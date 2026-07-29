@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent><groupId>com.rigour</groupId><artifactId>rigour-supply-chain-platform</artifactId><version>1.0.0-SNAPSHOT</version><relativePath>../../pom.xml</relativePath></parent>
+    <artifactId>rigour-shared-logging</artifactId>
+    <name>Rigour Shared Logging</name>
+    <description>带 requestId 和 tenantId 的 HTTP 访问日志</description>
+    <dependencies>
+        <dependency><groupId>com.rigour</groupId><artifactId>rigour-shared-context</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-autoconfigure</artifactId></dependency>
+        <dependency><groupId>org.springframework</groupId><artifactId>spring-web</artifactId></dependency>
+        <dependency><groupId>jakarta.servlet</groupId><artifactId>jakarta.servlet-api</artifactId></dependency>
+        <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId></dependency>
+    </dependencies>
+</project>

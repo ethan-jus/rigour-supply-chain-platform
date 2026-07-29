@@ -1,0 +1,19 @@
+server:
+  port: 8085
+
+spring:
+  application:
+    name: rigour-order-center-service
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when_authorized
+
+logging:
+  level:
+    com.rigour: INFO

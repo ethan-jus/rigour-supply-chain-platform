@@ -1,0 +1,67 @@
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.jar
+*.war
+dependency-reduced-pom.xml
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.fleet/
+.cursor/
+*.code-workspace
+.settings/
+.project
+.classpath
+.factorypath
+
+# OS
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100/
+.Trashes/
+Thumbs.db
+ehthumbs.db
+
+# Logs
+*.log
+logs/
+
+# TypeScript (防止仓库后续工具脚本误提交增量构建状态)
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+.env.*.local
+*.env
+
+# Keys and local credentials
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+
+# Docker volumes
+docker/volumes/
+
+# Node (if any)
+node_modules/
+dist/
+
+# Temp
+tmp/
+temp/
+.cache/
+reports/
+outputs/
+*.pid
+
+# Local AI and automation tools
+.codex/
+.claude/

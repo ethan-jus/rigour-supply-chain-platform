@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.rigour</groupId>
+        <artifactId>rigour-supply-chain-platform</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+    <artifactId>rigour-platform-bom</artifactId>
+    <packaging>pom</packaging>
+    <name>Rigour Platform BOM</name>
+    <description>Rigour 平台内部库版本清单，不携带运行时依赖</description>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>rigour-platform-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>rigour-shared-context</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>rigour-shared-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>rigour-shared-logging</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>rigour-shared-audit</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>rigour-shared-idempotency</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>rigour-shared-outbox</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>rigour-shared-cache</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>rigour-shared-file</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
