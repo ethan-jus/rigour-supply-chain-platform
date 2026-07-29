@@ -21,8 +21,8 @@ shared/
 ├── rigour-shared-cache/          # 可选：缓存端口
 └── rigour-shared-file/           # 可选：文件元数据与存储端口
 services/
-├── rigour-api-gateway/           # 统一 API 入口，端口 8080
-└── rigour-*-service/             # 11 个领域服务，端口 8081-8091
+├── rigour-api-gateway/           # 统一 API 入口，端口 26880
+└── rigour-*-service/             # 11 个领域服务，端口 26881-26891
 ```
 
 `rigour-platform-starter` 只聚合 `core/context/logging`、Spring Web、Validation 和 Actuator。`audit/idempotency/outbox/cache/file` 不会被强制带入服务，领域服务必须按实际需求显式依赖并提供基础设施实现。
@@ -65,7 +65,7 @@ docker compose --env-file .env -f docker/compose/docker-compose.yml up -d
 | RocketMQ Proxy | `apache/rocketmq:5.3.3` | **18081 → 容器 8081** |
 | MinIO | `minio/minio:RELEASE.2025-04-22T22-12-26Z` | 9000、9001 |
 
-RocketMQ Proxy 使用宿主机 `18081`，因为 `8081` 已由 `tenant-iam-service` 使用。
+RocketMQ Proxy 继续使用独立宿主机端口 `18081`；表中的 `8081` 是容器内部端口。
 
 ## HTTP 契约
 

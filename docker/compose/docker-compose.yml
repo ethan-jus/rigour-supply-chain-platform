@@ -45,7 +45,7 @@ services:
     depends_on:
       - rocketmq-nameserver
     ports:
-      # 宿主机 8081 已分配给 tenant-iam-service；18081 仅用于本地 RocketMQ Proxy。
+      # 18081 是本地 RocketMQ Proxy 的独立宿主机端口。
       - "18081:8081"
       - "10909:10909"
       - "10911:10911"

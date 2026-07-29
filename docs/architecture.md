@@ -84,7 +84,7 @@ domain          -> 不依赖 Spring、数据库或其他服务实现
 
 唯一 Compose 文件是 `docker/compose/docker-compose.yml`，固定 MySQL、Redis、RocketMQ 和 MinIO 镜像版本。它只用于本地开发，不包含生产密钥管理、高可用、备份、TLS、监控或容量配置。
 
-RocketMQ Proxy 映射为宿主机 `18081` 到容器 `8081`，避免与 `tenant-iam-service:8081` 冲突。
+RocketMQ Proxy 映射为宿主机 `18081` 到容器 `8081`，与微服务使用的 `26880-26891` 端口段分离。
 
 ## 尚未生产就绪
 

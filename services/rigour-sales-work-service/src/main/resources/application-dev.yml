@@ -1,0 +1,12 @@
+spring:
+  config:
+    import: optional:nacos:${spring.application.name}.yaml?refreshEnabled=true
+  cloud:
+    nacos:
+      server-addr: 82.157.4.176:18848
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD}
+      config:
+        namespace: ${NACOS_NAMESPACE:}
+      discovery:
+        namespace: ${NACOS_NAMESPACE:}
