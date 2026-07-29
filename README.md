@@ -67,6 +67,16 @@ docker compose --env-file .env -f docker/compose/docker-compose.yml up -d
 
 RocketMQ Proxy 使用宿主机 `18081`，因为 `8081` 已由 `tenant-iam-service` 使用。
 
+## 共享开发基础设施
+
+团队共享的 MySQL、Redis、RocketMQ 和 MinIO 运行在受控开发服务器中，不直接开放公网。开发者通过个人 SSH 账号建立端口隧道：
+
+```bash
+RIGOUR_SSH_USER=你的个人账号 ./scripts/shared-dev-tunnel.sh
+```
+
+连接变量模板见 `config/shared-dev.env.example`，完整账号、端口、主机指纹和验收方式见 [共享开发环境接入](docs/shared-development-environment.md)。仓库不保存真实密码、服务器私钥或管理员配置。
+
 ## HTTP 契约
 
 - 业务前缀：`/api/v1`
