@@ -6,7 +6,7 @@
 
 ## Reactor
 
-根 reactor 共 24 个项目：根聚合项目 1 个、platform 3 个、shared 8 个、启动应用 12 个。
+根reactor共46个项目：根聚合项目1个、platform 3个、shared 8个、Gateway 1个、领域聚合父模块11个、领域API模块11个、领域启动应用11个。
 
 ```text
 root
@@ -21,7 +21,9 @@ root
 ├── shared-file        # 可选纯契约
 ├── platform-starter   -> context + core + logging + web + validation + actuator
 ├── api-gateway        -> platform-starter + Spring Cloud Gateway WebMVC
-├── 11 domain services -> platform-starter
+├── 11 domain service parents
+│   ├── <domain>-api     # 版本化接口和DTO，不包含实现
+│   └── <domain>-service # 启动应用、业务、领域和持久化
 └── architecture-tests
 ```
 
@@ -38,7 +40,7 @@ root
 | idempotency | 否 | IdempotencyKey/Record/Store | 无效切面、内存伪实现、共享实体表 |
 | outbox | 否 | OutboxMessage、OutboxStore | JPA 实体、共享 Outbox 表、投递器 |
 | cache | 否 | 租户隔离 CacheStore | Redis 绑定、自动缓存、唯一事实 |
-| file | 否 | FileMetadata、FileStorage | MinIO/OSS 绑定、业务授权 |
+| file | 否 | FileMetadata、FileStorage | 具体 COS SDK 绑定、业务授权 |
 
 ### 幂等落地要求
 
@@ -50,26 +52,30 @@ root
 
 ## 服务内部依赖
 
-每个领域服务预留四层 package 边界：
+所有领域服务都采用业务聚合目录，让接口契约和实现相邻，避免按技术类型集中到顶层`contracts`目录。API模型不再拆出独立DTO模块：请求、响应和错误语义都是接口契约的一部分。Gateway只承担入口能力，不发布领域调用契约，因此保持单模块。
+
+领域实现模块统一采用四层package边界：
 
 ```text
-interfaces      -> application -> domain
+api             -> application -> domain
 infrastructure  -> application -> domain
 domain          -> 不依赖 Spring、数据库或其他服务实现
 ```
 
-- `interfaces`：HTTP、消息、批处理等入站协议适配；
+- `api`：Controller等入站协议适配；可供其他服务依赖的Java契约只放在同级`iam-api` Maven模块；
 - `application`：用例编排、事务边界和端口调用；
 - `domain`：聚合、值对象、领域服务和业务不变量；
 - `infrastructure`：数据库、消息、缓存、文件和第三方系统出站适配。
 
-当前仅使用 `package-info.java` 固化边界，尚未实现领域类型。
+标准包名为`api.controller`、`application.service`、`domain.model/repository`和`infrastructure.persistence`。空骨架阶段只创建顶层边界和已确认的业务类型，不批量制造空Controller、Mapper或DTO。
+
+持久层统一选型为MyBatis-Plus加显式XML，但运行依赖按服务渐进接入：只有Schema、Flyway脚本、Nacos数据源和集成测试同时具备时，服务实现模块才能加入MyBatis-Plus/Flyway/MySQL。当前只有IAM满足条件。业务层不继承`IService/ServiceImpl`；复杂查询保留XML；多租户SQL插件必须经过平台表豁免和越权测试后才能启用。
 
 ## 架构门禁
 
 根 POM 的 Maven Enforcer 禁止任何领域服务 artifact 成为依赖。`rigour-architecture-tests` 进一步验证：
 
-1. 所有 POM 都由根 reactor 聚合；
+1. 所有POM都由根reactor直接或递归聚合；
 2. artifactId 不重复；
 3. 只有 `rigour-api-gateway` 和 11 个领域服务；
 4. 服务 POM 不直接依赖其他服务 artifact。
@@ -82,10 +88,10 @@ domain          -> 不依赖 Spring、数据库或其他服务实现
 
 ## 本地基础设施边界
 
-唯一 Compose 文件是 `docker/compose/docker-compose.yml`，固定 MySQL、Redis、RocketMQ 和 MinIO 镜像版本。它只用于本地开发，不包含生产密钥管理、高可用、备份、TLS、监控或容量配置。
+唯一 Compose 文件是 `docker/compose/docker-compose.yml`，固定 MySQL、Redis 和 RocketMQ 镜像版本。它只用于本地开发，不包含生产密钥管理、高可用、备份、TLS、监控或容量配置。文件能力通过对象存储端口适配腾讯云 COS，不在 Compose 中运行本地替代服务。
 
 RocketMQ Proxy 映射为宿主机 `18081` 到容器 `8081`，与微服务使用的 `26880-26891` 端口段分离。
 
 ## 尚未生产就绪
 
-认证授权、可信租户头、数据库迁移、领域持久化、幂等实现、Outbox 投递、审计落库、缓存/文件适配器、OpenAPI、消息契约、集成测试和生产部署均未完成。`mvn verify` 通过只证明当前静态结构、编译和最小上下文测试通过。
+认证授权、可信租户头、完整领域持久化、幂等实现、Outbox投递、审计应用实现、缓存/文件适配器、OpenAPI、消息契约和生产部署均未完成。IAM已接入Flyway运行时、MyBatis-Plus和MySQL容器集成测试，但尚未应用到开发服务器。`mvn verify`通过只证明当前代码结构、迁移和受测Mapper在本地测试环境可工作。

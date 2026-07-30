@@ -1,0 +1,17 @@
+# 手工复制到Nacos Data ID: rigour-tenant-iam-service.yaml
+# 开发环境Namespace名称为`dev`，Namespace ID为`3aa03547-8948-4254-bd94-47c630db128b`。
+# Nacos只保存环境变量引用，真实密码由本机IDE/终端或部署平台注入。
+spring:
+  datasource:
+    url: jdbc:mysql://82.157.4.176:13306/rigour_iam?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
+    username: ${IAM_DB_APP_USERNAME:rigour_iam_app}
+    password: ${IAM_DB_APP_PASSWORD}
+    hikari:
+      minimum-idle: 2
+      maximum-pool-size: 10
+      connection-timeout: 30000
+      validation-timeout: 5000
+  flyway:
+    url: jdbc:mysql://82.157.4.176:13306/rigour_iam?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
+    user: ${IAM_DB_MIGRATOR_USERNAME:rigour_iam_migrator}
+    password: ${IAM_DB_MIGRATOR_PASSWORD}

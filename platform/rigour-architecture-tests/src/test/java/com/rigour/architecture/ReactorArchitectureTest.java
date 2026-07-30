@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -31,7 +32,7 @@ class ReactorArchitectureTest {
     void everyPomBelongsToRootReactor() throws Exception {
         Set<String> expected = new TreeSet<>();
         expected.add(".");
-        expected.addAll(rootModules());
+        expected.addAll(allModules());
 
         Set<String> actual = new TreeSet<>();
         try (var paths = Files.walk(ROOT)) {
@@ -50,7 +51,7 @@ class ReactorArchitectureTest {
     @Test
     void artifactIdsAreUniqueAndApplicationSetIsStable() throws Exception {
         Set<String> artifactIds = new HashSet<>();
-        for (String module : rootModules()) {
+        for (String module : allModules()) {
             String artifactId = directChildText(readPom(ROOT.resolve(module).resolve("pom.xml")), "artifactId");
             assertTrue(artifactIds.add(artifactId), () -> "重复 artifactId: " + artifactId);
         }
@@ -63,14 +64,13 @@ class ReactorArchitectureTest {
         assertEquals(12, serviceModules.size(), "必须保持 Gateway + 11 个领域服务");
         assertTrue(serviceModules.contains("services/rigour-api-gateway"));
         assertTrue(serviceModules.stream().noneMatch(module -> module.equals("services/rigour-gateway")));
+        assertEquals(12, applicationModules().size(), "聚合父模块和API模块不得被误计为启动应用");
     }
 
     @Test
     void servicesDoNotDependOnOtherServiceArtifacts() throws Exception {
         Set<String> serviceArtifacts = new HashSet<>();
-        List<String> serviceModules = rootModules().stream()
-                .filter(module -> module.startsWith("services/"))
-                .toList();
+        List<String> serviceModules = applicationModules();
         for (String module : serviceModules) {
             serviceArtifacts.add(directChildText(readPom(ROOT.resolve(module).resolve("pom.xml")), "artifactId"));
         }
@@ -119,6 +119,44 @@ class ReactorArchitectureTest {
         List<String> result = new ArrayList<>();
         for (Element module : directChildren(modules, "module")) {
             result.add(module.getTextContent().trim());
+        }
+        return result;
+    }
+
+    private List<String> allModules() throws Exception {
+        Set<String> result = new LinkedHashSet<>();
+        collectModules(Path.of(""), ROOT.resolve("pom.xml"), result);
+        return List.copyOf(result);
+    }
+
+    private void collectModules(Path parent, Path pomPath, Set<String> result) throws Exception {
+        Document pom = readPom(pomPath);
+        Element modules = directChild(pom.getDocumentElement(), "modules");
+        if (modules == null) {
+            return;
+        }
+        for (Element module : directChildren(modules, "module")) {
+            Path relativePath = parent.resolve(module.getTextContent().trim()).normalize();
+            String modulePath = relativePath.toString();
+            if (result.add(modulePath)) {
+                collectModules(relativePath, ROOT.resolve(relativePath).resolve("pom.xml"), result);
+            }
+        }
+    }
+
+    private List<String> applicationModules() throws Exception {
+        List<String> result = new ArrayList<>();
+        for (String module : allModules()) {
+            if (!module.startsWith("services/")) {
+                continue;
+            }
+            Document pom = readPom(ROOT.resolve(module).resolve("pom.xml"));
+            String packaging = directChildText(pom, "packaging");
+            String artifactId = directChildText(pom, "artifactId");
+            if (!"pom".equals(packaging)
+                    && ("rigour-api-gateway".equals(artifactId) || artifactId.endsWith("-service"))) {
+                result.add(module);
+            }
         }
         return result;
     }

@@ -6,5 +6,5 @@
     <parent><groupId>com.rigour</groupId><artifactId>rigour-supply-chain-platform</artifactId><version>1.0.0-SNAPSHOT</version><relativePath>../../pom.xml</relativePath></parent>
     <artifactId>rigour-shared-file</artifactId>
     <name>Rigour Shared File</name>
-    <description>文件元数据和对象存储端口，不绑定 MinIO</description>
+    <description>文件元数据和对象存储端口，不绑定具体对象存储 SDK</description>
 </project>

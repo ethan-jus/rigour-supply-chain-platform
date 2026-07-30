@@ -3,14 +3,18 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    <parent><groupId>com.rigour</groupId><artifactId>rigour-supply-chain-platform</artifactId><version>1.0.0-SNAPSHOT</version><relativePath>../../pom.xml</relativePath></parent>
+    <parent>
+        <groupId>com.rigour</groupId>
+        <artifactId>rigour-supply-chain-platform</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
     <artifactId>rigour-tenant-iam-service</artifactId>
+    <packaging>pom</packaging>
     <name>rigour-tenant-iam-service</name>
-    <dependencies>
-        <dependency><groupId>com.rigour</groupId><artifactId>rigour-platform-starter</artifactId></dependency>
-        <dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId></dependency>
-        <dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId></dependency>
-        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
-    </dependencies>
-    <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>
+    <description>IAM接口契约与业务实现的聚合工程</description>
+    <modules>
+        <module>iam-api</module>
+        <module>iam-service</module>
+    </modules>
 </project>

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.rigour.tenant.iam.infrastructure.persistence.mapper.ApplicationMapper">
+
+    <resultMap id="applicationResultMap"
+               type="com.rigour.tenant.iam.infrastructure.persistence.dataobject.ApplicationDO">
+        <id property="id" column="id"
+            typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+        <result property="createdBy" column="created_by"
+                typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+        <result property="updatedBy" column="updated_by"
+                typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+        <result property="deletedBy" column="deleted_by"
+                typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+    </resultMap>
+
+    <sql id="applicationColumns">
+        id, app_code, app_name, app_scope, app_type, icon_key, sort_order,
+        launch_mode, target_uri, credential_ref, status, version,
+        created_at, created_by, updated_at, updated_by,
+        deleted_at, deleted_by, delete_reason
+    </sql>
+
+    <select id="selectByCode" resultMap="applicationResultMap">
+        SELECT <include refid="applicationColumns"/>
+        FROM iam_application
+        WHERE app_code = #{appCode}
+          AND deleted_at IS NULL
+    </select>
+
+    <select id="selectActiveByScope" resultMap="applicationResultMap">
+        SELECT <include refid="applicationColumns"/>
+        FROM iam_application
+        WHERE app_scope = #{appScope}
+          AND status = 'ACTIVE'
+          AND deleted_at IS NULL
+        ORDER BY sort_order, app_code
+    </select>
+</mapper>

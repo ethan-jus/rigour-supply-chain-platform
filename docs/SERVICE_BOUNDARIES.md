@@ -15,6 +15,6 @@
 | rigour-city-operations-service | 26890 | 城市成本、预算、活动、合作方、营销、复盘和培训 |
 | rigour-channel-agent-service | 26891 | 代理等级、关系树、额度、审批、占用和释放流水 |
 
-每个领域服务独占自己的 Schema、数据库账号和写权限。当前脚手架尚未声明数据库驱动或 Schema，这条规则需要后续 Flyway、账号配置和部署验收共同落实。
+每个领域服务独占自己的Schema、数据库账号和写权限。IAM已将逻辑Schema冻结为`rigour_iam`，并在`iam-service`接入MyBatis-Plus、MySQL Driver和Flyway V1～V6迁移；运行/迁移账号仍需按最小权限创建，密码通过环境Secret注入而不是写入Nacos。
 
-服务之间无 Maven 实现依赖，通过 API、事件或本地投影协作。BI 聚合由 analytics-bi-service 提供，不在页面或 Gateway 中实时拼装多个业务库。
+服务之间无Maven实现依赖，通过API、事件或本地投影协作。每个领域服务的Java调用契约位于同一聚合工程的`<domain>-api`，调用方只允许依赖API模块。BI聚合由analytics-bi-service提供，不在页面或Gateway中实时拼装多个业务库。

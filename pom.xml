@@ -47,6 +47,9 @@
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
         <maven-enforcer-plugin.version>3.5.0</maven-enforcer-plugin.version>
         <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
+        <mybatis-plus.version>3.5.16</mybatis-plus.version>
+        <archunit.version>1.4.2</archunit.version>
+        <testcontainers.version>2.0.5</testcontainers.version>
     </properties>
 
     <dependencyManagement>
@@ -76,6 +79,66 @@
                 <groupId>com.rigour</groupId>
                 <artifactId>rigour-platform-starter</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>iam-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>integration-migration-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>merchant-crm-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>erp-core-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>order-center-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>sales-work-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>ai-agent-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>analytics-bi-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>hr-payroll-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>city-operations-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>channel-agent-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-spring-boot4-starter</artifactId>
+                <version>${mybatis-plus.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
@@ -191,6 +254,17 @@
                                         <exclude>com.rigour:rigour-hr-payroll-service</exclude>
                                         <exclude>com.rigour:rigour-city-operations-service</exclude>
                                         <exclude>com.rigour:rigour-channel-agent-service</exclude>
+                                        <exclude>com.rigour:iam-service</exclude>
+                                        <exclude>com.rigour:integration-migration-service</exclude>
+                                        <exclude>com.rigour:merchant-crm-service</exclude>
+                                        <exclude>com.rigour:erp-core-service</exclude>
+                                        <exclude>com.rigour:order-center-service</exclude>
+                                        <exclude>com.rigour:sales-work-service</exclude>
+                                        <exclude>com.rigour:ai-agent-service</exclude>
+                                        <exclude>com.rigour:analytics-bi-service</exclude>
+                                        <exclude>com.rigour:hr-payroll-service</exclude>
+                                        <exclude>com.rigour:city-operations-service</exclude>
+                                        <exclude>com.rigour:channel-agent-service</exclude>
                                     </excludes>
                                     <message>领域服务之间禁止直接或传递依赖，只能通过 API、事件或本地投影协作。</message>
                                 </bannedDependencies>
