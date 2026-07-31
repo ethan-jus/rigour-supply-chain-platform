@@ -1,0 +1,30 @@
+# IAM、统一门户与管理中心实施状态
+
+## 代码已完成
+
+| 阶段 | 已完成边界 |
+|---|---|
+| 1 认证与会话 | Argon2id、统一失败响应、锁定、租户边界、IAM HttpOnly会话、交互式首管理员初始化 |
+| 2 签名与发现 | RSA-3072/RS256、Discovery、JWKS、受限`env:`/绝对`file:`私钥引用，数据库仅保存公开JWK元数据 |
+| 3 Token生命周期 | Access/ID Token自包含且不落库；Refresh仅保存哈希、原子轮换、重放后撤销整个会话 |
+| 4 OIDC授权服务 | Authorization Code + PKCE、nonce/state、精确CORS、OIDC退出、多公开客户端、IAM登录会话复用 |
+| 5 Gateway | JWT issuer/JWKS/audience/tokenUse校验；每次请求向IAM `/token/current`核验当前会话和版本；删除客户端`X-Rigour-*`，以HMAC签名重建下游身份、角色和权限上下文 |
+| 6 Portal | PKCE、ID Token RS256/issuer/aud/azp/exp/iat/nonce校验、内存Token、`/me`、用户/租户展示、应用卡片、受控启动、OIDC退出 |
+| 7 配置化管理 | 平台级租户/套餐及订阅历史/应用/OIDC客户端/资源/审计；租户级组织/用户/密码重置/角色/数据范围/设置/审计；菜单、页面、按钮、API资源入库 |
+
+V8后空库共32张IAM表、5个应用、74个资源、26个权限码、43条UI导航元数据。数据库只保存稳定`routeKey`和路径，Portal将其映射到已编译路由；未知`routeKey`或路径不一致时失败关闭，不允许数据库下发组件路径或脚本。
+
+## 现在还差什么
+
+代码开发阶段已不再差原来的“第7步功能实现”；剩余是环境变更和真实跨进程验收：
+
+1. 评审V7/V8并由负责人授权将Flyway迁移应用到共享DEV。
+2. 为所有本地IAM进程注入同一份DEV RSA私钥和同一份AES-256授权上下文密钥；为Gateway、IAM和所有领域服务注入同一份独立HMAC上下文密钥。共享DEV禁止使用进程级随机密钥。
+3. 一次性初始化Portal公开PKCE客户端、平台管理员，并为已开通套餐的租户初始化租户管理员。
+4. 按`docs/IAM_MANAGEMENT_ACCEPTANCE.md`前台启动IAM、Gateway和Portal，完成真实浏览器验收。
+
+## 不能误报为已完成
+
+- 本分支的自动测试不等于共享DEV数据已迁移，也不等于真实浏览器登录已验收。
+- Gateway当前为正确性优先的逐请求IAM在线确认，能立即感知退出和权限版本变化，但会增加IAM延迟与可用性耦合；规模化阶段应改为可审计的安全版本事件投影。
+- 订货宝和飞书销售工作台的外部启动与业务数据同步仍属于后续集成/业务开发；当前提供的是应用、OIDC客户端和权限资源接入基座。

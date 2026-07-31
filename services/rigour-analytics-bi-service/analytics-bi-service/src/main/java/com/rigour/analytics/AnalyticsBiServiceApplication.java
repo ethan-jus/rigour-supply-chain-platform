@@ -1,6 +1,6 @@
 package com.rigour.analytics;
 
-import org.springframework.boot.SpringApplication;
+import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
@@ -10,6 +10,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class AnalyticsBiServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(AnalyticsBiServiceApplication.class, args);
+        ServiceApplicationLauncher.run(AnalyticsBiServiceApplication.class, "分析BI服务", args);
     }
 }

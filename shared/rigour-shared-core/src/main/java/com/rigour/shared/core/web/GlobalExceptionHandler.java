@@ -4,10 +4,12 @@ import com.rigour.shared.core.api.ApiErrorDetail;
 import com.rigour.shared.core.api.ApiResponse;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
+import com.rigour.shared.context.AuthorizationDeniedException;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -47,6 +49,13 @@ public class GlobalExceptionHandler {
                 .toList();
         return ResponseEntity.badRequest()
                 .body(ApiResponse.error("VALIDATION_FAILED", "参数校验失败", details));
+    }
+
+    @ExceptionHandler(AuthorizationDeniedException.class)
+    ResponseEntity<ApiResponse<Void>> handleAuthorizationDenied(AuthorizationDeniedException exception) {
+        log.warn("requestId={} authorization denied", com.rigour.shared.context.RequestContext.getRequestId());
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(ApiResponse.error("IAM_FORBIDDEN", "没有访问该资源的权限", List.of()));
     }
 
     @ExceptionHandler(Exception.class)

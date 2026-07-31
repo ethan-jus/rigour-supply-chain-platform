@@ -1,6 +1,6 @@
 package com.rigour.integration;
 
-import org.springframework.boot.SpringApplication;
+import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
@@ -10,6 +10,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class IntegrationMigrationServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(IntegrationMigrationServiceApplication.class, args);
+        ServiceApplicationLauncher.run(IntegrationMigrationServiceApplication.class, "集成迁移服务", args);
     }
 }

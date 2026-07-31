@@ -1,5 +1,12 @@
 server:
   port: 26881
+  servlet:
+    session:
+      cookie:
+        name: RIGOUR_IAM_SESSION
+        http-only: true
+        secure: true
+        same-site: lax
 
 spring:
   application:
@@ -35,3 +42,37 @@ management:
 logging:
   level:
     com.rigour: INFO
+
+rigour:
+  context:
+    trust:
+      active-key-id: v1
+      keys-base64:
+        v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}
+  iam:
+    bootstrap:
+      platform-admin:
+        enabled: false
+      tenant-admin:
+        enabled: false
+      portal-client:
+        enabled: false
+        client-id: rigour-portal-browser
+    authentication:
+      password:
+        maximum-failed-attempts: 5
+        lock-duration: 15m
+        session-time-to-live: 8h
+    oidc:
+      server:
+        enabled: false
+        issuer: https://iam.dev.rigour.local
+        allowed-origins: []
+      signing:
+        enabled: false
+        minimum-rsa-bits: 3072
+      token:
+        access-token-audience:
+          - rigour-api
+      authorization-attributes:
+        enabled: false

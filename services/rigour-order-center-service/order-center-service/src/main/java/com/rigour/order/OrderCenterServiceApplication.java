@@ -1,6 +1,6 @@
 package com.rigour.order;
 
-import org.springframework.boot.SpringApplication;
+import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
@@ -10,6 +10,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class OrderCenterServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(OrderCenterServiceApplication.class, args);
+        ServiceApplicationLauncher.run(OrderCenterServiceApplication.class, "订单中心服务", args);
     }
 }

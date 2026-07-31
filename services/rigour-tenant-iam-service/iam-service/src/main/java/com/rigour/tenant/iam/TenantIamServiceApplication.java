@@ -1,6 +1,6 @@
 package com.rigour.tenant.iam;
 
-import org.springframework.boot.SpringApplication;
+import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
@@ -10,6 +10,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class TenantIamServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(TenantIamServiceApplication.class, args);
+        ServiceApplicationLauncher.run(TenantIamServiceApplication.class, "租户IAM服务", args);
     }
 }

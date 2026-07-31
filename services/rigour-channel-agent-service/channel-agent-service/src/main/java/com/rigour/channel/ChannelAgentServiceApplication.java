@@ -1,6 +1,6 @@
 package com.rigour.channel;
 
-import org.springframework.boot.SpringApplication;
+import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
@@ -10,6 +10,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class ChannelAgentServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(ChannelAgentServiceApplication.class, args);
+        ServiceApplicationLauncher.run(ChannelAgentServiceApplication.class, "渠道代理服务", args);
     }
 }

@@ -10,3 +10,5 @@ spring:
         namespace: ${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}
       discovery:
         namespace: ${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}
+
+# 安全开关、issuer和JWKS地址只在Nacos评审配置后开启；本文件不保存DEV真实域名或Secret。

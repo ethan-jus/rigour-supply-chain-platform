@@ -1,0 +1,14 @@
+spring:
+  cloud:
+    nacos:
+      discovery:
+        # 本机服务只读取共享DEV配置，不向共享注册中心发布开发者电脑地址。
+        register-enabled: ${NACOS_DISCOVERY_REGISTER_ENABLED:false}
+
+rigour:
+  gateway:
+    security:
+      allow-insecure-loopback: true
+      issuer: http://localhost:26881
+      jwk-set-uri: http://localhost:26881/oauth2/jwks
+      iam-current-token-uri: http://localhost:26881/api/v1/token/current

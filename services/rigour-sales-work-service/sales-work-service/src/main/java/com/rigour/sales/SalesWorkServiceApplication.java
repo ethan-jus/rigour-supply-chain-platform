@@ -1,6 +1,6 @@
 package com.rigour.sales;
 
-import org.springframework.boot.SpringApplication;
+import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
@@ -10,6 +10,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class SalesWorkServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(SalesWorkServiceApplication.class, args);
+        ServiceApplicationLauncher.run(SalesWorkServiceApplication.class, "销售工作服务", args);
     }
 }

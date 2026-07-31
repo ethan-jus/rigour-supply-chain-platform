@@ -1,6 +1,6 @@
 package com.rigour.city;
 
-import org.springframework.boot.SpringApplication;
+import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
@@ -10,6 +10,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class CityOperationsServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(CityOperationsServiceApplication.class, args);
+        ServiceApplicationLauncher.run(CityOperationsServiceApplication.class, "城市运营服务", args);
     }
 }

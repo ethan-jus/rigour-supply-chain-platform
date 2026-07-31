@@ -1,6 +1,6 @@
 package com.rigour.hr;
 
-import org.springframework.boot.SpringApplication;
+import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
@@ -10,6 +10,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class HrPayrollServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(HrPayrollServiceApplication.class, args);
+        ServiceApplicationLauncher.run(HrPayrollServiceApplication.class, "人力薪资服务", args);
     }
 }

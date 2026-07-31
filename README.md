@@ -2,7 +2,7 @@
 
 Java 21、Spring Boot 4.0.7、Spring Cloud 2025.1.2 的领域化服务骨架。
 
-本仓库当前证明模块边界、统一 HTTP 契约、自动配置和构建门禁可工作，不表示认证、数据持久化、消息投递、缓存、文件存储或任何领域业务已达到生产就绪。
+本仓库已实现IAM OIDC、Gateway资源服务器和配置化基础管理，其余领域服务仍是可编译骨架。自动构建通过不表示共享DEV、浏览器或生产环境已验收。
 
 ## 工程结构
 
@@ -12,7 +12,7 @@ platform/
 ├── rigour-platform-starter/      # 所有 HTTP 服务的最小公共基线
 └── rigour-architecture-tests/    # reactor 与服务依赖边界测试
 shared/
-├── rigour-shared-context/        # request/tenant 上下文与清理
+├── rigour-shared-context/        # request、签名调用人、tenant上下文与清理
 ├── rigour-shared-core/           # 统一响应、错误和分页
 ├── rigour-shared-logging/        # HTTP 访问日志
 ├── rigour-shared-audit/          # 可选：审计事件与端口
@@ -79,7 +79,8 @@ RocketMQ Proxy 继续使用独立宿主机端口 `18081`；表中的 `8081` 是�
 ## HTTP 契约
 
 - 业务前缀：`/api/v1`
-- 请求头：`Authorization`、`X-Tenant-Id`、`X-Request-Id`、`Accept-Language`
+- 浏览器请求头：`Authorization`、`X-Request-Id`、`Accept-Language`；客户端不得发送可信租户身份头
+- 下游身份：Gateway验签JWT并向IAM在线确认后，使用HMAC签名`X-Rigour-*`最小身份/角色/权限上下文；领域服务拒绝未签名、篡改或过期上下文
 - requestId：缺失时由请求上下文过滤器生成，并同时写入响应头和响应体
 - 错误码：稳定机器码；领域错误使用 `DOMAIN_REASON`
 
@@ -93,10 +94,10 @@ RocketMQ Proxy 继续使用独立宿主机端口 `18081`；表中的 `8081` 是�
 }
 ```
 
-## 当前未实现
+## 当前未实现或未验收
 
-- Gateway 生产级认证、可信租户头、限流、熔断和服务发现；
-- 其余领域服务的数据库驱动、迁移和仓储实现；IAM当前只接入首个应用目录Mapper骨架，尚未实现完整仓储；
+- Gateway限流、熔断和规模化的IAM安全版本事件投影；当前逐请求在线确认能即时失效，但与IAM延迟/可用性耦合；
+- 其余领域服务的数据库驱动、迁移和仓储实现；IAM已完成OIDC V7和基础管理V8；
 - 幂等存储、Outbox投递器、审计应用实现、缓存和对象存储适配器；IAM的Outbox和审计表仅完成DDL；
 - OpenAPI、领域 API、消息契约和跨服务集成测试；
 - Docker Compose 的生产部署、安全加固、备份和可观测性。
@@ -105,6 +106,8 @@ RocketMQ Proxy 继续使用独立宿主机端口 `18081`；表中的 `8081` 是�
 
 ## IAM数据库迁移
 
-`services/rigour-tenant-iam-service/iam-service/src/main/resources/db/migration`已包含V1～V6，共22张表、5个应用、70个资源、24个权限码和一期标准套餐。集成测试会在一次性MySQL 8.4容器中通过Flyway执行全部迁移，并验证MyBatis-Plus BaseMapper和自定义XML查询；尚未连接或修改开发服务器数据库。
+共享DEV当前已确认只执行V1～V6；功能分支新增V7 OIDC持久化和V8管理中心。空库顺序迁移后共32张IAM表、5个应用、74个资源、26个权限码、51个标准套餐资源和43条UI导航元数据。V7/V8已在一次性MySQL 8.4 Testcontainers中验证，尚未应用共享DEV。
+
+代码完成边界见[`docs/IAM_OIDC_REMAINING_ROADMAP.md`](docs/IAM_OIDC_REMAINING_ROADMAP.md)，多人共享DEV配置/数据库且各自本机运行服务见[`docs/SHARED_DEV_LOCAL_RUNTIME.md`](docs/SHARED_DEV_LOCAL_RUNTIME.md)，登录验收步骤见[`docs/IAM_MANAGEMENT_ACCEPTANCE.md`](docs/IAM_MANAGEMENT_ACCEPTANCE.md)，业务服务的用户上下文和授权接入见[`docs/DOMAIN_AUTHORIZATION_GUIDE.md`](docs/DOMAIN_AUTHORIZATION_GUIDE.md)。
 
 IAM实现模块已加入MyBatis-Plus、JDBC、MySQL Driver和Spring Boot 4 Flyway Starter。Nacos只保存数据源地址、用户名和密码环境变量引用；真实密码由本机或部署平台Secret注入，不能直接用root账号启动迁移。

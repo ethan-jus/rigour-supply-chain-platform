@@ -1,6 +1,6 @@
 package com.rigour.erp;
 
-import org.springframework.boot.SpringApplication;
+import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
@@ -10,6 +10,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class ErpCoreServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(ErpCoreServiceApplication.class, args);
+        ServiceApplicationLauncher.run(ErpCoreServiceApplication.class, "ERP核心服务", args);
     }
 }

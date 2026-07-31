@@ -9,6 +9,10 @@ spring:
       server:
         webmvc:
           routes:
+            - id: tenant-iam-portal
+              uri: ${IAM_SERVICE_URL:http://localhost:26881}
+              predicates:
+                - Path=/api/v1/me,/api/v1/portal/**,/api/v1/management/**
             - id: tenant-iam
               uri: ${IAM_SERVICE_URL:http://localhost:26881}
               predicates:
@@ -66,3 +70,10 @@ management:
 logging:
   level:
     com.rigour: INFO
+
+rigour:
+  context:
+    trust:
+      active-key-id: v1
+      keys-base64:
+        v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}

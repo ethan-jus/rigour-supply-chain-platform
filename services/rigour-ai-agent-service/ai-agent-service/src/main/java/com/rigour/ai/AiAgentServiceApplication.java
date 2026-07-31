@@ -1,6 +1,6 @@
 package com.rigour.ai;
 
-import org.springframework.boot.SpringApplication;
+import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
@@ -10,6 +10,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class AiAgentServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(AiAgentServiceApplication.class, args);
+        ServiceApplicationLauncher.run(AiAgentServiceApplication.class, "AI智能体服务", args);
     }
 }

@@ -33,7 +33,7 @@ root
 
 | 模块 | 默认进入服务 | 职责 | 明确不负责 |
 |---|---:|---|---|
-| context | 是 | requestId、tenantId、语言上下文与请求后清理 | 认证、授权、异步隐式传播 |
+| context | 是 | requestId、HMAC签名调用人、tenant/角色/权限上下文与请求后清理 | JWT认证、IAM事实计算、领域数据范围、异步隐式传播 |
 | core | 是 | ApiResponse、错误格式、分页、DataScope 名称 | 领域实体、数据访问、万能数据服务 |
 | logging | 是 | 不含敏感内容的 HTTP 访问日志 | 业务审计、请求体复制 |
 | audit | 否 | AuditEvent、AuditSink | AOP、共享表、默认空实现 |
@@ -84,7 +84,7 @@ domain          -> 不依赖 Spring、数据库或其他服务实现
 
 ## 请求与错误契约
 
-`RequestContextFilter` 解析或生成 `X-Request-Id`，将其写入响应头，并在 `finally` 中清理 request/tenant ThreadLocal。`ApiResponse` 创建时从 `RequestContext` 读取同一个 requestId。`GlobalExceptionHandler` 对未知异常只返回稳定通用文案，完整堆栈留在服务端日志。
+`RequestContextFilter` 解析或生成 `X-Request-Id`；存在身份头时校验Gateway生成的HMAC签名、时间窗口、请求方法、路径和查询，再建立`CallerIdentity`/tenant上下文，并在`finally`中清理ThreadLocal。未签名、篡改和过期上下文返回401；`AuthorizationContext.requirePermission`失败返回403。`ApiResponse`创建时读取同一requestId；未知异常只返回稳定通用文案，完整堆栈留在服务端日志。
 
 ## 本地基础设施边界
 
@@ -94,4 +94,4 @@ RocketMQ Proxy 映射为宿主机 `18081` 到容器 `8081`，与微服务使用�
 
 ## 尚未生产就绪
 
-认证授权、可信租户头、完整领域持久化、幂等实现、Outbox投递、审计应用实现、缓存/文件适配器、OpenAPI、消息契约和生产部署均未完成。IAM已接入Flyway运行时、MyBatis-Plus和MySQL容器集成测试，但尚未应用到开发服务器。`mvn verify`通过只证明当前代码结构、迁移和受测Mapper在本地测试环境可工作。
+IAM OIDC、平台/租户管理、数据库导航、Portal卡片与权限Gate、Gateway资源服务器和签名上下文已完成代码。Gateway对每个受保护请求调用IAM内部`/token/current`，会话撤销和安全/租户策略版本变化可立即生效；代价是当前请求链路与IAM延迟和可用性耦合，后续需以安全版本事件投影扩展。V1～V6已应用共享DEV，V7/V8、共享密钥、客户端和跨进程浏览器链路尚未发布验收。构建和Testcontainers通过不代表共享DEV或生产验收完成。

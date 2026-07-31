@@ -17,3 +17,10 @@ management:
 logging:
   level:
     com.rigour: INFO
+
+rigour:
+  context:
+    trust:
+      active-key-id: v1
+      keys-base64:
+        v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}
