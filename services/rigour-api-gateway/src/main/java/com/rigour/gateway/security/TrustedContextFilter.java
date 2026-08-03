@@ -1,6 +1,7 @@
 package com.rigour.gateway.security;
 
 import com.rigour.shared.context.RequestHeaders;
+import com.rigour.shared.context.RequestContext;
 import com.rigour.shared.context.TrustedContextSigner;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -19,10 +20,13 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** 删除客户端身份头并仅从已验签JWT重建下游可信上下文。 */
 public final class TrustedContextFilter extends OncePerRequestFilter {
 
+    private static final Logger log = LoggerFactory.getLogger(TrustedContextFilter.class);
     public static final String PREFIX = "X-Rigour-";
     private static final java.util.regex.Pattern SAFE_AUTHORITY =
             java.util.regex.Pattern.compile("[A-Za-z0-9*][A-Za-z0-9*._:-]{0,127}");
@@ -58,7 +62,14 @@ public final class TrustedContextFilter extends OncePerRequestFilter {
                 trusted.put(RequestHeaders.CONTEXT_KEY_ID, signature.keyId());
                 trusted.put(RequestHeaders.CONTEXT_TIMESTAMP, signature.timestamp());
                 trusted.put(RequestHeaders.CONTEXT_SIGNATURE, signature.signature());
+                log.debug("已生成下游可信身份上下文 requestId={} scope={} tenantId={} userId={} rolesCount={} permissionsCount={} keyId={}",
+                        RequestContext.getRequestId(), trusted.get(RequestHeaders.PRINCIPAL_SCOPE),
+                        trusted.get(RequestHeaders.TENANT_ID), trusted.get(RequestHeaders.USER_ID),
+                        countAuthorities(trusted.get(RequestHeaders.ROLES)),
+                        countAuthorities(trusted.get(RequestHeaders.PERMISSIONS)), signature.keyId());
             } catch (IllegalArgumentException | IllegalStateException exception) {
+                log.warn("生成下游可信身份上下文失败 requestId={} path={} reason={}",
+                        RequestContext.getRequestId(), request.getRequestURI(), exception.getMessage());
                 response.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE,
                         "Trusted authorization context is unavailable");
                 return;
@@ -84,6 +95,10 @@ public final class TrustedContextFilter extends OncePerRequestFilter {
                 throw new IllegalArgumentException("Unsafe authority value");
             }
         }).sorted().collect(java.util.stream.Collectors.joining(","));
+    }
+
+    private static int countAuthorities(String value) {
+        return value == null || value.isBlank() ? 0 : value.split(",").length;
     }
 
     private static final class TrustedHeaderRequest extends HttpServletRequestWrapper {

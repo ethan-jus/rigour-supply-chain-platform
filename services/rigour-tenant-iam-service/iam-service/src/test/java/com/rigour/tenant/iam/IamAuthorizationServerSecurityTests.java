@@ -71,6 +71,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
@@ -198,7 +199,7 @@ class IamAuthorizationServerSecurityTests {
                 .andExpect(header().string("Content-Security-Policy",
                         org.hamcrest.Matchers.containsString(
                                 "form-action 'self' https://portal.dev.rigour.local")))
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("瑞盖统一身份认证")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("瑞盖优选 · 统一身份认证")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("正在验证身份…")))
                 .andReturn();
         Matcher matcher = CSRF_VALUE.matcher(loginPage.getResponse().getContentAsString());
@@ -207,7 +208,6 @@ class IamAuthorizationServerSecurityTests {
 
         mockMvc.perform(post("/login").secure(true).session(session)
                         .param("_csrf", csrf)
-                        .param("principalScope", "PLATFORM")
                         .param("username", USERNAME)
                         .param("password", PASSWORD))
                 .andExpect(status().is3xxRedirection())
@@ -262,7 +262,8 @@ class IamAuthorizationServerSecurityTests {
                 + "&post_logout_redirect_uri=https%3A%2F%2Fportal.dev.rigour.local%2F";
         mockMvc.perform(get(URI.create(logoutPath)).secure(true).session(session))
                 .andExpect(status().is3xxRedirection())
-                .andExpect(redirectedUrl("https://portal.dev.rigour.local/"));
+                .andExpect(redirectedUrl("https://portal.dev.rigour.local/"))
+                .andExpect(cookie().maxAge("RIGOUR_IAM_SESSION", 0));
         mockMvc.perform(get("/api/v1/me").secure(true)
                         .header("Authorization", "Bearer " + accessToken))
                 .andExpect(status().isUnauthorized());
@@ -279,11 +280,59 @@ class IamAuthorizationServerSecurityTests {
 
         mockMvc.perform(post("/login").secure(true).session(session)
                         .param("_csrf", matcher.group(1))
-                        .param("principalScope", "PLATFORM")
                         .param("username", USERNAME)
                         .param("password", PASSWORD))
                 .andExpect(status().is3xxRedirection())
                 .andExpect(redirectedUrl("https://portal.dev.rigour.local/"));
+    }
+
+    @Test
+    void promptLoginForcesFreshIamLoginAfterExistingBrowserSession() throws Exception {
+        MockHttpSession session = new MockHttpSession();
+        MvcResult loginPage = mockMvc.perform(get("/login").secure(true).session(session))
+                .andExpect(status().isOk())
+                .andReturn();
+        Matcher matcher = CSRF_VALUE.matcher(loginPage.getResponse().getContentAsString());
+        assertThat(matcher.find()).isTrue();
+
+        mockMvc.perform(post("/login").secure(true).session(session)
+                        .param("_csrf", matcher.group(1))
+                        .param("username", USERNAME)
+                        .param("password", PASSWORD))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(redirectedUrl("https://portal.dev.rigour.local/"));
+
+        String verifier = "prompt-login-pkce-verifier-that-is-long-enough-0123456789";
+        String challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                MessageDigest.getInstance("SHA-256").digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+        String authorizationPath = "/oauth2/authorize?response_type=code&client_id=" + CLIENT_ID
+                + "&redirect_uri=" + REDIRECT_URI
+                + "&scope=openid%20profile&state=prompt-login-state"
+                + "&code_challenge=" + challenge + "&code_challenge_method=S256"
+                + "&prompt=login";
+
+        MvcResult forceLogin = mockMvc.perform(get(URI.create(authorizationPath)).secure(true).session(session))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(redirectedUrl("/login"))
+                .andReturn();
+        MockHttpSession freshSession = (MockHttpSession) forceLogin.getRequest().getSession(false);
+        assertThat(freshSession).isNotNull();
+
+        MvcResult freshLoginPage = mockMvc.perform(get("/login").secure(true).session(freshSession))
+                .andExpect(status().isOk())
+                .andReturn();
+        Matcher freshMatcher = CSRF_VALUE.matcher(freshLoginPage.getResponse().getContentAsString());
+        assertThat(freshMatcher.find()).isTrue();
+        mockMvc.perform(post("/login").secure(true).session(freshSession)
+                        .param("_csrf", freshMatcher.group(1))
+                        .param("username", USERNAME)
+                        .param("password", PASSWORD))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(header().string("Location", org.hamcrest.Matchers.containsString("/oauth2/authorize")));
+
+        mockMvc.perform(get(URI.create(authorizationPath)).secure(true).session(freshSession))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(header().string("Location", org.hamcrest.Matchers.startsWith(REDIRECT_URI)));
     }
 
     private RegisteredClient portalClient() {

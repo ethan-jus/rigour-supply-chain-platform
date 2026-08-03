@@ -41,5 +41,11 @@ public interface IamManagementStore {
     DataScopeView saveDataScope(Actor actor, UUID id, DataScopeCommand command);
     List<SettingView> settings(Actor actor);
     SettingView saveSetting(Actor actor, String key, SettingCommand command);
+    List<DictionaryTypeView> dictionaryTypes(Actor actor);
+    DictionaryTypeView createDictionaryType(Actor actor, DictionaryTypeCommand command);
+    DictionaryTypeView updateDictionaryType(Actor actor, UUID id, DictionaryTypeCommand command);
+    List<DictionaryItemView> dictionaryItems(Actor actor, UUID typeId);
+    DictionaryItemView createDictionaryItem(Actor actor, DictionaryItemCommand command);
+    DictionaryItemView updateDictionaryItem(Actor actor, UUID id, DictionaryItemCommand command);
     List<AuditView> audits(Actor actor, int limit);
 }

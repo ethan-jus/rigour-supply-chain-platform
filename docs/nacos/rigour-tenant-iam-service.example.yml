@@ -1,11 +1,12 @@
 # 手工复制到Nacos Data ID: rigour-tenant-iam-service.yaml
 # 开发环境Namespace名称为`dev`，Namespace ID为`3aa03547-8948-4254-bd94-47c630db128b`。
 # 当前开发模式：配置与数据库共享DEV，IAM/Gateway/Portal由每位开发者在本机启动。
-# Nacos只保存环境变量引用，真实密码由本机IDE/终端或部署平台注入。
+# Nacos保存共享DEV的非敏感配置；数据库密码、授权密钥和上下文签名密钥
+# 必须由本机Secret文件、IDE Secret或部署平台注入，不能写入Git或Nacos明文。
 spring:
   datasource:
     url: jdbc:mysql://82.157.4.176:13306/rigour_iam?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
-    username: ${IAM_DB_APP_USERNAME:rigour_iam_app}
+    username: rigour_iam_app
     password: ${IAM_DB_APP_PASSWORD}
     hikari:
       minimum-idle: 2
@@ -14,11 +15,11 @@ spring:
       validation-timeout: 5000
   flyway:
     url: jdbc:mysql://82.157.4.176:13306/rigour_iam?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
-    user: ${IAM_DB_MIGRATOR_USERNAME:rigour_iam_migrator}
+    user: rigour_iam_migrator
     password: ${IAM_DB_MIGRATOR_PASSWORD}
 
-# V7/V8通过评审并迁移到共享DEV后才能把enabled改为true。
-# Nacos只保存环境变量引用；IAM_OIDC_AUTH_ATTRIBUTES_KEY_V1必须是32随机字节的Base64值。
+# 共享DEV已完成OIDC迁移和密钥准备时使用以下开关；新环境必须先完成迁移和Secret准备。
+# IAM_OIDC_AUTH_ATTRIBUTES_KEY_V1必须是32随机字节的Base64值，不能写入本文件。
 rigour:
   context:
     trust:
@@ -31,41 +32,52 @@ rigour:
       platform-admin:
         # 只能在单实例、前台交互终端中临时开启；创建成功后立即恢复false。
         enabled: false
-      tenant-admin:
-        # 必须已存在唯一有效套餐订阅；密码只从前台交互终端读取。
+      local-signing-key:
+        # 仅用于隔离本机数据库：没有ACTIVE签名密钥时自动生成RSA-3072私钥并登记公钥。
+        # 共享DEV使用团队统一私钥，禁止开启，避免不同电脑生成互不兼容的JWT签名密钥。
         enabled: false
+      tenant-admin:
+        # 一次性创建指定租户的首个TENANT_SUPER_ADMIN；必须已存在唯一有效套餐订阅。
+        # 密码只从前台交互终端读取，创建成功后立即恢复false。
+        enabled: false
+        tenant-code: test001
+        username: tenant-admin
+        display-name: 租户超级管理员
+        minimum-password-length: 14
       portal-client:
-        # 首次初始化时显式开启；写入成功后恢复false。公开PKCE客户端没有Secret。
-        enabled: ${IAM_PORTAL_CLIENT_BOOTSTRAP_ENABLED:false}
-        client-id: ${IAM_PORTAL_CLIENT_ID:rigour-portal-browser}
-        client-name: ${IAM_PORTAL_CLIENT_NAME:Rigour Portal Browser}
-        redirect-uri: ${IAM_PORTAL_REDIRECT_URI:http://localhost:5100/oidc/callback}
-        post-logout-redirect-uri: ${IAM_PORTAL_POST_LOGOUT_REDIRECT_URI:http://localhost:5100/}
-        allow-insecure-loopback: ${IAM_PORTAL_ALLOW_INSECURE_LOOPBACK:true}
+        # 首次初始化时临时改为true；写入成功后恢复false。公开PKCE客户端没有Secret。
+        enabled: false
+        client-id: rigour-portal-browser
+        client-name: Rigour Portal Browser
+        redirect-uri: http://localhost:5100/oidc/callback
+        post-logout-redirect-uri: http://localhost:5100/
+        allow-insecure-loopback: true
     authentication:
       password:
         # 一期DEV暂定值；生产前必须依据并发压测和安全评审冻结。
-        maximum-failed-attempts: ${IAM_PASSWORD_MAXIMUM_FAILED_ATTEMPTS:5}
-        lock-duration: ${IAM_PASSWORD_LOCK_DURATION:15m}
-        session-time-to-live: ${IAM_PASSWORD_SESSION_TTL:8h}
+        maximum-failed-attempts: 5
+        lock-duration: 15m
+        session-time-to-live: 8h
     oidc:
       server:
-        # signing和authorization store均验证完成后才允许开启。
-        enabled: ${IAM_OIDC_SERVER_ENABLED:false}
-        issuer: ${IAM_OIDC_ISSUER:http://localhost:26881}
+        # OIDC授权服务器总开关：开启Discovery、authorize和token端点；依赖下面两个能力。
+        enabled: true
+        issuer: http://localhost:26881
         allowed-origins:
-          - ${PORTAL_ORIGIN:http://localhost:5100}
+          - http://localhost:5100
         # 仅允许浏览器本机loopback HTTP；远程IP和非loopback HTTP仍会失败关闭。
-        allow-insecure-loopback: ${IAM_OIDC_ALLOW_INSECURE_LOOPBACK:true}
+        allow-insecure-loopback: true
       signing:
-        # V7评审、iam_signing_key初始化和受限Secret挂载完成前保持false。
-        enabled: ${IAM_OIDC_SIGNING_ENABLED:false}
+        # JWT/ID Token签名运行开关：加载iam_signing_key的ACTIVE RSA私钥并发布JWKS。
+        # 不负责生成私钥；local-signing-key只是一项一次性本机初始化辅助功能。
+        enabled: true
         minimum-rsa-bits: 3072
       token:
         access-token-audience:
           - rigour-api
       authorization-attributes:
-        enabled: ${IAM_OIDC_AUTHORIZATION_STORE_ENABLED:false}
+        # OAuth授权请求上下文加密存储开关，使用稳定的AES-256-GCM Secret保护state等数据。
+        enabled: true
         active-key-version: v1
         keys-base64:
           v1: ${IAM_OIDC_AUTH_ATTRIBUTES_KEY_V1:}

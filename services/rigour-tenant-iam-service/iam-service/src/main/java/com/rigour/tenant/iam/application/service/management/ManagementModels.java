@@ -151,6 +151,23 @@ public final class ManagementModels {
     public record SettingCommand(String valueJson, long version) {
     }
 
+    public record DictionaryTypeView(UUID id, UUID tenantId, String code, String name,
+                                     String description, String status, long version) {
+    }
+
+    public record DictionaryTypeCommand(String code, String name, String description,
+                                        String status, long version) {
+    }
+
+    public record DictionaryItemView(UUID id, UUID typeId, UUID tenantId, String code,
+                                     String label, String value, int sortOrder, String status,
+                                     long version) {
+    }
+
+    public record DictionaryItemCommand(UUID typeId, String code, String label, String value,
+                                        int sortOrder, String status, long version) {
+    }
+
     public record AuditView(UUID id, UUID tenantId, String actorScope, UUID actorId, String action,
                             String targetType, UUID targetId, String result, Instant occurredAt) {
     }

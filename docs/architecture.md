@@ -67,7 +67,7 @@ domain          -> 不依赖 Spring、数据库或其他服务实现
 - `domain`：聚合、值对象、领域服务和业务不变量；
 - `infrastructure`：数据库、消息、缓存、文件和第三方系统出站适配。
 
-标准包名为`api.controller`、`application.service`、`domain.model/repository`和`infrastructure.persistence`。空骨架阶段只创建顶层边界和已确认的业务类型，不批量制造空Controller、Mapper或DTO。
+标准包名为`api.controller`、`application.service`、`domain.model/repository`和`infrastructure.persistence`。只在存在实现或已确认的跨服务契约时创建类型，不保留空Controller、空适配器、空领域模型或重复的占位目录。
 
 持久层统一选型为MyBatis-Plus加显式XML，但运行依赖按服务渐进接入：只有Schema、Flyway脚本、Nacos数据源和集成测试同时具备时，服务实现模块才能加入MyBatis-Plus/Flyway/MySQL。当前只有IAM满足条件。业务层不继承`IService/ServiceImpl`；复杂查询保留XML；多租户SQL插件必须经过平台表豁免和越权测试后才能启用。
 
@@ -94,4 +94,4 @@ RocketMQ Proxy 映射为宿主机 `18081` 到容器 `8081`，与微服务使用�
 
 ## 尚未生产就绪
 
-IAM OIDC、平台/租户管理、数据库导航、Portal卡片与权限Gate、Gateway资源服务器和签名上下文已完成代码。Gateway对每个受保护请求调用IAM内部`/token/current`，会话撤销和安全/租户策略版本变化可立即生效；代价是当前请求链路与IAM延迟和可用性耦合，后续需以安全版本事件投影扩展。V1～V6已应用共享DEV，V7/V8、共享密钥、客户端和跨进程浏览器链路尚未发布验收。构建和Testcontainers通过不代表共享DEV或生产验收完成。
+IAM OIDC、平台/租户管理、数据库导航、Portal卡片与权限导航、Gateway资源服务器和签名上下文已完成代码。Gateway对每个受保护请求调用IAM内部`/token/current`，会话撤销和安全/租户策略版本变化可立即生效；代价是当前请求链路与IAM延迟和可用性耦合，后续需以安全版本事件投影扩展。V1～V6已应用共享DEV，V7/V8、共享密钥、客户端和跨进程浏览器链路尚未发布验收。构建和Testcontainers通过不代表共享DEV或生产验收完成。

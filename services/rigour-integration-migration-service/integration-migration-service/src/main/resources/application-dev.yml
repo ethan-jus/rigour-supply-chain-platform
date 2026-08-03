@@ -1,8 +1,10 @@
 spring:
   config:
+    # dev 读取共享远端 Nacos；数据库连接参数由 Nacos Data ID 提供。
     import: optional:nacos:${spring.application.name}.yaml?refreshEnabled=true
   cloud:
     nacos:
+      # local 配置不会把数据库切换到本机，只关闭本机实例的服务发现注册。
       server-addr: 82.157.4.176:18848
       username: ${NACOS_USERNAME:nacos}
       password: ${NACOS_PASSWORD}

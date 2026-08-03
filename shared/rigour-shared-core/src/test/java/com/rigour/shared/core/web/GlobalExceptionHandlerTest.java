@@ -8,6 +8,7 @@ import com.rigour.shared.core.exception.BusinessException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.client.ResourceAccessException;
 
 import java.util.List;
 
@@ -45,5 +46,17 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().code()).isEqualTo("IAM_FORBIDDEN");
         assertThat(response.getBody().requestId()).isEqualTo("request-forbidden");
+    }
+
+    @Test
+    void mapsDownstreamConnectionFailureToServiceUnavailable() {
+        RequestContext.set("request-downstream", "zh-CN");
+        ResponseEntity<ApiResponse<Void>> response = handler.handleResourceAccess(
+                new ResourceAccessException("Connection refused"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(503);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().code()).isEqualTo("SERVICE_UNAVAILABLE");
+        assertThat(response.getBody().requestId()).isEqualTo("request-downstream");
     }
 }

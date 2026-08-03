@@ -2,4 +2,6 @@ spring:
   cloud:
     nacos:
       discovery:
+        # local 只是本机运行覆盖层：读取共享DEV Nacos/数据库，但不把本机实例注册到共享服务发现。
+        # 本服务的数据库仍由 dev 配置从远端共享环境提供，不在本机创建数据库。
         register-enabled: ${NACOS_DISCOVERY_REGISTER_ENABLED:false}

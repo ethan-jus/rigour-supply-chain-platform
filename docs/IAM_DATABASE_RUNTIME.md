@@ -4,7 +4,7 @@
 
 - 逻辑Schema：`rigour_iam`。
 - 开发MySQL：`82.157.4.176:13306`。
-- V1～V6迁移由`services/rigour-tenant-iam-service/iam-service`的Flyway执行。
+- V1～V11迁移由`services/rigour-tenant-iam-service/iam-service`的Flyway执行；共享DEV的实际版本必须以启动日志和`flyway_schema_history`查询为准。
 - 数据源地址和非敏感参数放在Nacos；数据库密码只通过环境变量或部署平台Secret注入。
 - 真实密码不进入Git，也不能使用MySQL root账号启动服务。
 
@@ -21,19 +21,17 @@
 
 为支持团队成员从允许的公网IP连接，开发账号当前使用`'%'`主机范围，公网入口继续由云防火墙白名单限制。生产环境必须收紧为实际应用来源。
 
-开发库已在2026-07-30由Flyway执行V1～V6，当前版本为6，包含22张IAM业务表；没有使用`baseline`，也没有手工伪造`flyway_schema_history`。
+文档中的“2026-07-30执行V1～V6、22张业务表”是历史快照，不代表当前共享DEV版本；V9/V10/V11应用后目标为34张IAM业务表。不要根据旧快照判断迁移是否完成。
 
 ## 3. Nacos配置
 
 1. 打开[Nacos配置模板](nacos/rigour-tenant-iam-service.example.yml)。
 2. 将内容复制到开发Namespace `dev`（ID `3aa03547-8948-4254-bd94-47c630db128b`）下的`rigour-tenant-iam-service.yaml`。
-3. 保留`${IAM_DB_APP_PASSWORD}`和`${IAM_DB_MIGRATOR_PASSWORD}`引用，不要替换成明文。
-4. 在本地IDE/终端或部署平台中注入四个环境变量：
+3. 用户名已固定写入DEV Nacos YAML；保留`${IAM_DB_APP_PASSWORD}`和`${IAM_DB_MIGRATOR_PASSWORD}`引用，不要替换成明文。
+4. 在本地Secret文件、IDE Secret或部署平台中只注入两个密码：
 
 ```text
-IAM_DB_APP_USERNAME=rigour_iam_app
 IAM_DB_APP_PASSWORD=<真实运行密码>
-IAM_DB_MIGRATOR_USERNAME=rigour_iam_migrator
 IAM_DB_MIGRATOR_PASSWORD=<真实迁移密码>
 ```
 
@@ -70,4 +68,4 @@ FROM information_schema.tables
 WHERE table_schema = 'rigour_iam';
 ```
 
-期望V1～V6全部成功、业务表22张。Flyway历史表不计入22张业务表。
+期望当前代码对应V1～V11全部成功、业务表34张。Flyway历史表不计入业务表数量。

@@ -9,29 +9,48 @@ spring:
     nacos:
       discovery:
         # 本机服务只读取共享DEV配置，不向共享注册中心发布开发者电脑地址。
-        register-enabled: ${NACOS_DISCOVERY_REGISTER_ENABLED:false}
+        register-enabled: false
 
 rigour:
   iam:
     bootstrap:
       local-signing-key:
-        enabled: ${IAM_LOCAL_SIGNING_KEY_BOOTSTRAP_ENABLED:false}
+        # 本机隔离数据库的首次签名密钥辅助程序：当iam_signing_key没有ACTIVE密钥时，
+        # 自动生成RSA-3072私钥文件并登记公钥。共享DEV已有统一签名密钥，必须保持false，
+        # 否则不同开发者可能生成不同JWT签名密钥。
+        enabled: false
+      tenant-admin:
+        # 一次性创建指定租户的首个TENANT_SUPER_ADMIN；只在前台终端临时开启，
+        # 密码由终端交互输入，不读取配置文件。创建成功后必须恢复false。
+        enabled: false
+        tenant-code: test001
+        username: tenant-admin
+        display-name: 瑞盖门户管理员
+        minimum-password-length: 14
       portal-client:
-        enabled: ${IAM_PORTAL_CLIENT_BOOTSTRAP_ENABLED:false}
+        # 仅首次初始化时临时改为true；正常开发运行保持false。
+        enabled: false
         allow-insecure-loopback: true
         redirect-uri: http://localhost:5100/oidc/callback
         post-logout-redirect-uri: http://localhost:5100/
     oidc:
       server:
-        enabled: ${IAM_OIDC_SERVER_ENABLED:false}
+        # OIDC授权服务器总开关：开启Discovery、/oauth2/authorize和/oauth2/token等端点。
+        # 它依赖signing.enabled提供JWT签名能力，也依赖authorization-attributes.enabled
+        # 保存加密的授权请求上下文；不是生成密钥的开关。
+        enabled: true
         allow-insecure-loopback: true
         issuer: http://localhost:26881
         allowed-origins:
           - http://localhost:5100
       signing:
-        enabled: ${IAM_OIDC_SIGNING_ENABLED:false}
+        # JWT/ID Token签名运行开关：加载iam_signing_key中的ACTIVE RSA私钥，
+        # 创建JWT Encoder/Decoder并发布JWKS。它不会自动生成私钥，也不等于local-signing-key。
+        enabled: true
       authorization-attributes:
-        enabled: ${IAM_OIDC_AUTHORIZATION_STORE_ENABLED:false}
+        # OAuth授权请求上下文加密存储开关：使用稳定的AES-256-GCM密钥保护state等数据。
+        # 密钥必须由Secret注入且所有连接共享DEV IAM的实例保持一致。
+        enabled: true
         active-key-version: v1
         # 开发人员共用DEV数据库时也必须注入同一个持久AES密钥；禁止进程级随机密钥写入共享数据。
         allow-ephemeral-local-key: false

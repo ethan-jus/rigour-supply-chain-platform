@@ -13,10 +13,13 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.authority.FactorGrantedAuthority;
 import org.springframework.transaction.support.TransactionOperations;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** 将统一密码登录用例接入Spring Security，并确保失败计数先提交再抛统一异常。 */
 public final class IamPasswordAuthenticationProvider implements AuthenticationProvider {
 
+    private static final Logger log = LoggerFactory.getLogger(IamPasswordAuthenticationProvider.class);
     private static final String FAILURE_MESSAGE = "Authentication failed";
 
     private final AuthService authService;
@@ -40,8 +43,16 @@ public final class IamPasswordAuthenticationProvider implements AuthenticationPr
             PasswordAuthenticationAttempt attempt = transactionOperations.execute(
                     ignored -> authService.authenticate(command));
             if (!(attempt instanceof PasswordAuthenticationAttempt.Success success)) {
+                String reason = attempt instanceof PasswordAuthenticationAttempt.Failure failure
+                        ? failure.reason().name() : "UNKNOWN";
+                log.warn("IAM密码登录失败 scope={} tenantCode={} username={} reason={}",
+                        request.principalScope(), safeTenantCode(request.tenantCode()), request.getName(), reason);
                 throw new BadCredentialsException(FAILURE_MESSAGE);
             }
+
+            log.info("IAM密码登录成功 scope={} tenantCode={} username={} principalId={} sessionId={}",
+                    success.principalScope(), safeTenantCode(request.tenantCode()), request.getName(),
+                    success.principalId(), success.sessionId());
 
             UsernamePasswordAuthenticationToken result = UsernamePasswordAuthenticationToken.authenticated(
                     success.principalId().toString(), null, authorities(success));
@@ -70,5 +81,9 @@ public final class IamPasswordAuthenticationProvider implements AuthenticationPr
             authorities.add(new SimpleGrantedAuthority("ROLE_" + success.platformRole()));
         }
         return List.copyOf(authorities);
+    }
+
+    private static String safeTenantCode(String tenantCode) {
+        return tenantCode == null || tenantCode.isBlank() ? "-" : tenantCode;
     }
 }

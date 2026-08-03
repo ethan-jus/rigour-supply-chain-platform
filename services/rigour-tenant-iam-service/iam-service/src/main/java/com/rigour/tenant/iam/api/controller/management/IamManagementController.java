@@ -4,6 +4,7 @@ import com.rigour.tenant.iam.application.service.management.IamManagementService
 import com.rigour.tenant.iam.application.service.management.ManagementModels.*;
 import com.rigour.tenant.iam.application.service.portal.PortalAccessQuery;
 import com.rigour.tenant.iam.application.service.portal.PortalAccessService;
+import com.rigour.shared.context.RequestContext;
 import java.util.List;
 import java.util.UUID;
 import java.util.Set;
@@ -11,6 +12,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -24,6 +27,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/v1")
 public final class IamManagementController {
+    private static final Logger log = LoggerFactory.getLogger(IamManagementController.class);
+
     private final IamManagementService service;
     private final PortalAccessService portalAccessService;
 
@@ -47,7 +52,19 @@ public final class IamManagementController {
 
     @GetMapping("/portal/navigation/{applicationCode}")
     public List<NavigationNode> navigation(@PathVariable("applicationCode") String applicationCode) {
-        return service.navigation(currentActor(), applicationCode);
+        Actor actor = currentActor();
+        try {
+            List<NavigationNode> result = service.navigation(actor, applicationCode);
+            log.info("IAM导航加载成功 requestId={} scope={} principalId={} tenantId={} applicationCode={} rootCount={}",
+                    RequestContext.getRequestId(), actor.scope(), actor.principalId(), actor.tenantId(),
+                    applicationCode, result.size());
+            return result;
+        } catch (RuntimeException exception) {
+            log.warn("IAM导航加载失败 requestId={} scope={} principalId={} tenantId={} applicationCode={} reason={}",
+                    RequestContext.getRequestId(), actor.scope(), actor.principalId(), actor.tenantId(),
+                    applicationCode, exception.getMessage());
+            throw exception;
+        }
     }
 
     @GetMapping("/management/platform/applications")
@@ -202,6 +219,70 @@ public final class IamManagementController {
     @PutMapping("/management/tenant/settings/{key}")
     public SettingView saveSetting(@PathVariable("key") String key, @RequestBody SettingCommand command) {
         return service.saveSetting(currentActor(), key, command);
+    }
+
+    @GetMapping("/management/platform/dictionary-types")
+    public List<DictionaryTypeView> platformDictionaryTypes() {
+        return service.dictionaryTypes(currentActor());
+    }
+
+    @PostMapping("/management/platform/dictionary-types")
+    public DictionaryTypeView createPlatformDictionaryType(@RequestBody DictionaryTypeCommand command) {
+        return service.createDictionaryType(currentActor(), command);
+    }
+
+    @PutMapping("/management/platform/dictionary-types/{id}")
+    public DictionaryTypeView updatePlatformDictionaryType(@PathVariable("id") UUID id,
+                                                           @RequestBody DictionaryTypeCommand command) {
+        return service.updateDictionaryType(currentActor(), id, command);
+    }
+
+    @GetMapping("/management/platform/dictionary-types/{typeId}/items")
+    public List<DictionaryItemView> platformDictionaryItems(@PathVariable("typeId") UUID typeId) {
+        return service.dictionaryItems(currentActor(), typeId);
+    }
+
+    @PostMapping("/management/platform/dictionary-items")
+    public DictionaryItemView createPlatformDictionaryItem(@RequestBody DictionaryItemCommand command) {
+        return service.createDictionaryItem(currentActor(), command);
+    }
+
+    @PutMapping("/management/platform/dictionary-items/{id}")
+    public DictionaryItemView updatePlatformDictionaryItem(@PathVariable("id") UUID id,
+                                                           @RequestBody DictionaryItemCommand command) {
+        return service.updateDictionaryItem(currentActor(), id, command);
+    }
+
+    @GetMapping("/management/tenant/dictionary-types")
+    public List<DictionaryTypeView> tenantDictionaryTypes() {
+        return service.dictionaryTypes(currentActor());
+    }
+
+    @PostMapping("/management/tenant/dictionary-types")
+    public DictionaryTypeView createTenantDictionaryType(@RequestBody DictionaryTypeCommand command) {
+        return service.createDictionaryType(currentActor(), command);
+    }
+
+    @PutMapping("/management/tenant/dictionary-types/{id}")
+    public DictionaryTypeView updateTenantDictionaryType(@PathVariable("id") UUID id,
+                                                         @RequestBody DictionaryTypeCommand command) {
+        return service.updateDictionaryType(currentActor(), id, command);
+    }
+
+    @GetMapping("/management/tenant/dictionary-types/{typeId}/items")
+    public List<DictionaryItemView> tenantDictionaryItems(@PathVariable("typeId") UUID typeId) {
+        return service.dictionaryItems(currentActor(), typeId);
+    }
+
+    @PostMapping("/management/tenant/dictionary-items")
+    public DictionaryItemView createTenantDictionaryItem(@RequestBody DictionaryItemCommand command) {
+        return service.createDictionaryItem(currentActor(), command);
+    }
+
+    @PutMapping("/management/tenant/dictionary-items/{id}")
+    public DictionaryItemView updateTenantDictionaryItem(@PathVariable("id") UUID id,
+                                                         @RequestBody DictionaryItemCommand command) {
+        return service.updateDictionaryItem(currentActor(), id, command);
     }
 
     @GetMapping("/management/audits")

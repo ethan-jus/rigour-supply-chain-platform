@@ -8,6 +8,8 @@ import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.rigour.tenant.iam.infrastructure.security.session.IamLoginAuthenticationFilter;
 import com.rigour.tenant.iam.infrastructure.security.session.IamSessionLogoutHandler;
+import com.rigour.tenant.iam.infrastructure.security.session.OidcPromptLoginFilter;
+import com.rigour.tenant.iam.infrastructure.security.session.OidcLoginAuthenticationSuccessHandler;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
@@ -34,13 +36,16 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
-import org.springframework.security.web.authentication.SavedRequestAwareAuthenticationSuccessHandler;
 import org.springframework.security.web.authentication.SimpleUrlAuthenticationFailureHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.authentication.logout.CompositeLogoutHandler;
+import org.springframework.security.web.authentication.logout.CookieClearingLogoutHandler;
 import org.springframework.security.web.authentication.logout.SecurityContextLogoutHandler;
 import org.springframework.security.web.context.SecurityContextRepository;
+import org.springframework.security.web.savedrequest.HttpSessionRequestCache;
+import org.springframework.security.web.savedrequest.RequestCache;
 import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.cors.CorsConfiguration;
@@ -68,13 +73,15 @@ public class IamAuthorizationServerSecurityConfiguration {
             AuthorizationServerSettings authorizationServerSettings,
             OAuth2TokenGenerator<? extends OAuth2Token> tokenGenerator,
             @Qualifier("oidcCorsConfigurationSource") CorsConfigurationSource oidcCorsConfigurationSource,
-            IamSessionLogoutHandler iamSessionLogoutHandler
+            IamSessionLogoutHandler iamSessionLogoutHandler,
+            RequestCache oidcRequestCache
     ) throws Exception {
         OAuth2AuthorizationServerConfigurer authorizationServer =
                 new OAuth2AuthorizationServerConfigurer();
         RequestMatcher endpointsMatcher = authorizationServer.getEndpointsMatcher();
         http.securityMatcher(endpointsMatcher)
                 .cors(cors -> cors.configurationSource(oidcCorsConfigurationSource))
+                .requestCache(cache -> cache.requestCache(oidcRequestCache))
                 .authorizeHttpRequests(authorize -> authorize.anyRequest().authenticated())
                 .exceptionHandling(exceptions -> exceptions.defaultAuthenticationEntryPointFor(
                         new LoginUrlAuthenticationEntryPoint("/login"),
@@ -89,9 +96,14 @@ public class IamAuthorizationServerSecurityConfiguration {
                             OidcLogoutAuthenticationSuccessHandler successHandler =
                                     new OidcLogoutAuthenticationSuccessHandler();
                             successHandler.setLogoutHandler(new CompositeLogoutHandler(
-                                    iamSessionLogoutHandler, new SecurityContextLogoutHandler()));
+                                    iamSessionLogoutHandler,
+                                    new SecurityContextLogoutHandler(),
+                                    new CookieClearingLogoutHandler("RIGOUR_IAM_SESSION")));
                             logout.logoutResponseHandler(successHandler);
-                        })));
+                        })))
+                .addFilterBefore(
+                        new OidcPromptLoginFilter(oidcRequestCache, iamSessionLogoutHandler),
+                        AuthorizationFilter.class);
         return http.build();
     }
 
@@ -109,6 +121,13 @@ public class IamAuthorizationServerSecurityConfiguration {
         source.registerCorsConfiguration("/oauth2/token", configuration);
         source.registerCorsConfiguration("/oauth2/jwks", configuration);
         return source;
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "rigour.iam.oidc.server", name = "enabled", havingValue = "true")
+    RequestCache oidcRequestCache() {
+        // 授权链和登录链共用同一个会话请求缓存，避免旧的错误地址污染登录成功跳转。
+        return new HttpSessionRequestCache();
     }
 
     @Bean
@@ -146,18 +165,20 @@ public class IamAuthorizationServerSecurityConfiguration {
             SecurityContextRepository securityContextRepository,
             IamSessionLogoutHandler logoutHandler,
             OidcServerProperties serverProperties,
-            @Qualifier("oidcCorsConfigurationSource") CorsConfigurationSource oidcCorsConfigurationSource
+            @Qualifier("oidcCorsConfigurationSource") CorsConfigurationSource oidcCorsConfigurationSource,
+            RequestCache oidcRequestCache
     ) throws Exception {
         IamLoginAuthenticationFilter loginFilter = new IamLoginAuthenticationFilter(authenticationManager);
         loginFilter.setSecurityContextRepository(securityContextRepository);
-        SavedRequestAwareAuthenticationSuccessHandler successHandler =
-                new SavedRequestAwareAuthenticationSuccessHandler();
+        OidcLoginAuthenticationSuccessHandler successHandler =
+                new OidcLoginAuthenticationSuccessHandler(oidcRequestCache);
         successHandler.setDefaultTargetUrl(serverProperties.requirePrimaryPortalEntryUri());
         loginFilter.setAuthenticationSuccessHandler(successHandler);
         loginFilter.setAuthenticationFailureHandler(new SimpleUrlAuthenticationFailureHandler("/login?error"));
         http.cors(cors -> cors.configurationSource(oidcCorsConfigurationSource))
+                .requestCache(cache -> cache.requestCache(oidcRequestCache))
                 .authorizeHttpRequests(authorize -> authorize
-                        .requestMatchers("/login", "/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers("/login", "/brand/**", "/actuator/health", "/actuator/health/**").permitAll()
                         .requestMatchers("/logout").authenticated()
                         .anyRequest().denyAll())
                 .securityContext(context -> context

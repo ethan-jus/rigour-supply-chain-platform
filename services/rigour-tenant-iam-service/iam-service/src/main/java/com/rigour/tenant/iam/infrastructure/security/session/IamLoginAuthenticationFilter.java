@@ -28,11 +28,20 @@ public final class IamLoginAuthenticationFilter extends AbstractAuthenticationPr
     public Authentication attemptAuthentication(
             HttpServletRequest request, HttpServletResponse response) throws AuthenticationException {
         try {
-            PrincipalScope scope = PrincipalScope.valueOf(required(request, "principalScope").toUpperCase());
+            String tenantCode = normalized(request.getParameter("tenantCode"));
+            // 新登录页不暴露平台/租户身份选择器：填写企业编码即租户登录，留空即平台登录。
+            // 兼容旧客户端显式提交的scope，但必须与企业编码一致，不能借此跨范围登录。
+            String requestedScope = normalized(request.getParameter("principalScope"));
+            PrincipalScope scope = requestedScope == null
+                    ? (tenantCode == null ? PrincipalScope.PLATFORM : PrincipalScope.TENANT)
+                    : PrincipalScope.valueOf(requestedScope.toUpperCase());
+            if ((scope == PrincipalScope.TENANT) != (tenantCode != null)) {
+                throw new IllegalArgumentException("login scope and tenant code do not match");
+            }
             String password = required(request, "password");
             return getAuthenticationManager().authenticate(new IamLoginAuthenticationToken(
                     scope,
-                    request.getParameter("tenantCode"),
+                    tenantCode,
                     required(request, "username"),
                     password.toCharArray(),
                     ClientType.WEB,

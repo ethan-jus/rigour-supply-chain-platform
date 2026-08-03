@@ -11,7 +11,7 @@
     </parent>
     <artifactId>iam-api</artifactId>
     <name>iam-api</name>
-    <description>IAM版本化内部HTTP契约和API模型，不包含领域实现或数据库对象</description>
+    <description>IAM版本化HTTP契约和API模型，不包含领域实现或数据库对象</description>
     <dependencies>
         <dependency>
             <groupId>org.springframework</groupId>

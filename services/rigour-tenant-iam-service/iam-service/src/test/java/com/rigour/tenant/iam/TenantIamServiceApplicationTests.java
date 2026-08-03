@@ -8,6 +8,10 @@ import com.nimbusds.jose.jwk.RSAKey;
 import com.rigour.tenant.iam.application.port.out.PasswordHasher;
 import com.rigour.tenant.iam.application.port.out.IamManagementStore;
 import com.rigour.tenant.iam.application.service.management.ManagementModels.*;
+import com.rigour.tenant.iam.application.service.portal.PortalAccessQuery;
+import com.rigour.tenant.iam.application.service.portal.PortalAccessService;
+import com.rigour.tenant.iam.application.service.portal.PortalApplication;
+import com.rigour.tenant.iam.application.service.portal.PortalCurrentUser;
 import com.rigour.tenant.iam.domain.model.session.AuthSession.ClientType;
 import com.rigour.tenant.iam.domain.model.session.AuthSession.PrincipalScope;
 import com.rigour.tenant.iam.infrastructure.security.session.IamAuthenticationDetails;
@@ -134,25 +138,34 @@ class TenantIamServiceApplicationTests {
     @Autowired
     private IamManagementStore managementStore;
 
+    @Autowired
+    private PortalAccessService portalAccessService;
+
     @Test
     void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 8);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 11);
         assertCount("SELECT COUNT(*) FROM information_schema.tables "
-                + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 32);
-        assertCount("SELECT COUNT(*) FROM iam_application", 5);
-        assertCount("SELECT COUNT(*) FROM iam_resource", 74);
-        assertCount("SELECT COUNT(permission_code) FROM iam_resource", 26);
-        assertCount("SELECT COUNT(*) FROM iam_package_resource", 51);
-        assertCount("SELECT COUNT(*) FROM iam_resource_ui", 43);
+                + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 34);
+        assertCount("SELECT COUNT(*) FROM iam_application", 6);
+        assertCount("SELECT COUNT(*) FROM iam_resource", 94);
+        assertCount("SELECT COUNT(permission_code) FROM iam_resource", 32);
+        assertCount("SELECT COUNT(*) FROM iam_package_resource", 67);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui", 56);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='PLATFORM_ADMIN' AND target_uri='/platform-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='SYSTEM_ADMIN' AND target_uri='/system-admin'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_application "
+                + "WHERE app_code='DINGHUOBAO' AND app_name='订货宝商城系统' "
+                + "AND launch_mode='EXTERNAL_URL' AND target_uri='https://pc.dhb168.com' "
+                + "AND status='ACTIVE'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_application "
+                + "WHERE app_code='DINGHUOBAO_INTEGRATION' AND status='DISABLED'", 1);
         org.assertj.core.api.Assertions.assertThat(applicationMapper.selectById(
                         UUID.fromString("019facf1-0000-7000-8000-000000000003")))
                 .extracting("appCode")
                 .isEqualTo("SUPPLY_CHAIN");
         org.assertj.core.api.Assertions.assertThat(applicationMapper.selectActiveByScope("TENANT"))
                 .extracting("appCode")
-                .containsExactly("SYSTEM_ADMIN", "SUPPLY_CHAIN");
+                .containsExactly("SYSTEM_ADMIN", "SUPPLY_CHAIN", "DINGHUOBAO");
         assertCount("SELECT COUNT(*) FROM information_schema.columns "
                 + "WHERE table_schema = DATABASE() AND table_name = 'iam_refresh_token' "
                 + "AND column_name = 'authorization_id'", 1);
@@ -188,6 +201,10 @@ class TenantIamServiceApplicationTests {
                 new SettingCommand("{\"primaryColor\":\"#2457d6\"}", 0));
         assertThat(setting.valueJson()).contains("primaryColor");
         assertThat(managementStore.navigation(first.actor(), "SYSTEM_ADMIN")).isNotEmpty();
+        assertThat(managementStore.navigation(first.actor(), "SYSTEM_ADMIN"))
+                .anyMatch(node -> "/system-admin".equals(node.routePath()));
+        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
+                .anyMatch(node -> "/supply-chain".equals(node.routePath()));
 
         List<ResourceView> grantable = managementStore.grantableResources(first.actor());
         RoleView role = managementStore.createRole(first.actor(), new RoleCommand(
@@ -252,6 +269,50 @@ class TenantIamServiceApplicationTests {
         assertThat(managementStore.audits(first.actor(), 100)).extracting(AuditView::action)
                 .contains("ORGANIZATION_CREATE", "SETTING_SAVE", "ROLE_CREATE", "DATA_SCOPE_CREATE", "USER_CREATE",
                         "USER_PASSWORD_RESET");
+    }
+
+    @Test
+    void managesPlatformAndTenantDictionariesWithSeparateBoundaries() {
+        UUID platformId = insertPlatformIdentity("dictionary-platform-" + UUID.randomUUID(),
+                "Platform-Password-42!", "ACTIVE", "ACTIVE");
+        Actor platform = new Actor("PLATFORM", platformId, null);
+        DictionaryTypeView platformType = managementStore.createDictionaryType(platform,
+                new DictionaryTypeCommand("ORDER_SOURCE", "订单来源", "平台级订单来源字典", "ACTIVE", 0));
+        DictionaryItemView platformItem = managementStore.createDictionaryItem(platform,
+                new DictionaryItemCommand(platformType.id(), "DINGHUOBAO", "订货宝", "dinghuobao", 10,
+                        "ACTIVE", 0));
+        assertThat(managementStore.dictionaryTypes(platform)).extracting(DictionaryTypeView::code)
+                .contains("ORDER_SOURCE");
+        assertThat(managementStore.dictionaryItems(platform, platformType.id()))
+                .extracting(DictionaryItemView::code).containsExactly("DINGHUOBAO");
+
+        TenantAdminFixture first = insertTenantAdministrator();
+        PortalCurrentUser currentUser = portalAccessService.currentUser(new PortalAccessQuery(
+                "TENANT", first.actor().principalId(), first.actor().tenantId()));
+        assertThat(currentUser.permissions()).contains("iam:dictionary:write", "integration:dinghuobao:read");
+        assertThat(portalAccessService.grantedApplications(new PortalAccessQuery(
+                        "TENANT", first.actor().principalId(), first.actor().tenantId())))
+                .extracting(PortalApplication::code)
+                .contains("SYSTEM_ADMIN", "SUPPLY_CHAIN", "DINGHUOBAO");
+        DictionaryTypeView tenantType = managementStore.createDictionaryType(first.actor(),
+                new DictionaryTypeCommand("VISIT_RESULT", "拜访结果", "本租户拜访结果字典", "ACTIVE", 0));
+        DictionaryItemView tenantItem = managementStore.createDictionaryItem(first.actor(),
+                new DictionaryItemCommand(tenantType.id(), "COMPLETED", "已完成", "completed", 10,
+                        "ACTIVE", 0));
+        assertThat(managementStore.dictionaryTypes(first.actor())).extracting(DictionaryTypeView::code)
+                .doesNotContain("ORDER_SOURCE").contains("VISIT_RESULT");
+        assertThat(managementStore.dictionaryItems(first.actor(), tenantType.id()))
+                .extracting(DictionaryItemView::code).containsExactly("COMPLETED");
+        assertThatThrownBy(() -> managementStore.dictionaryItems(first.actor(), platformType.id()))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+
+        managementStore.updateDictionaryItem(first.actor(), tenantItem.id(),
+                new DictionaryItemCommand(tenantType.id(), "COMPLETED", "已完成拜访", "completed", 20,
+                        "ACTIVE", tenantItem.version()));
+        assertThat(managementStore.dictionaryItems(first.actor(), tenantType.id()))
+                .singleElement().extracting(DictionaryItemView::label).isEqualTo("已完成拜访");
+        assertThat(managementStore.audits(first.actor(), 100)).extracting(AuditView::action)
+                .contains("DICTIONARY_TYPE_CREATE", "DICTIONARY_ITEM_CREATE", "DICTIONARY_ITEM_UPDATE");
     }
 
     @Test
@@ -842,6 +903,21 @@ class TenantIamServiceApplicationTests {
                 SELECT ?, ?, resource_id, 'ACTIVE', ?, ? FROM iam_package_resource
                  WHERE package_version_id=UUID_TO_BIN('019facf3-0000-7000-8000-000000000002')
                 """, uuidBytes(tenantId), uuidBytes(roleId), now, now);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM iam_package_resource
+                 WHERE package_version_id=UUID_TO_BIN('019facf3-0000-7000-8000-000000000002')
+                """, Integer.class)).isEqualTo(67);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM iam_package_resource package_resource
+                 JOIN iam_resource resource_record ON resource_record.id=package_resource.resource_id
+                 WHERE package_resource.package_version_id=UUID_TO_BIN('019facf3-0000-7000-8000-000000000002')
+                   AND resource_record.permission_code='iam:dictionary:write'
+                """, Integer.class)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM iam_role_resource rr
+                 JOIN iam_resource resource_record ON resource_record.id=rr.resource_id
+                 WHERE rr.tenant_id=? AND rr.role_id=? AND resource_record.permission_code='iam:dictionary:write'
+                """, Integer.class, uuidBytes(tenantId), uuidBytes(roleId))).isEqualTo(1);
         jdbcTemplate.update("""
                 INSERT INTO iam_user_role
                 (tenant_id, user_id, role_id, status, effective_from, created_at, updated_at)

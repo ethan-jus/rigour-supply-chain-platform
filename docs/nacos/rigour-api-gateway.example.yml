@@ -1,17 +1,16 @@
 # Nacos dataId: rigour-api-gateway.yaml
-# DEV评审模板；当前模式由每位开发者本机启动Gateway/IAM。
-# HMAC只由基础application.yml绑定本机环境变量；localhost地址只由application-local.yml覆盖。
+# 共享DEV的非敏感安全开关和超时配置放在Nacos；HMAC密钥仍由Secret注入。
 rigour:
   gateway:
     security:
-      enabled: ${GATEWAY_SECURITY_ENABLED:false}
+      enabled: true
       audience:
         - rigour-api
       # 正确性优先：开启后每次受保护请求向IAM确认当前会话/版本。IAM拒绝返401，IAM故障返503。
       # security开启时此项必须为true，否则Gateway拒绝启动。
-      current-token-validation-enabled: ${GATEWAY_CURRENT_TOKEN_VALIDATION_ENABLED:false}
-      current-token-connect-timeout: ${GATEWAY_CURRENT_TOKEN_CONNECT_TIMEOUT:2s}
-      current-token-read-timeout: ${GATEWAY_CURRENT_TOKEN_READ_TIMEOUT:3s}
+      current-token-validation-enabled: true
+      current-token-connect-timeout: 2s
+      current-token-read-timeout: 3s
 
 # 路由清单由Gateway仓库application.yml统一维护。Nacos不得配置不完整的routes列表，
 # 否则Spring列表覆盖会使其他业务服务路由消失。

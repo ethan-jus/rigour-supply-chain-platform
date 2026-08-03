@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.client.ResourceAccessException;
 
 import java.util.List;
 
@@ -53,9 +54,17 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(AuthorizationDeniedException.class)
     ResponseEntity<ApiResponse<Void>> handleAuthorizationDenied(AuthorizationDeniedException exception) {
-        log.warn("requestId={} authorization denied", com.rigour.shared.context.RequestContext.getRequestId());
+        log.warn("授权校验拒绝请求 requestId={}", com.rigour.shared.context.RequestContext.getRequestId());
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(ApiResponse.error("IAM_FORBIDDEN", "没有访问该资源的权限", List.of()));
+    }
+
+    @ExceptionHandler(ResourceAccessException.class)
+    ResponseEntity<ApiResponse<Void>> handleResourceAccess(ResourceAccessException exception) {
+        log.warn("下游服务暂不可用 requestId={} reason={}",
+                com.rigour.shared.context.RequestContext.getRequestId(), exception.getMessage());
+        return ResponseEntity.status(ErrorCode.SERVICE_UNAVAILABLE.getHttpStatus())
+                .body(ApiResponse.error(ErrorCode.SERVICE_UNAVAILABLE));
     }
 
     @ExceptionHandler(Exception.class)

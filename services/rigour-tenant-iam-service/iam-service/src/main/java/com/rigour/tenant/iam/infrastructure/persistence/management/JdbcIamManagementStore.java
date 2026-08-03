@@ -854,6 +854,159 @@ public final class JdbcIamManagementStore implements IamManagementStore {
     }
 
     @Override
+    public List<DictionaryTypeView> dictionaryTypes(Actor actor) {
+        if ("PLATFORM".equals(actor.scope())) {
+            requirePlatform(actor);
+            return jdbc.query("""
+                    SELECT id, tenant_id, type_code, type_name, description, status, version
+                      FROM iam_dictionary_type
+                     WHERE owner_scope='PLATFORM' AND deleted_at IS NULL
+                     ORDER BY type_code
+                    """, (rs, row) -> dictionaryType(rs));
+        }
+        requireTenantPermission(actor, "iam:dictionary:read");
+        return jdbc.query("""
+                SELECT id, tenant_id, type_code, type_name, description, status, version
+                  FROM iam_dictionary_type
+                 WHERE owner_scope='TENANT' AND tenant_id=? AND deleted_at IS NULL
+                 ORDER BY type_code
+                """, (rs, row) -> dictionaryType(rs), bin(actor.tenantId()));
+    }
+
+    @Override
+    public DictionaryTypeView createDictionaryType(Actor actor, DictionaryTypeCommand command) {
+        validateDictionaryType(command);
+        UUID id = ids.nextId();
+        if ("PLATFORM".equals(actor.scope())) {
+            requirePlatform(actor);
+            transaction.executeWithoutResult(status -> {
+                jdbc.update("""
+                        INSERT INTO iam_dictionary_type
+                        (id, owner_scope, owner_key, tenant_id, type_code, type_name, description, status,
+                         created_at, created_by, updated_at, updated_by)
+                        VALUES (?, 'PLATFORM', UUID_TO_BIN('00000000-0000-0000-0000-000000000000'), NULL,
+                                ?, ?, ?, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
+                        """, bin(id), normalizedCode(command.code()), required(command.name(), "name"),
+                        blankToNull(command.description()),
+                        allowed(command.status(), RESOURCE_STATUSES, "status"),
+                        bin(actor.principalId()), bin(actor.principalId()));
+                bumpAllTenantPolicies();
+                audit(actor, "DICTIONARY_TYPE_CREATE", "DICTIONARY_TYPE", id);
+            });
+        } else {
+            requireTenantPermission(actor, "iam:dictionary:write");
+            transaction.executeWithoutResult(status -> {
+                jdbc.update("""
+                        INSERT INTO iam_dictionary_type
+                        (id, owner_scope, owner_key, tenant_id, type_code, type_name, description, status,
+                         created_at, created_by, updated_at, updated_by)
+                        VALUES (?, 'TENANT', ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
+                        """, bin(id), bin(actor.tenantId()), bin(actor.tenantId()),
+                        normalizedCode(command.code()), required(command.name(), "name"),
+                        blankToNull(command.description()),
+                        allowed(command.status(), RESOURCE_STATUSES, "status"),
+                        bin(actor.principalId()), bin(actor.principalId()));
+                bumpTenantPolicy(actor.tenantId());
+                audit(actor, "DICTIONARY_TYPE_CREATE", "DICTIONARY_TYPE", id);
+            });
+        }
+        return dictionaryTypeById(actor, id);
+    }
+
+    @Override
+    public DictionaryTypeView updateDictionaryType(Actor actor, UUID id, DictionaryTypeCommand command) {
+        validateDictionaryType(command);
+        requireDictionaryTypeAccess(actor, id, true);
+        transaction.executeWithoutResult(status -> {
+            int changed;
+            if ("PLATFORM".equals(actor.scope())) {
+                changed = jdbc.update("""
+                        UPDATE iam_dictionary_type
+                           SET type_name=?, description=?, status=?, version=version+1,
+                               updated_at=UTC_TIMESTAMP(6), updated_by=?
+                         WHERE id=? AND owner_scope='PLATFORM' AND tenant_id IS NULL
+                           AND type_code=? AND version=? AND deleted_at IS NULL
+                        """, required(command.name(), "name"), blankToNull(command.description()),
+                        allowed(command.status(), RESOURCE_STATUSES, "status"), bin(actor.principalId()),
+                        bin(id), normalizedCode(command.code()), command.version());
+            } else {
+                changed = jdbc.update("""
+                        UPDATE iam_dictionary_type
+                           SET type_name=?, description=?, status=?, version=version+1,
+                               updated_at=UTC_TIMESTAMP(6), updated_by=?
+                         WHERE id=? AND owner_scope='TENANT' AND tenant_id=?
+                           AND type_code=? AND version=? AND deleted_at IS NULL
+                        """, required(command.name(), "name"), blankToNull(command.description()),
+                        allowed(command.status(), RESOURCE_STATUSES, "status"), bin(actor.principalId()),
+                        bin(id), bin(actor.tenantId()), normalizedCode(command.code()), command.version());
+            }
+            requireChanged(changed);
+            if ("PLATFORM".equals(actor.scope())) bumpAllTenantPolicies();
+            else bumpTenantPolicy(actor.tenantId());
+            audit(actor, "DICTIONARY_TYPE_UPDATE", "DICTIONARY_TYPE", id);
+        });
+        return dictionaryTypeById(actor, id);
+    }
+
+    @Override
+    public List<DictionaryItemView> dictionaryItems(Actor actor, UUID typeId) {
+        requireDictionaryTypeAccess(actor, typeId, false);
+        return jdbc.query("""
+                SELECT id, type_id, tenant_id, item_code, item_label, item_value, sort_order, status, version
+                  FROM iam_dictionary_item
+                 WHERE type_id=? AND deleted_at IS NULL
+                 ORDER BY sort_order, item_code
+                """, (rs, row) -> dictionaryItem(rs), bin(typeId));
+    }
+
+    @Override
+    public DictionaryItemView createDictionaryItem(Actor actor, DictionaryItemCommand command) {
+        validateDictionaryItem(command);
+        UUID tenantId = requireDictionaryTypeAccess(actor, command.typeId(), true);
+        UUID id = ids.nextId();
+        transaction.executeWithoutResult(status -> {
+            jdbc.update("""
+                    INSERT INTO iam_dictionary_item
+                    (id, type_id, tenant_id, item_code, item_label, item_value, sort_order, status,
+                     created_at, created_by, updated_at, updated_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
+                    """, bin(id), bin(command.typeId()), bin(tenantId), normalizedCode(command.code()),
+                    required(command.label(), "label"), blankToNull(command.value()), command.sortOrder(),
+                    allowed(command.status(), RESOURCE_STATUSES, "status"),
+                    bin(actor.principalId()), bin(actor.principalId()));
+            if ("PLATFORM".equals(actor.scope())) bumpAllTenantPolicies();
+            else bumpTenantPolicy(actor.tenantId());
+            audit(actor, "DICTIONARY_ITEM_CREATE", "DICTIONARY_ITEM", id);
+        });
+        return dictionaryItemById(actor, id);
+    }
+
+    @Override
+    public DictionaryItemView updateDictionaryItem(Actor actor, UUID id, DictionaryItemCommand command) {
+        validateDictionaryItem(command);
+        UUID tenantId = requireDictionaryTypeAccess(actor, command.typeId(), true);
+        transaction.executeWithoutResult(status -> {
+            int changed = jdbc.update("""
+                    UPDATE iam_dictionary_item item
+                    JOIN iam_dictionary_type type_record ON type_record.id=item.type_id
+                       SET item.type_id=?, item.tenant_id=?, item.item_label=?, item.item_value=?,
+                           item.sort_order=?, item.status=?, item.version=item.version+1,
+                           item.updated_at=UTC_TIMESTAMP(6), item.updated_by=?
+                     WHERE item.id=? AND type_record.id=? AND item.item_code=? AND item.version=?
+                       AND item.deleted_at IS NULL AND type_record.deleted_at IS NULL
+                    """, bin(command.typeId()), bin(tenantId), required(command.label(), "label"),
+                    blankToNull(command.value()), command.sortOrder(),
+                    allowed(command.status(), RESOURCE_STATUSES, "status"), bin(actor.principalId()),
+                    bin(id), bin(command.typeId()), normalizedCode(command.code()), command.version());
+            requireChanged(changed);
+            if ("PLATFORM".equals(actor.scope())) bumpAllTenantPolicies();
+            else bumpTenantPolicy(actor.tenantId());
+            audit(actor, "DICTIONARY_ITEM_UPDATE", "DICTIONARY_ITEM", id);
+        });
+        return dictionaryItemById(actor, id);
+    }
+
+    @Override
     public List<AuditView> audits(Actor actor, int limit) {
         int safeLimit = Math.max(1, Math.min(limit, 200));
         if ("PLATFORM".equals(actor.scope())) {
@@ -1057,6 +1210,32 @@ public final class JdbcIamManagementStore implements IamManagementStore {
                 bin(applicationId)) != 1) throw new IllegalArgumentException("Unknown application");
     }
 
+    /**
+     * 校验字典类型归属，返回该字典绑定的租户ID；平台字典返回 null。
+     * 字典项不能跨平台/租户边界迁移，避免共享枚举绕过租户隔离。
+     */
+    private UUID requireDictionaryTypeAccess(Actor actor, UUID typeId, boolean write) {
+        if (typeId == null) throw new IllegalArgumentException("typeId is required");
+        if ("PLATFORM".equals(actor.scope())) {
+            requirePlatform(actor);
+            if (count("""
+                    SELECT COUNT(*) FROM iam_dictionary_type
+                     WHERE id=? AND owner_scope='PLATFORM' AND tenant_id IS NULL AND deleted_at IS NULL
+                    """, bin(typeId)) != 1) {
+                throw new AccessDeniedException("Dictionary type is outside the platform boundary");
+            }
+            return null;
+        }
+        requireTenantPermission(actor, write ? "iam:dictionary:write" : "iam:dictionary:read");
+        if (count("""
+                SELECT COUNT(*) FROM iam_dictionary_type
+                 WHERE id=? AND owner_scope='TENANT' AND tenant_id=? AND deleted_at IS NULL
+                """, bin(typeId), bin(actor.tenantId())) != 1) {
+            throw new AccessDeniedException("Dictionary type is outside the current tenant");
+        }
+        return actor.tenantId();
+    }
+
     private String trustedRedirect(String raw) {
         URI uri;
         try { uri = URI.create(required(raw, "redirectUri")); }
@@ -1203,6 +1382,38 @@ public final class JdbcIamManagementStore implements IamManagementStore {
                 """, (rs, row) -> dataScope(rs), bin(tenantId), bin(id));
     }
 
+    private DictionaryTypeView dictionaryTypeById(Actor actor, UUID id) {
+        if ("PLATFORM".equals(actor.scope())) {
+            return jdbc.queryForObject("""
+                    SELECT id, tenant_id, type_code, type_name, description, status, version
+                      FROM iam_dictionary_type WHERE id=? AND owner_scope='PLATFORM' AND tenant_id IS NULL
+                    """, (rs, row) -> dictionaryType(rs), bin(id));
+        }
+        return jdbc.queryForObject("""
+                SELECT id, tenant_id, type_code, type_name, description, status, version
+                  FROM iam_dictionary_type WHERE id=? AND owner_scope='TENANT' AND tenant_id=?
+                """, (rs, row) -> dictionaryType(rs), bin(id), bin(actor.tenantId()));
+    }
+
+    private DictionaryItemView dictionaryItemById(Actor actor, UUID id) {
+        if ("PLATFORM".equals(actor.scope())) {
+            return jdbc.queryForObject("""
+                    SELECT item.id, item.type_id, item.tenant_id, item.item_code, item.item_label,
+                           item.item_value, item.sort_order, item.status, item.version
+                      FROM iam_dictionary_item item
+                      JOIN iam_dictionary_type type_record ON type_record.id=item.type_id
+                     WHERE item.id=? AND type_record.owner_scope='PLATFORM' AND type_record.tenant_id IS NULL
+                    """, (rs, row) -> dictionaryItem(rs), bin(id));
+        }
+        return jdbc.queryForObject("""
+                SELECT item.id, item.type_id, item.tenant_id, item.item_code, item.item_label,
+                       item.item_value, item.sort_order, item.status, item.version
+                  FROM iam_dictionary_item item
+                  JOIN iam_dictionary_type type_record ON type_record.id=item.type_id
+                 WHERE item.id=? AND type_record.owner_scope='TENANT' AND type_record.tenant_id=?
+                """, (rs, row) -> dictionaryItem(rs), bin(id), bin(actor.tenantId()));
+    }
+
     private ApplicationView application(ResultSet rs) throws SQLException {
         return new ApplicationView(uuid(rs, "id"), rs.getString("app_code"), rs.getString("app_name"),
                 rs.getString("app_scope"), rs.getString("app_type"), rs.getString("icon_key"),
@@ -1266,6 +1477,18 @@ public final class JdbcIamManagementStore implements IamManagementStore {
     private DataScopeView dataScope(ResultSet rs) throws SQLException {
         return new DataScopeView(uuid(rs, "id"), uuid(rs, "role_id"), uuid(rs, "application_id"),
                 rs.getString("scope_key"), rs.getString("scope_type"), rs.getString("status"), rs.getLong("version"));
+    }
+
+    private DictionaryTypeView dictionaryType(ResultSet rs) throws SQLException {
+        return new DictionaryTypeView(uuid(rs, "id"), uuid(rs, "tenant_id"), rs.getString("type_code"),
+                rs.getString("type_name"), rs.getString("description"), rs.getString("status"),
+                rs.getLong("version"));
+    }
+
+    private DictionaryItemView dictionaryItem(ResultSet rs) throws SQLException {
+        return new DictionaryItemView(uuid(rs, "id"), uuid(rs, "type_id"), uuid(rs, "tenant_id"),
+                rs.getString("item_code"), rs.getString("item_label"), rs.getString("item_value"),
+                rs.getInt("sort_order"), rs.getString("status"), rs.getLong("version"));
     }
 
     private AuditView auditView(ResultSet rs) throws SQLException {
@@ -1391,5 +1614,14 @@ public final class JdbcIamManagementStore implements IamManagementStore {
     }
     private static void validateRole(RoleCommand c) {
         required(c.code(), "code"); required(c.name(), "name"); required(c.type(), "type");
+    }
+    private static void validateDictionaryType(DictionaryTypeCommand c) {
+        required(c.code(), "code");
+        required(c.name(), "name");
+    }
+    private static void validateDictionaryItem(DictionaryItemCommand c) {
+        if (c.typeId() == null) throw new IllegalArgumentException("typeId is required");
+        required(c.code(), "code");
+        required(c.label(), "label");
     }
 }

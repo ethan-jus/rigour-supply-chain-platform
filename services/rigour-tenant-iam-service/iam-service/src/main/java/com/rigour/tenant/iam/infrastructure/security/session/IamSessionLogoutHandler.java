@@ -7,13 +7,18 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.oauth2.server.authorization.oidc.authentication.OidcLogoutAuthenticationToken;
 import org.springframework.security.web.authentication.logout.LogoutHandler;
 import org.springframework.transaction.support.TransactionOperations;
 
 /** 浏览器退出时同步撤销IAM会话、授权与Refresh Token链。 */
 public final class IamSessionLogoutHandler implements LogoutHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(IamSessionLogoutHandler.class);
 
     private final JdbcTemplate jdbcTemplate;
     private final TransactionOperations transactionOperations;
@@ -27,9 +32,11 @@ public final class IamSessionLogoutHandler implements LogoutHandler {
     public void logout(HttpServletRequest request, HttpServletResponse response, Authentication authentication) {
         UUID sessionId = sessionId(authentication);
         if (sessionId == null) {
+            log.warn("IAM退出未解析到会话，未执行数据库撤销");
             return;
         }
         transactionOperations.executeWithoutResult(ignored -> revoke(sessionId));
+        log.info("IAM退出完成，会话已撤销 sessionId={}", sessionId);
     }
 
     private void revoke(UUID sessionId) {
@@ -57,11 +64,22 @@ public final class IamSessionLogoutHandler implements LogoutHandler {
         if (authentication == null) {
             return null;
         }
+        if (authentication instanceof OidcLogoutAuthenticationToken oidcLogout) {
+            UUID hintedSessionId = parseUuid(oidcLogout.getSessionId());
+            if (hintedSessionId != null) {
+                return hintedSessionId;
+            }
+            return oidcLogout.getPrincipal() instanceof Authentication principal
+                    ? sessionId(principal) : null;
+        }
         if (!(authentication.getDetails() instanceof Map<?, ?> details)) {
             return authentication.getPrincipal() instanceof Authentication principal
                     ? sessionId(principal) : null;
         }
-        Object value = details.get(IamAuthenticationDetails.SESSION_ID);
+        return parseUuid(details.get(IamAuthenticationDetails.SESSION_ID));
+    }
+
+    private static UUID parseUuid(Object value) {
         try {
             return value == null ? null : UUID.fromString(String.valueOf(value));
         } catch (IllegalArgumentException exception) {

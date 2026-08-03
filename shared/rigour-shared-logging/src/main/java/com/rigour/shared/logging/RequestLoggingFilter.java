@@ -29,7 +29,7 @@ public final class RequestLoggingFilter extends OncePerRequestFilter {
             filterChain.doFilter(request, response);
         } finally {
             long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
-            log.info("requestId={} tenantId={} method={} path={} status={} elapsedMs={}",
+            log.info("HTTP请求完成 requestId={} tenantId={} method={} path={} status={} elapsedMs={}",
                     RequestContext.getRequestId(),
                     TenantContext.getTenantId(),
                     request.getMethod(),

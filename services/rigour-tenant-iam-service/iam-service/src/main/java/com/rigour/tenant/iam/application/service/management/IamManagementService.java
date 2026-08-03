@@ -55,5 +55,21 @@ public final class IamManagementService {
     public DataScopeView saveDataScope(Actor actor, UUID id, DataScopeCommand command) { return store.saveDataScope(actor, id, command); }
     public List<SettingView> settings(Actor actor) { return store.settings(actor); }
     public SettingView saveSetting(Actor actor, String key, SettingCommand command) { return store.saveSetting(actor, key, command); }
+    public List<DictionaryTypeView> dictionaryTypes(Actor actor) { return store.dictionaryTypes(actor); }
+    public DictionaryTypeView createDictionaryType(Actor actor, DictionaryTypeCommand command) {
+        return store.createDictionaryType(actor, command);
+    }
+    public DictionaryTypeView updateDictionaryType(Actor actor, UUID id, DictionaryTypeCommand command) {
+        return store.updateDictionaryType(actor, id, command);
+    }
+    public List<DictionaryItemView> dictionaryItems(Actor actor, UUID typeId) {
+        return store.dictionaryItems(actor, typeId);
+    }
+    public DictionaryItemView createDictionaryItem(Actor actor, DictionaryItemCommand command) {
+        return store.createDictionaryItem(actor, command);
+    }
+    public DictionaryItemView updateDictionaryItem(Actor actor, UUID id, DictionaryItemCommand command) {
+        return store.updateDictionaryItem(actor, id, command);
+    }
     public List<AuditView> audits(Actor actor, int limit) { return store.audits(actor, limit); }
 }
