@@ -48,7 +48,7 @@ CI 执行同一命令。`verify` 会同时检查：
 - 应用集合为一个 Gateway 加 11 个领域服务；
 - 领域服务之间没有直接 Maven 依赖。
 
-领域API模块当前只固化依赖边界，未确认的接口和DTO不会提前创建。数据库运行依赖也不机械复制：只有已经完成Schema、Flyway和数据源设计的IAM接入MyBatis-Plus/Flyway/MySQL，其余领域服务在各自库表设计确认后按同一标准接入。
+领域API模块当前只固化依赖边界，未确认的接口和DTO不会提前创建。数据库运行依赖也不机械复制：IAM与Integration已经分别具备Schema和迁移；其余领域服务的空DEV Schema/账号初始化见[`docs/DOMAIN_DATABASE_RUNTIME.md`](docs/DOMAIN_DATABASE_RUNTIME.md)，但在各自字段级设计确认前不接入业务表、MyBatis-Plus或Flyway。
 
 启动单个服务示例：
 
@@ -106,7 +106,7 @@ RocketMQ Proxy 继续使用独立宿主机端口 `18081`；表中的 `8081` 是�
 
 ## IAM数据库迁移
 
-共享DEV当前已确认只执行V1～V6；功能分支新增V7 OIDC持久化和V8管理中心。空库顺序迁移后共32张IAM表、5个应用、74个资源、26个权限码、51个标准套餐资源和43条UI导航元数据。V7/V8已在一次性MySQL 8.4 Testcontainers中验证，尚未应用共享DEV。
+共享DEV在2026-08-03只读核验的IAM运行时为Flyway V1～V14、35张业务表；当前检出代码的IAM迁移目录只有V1～V11，V12～V14的运行时/源码漂移见[`docs/IAM_DATABASE_RUNTIME.md`](docs/IAM_DATABASE_RUNTIME.md)。Integration为独立的`rigour_integration` Schema，运行时V1～V2、13张业务表。其余9个领域库的空Schema和账号初始化见[`docs/DOMAIN_DATABASE_RUNTIME.md`](docs/DOMAIN_DATABASE_RUNTIME.md)。
 
 代码完成边界见[`docs/IAM_OIDC_REMAINING_ROADMAP.md`](docs/IAM_OIDC_REMAINING_ROADMAP.md)，多人共享DEV配置/数据库且各自本机运行服务见[`docs/SHARED_DEV_LOCAL_RUNTIME.md`](docs/SHARED_DEV_LOCAL_RUNTIME.md)，登录验收步骤见[`docs/IAM_MANAGEMENT_ACCEPTANCE.md`](docs/IAM_MANAGEMENT_ACCEPTANCE.md)，业务服务的用户上下文和授权接入见[`docs/DOMAIN_AUTHORIZATION_GUIDE.md`](docs/DOMAIN_AUTHORIZATION_GUIDE.md)。
 

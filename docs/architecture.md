@@ -69,7 +69,7 @@ domain          -> 不依赖 Spring、数据库或其他服务实现
 
 标准包名为`api.controller`、`application.service`、`domain.model/repository`和`infrastructure.persistence`。只在存在实现或已确认的跨服务契约时创建类型，不保留空Controller、空适配器、空领域模型或重复的占位目录。
 
-持久层统一选型为MyBatis-Plus加显式XML，但运行依赖按服务渐进接入：只有Schema、Flyway脚本、Nacos数据源和集成测试同时具备时，服务实现模块才能加入MyBatis-Plus/Flyway/MySQL。当前只有IAM满足条件。业务层不继承`IService/ServiceImpl`；复杂查询保留XML；多租户SQL插件必须经过平台表豁免和越权测试后才能启用。
+持久层统一选型为MyBatis-Plus加显式XML，但运行依赖按服务渐进接入：只有Schema、Flyway脚本、Nacos数据源和集成测试同时具备时，服务实现模块才能加入MyBatis-Plus/Flyway/MySQL。当前IAM与Integration满足条件；其余领域服务虽然已经完成共享DEV空Schema和账号初始化，但仍要在字段级设计、迁移和集成测试完成后再接入数据库依赖。业务层不继承`IService/ServiceImpl`；复杂查询保留XML；多租户SQL插件必须经过平台表豁免和越权测试后才能启用。
 
 ## 架构门禁
 

@@ -4,7 +4,7 @@
 
 - 逻辑Schema：`rigour_iam`。
 - 开发MySQL：`82.157.4.176:13306`。
-- V1～V11迁移由`services/rigour-tenant-iam-service/iam-service`的Flyway执行；共享DEV的实际版本必须以启动日志和`flyway_schema_history`查询为准。
+- 当前检出的V1～V11迁移由`services/rigour-tenant-iam-service/iam-service`的Flyway执行；共享DEV的实际版本必须以启动日志和`flyway_schema_history`查询为准。
 - 数据源地址和非敏感参数放在Nacos；数据库密码只通过环境变量或部署平台Secret注入。
 - 真实密码不进入Git，也不能使用MySQL root账号启动服务。
 
@@ -21,7 +21,7 @@
 
 为支持团队成员从允许的公网IP连接，开发账号当前使用`'%'`主机范围，公网入口继续由云防火墙白名单限制。生产环境必须收紧为实际应用来源。
 
-文档中的“2026-07-30执行V1～V6、22张业务表”是历史快照，不代表当前共享DEV版本；V9/V10/V11应用后目标为34张IAM业务表。不要根据旧快照判断迁移是否完成。
+文档中的“2026-07-30执行V1～V6、22张业务表”是历史快照，不代表当前共享DEV版本。2026-08-03对共享DEV的只读核验结果为 Flyway V1～V14 全部成功、35 张 IAM 业务表；但当前检出代码的迁移目录只有 V1～V11，V12～V14 与源码存在漂移，不能把共享DEV运行结果当成当前检出代码可复现的迁移证明。
 
 ## 3. Nacos配置
 
@@ -68,4 +68,4 @@ FROM information_schema.tables
 WHERE table_schema = 'rigour_iam';
 ```
 
-期望当前代码对应V1～V11全部成功、业务表34张。Flyway历史表不计入业务表数量。
+对当前检出代码做独立环境验收时，期望其实际迁移集合与代码目录一致；Flyway历史表不计入业务表数量。共享DEV当前的35张业务表是上述运行时快照，不是当前检出代码的静态期望值。

@@ -151,12 +151,14 @@ NACOS_PASSWORD=<Nacos密码>
 cd "/Users/ethan/myspance/rigour/B2B供应链/自动化系统构建/06_代码工程/rigour-supply-chain-platform"
 
 ./mvnw -B -pl services/rigour-integration-migration-service/integration-migration-service \
-  -am -DskipTests package
+  -am -DskipTests install
 
 SPRING_PROFILES_ACTIVE=dev,local \
-./mvnw -pl services/rigour-integration-migration-service/integration-migration-service \
+./mvnw -f services/rigour-integration-migration-service/integration-migration-service/pom.xml \
   spring-boot:run
 ```
+
+这里故意分成两条命令：第一条把共享模块和 `integration-migration-api` 安装到本机 Maven 仓库；第二条从服务自己的 POM 运行。直接在根聚合 POM 上执行 `spring-boot:run` 会因为根项目没有主类而失败。
 
 也可以在 IDEA 直接运行主类：
 
