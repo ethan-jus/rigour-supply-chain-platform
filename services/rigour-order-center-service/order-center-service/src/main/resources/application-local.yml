@@ -1,5 +1,43 @@
 spring:
+  config:
+    import: optional:nacos:${spring.application.name}.yaml?refreshEnabled=true
   cloud:
     nacos:
+      server-addr: 82.157.4.176:18848
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD}
+      config:
+        namespace: ${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}
       discovery:
-        register-enabled: ${NACOS_DISCOVERY_REGISTER_ENABLED:false}
+        namespace: ${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}
+  datasource:
+    url: ${ORDER_DB_URL:jdbc:mysql://82.157.4.176:13306/rigour_order}
+    username: ${ORDER_DB_USERNAME:rigour_order_app}
+    password: ${ORDER_DB_PASSWORD:${ORDER_DB_APP_PASSWORD}}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: ${ORDER_DB_POOL_MAX:10}
+      minimum-idle: ${ORDER_DB_POOL_MIN:2}
+      connection-timeout: 3000
+  flyway:
+    url: ${ORDER_DB_MIGRATOR_URL:${ORDER_DB_URL:jdbc:mysql://82.157.4.176:13306/rigour_order}}
+    user: ${ORDER_DB_MIGRATOR_USERNAME:rigour_order_migrator}
+    password: ${ORDER_DB_MIGRATOR_PASSWORD:}
+    enabled: ${ORDER_DB_MIGRATOR_ENABLED:true}
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    clean-disabled: true
+    locations: classpath:db/migration
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
+rigour:
+  context:
+    trust:
+      active-key-id: v1
+      keys-base64:
+        v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}

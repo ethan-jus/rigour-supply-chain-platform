@@ -1,0 +1,102 @@
+-- 订货宝一期只读同步：规范化订单主表/明细表 + 原始报文兜底。
+-- 该Schema由order-center独占，第三方接口凭据不落库。
+CREATE TABLE dhb_order (
+    id                  BIGINT NOT NULL AUTO_INCREMENT,
+    tenant_id           VARCHAR(64)  NOT NULL,
+    order_sn            VARCHAR(80)  NOT NULL,
+    delivery_date       VARCHAR(32)  NULL,
+    order_remark        VARCHAR(1000) NULL,
+    order_total         DECIMAL(18,4) NULL,
+    order_status        VARCHAR(40)  NULL,
+    order_date          DATETIME(6) NULL,
+    order_update_date   DATETIME(6) NULL,
+    order_update_time   VARCHAR(32) NULL,
+    order_type          VARCHAR(40) NULL,
+    order_api           VARCHAR(8)  NULL,
+    order_exception     VARCHAR(8)  NULL,
+    order_send_type     VARCHAR(80) NULL,
+    last_order_at       VARCHAR(32) NULL,
+    client_no           VARCHAR(80) NULL,
+    client_guid         VARCHAR(80) NULL,
+    source_device       VARCHAR(40) NULL,
+    is_admin_order      VARCHAR(8)  NULL,
+    pay_status          VARCHAR(40) NULL,
+    client_name         VARCHAR(160) NULL,
+    receive_name        VARCHAR(80) NULL,
+    receive_company     VARCHAR(200) NULL,
+    receive_phone       VARCHAR(64) NULL,
+    receive_address     VARCHAR(500) NULL,
+    province            VARCHAR(80) NULL,
+    city                VARCHAR(80) NULL,
+    district            VARCHAR(80) NULL,
+    split_type          VARCHAR(32) NULL,
+    split_type_name     VARCHAR(80) NULL,
+    raw_list_json       JSON NOT NULL,
+    raw_detail_json     JSON NULL,
+    detail_synced_at    DATETIME(6) NULL,
+    synced_at           DATETIME(6) NOT NULL,
+    created_at          DATETIME(6) NOT NULL,
+    updated_at          DATETIME(6) NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_dhb_order_tenant_sn (tenant_id, order_sn),
+    KEY idx_dhb_order_tenant_date (tenant_id, order_date),
+    KEY idx_dhb_order_tenant_status (tenant_id, order_status),
+    KEY idx_dhb_order_tenant_update (tenant_id, order_update_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='订货宝订单本地规范化投影';
+
+CREATE TABLE dhb_order_line (
+    id                  BIGINT NOT NULL AUTO_INCREMENT,
+    order_id            BIGINT NOT NULL,
+    line_id             VARCHAR(80) NULL,
+    product_guid        VARCHAR(100) NULL,
+    sku_no              VARCHAR(100) NULL,
+    options_goods_num   VARCHAR(100) NULL,
+    options_barcode     VARCHAR(160) NULL,
+    product_name        VARCHAR(200) NULL,
+    coding              VARCHAR(100) NULL,
+    multi_first         VARCHAR(100) NULL,
+    multi_second        VARCHAR(100) NULL,
+    multi_name          VARCHAR(200) NULL,
+    unit_price          DECIMAL(18,4) NULL,
+    quantity            DECIMAL(18,4) NULL,
+    unit                VARCHAR(40) NULL,
+    remark              VARCHAR(1000) NULL,
+    created_at          DATETIME(6) NOT NULL,
+    updated_at          DATETIME(6) NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_dhb_order_line_order FOREIGN KEY (order_id) REFERENCES dhb_order(id)
+        ON DELETE CASCADE ON UPDATE RESTRICT,
+    UNIQUE KEY uk_dhb_order_line (order_id, line_id),
+    KEY idx_dhb_order_line_product (product_guid, options_goods_num)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='订货宝订单明细本地投影';
+
+CREATE TABLE dhb_order_shipment (
+    id                  BIGINT NOT NULL AUTO_INCREMENT,
+    order_id            BIGINT NOT NULL,
+    shipment_no         VARCHAR(100) NULL,
+    status              VARCHAR(40) NULL,
+    shipment_date       VARCHAR(32) NULL,
+    stock_up_time       VARCHAR(32) NULL,
+    created_at          DATETIME(6) NOT NULL,
+    updated_at          DATETIME(6) NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_dhb_order_shipment_order FOREIGN KEY (order_id) REFERENCES dhb_order(id)
+        ON DELETE CASCADE ON UPDATE RESTRICT,
+    KEY idx_dhb_order_shipment_order (order_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='订货宝订单发货信息本地投影';
+
+CREATE TABLE dhb_order_sync_run (
+    id                  BIGINT NOT NULL AUTO_INCREMENT,
+    tenant_id           VARCHAR(64) NOT NULL,
+    function_name       VARCHAR(64) NOT NULL,
+    request_json        JSON NOT NULL,
+    response_status     VARCHAR(16) NULL,
+    provider_total      INT NULL,
+    synchronized_count  INT NOT NULL DEFAULT 0,
+    run_status          VARCHAR(16) NOT NULL,
+    error_message       VARCHAR(1000) NULL,
+    started_at          DATETIME(6) NOT NULL,
+    finished_at         DATETIME(6) NULL,
+    PRIMARY KEY (id),
+    KEY idx_dhb_sync_tenant_started (tenant_id, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='订货宝只读同步运行记录';
