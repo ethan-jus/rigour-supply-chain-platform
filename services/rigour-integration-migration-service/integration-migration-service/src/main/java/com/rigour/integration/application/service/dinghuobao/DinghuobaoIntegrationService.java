@@ -1,6 +1,8 @@
 package com.rigour.integration.application.service.dinghuobao;
 
 import com.rigour.integration.application.port.out.DinghuobaoIntegrationStore;
+import com.rigour.integration.application.port.out.DinghuobaoClient;
+import com.rigour.integration.application.port.out.DinghuobaoClient.ConnectionTestResult;
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.ConnectorCommand;
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.ConnectorView;
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.FieldMappingCommand;
@@ -19,9 +21,11 @@ import java.util.UUID;
 public final class DinghuobaoIntegrationService {
 
     private final DinghuobaoIntegrationStore store;
+    private final DinghuobaoClient client;
 
-    public DinghuobaoIntegrationService(DinghuobaoIntegrationStore store) {
+    public DinghuobaoIntegrationService(DinghuobaoIntegrationStore store, DinghuobaoClient client) {
         this.store = Objects.requireNonNull(store, "store cannot be null");
+        this.client = Objects.requireNonNull(client, "client cannot be null");
     }
 
     public List<ConnectorView> connectors() {
@@ -32,6 +36,16 @@ public final class DinghuobaoIntegrationService {
     public ConnectorView createConnector(ConnectorCommand command) {
         CallerIdentity caller = requireWriteCaller();
         return store.createConnector(caller.tenantId(), caller.userId(), command);
+    }
+
+    /** 只验证订货宝认证，不返回 Secret 或令牌；调用需要写权限因为会触发外部请求。 */
+    public ConnectionTestResult testConnection(UUID connectorId) {
+        CallerIdentity caller = requireWriteCaller();
+        ConnectorView connector = store.connector(caller.tenantId(), connectorId);
+        ConnectionTestResult result = client.testConnection(new DinghuobaoClient.Connector(
+                connector.tenantId(), connector.id(), connector.baseUrl(), connector.authSecretRef()));
+        store.recordConnectionTest(caller.tenantId(), caller.userId(), connectorId, result);
+        return result;
     }
 
     public ConnectorView updateConnector(UUID id, ConnectorCommand command) {

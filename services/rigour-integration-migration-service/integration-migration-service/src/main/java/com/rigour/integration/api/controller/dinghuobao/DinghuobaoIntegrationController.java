@@ -9,6 +9,7 @@ import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.Or
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncLogView;
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncTaskCommand;
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncTaskView;
+import com.rigour.integration.application.port.out.DinghuobaoClient.ConnectionTestResult;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -39,6 +40,11 @@ public final class DinghuobaoIntegrationController {
     @PostMapping("/connectors")
     public ConnectorView createConnector(@RequestBody ConnectorCommand command) {
         return service.createConnector(command);
+    }
+
+    @PostMapping("/connectors/{id}/test")
+    public ConnectionTestResult testConnection(@PathVariable("id") UUID id) {
+        return service.testConnection(id);
     }
 
     @PutMapping("/connectors/{id}")

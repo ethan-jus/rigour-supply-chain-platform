@@ -1,6 +1,8 @@
 package com.rigour.integration;
 
 import com.rigour.integration.application.port.out.DinghuobaoIntegrationStore;
+import com.rigour.integration.application.port.out.DinghuobaoClient.ConnectionTestResult;
+import com.rigour.integration.infrastructure.persistence.IntegrationUuidCodec;
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.ConnectorCommand;
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.ConnectorView;
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.FieldMappingCommand;
@@ -78,9 +80,11 @@ class IntegrationMigrationServiceApplicationTests {
 
         ConnectorView connector = store.createConnector(tenantA, actor,
                 new ConnectorCommand("DINGHUOBAO_MAIN", "订货宝主连接",
-                        "https://open.dinghuobao.example", "secret-ref:dev/dinghuobao/main", "ACTIVE", 0));
+                        "https://open.dinghuobao.example", "env://DHB_TEST", "ACTIVE", 0));
         store.createSyncTask(tenantA, actor,
                 new SyncTaskCommand(connector.id(), "ORDER_PULL", "ORDER", "IDLE", null, 0));
+        store.recordConnectionTest(tenantA, actor, connector.id(),
+                ConnectionTestResult.failure("DINGHUOBAO_AUTH_FAILED", "认证失败"));
         store.saveFieldMapping(tenantA, actor, null,
                 new FieldMappingCommand(connector.id(), "orderId", "sourceOrderId", "DIRECT", true, 0));
 
@@ -88,6 +92,12 @@ class IntegrationMigrationServiceApplicationTests {
         assertThat(store.connectors(tenantB)).isEmpty();
         assertThat(store.syncTasks(tenantA)).hasSize(1);
         assertThat(store.fieldMappings(tenantA, connector.id())).hasSize(1);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT credential_status FROM integration_dinghuobao_connector
+                 WHERE tenant_id=? AND id=?
+                """, String.class, IntegrationUuidCodec.encode(tenantA),
+                IntegrationUuidCodec.encode(connector.id())))
+                .isEqualTo("INVALID");
         assertThatThrownBy(() -> store.fieldMappings(tenantB, connector.id()))
                 .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
     }

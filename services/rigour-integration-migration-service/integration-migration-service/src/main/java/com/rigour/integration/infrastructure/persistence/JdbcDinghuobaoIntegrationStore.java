@@ -9,6 +9,7 @@ import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.Or
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncLogView;
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncTaskCommand;
 import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncTaskView;
+import com.rigour.integration.application.port.out.DinghuobaoClient.ConnectionTestResult;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import java.math.BigDecimal;
 import java.sql.ResultSet;
@@ -44,6 +45,43 @@ public final class JdbcDinghuobaoIntegrationStore implements DinghuobaoIntegrati
                  WHERE tenant_id=? AND deleted_at IS NULL
                  ORDER BY connector_code
                 """, (rs, row) -> connector(rs), bin(tenantId));
+    }
+
+    @Override
+    public ConnectorView connector(UUID tenantId, UUID connectorId) {
+        if (connectorId == null) {
+            throw new AuthorizationDeniedException("integration:dinghuobao:connector");
+        }
+        List<ConnectorView> rows = jdbc.query("""
+                SELECT id, tenant_id, connector_code, connector_name, base_url, auth_secret_ref, status, version
+                  FROM integration_dinghuobao_connector
+                 WHERE tenant_id=? AND id=? AND deleted_at IS NULL
+                """, (rs, row) -> connector(rs), bin(tenantId), bin(connectorId));
+        if (rows.isEmpty()) {
+            throw new AuthorizationDeniedException("integration:dinghuobao:connector");
+        }
+        return rows.getFirst();
+    }
+
+    @Override
+    public void recordConnectionTest(UUID tenantId, UUID actorId, UUID connectorId,
+                                     ConnectionTestResult result) {
+        if (connectorId == null || result == null) {
+            throw new IllegalArgumentException("connectorId and result are required");
+        }
+        String credentialStatus = result.success() ? "VALID"
+                : ("DINGHUOBAO_AUTH_FAILED".equals(result.code()) ? "INVALID" : "UNKNOWN");
+        String errorMessage = result.message() == null ? null
+                : result.message().substring(0, Math.min(result.message().length(), 2000));
+        int changed = jdbc.update("""
+                UPDATE integration_dinghuobao_connector
+                   SET credential_status=?, last_checked_at=UTC_TIMESTAMP(6),
+                       last_error_code=?, last_error_message=?, version=version+1,
+                       updated_at=UTC_TIMESTAMP(6), updated_by=?
+                 WHERE tenant_id=? AND id=? AND deleted_at IS NULL
+                """, credentialStatus, result.success() ? null : result.code(), errorMessage,
+                bin(actorId), bin(tenantId), bin(connectorId));
+        requireChanged(changed);
     }
 
     @Override

@@ -25,6 +25,7 @@ Integration 是外部系统和本平台领域服务之间的隔离层，负责�
 6. 记录外部与内部事实的差异，并记录每个租户、业务域当前由谁拥有事实主权。
 
 当前代码已经提供控制面接口和数据库迁移，允许在门户中配置连接、任务和字段映射；真正的订货宝拉取 Worker 必须以订货宝确认的 API 地址、版本、签名算法、接口字段和 Secret 为前提，不能用测试账号密码臆造同步实现。
+当前版本已经在 Integration 内实现订货宝 `DinghuobaoClient` 与 HTTP 适配器（认证、超时、有限重试、进程内限流、偏移分页、客户/订单时间窗口和脱敏日志）；Worker 仍需在正式 API 合同确认后接入。
 
 ## 3. 从供应链入口调用的完整链路
 
@@ -43,6 +44,7 @@ Integration 是外部系统和本平台领域服务之间的隔离层，负责�
 现有 API：
 
 - `GET/POST/PUT /api/v1/integration/dinghuobao/connectors`
+- `POST /api/v1/integration/dinghuobao/connectors/{id}/test`（只验证 Secret，不返回 token）
 - `GET/POST/PUT /api/v1/integration/dinghuobao/sync-tasks`
 - `GET /api/v1/integration/dinghuobao/order-mirrors`
 - `GET /api/v1/integration/dinghuobao/sync-logs`
@@ -137,6 +139,9 @@ INTEGRATION_DB_MIGRATOR_PASSWORD=<刚生成的迁移账号密码>
 RIGOUR_CONTEXT_TRUST_KEY_V1=<与Gateway、IAM、其他领域服务相同的DEV HMAC密钥>
 NACOS_USERNAME=nacos
 NACOS_PASSWORD=<Nacos密码>
+# 订货宝账号密码由 Secret 引用解析，不写 Nacos；开发默认引用 env://RIGOUR_DHB_DEV
+RIGOUR_DHB_DEV_SERIAL_NUMBER=<订货宝接口账号>
+RIGOUR_DHB_DEV_PASSWORD=<订货宝接口密码>
 ```
 
 同一共享 DEV 数据库的开发者必须使用相同的 `RIGOUR_CONTEXT_TRUST_KEY_V1`；数据库密码只需一致到对应数据库账号，不要把第三方订货宝账号密码放进这里。Nacos 示例见 `docs/nacos/rigour-integration-migration-service.example.yml`。
@@ -192,9 +197,9 @@ ORDER BY table_name;
 
 然后登录 Portal，进入“供应链系统 → 订货宝数据同步”：
 
-1. 在“连接配置”创建连接器，只填写订货宝确认的 API Base URL 和 Secret 引用，例如 `secret-ref:dev/dinghuobao/<tenant-code>/main`。
+1. 在“连接配置”创建连接器，只填写订货宝确认的 API Base URL 和 Secret 引用，例如 `env://RIGOUR_DHB_DEV`；运行时从 `RIGOUR_DHB_DEV_SERIAL_NUMBER` 和 `RIGOUR_DHB_DEV_PASSWORD` 读取。
 2. 在“同步任务”先创建 `ORDER_PULL`，初期使用“手动”策略，确认 API 合同后再启用定时策略。
 3. 配置字段映射，检查同步日志、Raw Landing 和订单镜像。
-4. 真实同步 Worker、死信重放和下游订单/BI消费完成前，页面上的“已同步数量”为零是正确的，不应伪造成功数量。
+4. 真实同步 Worker、死信重放和下游订单/BI消费完成前，页面上的“已同步数量”为零是正确的，不应伪造成功数量。连接测试返回 `DINGHUOBAO_SECRET_NOT_CONFIGURED` 时不会调用第三方。
 
 Integration 未启动只会让 `/api/v1/integration/**` 连接失败；它不应让 IAM 登录、系统管理或供应链菜单整体跳回登录页。若出现这种现象，应沿 Portal → Gateway → Integration 的 `requestId` 分别查看日志。
