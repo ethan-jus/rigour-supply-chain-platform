@@ -5,6 +5,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 
 /**
@@ -15,10 +17,20 @@ import org.springframework.core.Ordered;
 @EnableConfigurationProperties(ContextTrustProperties.class)
 public class ContextAutoConfiguration {
 
+    private static final Logger log = LoggerFactory.getLogger(ContextAutoConfiguration.class);
+
     @Bean
     @ConditionalOnMissingBean
     TrustedContextSigner trustedContextSigner(ContextTrustProperties properties) {
-        return new TrustedContextSigner(properties);
+        TrustedContextSigner signer = new TrustedContextSigner(properties);
+        try {
+            log.info("可信上下文HMAC配置已加载 keyId={} keyFingerprint={} maximumAgeMs={}",
+                    signer.activeKeyId(), signer.activeKeyFingerprint(), signer.maximumAgeMillis());
+        } catch (IllegalStateException exception) {
+            // 空骨架服务可在未对外提供受保护接口时启动；一旦收到X-Rigour上下文会安全失败。
+            log.warn("可信上下文HMAC尚未正确配置，受保护的下游请求将被拒绝 reason={}", exception.getMessage());
+        }
+        return signer;
     }
 
     @Bean

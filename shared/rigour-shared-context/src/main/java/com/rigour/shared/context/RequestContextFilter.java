@@ -11,6 +11,8 @@ import java.util.Arrays;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 在请求入口建立 request/tenant 上下文，并在所有退出路径清理 ThreadLocal。
@@ -18,6 +20,7 @@ import java.util.stream.Collectors;
  */
 public final class RequestContextFilter extends OncePerRequestFilter {
 
+    private static final Logger log = LoggerFactory.getLogger(RequestContextFilter.class);
     static final String DEFAULT_LANGUAGE = "zh-CN";
     private final TrustedContextSigner contextSigner;
 
@@ -35,13 +38,19 @@ public final class RequestContextFilter extends OncePerRequestFilter {
 
         try {
             if (contextSigner.hasContextHeaders(request)) {
-                if (!contextSigner.verify(request)) {
+                TrustedContextSigner.VerificationResult verification = contextSigner.verifyDetailed(request);
+                if (!verification.valid()) {
+                    log.warn("下游可信上下文校验失败 requestId={} method={} path={} keyId={} reason={} ageMs={}",
+                            requestId, request.getMethod(), request.getRequestURI(), verification.keyId(),
+                            verification.reason(), verification.ageMillis());
                     response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid trusted request context");
                     return;
                 }
                 CallerIdentity identity;
                 try { identity = callerIdentity(request); }
                 catch (IllegalArgumentException exception) {
+                    log.warn("下游可信上下文身份字段无效 requestId={} method={} path={} reason={}",
+                            requestId, request.getMethod(), request.getRequestURI(), exception.getMessage());
                     response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid trusted request context");
                     return;
                 }

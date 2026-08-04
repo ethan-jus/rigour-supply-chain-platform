@@ -86,7 +86,7 @@ domain          -> 不依赖 Spring、数据库或其他服务实现
 
 ## 请求与错误契约
 
-`RequestContextFilter` 解析或生成 `X-Request-Id`；存在身份头时校验Gateway生成的HMAC签名、时间窗口、请求方法、路径和查询，再建立`CallerIdentity`/tenant上下文，并在`finally`中清理ThreadLocal。未签名、篡改和过期上下文返回401；`AuthorizationContext.requirePermission`失败返回403。`ApiResponse`创建时读取同一requestId；未知异常只返回稳定通用文案，完整堆栈留在服务端日志。
+`RequestContextFilter` 解析或生成 `X-Request-Id`；存在身份头时校验Gateway生成的HMAC签名、时间窗口、请求方法、路径和查询，再建立`CallerIdentity`/tenant上下文，并在`finally`中清理ThreadLocal。查询参数按参数名稳定排序并统一等价URL编码，同名参数值顺序仍参与签名，避免Gateway重组查询串造成误判，同时继续拒绝真实参数篡改。未签名、篡改和过期上下文返回401；`AuthorizationContext.requirePermission`失败返回403。`ApiResponse`创建时读取同一requestId；未知异常只返回稳定通用文案，完整堆栈留在服务端日志。
 
 ## 本地基础设施边界
 

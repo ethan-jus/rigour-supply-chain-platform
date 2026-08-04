@@ -24,8 +24,8 @@ Group：DEFAULT_GROUP
 | `rigour-city-operations-service.example.yml` | `rigour-city-operations-service.yaml` | `CITY_DB_APP_PASSWORD` / `CITY_DB_MIGRATOR_PASSWORD` |
 | `rigour-channel-agent-service.example.yml` | `rigour-channel-agent-service.yaml` | `CHANNEL_DB_APP_PASSWORD` / `CHANNEL_DB_MIGRATOR_PASSWORD` |
 
-9 个新领域库目前只有空 Schema，没有业务迁移，所以模板将 `spring.flyway.enabled` 设为 `false`。完成某个服务的 V1 迁移并把 JDBC/Flyway 依赖接入后，再在该服务的 Nacos Data ID 中改为 `true`。
+Order Center 已包含 V1～V4 业务迁移，其模板将 `spring.flyway.enabled` 设为 `true`。其他仍为空 Schema 的领域服务保持 `false`；完成首个迁移并接入 JDBC/Flyway 后再切换。
 
-启动时只需要在本机或 IDEA Run Configuration 设置对应的两个密码变量；Nacos 只保存 `${...}` 占位符，不解析也不保存密码明文。所有领域服务还需要注入同一份 `RIGOUR_CONTEXT_TRUST_KEY_V1`。
+启动时只需要在本机或 IDEA Run Configuration 设置对应的两个数据库密码变量；Nacos 只保存 `${...}` 占位符，不解析也不保存密码明文。所有领域服务还需要注入同一份 `RIGOUR_CONTEXT_TRUST_KEY_V1`；该变量的属性映射保留在各服务本地 `application.yml`，不写入 Nacos Data ID。
 
 Gateway 不拥有业务数据库，因此只有安全和路由配置，不增加 datasource 配置。

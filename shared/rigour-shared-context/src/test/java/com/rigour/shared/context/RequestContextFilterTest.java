@@ -67,6 +67,46 @@ class RequestContextFilterTest {
     }
 
     @Test
+    void reportsStableFailureReasonsWithoutExposingSignedValues() {
+        MockHttpServletRequest tampered = signedTenantRequest();
+        tampered.removeHeader(RequestHeaders.PERMISSIONS);
+        tampered.addHeader(RequestHeaders.PERMISSIONS, "order:write");
+
+        TrustedContextSigner.VerificationResult result = signer.verifyDetailed(tampered);
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.reason()).isEqualTo("SIGNATURE_MISMATCH");
+        assertThat(result.keyId()).isEqualTo("v1");
+        assertThat(result.ageMillis()).isBetween(0L, 30_000L);
+    }
+
+    @Test
+    void acceptsEquivalentForwardedQueryOrderAndEncodingButRejectsChangedValue() {
+        MockHttpServletRequest reordered = signedTenantRequest(
+                "begin=0&step=20&apiStatus=all&exceptionStatus=F&keyword=hello+world");
+        reordered.setQueryString(
+                "keyword=hello%20world&exceptionStatus=F&apiStatus=all&begin=0&step=20");
+
+        assertThat(signer.verifyDetailed(reordered).valid()).isTrue();
+
+        reordered.setQueryString(
+                "keyword=hello%20world&exceptionStatus=T&apiStatus=all&begin=0&step=20");
+        TrustedContextSigner.VerificationResult tampered = signer.verifyDetailed(reordered);
+        assertThat(tampered.valid()).isFalse();
+        assertThat(tampered.reason()).isEqualTo("SIGNATURE_MISMATCH");
+    }
+
+    @Test
+    void preservesTheBusinessOrderOfRepeatedQueryValues() {
+        MockHttpServletRequest repeated = signedTenantRequest("tag=first&other=1&tag=second");
+        repeated.setQueryString("other=1&tag=first&tag=second");
+        assertThat(signer.verifyDetailed(repeated).valid()).isTrue();
+
+        repeated.setQueryString("other=1&tag=second&tag=first");
+        assertThat(signer.verifyDetailed(repeated).valid()).isFalse();
+    }
+
+    @Test
     void clearsContextsWhenDownstreamThrows() {
         MockHttpServletRequest request = new MockHttpServletRequest();
 
@@ -91,7 +131,12 @@ class RequestContextFilterTest {
     }
 
     private MockHttpServletRequest signedTenantRequest() {
+        return signedTenantRequest(null);
+    }
+
+    private MockHttpServletRequest signedTenantRequest(String query) {
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/orders");
+        request.setQueryString(query);
         Map<String, String> values = new LinkedHashMap<>();
         values.put(RequestHeaders.PRINCIPAL_SCOPE, "TENANT");
         values.put(RequestHeaders.PRINCIPAL_ID, "019fb000-0000-7000-8000-000000000001");

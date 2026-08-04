@@ -8,7 +8,7 @@
 
 1. 浏览器只发送Bearer Access Token、`X-Request-Id`和语言信息，禁止自行发送`X-Rigour-*`身份头。
 2. Gateway验证JWT签名、issuer、audience、`tokenUse`和必需声明，再调用IAM内部`/api/v1/token/current`检查当前会话、用户安全版本、租户策略版本并取得最新角色/权限。
-3. Gateway删除所有客户端`X-Rigour-*`，用独立HMAC密钥签名调用人、租户、会话版本、角色、权限、HTTP方法、路径和查询。
+3. Gateway删除所有客户端`X-Rigour-*`，用独立HMAC密钥签名调用人、租户、会话版本、角色、权限、HTTP方法、路径和规范化查询参数；参数名顺序与等价URL编码不影响验签，同名参数值顺序和真实参数值仍受签名保护。
 4. 领域服务的`RequestContextFilter`验证签名和30秒时间窗口后建立`CallerIdentity`；未签名、篡改、超限或过期上下文返回401。
 5. Controller或应用服务执行权限检查；数据归属仍必须在仓储SQL中以当前`tenantId`和领域数据范围约束，不能只依赖页面隐藏。
 

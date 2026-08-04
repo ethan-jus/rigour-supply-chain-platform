@@ -1,31 +1,31 @@
 # Nacos Data ID: rigour-order-center-service.yaml
 # Namespace: dev / 3aa03547-8948-4254-bd94-47c630db128b
-# 密码只从本机 Secret、IDEA 环境变量或部署平台注入，不要替换为明文。
+# 本文件只保存共享DEV的非敏感参数，手工发布到上述Data ID。
+# 数据库密码只从本机Secret、IDEA环境变量或部署平台注入，不要替换为明文。
+# RIGOUR_CONTEXT_TRUST_KEY_V1的映射保留在服务application.yml，本Nacos Data ID不得再定义rigour.context.trust。
 spring:
   datasource:
+    # 应用运行数据源：只使用rigour_order_app的业务读写权限，不得使用root或迁移账号。
     url: jdbc:mysql://82.157.4.176:13306/rigour_order?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
     username: rigour_order_app
+    # Nacos保留变量引用；Spring应用启动时从进程环境解析真实密码。
     password: ${ORDER_DB_APP_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
+      # 共享DEV使用保守连接池，避免多名开发者同时启动耗尽数据库连接。
       minimum-idle: 2
       maximum-pool-size: 10
       connection-timeout: 30000
       validation-timeout: 5000
   flyway:
-    # 当前 Order 还没有正式 V1 迁移；完成字段评审后改为 true。
-    enabled: false
+    # Order已包含V1～V4迁移；共享DEV启动时必须校验并执行后续新迁移。
+    enabled: true
+    # 迁移使用独立rigour_order_migrator账号，与应用运行账号分离。
     url: jdbc:mysql://82.157.4.176:13306/rigour_order?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
     user: rigour_order_migrator
     password: ${ORDER_DB_MIGRATOR_PASSWORD}
+    # 共享DEV禁止baseline和clean；历史迁移不得重写，只能新增更高版本。
     baseline-on-migrate: false
     validate-on-migrate: true
     clean-disabled: true
     locations: classpath:db/migration
-
-rigour:
-  context:
-    trust:
-      active-key-id: v1
-      keys-base64:
-        v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}

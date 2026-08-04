@@ -1,43 +1,19 @@
+# DEV配置：连接共享Nacos并读取共享数据库参数；真实密码仍由进程环境Secret注入。
 spring:
   config:
-    import: optional:nacos:${spring.application.name}.yaml?refreshEnabled=true
+    # DEV必须读取共享Nacos；鉴权或配置失败时直接停止启动，避免服务“端口已起但配置不完整”。
+    # refreshEnabled只用于刷新非敏感运行参数；HMAC和数据库密码不放入Nacos。
+    import: nacos:${spring.application.name}.yaml?refreshEnabled=true
   cloud:
     nacos:
+      # Nacos HTTP/API端口；客户端会自动使用派生的gRPC端口，不要手动改成19848。
       server-addr: 82.157.4.176:18848
+      # 用户名可使用DEV默认值；密码必须在IDEA或当前终端显式注入。
       username: ${NACOS_USERNAME:nacos}
       password: ${NACOS_PASSWORD}
       config:
+        # 配置中心固定读取共享DEV Namespace。
         namespace: ${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}
       discovery:
+        # 与配置中心使用同一DEV Namespace；是否注册由local覆盖层决定。
         namespace: ${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}
-  datasource:
-    url: ${ORDER_DB_URL:jdbc:mysql://82.157.4.176:13306/rigour_order}
-    username: ${ORDER_DB_USERNAME:rigour_order_app}
-    password: ${ORDER_DB_PASSWORD:${ORDER_DB_APP_PASSWORD}}
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    hikari:
-      maximum-pool-size: ${ORDER_DB_POOL_MAX:10}
-      minimum-idle: ${ORDER_DB_POOL_MIN:2}
-      connection-timeout: 3000
-  flyway:
-    url: ${ORDER_DB_MIGRATOR_URL:${ORDER_DB_URL:jdbc:mysql://82.157.4.176:13306/rigour_order}}
-    user: ${ORDER_DB_MIGRATOR_USERNAME:rigour_order_migrator}
-    password: ${ORDER_DB_MIGRATOR_PASSWORD:}
-    enabled: ${ORDER_DB_MIGRATOR_ENABLED:true}
-    baseline-on-migrate: false
-    validate-on-migrate: true
-    clean-disabled: true
-    locations: classpath:db/migration
-
-mybatis-plus:
-  configuration:
-    map-underscore-to-camel-case: true
-  global-config:
-    banner: false
-
-rigour:
-  context:
-    trust:
-      active-key-id: v1
-      keys-base64:
-        v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}

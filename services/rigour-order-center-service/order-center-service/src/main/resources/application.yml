@@ -1,26 +1,43 @@
+# 订单中心通用配置：不区分DEV/本机启动方式，也不保存数据库密码等环境Secret。
 server:
+  # 本机启动的固定端口；Gateway默认将 /api/v1/orders/** 转发到此端口。
   port: 26885
 
 spring:
   application:
+    # 同时作为Nacos Data ID前缀，DEV会读取 rigour-order-center-service.yaml。
     name: rigour-order-center-service
 
 management:
   endpoints:
     web:
       exposure:
+        # 只暴露基础健康和版本信息，不对外暴露env/configprops等敏感端点。
         include: health,info
   endpoint:
     health:
+      # 详细健康信息仅在已授权时返回。
       show-details: when_authorized
 
 logging:
   level:
+    # 业务日志默认INFO；不得记录Bearer Token、HMAC密钥、数据库密码或订货宝凭据。
     com.rigour: INFO
+
+mybatis-plus:
+  configuration:
+    # 将数据库 snake_case 字段自动映射为Java camelCase属性。
+    map-underscore-to-camel-case: true
+  global-config:
+    # 关闭MyBatis-Plus启动Banner，减少无关日志。
+    banner: false
 
 rigour:
   context:
     trust:
+      # 当前主动签名/验签密钥版本；轮换密钥时按v1、v2递增。
       active-key-id: v1
+      # Gateway与所有下游服务必须注入同一份Base64 HMAC密钥。
+      # 环境变量名与Spring属性名不同，必须保留此映射；真实值不进Nacos或Git。
       keys-base64:
         v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}
