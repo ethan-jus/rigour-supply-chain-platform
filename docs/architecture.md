@@ -4,6 +4,8 @@
 
 本工程是 11 个粗粒度领域服务和一个 API Gateway 的可编译骨架。当前目标是建立稳定的代码所有权、依赖方向和跨仓库 HTTP 契约，不以空实现冒充生产基础设施。
 
+多人协同开发入口是 [`TEAM_DEVELOPMENT_GUIDE.md`](TEAM_DEVELOPMENT_GUIDE.md)。它规定了服务唯一所有者、第三方集成归属、跨服务契约、README、评审和断舍离门禁；本文件负责解释架构结构，不替代协同规则。
+
 ## Reactor
 
 根reactor共46个项目：根聚合项目1个、platform 3个、shared 8个、Gateway 1个、领域聚合父模块11个、领域API模块11个、领域启动应用11个。
@@ -69,7 +71,7 @@ domain          -> 不依赖 Spring、数据库或其他服务实现
 
 标准包名为`api.controller`、`application.service`、`domain.model/repository`和`infrastructure.persistence`。只在存在实现或已确认的跨服务契约时创建类型，不保留空Controller、空适配器、空领域模型或重复的占位目录。
 
-持久层统一选型为MyBatis-Plus加显式XML，但运行依赖按服务渐进接入：只有Schema、Flyway脚本、Nacos数据源和集成测试同时具备时，服务实现模块才能加入MyBatis-Plus/Flyway/MySQL。当前IAM与Integration满足条件；其余领域服务虽然已经完成共享DEV空Schema和账号初始化，但仍要在字段级设计、迁移和集成测试完成后再接入数据库依赖。业务层不继承`IService/ServiceImpl`；复杂查询保留XML；多租户SQL插件必须经过平台表豁免和越权测试后才能启用。
+持久层统一选型为 MyBatis-Plus 加显式 XML，但运行依赖按服务渐进接入：只有 Schema、Flyway 脚本、Nacos 数据源和集成测试同时具备时，服务实现模块才能加入 MyBatis-Plus/Flyway/MySQL。当前 IAM、Integration 和订单中心满足条件；其余领域服务虽然已经完成共享 DEV 空 Schema 和账号初始化，但仍要在字段级设计、迁移和集成测试完成后再接入数据库依赖。业务层不继承 `IService/ServiceImpl`；复杂查询保留 XML；多租户 SQL 插件必须经过平台表豁免和越权测试后才能启用。
 
 ## 架构门禁
 

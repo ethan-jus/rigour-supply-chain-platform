@@ -2,7 +2,9 @@
 
 Java 21、Spring Boot 4.0.7、Spring Cloud 2025.1.2 的领域化服务骨架。
 
-本仓库已实现IAM OIDC、Gateway资源服务器和配置化基础管理，其余领域服务仍是可编译骨架。自动构建通过不表示共享DEV、浏览器或生产环境已验收。
+本仓库已实现 IAM OIDC、Gateway 资源服务器、配置化基础管理、Integration 连接器基础能力和订单中心本地投影；尚未进入业务实现的领域服务仍是可编译骨架。自动构建通过不表示共享 DEV、浏览器或生产环境已验收。
+
+协同开发先阅读 [`docs/TEAM_DEVELOPMENT_GUIDE.md`](docs/TEAM_DEVELOPMENT_GUIDE.md)；服务职责和 Schema 所有权以 [`docs/SERVICE_BOUNDARIES.md`](docs/SERVICE_BOUNDARIES.md) 为准。Integration 与订单中心的具体边界见各自的 [`README.md`](services/rigour-integration-migration-service/README.md) 和 [`README.md`](services/rigour-order-center-service/README.md)。
 
 ## 工程结构
 
@@ -48,7 +50,7 @@ CI 执行同一命令。`verify` 会同时检查：
 - 应用集合为一个 Gateway 加 11 个领域服务；
 - 领域服务之间没有直接 Maven 依赖。
 
-领域API模块当前只固化依赖边界，未确认的接口和DTO不会提前创建。数据库运行依赖也不机械复制：IAM与Integration已经分别具备Schema和迁移；其余领域服务的空DEV Schema/账号初始化见[`docs/DOMAIN_DATABASE_RUNTIME.md`](docs/DOMAIN_DATABASE_RUNTIME.md)，但在各自字段级设计确认前不接入业务表、MyBatis-Plus或Flyway。
+领域 API 模块只保存已确认的跨服务契约，未确认的接口和 DTO 不提前创建。数据库运行依赖也不机械复制：IAM、Integration 和订单中心已经分别具备已提交的 Schema/迁移；其余领域服务的空 DEV Schema/账号初始化见[`docs/DOMAIN_DATABASE_RUNTIME.md`](docs/DOMAIN_DATABASE_RUNTIME.md)，在各自字段级设计确认前不接入业务表、MyBatis-Plus 或 Flyway。
 
 启动单个服务示例：
 
@@ -97,7 +99,7 @@ RocketMQ Proxy 继续使用独立宿主机端口 `18081`；表中的 `8081` 是�
 ## 当前未实现或未验收
 
 - Gateway限流、熔断和规模化的IAM安全版本事件投影；当前逐请求在线确认能即时失效，但与IAM延迟/可用性耦合；
-- 其余领域服务的数据库驱动、迁移和仓储实现；IAM已完成OIDC V7和基础管理V8；
+- 其余领域服务的数据库驱动、迁移和仓储实现；当前已提交的数据库迁移版本仍需按共享 DEV 实际执行状态分别验收；
 - 幂等存储、Outbox投递器、审计应用实现、缓存和对象存储适配器；IAM的Outbox和审计表仅完成DDL；
 - OpenAPI、领域 API、消息契约和跨服务集成测试；
 - Docker Compose 的生产部署、安全加固、备份和可观测性。
@@ -106,7 +108,7 @@ RocketMQ Proxy 继续使用独立宿主机端口 `18081`；表中的 `8081` 是�
 
 ## IAM数据库迁移
 
-共享DEV在2026-08-03只读核验的IAM运行时为Flyway V1～V14、35张业务表；当前检出代码的IAM迁移目录只有V1～V11，V12～V14的运行时/源码漂移见[`docs/IAM_DATABASE_RUNTIME.md`](docs/IAM_DATABASE_RUNTIME.md)。Integration为独立的`rigour_integration` Schema，运行时V1～V2、13张业务表。其余9个领域库的空Schema和账号初始化见[`docs/DOMAIN_DATABASE_RUNTIME.md`](docs/DOMAIN_DATABASE_RUNTIME.md)。
+IAM 当前检出代码的迁移目录为 V1～V15；共享 DEV 实际已执行版本、表数量和源码差异必须以[`docs/IAM_DATABASE_RUNTIME.md`](docs/IAM_DATABASE_RUNTIME.md)的最新只读核验为准，不能从代码目录推断运行时已发布。Integration 为独立的`rigour_integration` Schema，代码迁移为 V1～V2。其余领域库的 Schema 和账号初始化见[`docs/DOMAIN_DATABASE_RUNTIME.md`](docs/DOMAIN_DATABASE_RUNTIME.md)。
 
 代码完成边界见[`docs/IAM_OIDC_REMAINING_ROADMAP.md`](docs/IAM_OIDC_REMAINING_ROADMAP.md)，多人共享DEV配置/数据库且各自本机运行服务见[`docs/SHARED_DEV_LOCAL_RUNTIME.md`](docs/SHARED_DEV_LOCAL_RUNTIME.md)，登录验收步骤见[`docs/IAM_MANAGEMENT_ACCEPTANCE.md`](docs/IAM_MANAGEMENT_ACCEPTANCE.md)，业务服务的用户上下文和授权接入见[`docs/DOMAIN_AUTHORIZATION_GUIDE.md`](docs/DOMAIN_AUTHORIZATION_GUIDE.md)。
 
