@@ -143,7 +143,7 @@ class TenantIamServiceApplicationTests {
 
     @Test
     void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 15);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 16);
         assertCount("SELECT COUNT(*) FROM information_schema.tables "
                 + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 34);
         assertCount("SELECT COUNT(*) FROM iam_application", 6);

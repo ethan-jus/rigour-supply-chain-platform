@@ -21,6 +21,7 @@ SET @r116 = UUID_TO_BIN('019facf2-0000-7000-8000-000000000116');
 SET @r117 = UUID_TO_BIN('019facf2-0000-7000-8000-000000000117');
 SET @r118 = UUID_TO_BIN('019facf2-0000-7000-8000-000000000118');
 SET @r119 = UUID_TO_BIN('019facf2-0000-7000-8000-000000000119');
+SET @r120 = UUID_TO_BIN('019facf2-0000-7000-8000-000000000120');
 
 INSERT INTO iam_role_resource
     (tenant_id, role_id, resource_id, status, created_at, updated_at)
@@ -41,7 +42,7 @@ SELECT role_record.tenant_id, role_record.id, package_resource.resource_id,
    AND package_resource.resource_id IN (
        @r101, @r102, @r103, @r104, @r105, @r106, @r107, @r108, @r109,
        @r110, @r111, @r112, @r113, @r114, @r115, @r116, @r117, @r118,
-       @r119
+       @r119, @r120
    )
 ON DUPLICATE KEY UPDATE status = 'ACTIVE', updated_at = @seed_at;
 

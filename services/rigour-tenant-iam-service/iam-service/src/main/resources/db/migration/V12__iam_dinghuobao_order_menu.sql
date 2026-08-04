@@ -37,6 +37,7 @@ SET @r116 = UUID_TO_BIN('019facf2-0000-7000-8000-000000000116');
 SET @r117 = UUID_TO_BIN('019facf2-0000-7000-8000-000000000117');
 SET @r118 = UUID_TO_BIN('019facf2-0000-7000-8000-000000000118');
 SET @r119 = UUID_TO_BIN('019facf2-0000-7000-8000-000000000119');
+SET @r120 = UUID_TO_BIN('019facf2-0000-7000-8000-000000000120');
 
 INSERT INTO iam_resource (
     id, application_id, parent_id, resource_code, resource_type,
@@ -60,7 +61,8 @@ INSERT INTO iam_resource (
     (@r116, @app_supply_chain, @order_menu, 'SUPPLY_CHAIN.PAGE.ORDER_REPORT', 'PAGE', NULL, '报表', 170, 'ACTIVE', @seed_at, @seed_at),
     (@r117, @app_supply_chain, @order_menu, 'SUPPLY_CHAIN.PAGE.ORDER_DATA', 'PAGE', NULL, '数据', 180, 'ACTIVE', @seed_at, @seed_at),
     (@r118, @app_supply_chain, @order_menu, 'SUPPLY_CHAIN.PAGE.ORDER_SYSTEM', 'PAGE', NULL, '系统', 190, 'ACTIVE', @seed_at, @seed_at),
-    (@r119, @app_supply_chain, @order_page, 'SUPPLY_CHAIN.API.ORDER_READ', 'API', 'order:read', '查询订单中心本地投影', 10, 'ACTIVE', @seed_at, @seed_at);
+    (@r119, @app_supply_chain, @order_page, 'SUPPLY_CHAIN.API.ORDER_READ', 'API', 'order:read', '查询订货宝订单', 10, 'ACTIVE', @seed_at, @seed_at),
+    (@r120, @app_supply_chain, @order_page, 'SUPPLY_CHAIN.API.ORDER_WRITE', 'API', 'order:write', '同步订货宝订单到本地', 20, 'ACTIVE', @seed_at, @seed_at);
 
 INSERT INTO iam_resource_ui (resource_id, route_key, route_path, icon_key, visible, keep_alive, created_at, updated_at) VALUES
     (@r101, 'supply.order.order-list', '/supply-chain/order/orders', NULL, 1, 0, @seed_at, @seed_at),
@@ -86,4 +88,4 @@ INSERT INTO iam_package_resource (package_version_id, resource_id, created_at, c
 SELECT UUID_TO_BIN('019facf3-0000-7000-8000-000000000002'), resource.id, @seed_at, NULL
 FROM iam_resource resource
 WHERE resource.id IN (@r101, @r102, @r103, @r104, @r105, @r106, @r107, @r108, @r109, @r110,
-                      @r111, @r112, @r113, @r114, @r115, @r116, @r117, @r118, @r119);
+                      @r111, @r112, @r113, @r114, @r115, @r116, @r117, @r118, @r119, @r120);
