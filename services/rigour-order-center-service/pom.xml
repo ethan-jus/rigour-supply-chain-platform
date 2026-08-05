@@ -11,7 +11,7 @@
     </parent>
     <artifactId>rigour-order-center-service</artifactId>
     <packaging>pom</packaging>
-    <name>rigour-order-center-service</name>
+    <name>订单中心服务</name>
     <description>Order Center接口契约与业务实现的聚合工程</description>
     <modules>
         <module>order-center-api</module>

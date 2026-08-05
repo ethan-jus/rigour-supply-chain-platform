@@ -3,23 +3,31 @@ package com.rigour.order.api.controller;
 import com.rigour.order.api.v1.DhbOrderApi;
 import com.rigour.order.api.v1.model.DhbOrderDetailView;
 import com.rigour.order.api.v1.model.DhbOrderPageView;
+import com.rigour.order.api.v1.model.DhbOrderSyncCommand;
+import com.rigour.order.api.v1.model.DhbOrderSyncResult;
 import com.rigour.order.application.service.dhb.DhbOrderService;
+import com.rigour.order.application.service.dhb.DhbOrderSyncService;
 import com.rigour.shared.context.TenantContext;
 import com.rigour.shared.core.api.ApiResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import java.util.UUID;
 
-/** 订货宝一期本地投影查询边界；第三方同步由Integration负责。 */
+/** 订货宝订单中心查询和本地导入边界；第三方协议仍由Integration负责。 */
 @RestController
 @RequestMapping(DhbOrderApi.BASE_PATH)
 public class DhbOrderController {
     private final DhbOrderService service;
+    private final DhbOrderSyncService syncService;
 
-    public DhbOrderController(DhbOrderService service) {
+    public DhbOrderController(DhbOrderService service, DhbOrderSyncService syncService) {
         this.service = service;
+        this.syncService = syncService;
     }
 
     @GetMapping
@@ -42,6 +50,13 @@ public class DhbOrderController {
     @GetMapping("/{orderSn}")
     public ApiResponse<DhbOrderDetailView> detail(@PathVariable String orderSn) {
         return ApiResponse.success(service.detail(tenantId(), orderSn));
+    }
+
+    @PostMapping("/sync/{connectorId}")
+    public ApiResponse<DhbOrderSyncResult> sync(
+            @PathVariable UUID connectorId,
+            @RequestBody(required = false) DhbOrderSyncCommand command) {
+        return ApiResponse.success(syncService.run(connectorId, command));
     }
 
     private static DhbOrderService.OrderQuery query(int begin, int step, String orderStatusVal, String starttime,

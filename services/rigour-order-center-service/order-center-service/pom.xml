@@ -9,6 +9,7 @@
     <description>Order Center业务实现和启动应用</description>
     <dependencies>
         <dependency><groupId>com.rigour</groupId><artifactId>order-center-api</artifactId></dependency>
+        <dependency><groupId>com.rigour</groupId><artifactId>integration-migration-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>rigour-platform-starter</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>rigour-shared-outbox</artifactId></dependency>
         <dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId></dependency>

@@ -47,12 +47,24 @@ public final class TrustedContextSigner {
     public long maximumAgeMillis() { return properties.getMaximumAge().toMillis(); }
 
     public SignedContext sign(HttpServletRequest request, Map<String, String> headers) {
+        return sign(request.getMethod(), request.getRequestURI(), request.getQueryString(), headers);
+    }
+
+    /**
+     * 为服务间主动发起的HTTP请求生成可信上下文签名。
+     * 入站请求继续使用 {@link #sign(HttpServletRequest, Map)}；出站调用方必须显式提供
+     * 实际请求方法、路径和查询串，保证签名内容与下游收到的请求一致。
+     */
+    public SignedContext sign(String method, String path, String query, Map<String, String> headers) {
+        if (method == null || method.isBlank() || path == null || path.isBlank()) {
+            throw new IllegalArgumentException("Signed request method and path are required");
+        }
         String keyId = properties.getActiveKeyId();
         long timestamp = clock.millis();
         Map<String, String> normalized = normalize(headers);
         validateSize(normalized);
         String signature = encode(mac(properties.requireActiveKey(), canonical(
-                request.getMethod(), request.getRequestURI(), request.getQueryString(), keyId, timestamp, normalized)));
+                method, path, query, keyId, timestamp, normalized)));
         return new SignedContext(keyId, Long.toString(timestamp), signature);
     }
 

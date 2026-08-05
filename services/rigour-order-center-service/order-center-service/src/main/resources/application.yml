@@ -33,6 +33,9 @@ mybatis-plus:
     banner: false
 
 rigour:
+  integration:
+    # Order Center只调用Integration版本化HTTP契约，不直接访问订货宝或Integration数据库。
+    base-url: ${RIGOUR_INTEGRATION_BASE_URL:http://localhost:26882}
   context:
     trust:
       # 当前主动签名/验签密钥版本；轮换密钥时按v1、v2递增。
