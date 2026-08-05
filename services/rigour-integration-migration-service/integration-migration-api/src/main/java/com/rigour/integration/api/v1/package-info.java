@@ -1,2 +1,2 @@
-/** Integration Migration V1跨服务调用契约；确认具体接口后在本包增加接口和请求响应模型。 */
+/** Integration Migration V1 跨服务调用契约；第三方认证细节只存在 Integration 实现层。 */
 package com.rigour.integration.api.v1;

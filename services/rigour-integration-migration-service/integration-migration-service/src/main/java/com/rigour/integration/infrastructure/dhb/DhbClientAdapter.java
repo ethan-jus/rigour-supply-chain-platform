@@ -1,18 +1,18 @@
-package com.rigour.integration.infrastructure.dinghuobao;
+package com.rigour.integration.infrastructure.dhb;
 
-import com.rigour.integration.application.port.out.DinghuobaoClient;
-import com.rigour.integration.application.port.out.DinghuobaoClient.Connector;
-import com.rigour.integration.application.port.out.DinghuobaoClient.ConnectionTestResult;
-import com.rigour.integration.application.port.out.DinghuobaoClient.Customer;
-import com.rigour.integration.application.port.out.DinghuobaoClient.CustomerQuery;
-import com.rigour.integration.application.port.out.DinghuobaoClient.OrderDetail;
-import com.rigour.integration.application.port.out.DinghuobaoClient.OrderQuery;
-import com.rigour.integration.application.port.out.DinghuobaoClient.OrderSummary;
-import com.rigour.integration.application.port.out.DinghuobaoClient.Page;
-import com.rigour.integration.application.port.out.DinghuobaoClient.Product;
-import com.rigour.integration.application.port.out.DinghuobaoClient.ProductQuery;
-import com.rigour.integration.application.port.out.DinghuobaoClient.TimeWindow;
-import com.rigour.integration.infrastructure.config.DinghuobaoClientProperties;
+import com.rigour.integration.application.port.out.DhbClient;
+import com.rigour.integration.application.port.out.DhbClient.Connector;
+import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
+import com.rigour.integration.application.port.out.DhbClient.Customer;
+import com.rigour.integration.application.port.out.DhbClient.CustomerQuery;
+import com.rigour.integration.application.port.out.DhbClient.OrderDetail;
+import com.rigour.integration.application.port.out.DhbClient.OrderQuery;
+import com.rigour.integration.application.port.out.DhbClient.OrderSummary;
+import com.rigour.integration.application.port.out.DhbClient.Page;
+import com.rigour.integration.application.port.out.DhbClient.Product;
+import com.rigour.integration.application.port.out.DhbClient.ProductQuery;
+import com.rigour.integration.application.port.out.DhbClient.TimeWindow;
+import com.rigour.integration.infrastructure.config.DhbClientProperties;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.time.Duration;
@@ -47,31 +47,31 @@ import org.springframework.web.client.RestClientResponseException;
  * 处理令牌缓存、Secret 引用、超时、仅对传输临时错误重试、进程内限流、偏移分页和字段
  * 映射。业务服务不得复制这些规则，也不得直接访问订货宝。</p>
  */
-public final class DinghuobaoClientAdapter implements DinghuobaoClient {
+public final class DhbClientAdapter implements DhbClient {
 
-    private static final Logger log = LoggerFactory.getLogger(DinghuobaoClientAdapter.class);
+    private static final Logger log = LoggerFactory.getLogger(DhbClientAdapter.class);
     private static final DateTimeFormatter DHB_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final ZoneOffset DHB_ZONE = ZoneOffset.ofHours(8);
     private static final String TOKEN_FUNCTION = "getTokenValue";
 
     private final RestClient restClient;
-    private final DinghuobaoSecretResolver secretResolver;
-    private final DinghuobaoClientProperties properties;
+    private final DhbSecretResolver secretResolver;
+    private final DhbClientProperties properties;
     private final ConcurrentMap<String, CachedToken> tokenCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Object> tokenLocks = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, PermitBucket> rateLimiters = new ConcurrentHashMap<>();
 
-    public DinghuobaoClientAdapter(RestClient.Builder builder,
-                                   DinghuobaoSecretResolver secretResolver,
-                                   DinghuobaoClientProperties properties) {
+    public DhbClientAdapter(RestClient.Builder builder,
+                                   DhbSecretResolver secretResolver,
+                                   DhbClientProperties properties) {
         this(createRestClient(builder, properties), secretResolver, properties);
     }
 
     /** 测试/嵌入式调用使用已构造的 RestClient，以便注入可重复的 HTTP 契约服务器。 */
-    DinghuobaoClientAdapter(RestClient restClient,
-                            DinghuobaoSecretResolver secretResolver,
-                            DinghuobaoClientProperties properties) {
+    DhbClientAdapter(RestClient restClient,
+                            DhbSecretResolver secretResolver,
+                            DhbClientProperties properties) {
         this.secretResolver = Objects.requireNonNull(secretResolver, "secretResolver cannot be null");
         this.properties = Objects.requireNonNull(properties, "properties cannot be null");
         properties.validate();
@@ -79,7 +79,7 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
     }
 
     private static RestClient createRestClient(RestClient.Builder builder,
-                                               DinghuobaoClientProperties properties) {
+                                               DhbClientProperties properties) {
         Objects.requireNonNull(builder, "builder cannot be null");
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(properties.getConnectTimeout());
@@ -92,15 +92,15 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
         try {
             CachedToken token = tokenFor(connector);
             return ConnectionTestResult.success(token.expiresAt());
-        } catch (DinghuobaoClientException exception) {
+        } catch (DhbClientException exception) {
             log.warn("订货宝连接测试失败 tenantId={} connectorId={} code={}",
                     connector.tenantId(), connector.connectorId(), exception.code());
             return ConnectionTestResult.failure(exception.code(), exception.getMessage());
         } catch (RuntimeException exception) {
-            log.warn("订货宝连接测试失败 tenantId={} connectorId={} code=DINGHUOBAO_CLIENT_CONFIG_INVALID",
+            log.warn("订货宝连接测试失败 tenantId={} connectorId={} code=DHB_CLIENT_CONFIG_INVALID",
                     connector.tenantId(), connector.connectorId());
             return ConnectionTestResult.failure(
-                    "DINGHUOBAO_CLIENT_CONFIG_INVALID", "订货宝连接配置无效，请检查基础 URL 和 Secret 引用");
+                    "DHB_CLIENT_CONFIG_INVALID", "订货宝连接配置无效，请检查基础 URL 和 Secret 引用");
         }
     }
 
@@ -113,9 +113,11 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
         putIfPresent(values, "status", query.status());
         putIfPresent(values, "putaway", query.putaway());
         putIfPresent(values, "goodsCode", query.goodsCode());
+        putWindow(values, query.updatedWindow(), "updateGe", "updateLe");
+        putIfPresent(values, "barcode", query.barcode());
         ApiEnvelope response = callBusiness(connector, "getGoodsList", values);
         List<Map<String, Object>> rows = rows(response, "getGoodsList");
-        List<Product> items = rows.stream().map(DinghuobaoClientAdapter::product).toList();
+        List<Product> items = rows.stream().map(DhbClientAdapter::product).toList();
         logPage(connector, "getGoodsList", query.page(), response, items.size());
         return new Page<>(query.page(), response.total(), items);
     }
@@ -130,9 +132,12 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
         putIfPresent(values, "data_type", query.dataType());
         putIfPresent(values, "time_type", query.timeType());
         putWindow(values, query.window(), "start_time", "end_time");
+        putIfPresent(values, "client_no", query.clientNo());
+        putIfPresent(values, "client_area", query.clientArea());
+        putIfPresent(values, "type_id", query.typeId());
         ApiEnvelope response = callBusiness(connector, "getDealersList", values);
         List<Map<String, Object>> rows = rows(response, "getDealersList");
-        List<Customer> items = rows.stream().map(DinghuobaoClientAdapter::customer).toList();
+        List<Customer> items = rows.stream().map(DhbClientAdapter::customer).toList();
         logPage(connector, "getDealersList", query.page(), response, items.size());
         return new Page<>(query.page(), response.total(), items);
     }
@@ -147,10 +152,12 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
         putWindow(values, query.createdWindow(), "starttime", "endtime");
         putWindow(values, query.updatedWindow(), "updateGe", "updateLe");
         putIfPresent(values, "exceptionStatus", query.exceptionStatus());
+        putIfPresent(values, "apiStatus", query.apiStatus());
         putIfPresent(values, "payStatus", query.payStatus());
+        putIfPresent(values, "splitType", query.splitType());
         ApiEnvelope response = callBusiness(connector, "getOrderList", values);
         List<Map<String, Object>> rows = rows(response, "getOrderList");
-        List<OrderSummary> items = rows.stream().map(DinghuobaoClientAdapter::order).toList();
+        List<OrderSummary> items = rows.stream().map(DhbClientAdapter::order).toList();
         logPage(connector, "getOrderList", query.page(), response, items.size());
         return new Page<>(query.page(), response.total(), items);
     }
@@ -185,10 +192,10 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
                 return cached;
             }
             if (connector.secretRef() == null || connector.secretRef().isBlank()) {
-                throw new DinghuobaoClientException(
-                        "DINGHUOBAO_SECRET_NOT_CONFIGURED", "订货宝 Secret 尚未配置引用", false, null, null);
+                throw new DhbClientException(
+                        "DHB_SECRET_NOT_CONFIGURED", "订货宝 Secret 尚未配置引用", false, null, null);
             }
-            DinghuobaoSecretResolver.Credentials credentials = secretResolver.resolve(connector.secretRef());
+            DhbSecretResolver.Credentials credentials = secretResolver.resolve(connector.secretRef());
             Map<String, Object> values = new LinkedHashMap<>();
             values.put("SerialNumber", credentials.serialNumber());
             values.put("Password", credentials.password());
@@ -208,18 +215,24 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
     }
 
     private ApiEnvelope callBusiness(Connector connector, String function, Map<String, Object> values) {
-        CachedToken token = tokenFor(connector);
-        Map<String, Object> authenticated = new LinkedHashMap<>();
-        authenticated.put("sKey", token.value());
-        authenticated.putAll(values);
-        try {
-            return postEnvelope(connector, function, authenticated);
-        } catch (DinghuobaoClientException exception) {
-            if ("DINGHUOBAO_AUTH_FAILED".equals(exception.code())) {
-                tokenCache.remove(connectorKey(connector));
+        String key = connectorKey(connector);
+        for (int authAttempt = 0; authAttempt < 2; authAttempt++) {
+            CachedToken token = tokenFor(connector);
+            Map<String, Object> authenticated = new LinkedHashMap<>();
+            authenticated.put("sKey", token.value());
+            authenticated.putAll(values);
+            try {
+                return postEnvelope(connector, function, authenticated);
+            } catch (DhbClientException exception) {
+                if (!"DHB_AUTH_FAILED".equals(exception.code()) || authAttempt == 1) {
+                    throw exception;
+                }
+                tokenCache.remove(key, token);
+                log.info("订货宝 Token 失效，准备重新获取 tenantId={} connectorId={} function={}",
+                        connector.tenantId(), connector.connectorId(), function);
             }
-            throw exception;
         }
+        throw new DhbClientException("DHB_AUTH_FAILED", "订货宝认证失败", false, null, null);
     }
 
     @SuppressWarnings("unchecked")
@@ -248,12 +261,12 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
     private ApiEnvelope executeWithRetry(Connector connector, String function,
                                           RetryCall<ApiEnvelope> call) {
         int maxAttempts = properties.getMaxAttempts();
-        DinghuobaoClientException last = null;
+        DhbClientException last = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             acquirePermit(connector);
             try {
                 return call.execute();
-            } catch (DinghuobaoClientException exception) {
+            } catch (DhbClientException exception) {
                 last = exception;
                 if (!exception.retryable() || attempt == maxAttempts) {
                     log.warn("订货宝接口调用失败 tenantId={} connectorId={} function={} attempt={} code={}",
@@ -274,8 +287,8 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
                 log.warn("订货宝 HTTP 调用准备重试 tenantId={} connectorId={} function={} attempt={} httpStatus={}",
                         connector.tenantId(), connector.connectorId(), function, attempt, status);
             } catch (ResourceAccessException exception) {
-                last = new DinghuobaoClientException(
-                        "DINGHUOBAO_NETWORK_TIMEOUT", "订货宝网络请求超时或不可达", true, null, null);
+                last = new DhbClientException(
+                        "DHB_NETWORK_TIMEOUT", "订货宝网络请求超时或不可达", true, null, null);
                 if (attempt == maxAttempts) {
                     log.warn("订货宝网络调用失败 tenantId={} connectorId={} function={} attempt={} code={}",
                             connector.tenantId(), connector.connectorId(), function, attempt, last.code());
@@ -287,7 +300,7 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
             sleepBeforeRetry(attempt);
         }
         throw last == null
-                ? new DinghuobaoClientException("DINGHUOBAO_CALL_FAILED", "订货宝调用失败", false, null, null)
+                ? new DhbClientException("DHB_CALL_FAILED", "订货宝调用失败", false, null, null)
                 : last;
     }
 
@@ -304,8 +317,8 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
             Thread.sleep(Math.min(properties.getMaxBackoff().toMillis(), capped + jitter));
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            throw new DinghuobaoClientException(
-                    "DINGHUOBAO_RETRY_INTERRUPTED", "订货宝重试被中断", false, null, null);
+            throw new DhbClientException(
+                    "DHB_RETRY_INTERRUPTED", "订货宝重试被中断", false, null, null);
         }
     }
 
@@ -317,8 +330,8 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
         String message = redact(text(body, "message"));
         if (status != 100) {
             String code = isAuthFailure(status, message)
-                    ? "DINGHUOBAO_AUTH_FAILED" : "DINGHUOBAO_PROVIDER_ERROR";
-            throw new DinghuobaoClientException(code,
+                    ? "DHB_AUTH_FAILED" : "DHB_PROVIDER_ERROR";
+            throw new DhbClientException(code,
                     message == null || message.isBlank() ? "订货宝返回业务失败" : message,
                     false, null, status);
         }
@@ -327,7 +340,7 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
 
     private static boolean isAuthFailure(int status, String message) {
         String value = message == null ? "" : message.toLowerCase();
-        return status == 401 || status == 403 || value.contains("token")
+        return status == 203 || status == 401 || status == 403 || value.contains("token")
                 || value.contains("令牌") || value.contains("密码") || value.contains("账号");
     }
 
@@ -463,22 +476,22 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
             }
             return uri;
         } catch (IllegalArgumentException exception) {
-            throw new DinghuobaoClientException(
-                    "DINGHUOBAO_BASE_URL_INVALID", "订货宝基础 URL 无效", false, null, null);
+            throw new DhbClientException(
+                    "DHB_BASE_URL_INVALID", "订货宝基础 URL 无效", false, null, null);
         }
     }
 
-    private static DinghuobaoClientException protocolError(String function, String message) {
-        return new DinghuobaoClientException(
-                "DINGHUOBAO_RESPONSE_INVALID", "订货宝接口 " + function + " 回执格式无效：" + redact(message),
+    private static DhbClientException protocolError(String function, String message) {
+        return new DhbClientException(
+                "DHB_RESPONSE_INVALID", "订货宝接口 " + function + " 回执格式无效：" + redact(message),
                 false, null, null);
     }
 
-    private static DinghuobaoClientException httpError(int status, boolean retryable) {
-        return new DinghuobaoClientException(
-                status == 429 ? "DINGHUOBAO_RATE_LIMITED"
+    private static DhbClientException httpError(int status, boolean retryable) {
+        return new DhbClientException(
+                status == 429 ? "DHB_RATE_LIMITED"
                         : (status == 401 || status == 403
-                        ? "DINGHUOBAO_AUTH_FAILED" : "DINGHUOBAO_HTTP_ERROR"),
+                        ? "DHB_AUTH_FAILED" : "DHB_HTTP_ERROR"),
                 status == 429 ? "订货宝请求被限流"
                         : (status == 401 || status == 403
                         ? "订货宝认证失败" : "订货宝 HTTP 请求失败"),
@@ -507,7 +520,9 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
     }
 
     private static String connectorKey(Connector connector) {
-        return connector.tenantId() + ":" + connector.connectorId();
+        // 连接器更新后，baseUrl 或 Secret 引用可能改变；不能让旧 Token 跨配置复用。
+        return connector.tenantId() + ":" + connector.connectorId() + ":"
+                + String.valueOf(connector.baseUrl()) + ":" + String.valueOf(connector.secretRef());
     }
 
     private static long elapsedMillis(long started) {
@@ -563,8 +578,8 @@ public final class DinghuobaoClientAdapter implements DinghuobaoClient {
                             Thread.sleep(millis, nanos);
                         } catch (InterruptedException exception) {
                             Thread.currentThread().interrupt();
-                            throw new DinghuobaoClientException(
-                                    "DINGHUOBAO_RATE_LIMIT_INTERRUPTED", "订货宝限流等待被中断", false, null, null);
+                            throw new DhbClientException(
+                                    "DHB_RATE_LIMIT_INTERRUPTED", "订货宝限流等待被中断", false, null, null);
                         }
                     }
                     return;

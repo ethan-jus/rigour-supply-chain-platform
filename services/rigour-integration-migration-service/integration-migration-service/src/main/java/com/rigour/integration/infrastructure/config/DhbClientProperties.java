@@ -4,8 +4,8 @@ import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /** 订货宝外呼策略；供应商没有公布的值必须在合同确认后覆盖，不从代码猜测。 */
-@ConfigurationProperties(prefix = "rigour.integration.dinghuobao.client")
-public final class DinghuobaoClientProperties {
+@ConfigurationProperties(prefix = "rigour.integration.dhb.client")
+public final class DhbClientProperties {
 
     private Duration connectTimeout = Duration.ofSeconds(3);
     private Duration readTimeout = Duration.ofSeconds(15);

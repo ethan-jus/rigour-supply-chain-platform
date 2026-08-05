@@ -154,6 +154,6 @@ VITE_OIDC_POST_LOGOUT_REDIRECT_URI=http://localhost:5100/
 
 订货宝数据同步页面依赖本机`26882`的Integration服务；该服务未启动时，`/api/v1/integration/**`连接拒绝只影响同步数据，不应影响系统管理和供应链的门户授权链路。Integration使用服务账号/API密钥同步数据，不能复用员工浏览器登录密码。
 
-Integration 的共享DEV数据库、`rigour_integration_app`运行时账号、`rigour_integration_migrator`迁移账号、Flyway V1/V2和启动验收步骤见 [`docs/INTEGRATION_DATABASE_RUNTIME.md`](./INTEGRATION_DATABASE_RUNTIME.md)。数据库密码只通过本机Secret/IDEA环境变量注入，不能写入Nacos或提交到Git。
+Integration 的共享DEV数据库、`rigour_integration_app`运行时账号、`rigour_integration_migrator`迁移账号、Flyway V1～V3和启动验收步骤见 [`docs/INTEGRATION_DATABASE_RUNTIME.md`](./INTEGRATION_DATABASE_RUNTIME.md)。数据库密码只通过本机Secret/IDEA环境变量注入，不能写入Nacos或提交到Git。
 
 其余 9 个领域服务的共享DEV空Schema、运行账号、迁移账号和一次性初始化脚本见 [`docs/DOMAIN_DATABASE_RUNTIME.md`](./DOMAIN_DATABASE_RUNTIME.md)。这些库当前没有业务表，服务也尚未因此自动获得JDBC/Flyway能力；不能把账号登录成功当成领域服务已接入或业务接口已验收。

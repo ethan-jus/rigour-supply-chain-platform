@@ -37,7 +37,7 @@
 
 | 需求内容 | 放置位置 | 例子 |
 |---|---|---|
-| 第三方协议、认证、API Key/账号密码、HTTP 超时、重试、限流、分页、Webhook | Integration 的 `infrastructure` | `DinghuobaoClientAdapter` |
+| 第三方协议、认证、API Key/账号密码、HTTP 超时、重试、限流、分页、Webhook | Integration 的 `infrastructure` | `DhbClientAdapter` |
 | 外部原始响应、同步游标、同步批次、死信、对账和连接探活 | Integration Schema | `integration_raw_landing`、`integration_sync_checkpoint` |
 | 内部订单、库存、客户或销售的业务状态机 | 对应领域服务 | 订单中心维护 `internalStatus` |
 | 外部数据导入后的内部事实 | 对应领域服务的导入用例 | 订单中心接收 `OrderImported`，自己事务落库 |
@@ -50,7 +50,7 @@
 
 ```text
 Portal -> Gateway -> Integration
-                    ├─ DinghuobaoClientAdapter
+                    ├─ DhbClientAdapter
                     ├─ SecretResolver
                     ├─ 同步批次 / Raw Landing / 订单镜像
                     └─ 内部导入契约或事件
@@ -60,13 +60,13 @@ Portal -> Gateway -> Integration
 
 因此：
 
-- `DinghuobaoClient`、订货宝 URL、账号、密码、API Key、签名、重试和限流只能出现在 Integration。
+- `DhbClient`、订货宝 URL、账号、密码、API Key、签名、重试和限流只能出现在 Integration。
 - Order Center 不得新增 `DhbClient`、订货宝登录配置、第三方重试或“手工同步”接口。
 - Order Center 只接收内部导入契约/事件，负责内部订单幂等、事务和状态机。
 - Portal 只调用本平台的 Integration/Order API，不把 Token 或第三方密码转发给外部系统。
 - 新增商品、客户、订单等外部来源时，先复用 Integration 的连接器模式，不在业务服务中新增 Provider。
 
-详细实现见 [`INTEGRATION_DATABASE_RUNTIME.md`](INTEGRATION_DATABASE_RUNTIME.md)、[`DINGHUOBAO_API_CONTRACT.md`](DINGHUOBAO_API_CONTRACT.md) 和 [`ORDER_CENTER_DHB_INTEGRATION.md`](ORDER_CENTER_DHB_INTEGRATION.md)。
+详细实现见 [`INTEGRATION_DATABASE_RUNTIME.md`](INTEGRATION_DATABASE_RUNTIME.md)、[`DHB_API_CONTRACT.md`](DHB_API_CONTRACT.md) 和 [`ORDER_CENTER_DHB_INTEGRATION.md`](ORDER_CENTER_DHB_INTEGRATION.md)。
 
 ## 4. 开发前的五分钟边界检查
 

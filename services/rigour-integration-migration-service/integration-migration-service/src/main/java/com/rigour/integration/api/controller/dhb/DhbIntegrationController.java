@@ -1,15 +1,15 @@
-package com.rigour.integration.api.controller.dinghuobao;
+package com.rigour.integration.api.controller.dhb;
 
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoIntegrationService;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.ConnectorCommand;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.ConnectorView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.FieldMappingCommand;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.FieldMappingView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.OrderMirrorView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncLogView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncTaskCommand;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncTaskView;
-import com.rigour.integration.application.port.out.DinghuobaoClient.ConnectionTestResult;
+import com.rigour.integration.application.service.dhb.DhbIntegrationService;
+import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorView;
+import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingView;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncLogView;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
+import com.rigour.integration.api.v1.model.DhbConnectionTestResult;
+import com.rigour.integration.api.v1.DhbIntegrationApi;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,12 +23,12 @@ import org.springframework.web.bind.annotation.RestController;
 
 /** 订货宝数据同步HTTP边界；身份与权限只来自Gateway签名上下文。 */
 @RestController
-@RequestMapping("/api/v1/integration/dinghuobao")
-public final class DinghuobaoIntegrationController {
+@RequestMapping(DhbIntegrationApi.BASE_PATH)
+public final class DhbIntegrationController implements DhbIntegrationApi {
 
-    private final DinghuobaoIntegrationService service;
+    private final DhbIntegrationService service;
 
-    public DinghuobaoIntegrationController(DinghuobaoIntegrationService service) {
+    public DhbIntegrationController(DhbIntegrationService service) {
         this.service = service;
     }
 
@@ -43,7 +43,7 @@ public final class DinghuobaoIntegrationController {
     }
 
     @PostMapping("/connectors/{id}/test")
-    public ConnectionTestResult testConnection(@PathVariable("id") UUID id) {
+    public DhbConnectionTestResult testConnection(@PathVariable("id") UUID id) {
         return service.testConnection(id);
     }
 
@@ -67,13 +67,6 @@ public final class DinghuobaoIntegrationController {
     public SyncTaskView updateSyncTask(@PathVariable("id") UUID id,
                                        @RequestBody SyncTaskCommand command) {
         return service.updateSyncTask(id, command);
-    }
-
-    @GetMapping("/order-mirrors")
-    public List<OrderMirrorView> orderMirrors(
-            @RequestParam(name = "limit", defaultValue = "50") int limit,
-            @RequestParam(name = "offset", defaultValue = "0") int offset) {
-        return service.orderMirrors(limit, offset);
     }
 
     @GetMapping("/sync-logs")

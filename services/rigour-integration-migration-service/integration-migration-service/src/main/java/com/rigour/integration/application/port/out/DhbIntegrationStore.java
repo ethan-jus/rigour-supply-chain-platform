@@ -1,19 +1,19 @@
 package com.rigour.integration.application.port.out;
 
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.ConnectorCommand;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.ConnectorView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.FieldMappingCommand;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.FieldMappingView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.OrderMirrorView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncLogView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncTaskCommand;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncTaskView;
-import com.rigour.integration.application.port.out.DinghuobaoClient.ConnectionTestResult;
+import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorView;
+import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingView;
+import com.rigour.integration.api.v1.model.DhbApiModels.OrderMirrorView;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncLogView;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
+import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
 import java.util.List;
 import java.util.UUID;
 
 /** 订货宝同步持久化端口；实现必须在SQL层绑定已验签租户ID。 */
-public interface DinghuobaoIntegrationStore {
+public interface DhbIntegrationStore {
     List<ConnectorView> connectors(UUID tenantId);
     ConnectorView connector(UUID tenantId, UUID connectorId);
     void recordConnectionTest(UUID tenantId, UUID actorId, UUID connectorId, ConnectionTestResult result);

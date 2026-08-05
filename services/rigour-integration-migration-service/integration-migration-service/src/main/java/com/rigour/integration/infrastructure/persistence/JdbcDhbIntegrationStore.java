@@ -1,15 +1,15 @@
 package com.rigour.integration.infrastructure.persistence;
 
-import com.rigour.integration.application.port.out.DinghuobaoIntegrationStore;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.ConnectorCommand;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.ConnectorView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.FieldMappingCommand;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.FieldMappingView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.OrderMirrorView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncLogView;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncTaskCommand;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoModels.SyncTaskView;
-import com.rigour.integration.application.port.out.DinghuobaoClient.ConnectionTestResult;
+import com.rigour.integration.application.port.out.DhbIntegrationStore;
+import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorView;
+import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingView;
+import com.rigour.integration.api.v1.model.DhbApiModels.OrderMirrorView;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncLogView;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
+import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import java.math.BigDecimal;
 import java.sql.ResultSet;
@@ -24,7 +24,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** 订货宝同步JDBC仓储；所有查询强制绑定tenantId，跨租户访问直接拒绝。 */
-public final class JdbcDinghuobaoIntegrationStore implements DinghuobaoIntegrationStore {
+public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
     private static final Set<String> CONNECTOR_STATUSES = Set.of("ACTIVE", "DISABLED");
     private static final Set<String> TASK_STATUSES = Set.of("IDLE", "RUNNING", "PAUSED", "FAILED", "COMPLETED");
     private static final Set<String> TRANSFORM_TYPES = Set.of("DIRECT", "CONSTANT", "EXPRESSION", "DICTIONARY");
@@ -32,7 +32,7 @@ public final class JdbcDinghuobaoIntegrationStore implements DinghuobaoIntegrati
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
 
-    public JdbcDinghuobaoIntegrationStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager) {
+    public JdbcDhbIntegrationStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager) {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(transactionManager);
     }
@@ -41,7 +41,7 @@ public final class JdbcDinghuobaoIntegrationStore implements DinghuobaoIntegrati
     public List<ConnectorView> connectors(UUID tenantId) {
         return jdbc.query("""
                 SELECT id, tenant_id, connector_code, connector_name, base_url, auth_secret_ref, status, version
-                  FROM integration_dinghuobao_connector
+                  FROM integration_dhb_connector
                  WHERE tenant_id=? AND deleted_at IS NULL
                  ORDER BY connector_code
                 """, (rs, row) -> connector(rs), bin(tenantId));
@@ -50,15 +50,15 @@ public final class JdbcDinghuobaoIntegrationStore implements DinghuobaoIntegrati
     @Override
     public ConnectorView connector(UUID tenantId, UUID connectorId) {
         if (connectorId == null) {
-            throw new AuthorizationDeniedException("integration:dinghuobao:connector");
+            throw new AuthorizationDeniedException("integration:dhb:connector");
         }
         List<ConnectorView> rows = jdbc.query("""
                 SELECT id, tenant_id, connector_code, connector_name, base_url, auth_secret_ref, status, version
-                  FROM integration_dinghuobao_connector
+                  FROM integration_dhb_connector
                  WHERE tenant_id=? AND id=? AND deleted_at IS NULL
                 """, (rs, row) -> connector(rs), bin(tenantId), bin(connectorId));
         if (rows.isEmpty()) {
-            throw new AuthorizationDeniedException("integration:dinghuobao:connector");
+            throw new AuthorizationDeniedException("integration:dhb:connector");
         }
         return rows.getFirst();
     }
@@ -70,11 +70,11 @@ public final class JdbcDinghuobaoIntegrationStore implements DinghuobaoIntegrati
             throw new IllegalArgumentException("connectorId and result are required");
         }
         String credentialStatus = result.success() ? "VALID"
-                : ("DINGHUOBAO_AUTH_FAILED".equals(result.code()) ? "INVALID" : "UNKNOWN");
+                : ("DHB_AUTH_FAILED".equals(result.code()) ? "INVALID" : "UNKNOWN");
         String errorMessage = result.message() == null ? null
                 : result.message().substring(0, Math.min(result.message().length(), 2000));
         int changed = jdbc.update("""
-                UPDATE integration_dinghuobao_connector
+                UPDATE integration_dhb_connector
                    SET credential_status=?, last_checked_at=UTC_TIMESTAMP(6),
                        last_error_code=?, last_error_message=?, version=version+1,
                        updated_at=UTC_TIMESTAMP(6), updated_by=?
@@ -90,7 +90,7 @@ public final class JdbcDinghuobaoIntegrationStore implements DinghuobaoIntegrati
         UUID id = UUID.randomUUID();
         transaction.executeWithoutResult(status -> {
             jdbc.update("""
-                    INSERT INTO integration_dinghuobao_connector
+                    INSERT INTO integration_dhb_connector
                     (id, tenant_id, connector_code, connector_name, base_url, auth_secret_ref, status,
                      created_at, created_by, updated_at, updated_by)
                     VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
@@ -106,7 +106,7 @@ public final class JdbcDinghuobaoIntegrationStore implements DinghuobaoIntegrati
         validateConnector(command);
         transaction.executeWithoutResult(status -> {
             int changed = jdbc.update("""
-                    UPDATE integration_dinghuobao_connector
+                    UPDATE integration_dhb_connector
                        SET connector_name=?, base_url=?, auth_secret_ref=?, status=?,
                            version=version+1, updated_at=UTC_TIMESTAMP(6), updated_by=?
                      WHERE tenant_id=? AND id=? AND connector_code=? AND version=? AND deleted_at IS NULL
@@ -238,7 +238,7 @@ public final class JdbcDinghuobaoIntegrationStore implements DinghuobaoIntegrati
     private ConnectorView connectorById(UUID tenantId, UUID id) {
         return jdbc.queryForObject("""
                 SELECT id, tenant_id, connector_code, connector_name, base_url, auth_secret_ref, status, version
-                  FROM integration_dinghuobao_connector WHERE tenant_id=? AND id=?
+                  FROM integration_dhb_connector WHERE tenant_id=? AND id=?
                 """, (rs, row) -> connector(rs), bin(tenantId), bin(id));
     }
 
@@ -260,10 +260,10 @@ public final class JdbcDinghuobaoIntegrationStore implements DinghuobaoIntegrati
 
     private void requireConnector(UUID tenantId, UUID connectorId) {
         if (connectorId == null || count("""
-                SELECT COUNT(*) FROM integration_dinghuobao_connector
+                SELECT COUNT(*) FROM integration_dhb_connector
                  WHERE tenant_id=? AND id=? AND deleted_at IS NULL
                 """, bin(tenantId), bin(connectorId)) != 1) {
-            throw new AuthorizationDeniedException("integration:dinghuobao:connector");
+            throw new AuthorizationDeniedException("integration:dhb:connector");
         }
     }
 
@@ -334,7 +334,10 @@ public final class JdbcDinghuobaoIntegrationStore implements DinghuobaoIntegrati
         return normalized;
     }
     private static void validateConnector(ConnectorCommand c) {
-        required(c.code(), "code"); required(c.name(), "name");
+        required(c.code(), "code");
+        required(c.name(), "name");
+        required(c.baseUrl(), "baseUrl");
+        required(c.authSecretRef(), "authSecretRef");
     }
     private static void validateSyncTask(SyncTaskCommand c) {
         if (c.connectorId() == null) throw new IllegalArgumentException("connectorId is required");

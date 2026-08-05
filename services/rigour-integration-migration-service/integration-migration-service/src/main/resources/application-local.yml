@@ -4,4 +4,9 @@ spring:
       discovery:
         # local 只是本机运行覆盖层：读取共享DEV Nacos/数据库，但不把本机实例注册到共享服务发现。
         # 本服务的数据库仍由 dev 配置从远端共享环境提供，不在本机创建数据库。
-#        register-enabled: ${NACOS_DISCOVERY_REGISTER_ENABLED:false}
+        register-enabled: ${NACOS_DISCOVERY_REGISTER_ENABLED:false}
+
+# 订货宝凭据不写入此文件。连接器 authSecretRef 使用 env://RIGOUR_DHB_DEV，
+# IDEA Run Configuration 的 Environment variables 中配置：
+# RIGOUR_DHB_DEV_SERIAL_NUMBER=<真实 SerialNumber>
+# RIGOUR_DHB_DEV_PASSWORD=<真实 Password>

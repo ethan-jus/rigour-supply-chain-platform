@@ -1,54 +1,70 @@
 package com.rigour.integration.infrastructure.config;
 
-import com.rigour.integration.application.port.out.DinghuobaoIntegrationStore;
-import com.rigour.integration.application.port.out.DinghuobaoClient;
-import com.rigour.integration.application.service.dinghuobao.DinghuobaoIntegrationService;
-import com.rigour.integration.infrastructure.dinghuobao.DinghuobaoClientAdapter;
-import com.rigour.integration.infrastructure.dinghuobao.DinghuobaoSecretResolver;
-import com.rigour.integration.infrastructure.dinghuobao.EnvironmentDinghuobaoSecretResolver;
-import com.rigour.integration.infrastructure.persistence.JdbcDinghuobaoIntegrationStore;
+import com.rigour.integration.application.port.out.DhbIntegrationStore;
+import com.rigour.integration.application.port.out.DhbClient;
+import com.rigour.integration.application.port.out.DhbSyncStore;
+import com.rigour.integration.application.service.dhb.DhbIntegrationService;
+import com.rigour.integration.application.service.dhb.DhbOrderSyncService;
+import com.rigour.integration.infrastructure.dhb.DhbClientAdapter;
+import com.rigour.integration.infrastructure.dhb.DhbSecretResolver;
+import com.rigour.integration.infrastructure.dhb.EnvDhbSecretResolver;
+import com.rigour.integration.infrastructure.persistence.JdbcDhbIntegrationStore;
+import com.rigour.integration.infrastructure.persistence.JdbcDhbSyncStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.web.client.RestClient;
 
 /** Integration服务基础设施装配；持久化只属于Integration自己的Schema。 */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(DinghuobaoClientProperties.class)
+@EnableConfigurationProperties(DhbClientProperties.class)
 public final class IntegrationInfrastructureConfiguration {
 
     @Bean
-    @ConditionalOnMissingBean(DinghuobaoSecretResolver.class)
-    DinghuobaoSecretResolver dinghuobaoSecretResolver(Environment environment) {
-        return new EnvironmentDinghuobaoSecretResolver(environment);
+    @ConditionalOnMissingBean(DhbSecretResolver.class)
+    DhbSecretResolver dhbSecretResolver() {
+        return new EnvDhbSecretResolver();
     }
 
     @Bean
     @ConditionalOnMissingBean(RestClient.Builder.class)
-    RestClient.Builder dinghuobaoRestClientBuilder() {
+    RestClient.Builder dhbRestClientBuilder() {
         return RestClient.builder();
     }
 
     @Bean
-    DinghuobaoClient dinghuobaoClient(RestClient.Builder restClientBuilder,
-                                      DinghuobaoSecretResolver secretResolver,
-                                      DinghuobaoClientProperties properties) {
-        return new DinghuobaoClientAdapter(restClientBuilder, secretResolver, properties);
+    DhbClient dhbClient(RestClient.Builder restClientBuilder,
+                                      DhbSecretResolver secretResolver,
+                                      DhbClientProperties properties) {
+        return new DhbClientAdapter(restClientBuilder, secretResolver, properties);
     }
 
     @Bean
-    DinghuobaoIntegrationStore dinghuobaoIntegrationStore(
+    DhbIntegrationStore dhbIntegrationStore(
             JdbcTemplate jdbcTemplate, PlatformTransactionManager transactionManager) {
-        return new JdbcDinghuobaoIntegrationStore(jdbcTemplate, transactionManager);
+        return new JdbcDhbIntegrationStore(jdbcTemplate, transactionManager);
     }
 
     @Bean
-    DinghuobaoIntegrationService dinghuobaoIntegrationService(
-            DinghuobaoIntegrationStore store, DinghuobaoClient client) {
-        return new DinghuobaoIntegrationService(store, client);
+    DhbSyncStore dhbSyncStore(
+            JdbcTemplate jdbcTemplate, PlatformTransactionManager transactionManager,
+            tools.jackson.databind.ObjectMapper objectMapper) {
+        return new JdbcDhbSyncStore(jdbcTemplate, transactionManager, objectMapper);
+    }
+
+    @Bean
+    DhbOrderSyncService dhbOrderSyncService(
+            DhbSyncStore syncStore, DhbClient client) {
+        return new DhbOrderSyncService(syncStore, client);
+    }
+
+    @Bean
+    DhbIntegrationService dhbIntegrationService(
+            DhbIntegrationStore store, DhbClient client,
+            DhbOrderSyncService orderSyncService) {
+        return new DhbIntegrationService(store, client, orderSyncService);
     }
 }

@@ -16,7 +16,7 @@ Portal只调用订单中心的本地查询接口。订货宝同步由 Integratio
 
 ```text
 Integration
-  -> DinghuobaoClientAdapter   订货宝HTTP协议、Token、超时、重试、限流和脱敏
+  -> DhbClientAdapter   订货宝HTTP协议、Token、超时、重试、限流和脱敏
   -> Raw Landing / 同步批次
   -> 订单中心内部导入契约或事件
        -> InternalOrderRepository  MyBatis-Plus事务落库
@@ -25,7 +25,7 @@ Integration
 Portal -> Gateway -> order-center-service -> 本地订单投影
 ```
 
-- `DinghuobaoClientAdapter` 是订货宝唯一的外部适配器，位于 Integration。
+- `DhbClientAdapter` 是订货宝唯一的外部适配器，位于 Integration。
 - 订单中心只拥有内部订单模型和查询/导入持久化边界，不读取第三方凭据。
 - `Order` 是平台内部订单模型，内部流程只使用 `internalStatus`。
 - `sourceStatus` 保留订货宝原始状态，便于追溯和重新映射。

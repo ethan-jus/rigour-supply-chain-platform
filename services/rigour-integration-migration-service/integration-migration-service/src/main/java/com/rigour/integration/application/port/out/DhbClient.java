@@ -15,7 +15,7 @@ import java.util.UUID;
  * 字段兼容逻辑必须留在 infrastructure。所有请求都带租户和连接器标识，避免把一个
  * 供应商连接误用到另一个租户。</p>
  */
-public interface DinghuobaoClient {
+public interface DhbClient {
 
     ConnectionTestResult testConnection(Connector connector);
 
@@ -84,20 +84,26 @@ public interface DinghuobaoClient {
         }
     }
 
-    record ProductQuery(PageRequest page, String status, String putaway, String goodsCode) {
+    record ProductQuery(PageRequest page, String status, String putaway, String goodsCode,
+                        TimeWindow updatedWindow, String barcode) {
         public ProductQuery {
             if (page == null) {
                 throw new IllegalArgumentException("page is required");
             }
         }
 
+        public ProductQuery(PageRequest page, String status, String putaway, String goodsCode) {
+            this(page, status, putaway, goodsCode, null, null);
+        }
+
         public static ProductQuery first(int step) {
-            return new ProductQuery(PageRequest.first(step), null, null, null);
+            return new ProductQuery(PageRequest.first(step), null, null, null, null, null);
         }
     }
 
     record CustomerQuery(PageRequest page, Integer status, Integer dataType,
-                         String timeType, TimeWindow window) {
+                         String timeType, TimeWindow window, String clientNo,
+                         Integer clientArea, Integer typeId) {
         public CustomerQuery {
             if (page == null) {
                 throw new IllegalArgumentException("page is required");
@@ -110,21 +116,35 @@ public interface DinghuobaoClient {
             }
         }
 
+        public CustomerQuery(PageRequest page, Integer status, Integer dataType,
+                             String timeType, TimeWindow window) {
+            this(page, status, dataType, timeType, window, null, null, null);
+        }
+
         public static CustomerQuery first(int step, String timeType, TimeWindow window) {
-            return new CustomerQuery(PageRequest.first(step), null, null, timeType, window);
+            return new CustomerQuery(PageRequest.first(step), null, null, timeType, window,
+                    null, null, null);
         }
     }
 
     record OrderQuery(PageRequest page, String orderStatus, TimeWindow createdWindow,
-                      TimeWindow updatedWindow, String exceptionStatus, String payStatus) {
+                      TimeWindow updatedWindow, String exceptionStatus, String apiStatus,
+                      String payStatus, Integer splitType) {
         public OrderQuery {
             if (page == null) {
                 throw new IllegalArgumentException("page is required");
             }
         }
 
+        public OrderQuery(PageRequest page, String orderStatus, TimeWindow createdWindow,
+                          TimeWindow updatedWindow, String exceptionStatus, String payStatus) {
+            this(page, orderStatus, createdWindow, updatedWindow, exceptionStatus, null,
+                    payStatus, null);
+        }
+
         public static OrderQuery first(int step, TimeWindow createdWindow, TimeWindow updatedWindow) {
-            return new OrderQuery(PageRequest.first(step), null, createdWindow, updatedWindow, null, null);
+            return new OrderQuery(PageRequest.first(step), null, createdWindow, updatedWindow,
+                    null, null, null, null);
         }
     }
 

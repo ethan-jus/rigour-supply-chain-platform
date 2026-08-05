@@ -18,11 +18,11 @@ logging:
   level:
     com.rigour: INFO
     # 只记录租户、连接器、函数、分页和耗时；订货宝 token、密码和原始回执不会写入日志。
-    com.rigour.integration.infrastructure.dinghuobao: INFO
+    com.rigour.integration.infrastructure.dhb: INFO
 
 rigour:
   integration:
-    dinghuobao:
+    dhb:
       client:
         # 订货宝正式 API 基础 URL 必须配置在租户连接器的 base_url 中；文档未给出固定 URL，禁止硬编码。
         # 下面是本地客户端策略，不是订货宝官方承诺的限流值。正式上线前以订货宝确认的阈值覆盖。

@@ -143,7 +143,7 @@ class TenantIamServiceApplicationTests {
 
     @Test
     void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 16);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 17);
         assertCount("SELECT COUNT(*) FROM information_schema.tables "
                 + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 34);
         assertCount("SELECT COUNT(*) FROM iam_application", 6);
@@ -154,18 +154,18 @@ class TenantIamServiceApplicationTests {
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='PLATFORM_ADMIN' AND target_uri='/platform-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='SYSTEM_ADMIN' AND target_uri='/system-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application "
-                + "WHERE app_code='DINGHUOBAO' AND app_name='订货宝商城系统' "
+                + "WHERE app_code='DHB' AND app_name='订货宝商城系统' "
                 + "AND launch_mode='EXTERNAL_URL' AND target_uri='https://pc.dhb168.com' "
                 + "AND status='ACTIVE'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application "
-                + "WHERE app_code='DINGHUOBAO_INTEGRATION' AND status='DISABLED'", 1);
+                + "WHERE app_code='DHB_INTEGRATION' AND status='DISABLED'", 1);
         org.assertj.core.api.Assertions.assertThat(applicationMapper.selectById(
                         UUID.fromString("019facf1-0000-7000-8000-000000000003")))
                 .extracting("appCode")
                 .isEqualTo("SUPPLY_CHAIN");
         org.assertj.core.api.Assertions.assertThat(applicationMapper.selectActiveByScope("TENANT"))
                 .extracting("appCode")
-                .containsExactly("SYSTEM_ADMIN", "SUPPLY_CHAIN", "DINGHUOBAO");
+                .containsExactly("SYSTEM_ADMIN", "SUPPLY_CHAIN", "DHB");
         assertCount("SELECT COUNT(*) FROM information_schema.columns "
                 + "WHERE table_schema = DATABASE() AND table_name = 'iam_refresh_token' "
                 + "AND column_name = 'authorization_id'", 1);
@@ -279,21 +279,21 @@ class TenantIamServiceApplicationTests {
         DictionaryTypeView platformType = managementStore.createDictionaryType(platform,
                 new DictionaryTypeCommand("ORDER_SOURCE", "订单来源", "平台级订单来源字典", "ACTIVE", 0));
         DictionaryItemView platformItem = managementStore.createDictionaryItem(platform,
-                new DictionaryItemCommand(platformType.id(), "DINGHUOBAO", "订货宝", "dinghuobao", 10,
+                new DictionaryItemCommand(platformType.id(), "DHB", "订货宝", "dhb", 10,
                         "ACTIVE", 0));
         assertThat(managementStore.dictionaryTypes(platform)).extracting(DictionaryTypeView::code)
                 .contains("ORDER_SOURCE");
         assertThat(managementStore.dictionaryItems(platform, platformType.id()))
-                .extracting(DictionaryItemView::code).containsExactly("DINGHUOBAO");
+                .extracting(DictionaryItemView::code).containsExactly("DHB");
 
         TenantAdminFixture first = insertTenantAdministrator();
         PortalCurrentUser currentUser = portalAccessService.currentUser(new PortalAccessQuery(
                 "TENANT", first.actor().principalId(), first.actor().tenantId()));
-        assertThat(currentUser.permissions()).contains("iam:dictionary:write", "integration:dinghuobao:read");
+        assertThat(currentUser.permissions()).contains("iam:dictionary:write", "integration:dhb:read");
         assertThat(portalAccessService.grantedApplications(new PortalAccessQuery(
                         "TENANT", first.actor().principalId(), first.actor().tenantId())))
                 .extracting(PortalApplication::code)
-                .contains("SYSTEM_ADMIN", "SUPPLY_CHAIN", "DINGHUOBAO");
+                .contains("SYSTEM_ADMIN", "SUPPLY_CHAIN", "DHB");
         DictionaryTypeView tenantType = managementStore.createDictionaryType(first.actor(),
                 new DictionaryTypeCommand("VISIT_RESULT", "拜访结果", "本租户拜访结果字典", "ACTIVE", 0));
         DictionaryItemView tenantItem = managementStore.createDictionaryItem(first.actor(),

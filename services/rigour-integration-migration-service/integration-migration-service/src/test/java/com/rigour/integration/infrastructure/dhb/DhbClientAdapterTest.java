@@ -1,13 +1,13 @@
-package com.rigour.integration.infrastructure.dinghuobao;
+package com.rigour.integration.infrastructure.dhb;
 
-import com.rigour.integration.application.port.out.DinghuobaoClient;
-import com.rigour.integration.application.port.out.DinghuobaoClient.ConnectionTestResult;
-import com.rigour.integration.application.port.out.DinghuobaoClient.CustomerQuery;
-import com.rigour.integration.application.port.out.DinghuobaoClient.OrderQuery;
-import com.rigour.integration.application.port.out.DinghuobaoClient.Page;
-import com.rigour.integration.application.port.out.DinghuobaoClient.Product;
-import com.rigour.integration.application.port.out.DinghuobaoClient.ProductQuery;
-import com.rigour.integration.infrastructure.config.DinghuobaoClientProperties;
+import com.rigour.integration.application.port.out.DhbClient;
+import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
+import com.rigour.integration.application.port.out.DhbClient.CustomerQuery;
+import com.rigour.integration.application.port.out.DhbClient.OrderQuery;
+import com.rigour.integration.application.port.out.DhbClient.Page;
+import com.rigour.integration.application.port.out.DhbClient.Product;
+import com.rigour.integration.application.port.out.DhbClient.ProductQuery;
+import com.rigour.integration.infrastructure.config.DhbClientProperties;
 import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -24,9 +24,9 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
 
-class DinghuobaoClientAdapterTest {
+class DhbClientAdapterTest {
 
-    private static final DinghuobaoClient.Connector CONNECTOR = new DinghuobaoClient.Connector(
+    private static final DhbClient.Connector CONNECTOR = new DhbClient.Connector(
             UUID.fromString("00000000-0000-0000-0000-000000000001"),
             UUID.fromString("00000000-0000-0000-0000-000000000002"),
             "https://api.test/erp", "env://DHB_TEST");
@@ -60,8 +60,8 @@ class DinghuobaoClientAdapterTest {
                         {"rStatus":100,"message":"success","rTotal":2,"rData":[{"guid":"g-2","coding":"G-2","name":"商品二","putaway":"T"}]}
                         """, MediaType.APPLICATION_JSON));
 
-        DinghuobaoClientAdapter client = new DinghuobaoClientAdapter(builder.build(),
-                ref -> new DinghuobaoSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
         Page<Product> first = client.getProducts(CONNECTOR, ProductQuery.first(1));
         Page<Product> second = client.getProducts(CONNECTOR,
                 new ProductQuery(first.nextRequest(), null, null, null));
@@ -82,17 +82,18 @@ class DinghuobaoClientAdapterTest {
                 """, MediaType.APPLICATION_JSON));
         server.expect(requestTo("https://api.test/erp"))
                 .andExpect(content().json("""
-                        {"f":"getDealersList","v":{"sKey":"opaque-token","begin":0,"step":100,"time_type":"update_date","start_time":"2026-08-01 08:00:00","end_time":"2026-08-01 09:00:00"}}
+                        {"f":"getDealersList","v":{"sKey":"opaque-token","begin":0,"step":100,"status":2,"data_type":2,"time_type":"update_date","start_time":"2026-08-01 08:00:00","end_time":"2026-08-01 09:00:00","client_no":"C-1","client_area":12,"type_id":34}}
                         """))
                 .andRespond(withSuccess("""
                         {"rStatus":100,"message":"success","rTotal":0,"rData":[]}
                         """, MediaType.APPLICATION_JSON));
 
-        DinghuobaoClientAdapter client = new DinghuobaoClientAdapter(builder.build(),
-                ref -> new DinghuobaoSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
-        Page<?> page = client.getCustomers(CONNECTOR, CustomerQuery.first(100, "update_date",
-                new DinghuobaoClient.TimeWindow(Instant.parse("2026-08-01T00:00:00Z"),
-                        Instant.parse("2026-08-01T01:00:00Z"))));
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
+        Page<?> page = client.getCustomers(CONNECTOR, new CustomerQuery(
+                new DhbClient.PageRequest(0, 100), 2, 2, "update_date",
+                new DhbClient.TimeWindow(Instant.parse("2026-08-01T00:00:00Z"),
+                        Instant.parse("2026-08-01T01:00:00Z")), "C-1", 12, 34));
 
         assertThat(page.items()).isEmpty();
         server.verify();
@@ -107,21 +108,23 @@ class DinghuobaoClientAdapterTest {
                 """, MediaType.APPLICATION_JSON));
         server.expect(requestTo("https://api.test/erp"))
                 .andExpect(content().json("""
-                        {"f":"getOrderList","v":{"sKey":"opaque-token","begin":0,"step":100,"starttime":"2026-08-01 08:00:00","endtime":"2026-08-01 09:00:00"}}
+                        {"f":"getOrderList","v":{"sKey":"opaque-token","begin":0,"step":100,"starttime":"2026-08-01 08:00:00","endtime":"2026-08-01 09:00:00","exceptionStatus":"all","apiStatus":"F","payStatus":"paided","splitType":2}}
                         """))
                 .andRespond(withSuccess("""
                         {"rStatus":100,"message":"success","rTotal":1,"rData":[{"OrderSN":"DH-1","OrderStatus":"stockup","OrderTotal":"12.50","OrderDate":1785542400,"OrderUpdateDate":1785542460,"ClientNO":"C-1","PayStatus":"oblig"}]}
                         """, MediaType.APPLICATION_JSON));
 
-        DinghuobaoClientAdapter client = new DinghuobaoClientAdapter(builder.build(),
-                ref -> new DinghuobaoSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
-        Page<?> page = client.getOrders(CONNECTOR, OrderQuery.first(100,
-                new DinghuobaoClient.TimeWindow(Instant.parse("2026-08-01T00:00:00Z"),
-                        Instant.parse("2026-08-01T01:00:00Z")), null));
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
+        Page<?> page = client.getOrders(CONNECTOR, new OrderQuery(
+                new DhbClient.PageRequest(0, 100), null,
+                new DhbClient.TimeWindow(Instant.parse("2026-08-01T00:00:00Z"),
+                        Instant.parse("2026-08-01T01:00:00Z")), null,
+                "all", "F", "paided", 2));
 
         assertThat(page.items()).hasSize(1);
-        assertThat(page.items().getFirst()).isInstanceOf(DinghuobaoClient.OrderSummary.class);
-        DinghuobaoClient.OrderSummary order = (DinghuobaoClient.OrderSummary) page.items().getFirst();
+        assertThat(page.items().getFirst()).isInstanceOf(DhbClient.OrderSummary.class);
+        DhbClient.OrderSummary order = (DhbClient.OrderSummary) page.items().getFirst();
         assertThat(order.orderNumber()).isEqualTo("DH-1");
         assertThat(order.amount()).isEqualByComparingTo("12.50");
         server.verify();
@@ -129,13 +132,28 @@ class DinghuobaoClientAdapterTest {
 
     @Test
     void doesNotCallProviderWhenSecretReferenceIsEmpty() {
-        DinghuobaoClientAdapter client = new DinghuobaoClientAdapter(RestClient.builder().build(),
+        DhbClientAdapter client = new DhbClientAdapter(RestClient.builder().build(),
                 ref -> { throw new AssertionError("secret resolver must not be called"); }, properties());
-        ConnectionTestResult result = client.testConnection(new DinghuobaoClient.Connector(
+        ConnectionTestResult result = client.testConnection(new DhbClient.Connector(
                 CONNECTOR.tenantId(), CONNECTOR.connectorId(), CONNECTOR.baseUrl(), ""));
 
         assertThat(result.success()).isFalse();
-        assertThat(result.code()).isEqualTo("DINGHUOBAO_SECRET_NOT_CONFIGURED");
+        assertThat(result.code()).isEqualTo("DHB_SECRET_NOT_CONFIGURED");
+    }
+
+    @Test
+    void resolvesProcessEnvironmentCredentialsWithoutPuttingThemInConnector() {
+        EnvDhbSecretResolver resolver = new EnvDhbSecretResolver(
+                key -> switch (key) {
+                    case "RIGOUR_DHB_DEV_SERIAL_NUMBER" -> "fixture-account";
+                    case "RIGOUR_DHB_DEV_PASSWORD" -> "fixture-credential";
+                    default -> null;
+                });
+
+        DhbSecretResolver.Credentials credentials = resolver.resolve("env://RIGOUR_DHB_DEV");
+
+        assertThat(credentials.serialNumber()).isEqualTo("fixture-account");
+        assertThat(credentials.password()).isEqualTo("fixture-credential");
     }
 
     @Test
@@ -149,12 +167,44 @@ class DinghuobaoClientAdapterTest {
                 {"rStatus":9001,"message":"参数错误","rData":[]}
                 """, MediaType.APPLICATION_JSON));
 
-        DinghuobaoClientAdapter client = new DinghuobaoClientAdapter(builder.build(),
-                ref -> new DinghuobaoSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
         assertThatThrownBy(() -> client.getProducts(CONNECTOR, ProductQuery.first(100)))
-                .isInstanceOf(DinghuobaoClientException.class)
+                .isInstanceOf(DhbClientException.class)
                 .extracting(Throwable::getMessage)
                 .isEqualTo("参数错误");
+        server.verify();
+    }
+
+    @Test
+    void refreshesTokenOnceWhenProviderReturnsOfficial203() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://api.test/erp")).andRespond(withSuccess("""
+                {"rStatus":100,"message":"success","rData":{"token":"old-token","expires_in":3600}}
+                """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.test/erp"))
+                .andExpect(content().json("""
+                        {"f":"getGoodsList","v":{"sKey":"old-token","begin":0,"step":100}}
+                        """))
+                .andRespond(withSuccess("""
+                        {"rStatus":203,"message":"sKey不存在","rData":[]}
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.test/erp")).andRespond(withSuccess("""
+                {"rStatus":100,"message":"success","rData":{"token":"new-token","expires_in":3600}}
+                """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.test/erp"))
+                .andExpect(content().json("""
+                        {"f":"getGoodsList","v":{"sKey":"new-token","begin":0,"step":100}}
+                        """))
+                .andRespond(withSuccess("""
+                        {"rStatus":100,"message":"success","rTotal":0,"rData":[]}
+                        """, MediaType.APPLICATION_JSON));
+
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
+
+        assertThat(client.getProducts(CONNECTOR, DhbClient.ProductQuery.first(100)).items()).isEmpty();
         server.verify();
     }
 
@@ -170,19 +220,19 @@ class DinghuobaoClientAdapterTest {
                 {"rStatus":100,"message":"success","rTotal":0,"rData":[]}
                 """, MediaType.APPLICATION_JSON));
 
-        DinghuobaoClientProperties properties = properties();
+        DhbClientProperties properties = properties();
         properties.setMaxAttempts(2);
         properties.setInitialBackoff(java.time.Duration.ofMillis(1));
         properties.setMaxBackoff(java.time.Duration.ofMillis(2));
-        DinghuobaoClientAdapter client = new DinghuobaoClientAdapter(builder.build(),
-                ref -> new DinghuobaoSecretResolver.Credentials("fixture-account", "fixture-credential"), properties);
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties);
 
         assertThat(client.getProducts(CONNECTOR, ProductQuery.first(100)).items()).isEmpty();
         server.verify();
     }
 
-    private static DinghuobaoClientProperties properties() {
-        DinghuobaoClientProperties properties = new DinghuobaoClientProperties();
+    private static DhbClientProperties properties() {
+        DhbClientProperties properties = new DhbClientProperties();
         properties.setMaxAttempts(3);
         properties.setRequestsPerSecond(1000);
         properties.setRateLimitBurst(10);
