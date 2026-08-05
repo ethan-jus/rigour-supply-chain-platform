@@ -7,8 +7,10 @@ import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.List;
 
@@ -58,5 +60,17 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().code()).isEqualTo("SERVICE_UNAVAILABLE");
         assertThat(response.getBody().requestId()).isEqualTo("request-downstream");
+    }
+
+    @Test
+    void mapsMissingStaticResourceToNotFoundResponse() {
+        RequestContext.set("request-not-found", "zh-CN");
+        ResponseEntity<ApiResponse<Void>> response = handler.handleNoResourceFound(
+                new NoResourceFoundException(HttpMethod.GET, "", "favicon.ico"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().code()).isEqualTo("NOT_FOUND");
+        assertThat(response.getBody().requestId()).isEqualTo("request-not-found");
     }
 }

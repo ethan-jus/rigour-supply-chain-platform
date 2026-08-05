@@ -14,6 +14,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.List;
 
@@ -65,6 +66,12 @@ public class GlobalExceptionHandler {
                 com.rigour.shared.context.RequestContext.getRequestId(), exception.getMessage());
         return ResponseEntity.status(ErrorCode.SERVICE_UNAVAILABLE.getHttpStatus())
                 .body(ApiResponse.error(ErrorCode.SERVICE_UNAVAILABLE));
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    ResponseEntity<ApiResponse<Void>> handleNoResourceFound(NoResourceFoundException exception) {
+        return ResponseEntity.status(ErrorCode.NOT_FOUND.getHttpStatus())
+                .body(ApiResponse.error(ErrorCode.NOT_FOUND));
     }
 
     @ExceptionHandler(Exception.class)
