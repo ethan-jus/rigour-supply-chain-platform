@@ -6,11 +6,11 @@
 
 | 类型 | 接口 | 作用 |
 |---|---|---|
-| Integration 官方适配器 | `getTokenValue`、`getOrderList`、`getOrderContent` | 认证并同步订货宝原始数据，凭据只从Secret引用读取 |
+| Integration 官方适配器 | `getTokenValue`、`getOrderList`、`getOrderContent`、`getShipsList/getShipsContent`、`getWaitShips` | 认证并同步订货宝原始数据，凭据只从Secret引用读取 |
 | 订单中心平台接口 | `GET /api/v1/orders/dhb` | 查询订单中心本地订单投影 |
 | 订单中心平台接口 | `GET /api/v1/orders/dhb/{orderSn}` | 查询本地订单明细投影 |
 
-Portal只调用订单中心的本地查询接口。订货宝同步由 Integration 的同步任务负责，完成后通过内部导入端口或事件写入订单中心；当前提交不再在订单中心暴露手工同步接口，避免同一第三方能力出现两套实现。
+Portal只调用订单中心的本地查询和立即同步接口。前端同步请求只进入 Order Center，Order Center 调 Integration 查询，完成业务转换和幂等落库后返回；定时同步也由 Order Center 编排，Portal 不直接调用 Integration 执行接口。
 
 ## 2. 分层职责
 
@@ -26,6 +26,8 @@ Portal -> Gateway -> order-center-service -> 本地订单投影
 ```
 
 - `DhbClientAdapter` 是订货宝唯一的外部适配器，位于 Integration。
+- 物流查询使用订货宝 `getWaitShips`，入参为订单号 `orders_num`；返回 `shipped` 已出库/已发货记录和
+  `wait_stock` 待出库明细。该调用发生在 Integration，订单中心只接收已归一化的物流数据。
 - 订单中心只拥有内部订单模型和查询/导入持久化边界，不读取第三方凭据。
 - `Order` 是平台内部订单模型，内部流程只使用 `internalStatus`。
 - `sourceStatus` 保留订货宝原始状态，便于追溯和重新映射。
@@ -41,6 +43,8 @@ Portal -> Gateway -> order-center-service -> 本地订单投影
 | `order_source_record` | 不可变的订货宝列表/明细原始JSON及SHA-256 |
 | `order_sync_run` | 历史同步批次表；新同步批次由Integration作为主记录 |
 | `order_outbox_event` | 与订单写入同事务的领域事件，供后续投递器使用 |
+| `order_dhb_shipment_logistics` | 按租户、来源系统和订单号幂等保存`getWaitShips`最新物流快照 |
+| `order_dhb_shipment_logistics_line` | 保存`SHIPPED`已出库/已发货和`WAIT_STOCK`待出库明细 |
 
 内部订单幂等键为：
 

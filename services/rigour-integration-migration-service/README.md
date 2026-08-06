@@ -39,6 +39,13 @@
 | `POST /api/v1/integration/dhb/products/{connectorId}/query` | 商品域：查询订货宝商品 |
 | `POST /api/v1/integration/dhb/orders/{connectorId}/query` | 订单域：查询订货宝订单列表 |
 | `POST /api/v1/integration/dhb/orders/{connectorId}/{orderNumber}/content` | 订单域：查询订单明细 |
+| `POST /api/v1/integration/dhb/orders/{connectorId}/shipments/query` | 订单域：调用 `getShipsList` 查询出库/发货单列表 |
+| `POST /api/v1/integration/dhb/orders/{connectorId}/shipments/{shipmentNumber}/content` | 订单域：调用 `getShipsContent` 查询出库/发货单详情 |
+| `POST /api/v1/integration/dhb/orders/{connectorId}/{orderNumber}/wait-ships` | 订单域：调用 `getWaitShips` 查询指定订单物流快照 |
+| `POST /api/v1/integration/dhb/orders/{connectorId}/returns/query` | 订单域：调用 `getReturnsList` 查询退货单列表 |
+| `POST /api/v1/integration/dhb/orders/{connectorId}/returns/{returnNumber}/content` | 订单域：调用 `getReturnsContent` 查询退货单明细 |
+| `POST /api/v1/integration/dhb/orders/{connectorId}/receipts/query` | 订单域：调用 `getReceiptsList` 查询收款单列表 |
+| `POST /api/v1/integration/dhb/orders/{connectorId}/payments/query` | 订单域：调用 `getPaymentList` 查询付款单列表 |
 | `POST /api/v1/integration/dhb/orders/sync-tasks/{taskId}/run` | 订单域：手动执行订单拉取 |
 | `GET /api/v1/integration/dhb/orders/mirrors` | 订单域：查询订单镜像 |
 | `GET /api/v1/integration/dhb/sync-logs` | 同步诊断日志 |

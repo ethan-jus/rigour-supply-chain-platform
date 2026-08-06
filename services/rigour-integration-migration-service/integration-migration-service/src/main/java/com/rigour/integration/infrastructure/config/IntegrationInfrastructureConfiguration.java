@@ -44,8 +44,9 @@ public final class IntegrationInfrastructureConfiguration {
 
     @Bean
     DhbIntegrationStore dhbIntegrationStore(
-            JdbcTemplate jdbcTemplate, PlatformTransactionManager transactionManager) {
-        return new JdbcDhbIntegrationStore(jdbcTemplate, transactionManager);
+            JdbcTemplate jdbcTemplate, PlatformTransactionManager transactionManager,
+            tools.jackson.databind.ObjectMapper objectMapper) {
+        return new JdbcDhbIntegrationStore(jdbcTemplate, transactionManager, objectMapper);
     }
 
     @Bean

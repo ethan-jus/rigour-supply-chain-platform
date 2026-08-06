@@ -9,7 +9,9 @@ import com.rigour.integration.api.v1.model.DhbApiModels.SyncLogView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
 import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /** 订货宝同步持久化端口；实现必须在SQL层绑定已验签租户ID。 */
@@ -26,4 +28,8 @@ public interface DhbIntegrationStore {
     List<SyncLogView> syncLogs(UUID tenantId, int limit);
     List<FieldMappingView> fieldMappings(UUID tenantId, UUID connectorId);
     FieldMappingView saveFieldMapping(UUID tenantId, UUID actorId, UUID id, FieldMappingCommand command);
+
+    /** 保存订货宝技术原始业务字段；不得传入sKey、账号、密码或Token。 */
+    void persistRawLanding(UUID tenantId, UUID connectorId, String sourceObjectType,
+                           String sourceId, Instant sourceUpdatedAt, Map<String, Object> payload);
 }

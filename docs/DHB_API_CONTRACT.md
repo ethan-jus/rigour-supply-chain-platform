@@ -7,7 +7,14 @@
 [getGoodsList](https://docs.dhb168.com/books/erp/page/getgoodslist)、
 [getDealersList](https://docs.dhb168.com/books/erp/page/getdealerslist)、
 [getOrderList](https://docs.dhb168.com/books/erp/page/getorderlist) 和
-[getOrderContent](https://docs.dhb168.com/books/erp/page/getordercontent)。这份资料是 ERP
+[getOrderContent](https://docs.dhb168.com/books/erp/page/getordercontent)、
+[getShipsList](https://docs.dhb168.com/books/erp/page/getshipslist)、
+[getShipsContent](https://docs.dhb168.com/books/erp/page/getshipscontent)、
+[getWaitShips](https://docs.dhb168.com/books/erp/page/getwaitships)、
+[getReturnsList](https://docs.dhb168.com/books/erp/page/getreturnslist)、
+[getReturnsContent](https://docs.dhb168.com/books/erp/page/getreturnscontent)、
+[getReceiptsList](https://docs.dhb168.com/books/erp/page/getreceiptslist) 和
+[getPaymentList](https://docs.dhb168.com/books/erp/page/getpaymentlist)。这份资料是 ERP
 对接说明，不是 OpenAPI 文件；未确认的 URL、字段、签名算法和租户配额不在代码中臆造。
 
 ## 官方在线基础页已确认的协议
@@ -48,6 +55,12 @@
 | 客户 | `getDealersList` | `begin + step`；支持创建/更新时间、客户编号、地区和客户类型筛选 |
 | 订单摘要 | `getOrderList` | `begin + step`；支持创建/更新时间、订单状态、下载状态、异常状态、付款状态和拆单类型筛选 |
 | 订单明细 | `getOrderContent` | 单订单号查询；`isAutoSign`/`isAutoAudit` 显式控制外部标记和审核副作用 |
+| 出库/发货单列表 | `getShipsList` | 订货宝 `page/page_size` 分页；支持状态、下载状态、出库类型、创建/更新时间、客户和仓库筛选 |
+| 出库/发货单详情 | `getShipsContent` | `ships_num` 查询；返回主单、收货地址、联营商和 `list` 商品明细 |
+| 退货单列表 | `getReturnsList` | `begin + step`；支持退货状态、下载状态、创建/更新时间和仓库筛选 |
+| 退货单明细 | `getReturnsContent` | `returnsSn` 查询；返回退货单主信息和 `body` 商品明细 |
+| 收款单列表 | `getReceiptsList` | `begin + step`；支持订单号、转账时间、`updateDateGe` 和收款状态筛选 |
+| 付款单列表 | `getPaymentList` | `begin + step`；支持订单号、转账时间和付款状态筛选 |
 
 适配器还提供：
 
@@ -81,15 +94,36 @@ Integration 暴露 `POST /api/v1/integration/dhb/connectors/{id}/test` 作为连
 仅返回成功/稳定错误码和 token 到期时间，不返回 token 或 Secret；该动作需要
 `integration:dhb:write` 权限。
 
-当前还提供手动订单同步入口：
+Integration 侧仍保留同步任务执行能力，但前端不再调用该执行入口。Order Center 的定时编排会
+通过版本化查询契约读取数据，完成订单域业务幂等落库后才推进自己的同步游标；Integration 只负责
+订货宝访问、技术原始数据落地和字段转换。
+
+当前本地工作区已确认可供 Order Center 调用的订单查询契约为：
 
 ```text
-POST /api/v1/integration/dhb/orders/sync-tasks/{taskId}/run
+POST /api/v1/integration/dhb/orders/{connectorId}/query
+POST /api/v1/integration/dhb/orders/{connectorId}/{orderNumber}/content
+POST /api/v1/integration/dhb/orders/{connectorId}/shipments/query
+POST /api/v1/integration/dhb/orders/{connectorId}/shipments/{shipmentNumber}/content
+POST /api/v1/integration/dhb/orders/{connectorId}/{orderNumber}/wait-ships
+POST /api/v1/integration/dhb/orders/{connectorId}/returns/query
+POST /api/v1/integration/dhb/orders/{connectorId}/returns/{returnNumber}/content
+POST /api/v1/integration/dhb/orders/{connectorId}/receipts/query
+POST /api/v1/integration/dhb/orders/{connectorId}/payments/query
 ```
 
-第一阶段只支持 `objectType=ORDER`，按供应商更新时间窗口分页拉取订单列表，写入 Raw Landing、
-订单镜像和 Integration Outbox；成功后推进 checkpoint。暂不自动调度、不调用订货宝写接口，
-也不在本阶段拉取订单明细或直接写 Order Center。
+退货单状态原值为 `return_audit`（待退货审核）、`shipp_cust`（待客户发货）、
+`shipped`（待收货）、`refunded`（待退款）、`finished`（已完成）和 `cancelled`（已取消）。
+收付款列表的状态筛选值为 `pend_receipt`（待确认）、`pend_receipted`（已确认）、
+`canceled`（已取消）和 `all`（全部）。订货宝收付款列表的部分历史数据可能不返回状态字段，
+Integration 会保留空值并完整返回 `sourceFields`，不自行推断状态。
+
+Order Center 默认以 `0 0/30 * * * ?` 每半小时调度；Portal 的“立即同步”也必须先进入 Order Center，
+不得直接调用 Integration 执行接口。首次任务不带更新时间窗口，后续按最近一次
+成功落库时间向前重叠5分钟增量查询。前端列表和详情只查询 Order Center 本地投影表，不实时访问订货宝。
+
+`wait-ships` 对应订货宝 `getWaitShips`，请求参数只有 `orders_num`；返回 `shipped` 已出库/已发货记录和
+`wait_stock` 待出库明细。Integration 负责认证、调用和字段归一化，Order Center 只接收不含凭据的业务数据并幂等落库。
 
 商品和订单域的跨服务查询入口使用 POST 请求体承载查询条件，避免调用方直接拼接订货宝字段：
 
@@ -97,9 +131,34 @@ POST /api/v1/integration/dhb/orders/sync-tasks/{taskId}/run
 POST /api/v1/integration/dhb/products/{connectorId}/query
 POST /api/v1/integration/dhb/orders/{connectorId}/query
 POST /api/v1/integration/dhb/orders/{connectorId}/{orderNumber}/content
-POST /api/v1/integration/dhb/orders/sync-tasks/{taskId}/run
+POST /api/v1/integration/dhb/orders/{connectorId}/{orderNumber}/wait-ships
 GET  /api/v1/integration/dhb/orders/mirrors
 ```
+
+Order Center 对 Portal 暴露的立即同步入口为：
+
+```text
+POST /api/v1/orders/dhb/sync/{connectorId}
+```
+
+Portal 只能调用该入口，不能调用 Integration 的同步执行入口。
+
+Order Center 面向 Portal 的本地只读查询接口如下：
+
+```text
+GET /api/v1/orders/dhb/shipments
+GET /api/v1/orders/dhb/shipments/{shipmentNo}
+GET /api/v1/orders/dhb/shipment-logistics
+GET /api/v1/orders/dhb/shipment-logistics/{orderNo}
+GET /api/v1/orders/dhb/returns
+GET /api/v1/orders/dhb/returns/{returnNo}
+GET /api/v1/orders/dhb/receipts
+GET /api/v1/orders/dhb/payments
+```
+
+其中 `/shipments` 为出库/发货页面接口，查询`getShipsList/getShipsContent`落库的独立发货单表；
+`/shipment-logistics` 为出库/发货物流页面接口，查询按订单调用`getWaitShips`落库的物流快照表。
+两者均不实时访问订货宝。物流快照主键为租户、来源系统和订单号，明细区分`SHIPPED`与`WAIT_STOCK`。
 
 商品和订单列表查询只执行对应的订货宝读取接口；订单明细查询需要
 `integration:dhb:write` 权限，并显式传入 `autoMarkDownloaded`、`autoAudit`，因为官方文档说明
@@ -148,5 +207,5 @@ RIGOUR_DHB_DEV_PASSWORD=<订货宝接口密码>
 6. 真实账号返回字段是否存在租户级扩展字段，尤其是订单明细中的 `Invoice`、`Ships`、`Payment` 和 `body` 子结构。
 
 当前 Worker 已先实现订单手动拉取：从 `integration_sync_checkpoint` 读取订单更新时间窗口，按页拉取，
-写入 Raw Landing，幂等更新订单镜像并发布 Integration Outbox 事件。商品同步、客户/仓库/员工目录、定时调度、
-死信重放以及下游消费仍待后续实现；商品接口虽有 `updateGe/updateLe`，仍需真实账号确认时间窗口稳定性。
+写入 Raw Landing，幂等更新订单镜像并发布 Integration Outbox 事件。Order Center 的本地定时编排和
+订单投影增量游标已落地；商品同步、客户/仓库/员工目录、死信重放以及下游消费仍待后续实现。

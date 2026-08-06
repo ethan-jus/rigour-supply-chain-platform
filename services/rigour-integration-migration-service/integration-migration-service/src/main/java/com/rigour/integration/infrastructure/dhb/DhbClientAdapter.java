@@ -8,14 +8,30 @@ import com.rigour.integration.application.port.out.DhbClient.CustomerQuery;
 import com.rigour.integration.application.port.out.DhbClient.OrderDetail;
 import com.rigour.integration.application.port.out.DhbClient.OrderQuery;
 import com.rigour.integration.application.port.out.DhbClient.OrderSummary;
+import com.rigour.integration.application.port.out.DhbClient.Payment;
+import com.rigour.integration.application.port.out.DhbClient.PaymentQuery;
 import com.rigour.integration.application.port.out.DhbClient.Page;
 import com.rigour.integration.application.port.out.DhbClient.Product;
 import com.rigour.integration.application.port.out.DhbClient.ProductQuery;
+import com.rigour.integration.application.port.out.DhbClient.Receipt;
+import com.rigour.integration.application.port.out.DhbClient.ReceiptQuery;
+import com.rigour.integration.application.port.out.DhbClient.ReturnDetail;
+import com.rigour.integration.application.port.out.DhbClient.ReturnLine;
+import com.rigour.integration.application.port.out.DhbClient.ReturnQuery;
+import com.rigour.integration.application.port.out.DhbClient.ReturnSummary;
+import com.rigour.integration.application.port.out.DhbClient.Shipment;
+import com.rigour.integration.application.port.out.DhbClient.ShipmentDetail;
+import com.rigour.integration.application.port.out.DhbClient.ShipmentQuery;
 import com.rigour.integration.application.port.out.DhbClient.TimeWindow;
+import com.rigour.integration.application.port.out.DhbClient.WaitShipment;
+import com.rigour.integration.application.port.out.DhbClient.WaitShipmentLine;
+import com.rigour.integration.application.port.out.DhbClient.WaitStock;
+import com.rigour.integration.application.port.out.DhbClient.WaitShips;
 import com.rigour.integration.infrastructure.config.DhbClientProperties;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -52,6 +68,8 @@ public final class DhbClientAdapter implements DhbClient {
     private static final Logger log = LoggerFactory.getLogger(DhbClientAdapter.class);
     private static final DateTimeFormatter DHB_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final DateTimeFormatter DHB_DATE =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final ZoneOffset DHB_ZONE = ZoneOffset.ofHours(8);
     private static final String TOKEN_FUNCTION = "getTokenValue";
 
@@ -178,6 +196,133 @@ public final class DhbClientAdapter implements DhbClient {
                 connector.tenantId(), connector.connectorId(), safeBusinessKey(orderNumber), response.elapsedMs());
         return new OrderDetail(first(data, "OrderSN", orderNumber),
                 text(data, "OrderStatus"), decimal(data, "OrderTotal"), data);
+    }
+
+    @Override
+    public Page<Shipment> getShipments(Connector connector, ShipmentQuery query) {
+        Objects.requireNonNull(query, "query cannot be null");
+        Map<String, Object> values = new LinkedHashMap<>();
+        // 订货宝 getShipsList 使用 1 基页码，本平台出站端口保持 begin/step 偏移语义。
+        values.put("page", query.page().begin() / query.page().step() + 1);
+        values.put("page_size", query.page().step());
+        putIfPresent(values, "status", query.status());
+        putIfPresent(values, "is_api", query.isApi());
+        putIfPresent(values, "type_id", query.typeId());
+        putWindow(values, query.createdWindow(), "create_date_egt", "create_date_elt");
+        putWindow(values, query.updatedWindow(), "update_date_egt", "update_date_elt");
+        putIfPresent(values, "client_num", query.clientNumber());
+        putIfPresent(values, "stock_id", query.stockId());
+        putIfPresent(values, "stock_num", query.stockNumber());
+        ApiEnvelope response = callBusiness(connector, "getShipsList", values);
+        List<Map<String, Object>> rows = pageRows(response, "getShipsList");
+        List<Shipment> items = rows.stream().map(DhbClientAdapter::shipment).toList();
+        long total = pageTotal(response, "getShipsList");
+        logPage(connector, "getShipsList", query.page(), response, items.size(), total);
+        return new Page<>(query.page(), total, items);
+    }
+
+    @Override
+    public ShipmentDetail getShipmentContent(Connector connector, String shipmentNumber) {
+        if (shipmentNumber == null || shipmentNumber.isBlank()) {
+            throw new IllegalArgumentException("shipmentNumber is required");
+        }
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("ships_num", shipmentNumber.strip());
+        ApiEnvelope response = callBusiness(connector, "getShipsContent", values);
+        Map<String, Object> data = object(response.data(), "getShipsContent");
+        log.info("订货宝接口调用成功 tenantId={} connectorId={} function=getShipsContent shipmentNumber={} elapsedMs={}",
+                connector.tenantId(), connector.connectorId(), safeBusinessKey(shipmentNumber),
+                response.elapsedMs());
+        return new ShipmentDetail(first(data, "ships_num", "ShipsNum", "shipmentNumber"), data);
+    }
+
+    @Override
+    public WaitShips getWaitShips(Connector connector, String orderNumber) {
+        if (orderNumber == null || orderNumber.isBlank()) {
+            throw new IllegalArgumentException("orderNumber is required");
+        }
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("orders_num", orderNumber.strip());
+        ApiEnvelope response = callBusiness(connector, "getWaitShips", values);
+        Map<String, Object> data = object(response.data(), "getWaitShips");
+        List<WaitShipment> shipped = childRows(data, "shipped", "getWaitShips").stream()
+                .map(DhbClientAdapter::waitShipment).toList();
+        List<WaitStock> waitStock = childRows(data, "wait_stock", "getWaitShips").stream()
+                .map(DhbClientAdapter::waitStock).toList();
+        log.info("订货宝接口调用成功 tenantId={} connectorId={} function=getWaitShips orderNumber={} shipped={} waitStock={} elapsedMs={}",
+                connector.tenantId(), connector.connectorId(), safeBusinessKey(orderNumber),
+                shipped.size(), waitStock.size(), response.elapsedMs());
+        return new WaitShips(orderNumber.strip(), shipped, waitStock, data);
+    }
+
+    @Override
+    public Page<ReturnSummary> getReturns(Connector connector, ReturnQuery query) {
+        Objects.requireNonNull(query, "query cannot be null");
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("begin", query.page().begin());
+        values.put("step", query.page().step());
+        putIfPresent(values, "status", query.status());
+        putIfPresent(values, "isApi", query.isApi());
+        putWindow(values, query.createdWindow(), "starttime", "endtime");
+        putWindow(values, query.updatedWindow(), "updateGe", "updateLe");
+        putIfPresent(values, "stock_id", query.stockId());
+        putIfPresent(values, "stock_num", query.stockNumber());
+        ApiEnvelope response = callBusiness(connector, "getReturnsList", values);
+        List<Map<String, Object>> rows = rows(response, "getReturnsList");
+        List<ReturnSummary> items = rows.stream().map(DhbClientAdapter::returnSummary).toList();
+        logPage(connector, "getReturnsList", query.page(), response, items.size());
+        return new Page<>(query.page(), response.total(), items);
+    }
+
+    @Override
+    public ReturnDetail getReturnContent(Connector connector, String returnNumber) {
+        if (returnNumber == null || returnNumber.isBlank()) {
+            throw new IllegalArgumentException("returnNumber is required");
+        }
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("returnsSn", returnNumber.strip());
+        ApiEnvelope response = callBusiness(connector, "getReturnsContent", values);
+        Map<String, Object> data = object(response.data(), "getReturnsContent");
+        ReturnSummary summary = returnSummary(data);
+        List<ReturnLine> lines = childRows(data, "body", "getReturnsContent").stream()
+                .map(DhbClientAdapter::returnLine).toList();
+        log.info("订货宝接口调用成功 tenantId={} connectorId={} function=getReturnsContent returnNumber={} lines={} elapsedMs={}",
+                connector.tenantId(), connector.connectorId(), safeBusinessKey(returnNumber),
+                lines.size(), response.elapsedMs());
+        return new ReturnDetail(first(data, "ReturnsSN", returnNumber), summary, lines, data);
+    }
+
+    @Override
+    public Page<Receipt> getReceipts(Connector connector, ReceiptQuery query) {
+        Objects.requireNonNull(query, "query cannot be null");
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("begin", query.page().begin());
+        values.put("step", query.page().step());
+        putIfPresent(values, "orderSn", query.orderNumber());
+        putWindow(values, query.createdWindow(), "starttime", "endtime");
+        putInstant(values, "updateDateGe", query.updatedFrom());
+        putIfPresent(values, "status", query.status());
+        ApiEnvelope response = callBusiness(connector, "getReceiptsList", values);
+        List<Map<String, Object>> rows = rows(response, "getReceiptsList");
+        List<Receipt> items = rows.stream().map(DhbClientAdapter::receipt).toList();
+        logPage(connector, "getReceiptsList", query.page(), response, items.size());
+        return new Page<>(query.page(), response.total(), items);
+    }
+
+    @Override
+    public Page<Payment> getPayments(Connector connector, PaymentQuery query) {
+        Objects.requireNonNull(query, "query cannot be null");
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("begin", query.page().begin());
+        values.put("step", query.page().step());
+        putIfPresent(values, "orderSn", query.orderNumber());
+        putWindow(values, query.createdWindow(), "starttime", "endtime");
+        putIfPresent(values, "status", query.status());
+        ApiEnvelope response = callBusiness(connector, "getPaymentList", values);
+        List<Map<String, Object>> rows = rows(response, "getPaymentList");
+        List<Payment> items = rows.stream().map(DhbClientAdapter::payment).toList();
+        logPage(connector, "getPaymentList", query.page(), response, items.size());
+        return new Page<>(query.page(), response.total(), items);
     }
 
     private CachedToken tokenFor(Connector connector) {
@@ -358,6 +503,75 @@ public final class DhbClientAdapter implements DhbClient {
         return rows;
     }
 
+    /** 解析 getShipsList 的 rData 分页对象：{page_size,page,total_page,total,data:[...]}。 */
+    private static List<Map<String, Object>> pageRows(ApiEnvelope response, String function) {
+        Map<String, Object> data = object(response.data(), function);
+        Object value = data.get("data");
+        if (value == null) return List.of();
+        if (!(value instanceof Iterable<?> iterable)) {
+            throw protocolError(function, "订货宝分页回执字段 data 不是数组");
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Object item : iterable) rows.add(object(item, function));
+        return rows;
+    }
+
+    private static long pageTotal(ApiEnvelope response, String function) {
+        Map<String, Object> data = object(response.data(), function);
+        return number(data, "total", response.total());
+    }
+
+    private static List<Map<String, Object>> childRows(Map<String, Object> parent, String key, String function) {
+        Object value = parent.get(key);
+        if (value == null) return List.of();
+        if (value instanceof Map<?, ?>) return List.of(object(value, function));
+        if (!(value instanceof Iterable<?> iterable)) {
+            throw protocolError(function, "订货宝回执字段 " + key + " 不是数组或对象");
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object item : iterable) result.add(object(item, function));
+        return result;
+    }
+
+    private static WaitShipment waitShipment(Map<String, Object> row) {
+        List<WaitShipmentLine> lines = childRows(row, "list", "getWaitShips").stream()
+                .map(DhbClientAdapter::waitShipmentLine).toList();
+        return new WaitShipment(first(row, "ships_id"), first(row, "ships_num"), first(row, "status"),
+                first(row, "logistics_name"), first(row, "logistics_code"), valueText(row, "express_num"),
+                instant(row, "ships_date"), instant(row, "ships_time"), first(row, "stock_num"),
+                first(row, "stock_name"), lines, row);
+    }
+
+    private static WaitShipmentLine waitShipmentLine(Map<String, Object> row) {
+        return new WaitShipmentLine(first(row, "ships_list_id"), first(row, "orders_list_id"),
+                first(row, "goods_id"), first(row, "options_goods_num"), first(row, "list_type"),
+                first(row, "goods_num"), first(row, "goods_name"), first(row, "goods_options"),
+                first(row, "base_units"), first(row, "container_units"), decimal(row, "conversion_number"),
+                decimal(row, "ships_number"), first(row, "remark"), row);
+    }
+
+    private static WaitStock waitStock(Map<String, Object> row) {
+        return new WaitStock(first(row, "orders_list_id"), first(row, "goods_id"),
+                first(row, "options_goods_num"), first(row, "list_type"), first(row, "goods_num"),
+                first(row, "goods_name"), first(row, "goods_options"), first(row, "base_units"),
+                first(row, "container_units"), decimal(row, "conversion_number"), first(row, "stock_num"),
+                first(row, "stock_name"), decimal(row, "orders_number"), decimal(row, "stock_number"),
+                decimal(row, "real_number"), decimal(row, "wait_stock_number"), first(row, "remark"), row);
+    }
+
+    private static String valueText(Map<String, Object> values, String key) {
+        Object value = values.get(key);
+        if (value == null) return null;
+        if (value instanceof Map<?, ?> map) {
+            for (String candidate : List.of("express_num", "code", "number", "value")) {
+                Object nested = map.get(candidate);
+                if (nested != null) return String.valueOf(nested);
+            }
+        }
+        String text = String.valueOf(value).strip();
+        return text.isEmpty() || "null".equalsIgnoreCase(text) ? null : text;
+    }
+
     private static Product product(Map<String, Object> row) {
         return new Product(first(row, "guid", "coding"), text(row, "coding"), text(row, "name"),
                 text(row, "putaway"), row);
@@ -375,6 +589,107 @@ public final class DhbClientAdapter implements DhbClient {
                 first(row, "ClientNO"), text(row, "PayStatus"), row);
     }
 
+    private static Shipment shipment(Map<String, Object> row) {
+        return new Shipment(first(row, "ships_id"), first(row, "ships_num"), first(row, "orders_num"),
+                first(row, "status"), first(row, "status_name"), first(row, "type_id"),
+                first(row, "type_name"), first(row, "client_num"), first(row, "client_name"),
+                first(row, "client_guid"), first(row, "stock_num"), first(row, "stock_name"),
+                first(row, "stock_guid"), instant(row, "ships_date"), first(row, "logistics_name"),
+                valueText(row, "express_num"), first(row, "remark"), instant(row, "create_date"),
+                instant(row, "update_date"), row);
+    }
+
+    private static ReturnSummary returnSummary(Map<String, Object> row) {
+        return new ReturnSummary(
+                first(row, "ReturnsSN"),
+                first(row, "ReturnsSN"),
+                first(row, "OrdersNum", "OrderSN", "order_sn"),
+                first(row, "ReturnsStatus"),
+                first(row, "StaffName"),
+                decimal(row, "ReturnsTotal"),
+                decimal(row, "ReturnsDiscountTotal"),
+                instant(row, "ReturnsDate"),
+                instant(row, "ReturnsUpdateDate"),
+                first(row, "ReturnsReason"),
+                first(row, "ClientNum", "client_num"),
+                first(row, "ClientGUID", "ClientGuid"),
+                first(row, "ReturnsConsignee"),
+                first(row, "ReturnsPhone"),
+                first(row, "ReturnsAddress"),
+                first(row, "ReturnsSendCompany"),
+                first(row, "ReturnsSendNo"),
+                first(row, "ReturnsType"),
+                first(row, "ReturnsSendMode"),
+                row);
+    }
+
+    private static ReturnLine returnLine(Map<String, Object> row) {
+        Map<String, Object> stock = nestedObject(row, "Stock", "getReturnsContent");
+        return new ReturnLine(
+                first(row, "Guid", "TrueGuid", "Coding", "OptionsGoodsNum"),
+                first(row, "TrueGuid", "Guid"),
+                first(row, "OptionsGoodsNum"),
+                first(row, "Coding"),
+                first(row, "Name"),
+                decimal(row, "ReturnsNumber"),
+                decimal(row, "ReturnsConfirmNumber"),
+                decimal(row, "ReturnsPrice"),
+                decimal(row, "ReturnsConfirmPrice"),
+                first(row, "ReturnsUnitsName", "ReturnsUnits"),
+                decimal(row, "ReturnsUnitsNumber"),
+                decimal(row, "ReturnsConfirmUnitsNumber"),
+                decimal(row, "ConversionNumber"),
+                first(row, "ReturnsRemark"),
+                first(stock, "StockId"),
+                first(stock, "StockName"),
+                first(stock, "StockGuid"),
+                row);
+    }
+
+    private static Receipt receipt(Map<String, Object> row) {
+        return new Receipt(
+                first(row, "ReceiptsNum"),
+                first(row, "ReceiptsNum"),
+                first(row, "OrdersNum"),
+                first(row, "ClientNum", "client_num"),
+                first(row, "ClientGuid", "ClientGUID"),
+                first(row, "IncexpId"),
+                first(row, "TypeId"),
+                decimal(row, "Amount"),
+                first(row, "Status"),
+                instant(row, "ReceiptsDate"),
+                instant(row, "CreateDate"),
+                instant(row, "UpdateDate"),
+                first(row, "SerialNumber"),
+                first(row, "AccountName"),
+                first(row, "BankName"),
+                first(row, "AccountNumber"),
+                first(row, "Remark"),
+                row);
+    }
+
+    private static Payment payment(Map<String, Object> row) {
+        return new Payment(
+                first(row, "PaymentNum"),
+                first(row, "PaymentNum"),
+                first(row, "ReceiptsNum"),
+                first(row, "OrdersNum"),
+                first(row, "ClientNum", "client_num"),
+                first(row, "ClientGuid", "ClientGUID"),
+                first(row, "IncexpId"),
+                first(row, "TypeId"),
+                decimal(row, "Amount"),
+                first(row, "Status"),
+                instant(row, "ReceiptsDate"),
+                instant(row, "CreateDate"),
+                first(row, "SerialNumber"),
+                first(row, "AccountName"),
+                first(row, "BankName"),
+                first(row, "AccountNumber"),
+                first(row, "Remark"),
+                row);
+    }
+
     private static void putWindow(Map<String, Object> values, TimeWindow window,
                                   String fromKey, String toKey) {
         if (window == null) {
@@ -390,6 +705,12 @@ public final class DhbClientAdapter implements DhbClient {
         }
     }
 
+    private static void putInstant(Map<String, Object> values, String key, Instant value) {
+        if (value != null) {
+            values.put(key, DHB_TIME.withZone(DHB_ZONE).format(value));
+        }
+    }
+
     private static Map<String, Object> object(Object value, String function) {
         if (!(value instanceof Map<?, ?> source)) {
             throw protocolError(function, "订货宝回执对象格式无效");
@@ -397,6 +718,12 @@ public final class DhbClientAdapter implements DhbClient {
         Map<String, Object> result = new LinkedHashMap<>();
         source.forEach((key, item) -> result.put(String.valueOf(key), item));
         return immutable(result);
+    }
+
+    private static Map<String, Object> nestedObject(Map<String, Object> values, String key,
+                                                    String function) {
+        Object value = values.get(key);
+        return value == null ? Map.of() : object(value, function);
     }
 
     private static String text(Map<String, Object> values, String key) {
@@ -458,9 +785,13 @@ public final class DhbClientAdapter implements DhbClient {
                 return LocalDateTime.parse(text, DHB_TIME).toInstant(DHB_ZONE);
             } catch (DateTimeParseException ignoredAgain) {
                 try {
-                    return Instant.ofEpochSecond(Long.parseLong(text));
-                } catch (NumberFormatException ignoredFinally) {
-                    return null;
+                    return LocalDate.parse(text, DHB_DATE).atStartOfDay(DHB_ZONE).toInstant();
+                } catch (DateTimeParseException ignoredDate) {
+                    try {
+                        return Instant.ofEpochSecond(Long.parseLong(text));
+                    } catch (NumberFormatException ignoredFinally) {
+                        return null;
+                    }
                 }
             }
         }
@@ -514,9 +845,14 @@ public final class DhbClientAdapter implements DhbClient {
 
     private void logPage(Connector connector, String function, PageRequest request,
                          ApiEnvelope response, int itemCount) {
+        logPage(connector, function, request, response, itemCount, response.total());
+    }
+
+    private void logPage(Connector connector, String function, PageRequest request,
+                         ApiEnvelope response, int itemCount, long total) {
         log.info("订货宝接口调用成功 tenantId={} connectorId={} function={} begin={} step={} returned={} total={} elapsedMs={}",
                 connector.tenantId(), connector.connectorId(), function, request.begin(), request.step(),
-                itemCount, response.total(), response.elapsedMs());
+                itemCount, total, response.elapsedMs());
     }
 
     private static String connectorKey(Connector connector) {

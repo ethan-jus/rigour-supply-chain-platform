@@ -61,8 +61,8 @@ Portal -> Gateway -> Integration
 因此：
 
 - `DhbClient`、订货宝 URL、账号、密码、API Key、签名、重试和限流只能出现在 Integration。
-- Order Center 不得新增 `DhbClient`、订货宝登录配置、第三方重试或“手工同步”接口。
-- Order Center 只接收内部导入契约/事件，负责内部订单幂等、事务和状态机。
+- Order Center 不得新增 `DhbClient`、订货宝登录配置、第三方重试或直接访问订货宝的接口；可提供前端立即同步编排入口，统一由 Order Center 调 Integration 后落库。
+- Order Center 负责内部订单幂等、事务和状态机；Portal 的列表和详情只查询 Order Center 本地表。
 - Portal 只调用本平台的 Integration/Order API，不把 Token 或第三方密码转发给外部系统。
 - 新增商品、客户、订单等外部来源时，先复用 Integration 的连接器模式，不在业务服务中新增 Provider。
 

@@ -12,6 +12,9 @@ import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
 import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -22,6 +25,7 @@ import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
 
 /** 订货宝同步JDBC仓储；所有查询强制绑定tenantId，跨租户访问直接拒绝。 */
 public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
@@ -31,10 +35,13 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
+    private final ObjectMapper objectMapper;
 
-    public JdbcDhbIntegrationStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager) {
+    public JdbcDhbIntegrationStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager,
+                                   ObjectMapper objectMapper) {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(transactionManager);
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -235,6 +242,32 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
         return fieldMappingById(tenantId, targetId);
     }
 
+    @Override
+    public void persistRawLanding(UUID tenantId, UUID connectorId, String sourceObjectType,
+                                  String sourceId, Instant sourceUpdatedAt,
+                                  java.util.Map<String, Object> payload) {
+        String objectType = required(sourceObjectType, "sourceObjectType");
+        String businessId = required(sourceId, "sourceId");
+        if (payload == null) throw new IllegalArgumentException("payload is required");
+        String payloadJson;
+        try {
+            payloadJson = objectMapper.writeValueAsString(payload);
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("订货宝原始回执序列化失败", exception);
+        }
+        String checksum = sha256(payloadJson);
+        transaction.executeWithoutResult(status -> jdbc.update("""
+                INSERT INTO integration_raw_landing
+                    (id, tenant_id, connector_id, source_system, source_object_type, source_id,
+                     source_version, source_updated_at, payload_json, payload_checksum,
+                     received_at, landing_status, attempts, last_attempt_at)
+                VALUES (?, ?, ?, 'DHB', ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), 'RECEIVED', 0, NULL)
+                ON DUPLICATE KEY UPDATE id=id
+                """, bin(UUID.randomUUID()), bin(tenantId), bin(connectorId), objectType, businessId,
+                sourceUpdatedAt == null ? null : sourceUpdatedAt.toString(), timestamp(sourceUpdatedAt),
+                payloadJson, checksum));
+    }
+
     private ConnectorView connectorById(UUID tenantId, UUID id) {
         return jdbc.queryForObject("""
                 SELECT id, tenant_id, connector_code, connector_name, base_url, auth_secret_ref, status, version
@@ -320,6 +353,15 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
     }
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.strip();
+    }
+
+    private static String sha256(String value) {
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256不可用", exception);
+        }
     }
     private static String normalizedCode(String value) {
         String code = required(value, "code").strip();
