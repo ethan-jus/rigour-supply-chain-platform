@@ -49,6 +49,17 @@ public final class IamManagementService {
     }
     public List<RoleView> roles(Actor actor) { return store.roles(actor); }
     public List<ResourceView> grantableResources(Actor actor) { return store.grantableResources(actor); }
+    public List<TenantMenuView> tenantMenus(Actor actor) { return store.tenantMenus(actor); }
+    public TenantMenuView saveTenantMenu(Actor actor, UUID resourceId, TenantMenuCommand command) {
+        return store.saveTenantMenu(actor, resourceId, command);
+    }
+    public List<TenantMenuGroupView> tenantMenuGroups(Actor actor) { return store.tenantMenuGroups(actor); }
+    public TenantMenuGroupView createTenantMenuGroup(Actor actor, TenantMenuGroupCommand command) {
+        return store.createTenantMenuGroup(actor, command);
+    }
+    public TenantMenuGroupView updateTenantMenuGroup(Actor actor, UUID id, TenantMenuGroupCommand command) {
+        return store.updateTenantMenuGroup(actor, id, command);
+    }
     public RoleView createRole(Actor actor, RoleCommand command) { return store.createRole(actor, command); }
     public RoleView updateRole(Actor actor, UUID id, RoleCommand command) { return store.updateRole(actor, id, command); }
     public List<DataScopeView> dataScopes(Actor actor) { return store.dataScopes(actor); }

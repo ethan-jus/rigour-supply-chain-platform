@@ -143,14 +143,14 @@ class TenantIamServiceApplicationTests {
 
     @Test
     void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 17);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 22);
         assertCount("SELECT COUNT(*) FROM information_schema.tables "
-                + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 34);
+                + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 36);
         assertCount("SELECT COUNT(*) FROM iam_application", 6);
-        assertCount("SELECT COUNT(*) FROM iam_resource", 113);
-        assertCount("SELECT COUNT(permission_code) FROM iam_resource", 33);
-        assertCount("SELECT COUNT(*) FROM iam_package_resource", 86);
-        assertCount("SELECT COUNT(*) FROM iam_resource_ui", 74);
+        assertCount("SELECT COUNT(*) FROM iam_resource", 263);
+        assertCount("SELECT COUNT(permission_code) FROM iam_resource", 44);
+        assertCount("SELECT COUNT(*) FROM iam_package_resource", 236);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui", 213);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='PLATFORM_ADMIN' AND target_uri='/platform-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='SYSTEM_ADMIN' AND target_uri='/system-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application "
@@ -159,13 +159,40 @@ class TenantIamServiceApplicationTests {
                 + "AND status='ACTIVE'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application "
                 + "WHERE app_code='DHB_INTEGRATION' AND status='DISABLED'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_application "
+                + "WHERE app_code='FEISHU_SALES' AND app_type='EXTERNAL' AND launch_mode='FEISHU_DEEPLINK' "
+                + "AND target_uri='/sales-workbench' AND status='ACTIVE'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND ("
+                + "id IN (UUID_TO_BIN('019facf2-0000-7000-8000-000000000057'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000058')) OR id BETWEEN "
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000121') AND "
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000166'))", 48);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000049') "
+                + "AND display_name IN ('供应链首页','ERP','CRM','订单管理','销售管理','城市运营','BI 数据看板',"
+                + "'人事与绩效','渠道代理','外部集成与数据同步','业务设置')", 11);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
+                + "'supply.order.index','supply.order.center.menu','supply.order.all','supply.order.pending',"
+                + "'supply.order.exceptions','supply.order.fulfillment.menu','supply.order.after-sales.menu') "
+                + "AND visible=1", 7);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE resource_id IN ("
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000102'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000107'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000108'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000109'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000110'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000117'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000118')) AND visible=0", 7);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE resource_id BETWEEN "
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000167') AND "
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000267') AND visible=1", 101);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.integration.%'", 10);
         org.assertj.core.api.Assertions.assertThat(applicationMapper.selectById(
                         UUID.fromString("019facf1-0000-7000-8000-000000000003")))
                 .extracting("appCode")
                 .isEqualTo("SUPPLY_CHAIN");
         org.assertj.core.api.Assertions.assertThat(applicationMapper.selectActiveByScope("TENANT"))
                 .extracting("appCode")
-                .containsExactly("SYSTEM_ADMIN", "SUPPLY_CHAIN", "DHB");
+                .containsExactly("SYSTEM_ADMIN", "SUPPLY_CHAIN", "DHB", "FEISHU_SALES");
         assertCount("SELECT COUNT(*) FROM information_schema.columns "
                 + "WHERE table_schema = DATABASE() AND table_name = 'iam_refresh_token' "
                 + "AND column_name = 'authorization_id'", 1);
@@ -205,6 +232,25 @@ class TenantIamServiceApplicationTests {
                 .anyMatch(node -> "/system-admin".equals(node.routePath()));
         assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
                 .anyMatch(node -> "/supply-chain".equals(node.routePath()));
+
+        List<TenantMenuView> tenantMenus = managementStore.tenantMenus(first.actor());
+        TenantMenuView configurableMenu = tenantMenus.stream()
+                .filter(menu -> "SUPPLY_CHAIN".equals(menu.applicationCode()) && "MENU".equals(menu.type()))
+                .findFirst().orElseThrow();
+        TenantMenuGroupView customGroup = managementStore.createTenantMenuGroup(first.actor(),
+                new TenantMenuGroupCommand(configurableMenu.applicationId(), null,
+                        "CUSTOM_GROUP_" + UUID.randomUUID().toString().substring(0, 8),
+                        "销售日常", "Collection", 5, true, "ACTIVE", 0));
+        TenantMenuView customizedMenu = managementStore.saveTenantMenu(first.actor(), configurableMenu.resourceId(),
+                new TenantMenuCommand("租户自定义菜单", 6, "Menu", true, customGroup.id(),
+                        configurableMenu.version()));
+        assertThat(customizedMenu.displayName()).isEqualTo("租户自定义菜单");
+        assertThat(customizedMenu.parentGroupId()).isEqualTo(customGroup.id());
+        assertThat(managementStore.tenantMenuGroups(first.actor())).extracting(TenantMenuGroupView::id)
+                .contains(customGroup.id());
+        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
+                .anyMatch(node -> customGroup.id().equals(node.id())
+                        && node.children().stream().anyMatch(child -> configurableMenu.resourceId().equals(child.id())));
 
         List<ResourceView> grantable = managementStore.grantableResources(first.actor());
         RoleView role = managementStore.createRole(first.actor(), new RoleCommand(
@@ -262,13 +308,18 @@ class TenantIamServiceApplicationTests {
         TenantAdminFixture second = insertTenantAdministrator();
         assertThat(managementStore.organizations(second.actor())).extracting(OrganizationView::id)
                 .doesNotContain(organization.id());
+        TenantMenuView secondTenantMenu = managementStore.tenantMenus(second.actor()).stream()
+                .filter(menu -> menu.resourceId().equals(configurableMenu.resourceId())).findFirst().orElseThrow();
+        assertThatThrownBy(() -> managementStore.saveTenantMenu(second.actor(), secondTenantMenu.resourceId(),
+                new TenantMenuCommand(null, null, null, true, customGroup.id(), secondTenantMenu.version())))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
         assertThatThrownBy(() -> managementStore.updateOrganization(second.actor(), organization.id(),
                 new OrganizationCommand(null, organization.code(), "越权修改", organization.type(),
                         organization.sortOrder(), organization.status(), organization.version())))
                 .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
         assertThat(managementStore.audits(first.actor(), 100)).extracting(AuditView::action)
                 .contains("ORGANIZATION_CREATE", "SETTING_SAVE", "ROLE_CREATE", "DATA_SCOPE_CREATE", "USER_CREATE",
-                        "USER_PASSWORD_RESET");
+                        "USER_PASSWORD_RESET", "TENANT_MENU_GROUP_CREATE", "TENANT_MENU_SAVE");
     }
 
     @Test
@@ -293,7 +344,7 @@ class TenantIamServiceApplicationTests {
         assertThat(portalAccessService.grantedApplications(new PortalAccessQuery(
                         "TENANT", first.actor().principalId(), first.actor().tenantId())))
                 .extracting(PortalApplication::code)
-                .contains("SYSTEM_ADMIN", "SUPPLY_CHAIN", "DHB");
+                .contains("SYSTEM_ADMIN", "SUPPLY_CHAIN", "DHB", "FEISHU_SALES");
         DictionaryTypeView tenantType = managementStore.createDictionaryType(first.actor(),
                 new DictionaryTypeCommand("VISIT_RESULT", "拜访结果", "本租户拜访结果字典", "ACTIVE", 0));
         DictionaryItemView tenantItem = managementStore.createDictionaryItem(first.actor(),
@@ -903,10 +954,20 @@ class TenantIamServiceApplicationTests {
                 SELECT ?, ?, resource_id, 'ACTIVE', ?, ? FROM iam_package_resource
                  WHERE package_version_id=UUID_TO_BIN('019facf3-0000-7000-8000-000000000002')
                 """, uuidBytes(tenantId), uuidBytes(roleId), now, now);
+        jdbcTemplate.update("""
+                INSERT INTO iam_tenant_menu_config
+                (tenant_id, resource_id, visible, created_at, updated_at)
+                SELECT ?, resource_record.id, resource_ui.visible, ?, ?
+                  FROM iam_package_resource package_resource
+                  JOIN iam_resource resource_record ON resource_record.id=package_resource.resource_id
+                  JOIN iam_resource_ui resource_ui ON resource_ui.resource_id=resource_record.id
+                 WHERE package_resource.package_version_id=UUID_TO_BIN('019facf3-0000-7000-8000-000000000002')
+                   AND resource_record.resource_type IN ('MENU','PAGE')
+                """, uuidBytes(tenantId), now, now);
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM iam_package_resource
                  WHERE package_version_id=UUID_TO_BIN('019facf3-0000-7000-8000-000000000002')
-                """, Integer.class)).isEqualTo(86);
+                """, Integer.class)).isEqualTo(236);
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM iam_package_resource package_resource
                  JOIN iam_resource resource_record ON resource_record.id=package_resource.resource_id
