@@ -12,7 +12,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
 
-/** 使用一次性MySQL 8.4验证Sales Work V1真实迁移，不连接共享DEV。 */
+    /** 使用一次性MySQL 8.4验证Sales Work迁移，不连接共享DEV。 */
 @SpringBootTest
 @Testcontainers(disabledWithoutDocker = true)
 class SalesWorkMigrationTests {
@@ -52,8 +52,8 @@ class SalesWorkMigrationTests {
                  WHERE table_schema=DATABASE() AND table_name='sales_store'
                 """, Integer.class);
 
-        assertThat(migrationCount).isEqualTo(1);
-        assertThat(tableCount).isEqualTo(30);
+        assertThat(migrationCount).isEqualTo(2);
+        assertThat(tableCount).isEqualTo(31);
         assertThat(editableStoreTableCount).isZero();
     }
 }

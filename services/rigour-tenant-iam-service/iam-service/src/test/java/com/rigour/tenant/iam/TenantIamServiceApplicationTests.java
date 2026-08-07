@@ -143,13 +143,13 @@ class TenantIamServiceApplicationTests {
 
     @Test
     void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 22);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 23);
         assertCount("SELECT COUNT(*) FROM information_schema.tables "
                 + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 36);
         assertCount("SELECT COUNT(*) FROM iam_application", 6);
-        assertCount("SELECT COUNT(*) FROM iam_resource", 263);
-        assertCount("SELECT COUNT(permission_code) FROM iam_resource", 44);
-        assertCount("SELECT COUNT(*) FROM iam_package_resource", 236);
+        assertCount("SELECT COUNT(*) FROM iam_resource", 267);
+        assertCount("SELECT COUNT(permission_code) FROM iam_resource", 48);
+        assertCount("SELECT COUNT(*) FROM iam_package_resource", 240);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui", 213);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='PLATFORM_ADMIN' AND target_uri='/platform-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='SYSTEM_ADMIN' AND target_uri='/system-admin'", 1);
@@ -967,7 +967,7 @@ class TenantIamServiceApplicationTests {
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM iam_package_resource
                  WHERE package_version_id=UUID_TO_BIN('019facf3-0000-7000-8000-000000000002')
-                """, Integer.class)).isEqualTo(236);
+                """, Integer.class)).isEqualTo(240);
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM iam_package_resource package_resource
                  JOIN iam_resource resource_record ON resource_record.id=package_resource.resource_id

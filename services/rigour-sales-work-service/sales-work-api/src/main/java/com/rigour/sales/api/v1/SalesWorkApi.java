@@ -1,0 +1,57 @@
+package com.rigour.sales.api.v1;
+
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.CheckInCommand;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.CheckOutCommand;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.InterruptionCommand;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.LocationBatchCommand;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.LocationBatchResult;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.SalesContextView;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitTargetPageView;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.WorkDayView;
+import com.rigour.shared.core.api.ApiResponse;
+import java.time.LocalDate;
+import java.util.UUID;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+
+/** Sales Work V1 的 H5 销售作业契约；不暴露跨域数据库模型。 */
+public interface SalesWorkApi {
+
+    String BASE_PATH = "/api/v1/sales";
+    String CONTEXT_PATH = BASE_PATH + "/me/context";
+    String VISIT_TARGETS_PATH = BASE_PATH + "/me/visit-targets";
+    String CHECK_IN_PATH = BASE_PATH + "/work-days/check-in";
+    String LOCATION_BATCH_PATH = BASE_PATH + "/work-days/{workDayId}/location-points:batch";
+    String INTERRUPTION_PATH = BASE_PATH + "/work-days/{workDayId}/interruptions";
+    String CHECK_OUT_PATH = BASE_PATH + "/work-days/{workDayId}/check-out";
+    String WORK_DAY_PATH = BASE_PATH + "/me/work-days/{date}";
+
+    @GetMapping(CONTEXT_PATH)
+    ApiResponse<SalesContextView> context();
+
+    @GetMapping(VISIT_TARGETS_PATH)
+    ApiResponse<VisitTargetPageView> visitTargets(
+            @RequestParam(name = "q", required = false) String query,
+            @RequestParam(name = "page", defaultValue = "1") int page,
+            @RequestParam(name = "pageSize", defaultValue = "20") int pageSize);
+
+    @PostMapping(CHECK_IN_PATH)
+    ApiResponse<WorkDayView> checkIn(@RequestBody CheckInCommand command);
+
+    @PostMapping(LOCATION_BATCH_PATH)
+    ApiResponse<LocationBatchResult> uploadLocationPoints(@PathVariable("workDayId") UUID workDayId,
+                                                          @RequestBody LocationBatchCommand command);
+
+    @PostMapping(CHECK_OUT_PATH)
+    ApiResponse<WorkDayView> checkOut(@PathVariable("workDayId") UUID workDayId, @RequestBody CheckOutCommand command);
+
+    @PostMapping(INTERRUPTION_PATH)
+    ApiResponse<WorkDayView> reportInterruption(@PathVariable("workDayId") UUID workDayId,
+                                                @RequestBody InterruptionCommand command);
+
+    @GetMapping(WORK_DAY_PATH)
+    ApiResponse<WorkDayView> workDay(@PathVariable("date") LocalDate date);
+}
