@@ -10,3 +10,10 @@ spring:
 # IDEA Run Configuration 的 Environment variables 中配置：
 # RIGOUR_DHB_DEV_SERIAL_NUMBER=<真实 SerialNumber>
 # RIGOUR_DHB_DEV_PASSWORD=<真实 Password>
+
+rigour:
+  integration:
+    feishu:
+      # 本机真机调试使用的非敏感应用标识与 H5 来源；App Secret 仍只从进程环境注入。
+      app-id: cli_aafff3a596b89cdc
+      allowed-origins: http://172.20.10.2:5200

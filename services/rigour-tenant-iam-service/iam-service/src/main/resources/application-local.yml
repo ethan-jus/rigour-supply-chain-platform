@@ -13,6 +13,9 @@ spring:
 
 rigour:
   iam:
+    feishu:
+      enabled: true
+      app-id: cli_aafff3a596b89cdc
     bootstrap:
       local-signing-key:
         # 本机隔离数据库的首次签名密钥辅助程序：当iam_signing_key没有ACTIVE密钥时，

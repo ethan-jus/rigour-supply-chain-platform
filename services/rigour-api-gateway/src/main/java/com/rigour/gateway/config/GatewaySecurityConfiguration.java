@@ -22,6 +22,7 @@ import org.springframework.security.oauth2.server.resource.web.authentication.Be
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.client.RestClient;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.HttpMethod;
 
 /** Gateway资源服务器安全链；只有显式配置IAM信任锚后才接受业务请求。 */
 @Configuration(proxyBeanMethods = false)
@@ -53,6 +54,9 @@ public class GatewaySecurityConfiguration {
     ) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers(HttpMethod.POST,
+                                CurrentTokenValidationFilter.PUBLIC_FEISHU_JSAPI_SIGN_PATH,
+                                CurrentTokenValidationFilter.PUBLIC_FEISHU_AUTH_EXCHANGE_PATH).permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(resourceServer -> resourceServer
                         .jwt(jwt -> jwt.decoder(jwtDecoder)))
@@ -86,7 +90,11 @@ public class GatewaySecurityConfiguration {
     SecurityFilterChain disabledGatewaySecurityFilterChain(HttpSecurity http) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers(HttpMethod.POST,
+                                CurrentTokenValidationFilter.PUBLIC_FEISHU_JSAPI_SIGN_PATH,
+                                CurrentTokenValidationFilter.PUBLIC_FEISHU_AUTH_EXCHANGE_PATH).permitAll()
                         .anyRequest().denyAll())
+                .csrf(csrf -> csrf.ignoringRequestMatchers("/api/**"))
                 .httpBasic(Customizer.withDefaults());
         return http.build();
     }

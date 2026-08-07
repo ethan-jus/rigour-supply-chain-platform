@@ -61,6 +61,38 @@ class CurrentTokenValidationFilterTest {
     }
 
     @Test
+    void skipsIamValidationForPublicFeishuJsapiSigningEndpoint() throws Exception {
+        GatewaySecurityProperties properties = new GatewaySecurityProperties();
+        properties.setCurrentTokenValidationEnabled(true);
+        CurrentTokenValidationFilter filter = new CurrentTokenValidationFilter(
+                RestClient.builder().build(), properties);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(new MockHttpServletRequest("POST",
+                        CurrentTokenValidationFilter.PUBLIC_FEISHU_JSAPI_SIGN_PATH),
+                response,
+                (request, forwardedResponse) -> { });
+
+        assertThat(response.getStatus()).isEqualTo(HttpStatus.OK.value());
+    }
+
+    @Test
+    void skipsIamValidationForPublicFeishuAuthExchangeEndpoint() throws Exception {
+        GatewaySecurityProperties properties = new GatewaySecurityProperties();
+        properties.setCurrentTokenValidationEnabled(true);
+        CurrentTokenValidationFilter filter = new CurrentTokenValidationFilter(
+                RestClient.builder().build(), properties);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(new MockHttpServletRequest("POST",
+                        CurrentTokenValidationFilter.PUBLIC_FEISHU_AUTH_EXCHANGE_PATH),
+                response,
+                (request, forwardedResponse) -> { });
+
+        assertThat(response.getStatus()).isEqualTo(HttpStatus.OK.value());
+    }
+
+    @Test
     void mapsIamTokenRejectionToUnauthorized() throws Exception {
         FilterFixture fixture = fixture(withStatus(HttpStatus.UNAUTHORIZED));
         MockHttpServletResponse response = new MockHttpServletResponse();
