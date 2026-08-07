@@ -3,11 +3,14 @@ package com.rigour.integration.infrastructure.config;
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
 import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbSyncStore;
+import com.rigour.integration.application.port.out.FeishuJsapiClient;
 import com.rigour.integration.application.service.dhb.DhbIntegrationService;
 import com.rigour.integration.application.service.dhb.DhbOrderSyncService;
+import com.rigour.integration.application.service.feishu.FeishuJsapiSignService;
 import com.rigour.integration.infrastructure.dhb.DhbClientAdapter;
 import com.rigour.integration.infrastructure.dhb.DhbSecretResolver;
 import com.rigour.integration.infrastructure.dhb.EnvDhbSecretResolver;
+import com.rigour.integration.infrastructure.feishu.FeishuJsapiClientAdapter;
 import com.rigour.integration.infrastructure.persistence.JdbcDhbIntegrationStore;
 import com.rigour.integration.infrastructure.persistence.JdbcDhbSyncStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -20,7 +23,7 @@ import org.springframework.web.client.RestClient;
 
 /** Integration服务基础设施装配；持久化只属于Integration自己的Schema。 */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(DhbClientProperties.class)
+@EnableConfigurationProperties({DhbClientProperties.class, FeishuClientProperties.class})
 public final class IntegrationInfrastructureConfiguration {
 
     @Bean
@@ -40,6 +43,18 @@ public final class IntegrationInfrastructureConfiguration {
                                       DhbSecretResolver secretResolver,
                                       DhbClientProperties properties) {
         return new DhbClientAdapter(restClientBuilder, secretResolver, properties);
+    }
+
+    @Bean
+    FeishuJsapiClient feishuJsapiClient(RestClient.Builder restClientBuilder,
+                                        FeishuClientProperties properties) {
+        return new FeishuJsapiClientAdapter(restClientBuilder, properties);
+    }
+
+    @Bean
+    FeishuJsapiSignService feishuJsapiSignService(
+            FeishuJsapiClient client, FeishuClientProperties properties) {
+        return new FeishuJsapiSignService(client, properties.getAppId(), properties.allowedOriginValues());
     }
 
     @Bean

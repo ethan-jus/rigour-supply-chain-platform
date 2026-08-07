@@ -16,6 +16,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.Customizer;
@@ -149,7 +150,9 @@ public class IamAuthorizationServerSecurityConfiguration {
                 new IamAccessTokenValidator(tokenProperties.getAccessTokenAudience()),
                 new IamCurrentSessionTokenValidator(jdbcTemplate)));
         http.securityMatcher("/api/**")
-                .authorizeHttpRequests(authorize -> authorize.anyRequest().authenticated())
+                .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/feishu/exchange").permitAll()
+                        .anyRequest().authenticated())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .csrf(csrf -> csrf.disable())
                 .oauth2ResourceServer(resourceServer -> resourceServer.jwt(jwt -> jwt.decoder(decoder)));
@@ -204,7 +207,9 @@ public class IamAuthorizationServerSecurityConfiguration {
     SecurityFilterChain disabledAuthorizationServerFilterChain(HttpSecurity http) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
                 .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
-                .anyRequest().denyAll());
+                .requestMatchers(HttpMethod.POST, "/api/v1/auth/feishu/exchange").permitAll()
+                .anyRequest().denyAll())
+                .csrf(csrf -> csrf.ignoringRequestMatchers("/api/v1/auth/feishu/exchange"));
         return http.build();
     }
 }

@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 
 /**
- * 账号登录、飞书身份交换、刷新、退出和当前用户查询的 HTTP 边界。
+ * 账号密码登录页的 HTTP 边界。
  *
  * <p>表单只收集登录输入并交给Spring Security，不在页面中实现令牌和权限规则。</p>
  */

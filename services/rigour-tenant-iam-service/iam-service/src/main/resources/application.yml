@@ -50,6 +50,15 @@ rigour:
       keys-base64:
         v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}
   iam:
+    feishu:
+      enabled: false
+      # App ID由环境覆盖层提供；App Secret只能进入IAM进程Secret，禁止写入Git、Nacos或日志。
+      app-secret: ${RIGOUR_FEISHU_APP_SECRET:}
+      connect-timeout: 3s
+      read-timeout: 5s
+      token-safety-window: 60s
+      session-time-to-live: 8h
+      access-token-time-to-live: 1h
     bootstrap:
       platform-admin:
         enabled: false

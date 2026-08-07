@@ -35,6 +35,13 @@ rigour:
         rate-limit-burst: 5
         # getTokenValue 返回 expires_in；在到期前提前刷新，避免同步过程中使用临界 token。
         token-safety-window: 60s
+    feishu:
+      # 本机 dev,local 的 App ID 与 H5 来源在 application-local.yml；App Secret 只能通过
+      # Integration 进程环境注入，不得提交到 Git、Nacos 或日志。
+      app-secret: ${RIGOUR_FEISHU_APP_SECRET:}
+      connect-timeout: 3s
+      read-timeout: 5s
+      token-safety-window: 60s
 
   context:
     trust:
