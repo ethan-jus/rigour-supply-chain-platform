@@ -52,6 +52,7 @@ import com.rigour.tenant.iam.infrastructure.security.session.PasswordAuthenticat
 import com.rigour.tenant.iam.infrastructure.security.session.IamSessionLogoutHandler;
 import java.time.Clock;
 import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -97,6 +98,12 @@ import tools.jackson.databind.ObjectMapper;
         LocalSigningKeyBootstrapProperties.class
 })
 public final class IamInfrastructureConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean(RestClient.Builder.class)
+    RestClient.Builder feishuRestClientBuilder() {
+        return RestClient.builder();
+    }
 
     @Bean
     @ConditionalOnProperty(prefix = "rigour.iam.feishu", name = "enabled", havingValue = "true")
