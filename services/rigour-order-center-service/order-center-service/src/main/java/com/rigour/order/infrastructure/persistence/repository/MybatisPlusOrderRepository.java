@@ -23,6 +23,7 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -250,8 +251,7 @@ public class MybatisPlusOrderRepository implements OrderRepository {
             query.and(wrapper -> wrapper.isNull("source_device").or().ne("source_device", "demo-portal"));
         }
         if (filter.sourceStatus() != null && !filter.sourceStatus().isBlank()) {
-            query.in("source_status", List.of(filter.sourceStatus().split(","))
-                    .stream().map(String::trim).filter(value -> !value.isBlank()).toList());
+            query.in("source_status", sourceStatusValues(filter.sourceStatus()));
         }
         if (filter.startTime() != null) query.ge("ordered_at", filter.startTime());
         if (filter.endTime() != null) query.le("ordered_at", filter.endTime());
@@ -269,6 +269,25 @@ public class MybatisPlusOrderRepository implements OrderRepository {
             query.eq("payment_status", filter.paymentStatus());
         }
         if (filter.splitType() != null) query.eq("split_type", filter.splitType().toString());
+    }
+
+    /**
+     * 官方 getOrderList 请求参数使用 stock_up，列表返回/历史落库可能使用 stockup；
+     * 两者都属于待出库，查询时展开别名避免 Portal 按官方参数查询时漏单。
+     */
+    static List<String> sourceStatusValues(String sourceStatus) {
+        List<String> values = new ArrayList<>();
+        for (String raw : sourceStatus.split(",")) {
+            String value = raw.trim();
+            if (value.isBlank()) continue;
+            if ("stock_up".equals(value) || "stockup".equals(value)) {
+                if (!values.contains("stockup")) values.add("stockup");
+                if (!values.contains("stock_up")) values.add("stock_up");
+            } else if (!values.contains(value)) {
+                values.add(value);
+            }
+        }
+        return values;
     }
 
     private String writeJson(Object payload) {

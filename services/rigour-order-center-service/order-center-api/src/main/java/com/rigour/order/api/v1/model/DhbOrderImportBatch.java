@@ -13,19 +13,28 @@ import java.util.List;
 public record DhbOrderImportBatch(
         /** 订单列表及可选详情；来源函数为 getOrderList/getOrderContent。 */ List<OrderItem> orders,
         /** 独立发货单及可选详情；来源函数为 getShipsList/getShipsContent。 */ List<ShipmentItem> shipments,
+        /** 出库/发货物流快照；来源函数为 getWaitShips，按orders_num查询。 */ List<ShipmentLogisticsItem> shipmentLogistics,
         /** 退货单及可选详情；来源函数为 getReturnsList/getReturnsContent。 */ List<ReturnItem> returns,
         /** 收款单和付款单；来源函数为 getReceiptsList/getPaymentList。 */ List<FinancialItem> financialDocuments) {
 
     public DhbOrderImportBatch {
         orders = orders == null ? List.of() : List.copyOf(orders);
         shipments = shipments == null ? List.of() : List.copyOf(shipments);
+        shipmentLogistics = shipmentLogistics == null ? List.of() : List.copyOf(shipmentLogistics);
         returns = returns == null ? List.of() : List.copyOf(returns);
         financialDocuments = financialDocuments == null ? List.of() : List.copyOf(financialDocuments);
     }
 
-    /** @return 当前批次四类单据的记录总数。 */
+    /** 兼容未接入物流快照时的四类单据构造方式。 */
+    public DhbOrderImportBatch(List<OrderItem> orders, List<ShipmentItem> shipments,
+                               List<ReturnItem> returns, List<FinancialItem> financialDocuments) {
+        this(orders, shipments, List.of(), returns, financialDocuments);
+    }
+
+    /** @return 当前批次订单、发货、物流、退货和收付款数据的记录总数。 */
     public int size() {
-        return orders.size() + shipments.size() + returns.size() + financialDocuments.size();
+        return orders.size() + shipments.size() + shipmentLogistics.size()
+                + returns.size() + financialDocuments.size();
     }
 
     public record OrderItem(
@@ -133,6 +142,77 @@ public record DhbOrderImportBatch(
             /** 来源计量单位。 */ String unit,
             /** 明细出库仓库编号。 */ String warehouseNo,
             /** 发货明细备注。 */ String remark) {
+    }
+
+    /** 一个订货单对应的一次getWaitShips本地快照，按订单号幂等更新。 */
+    public record ShipmentLogisticsItem(
+            /** 订货宝订单号orders_num，本租户内幂等业务键。 */ String orderNo,
+            /** getWaitShips.shipped已出库/已发货清单。 */ List<ShipmentLogisticsRecord> shipped,
+            /** getWaitShips.wait_stock待出库商品清单。 */ List<WaitStockItem> waitStock,
+            /** getWaitShips完整业务原始JSON，不含sKey。 */ String rawJson,
+            /** rawJson的SHA-256摘要。 */ String payloadHash) {
+        public ShipmentLogisticsItem {
+            shipped = shipped == null ? List.of() : List.copyOf(shipped);
+            waitStock = waitStock == null ? List.of() : List.copyOf(waitStock);
+        }
+    }
+
+    /** getWaitShips.shipped中的已出库/已发货记录。 */
+    public record ShipmentLogisticsRecord(
+            /** 发货单主键ships_id。 */ String sourceShipmentId,
+            /** 出库单/发货单号ships_num。 */ String shipmentNo,
+            /** shipped待发货、receivedin待收货、received已收货、cancelled已取消。 */ String status,
+            /** 物流公司名称。 */ String logisticsName,
+            /** 物流公司编码。 */ String logisticsCode,
+            /** 物流单号express_num。 */ String trackingNo,
+            /** 发货时间ships_date。 */ Instant shipmentAt,
+            /** 出库时间ships_time。 */ Instant stockUpAt,
+            /** 仓库编号stock_num。 */ String warehouseNo,
+            /** 仓库名称stock_name。 */ String warehouseName,
+            /** 已出库/已发货商品明细。 */ List<ShipmentLogisticsLineItem> lines) {
+        public ShipmentLogisticsRecord { lines = lines == null ? List.of() : List.copyOf(lines); }
+    }
+
+    /** getWaitShips.shipped.list明细。 */
+    public record ShipmentLogisticsLineItem(
+            /** 明细类型，固定SHIPPED。 */ String lineType,
+            /** 发货明细IDships_list_id。 */ String sourceLineId,
+            /** 订单明细IDorders_list_id。 */ String orderLineId,
+            /** 商品IDgoods_id。 */ String productId,
+            /** 规格商品编码options_goods_num。 */ String skuNo,
+            /** 买品或赠品。 */ String listType,
+            /** 商品编码goods_num。 */ String productCode,
+            /** 商品名称goods_name。 */ String productName,
+            /** 商品规格goods_options。 */ String specification,
+            /** 小单位base_units。 */ String unit,
+            /** 大单位container_units。 */ String containerUnit,
+            /** 换算关系conversion_number。 */ BigDecimal conversionNumber,
+            /** 出库数量ships_number。 */ BigDecimal quantity,
+            /** 明细备注remark。 */ String remark,
+            /** 明细来源仓库编号，getWaitShips shipped明细未返回时为空。 */ String warehouseNo,
+            /** 明细来源仓库名称，getWaitShips shipped明细未返回时为空。 */ String warehouseName) {
+    }
+
+    /** getWaitShips.wait_stock明细。 */
+    public record WaitStockItem(
+            /** 明细类型，固定WAIT_STOCK。 */ String lineType,
+            /** 订单明细IDorders_list_id。 */ String sourceLineId,
+            /** 商品IDgoods_id。 */ String productId,
+            /** 规格商品编码options_goods_num。 */ String skuNo,
+            /** 买品或赠品。 */ String listType,
+            /** 商品编码goods_num。 */ String productCode,
+            /** 商品名称goods_name。 */ String productName,
+            /** 商品规格goods_options。 */ String specification,
+            /** 小单位base_units。 */ String unit,
+            /** 大单位container_units。 */ String containerUnit,
+            /** 换算关系conversion_number。 */ BigDecimal conversionNumber,
+            /** 仓库编号stock_num。 */ String warehouseNo,
+            /** 仓库名称stock_name。 */ String warehouseName,
+            /** 订购数量orders_number。 */ BigDecimal orderedQuantity,
+            /** 已出库数量stock_number。 */ BigDecimal stockedQuantity,
+            /** 实际库存real_number。 */ BigDecimal realStock,
+            /** 待出库数量wait_stock_number。 */ BigDecimal waitQuantity,
+            /** 明细备注remark。 */ String remark) {
     }
 
     public record ReturnItem(

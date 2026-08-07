@@ -336,6 +336,10 @@ public class MybatisPlusOrderDocumentRepository implements OrderDocumentReposito
     private static <T> void appendDocumentFilters(
             QueryWrapper<T> query, DocumentFilter filter, String businessTimeColumn) {
         if (filter.status() != null) query.eq("source_status", filter.status());
+        if (filter.typeId() != null) {
+            query.in("source_type_id", java.util.Arrays.stream(filter.typeId().split(","))
+                    .map(String::strip).filter(value -> !value.isBlank()).toList());
+        }
         if (filter.orderNo() != null) query.eq("order_no", filter.orderNo());
         if (filter.from() != null) query.ge(businessTimeColumn, filter.from());
         if (filter.to() != null) query.le(businessTimeColumn, filter.to());
@@ -348,25 +352,28 @@ public class MybatisPlusOrderDocumentRepository implements OrderDocumentReposito
         entity.id = existing == null ? UUID.randomUUID().toString() : existing.id;
         entity.tenantId = tenantId;
         entity.sourceSystem = SOURCE_SYSTEM;
-        entity.sourceShipmentId = item.sourceShipmentId();
+        entity.sourceShipmentId = first(item.sourceShipmentId(), existing == null ? null : existing.sourceShipmentId);
         entity.shipmentNo = item.shipmentNo();
-        entity.orderNo = item.orderNo();
-        entity.sourceStatus = item.status();
-        entity.sourceStatusName = item.statusName();
-        entity.sourceTypeId = item.typeId();
-        entity.sourceTypeName = item.typeName();
-        entity.customerNo = item.customerNo();
-        entity.customerName = item.customerName();
-        entity.customerGuid = item.customerGuid();
-        entity.warehouseNo = item.warehouseNo();
-        entity.warehouseName = item.warehouseName();
-        entity.warehouseGuid = item.warehouseGuid();
-        entity.shipmentAt = utc(item.shipmentAt());
-        entity.logisticsName = item.logisticsName();
-        entity.trackingNo = item.trackingNo();
-        entity.remark = item.remark();
-        entity.sourceCreatedAt = utc(item.createdAt());
-        entity.sourceUpdatedAt = utc(item.updatedAt());
+        entity.orderNo = first(item.orderNo(), existing == null ? null : existing.orderNo);
+        entity.sourceStatus = first(item.status(), existing == null ? null : existing.sourceStatus);
+        entity.sourceStatusName = first(item.statusName(), existing == null ? null : existing.sourceStatusName);
+        entity.sourceTypeId = first(item.typeId(), existing == null ? null : existing.sourceTypeId);
+        entity.sourceTypeName = first(item.typeName(), existing == null ? null : existing.sourceTypeName);
+        entity.customerNo = first(item.customerNo(), existing == null ? null : existing.customerNo);
+        entity.customerName = first(item.customerName(), existing == null ? null : existing.customerName);
+        entity.customerGuid = first(item.customerGuid(), existing == null ? null : existing.customerGuid);
+        entity.warehouseNo = first(item.warehouseNo(), existing == null ? null : existing.warehouseNo);
+        entity.warehouseName = first(item.warehouseName(), existing == null ? null : existing.warehouseName);
+        entity.warehouseGuid = first(item.warehouseGuid(), existing == null ? null : existing.warehouseGuid);
+        entity.shipmentAt = item.shipmentAt() == null
+                ? existing == null ? null : existing.shipmentAt : utc(item.shipmentAt());
+        entity.logisticsName = first(item.logisticsName(), existing == null ? null : existing.logisticsName);
+        entity.trackingNo = first(item.trackingNo(), existing == null ? null : existing.trackingNo);
+        entity.remark = first(item.remark(), existing == null ? null : existing.remark);
+        entity.sourceCreatedAt = item.createdAt() == null
+                ? existing == null ? null : existing.sourceCreatedAt : utc(item.createdAt());
+        entity.sourceUpdatedAt = item.updatedAt() == null
+                ? existing == null ? null : existing.sourceUpdatedAt : utc(item.updatedAt());
         entity.rawJson = defaultJson(item.rawJson());
         entity.payloadHash = item.payloadHash();
         entity.detailAvailable = item.detailIncluded()
@@ -375,6 +382,10 @@ public class MybatisPlusOrderDocumentRepository implements OrderDocumentReposito
         entity.createdAt = existing == null ? now : existing.createdAt;
         entity.updatedAt = now;
         return entity;
+    }
+
+    private static String first(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     private static DhbReturnEntity returnEntity(

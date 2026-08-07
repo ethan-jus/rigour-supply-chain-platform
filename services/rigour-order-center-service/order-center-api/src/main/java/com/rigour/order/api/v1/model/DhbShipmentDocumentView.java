@@ -8,6 +8,7 @@ public record DhbShipmentDocumentView(
         /** 关联订货宝订单号orders_num。 */ String orderNo,
         /** shipped待发货、receivedin待收货、received已收货、cancelled已取消。 */ String status,
         /** 订货宝返回的状态中文名status_name。 */ String statusName,
+        /** 订货宝出库类型ID：-2采购退货、10销售出库、11盘亏出库、17其他出库、18调拨出库、19联营出库。 */ String typeId,
         /** 出库类型名称，如销售出库、调拨出库。 */ String typeName,
         /** 来源客户编号client_num。 */ String customerNo,
         /** 客户名称快照client_name。 */ String customerName,

@@ -21,6 +21,11 @@ public record CallerIdentity(
         } else if ("PLATFORM".equals(principalScope)) {
             if (tenantId != null || userId != null || platformUserId == null || !principalId.equals(platformUserId)
                     || tenantPolicyVersion != 0) throw new IllegalArgumentException("Invalid platform caller identity");
+        } else if ("SERVICE".equals(principalScope)) {
+            // 服务身份不代表某个用户；tenantId 可为空（跨租户发现）或绑定到当前目标租户。
+            if (userId != null || platformUserId != null || tenantPolicyVersion != 0) {
+                throw new IllegalArgumentException("Invalid service caller identity");
+            }
         } else throw new IllegalArgumentException("Invalid principal scope");
     }
 }

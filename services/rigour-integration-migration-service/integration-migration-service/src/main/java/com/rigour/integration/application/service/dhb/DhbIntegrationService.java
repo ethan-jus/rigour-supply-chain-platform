@@ -58,6 +58,7 @@ import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.api.v1.model.DhbApiModels.WaitShipView;
 import com.rigour.integration.api.v1.model.DhbApiModels.WaitShipsView;
 import com.rigour.integration.api.v1.model.DhbApiModels.WaitStockView;
@@ -162,7 +163,7 @@ public final class DhbIntegrationService {
      */
     public OrderContentView orderContent(UUID connectorId, String orderNumber,
                                          OrderContentCommand command) {
-        CallerIdentity caller = requireWriteCaller();
+        CallerIdentity caller = requireWriteOrServiceCaller();
         if (orderNumber == null || orderNumber.isBlank()) {
             throw new IllegalArgumentException("orderNumber is required");
         }
@@ -327,6 +328,17 @@ public final class DhbIntegrationService {
         return store.syncTasks(caller.tenantId());
     }
 
+    /**
+     * 返回供Order Center定时器使用的全局订单同步目标。
+     *
+     * <p>该用例只接受服务身份，避免把跨租户目标发现伪装成某个租户用户；具体租户的
+     * 后续查询仍由Order Center使用带tenantId的服务身份执行。</p>
+     */
+    public List<SyncTargetView> syncTargets() {
+        requireServiceCaller();
+        return store.activeOrderSyncTargets();
+    }
+
     public SyncTaskView createSyncTask(SyncTaskCommand command) {
         CallerIdentity caller = requireWriteCaller();
         return store.createSyncTask(caller.tenantId(), caller.userId(), command);
@@ -394,13 +406,38 @@ public final class DhbIntegrationService {
     private static CallerIdentity requireWriteCaller() {
         CallerIdentity caller = AuthorizationContext.requireCurrent();
         requireTenant(caller);
+        if (caller.userId() == null) {
+            throw new com.rigour.shared.context.AuthorizationDeniedException("user-caller");
+        }
+        AuthorizationContext.requirePermission("integration:dhb:write");
+        return caller;
+    }
+
+    /** 订单明细读取虽标记为写权限，但定时调度使用服务身份执行该受控外部调用。 */
+    private static CallerIdentity requireWriteOrServiceCaller() {
+        CallerIdentity caller = AuthorizationContext.requireCurrent();
+        requireTenant(caller);
         AuthorizationContext.requirePermission("integration:dhb:write");
         return caller;
     }
 
     private static void requireTenant(CallerIdentity caller) {
-        if (caller.tenantId() == null || caller.userId() == null) {
+        boolean tenantCaller = "TENANT".equals(caller.principalScope())
+                && caller.tenantId() != null && caller.userId() != null;
+        boolean tenantScopedService = "SERVICE".equals(caller.principalScope())
+                && caller.tenantId() != null && caller.userId() == null;
+        if (!tenantCaller && !tenantScopedService) {
             throw new com.rigour.shared.context.AuthorizationDeniedException("tenant-caller");
         }
+    }
+
+    private static CallerIdentity requireServiceCaller() {
+        CallerIdentity caller = AuthorizationContext.requireCurrent();
+        if (!"SERVICE".equals(caller.principalScope()) || caller.tenantId() != null
+                || caller.userId() != null || caller.platformUserId() != null) {
+            throw new com.rigour.shared.context.AuthorizationDeniedException("service-caller");
+        }
+        AuthorizationContext.requirePermission("integration:dhb:sync-discovery");
+        return caller;
     }
 }

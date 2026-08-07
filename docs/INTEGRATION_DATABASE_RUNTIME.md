@@ -25,7 +25,7 @@ Integration 是外部系统和本平台领域服务之间的隔离层，负责�
 6. 记录外部与内部事实的差异，并记录每个租户、业务域当前由谁拥有事实主权。
 
 当前代码已经提供控制面接口和数据库迁移，允许在门户中配置连接、任务和字段映射；订货宝正式 API 地址和账号 Secret 必须来自供应商/负责人确认，不能用测试账号密码臆造真实联调。
-当前版本已经在 Integration 内实现订货宝 `DhbClient`、HTTP 适配器、商品/订单公开查询、订单明细读取和手动 `ORDER_PULL` Worker（认证、超时、有限重试、进程内限流、偏移分页、更新时间窗口、Raw Landing、订单镜像、Outbox 和 checkpoint）；`integration-migration-api` 已提供版本化跨服务契约。客户、仓库、员工目录、定时 Worker、商品落库同步、订单明细自动拉取和下游消费仍需后续实现。
+当前版本已经在 Integration 内实现订货宝 `DhbClient`、HTTP 适配器、商品/订单公开查询、订单明细读取和手动 `ORDER_PULL` Worker（认证、超时、有限重试、进程内限流、偏移分页、更新时间窗口、Raw Landing、订单镜像、Outbox 和 checkpoint）；`integration-migration-api` 已提供版本化跨服务契约。Order Center 已实现通过内部可信服务身份动态发现启用订单任务、自动拉取订单及关联明细并完成本地幂等落库；客户、仓库、员工目录、死信重放和下游 Outbox 消费仍需后续实现。
 
 ## 3. 从供应链入口调用的完整链路
 

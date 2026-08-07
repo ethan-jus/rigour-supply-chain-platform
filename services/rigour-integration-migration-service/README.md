@@ -49,6 +49,7 @@
 | `POST /api/v1/integration/dhb/orders/sync-tasks/{taskId}/run` | 订单域：手动执行订单拉取 |
 | `GET /api/v1/integration/dhb/orders/mirrors` | 订单域：查询订单镜像 |
 | `GET /api/v1/integration/dhb/sync-logs` | 同步诊断日志 |
+| `GET /internal/v1/integration/dhb/sync-targets` | 仅供 Order Center 调度器发现启用订单同步目标；不经过 Gateway |
 
 这些接口必须经过 Gateway，并使用可信 `tenantId` 与 Integration 权限。同步完成后，订单中心通过内部导入契约或事件接收数据；该契约不得携带外部凭据。
 
@@ -79,9 +80,10 @@ integration-migration-service/
 不包含账号、密码、Token、Secret Resolver 或第三方 HTTP 实现。
 
 调用方向为 `ERP/Order Center -> Gateway/Integration -> 订货宝`；调用方只使用 API 模块的 DTO
-和 HTTP 路径，不读取 `rigour_integration` 表。当前契约支持带可信租户/用户上下文的查询和手动任务
-触发；面向定时任务的独立服务身份及 Order Center/ERP 自动落库编排仍属于后续跨服务契约，不在
-Integration 中复制业务主表。
+和 HTTP 路径，不读取 `rigour_integration` 表。Order Center 定时调度器另通过未配置到 Gateway
+的内部路径发现 `enabled=1`、`object_type=ORDER` 且连接器为 `ACTIVE` 的目标，再以带目标
+`tenantId` 的可信 `SERVICE` 身份调用订单查询契约；Integration 不在此过程中返回 Secret 或
+模拟租户操作人，也不复制订单主表。
 
 ## 启动与验证
 
@@ -111,5 +113,4 @@ POST /api/v1/integration/dhb/orders/sync-tasks/{taskId}/run
 Body: {"from":"2026-08-04T00:00:00Z","to":"2026-08-04T01:00:00Z","pageSize":100}
 ```
 
-定时 Worker、商品落库同步、客户/仓库/员工目录、订单明细自动拉取、死信重放、Outbox 消费和 Order Center 内部导入契约仍未完成；不得用测试账号
-或猜测字段冒充真实联调。
+商品落库同步、客户/仓库/员工目录、死信重放和 Outbox 消费仍未完成；不得用测试账号或猜测字段冒充真实联调。

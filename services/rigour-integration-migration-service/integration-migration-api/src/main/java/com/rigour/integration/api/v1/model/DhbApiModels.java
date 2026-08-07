@@ -30,6 +30,10 @@ public final class DhbApiModels {
                                Instant nextRunAt, long version) {
     }
 
+    /** Order Center定时调度使用的内部目标；不包含Secret、Token或任何用户身份。 */
+    public record SyncTargetView(UUID taskId, UUID tenantId, UUID connectorId) {
+    }
+
     public record SyncTaskCommand(UUID connectorId, String code, String objectType,
                                   String status, Instant nextRunAt, long version) {
     }

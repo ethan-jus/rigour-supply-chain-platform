@@ -49,6 +49,23 @@ class RequestContextFilterTest {
     }
 
     @Test
+    void acceptsSignedServiceIdentityWithOptionalTenantScope() throws Exception {
+        MockHttpServletRequest request = signedServiceRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, (ignoredRequest, ignoredResponse) -> {
+            CallerIdentity caller = AuthorizationContext.requireCurrent();
+            assertThat(caller.principalScope()).isEqualTo("SERVICE");
+            assertThat(caller.tenantId()).isNull();
+            assertThat(caller.userId()).isNull();
+            assertThat(caller.permissions()).contains("integration:dhb:sync-discovery");
+        });
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(AuthorizationContext.current()).isEmpty();
+    }
+
+    @Test
     void rejectsUnsignedOrTamperedTrustedHeaders() throws Exception {
         MockHttpServletRequest unsigned = new MockHttpServletRequest("GET", "/api/v1/orders");
         unsigned.addHeader(RequestHeaders.TENANT_ID, "019fb000-0000-7000-8000-000000000002");
@@ -148,6 +165,24 @@ class RequestContextFilterTest {
         values.put(RequestHeaders.TENANT_POLICY_VERSION, "4");
         values.put(RequestHeaders.ROLES, "ADMIN,OPERATOR");
         values.put(RequestHeaders.PERMISSIONS, "iam:user:read,iam:user:write");
+        TrustedContextSigner.SignedContext signature = signer.sign(request, values);
+        values.forEach(request::addHeader);
+        request.addHeader(RequestHeaders.CONTEXT_KEY_ID, signature.keyId());
+        request.addHeader(RequestHeaders.CONTEXT_TIMESTAMP, signature.timestamp());
+        request.addHeader(RequestHeaders.CONTEXT_SIGNATURE, signature.signature());
+        return request;
+    }
+
+    private MockHttpServletRequest signedServiceRequest() {
+        MockHttpServletRequest request = new MockHttpServletRequest(
+                "GET", "/internal/v1/integration/dhb/sync-targets");
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put(RequestHeaders.PRINCIPAL_SCOPE, "SERVICE");
+        values.put(RequestHeaders.PRINCIPAL_ID, "019fb000-0000-7000-8000-000000000004");
+        values.put(RequestHeaders.SESSION_ID, "019fb000-0000-7000-8000-000000000005");
+        values.put(RequestHeaders.SESSION_VERSION, "0");
+        values.put(RequestHeaders.USER_SECURITY_VERSION, "0");
+        values.put(RequestHeaders.PERMISSIONS, "integration:dhb:sync-discovery");
         TrustedContextSigner.SignedContext signature = signer.sign(request, values);
         values.forEach(request::addHeader);
         request.addHeader(RequestHeaders.CONTEXT_KEY_ID, signature.keyId());

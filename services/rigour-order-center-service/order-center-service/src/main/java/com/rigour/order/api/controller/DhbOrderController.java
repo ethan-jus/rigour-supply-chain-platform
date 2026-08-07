@@ -52,6 +52,7 @@ public class DhbOrderController {
         return ApiResponse.success(service.detail(tenantId(), orderSn));
     }
 
+    /** 前端立即同步入口；请求只进入Order Center，不允许前端直接调用Integration执行接口。 */
     @PostMapping("/sync/{connectorId}")
     public ApiResponse<DhbOrderSyncResult> sync(
             @PathVariable UUID connectorId,

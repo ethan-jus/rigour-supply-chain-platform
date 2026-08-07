@@ -2,6 +2,7 @@ package com.rigour.order.application.service.dhb;
 
 import com.rigour.order.api.v1.model.DhbOrderImportBatch;
 import com.rigour.order.api.v1.model.DhbOrderImportResult;
+import com.rigour.order.application.port.out.DhbShipmentLogisticsRepository;
 import com.rigour.order.application.port.out.OrderDocumentRepository;
 import com.rigour.order.application.port.out.OrderRepository;
 import com.rigour.order.domain.model.order.ImportedOrder;
@@ -9,33 +10,39 @@ import com.rigour.order.domain.model.order.Order;
 import com.rigour.order.domain.model.order.OrderLine;
 import com.rigour.order.domain.model.order.OrderShipment;
 import com.rigour.order.domain.model.order.enums.OrderStatus;
-import com.rigour.shared.context.AuthorizationContext;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Objects;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /** Integration完成供应商调用后，订单中心执行幂等本地落库的内部用例。 */
 @Service
 public class DhbOrderImportService {
     private final OrderRepository orderRepository;
     private final OrderDocumentRepository documentRepository;
+    private final DhbShipmentLogisticsRepository shipmentLogisticsRepository;
 
-    public DhbOrderImportService(OrderRepository orderRepository, OrderDocumentRepository documentRepository) {
+    public DhbOrderImportService(OrderRepository orderRepository, OrderDocumentRepository documentRepository,
+                                 DhbShipmentLogisticsRepository shipmentLogisticsRepository) {
         this.orderRepository = orderRepository;
         this.documentRepository = documentRepository;
+        this.shipmentLogisticsRepository = shipmentLogisticsRepository;
     }
 
     /**
-     * 导入订单域批次。
+     * 供Order Center受信任的定时同步调用；不依赖HTTP线程中的AuthorizationContext。
+     *
+     * <p>该方法不暴露为Controller接口，调用方必须是本服务内部的定时编排器；
+     * 外部请求没有直接导入入口。</p>
      *
      * @param tenantId Gateway/Integration共同签名的租户ID，不接受请求体覆盖
-     * @param batch 已完成字段归一化的订单、发货、退货和收付款数据
+     * @param batch 已完成字段归一化的订单、发货、getWaitShips物流、退货和收付款数据
      * @return 每类单据本次实际新增或内容变化的数量
      */
-    public DhbOrderImportResult importBatch(String tenantId, DhbOrderImportBatch batch) {
-        AuthorizationContext.requirePermission("integration:dhb:write");
+    @Transactional
+    public DhbOrderImportResult importBatchInternal(String tenantId, DhbOrderImportBatch batch) {
         if (tenantId == null || tenantId.isBlank()) throw new IllegalArgumentException("tenantId不能为空");
         Objects.requireNonNull(batch, "batch不能为空");
         int orders = 0;
@@ -44,10 +51,11 @@ public class DhbOrderImportService {
             if (result.changed()) orders++;
         }
         int shipments = documentRepository.importShipments(tenantId, batch.shipments());
+        int shipmentLogistics = shipmentLogisticsRepository.importSnapshots(tenantId, batch.shipmentLogistics());
         int returns = documentRepository.importReturns(tenantId, batch.returns());
         int financialDocuments = documentRepository.importFinancialDocuments(
                 tenantId, batch.financialDocuments());
-        return new DhbOrderImportResult(orders, shipments, returns, financialDocuments);
+        return new DhbOrderImportResult(orders, shipments, shipmentLogistics, returns, financialDocuments);
     }
 
     private static ImportedOrder importedOrder(String tenantId, DhbOrderImportBatch.OrderItem item) {
@@ -76,15 +84,16 @@ public class DhbOrderImportService {
     }
 
     /**
-     * 仅在首次建单时映射内部状态：pricing/pending待确认，stockup/shipped处于分配/出库阶段，
-     * received表示已发出待收货，finished/forcedone完成，cancelled取消；未知值进入EXCEPTION。
+     * 仅在首次建单时映射内部状态：pricing/pending待确认，stockup待出库，shipped已发货，
+     * received已收货，finished/forcedone完成，cancelled取消；未知值进入EXCEPTION。
      */
     private static String initialStatus(String sourceStatus) {
         if (sourceStatus == null) return OrderStatus.RECEIVED.code();
         return switch (sourceStatus.toLowerCase()) {
             case "pricing", "pending" -> OrderStatus.PENDING_CONFIRMATION.code();
-            case "stock_up", "stockup", "shipped" -> OrderStatus.ALLOCATING.code();
-            case "received" -> OrderStatus.SHIPPED.code();
+            case "stock_up", "stockup" -> OrderStatus.ALLOCATING.code();
+            case "shipped" -> OrderStatus.SHIPPED.code();
+            case "received" -> OrderStatus.COMPLETED.code();
             case "finished", "forcedone" -> OrderStatus.COMPLETED.code();
             case "cancelled" -> OrderStatus.CANCELLED.code();
             default -> OrderStatus.EXCEPTION.code();

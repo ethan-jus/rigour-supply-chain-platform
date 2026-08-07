@@ -8,6 +8,7 @@ import com.rigour.integration.api.v1.model.DhbApiModels.OrderMirrorView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncLogView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
 import java.time.Instant;
 import java.util.List;
@@ -22,6 +23,7 @@ public interface DhbIntegrationStore {
     ConnectorView createConnector(UUID tenantId, UUID actorId, ConnectorCommand command);
     ConnectorView updateConnector(UUID tenantId, UUID actorId, UUID id, ConnectorCommand command);
     List<SyncTaskView> syncTasks(UUID tenantId);
+    List<SyncTargetView> activeOrderSyncTargets();
     SyncTaskView createSyncTask(UUID tenantId, UUID actorId, SyncTaskCommand command);
     SyncTaskView updateSyncTask(UUID tenantId, UUID actorId, UUID id, SyncTaskCommand command);
     List<OrderMirrorView> orderMirrors(UUID tenantId, int limit, int offset);

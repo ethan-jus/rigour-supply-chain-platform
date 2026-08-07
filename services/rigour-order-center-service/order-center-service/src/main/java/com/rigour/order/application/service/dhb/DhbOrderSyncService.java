@@ -3,41 +3,76 @@ package com.rigour.order.application.service.dhb;
 import com.rigour.order.api.v1.model.DhbOrderImportResult;
 import com.rigour.order.api.v1.model.DhbOrderSyncCommand;
 import com.rigour.order.api.v1.model.DhbOrderSyncResult;
+import com.rigour.order.application.port.out.DhbOrderSyncCheckpointStore;
 import com.rigour.order.application.port.out.DhbOrderSyncClient;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
+import java.time.Clock;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 
-/** Portal 发起的订货宝订单域同步用例；Order Center 是业务编排和业务落库入口。 */
+/** Order Center编排订货宝订单域同步，并负责业务落库。 */
 @Service
 public final class DhbOrderSyncService {
     private final DhbOrderSyncClient integration;
     private final DhbOrderImportService importer;
+    private final DhbOrderSyncCheckpointStore checkpointStore;
+    private final Clock clock;
 
-    public DhbOrderSyncService(DhbOrderSyncClient integration, DhbOrderImportService importer) {
+    public DhbOrderSyncService(DhbOrderSyncClient integration, DhbOrderImportService importer,
+                               DhbOrderSyncCheckpointStore checkpointStore, Clock clock) {
         this.integration = integration;
         this.importer = importer;
+        this.checkpointStore = checkpointStore;
+        this.clock = clock;
     }
 
-    /**
-     * 执行“Order Center → Integration → 订货宝 → Order Center本地库”的一期同步链路。
-     *
-     * @param connectorId 当前租户在 Integration 配置的连接器 UUID
-     * @param command includeDetails 默认 true；maxPages 默认 100、范围 1..100，可选更新时间窗口
-     * @return 供应商拉取数量和本地实际新增/变化数量
-     */
+    /** 前端立即同步入口的应用用例；认证和权限来自Gateway签名上下文。 */
     public DhbOrderSyncResult run(UUID connectorId, DhbOrderSyncCommand command) {
         CallerIdentity caller = requireCaller();
         if (connectorId == null) throw new IllegalArgumentException("connectorId不能为空");
+        Instant checkpointAt = command != null && command.updatedTo() != null
+                ? command.updatedTo() : clock.instant();
+        try {
+            DhbOrderSyncResult result = runWithCaller(caller, connectorId, command);
+            if (result.completedObjects().contains("ORDER")) {
+                checkpointStore.markSucceeded(caller.tenantId().toString(), connectorId,
+                        "ORDER", result.runId(), checkpointAt);
+            }
+            return result;
+        } catch (RuntimeException error) {
+            checkpointStore.markFailed(caller.tenantId().toString(), connectorId,
+                    "ORDER", null, error.getMessage());
+            throw error;
+        }
+    }
+
+    /**
+     * 供Order Center内部定时编排器调用的同步入口。
+     *
+     * <p>该入口仍要求任务配置生成的租户身份带有订货宝读写权限，但不依赖
+     * 定时线程不存在的HTTP ThreadLocal上下文。</p>
+     */
+    public DhbOrderSyncResult runScheduled(CallerIdentity caller, UUID connectorId,
+                                            DhbOrderSyncCommand command) {
+        requireScheduledCaller(caller);
+        return runWithCaller(caller, connectorId, command);
+    }
+
+    private DhbOrderSyncResult runWithCaller(CallerIdentity caller, UUID connectorId,
+                                             DhbOrderSyncCommand command) {
+        if (connectorId == null) throw new IllegalArgumentException("connectorId不能为空");
         DhbOrderSyncCommand effective = command == null ? new DhbOrderSyncCommand(null, null) : command;
         DhbOrderSyncClient.Collected collected = integration.collect(caller, connectorId, effective);
-        DhbOrderImportResult imported = importer.importBatch(caller.tenantId().toString(), collected.batch());
+        String tenantId = caller.tenantId().toString();
+        DhbOrderImportResult imported = importer.importBatchInternal(tenantId, collected.batch());
         return new DhbOrderSyncResult(collected.runId(), collected.objectType(), "SUCCEEDED",
                 collected.fetched(), imported.totalChanged(), imported.orders(), imported.shipments(),
-                imported.returns(), imported.financialDocuments(), collected.completedObjects());
+                imported.shipmentLogistics(), imported.returns(), imported.financialDocuments(),
+                collected.completedObjects());
     }
 
     private static CallerIdentity requireCaller() {
@@ -48,5 +83,21 @@ public final class DhbOrderSyncService {
         AuthorizationContext.requirePermission("integration:dhb:read");
         AuthorizationContext.requirePermission("integration:dhb:write");
         return Objects.requireNonNull(caller);
+    }
+
+    private static void requireScheduledCaller(CallerIdentity caller) {
+        if (caller == null || caller.tenantId() == null
+                || !("SERVICE".equals(caller.principalScope())
+                || ("TENANT".equals(caller.principalScope()) && caller.userId() != null))) {
+            throw new AuthorizationDeniedException("tenant-caller");
+        }
+        if (!caller.permissions().contains("integration:dhb:read")
+                && !caller.permissions().contains("*:*:*")) {
+            throw new AuthorizationDeniedException("integration:dhb:read");
+        }
+        if (!caller.permissions().contains("integration:dhb:write")
+                && !caller.permissions().contains("*:*:*")) {
+            throw new AuthorizationDeniedException("integration:dhb:write");
+        }
     }
 }

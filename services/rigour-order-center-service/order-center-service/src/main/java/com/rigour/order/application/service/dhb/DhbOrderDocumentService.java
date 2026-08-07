@@ -22,7 +22,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import org.springframework.stereotype.Service;
 
-/** 发货、退货、收款和付款的本地只读查询用例。 */
+/** 出库/发货、退货、收款和付款的本地只读查询用例。 */
 @Service
 public class DhbOrderDocumentService {
     private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -32,7 +32,7 @@ public class DhbOrderDocumentService {
         this.repository = repository;
     }
 
-    /** 查询本地发货单，status允许shipped、receivedin、received、cancelled。 */
+    /** 查询统一的本地出库/发货单，status和typeId均沿用订货宝getShipsList原值。 */
     public DhbDocumentPageView<DhbShipmentDocumentView> shipments(String tenantId, Query query) {
         requireRead();
         DocumentFilter filter = filter(query, DhbSourceStatuses.SHIPMENT);
@@ -93,13 +93,20 @@ public class DhbOrderDocumentService {
         if (query.status() != null && !query.status().isBlank() && !statuses.containsKey(query.status())) {
             throw new IllegalArgumentException("不支持的来源状态: " + query.status());
         }
-        return new DocumentFilter(query.begin(), query.step(), blank(query.status()), blank(query.orderNo()),
-                parse(query.from()), parse(query.to()));
+        if (query.typeId() != null && !query.typeId().isBlank()) {
+            for (String typeId : query.typeId().split(",")) {
+                if (!DhbSourceStatuses.SHIPMENT_TYPES.containsKey(typeId.strip())) {
+                    throw new IllegalArgumentException("不支持的出库类型: " + typeId.strip());
+                }
+            }
+        }
+        return new DocumentFilter(query.begin(), query.step(), blank(query.status()), blank(query.typeId()),
+                blank(query.orderNo()), parse(query.from()), parse(query.to()));
     }
 
     private static DhbShipmentDocumentView shipment(DhbOrderDocuments.Shipment value) {
         return new DhbShipmentDocumentView(value.shipmentNo(), value.orderNo(), value.status(), value.statusName(),
-                value.typeName(), value.customerNo(), value.customerName(), value.warehouseNo(), value.warehouseName(),
+                value.typeId(), value.typeName(), value.customerNo(), value.customerName(), value.warehouseNo(), value.warehouseName(),
                 instant(value.shipmentAt()), value.logisticsName(), value.trackingNo(), value.remark(),
                 value.detailAvailable(), instant(value.syncedAt()));
     }
@@ -138,9 +145,9 @@ public class DhbOrderDocumentService {
 
     /**
      * 单据查询参数。
-     * begin为零基偏移；step范围1..1000；status为供应商状态原值；orderNo为关联订单号；
+     * begin为零基偏移；step范围1..1000；status和typeId为供应商原值；orderNo为关联订单号；
      * from/to支持yyyy-MM-dd或yyyy-MM-dd HH:mm:ss并按来源业务时间过滤。
      */
-    public record Query(int begin, int step, String status, String orderNo, String from, String to) {
+    public record Query(int begin, int step, String status, String typeId, String orderNo, String from, String to) {
     }
 }

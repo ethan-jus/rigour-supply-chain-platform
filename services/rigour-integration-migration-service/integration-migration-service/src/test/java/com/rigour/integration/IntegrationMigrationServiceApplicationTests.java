@@ -11,6 +11,7 @@ import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorView;
 import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.shared.context.CallerIdentity;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -117,6 +118,51 @@ class IntegrationMigrationServiceApplicationTests {
                 .isEqualTo("INVALID");
         assertThatThrownBy(() -> store.fieldMappings(tenantB, connector.id()))
                 .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+    }
+
+    @Test
+    void discoversOnlyEnabledOrderTasksWithActiveConnectorsAcrossTenants() {
+        UUID tenantA = UUID.randomUUID();
+        UUID tenantB = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+
+        ConnectorView activeConnector = store.createConnector(tenantA, actor,
+                new ConnectorCommand("DHB_DISCOVERY_ACTIVE", "启用连接",
+                        "https://open.dhb.example", "env://DHB_DISCOVERY_ACTIVE", "ACTIVE", 0));
+        var activeOrderTask = store.createSyncTask(tenantA, actor,
+                new SyncTaskCommand(activeConnector.id(), "ORDER_ACTIVE", "ORDER", "IDLE", null, 0));
+
+        ConnectorView disabledConnector = store.createConnector(tenantB, actor,
+                new ConnectorCommand("DHB_DISCOVERY_DISABLED", "禁用连接",
+                        "https://open.dhb.example", "env://DHB_DISCOVERY_DISABLED", "DISABLED", 0));
+        var disabledConnectorTask = store.createSyncTask(tenantB, actor,
+                new SyncTaskCommand(disabledConnector.id(), "ORDER_DISABLED_CONNECTOR", "ORDER", "IDLE", null, 0));
+
+        ConnectorView disabledTaskConnector = store.createConnector(tenantA, actor,
+                new ConnectorCommand("DHB_DISCOVERY_DISABLED_TASK", "禁用任务连接",
+                        "https://open.dhb.example", "env://DHB_DISCOVERY_DISABLED_TASK", "ACTIVE", 0));
+        var disabledTask = store.createSyncTask(tenantA, actor,
+                new SyncTaskCommand(disabledTaskConnector.id(), "ORDER_DISABLED_TASK", "ORDER", "IDLE", null, 0));
+        jdbcTemplate.update("UPDATE integration_sync_task SET enabled=0 WHERE id=?",
+                IntegrationUuidCodec.encode(disabledTask.id()));
+
+        ConnectorView productConnector = store.createConnector(tenantA, actor,
+                new ConnectorCommand("DHB_DISCOVERY_PRODUCT", "商品连接",
+                        "https://open.dhb.example", "env://DHB_DISCOVERY_PRODUCT", "ACTIVE", 0));
+        var productTask = store.createSyncTask(tenantA, actor,
+                new SyncTaskCommand(productConnector.id(), "PRODUCT_ACTIVE", "PRODUCT", "IDLE", null, 0));
+
+        ConnectorView pausedConnector = store.createConnector(tenantA, actor,
+                new ConnectorCommand("DHB_DISCOVERY_PAUSED", "暂停连接",
+                        "https://open.dhb.example", "env://DHB_DISCOVERY_PAUSED", "ACTIVE", 0));
+        var pausedTask = store.createSyncTask(tenantA, actor,
+                new SyncTaskCommand(pausedConnector.id(), "ORDER_PAUSED", "ORDER", "PAUSED", null, 0));
+
+        List<SyncTargetView> targets = store.activeOrderSyncTargets();
+
+        assertThat(targets).extracting(SyncTargetView::taskId).contains(activeOrderTask.id());
+        assertThat(targets).extracting(SyncTargetView::taskId)
+                .doesNotContain(disabledConnectorTask.id(), disabledTask.id(), productTask.id(), pausedTask.id());
     }
 
     @Test

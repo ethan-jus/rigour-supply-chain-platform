@@ -80,15 +80,17 @@ Controller 分别实现这些契约。
 其他微服务的调用方向固定为：
 
 ```text
-ERP/Order Center -> integration-migration-api 契约 -> Gateway/Integration -> 订货宝
+Portal/ERP立即同步 -> integration-migration-api 契约 -> Gateway/Integration -> 订货宝
+Order Center定时任务 -> 内部目标发现/可信 SERVICE 契约 -> Integration -> 订货宝
 ```
 
 调用方使用 `integration-migration-api` 中的 DTO 组织 HTTP 请求，例如商品查询调用
 `POST /api/v1/integration/dhb/products/{connectorId}/query`；`tenantId`、权限和
 身份来自 Gateway 签名上下文，不能放在请求体里伪造。当前已完成的是 Integration 的 HTTP 边界和
 版本化契约；调用方自己的 HTTP 客户端、服务编排和领域落库仍由 ERP/Order Center 实现，不能依赖
-Integration 的 JDBC 表。定时任务使用独立服务身份的内部调用契约尚未实现，在该契约完成前不应让
-各领域服务自行复制订货宝认证逻辑。
+Integration 的 JDBC 表。Order Center 定时任务使用独立的可信 `SERVICE` 身份调用未配置到 Gateway
+的 `/internal/v1/integration/dhb/sync-targets` 动态发现启用订单任务，再以目标 `tenantId` 调用上述
+查询契约；各领域服务不得复制订货宝认证逻辑。
 
 Integration 暴露 `POST /api/v1/integration/dhb/connectors/{id}/test` 作为连接测试入口，
 仅返回成功/稳定错误码和 token 到期时间，不返回 token 或 Secret；该动作需要
@@ -110,6 +112,7 @@ POST /api/v1/integration/dhb/orders/{connectorId}/returns/query
 POST /api/v1/integration/dhb/orders/{connectorId}/returns/{returnNumber}/content
 POST /api/v1/integration/dhb/orders/{connectorId}/receipts/query
 POST /api/v1/integration/dhb/orders/{connectorId}/payments/query
+GET  /internal/v1/integration/dhb/sync-targets  (仅服务间目标发现，不经过 Gateway)
 ```
 
 退货单状态原值为 `return_audit`（待退货审核）、`shipp_cust`（待客户发货）、

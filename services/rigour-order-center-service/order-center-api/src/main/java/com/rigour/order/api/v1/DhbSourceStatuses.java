@@ -20,6 +20,11 @@ public final class DhbSourceStatuses {
             "shipped", "待发货", "receivedin", "待收货",
             "received", "已收货", "cancelled", "已取消");
 
+    /** 出库/发货单类型：采购退货、销售出库、盘亏出库、其他出库、调拨出库、联营出库。 */
+    public static final Map<String, String> SHIPMENT_TYPES = Map.of(
+            "-2", "采购退货", "10", "销售出库", "11", "盘亏出库",
+            "17", "其他出库", "18", "调拨出库", "19", "联营出库");
+
     /** 退货单：待审核、待客户发货、待收货、待退款、已完成、已取消。 */
     public static final Map<String, String> RETURN = Map.of(
             "return_audit", "待退货审核", "shipp_cust", "待客户发货",

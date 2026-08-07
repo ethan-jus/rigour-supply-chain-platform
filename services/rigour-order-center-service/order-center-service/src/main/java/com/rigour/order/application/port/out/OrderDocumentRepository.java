@@ -20,7 +20,7 @@ public interface OrderDocumentRepository {
     /** 幂等导入收款/付款单；以tenantId+documentType+documentNo为唯一键。 */
     int importFinancialDocuments(String tenantId, List<DhbOrderImportBatch.FinancialItem> items);
 
-    /** 按来源状态、关联订单号和来源时间查询发货单。 */
+    /** 按来源状态、出库类型、关联订单号和来源时间查询统一出库/发货单。 */
     List<Shipment> findShipments(String tenantId, DocumentFilter filter);
 
     /** 统计符合过滤条件的发货单总数。 */
@@ -47,9 +47,10 @@ public interface OrderDocumentRepository {
 
     /**
      * 本地分页过滤器。
-     * status为订货宝来源状态；orderNo为关联订单号；from/to均为来源业务时间，含边界。
+     * status为订货宝来源状态；typeId为订货宝出库类型，支持逗号分隔；orderNo为关联订单号；
+     * from/to均为来源业务时间，含边界。
      */
-    record DocumentFilter(int begin, int step, String status, String orderNo,
+    record DocumentFilter(int begin, int step, String status, String typeId, String orderNo,
                           LocalDateTime from, LocalDateTime to) {
     }
 }

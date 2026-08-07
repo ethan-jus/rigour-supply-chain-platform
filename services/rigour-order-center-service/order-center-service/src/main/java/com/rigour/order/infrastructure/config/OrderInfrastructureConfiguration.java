@@ -1,9 +1,13 @@
 package com.rigour.order.infrastructure.config;
 
 import com.rigour.order.application.port.out.DhbOrderSyncClient;
+import com.rigour.order.application.port.out.DhbSyncTargetDiscoveryClient;
+import com.rigour.order.application.service.dhb.DhbOrderSyncScheduleProperties;
 import com.rigour.order.infrastructure.integration.HttpDhbOrderSyncClient;
+import com.rigour.order.infrastructure.integration.HttpDhbSyncTargetDiscoveryClient;
 import com.rigour.shared.context.TrustedContextSigner;
 import java.time.Clock;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -14,6 +18,7 @@ import tools.jackson.databind.ObjectMapper;
 /** 订单中心基础设施装配；第三方连接器不在本服务装配。 */
 @Configuration(proxyBeanMethods = false)
 @MapperScan("com.rigour.order.infrastructure.persistence.mapper")
+@EnableConfigurationProperties(DhbOrderSyncScheduleProperties.class)
 public class OrderInfrastructureConfiguration {
     @Bean Clock orderClock() { return Clock.systemUTC(); }
 
@@ -22,5 +27,12 @@ public class OrderInfrastructureConfiguration {
             TrustedContextSigner signer, ObjectMapper objectMapper,
             @Value("${rigour.integration.base-url:http://localhost:26882}") String integrationBaseUrl) {
         return new HttpDhbOrderSyncClient(RestClient.builder(), signer, objectMapper, integrationBaseUrl);
+    }
+
+    @Bean
+    DhbSyncTargetDiscoveryClient dhbSyncTargetDiscoveryClient(
+            TrustedContextSigner signer,
+            @Value("${rigour.integration.base-url:http://localhost:26882}") String integrationBaseUrl) {
+        return new HttpDhbSyncTargetDiscoveryClient(RestClient.builder(), signer, integrationBaseUrl);
     }
 }

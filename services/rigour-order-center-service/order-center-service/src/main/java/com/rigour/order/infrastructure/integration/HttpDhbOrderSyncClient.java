@@ -30,12 +30,15 @@ import java.util.TreeSet;
 import java.util.UUID;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.databind.ObjectMapper;
 
 /** 通过当前 Integration V1 订单契约查询订货宝，并转换为订单中心本地导入批次。 */
 public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
+    private static final Logger log = LoggerFactory.getLogger(HttpDhbOrderSyncClient.class);
     private static final int PAGE_SIZE = 100;
     private static final ZoneId DHB_ZONE = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -59,26 +62,119 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
         Objects.requireNonNull(connectorId, "connectorId不能为空");
         DhbOrderSyncCommand effective = command == null ? new DhbOrderSyncCommand(null, null) : command;
         List<DhbOrderImportBatch.OrderItem> orders = new ArrayList<>();
+        List<DhbOrderImportBatch.ShipmentItem> shipments = new ArrayList<>();
+        List<DhbOrderImportBatch.ShipmentLogisticsItem> shipmentLogistics = new ArrayList<>();
+        List<DhbOrderImportBatch.ReturnItem> returns = new ArrayList<>();
+        List<DhbOrderImportBatch.FinancialItem> financialDocuments = new ArrayList<>();
         Set<String> completed = new LinkedHashSet<>();
         long total = 0;
 
+        boolean truncatedByMaxPages = false;
         for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
             int begin = pageNumber * PAGE_SIZE;
             DhbApiModels.OrderPageView page = query(caller, connectorId, effective, begin);
             if (page == null || page.items() == null || page.items().isEmpty()) break;
-            total = page.total();
+            if (pageNumber == 0) total += page.total();
             for (DhbApiModels.OrderView summary : page.items()) {
                 DhbApiModels.OrderContentView detail = effective.includeDetails()
                         ? content(caller, connectorId, summary.orderNumber()) : null;
                 orders.add(order(summary, detail));
+                DhbApiModels.WaitShipsView waitShips = waitShips(caller, connectorId, summary.orderNumber());
+                shipmentLogistics.add(logisticsSnapshot(summary.orderNumber(), waitShips));
             }
-            completed.add("ORDER");
-            if (effective.includeDetails()) completed.add("ORDER_DETAIL");
             if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
+            truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
         }
 
-        DhbOrderImportBatch batch = new DhbOrderImportBatch(orders, List.of(), List.of(), List.of());
-        return new Collected(UUID.randomUUID(), "ORDER", orders.size(), completed, batch);
+        if (truncatedByMaxPages) {
+            throw new IllegalStateException("订货宝订单同步达到maxPages=" + effective.maxPages()
+                    + "，但供应商仍有后续数据；本次不推进增量游标");
+        }
+        completed.add("ORDER");
+        completed.add("SHIPMENT_LOGISTICS");
+        if (effective.includeDetails()) completed.add("ORDER_DETAIL");
+
+        boolean shipmentsTruncatedByMaxPages = false;
+        for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
+            int begin = pageNumber * PAGE_SIZE;
+            DhbApiModels.ShipmentPageView page = queryShipments(caller, connectorId, effective, begin);
+            if (page == null || page.items() == null || page.items().isEmpty()) break;
+            if (pageNumber == 0) total += page.total();
+            for (DhbApiModels.ShipmentView summary : page.items()) {
+                DhbApiModels.ShipmentContentView detail = effective.includeDetails()
+                        ? shipmentContent(caller, connectorId, summary.shipmentNumber()) : null;
+                shipments.add(shipment(summary, detail));
+            }
+            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= page.total()) break;
+            shipmentsTruncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+        }
+
+        if (shipmentsTruncatedByMaxPages) {
+            throw new IllegalStateException("订货宝出库/发货单同步达到maxPages=" + effective.maxPages()
+                    + "，但供应商仍有后续数据；本次不推进增量游标");
+        }
+        completed.add("SHIPMENT");
+        if (effective.includeDetails()) completed.add("SHIPMENT_DETAIL");
+
+        boolean returnsTruncatedByMaxPages = false;
+        for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
+            int begin = pageNumber * PAGE_SIZE;
+            DhbApiModels.ReturnPageView page = queryReturns(caller, connectorId, effective, begin);
+            if (page == null || page.items() == null || page.items().isEmpty()) break;
+            if (pageNumber == 0) total += page.total();
+            for (DhbApiModels.ReturnView summary : page.items()) {
+                DhbApiModels.ReturnContentView detail = effective.includeDetails()
+                        ? returnContent(caller, connectorId, summary.returnNumber()) : null;
+                returns.add(returnItem(summary, detail));
+            }
+            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= page.total()) break;
+            returnsTruncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+        }
+
+        if (returnsTruncatedByMaxPages) {
+            throw new IllegalStateException("订货宝退货单同步达到maxPages=" + effective.maxPages()
+                    + "，但供应商仍有后续数据；本次不推进增量游标");
+        }
+        completed.add("RETURN");
+        if (effective.includeDetails()) completed.add("RETURN_DETAIL");
+
+        boolean receiptsTruncatedByMaxPages = false;
+        for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
+            int begin = pageNumber * PAGE_SIZE;
+            DhbApiModels.ReceiptPageView page = queryReceipts(caller, connectorId, effective, begin);
+            if (page == null || page.items() == null || page.items().isEmpty()) break;
+            if (pageNumber == 0) total += page.total();
+            page.items().stream().map(this::receipt).forEach(financialDocuments::add);
+            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= page.total()) break;
+            receiptsTruncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+        }
+
+        if (receiptsTruncatedByMaxPages) {
+            throw new IllegalStateException("订货宝收款单同步达到maxPages=" + effective.maxPages()
+                    + "，但供应商仍有后续数据；本次不推进增量游标");
+        }
+        completed.add("RECEIPT");
+
+        boolean paymentsTruncatedByMaxPages = false;
+        for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
+            int begin = pageNumber * PAGE_SIZE;
+            DhbApiModels.PaymentPageView page = queryPayments(caller, connectorId, effective, begin);
+            if (page == null || page.items() == null || page.items().isEmpty()) break;
+            if (pageNumber == 0) total += page.total();
+            page.items().stream().map(this::payment).forEach(financialDocuments::add);
+            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= page.total()) break;
+            paymentsTruncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+        }
+
+        if (paymentsTruncatedByMaxPages) {
+            throw new IllegalStateException("订货宝付款单同步达到maxPages=" + effective.maxPages()
+                    + "，但供应商仍有后续数据；本次不推进增量游标");
+        }
+        completed.add("PAYMENT");
+
+        DhbOrderImportBatch batch = new DhbOrderImportBatch(
+                orders, shipments, shipmentLogistics, returns, financialDocuments);
+        return new Collected(UUID.randomUUID(), "ORDER_DOMAIN", total, completed, batch);
     }
 
     private DhbApiModels.OrderPageView query(CallerIdentity caller, UUID connectorId,
@@ -105,22 +201,135 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                 DhbApiModels.OrderContentView.class);
     }
 
+    /** 通过Integration调用订货宝getShipsList，查询独立出库/发货单。 */
+    private DhbApiModels.ShipmentPageView queryShipments(CallerIdentity caller, UUID connectorId,
+                                                          DhbOrderSyncCommand command, int begin) {
+        DhbApiModels.ShipmentQueryCommand request = new DhbApiModels.ShipmentQueryCommand(
+                begin, PAGE_SIZE, null, "F,T", null, null, null,
+                command.updatedFrom(), command.updatedTo(), null, null, null);
+        URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
+                .path(DhbOrderApi.SHIPMENT_QUERY_PATH)
+                .buildAndExpand(connectorId)
+                .encode()
+                .toUri();
+        return post(caller, uri, request, DhbApiModels.ShipmentPageView.class);
+    }
+
+    /** 通过Integration调用订货宝getShipsContent，补齐独立出库/发货单详情。 */
+    private DhbApiModels.ShipmentContentView shipmentContent(CallerIdentity caller, UUID connectorId,
+                                                               String shipmentNumber) {
+        URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
+                .path(DhbOrderApi.SHIPMENT_CONTENT_PATH)
+                .buildAndExpand(connectorId, shipmentNumber)
+                .encode()
+                .toUri();
+        return post(caller, uri, Map.of(), DhbApiModels.ShipmentContentView.class);
+    }
+
+    /** 通过Integration调用订货宝getWaitShips，查询指定订单的出库/发货物流。 */
+    private DhbApiModels.WaitShipsView waitShips(CallerIdentity caller, UUID connectorId,
+                                                  String orderNumber) {
+        URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
+                .path(DhbOrderApi.WAIT_SHIPS_PATH)
+                .buildAndExpand(connectorId, orderNumber)
+                .encode()
+                .toUri();
+        return post(caller, uri, Map.of(), DhbApiModels.WaitShipsView.class);
+    }
+
+    /** 通过Integration调用订货宝getReturnsList，查询退货单列表。 */
+    private DhbApiModels.ReturnPageView queryReturns(CallerIdentity caller, UUID connectorId,
+                                                      DhbOrderSyncCommand command, int begin) {
+        DhbApiModels.ReturnQueryCommand request = new DhbApiModels.ReturnQueryCommand(
+                begin, PAGE_SIZE, null, "F,T", null, null,
+                command.updatedFrom(), command.updatedTo(), null, null);
+        URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
+                .path(DhbOrderApi.RETURN_QUERY_PATH)
+                .buildAndExpand(connectorId)
+                .encode()
+                .toUri();
+        return post(caller, uri, request, DhbApiModels.ReturnPageView.class);
+    }
+
+    /** 通过Integration调用订货宝getReturnsContent，补齐退货单商品明细。 */
+    private DhbApiModels.ReturnContentView returnContent(CallerIdentity caller, UUID connectorId,
+                                                          String returnNumber) {
+        URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
+                .path(DhbOrderApi.RETURN_CONTENT_PATH)
+                .buildAndExpand(connectorId, returnNumber)
+                .encode()
+                .toUri();
+        return post(caller, uri, Map.of(), DhbApiModels.ReturnContentView.class);
+    }
+
+    /** 通过Integration调用订货宝getReceiptsList，查询收款单列表。 */
+    private DhbApiModels.ReceiptPageView queryReceipts(CallerIdentity caller, UUID connectorId,
+                                                        DhbOrderSyncCommand command, int begin) {
+        DhbApiModels.ReceiptQueryCommand request = new DhbApiModels.ReceiptQueryCommand(
+                null, begin, PAGE_SIZE, null, null, command.updatedFrom(), null);
+        URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
+                .path(DhbOrderApi.RECEIPT_QUERY_PATH)
+                .buildAndExpand(connectorId)
+                .encode()
+                .toUri();
+        return post(caller, uri, request, DhbApiModels.ReceiptPageView.class);
+    }
+
+    /** 通过Integration调用订货宝getPaymentList，查询付款单列表。 */
+    private DhbApiModels.PaymentPageView queryPayments(CallerIdentity caller, UUID connectorId,
+                                                        DhbOrderSyncCommand command, int begin) {
+        DhbApiModels.PaymentQueryCommand request = new DhbApiModels.PaymentQueryCommand(
+                null, begin, PAGE_SIZE, command.updatedFrom(), command.updatedTo(), null);
+        URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
+                .path(DhbOrderApi.PAYMENT_QUERY_PATH)
+                .buildAndExpand(connectorId)
+                .encode()
+                .toUri();
+        return post(caller, uri, request, DhbApiModels.PaymentPageView.class);
+    }
+
     private <T> T post(CallerIdentity caller, URI uri, Object body, Class<T> responseType) {
+        long startedAt = System.nanoTime();
         Map<String, String> context = contextHeaders(caller);
         TrustedContextSigner.SignedContext signed = signer.sign(
                 "POST", uri.getRawPath(), uri.getRawQuery(), context);
         context.put(RequestHeaders.CONTEXT_KEY_ID, signed.keyId());
         context.put(RequestHeaders.CONTEXT_TIMESTAMP, signed.timestamp());
         context.put(RequestHeaders.CONTEXT_SIGNATURE, signed.signature());
-        return restClient.post()
-                .uri(uri)
-                .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
-                .contentType(MediaType.APPLICATION_JSON)
-                .headers(headers -> context.forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(body)
-                .retrieve()
-                .body(responseType);
+        String requestId = requestId();
+        log.info("订单中心调用Integration method=POST path={} params={} requestId={}",
+                uri.getRawPath(), safeRequestBody(body), requestId);
+        try {
+            T result = restClient.post()
+                    .uri(uri)
+                    .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .headers(headers -> context.forEach(headers::set))
+                    .header(RequestHeaders.REQUEST_ID, requestId)
+                    .body(body)
+                    .retrieve()
+                    .body(responseType);
+            log.info("订单中心调用Integration完成 method=POST path={} elapsedMs={}",
+                    uri.getRawPath(), elapsedMillis(startedAt));
+            return result;
+        } catch (RuntimeException exception) {
+            log.warn("订单中心调用Integration失败 method=POST path={} elapsedMs={} reason={}",
+                    uri.getRawPath(), elapsedMillis(startedAt), exception.getMessage());
+            throw exception;
+        }
+    }
+
+    private String safeRequestBody(Object body) {
+        if (body == null) return "-";
+        try {
+            return objectMapper.writeValueAsString(body);
+        } catch (RuntimeException ignored) {
+            return body.getClass().getSimpleName();
+        }
+    }
+
+    private static long elapsedMillis(long startedAt) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
     private DhbOrderImportBatch.OrderItem order(DhbApiModels.OrderView summary,
@@ -164,6 +373,192 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                 detail == null ? List.of() : orderLines(content),
                 detail == null ? List.of() : orderShipments(content),
                 rawList, rawDetail, sha256(effectiveRaw), detail != null);
+    }
+
+    private DhbOrderImportBatch.ShipmentItem shipment(DhbApiModels.ShipmentView summary,
+                                                       DhbApiModels.ShipmentContentView detail) {
+        Map<String, Object> list = map(summary.sourceFields());
+        Map<String, Object> content = detail == null ? Map.of() : map(detail.sourceFields());
+        Map<String, Object> merged = new LinkedHashMap<>(list);
+        merged.putAll(content);
+        String shipmentNumber = defaultText(first(merged, "ships_num", "ShipsNum"), summary.shipmentNumber());
+        String warehouseNumber = defaultText(first(merged, "stock_num", "StockNum"), summary.warehouseNumber());
+        List<DhbOrderImportBatch.ShipmentLineItem> lines = detail == null
+                ? List.of() : shipmentLines(merged, warehouseNumber);
+        String rawJson = json(merged);
+        return new DhbOrderImportBatch.ShipmentItem(
+                defaultText(first(merged, "ships_id", "ShipsId"), summary.sourceId()),
+                shipmentNumber,
+                defaultText(first(merged, "orders_num", "OrdersNum"), summary.orderNumber()),
+                defaultText(first(merged, "status", "Status"), summary.status()),
+                defaultText(first(merged, "status_name", "StatusName"), summary.statusName()),
+                defaultText(first(merged, "type_id", "TypeId"), summary.typeId()),
+                defaultText(first(merged, "type_name", "TypeName"), summary.typeName()),
+                defaultText(first(merged, "client_num", "ClientNum"), summary.customerNumber()),
+                defaultText(first(merged, "client_name", "ClientName"), summary.customerName()),
+                defaultText(first(merged, "client_guid", "ClientGuid"), summary.customerGuid()),
+                warehouseNumber,
+                defaultText(first(merged, "stock_name", "StockName"), summary.warehouseName()),
+                defaultText(first(merged, "stock_guid", "StockGuid"), summary.warehouseGuid()),
+                firstInstant(merged, Map.of(), summary.shipmentAt(), "ships_date", "ShipsDate"),
+                defaultText(first(merged, "logistics_name", "LogisticsName"), summary.logisticsName()),
+                defaultText(first(merged, "express_num", "ExpressNum"), summary.trackingNumber()),
+                first(merged, "remark", "Remark"),
+                firstInstant(merged, Map.of(), summary.createdAt(), "create_date", "CreateDate"),
+                firstInstant(merged, Map.of(), summary.updatedAt(), "update_date", "UpdateDate"),
+                lines, rawJson, sha256(rawJson), detail != null);
+    }
+
+    private DhbOrderImportBatch.ReturnItem returnItem(DhbApiModels.ReturnView summary,
+                                                       DhbApiModels.ReturnContentView detail) {
+        Map<String, Object> list = map(summary.sourceFields());
+        Map<String, Object> content = detail == null ? Map.of() : map(detail.sourceFields());
+        Map<String, Object> merged = new LinkedHashMap<>(list);
+        merged.putAll(content);
+        DhbApiModels.ReturnView effective = detail == null || detail.summary() == null
+                ? summary : detail.summary();
+        String returnNumber = defaultText(first(merged, "ReturnsSN", "returnsSn", "returnNumber", "return_no"),
+                defaultText(effective.returnNumber(), effective.sourceId()));
+        List<DhbOrderImportBatch.ReturnLineItem> lines = detail == null
+                ? List.of() : detail.lines().stream().map(this::returnLine).toList();
+        String rawJson = json(merged);
+        return new DhbOrderImportBatch.ReturnItem(
+                required(returnNumber, "returnNumber"),
+                defaultText(first(merged, "OrdersNum", "orders_num", "orderNumber"), effective.orderNumber()),
+                defaultText(first(merged, "ReturnsStatus", "return_status", "status"), effective.status()),
+                defaultText(first(merged, "StaffName", "staffName"), effective.staffName()),
+                firstDecimal(merged, Map.of(), effective.returnAmount(),
+                        "ReturnsTotal", "return_amount", "returnAmount"),
+                firstDecimal(merged, Map.of(), effective.settlementAmount(),
+                        "ReturnsDiscountTotal", "settlement_amount", "settlementAmount"),
+                firstInstant(merged, Map.of(), effective.returnedAt(),
+                        "ReturnsDate", "returns_date", "returnedAt"),
+                firstInstant(merged, Map.of(), effective.updatedAt(),
+                        "ReturnsUpdateDate", "update_date", "updatedAt"),
+                defaultText(first(merged, "ReturnsReason", "reason"), effective.reason()),
+                defaultText(first(merged, "ClientNum", "client_num", "customerNumber"), effective.customerNumber()),
+                defaultText(first(merged, "ClientGUID", "ClientGuid", "client_guid", "customerGuid"),
+                        effective.customerGuid()),
+                defaultText(first(merged, "ReturnsConsignee", "consignee"), effective.consignee()),
+                defaultText(first(merged, "ReturnsPhone", "phone", "Mobile"), effective.phone()),
+                defaultText(first(merged, "ReturnsAddress", "address"), effective.address()),
+                defaultText(first(merged, "ReturnsSendCompany", "logistics_company", "logisticsCompany"),
+                        effective.logisticsCompany()),
+                defaultText(first(merged, "ReturnsSendNo", "logistics_no", "logisticsNumber"),
+                        effective.logisticsNumber()),
+                defaultText(first(merged, "ReturnsType", "return_type", "returnType"), effective.returnType()),
+                defaultText(first(merged, "ReturnsSendMode", "delivery_mode", "deliveryMode"),
+                        effective.deliveryMode()),
+                lines, rawJson, sha256(rawJson), detail != null);
+    }
+
+    private DhbOrderImportBatch.ReturnLineItem returnLine(DhbApiModels.ReturnLineView line) {
+        return new DhbOrderImportBatch.ReturnLineItem(
+                line.sourceId(), line.productGuid(), line.skuNumber(), line.productCode(), line.productName(),
+                line.quantity(), line.confirmedQuantity(), line.unitPrice(), line.confirmedPrice(), line.unit(),
+                defaultText(line.warehouseNumber(), line.warehouseGuid()), line.warehouseName(), line.remark());
+    }
+
+    private DhbOrderImportBatch.FinancialItem receipt(DhbApiModels.ReceiptView item) {
+        Map<String, Object> fields = map(item.sourceFields());
+        String rawJson = json(fields);
+        String documentNo = defaultText(first(fields, "ReceiptsNum", "receiptNumber"),
+                defaultText(item.receiptNumber(), item.sourceId()));
+        return new DhbOrderImportBatch.FinancialItem(
+                "RECEIPT",
+                required(documentNo, "receiptNumber"),
+                null,
+                defaultText(first(fields, "OrdersNum", "orderNumber"), item.orderNumber()),
+                defaultText(first(fields, "ClientNum", "customerNumber"), item.customerNumber()),
+                defaultText(first(fields, "ClientGUID", "ClientGuid", "customerGuid"), item.customerGuid()),
+                defaultText(first(fields, "IncexpId", "businessType"), item.businessType()),
+                defaultText(first(fields, "TypeId", "paymentMethod"), item.paymentMethod()),
+                firstDecimal(fields, Map.of(), item.amount(), "Amount", "amount"),
+                defaultText(first(fields, "Status", "status"), item.status()),
+                firstInstant(fields, Map.of(), item.transactionAt(), "ReceiptsDate", "transactionAt"),
+                firstInstant(fields, Map.of(), item.createdAt(), "CreateDate", "createdAt"),
+                firstInstant(fields, Map.of(), item.updatedAt(), "UpdateDate", "updatedAt"),
+                defaultText(first(fields, "SerialNumber", "serialNumber"), item.serialNumber()),
+                defaultText(first(fields, "AccountName", "accountName"), item.accountName()),
+                defaultText(first(fields, "BankName", "bankName"), item.bankName()),
+                defaultText(first(fields, "AccountNumber", "accountNumber"), item.accountNumber()),
+                defaultText(first(fields, "Remark", "remark"), item.remark()), rawJson, sha256(rawJson));
+    }
+
+    private DhbOrderImportBatch.FinancialItem payment(DhbApiModels.PaymentView item) {
+        Map<String, Object> fields = map(item.sourceFields());
+        String rawJson = json(fields);
+        String documentNo = defaultText(first(fields, "PaymentNum", "paymentNumber"),
+                defaultText(item.paymentNumber(), item.sourceId()));
+        return new DhbOrderImportBatch.FinancialItem(
+                "PAYMENT",
+                required(documentNo, "paymentNumber"),
+                defaultText(first(fields, "ReceiptsNum", "receiptNumber"), item.receiptNumber()),
+                defaultText(first(fields, "OrdersNum", "orderNumber"), item.orderNumber()),
+                defaultText(first(fields, "ClientNum", "customerNumber"), item.customerNumber()),
+                defaultText(first(fields, "ClientGUID", "ClientGuid", "customerGuid"), item.customerGuid()),
+                defaultText(first(fields, "IncexpId", "businessType"), item.businessType()),
+                defaultText(first(fields, "TypeId", "paymentMethod"), item.paymentMethod()),
+                firstDecimal(fields, Map.of(), item.amount(), "Amount", "amount"),
+                defaultText(first(fields, "Status", "status"), item.status()),
+                firstInstant(fields, Map.of(), item.transactionAt(), "ReceiptsDate", "transactionAt"),
+                firstInstant(fields, Map.of(), item.createdAt(), "CreateDate", "createdAt"),
+                null,
+                defaultText(first(fields, "SerialNumber", "serialNumber"), item.serialNumber()),
+                defaultText(first(fields, "AccountName", "accountName"), item.accountName()),
+                defaultText(first(fields, "BankName", "bankName"), item.bankName()),
+                defaultText(first(fields, "AccountNumber", "accountNumber"), item.accountNumber()),
+                defaultText(first(fields, "Remark", "remark"), item.remark()), rawJson, sha256(rawJson));
+    }
+
+    private static List<DhbOrderImportBatch.ShipmentLineItem> shipmentLines(
+            Map<String, Object> content, String warehouseNumber) {
+        List<Map<String, Object>> rows = rows(content, "list", "List");
+        List<DhbOrderImportBatch.ShipmentLineItem> result = new ArrayList<>(rows.size());
+        for (int index = 0; index < rows.size(); index++) {
+            Map<String, Object> row = rows.get(index);
+            Map<String, Object> orderInfo = nestedMap(row, "orders_list_info", "OrdersListInfo");
+            result.add(new DhbOrderImportBatch.ShipmentLineItem(
+                    stableLineId(index, row, "ships_list_id", "ShipsListId", "id"),
+                    first(row, "goods_guid", "GoodsGuid", "goods_id", "GoodsId"),
+                    first(row, "options_goods_num", "OptionsGoodsNum"),
+                    first(row, "goods_num", "GoodsNum"),
+                    first(row, "goods_name", "GoodsName"),
+                    decimal(firstObject(row, "ships_number", "ShipsNumber")),
+                    firstDecimal(row, orderInfo, null, "order_units_price", "orders_price", "OrdersPrice"),
+                    firstDecimal(orderInfo, row, null, "actual_amount", "ActualAmount"),
+                    first(orderInfo, "order_units_name", "base_units_name", "OrdersUnits"),
+                    warehouseNumber,
+                    first(row, "remark", "Remark")));
+        }
+        return List.copyOf(result);
+    }
+
+    private DhbOrderImportBatch.ShipmentLogisticsItem logisticsSnapshot(
+            String orderNumber, DhbApiModels.WaitShipsView waitShips) {
+        String rawJson = json(waitShips.sourceFields());
+        List<DhbOrderImportBatch.ShipmentLogisticsRecord> shipped = waitShips.shipped().stream()
+                .map(item -> new DhbOrderImportBatch.ShipmentLogisticsRecord(
+                        item.sourceId(), item.shipmentNo(), item.status(), item.logisticsName(),
+                        item.logisticsCode(), item.trackingNo(), item.shipmentAt(), item.stockUpAt(),
+                        item.warehouseNo(), item.warehouseName(), item.lines().stream().map(line ->
+                                new DhbOrderImportBatch.ShipmentLogisticsLineItem(
+                                        "SHIPPED", line.sourceLineId(), line.orderLineId(), line.productId(),
+                                        line.skuNo(), line.listType(), line.productCode(), line.productName(),
+                                        line.specification(), line.unit(), line.containerUnit(),
+                                        line.conversionNumber(), line.quantity(), line.remark(),
+                                        item.warehouseNo(), item.warehouseName())).toList()))
+                .toList();
+        List<DhbOrderImportBatch.WaitStockItem> waitStock = waitShips.waitStock().stream()
+                .map(item -> new DhbOrderImportBatch.WaitStockItem(
+                        "WAIT_STOCK", item.sourceLineId(), item.productId(), item.skuNo(), item.listType(),
+                        item.productCode(), item.productName(), item.specification(), item.unit(),
+                        item.containerUnit(), item.conversionNumber(), item.warehouseNo(), item.warehouseName(),
+                        item.orderedQuantity(), item.stockedQuantity(), item.realStock(), item.waitQuantity(),
+                        item.remark()))
+                .toList();
+        return new DhbOrderImportBatch.ShipmentLogisticsItem(
+                required(orderNumber, "orderNumber"), shipped, waitStock, rawJson, sha256(rawJson));
     }
 
     private static List<DhbOrderImportBatch.OrderLineItem> orderLines(Map<String, Object> content) {
@@ -226,6 +621,14 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
             }
         }
         return List.of();
+    }
+
+    private static Map<String, Object> nestedMap(Map<String, Object> root, String... keys) {
+        for (String key : keys) {
+            Object value = firstObject(root, key);
+            if (value instanceof Map<?, ?> map) return stringMap(map);
+        }
+        return Map.of();
     }
 
     private static String stableLineId(int index, Map<String, Object> row, String... keys) {

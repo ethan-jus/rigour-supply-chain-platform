@@ -9,6 +9,7 @@ import com.rigour.integration.api.v1.model.DhbApiModels.OrderMirrorView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncLogView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import java.math.BigDecimal;
@@ -132,8 +133,28 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
                        last_run_at, next_run_at, version
                   FROM integration_sync_task
                  WHERE tenant_id=? AND deleted_at IS NULL
-                 ORDER BY task_code
+                ORDER BY task_code
                 """, (rs, row) -> syncTask(rs), bin(tenantId));
+    }
+
+    @Override
+    public List<SyncTargetView> activeOrderSyncTargets() {
+        return jdbc.query("""
+                SELECT t.id AS task_id, t.tenant_id, t.connector_id
+                  FROM integration_sync_task t
+                  JOIN integration_dhb_connector c
+                    ON c.tenant_id=t.tenant_id AND c.id=t.connector_id
+                 WHERE t.object_type='ORDER'
+                   AND t.enabled=1
+                   AND t.task_status<>'PAUSED'
+                   AND t.deleted_at IS NULL
+                   AND c.status='ACTIVE'
+                   AND c.deleted_at IS NULL
+                 ORDER BY t.tenant_id, t.id
+                """, (rs, row) -> new SyncTargetView(
+                IntegrationUuidCodec.decode(rs, "task_id"),
+                IntegrationUuidCodec.decode(rs, "tenant_id"),
+                IntegrationUuidCodec.decode(rs, "connector_id")));
     }
 
     @Override
