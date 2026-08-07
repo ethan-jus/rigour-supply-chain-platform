@@ -35,6 +35,11 @@ public interface IamManagementStore {
     void resetUserPassword(Actor actor, UUID id, PasswordResetCommand command);
     List<RoleView> roles(Actor actor);
     List<ResourceView> grantableResources(Actor actor);
+    List<TenantMenuView> tenantMenus(Actor actor);
+    TenantMenuView saveTenantMenu(Actor actor, UUID resourceId, TenantMenuCommand command);
+    List<TenantMenuGroupView> tenantMenuGroups(Actor actor);
+    TenantMenuGroupView createTenantMenuGroup(Actor actor, TenantMenuGroupCommand command);
+    TenantMenuGroupView updateTenantMenuGroup(Actor actor, UUID id, TenantMenuGroupCommand command);
     RoleView createRole(Actor actor, RoleCommand command);
     RoleView updateRole(Actor actor, UUID id, RoleCommand command);
     List<DataScopeView> dataScopes(Actor actor);

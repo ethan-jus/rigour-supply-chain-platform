@@ -13,8 +13,8 @@ spring:
       connection-timeout: 30000
       validation-timeout: 5000
   flyway:
-    # 当前 Sales Work 还没有正式 V1 迁移；完成字段评审后改为 true。
-    enabled: false
+    # 源码已有Sales Work V1；复制到真实Nacos前必须确认迁移账号Secret和共享DEV变更窗口。
+    enabled: true
     url: jdbc:mysql://82.157.4.176:13306/rigour_sales_work?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
     user: rigour_sales_work_migrator
     password: ${SALES_WORK_DB_MIGRATOR_PASSWORD}

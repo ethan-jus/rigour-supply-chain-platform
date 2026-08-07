@@ -18,6 +18,12 @@ logging:
   level:
     com.rigour: INFO
 
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
 rigour:
   context:
     trust:

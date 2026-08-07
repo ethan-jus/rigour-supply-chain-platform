@@ -192,6 +192,29 @@ public final class IamManagementController {
     @GetMapping("/management/tenant/grantable-resources")
     public List<ResourceView> grantableResources() { return service.grantableResources(currentActor()); }
 
+    @GetMapping("/management/tenant/menus")
+    public List<TenantMenuView> tenantMenus() { return service.tenantMenus(currentActor()); }
+
+    @PutMapping("/management/tenant/menus/{resourceId}")
+    public TenantMenuView saveTenantMenu(@PathVariable("resourceId") UUID resourceId,
+                                         @RequestBody TenantMenuCommand command) {
+        return service.saveTenantMenu(currentActor(), resourceId, command);
+    }
+
+    @GetMapping("/management/tenant/menu-groups")
+    public List<TenantMenuGroupView> tenantMenuGroups() { return service.tenantMenuGroups(currentActor()); }
+
+    @PostMapping("/management/tenant/menu-groups")
+    public TenantMenuGroupView createTenantMenuGroup(@RequestBody TenantMenuGroupCommand command) {
+        return service.createTenantMenuGroup(currentActor(), command);
+    }
+
+    @PutMapping("/management/tenant/menu-groups/{id}")
+    public TenantMenuGroupView updateTenantMenuGroup(@PathVariable("id") UUID id,
+                                                     @RequestBody TenantMenuGroupCommand command) {
+        return service.updateTenantMenuGroup(currentActor(), id, command);
+    }
+
     @PostMapping("/management/tenant/roles")
     public RoleView createRole(@RequestBody RoleCommand command) { return service.createRole(currentActor(), command); }
 

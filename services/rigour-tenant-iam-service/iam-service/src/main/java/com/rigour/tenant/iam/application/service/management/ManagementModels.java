@@ -51,6 +51,32 @@ public final class ManagementModels {
                                   boolean keepAlive, long version) {
     }
 
+    /** 套餐内平台菜单及当前租户展示覆盖；路由和权限事实始终来自平台资源目录。 */
+    public record TenantMenuView(UUID resourceId, UUID applicationId, String applicationCode,
+                                 String applicationName, UUID parentId, String code, String type,
+                                 String originalDisplayName, String displayName, int originalSortOrder,
+                                 int sortOrder, String originalIconKey, String iconKey,
+                                 boolean platformVisible, boolean visible, UUID parentGroupId,
+                                 boolean configured, long version) {
+    }
+
+    public record TenantMenuCommand(String displayNameOverride, Integer sortOrderOverride,
+                                    String iconKeyOverride, boolean visible, UUID parentGroupId,
+                                    long version) {
+    }
+
+    /** 租户自定义分组只组织导航，不承载路由、页面组件或权限编码。 */
+    public record TenantMenuGroupView(UUID id, UUID applicationId, String applicationCode,
+                                      String applicationName, UUID parentId, String code,
+                                      String displayName, String iconKey, int sortOrder,
+                                      boolean visible, String status, long version) {
+    }
+
+    public record TenantMenuGroupCommand(UUID applicationId, UUID parentId, String code,
+                                         String displayName, String iconKey, int sortOrder,
+                                         boolean visible, String status, long version) {
+    }
+
     public record NavigationNode(UUID id, UUID parentId, String code, String type, String displayName,
                                  String permissionCode, String routeKey, String routePath, String iconKey,
                                  int sortOrder, boolean visible, boolean keepAlive, List<NavigationNode> children) {

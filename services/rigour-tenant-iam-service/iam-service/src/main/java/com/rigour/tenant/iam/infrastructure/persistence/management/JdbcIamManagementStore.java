@@ -250,14 +250,21 @@ public final class JdbcIamManagementStore implements IamManagementStore {
                     """, (rs, row) -> resource(rs), code);
         } else {
             flat = jdbc.query("""
-                    SELECT DISTINCT r.id, r.application_id, r.parent_id, r.resource_code, r.resource_type,
-                           r.permission_code, r.display_name, r.sort_order, r.status, r.version,
-                           ui.route_key, ui.route_path, ui.icon_key, ui.visible, ui.keep_alive
+                    SELECT DISTINCT r.id, r.application_id,
+                           COALESCE(menu_config.parent_group_id, r.parent_id) parent_id,
+                           r.resource_code, r.resource_type, r.permission_code,
+                           COALESCE(menu_config.display_name_override, r.display_name) display_name,
+                           COALESCE(menu_config.sort_order_override, r.sort_order) sort_order,
+                           r.status, r.version, ui.route_key, ui.route_path,
+                           COALESCE(menu_config.icon_key_override, ui.icon_key) icon_key,
+                           ui.visible * menu_config.visible visible, ui.keep_alive
                       FROM iam_user_role ur
                       JOIN iam_role role_record ON role_record.tenant_id=ur.tenant_id AND role_record.id=ur.role_id
                       JOIN iam_role_resource rr ON rr.tenant_id=ur.tenant_id AND rr.role_id=ur.role_id
                       JOIN iam_resource r ON r.id=rr.resource_id
                       JOIN iam_resource_ui ui ON ui.resource_id=r.id
+                      JOIN iam_tenant_menu_config menu_config
+                        ON menu_config.tenant_id=ur.tenant_id AND menu_config.resource_id=r.id
                       JOIN iam_application a ON a.id=r.application_id
                       JOIN iam_tenant_subscription subscription ON subscription.tenant_id=ur.tenant_id
                        AND subscription.status IN ('ACTIVE','SCHEDULED') AND subscription.effective_from<=UTC_TIMESTAMP(6)
@@ -271,8 +278,15 @@ public final class JdbcIamManagementStore implements IamManagementStore {
                        AND rr.status='ACTIVE' AND r.status='ACTIVE' AND r.deleted_at IS NULL
                        AND a.app_code=? AND a.app_scope='TENANT' AND a.status='ACTIVE' AND a.deleted_at IS NULL
                        AND r.resource_type IN ('MENU','PAGE')
-                     ORDER BY r.sort_order, r.resource_code
+                     ORDER BY sort_order, r.resource_code
                     """, (rs, row) -> resource(rs), bin(actor.tenantId()), bin(actor.principalId()), code);
+            List<ResourceView> tenantNavigation = new ArrayList<>(flat);
+            tenantNavigation.addAll(navigationGroups(actor, code));
+            Map<UUID, ResourceView> byId = new LinkedHashMap<>();
+            tenantNavigation.forEach(resource -> byId.put(resource.id(), resource));
+            flat = tenantNavigation.stream()
+                    .filter(resource -> grantableThroughVisibleMenu(resource, byId))
+                    .toList();
         }
         return tree(flat);
     }
@@ -408,6 +422,19 @@ public final class JdbcIamManagementStore implements IamManagementStore {
                                             updated_by=VALUES(updated_by)
                     """, bin(tenantId), bin(actor.principalId()), bin(actor.principalId()),
                     bin(command.packageVersionId()), bin(tenantId));
+            jdbc.update("""
+                    INSERT INTO iam_tenant_menu_config
+                    (tenant_id, resource_id, visible, created_at, created_by, updated_at, updated_by)
+                    SELECT ?, resource_record.id, 0, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?
+                      FROM iam_package_resource package_resource
+                      JOIN iam_resource resource_record ON resource_record.id=package_resource.resource_id
+                       AND resource_record.resource_type IN ('MENU','PAGE')
+                       AND resource_record.status='ACTIVE' AND resource_record.deleted_at IS NULL
+                      JOIN iam_resource_ui resource_ui ON resource_ui.resource_id=resource_record.id
+                     WHERE package_resource.package_version_id=?
+                    ON DUPLICATE KEY UPDATE updated_at=iam_tenant_menu_config.updated_at
+                    """, bin(tenantId), bin(actor.principalId()), bin(actor.principalId()),
+                    bin(command.packageVersionId()));
             bumpTenantPolicy(tenantId);
             audit(actor, "TENANT_SUBSCRIBE", "TENANT", tenantId);
         });
@@ -707,19 +734,170 @@ public final class JdbcIamManagementStore implements IamManagementStore {
     @Override
     public List<ResourceView> grantableResources(Actor actor) {
         requireTenantPermission(actor, "iam:role:read");
-        return jdbc.query("""
+        List<ResourceView> entitled = jdbc.query("""
                 SELECT DISTINCT r.id, r.application_id, r.parent_id, r.resource_code, r.resource_type,
                        r.permission_code, r.display_name, r.sort_order, r.status, r.version,
-                       ui.route_key, ui.route_path, ui.icon_key, ui.visible, ui.keep_alive
+                       ui.route_key, ui.route_path, ui.icon_key,
+                       CASE WHEN r.resource_type IN ('MENU','PAGE')
+                            THEN COALESCE(ui.visible, 0) * COALESCE(menu_config.visible, 0)
+                            ELSE 1 END visible,
+                       COALESCE(ui.keep_alive, 0) keep_alive
                   FROM iam_tenant_subscription subscription
                   JOIN iam_package_resource pr ON pr.package_version_id=subscription.package_version_id
                   JOIN iam_resource r ON r.id=pr.resource_id
                   LEFT JOIN iam_resource_ui ui ON ui.resource_id=r.id
+                  LEFT JOIN iam_tenant_menu_config menu_config
+                    ON menu_config.tenant_id=subscription.tenant_id AND menu_config.resource_id=r.id
                  WHERE subscription.tenant_id=? AND subscription.status IN ('ACTIVE','SCHEDULED')
                    AND subscription.effective_from<=UTC_TIMESTAMP(6) AND subscription.effective_to>UTC_TIMESTAMP(6)
                    AND r.status='ACTIVE' AND r.deleted_at IS NULL
                  ORDER BY r.application_id, r.sort_order, r.resource_code
                 """, (rs, row) -> resource(rs), bin(actor.tenantId()));
+        Map<UUID, ResourceView> byId = new LinkedHashMap<>();
+        entitled.forEach(resource -> byId.put(resource.id(), resource));
+        return entitled.stream().filter(resource -> grantableThroughVisibleMenu(resource, byId)).toList();
+    }
+
+    @Override
+    public List<TenantMenuView> tenantMenus(Actor actor) {
+        requireTenantPermission(actor, "iam:menu:read");
+        return jdbc.query("""
+                SELECT DISTINCT r.id resource_id, r.application_id, a.app_code, a.app_name,
+                       a.sort_order application_sort_order,
+                       r.parent_id, r.resource_code, r.resource_type,
+                       r.display_name original_display_name,
+                       COALESCE(menu_config.display_name_override, r.display_name) display_name,
+                       r.sort_order original_sort_order,
+                       COALESCE(menu_config.sort_order_override, r.sort_order) sort_order,
+                       ui.icon_key original_icon_key,
+                       COALESCE(menu_config.icon_key_override, ui.icon_key) icon_key,
+                       ui.visible platform_visible, COALESCE(menu_config.visible, 0) visible,
+                       menu_config.parent_group_id,
+                       CASE WHEN menu_config.resource_id IS NULL THEN 0 ELSE 1 END configured,
+                       COALESCE(menu_config.version, 0) version
+                  FROM iam_tenant_subscription subscription
+                  JOIN iam_package_resource package_resource
+                    ON package_resource.package_version_id=subscription.package_version_id
+                  JOIN iam_resource r ON r.id=package_resource.resource_id
+                   AND r.resource_type IN ('MENU','PAGE')
+                  JOIN iam_resource_ui ui ON ui.resource_id=r.id
+                  JOIN iam_application a ON a.id=r.application_id
+                   AND a.app_scope='TENANT' AND a.status='ACTIVE' AND a.deleted_at IS NULL
+                  LEFT JOIN iam_tenant_menu_config menu_config
+                    ON menu_config.tenant_id=subscription.tenant_id AND menu_config.resource_id=r.id
+                 WHERE subscription.tenant_id=? AND subscription.status IN ('ACTIVE','SCHEDULED')
+                   AND subscription.effective_from<=UTC_TIMESTAMP(6)
+                   AND subscription.effective_to>UTC_TIMESTAMP(6)
+                   AND r.status='ACTIVE' AND r.deleted_at IS NULL
+                 ORDER BY application_sort_order, r.sort_order, r.resource_code
+                """, (rs, row) -> tenantMenu(rs), bin(actor.tenantId()));
+    }
+
+    @Override
+    public TenantMenuView saveTenantMenu(Actor actor, UUID resourceId, TenantMenuCommand command) {
+        requireTenantPermission(actor, "iam:menu:write");
+        if (resourceId == null || command == null) throw new IllegalArgumentException("Menu configuration is required");
+        requireEntitledNavigableResource(actor.tenantId(), resourceId);
+        if (command.visible() && count("""
+                SELECT COUNT(*) FROM iam_resource_ui WHERE resource_id=? AND visible=1
+                """, bin(resourceId)) != 1) {
+            throw new IllegalArgumentException("Platform-disabled menu cannot be enabled by a tenant");
+        }
+        validateMenuGroupForResource(actor.tenantId(), resourceId, command.parentGroupId());
+        String displayName = optionalText(command.displayNameOverride(), "displayNameOverride", 128);
+        String iconKey = optionalText(command.iconKeyOverride(), "iconKeyOverride", 128);
+        transaction.executeWithoutResult(status -> {
+            int existing = count("SELECT COUNT(*) FROM iam_tenant_menu_config WHERE tenant_id=? AND resource_id=?",
+                    bin(actor.tenantId()), bin(resourceId));
+            if (existing == 0) {
+                if (command.version() != 0) throw new IllegalStateException("Menu configuration version is stale");
+                jdbc.update("""
+                        INSERT INTO iam_tenant_menu_config
+                        (tenant_id, resource_id, display_name_override, icon_key_override,
+                         sort_order_override, parent_group_id, visible, created_at, created_by, updated_at, updated_by)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
+                        """, bin(actor.tenantId()), bin(resourceId), displayName, iconKey,
+                        command.sortOrderOverride(), bin(command.parentGroupId()), command.visible(),
+                        bin(actor.principalId()), bin(actor.principalId()));
+            } else {
+                int changed = jdbc.update("""
+                        UPDATE iam_tenant_menu_config
+                           SET display_name_override=?, icon_key_override=?, sort_order_override=?,
+                               parent_group_id=?, visible=?, version=version+1,
+                               updated_at=UTC_TIMESTAMP(6), updated_by=?
+                         WHERE tenant_id=? AND resource_id=? AND version=?
+                        """, displayName, iconKey, command.sortOrderOverride(), bin(command.parentGroupId()),
+                        command.visible(), bin(actor.principalId()), bin(actor.tenantId()), bin(resourceId),
+                        command.version());
+                requireChanged(changed);
+            }
+            bumpTenantPolicy(actor.tenantId());
+            audit(actor, "TENANT_MENU_SAVE", "RESOURCE", resourceId);
+        });
+        return tenantMenuById(actor.tenantId(), resourceId);
+    }
+
+    @Override
+    public List<TenantMenuGroupView> tenantMenuGroups(Actor actor) {
+        requireTenantPermission(actor, "iam:menu:read");
+        return jdbc.query("""
+                SELECT menu_group.id, menu_group.application_id, application_record.app_code,
+                       application_record.app_name, menu_group.parent_id, menu_group.group_code,
+                       menu_group.display_name, menu_group.icon_key, menu_group.sort_order,
+                       menu_group.visible, menu_group.status, menu_group.version
+                  FROM iam_tenant_menu_group menu_group
+                  JOIN iam_application application_record ON application_record.id=menu_group.application_id
+                 WHERE menu_group.tenant_id=? AND menu_group.deleted_at IS NULL
+                 ORDER BY application_record.sort_order, menu_group.sort_order, menu_group.group_code
+                """, (rs, row) -> tenantMenuGroup(rs), bin(actor.tenantId()));
+    }
+
+    @Override
+    public TenantMenuGroupView createTenantMenuGroup(Actor actor, TenantMenuGroupCommand command) {
+        requireTenantPermission(actor, "iam:menu:write");
+        validateTenantMenuGroup(command);
+        requireSubscribedApplication(actor.tenantId(), command.applicationId());
+        validateMenuGroupParent(actor.tenantId(), command.applicationId(), command.parentId(), null);
+        UUID id = ids.nextId();
+        transaction.executeWithoutResult(status -> {
+            jdbc.update("""
+                    INSERT INTO iam_tenant_menu_group
+                    (id, tenant_id, application_id, parent_id, group_code, display_name, icon_key,
+                     sort_order, visible, status, created_at, created_by, updated_at, updated_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
+                    """, bin(id), bin(actor.tenantId()), bin(command.applicationId()), bin(command.parentId()),
+                    normalizedCode(command.code()), required(command.displayName(), "displayName"),
+                    optionalText(command.iconKey(), "iconKey", 128), command.sortOrder(), command.visible(),
+                    allowed(command.status(), RESOURCE_STATUSES, "status"), bin(actor.principalId()),
+                    bin(actor.principalId()));
+            bumpTenantPolicy(actor.tenantId());
+            audit(actor, "TENANT_MENU_GROUP_CREATE", "TENANT_MENU_GROUP", id);
+        });
+        return tenantMenuGroupById(actor.tenantId(), id);
+    }
+
+    @Override
+    public TenantMenuGroupView updateTenantMenuGroup(Actor actor, UUID id, TenantMenuGroupCommand command) {
+        requireTenantPermission(actor, "iam:menu:write");
+        validateTenantMenuGroup(command);
+        validateMenuGroupParent(actor.tenantId(), command.applicationId(), command.parentId(), id);
+        transaction.executeWithoutResult(status -> {
+            int changed = jdbc.update("""
+                    UPDATE iam_tenant_menu_group
+                       SET parent_id=?, display_name=?, icon_key=?, sort_order=?, visible=?, status=?,
+                           version=version+1, updated_at=UTC_TIMESTAMP(6), updated_by=?
+                     WHERE tenant_id=? AND id=? AND application_id=? AND group_code=?
+                       AND version=? AND deleted_at IS NULL
+                    """, bin(command.parentId()), required(command.displayName(), "displayName"),
+                    optionalText(command.iconKey(), "iconKey", 128), command.sortOrder(), command.visible(),
+                    allowed(command.status(), RESOURCE_STATUSES, "status"), bin(actor.principalId()),
+                    bin(actor.tenantId()), bin(id), bin(command.applicationId()), normalizedCode(command.code()),
+                    command.version());
+            requireChanged(changed);
+            bumpTenantPolicy(actor.tenantId());
+            audit(actor, "TENANT_MENU_GROUP_UPDATE", "TENANT_MENU_GROUP", id);
+        });
+        return tenantMenuGroupById(actor.tenantId(), id);
     }
 
     @Override
@@ -1345,6 +1523,51 @@ public final class JdbcIamManagementStore implements IamManagementStore {
                 """, (rs, row) -> packageVersion(rs), bin(id));
     }
 
+    private TenantMenuView tenantMenuById(UUID tenantId, UUID resourceId) {
+        List<TenantMenuView> result = jdbc.query("""
+                SELECT DISTINCT r.id resource_id, r.application_id, a.app_code, a.app_name,
+                       r.parent_id, r.resource_code, r.resource_type,
+                       r.display_name original_display_name,
+                       COALESCE(menu_config.display_name_override, r.display_name) display_name,
+                       r.sort_order original_sort_order,
+                       COALESCE(menu_config.sort_order_override, r.sort_order) sort_order,
+                       ui.icon_key original_icon_key,
+                       COALESCE(menu_config.icon_key_override, ui.icon_key) icon_key,
+                       ui.visible platform_visible, COALESCE(menu_config.visible, 0) visible,
+                       menu_config.parent_group_id,
+                       CASE WHEN menu_config.resource_id IS NULL THEN 0 ELSE 1 END configured,
+                       COALESCE(menu_config.version, 0) version
+                  FROM iam_tenant_subscription subscription
+                  JOIN iam_package_resource package_resource
+                    ON package_resource.package_version_id=subscription.package_version_id
+                  JOIN iam_resource r ON r.id=package_resource.resource_id
+                  JOIN iam_resource_ui ui ON ui.resource_id=r.id
+                  JOIN iam_application a ON a.id=r.application_id
+                  LEFT JOIN iam_tenant_menu_config menu_config
+                    ON menu_config.tenant_id=subscription.tenant_id AND menu_config.resource_id=r.id
+                 WHERE subscription.tenant_id=? AND r.id=?
+                   AND subscription.status IN ('ACTIVE','SCHEDULED')
+                   AND subscription.effective_from<=UTC_TIMESTAMP(6)
+                   AND subscription.effective_to>UTC_TIMESTAMP(6)
+                   AND r.resource_type IN ('MENU','PAGE')
+                   AND r.status='ACTIVE' AND r.deleted_at IS NULL
+                """, (rs, row) -> tenantMenu(rs), bin(tenantId), bin(resourceId));
+        if (result.size() != 1) throw new AccessDeniedException("Menu is outside the tenant subscription");
+        return result.getFirst();
+    }
+
+    private TenantMenuGroupView tenantMenuGroupById(UUID tenantId, UUID id) {
+        return jdbc.queryForObject("""
+                SELECT menu_group.id, menu_group.application_id, application_record.app_code,
+                       application_record.app_name, menu_group.parent_id, menu_group.group_code,
+                       menu_group.display_name, menu_group.icon_key, menu_group.sort_order,
+                       menu_group.visible, menu_group.status, menu_group.version
+                  FROM iam_tenant_menu_group menu_group
+                  JOIN iam_application application_record ON application_record.id=menu_group.application_id
+                 WHERE menu_group.tenant_id=? AND menu_group.id=? AND menu_group.deleted_at IS NULL
+                """, (rs, row) -> tenantMenuGroup(rs), bin(tenantId), bin(id));
+    }
+
     private ResourceView resourceById(UUID id) {
         return jdbc.queryForObject("""
                 SELECT r.id, r.application_id, r.parent_id, r.resource_code, r.resource_type,
@@ -1444,6 +1667,25 @@ public final class JdbcIamManagementStore implements IamManagementStore {
                 rs.getBoolean("visible"), rs.getBoolean("keep_alive"), rs.getLong("version"));
     }
 
+    private TenantMenuView tenantMenu(ResultSet rs) throws SQLException {
+        return new TenantMenuView(uuid(rs, "resource_id"), uuid(rs, "application_id"),
+                rs.getString("app_code"), rs.getString("app_name"), uuid(rs, "parent_id"),
+                rs.getString("resource_code"), rs.getString("resource_type"),
+                rs.getString("original_display_name"), rs.getString("display_name"),
+                rs.getInt("original_sort_order"), rs.getInt("sort_order"),
+                rs.getString("original_icon_key"), rs.getString("icon_key"),
+                rs.getBoolean("platform_visible"), rs.getBoolean("visible"),
+                uuid(rs, "parent_group_id"), rs.getBoolean("configured"), rs.getLong("version"));
+    }
+
+    private TenantMenuGroupView tenantMenuGroup(ResultSet rs) throws SQLException {
+        return new TenantMenuGroupView(uuid(rs, "id"), uuid(rs, "application_id"),
+                rs.getString("app_code"), rs.getString("app_name"), uuid(rs, "parent_id"),
+                rs.getString("group_code"), rs.getString("display_name"), rs.getString("icon_key"),
+                rs.getInt("sort_order"), rs.getBoolean("visible"), rs.getString("status"),
+                rs.getLong("version"));
+    }
+
     private OrganizationView organization(ResultSet rs) throws SQLException {
         return new OrganizationView(uuid(rs, "id"), uuid(rs, "parent_id"), rs.getString("org_code"),
                 rs.getString("org_name"), rs.getString("org_type"), rs.getString("path"),
@@ -1498,6 +1740,81 @@ public final class JdbcIamManagementStore implements IamManagementStore {
                 uuid(rs, "target_id"), rs.getString("result"), occurredAt.toInstant());
     }
 
+    private List<ResourceView> navigationGroups(Actor actor, String applicationCode) {
+        return jdbc.query("""
+                SELECT menu_group.id, menu_group.application_id, menu_group.parent_id,
+                       menu_group.group_code resource_code, 'MENU' resource_type,
+                       NULL permission_code, menu_group.display_name, menu_group.sort_order,
+                       menu_group.status, menu_group.version,
+                       CONCAT('tenant.menu.group.', REPLACE(BIN_TO_UUID(menu_group.id), '-', '')) route_key,
+                       NULL route_path, menu_group.icon_key, menu_group.visible, 0 keep_alive
+                  FROM iam_tenant_menu_group menu_group
+                  JOIN iam_application application_record ON application_record.id=menu_group.application_id
+                 WHERE menu_group.tenant_id=? AND application_record.app_code=?
+                   AND menu_group.status='ACTIVE' AND menu_group.deleted_at IS NULL
+                 ORDER BY menu_group.sort_order, menu_group.group_code
+                """, (rs, row) -> resource(rs), bin(actor.tenantId()), applicationCode);
+    }
+
+    private boolean grantableThroughVisibleMenu(ResourceView resource, Map<UUID, ResourceView> byId) {
+        ResourceView current = resource;
+        Set<UUID> visited = new java.util.HashSet<>();
+        while (current != null && visited.add(current.id())) {
+            if (("MENU".equals(current.type()) || "PAGE".equals(current.type())) && !current.visible()) return false;
+            current = byId.get(current.parentId());
+        }
+        return true;
+    }
+
+    private void requireEntitledNavigableResource(UUID tenantId, UUID resourceId) {
+        if (count("""
+                SELECT COUNT(DISTINCT resource_record.id)
+                  FROM iam_resource resource_record
+                  JOIN iam_resource_ui resource_ui ON resource_ui.resource_id=resource_record.id
+                  JOIN iam_package_resource package_resource ON package_resource.resource_id=resource_record.id
+                  JOIN iam_tenant_subscription subscription
+                    ON subscription.package_version_id=package_resource.package_version_id
+                   AND subscription.tenant_id=? AND subscription.status IN ('ACTIVE','SCHEDULED')
+                   AND subscription.effective_from<=UTC_TIMESTAMP(6)
+                   AND subscription.effective_to>UTC_TIMESTAMP(6)
+                 WHERE resource_record.id=? AND resource_record.resource_type IN ('MENU','PAGE')
+                   AND resource_record.status='ACTIVE' AND resource_record.deleted_at IS NULL
+                """, bin(tenantId), bin(resourceId)) != 1) {
+            throw new AccessDeniedException("Menu is outside the tenant subscription");
+        }
+    }
+
+    private void validateMenuGroupForResource(UUID tenantId, UUID resourceId, UUID groupId) {
+        if (groupId == null) return;
+        if (count("""
+                SELECT COUNT(*)
+                  FROM iam_tenant_menu_group menu_group
+                  JOIN iam_resource resource_record ON resource_record.application_id=menu_group.application_id
+                 WHERE menu_group.tenant_id=? AND menu_group.id=? AND resource_record.id=?
+                   AND menu_group.status='ACTIVE' AND menu_group.deleted_at IS NULL
+                """, bin(tenantId), bin(groupId), bin(resourceId)) != 1) {
+            throw new AccessDeniedException("Menu group is outside the resource application");
+        }
+    }
+
+    private void validateMenuGroupParent(UUID tenantId, UUID applicationId, UUID parentId, UUID self) {
+        if (parentId == null) return;
+        if (parentId.equals(self)) throw new IllegalArgumentException("Menu group cannot parent itself");
+        UUID current = parentId;
+        Set<UUID> visited = new java.util.HashSet<>();
+        while (current != null) {
+            if (!visited.add(current) || current.equals(self)) {
+                throw new IllegalArgumentException("Menu group cycle is not allowed");
+            }
+            List<byte[]> parents = jdbc.queryForList("""
+                    SELECT parent_id FROM iam_tenant_menu_group
+                     WHERE tenant_id=? AND application_id=? AND id=? AND deleted_at IS NULL
+                    """, byte[].class, bin(tenantId), bin(applicationId), bin(current));
+            if (parents.size() != 1) throw new AccessDeniedException("Menu group parent is outside the application");
+            current = UuidBinaryCodec.decode(parents.getFirst());
+        }
+    }
+
     private List<NavigationNode> tree(List<ResourceView> flat) {
         Map<UUID, MutableNode> nodes = new LinkedHashMap<>();
         flat.forEach(item -> nodes.put(item.id(), new MutableNode(item)));
@@ -1540,6 +1857,13 @@ public final class JdbcIamManagementStore implements IamManagementStore {
         return value.strip();
     }
     private static String blankToNull(String value) { return value == null || value.isBlank() ? null : value.strip(); }
+    private static String optionalText(String value, String field, int maxLength) {
+        String normalized = blankToNull(value);
+        if (normalized != null && normalized.length() > maxLength) {
+            throw new IllegalArgumentException(field + " is too long");
+        }
+        return normalized;
+    }
     private static String normalizedCode(String value) {
         String code = required(value, "code").strip();
         if (!code.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
@@ -1601,6 +1925,12 @@ public final class JdbcIamManagementStore implements IamManagementStore {
                 throw new IllegalArgumentException("Page resource requires an absolute routePath");
             }
         }
+    }
+    private static void validateTenantMenuGroup(TenantMenuGroupCommand c) {
+        if (c == null || c.applicationId() == null) throw new IllegalArgumentException("applicationId is required");
+        required(c.code(), "code");
+        required(c.displayName(), "displayName");
+        optionalText(c.iconKey(), "iconKey", 128);
     }
     private static void validateOrganization(OrganizationCommand c) {
         required(c.code(), "code"); required(c.name(), "name"); required(c.type(), "type");

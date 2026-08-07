@@ -92,6 +92,22 @@ public final class TenantAdminBootstrapCommand implements ApplicationRunner {
                  WHERE r.status='ACTIVE' AND r.deleted_at IS NULL
                 """, tenantId, UuidBinaryCodec.encode(roleId), now, now, tenantId);
         jdbc.update("""
+                INSERT INTO iam_tenant_menu_config
+                (tenant_id, resource_id, visible, created_at, updated_at)
+                SELECT ?, resource_record.id, resource_ui.visible, ?, ?
+                  FROM iam_resource resource_record
+                  JOIN iam_resource_ui resource_ui ON resource_ui.resource_id=resource_record.id
+                  JOIN iam_package_resource package_resource ON package_resource.resource_id=resource_record.id
+                  JOIN iam_tenant_subscription subscription
+                    ON subscription.package_version_id=package_resource.package_version_id
+                   AND subscription.tenant_id=? AND subscription.status IN ('ACTIVE','SCHEDULED')
+                   AND subscription.effective_from<=UTC_TIMESTAMP(6)
+                   AND subscription.effective_to>UTC_TIMESTAMP(6)
+                 WHERE resource_record.resource_type IN ('MENU','PAGE')
+                   AND resource_record.status='ACTIVE' AND resource_record.deleted_at IS NULL
+                ON DUPLICATE KEY UPDATE updated_at=iam_tenant_menu_config.updated_at
+                """, tenantId, now, now, tenantId);
+        jdbc.update("""
                 INSERT INTO iam_user_role
                 (tenant_id, user_id, role_id, status, effective_from, created_at, updated_at)
                 VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?)
