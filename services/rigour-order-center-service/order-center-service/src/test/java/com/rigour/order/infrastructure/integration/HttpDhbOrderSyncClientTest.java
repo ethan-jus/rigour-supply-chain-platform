@@ -10,6 +10,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 
 import com.rigour.order.api.v1.model.DhbOrderImportBatch;
 import com.rigour.order.api.v1.model.DhbOrderSyncCommand;
+import com.rigour.order.api.v1.model.DhbOrderSyncScope;
 import com.rigour.order.application.port.out.DhbOrderSyncClient;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.context.ContextTrustProperties;
@@ -352,6 +353,230 @@ class HttpDhbOrderSyncClientTest {
         assertThat(collected.batch().financialDocuments()).extracting(
                 DhbOrderImportBatch.FinancialItem::documentType)
                 .containsExactlyInAnyOrder("RECEIPT", "PAYMENT");
+        server.verify();
+    }
+
+    @Test
+    void orderScopeOnlyFetchesOrdersAndDetails() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        String base = "https://integration.test";
+
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID + "/query"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$.begin").value(0))
+                .andExpect(jsonPath("$.step").value(100))
+                .andRespond(withSuccess("""
+                        {
+                          "total": 1,
+                          "items": [{
+                            "orderNumber": "ORDER-ONLY-1",
+                            "status": "pending",
+                            "amount": 15.00,
+                            "sourceFields": {"OrderSN": "ORDER-ONLY-1"}
+                          }]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID
+                + "/ORDER-ONLY-1/content"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().json("{}"))
+                .andRespond(withSuccess("""
+                        {
+                          "orderNumber": "ORDER-ONLY-1",
+                          "sourceFields": {"OrderSN": "ORDER-ONLY-1", "OrderProduct": []}
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        HttpDhbOrderSyncClient client = new HttpDhbOrderSyncClient(builder, signer(),
+                JsonMapper.builder().build(), base);
+        DhbOrderSyncClient.Collected collected = client.collect(caller(), CONNECTOR_ID,
+                new DhbOrderSyncCommand(true, 1, null, null, DhbOrderSyncScope.ORDER));
+
+        assertThat(collected.objectType()).isEqualTo("ORDER");
+        assertThat(collected.fetched()).isEqualTo(1);
+        assertThat(collected.completedObjects()).containsExactlyInAnyOrder("ORDER", "ORDER_DETAIL");
+        assertThat(collected.batch().orders()).singleElement()
+                .satisfies(order -> assertThat(order.rawDetailJson()).contains("ORDER-ONLY-1"));
+        assertThat(collected.batch().shipments()).isEmpty();
+        assertThat(collected.batch().shipmentLogistics()).isEmpty();
+        assertThat(collected.batch().returns()).isEmpty();
+        assertThat(collected.batch().financialDocuments()).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    void returnScopeOnlyFetchesReturnsAndDetails() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        String base = "https://integration.test";
+
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID
+                + "/returns/query"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$.begin").value(0))
+                .andExpect(jsonPath("$.step").value(100))
+                .andRespond(withSuccess("""
+                        {
+                          "total": 1,
+                          "items": [{
+                            "returnNumber": "RETURN-ONLY-1",
+                            "status": "finished",
+                            "returnAmount": 3.00,
+                            "sourceFields": {"ReturnsSN": "RETURN-ONLY-1"}
+                          }]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID
+                + "/returns/RETURN-ONLY-1/content"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().json("{}"))
+                .andRespond(withSuccess("""
+                        {
+                          "returnNumber": "RETURN-ONLY-1",
+                          "sourceFields": {"ReturnsSN": "RETURN-ONLY-1"}
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        HttpDhbOrderSyncClient client = new HttpDhbOrderSyncClient(builder, signer(),
+                JsonMapper.builder().build(), base);
+        DhbOrderSyncClient.Collected collected = client.collect(caller(), CONNECTOR_ID,
+                new DhbOrderSyncCommand(true, 1, null, null, DhbOrderSyncScope.RETURN));
+
+        assertThat(collected.objectType()).isEqualTo("RETURN");
+        assertThat(collected.fetched()).isEqualTo(1);
+        assertThat(collected.completedObjects()).containsExactlyInAnyOrder("RETURN", "RETURN_DETAIL");
+        assertThat(collected.batch().returns()).singleElement()
+                .satisfies(item -> assertThat(item.rawJson()).contains("RETURN-ONLY-1"));
+        assertThat(collected.batch().orders()).isEmpty();
+        assertThat(collected.batch().shipments()).isEmpty();
+        assertThat(collected.batch().shipmentLogistics()).isEmpty();
+        assertThat(collected.batch().financialDocuments()).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    void documentScopesOnlyFetchTheirOwnProviderObjects() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        String base = "https://integration.test";
+
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID
+                + "/shipments/query"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$.begin").value(0))
+                .andRespond(withSuccess("""
+                        {
+                          "total": 1,
+                          "items": [{
+                            "shipmentNumber": "SHIP-ONLY-1",
+                            "orderNumber": "ORD-1",
+                            "status": "shipped",
+                            "sourceFields": {"ships_num": "SHIP-ONLY-1"}
+                          }]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID
+                + "/shipments/SHIP-ONLY-1/content"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "shipmentNumber": "SHIP-ONLY-1",
+                          "sourceFields": {"ships_num": "SHIP-ONLY-1", "list": []}
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID + "/query"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "total": 1,
+                          "items": [{
+                            "orderNumber": "ORD-LOG-1",
+                            "status": "shipped",
+                            "sourceFields": {"OrderSN": "ORD-LOG-1"}
+                          }]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID
+                + "/ORD-LOG-1/wait-ships"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "orderNumber": "ORD-LOG-1",
+                          "shipped": [],
+                          "waitStock": [],
+                          "sourceFields": {}
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID
+                + "/receipts/query"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "total": 1,
+                          "items": [{
+                            "receiptNumber": "REC-ONLY-1",
+                            "amount": 12.50,
+                            "sourceFields": {"ReceiptsNum": "REC-ONLY-1", "Amount": "12.50"}
+                          }]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID
+                + "/payments/query"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "total": 1,
+                          "items": [{
+                            "paymentNumber": "PAY-ONLY-1",
+                            "amount": 2.50,
+                            "sourceFields": {"PaymentNum": "PAY-ONLY-1", "Amount": "2.50"}
+                          }]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        HttpDhbOrderSyncClient client = new HttpDhbOrderSyncClient(builder, signer(),
+                JsonMapper.builder().build(), base);
+
+        DhbOrderSyncClient.Collected shipment = client.collect(caller(), CONNECTOR_ID,
+                new DhbOrderSyncCommand(true, 1, null, null, DhbOrderSyncScope.SHIPMENT));
+        assertThat(shipment.objectType()).isEqualTo("SHIPMENT");
+        assertThat(shipment.completedObjects()).containsExactlyInAnyOrder("SHIPMENT", "SHIPMENT_DETAIL");
+        assertThat(shipment.batch().shipments()).singleElement()
+                .satisfies(item -> assertThat(item.detailIncluded()).isTrue());
+        assertThat(shipment.batch().orders()).isEmpty();
+        assertThat(shipment.batch().returns()).isEmpty();
+        assertThat(shipment.batch().financialDocuments()).isEmpty();
+
+        DhbOrderSyncClient.Collected logistics = client.collect(caller(), CONNECTOR_ID,
+                new DhbOrderSyncCommand(true, 1, null, null, DhbOrderSyncScope.SHIPMENT_LOGISTICS));
+        assertThat(logistics.objectType()).isEqualTo("SHIPMENT_LOGISTICS");
+        assertThat(logistics.completedObjects()).containsExactly("SHIPMENT_LOGISTICS");
+        assertThat(logistics.batch().shipmentLogistics()).singleElement()
+                .extracting(DhbOrderImportBatch.ShipmentLogisticsItem::orderNo)
+                .isEqualTo("ORD-LOG-1");
+        assertThat(logistics.batch().orders()).isEmpty();
+
+        DhbOrderSyncClient.Collected receipt = client.collect(caller(), CONNECTOR_ID,
+                new DhbOrderSyncCommand(true, 1, null, null, DhbOrderSyncScope.RECEIPT));
+        assertThat(receipt.objectType()).isEqualTo("RECEIPT");
+        assertThat(receipt.completedObjects()).containsExactly("RECEIPT");
+        assertThat(receipt.batch().financialDocuments()).singleElement()
+                .extracting(DhbOrderImportBatch.FinancialItem::documentType)
+                .isEqualTo("RECEIPT");
+
+        DhbOrderSyncClient.Collected payment = client.collect(caller(), CONNECTOR_ID,
+                new DhbOrderSyncCommand(true, 1, null, null, DhbOrderSyncScope.PAYMENT));
+        assertThat(payment.objectType()).isEqualTo("PAYMENT");
+        assertThat(payment.completedObjects()).containsExactly("PAYMENT");
+        assertThat(payment.batch().financialDocuments()).singleElement()
+                .extracting(DhbOrderImportBatch.FinancialItem::documentType)
+                .isEqualTo("PAYMENT");
+        assertThat(payment.batch().orders()).isEmpty();
+        assertThat(payment.batch().returns()).isEmpty();
         server.verify();
     }
 

@@ -53,6 +53,8 @@
 
 这些接口必须经过 Gateway，并使用可信 `tenantId` 与 Integration 权限。同步完成后，订单中心通过内部导入契约或事件接收数据；该契约不得携带外部凭据。
 
+每个订货宝连接器只自动维护一个 `ORDER` 同步任务，任务编码为 `DHB_ORDER_DEFAULT`。创建连接器时在同一事务内创建；启用已有连接器时自动补齐；历史启用连接器由 Flyway V4 补齐。Portal 的“新增扩展任务”仅用于后续商品、发货、收款等对象类型，订单任务不需要人工重复创建。
+
 ## 数据与 Secret
 
 - Schema：`rigour_integration`；Flyway 由 `integration-migrator` 账号执行，应用使用 `integration-app` 账号。
@@ -83,7 +85,9 @@ integration-migration-service/
 和 HTTP 路径，不读取 `rigour_integration` 表。Order Center 定时调度器另通过未配置到 Gateway
 的内部路径发现 `enabled=1`、`object_type=ORDER` 且连接器为 `ACTIVE` 的目标，再以带目标
 `tenantId` 的可信 `SERVICE` 身份调用订单查询契约；Integration 不在此过程中返回 Secret 或
-模拟租户操作人，也不复制订单主表。
+模拟租户操作人，也不复制订单主表。当前发现返回的 `taskId` 主要用于调度识别和本地检查点，
+订单查询契约仍按 `connectorId` 和时间窗口调用；后续 ERP 不应再复制一份订货宝拉取任务，而应消费
+Integration 的 Raw Landing/Outbox 结果。
 
 ## 启动与验证
 
@@ -95,7 +99,7 @@ SPRING_PROFILES_ACTIVE=dev,local \
 
 健康检查：`http://localhost:26882/actuator/health`。完整数据库、Nacos 和共享 DEV 步骤见 [`INTEGRATION_DATABASE_RUNTIME.md`](../../docs/INTEGRATION_DATABASE_RUNTIME.md)。
 
-当前已实现客户端适配器、连接测试控制面和手动 `ORDER_PULL` Worker。Worker 使用连接器配置的
+当前已实现客户端适配器、连接测试控制面和手动订单 Worker。Worker 使用连接器配置的
 完整 API URL，读取 `env://` Secret 引用，按供应商更新时间窗口分页拉取订单，先写 Raw Landing，
 再写订单镜像和 Outbox；重复 payload 幂等跳过，成功后推进 checkpoint。
 

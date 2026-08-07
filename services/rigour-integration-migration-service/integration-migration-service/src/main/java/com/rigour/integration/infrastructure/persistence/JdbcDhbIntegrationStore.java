@@ -30,6 +30,7 @@ import tools.jackson.databind.ObjectMapper;
 
 /** 订货宝同步JDBC仓储；所有查询强制绑定tenantId，跨租户访问直接拒绝。 */
 public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
+    private static final String DEFAULT_ORDER_TASK_CODE = "DHB_ORDER_DEFAULT";
     private static final Set<String> CONNECTOR_STATUSES = Set.of("ACTIVE", "DISABLED");
     private static final Set<String> TASK_STATUSES = Set.of("IDLE", "RUNNING", "PAUSED", "FAILED", "COMPLETED");
     private static final Set<String> TRANSFORM_TYPES = Set.of("DIRECT", "CONSTANT", "EXPRESSION", "DICTIONARY");
@@ -105,6 +106,7 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
                     """, bin(id), bin(tenantId), normalizedCode(command.code()), required(command.name(), "name"),
                     blankToNull(command.baseUrl()), blankToNull(command.authSecretRef()),
                     allowed(command.status(), CONNECTOR_STATUSES, "status"), bin(actorId), bin(actorId));
+            ensureDefaultOrderSyncTask(tenantId, actorId, id);
         });
         return connectorById(tenantId, id);
     }
@@ -112,6 +114,7 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
     @Override
     public ConnectorView updateConnector(UUID tenantId, UUID actorId, UUID id, ConnectorCommand command) {
         validateConnector(command);
+        String connectorStatus = allowed(command.status(), CONNECTOR_STATUSES, "status");
         transaction.executeWithoutResult(status -> {
             int changed = jdbc.update("""
                     UPDATE integration_dhb_connector
@@ -119,9 +122,10 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
                            version=version+1, updated_at=UTC_TIMESTAMP(6), updated_by=?
                      WHERE tenant_id=? AND id=? AND connector_code=? AND version=? AND deleted_at IS NULL
                     """, required(command.name(), "name"), blankToNull(command.baseUrl()),
-                    blankToNull(command.authSecretRef()), allowed(command.status(), CONNECTOR_STATUSES, "status"),
+                    blankToNull(command.authSecretRef()), connectorStatus,
                     bin(actorId), bin(tenantId), bin(id), normalizedCode(command.code()), command.version());
             requireChanged(changed);
+            if ("ACTIVE".equals(connectorStatus)) ensureDefaultOrderSyncTask(tenantId, actorId, id);
         });
         return connectorById(tenantId, id);
     }
@@ -161,6 +165,10 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
     public SyncTaskView createSyncTask(UUID tenantId, UUID actorId, SyncTaskCommand command) {
         validateSyncTask(command);
         requireConnector(tenantId, command.connectorId());
+        String objectType = normalizedObjectType(command.objectType());
+        if ("ORDER".equals(objectType)) {
+            requireNoExistingOrderSyncTask(tenantId, command.connectorId(), null);
+        }
         UUID id = UUID.randomUUID();
         transaction.executeWithoutResult(status -> {
             jdbc.update("""
@@ -169,7 +177,7 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
                      next_run_at, created_at, created_by, updated_at, updated_by)
                     VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
                     """, bin(id), bin(tenantId), bin(command.connectorId()), normalizedCode(command.code()),
-                    required(command.objectType(), "objectType"),
+                    objectType,
                     allowed(command.status(), TASK_STATUSES, "status"), timestamp(command.nextRunAt()),
                     bin(actorId), bin(actorId));
         });
@@ -180,15 +188,23 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
     public SyncTaskView updateSyncTask(UUID tenantId, UUID actorId, UUID id, SyncTaskCommand command) {
         validateSyncTask(command);
         requireConnector(tenantId, command.connectorId());
+        String taskCode = normalizedCode(command.code());
+        String objectType = normalizedObjectType(command.objectType());
+        if (DEFAULT_ORDER_TASK_CODE.equals(taskCode) && !"ORDER".equals(objectType)) {
+            throw new IllegalArgumentException("系统默认订单同步任务不能修改对象类型");
+        }
+        if ("ORDER".equals(objectType)) {
+            requireNoExistingOrderSyncTask(tenantId, command.connectorId(), id);
+        }
         transaction.executeWithoutResult(status -> {
             int changed = jdbc.update("""
                     UPDATE integration_sync_task
                        SET connector_id=?, object_type=?, task_status=?, next_run_at=?,
                            version=version+1, updated_at=UTC_TIMESTAMP(6), updated_by=?
                      WHERE tenant_id=? AND id=? AND task_code=? AND version=? AND deleted_at IS NULL
-                    """, bin(command.connectorId()), required(command.objectType(), "objectType"),
+                    """, bin(command.connectorId()), objectType,
                     allowed(command.status(), TASK_STATUSES, "status"), timestamp(command.nextRunAt()),
-                    bin(actorId), bin(tenantId), bin(id), normalizedCode(command.code()), command.version());
+                    bin(actorId), bin(tenantId), bin(id), taskCode, command.version());
             requireChanged(changed);
         });
         return syncTaskById(tenantId, id);
@@ -321,6 +337,54 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
         }
     }
 
+    /**
+     * 每个订货宝连接器默认只维护一个订单域同步任务；收款、付款等扩展对象仍可单独配置。
+     * 该方法必须在连接器事务内调用，保证连接器创建与默认任务创建保持原子性。
+     */
+    private void ensureDefaultOrderSyncTask(UUID tenantId, UUID actorId, UUID connectorId) {
+        if (count("""
+                SELECT COUNT(*) FROM integration_sync_task
+                 WHERE tenant_id=? AND connector_id=? AND object_type='ORDER' AND deleted_at IS NULL
+                """, bin(tenantId), bin(connectorId)) > 0) {
+            return;
+        }
+        int restored = jdbc.update("""
+                UPDATE integration_sync_task
+                   SET object_type='ORDER', task_status='IDLE', enabled=1,
+                       deleted_at=NULL, deleted_by=NULL, delete_reason=NULL,
+                       version=version+1, updated_at=UTC_TIMESTAMP(6), updated_by=?
+                 WHERE tenant_id=? AND connector_id=? AND task_code=? AND deleted_at IS NOT NULL
+                """, bin(actorId), bin(tenantId), bin(connectorId), DEFAULT_ORDER_TASK_CODE);
+        if (restored == 1) return;
+
+        jdbc.update("""
+                INSERT INTO integration_sync_task
+                    (id, tenant_id, connector_id, task_code, object_type, task_status,
+                     next_run_at, created_at, created_by, updated_at, updated_by)
+                VALUES (?, ?, ?, ?, 'ORDER', 'IDLE', NULL, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
+                """, bin(UUID.randomUUID()), bin(tenantId), bin(connectorId), DEFAULT_ORDER_TASK_CODE,
+                bin(actorId), bin(actorId));
+    }
+
+    private void requireNoExistingOrderSyncTask(UUID tenantId, UUID connectorId, UUID ignoredTaskId) {
+        String sql = ignoredTaskId == null
+                ? """
+                    SELECT COUNT(*) FROM integration_sync_task
+                     WHERE tenant_id=? AND connector_id=? AND object_type='ORDER' AND deleted_at IS NULL
+                    """
+                : """
+                    SELECT COUNT(*) FROM integration_sync_task
+                     WHERE tenant_id=? AND connector_id=? AND object_type='ORDER'
+                       AND id<>? AND deleted_at IS NULL
+                    """;
+        int count = ignoredTaskId == null
+                ? count(sql, bin(tenantId), bin(connectorId))
+                : count(sql, bin(tenantId), bin(connectorId), bin(ignoredTaskId));
+        if (count > 0) {
+            throw new IllegalArgumentException("每个订货宝连接器只允许一个ORDER同步任务，系统已自动创建默认任务");
+        }
+    }
+
     private static ConnectorView connector(ResultSet rs) throws SQLException {
         return new ConnectorView(IntegrationUuidCodec.decode(rs, "id"),
                 IntegrationUuidCodec.decode(rs, "tenant_id"), rs.getString("connector_code"),
@@ -390,6 +454,9 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
             throw new IllegalArgumentException("code contains unsupported characters");
         }
         return code;
+    }
+    private static String normalizedObjectType(String value) {
+        return required(value, "objectType").toUpperCase(java.util.Locale.ROOT);
     }
     private static String allowed(String value, Set<String> values, String field) {
         String normalized = required(value, field).toUpperCase();

@@ -25,7 +25,7 @@ Integration 是外部系统和本平台领域服务之间的隔离层，负责�
 6. 记录外部与内部事实的差异，并记录每个租户、业务域当前由谁拥有事实主权。
 
 当前代码已经提供控制面接口和数据库迁移，允许在门户中配置连接、任务和字段映射；订货宝正式 API 地址和账号 Secret 必须来自供应商/负责人确认，不能用测试账号密码臆造真实联调。
-当前版本已经在 Integration 内实现订货宝 `DhbClient`、HTTP 适配器、商品/订单公开查询、订单明细读取和手动 `ORDER_PULL` Worker（认证、超时、有限重试、进程内限流、偏移分页、更新时间窗口、Raw Landing、订单镜像、Outbox 和 checkpoint）；`integration-migration-api` 已提供版本化跨服务契约。Order Center 已实现通过内部可信服务身份动态发现启用订单任务、自动拉取订单及关联明细并完成本地幂等落库；客户、仓库、员工目录、死信重放和下游 Outbox 消费仍需后续实现。
+当前版本已经在 Integration 内实现订货宝 `DhbClient`、HTTP 适配器、商品/订单公开查询、订单明细读取和订单 Worker（认证、超时、有限重试、进程内限流、偏移分页、更新时间窗口、Raw Landing、订单镜像、Outbox 和 checkpoint）；`integration-migration-api` 已提供版本化跨服务契约。每个连接器的默认 `ORDER` 任务由 Integration 自动创建，历史启用连接器由 Flyway V4 补齐。Order Center 已实现通过内部可信服务身份动态发现启用订单任务、自动拉取订单及关联明细并完成本地幂等落库；客户、仓库、员工目录、死信重放和下游 Outbox 消费仍需后续实现。
 
 ## 3. 从供应链入口调用的完整链路
 
@@ -221,7 +221,7 @@ Active profiles: dev,local
 VM options: -Dspring.output.ansi.enabled=ALWAYS
 ```
 
-启动成功标志是控制台出现带服务名、端口 `26882` 的 `✅✅✅` 日志。Flyway 会自动执行 V1、V2、V3；服务不会自动创建第三方连接器，也不会自动调用订货宝。
+启动成功标志是控制台出现带服务名、端口 `26882` 的 `✅✅✅` 日志。Flyway 会自动执行 V1、V2、V3、V4；V4 只为已有启用连接器补齐默认订单任务。服务不会自动创建第三方连接器，也不会自动调用订货宝。
 
 ## 8. 启动后验收
 
@@ -245,9 +245,10 @@ ORDER BY table_name;
 
 然后登录 Portal，进入“供应链系统 → 订货宝数据同步”：
 
-1. 在“连接配置”创建连接器，只填写订货宝确认的完整 API URL 和 Secret 引用，例如 `env://RIGOUR_DHB_DEV`；运行时从 `RIGOUR_DHB_DEV_SERIAL_NUMBER` 和 `RIGOUR_DHB_DEV_PASSWORD` 读取，`application-local.yml` 不保存凭据。
-2. 在“同步任务”先创建 `ORDER_PULL`，初期使用“手动”策略，确认 API 合同后再启用定时策略。
-3. 配置字段映射，检查同步日志、Raw Landing 和订单镜像。
-4. 定时同步、死信重放和下游订单/BI消费完成前，页面上的“已同步数量”不能伪造成功数量。当前 Worker 通过手动 API 执行；连接测试或同步返回 `DHB_SECRET_NOT_CONFIGURED` 时不会调用第三方。
+1. 在“连接配置”创建连接器，只填写订货宝确认的完整 API URL 和 Secret 引用，例如 `env://RIGOUR_DHB_DEV`；运行时从 `RIGOUR_DHB_DEV_SERIAL_NUMBER` 和 `RIGOUR_DHB_DEV_PASSWORD` 读取，`application-local.yml` 不保存凭据。创建后检查“同步任务”中是否出现 `DHB_ORDER_DEFAULT`。
+2. 订单任务初期保持 `IDLE`，由 Order Center 的定时调度器根据连接器状态、任务启用状态和任务状态发现；也可以从订单任务执行“立即同步”。
+3. 需要扩展其他对象类型时，再在“同步任务”创建扩展任务；当前尚未接入对应领域消费者的扩展任务不提供“立即同步”入口。
+4. 配置字段映射，检查同步日志、Raw Landing 和订单镜像。
+5. 定时同步、死信重放和下游订单/ERP/BI消费完成前，页面上的“已同步数量”不能伪造成功数量。连接测试或同步返回 `DHB_SECRET_NOT_CONFIGURED` 时不会调用第三方。
 
 Integration 未启动只会让 `/api/v1/integration/**` 连接失败；它不应让 IAM 登录、系统管理或供应链菜单整体跳回登录页。若出现这种现象，应沿 Portal → Gateway → Integration 的 `requestId` 分别查看日志。

@@ -47,7 +47,8 @@ Order Center 定时任务 -> Integration内部目标发现
 - `GET /api/v1/orders/dhb/shipments/{shipmentNo}`：查询本地出库/发货单及明细；
 - `GET /api/v1/orders/dhb/returns`、`GET /api/v1/orders/dhb/returns/{returnNo}`：查询本地退货单及明细；
 - `GET /api/v1/orders/dhb/receipts`、`GET /api/v1/orders/dhb/payments`：查询本地收款单、付款单。
-- `POST /api/v1/orders/dhb/sync/{connectorId}`：前端立即同步；由 Order Center 调 Integration 后落本地库。
+- `POST /api/v1/orders/dhb/sync`：Portal无需传connectorId，Order Center按当前登录租户从Integration sync-targets自动解析唯一启用连接器，再调Integration后落本地库；请求体的`scope=ORDER`只拉订货单列表和详情，`scope=RETURN`只拉退货单列表和详情，`scope=SHIPMENT`只拉出库/发货单及详情，`scope=SHIPMENT_LOGISTICS`只落库物流快照，`scope=RECEIPT`只拉收款单，`scope=PAYMENT`只拉付款单，省略或`ALL`保持历史聚合同步行为；若当前租户没有或有多个启用连接器，则拒绝执行，避免误同步。
+- `POST /api/v1/orders/dhb/sync/{connectorId}`：兼容旧调用方；Order Center仍会校验connectorId属于当前租户的启用任务，再调Integration后落本地库。
 
 Order Center 不实现订货宝 `f/v` 协议，不保存外部 Secret/Token；通过 `integration-migration-api` 的版本化查询契约调用 Integration。当前工作区已确认可调用订单列表和订单详情；同步结果使用 `tenantId + sourceSystem + sourceOrderNo` 做幂等。
 
@@ -74,7 +75,7 @@ Order Center 通过未配置到 Gateway 的 `/internal/v1/integration/dhb/sync-t
 首次同步不带更新时间窗口；后续以 `order_dhb_sync_checkpoint.last_success_at - overlap-minutes`
 作为起点，只有 Integration 查询成功且本地业务表全部落库成功后才推进游标。失败时保留上一次成功游标，下一次会重新读取重叠区间。
 
-订单同步通过 Integration 调用订货宝 `getShipsList` 分页读取独立出库/发货单，并按 `includeDetails` 调用 `getShipsContent(ships_num)` 补齐主单和商品明细，交回 Order Center 后由本地幂等导入写入 `order_dhb_shipment` 及明细表；同时按订单调用 `getWaitShips(orders_num)`，将`shipped`和`wait_stock`按订单域批次交回并写入`order_dhb_shipment_logistics`及明细表。Portal 的出库/发货和物流页面只查询本地接口，不实时访问订货宝。
+订单同步通过 Integration 调用订货宝 `getShipsList` 分页读取独立出库/发货单，并按 `includeDetails` 调用 `getShipsContent(ships_num)` 补齐主单和商品明细，交回 Order Center 后由本地幂等导入写入 `order_dhb_shipment` 及明细表；同时按订单调用 `getWaitShips(orders_num)`，将`shipped`和`wait_stock`按订单域批次交回并写入`order_dhb_shipment_logistics`及明细表。由于订货宝没有独立物流列表接口，物流页同步会先读取订单号作为索引，再逐单调用`getWaitShips`，但本批次只导入物流快照，不重复导入订单。Portal 的出库/发货、物流和订单结算页面只查询本地接口，手动同步分别使用专用范围；拉取成功后在同一轮导入事务中幂等落库。
 
 Order Center 的接口访问日志记录方法、路径、查询参数、JSON请求体、租户、requestId、响应状态和耗时；token、sKey、签名、密码等敏感值统一脱敏，便于按 requestId 定位问题而不把凭据写入日志。
 

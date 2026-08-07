@@ -10,5 +10,6 @@ package com.rigour.order.api.v1;
 public interface DhbOrderApi {
     String BASE_PATH = "/api/v1/orders/dhb";
     String DETAIL_PATH = BASE_PATH + "/{orderSn}";
+    String AUTO_SYNC_PATH = BASE_PATH + "/sync";
     String SYNC_PATH = BASE_PATH + "/sync/{connectorId}";
 }

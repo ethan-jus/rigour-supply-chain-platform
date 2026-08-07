@@ -143,14 +143,14 @@ class TenantIamServiceApplicationTests {
 
     @Test
     void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 23);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 28);
         assertCount("SELECT COUNT(*) FROM information_schema.tables "
                 + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 36);
         assertCount("SELECT COUNT(*) FROM iam_application", 6);
-        assertCount("SELECT COUNT(*) FROM iam_resource", 267);
+        assertCount("SELECT COUNT(*) FROM iam_resource", 270);
         assertCount("SELECT COUNT(permission_code) FROM iam_resource", 48);
-        assertCount("SELECT COUNT(*) FROM iam_package_resource", 240);
-        assertCount("SELECT COUNT(*) FROM iam_resource_ui", 213);
+        assertCount("SELECT COUNT(*) FROM iam_package_resource", 243);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui", 216);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='PLATFORM_ADMIN' AND target_uri='/platform-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='SYSTEM_ADMIN' AND target_uri='/system-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application "
@@ -181,7 +181,29 @@ class TenantIamServiceApplicationTests {
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000109'),"
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000110'),"
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000117'),"
-                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000118')) AND visible=0", 7);
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000118')) AND visible=0", 6);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE resource_id=UUID_TO_BIN("
+                + "'019facf2-0000-7000-8000-000000000102') AND visible=1 "
+                + "AND route_key='supply.order.stock-up' AND route_path='/supply-chain/order/stock-up'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE resource_code='SUPPLY_CHAIN.MENU.ORDER_SETTLEMENT' "
+                + "AND display_name='订单结算管理'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE resource_code='SUPPLY_CHAIN.PAGE.ORDER_SETTLEMENT_RECONCILIATION' "
+                + "AND display_name='财务对账'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE resource_code='SUPPLY_CHAIN.PAGE.ORDER_SETTLEMENT_COLLECTIONS' "
+                + "AND display_name='收付记录'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE resource_code='SUPPLY_CHAIN.PAGE.ORDER_SETTLEMENT_COLLECTIONS' "
+                + "AND resource_type='MENU'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE resource_code='SUPPLY_CHAIN.PAGE.ORDER_SETTLEMENT_RECEIPTS' "
+                + "AND display_name='收款单'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE resource_code='SUPPLY_CHAIN.PAGE.ORDER_SETTLEMENT_PAYMENTS' "
+                + "AND display_name='付款单'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
+                + "'supply.order.settlement.receipts','supply.order.settlement.payments') AND visible=1", 2);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE resource_id=UUID_TO_BIN("
+                + "'019facf2-0000-7000-8000-000000000237') AND visible=1 "
+                + "AND route_key='supply.order.settlement.collections' AND route_path IS NULL", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE resource_code='SUPPLY_CHAIN.PAGE.ORDER_SETTLEMENT_DIFFERENCES' "
+                + "AND display_name='对账差异'", 1);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE resource_id BETWEEN "
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000167') AND "
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000267') AND visible=1", 101);
@@ -232,6 +254,12 @@ class TenantIamServiceApplicationTests {
                 .anyMatch(node -> "/system-admin".equals(node.routePath()));
         assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
                 .anyMatch(node -> "/supply-chain".equals(node.routePath()));
+        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
+                .anyMatch(node -> node.children().stream().anyMatch(menu ->
+                        "履约编排".equals(menu.displayName())
+                                && menu.children().stream().anyMatch(page ->
+                                "/supply-chain/order/stock-up".equals(page.routePath())
+                                        && page.visible())));
 
         List<TenantMenuView> tenantMenus = managementStore.tenantMenus(first.actor());
         TenantMenuView configurableMenu = tenantMenus.stream()

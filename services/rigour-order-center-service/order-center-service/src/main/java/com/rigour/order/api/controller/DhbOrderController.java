@@ -5,8 +5,8 @@ import com.rigour.order.api.v1.model.DhbOrderDetailView;
 import com.rigour.order.api.v1.model.DhbOrderPageView;
 import com.rigour.order.api.v1.model.DhbOrderSyncCommand;
 import com.rigour.order.api.v1.model.DhbOrderSyncResult;
+import com.rigour.order.application.service.dhb.DhbOrderManualSyncService;
 import com.rigour.order.application.service.dhb.DhbOrderService;
-import com.rigour.order.application.service.dhb.DhbOrderSyncService;
 import com.rigour.shared.context.TenantContext;
 import com.rigour.shared.core.api.ApiResponse;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,11 +23,11 @@ import java.util.UUID;
 @RequestMapping(DhbOrderApi.BASE_PATH)
 public class DhbOrderController {
     private final DhbOrderService service;
-    private final DhbOrderSyncService syncService;
+    private final DhbOrderManualSyncService manualSyncService;
 
-    public DhbOrderController(DhbOrderService service, DhbOrderSyncService syncService) {
+    public DhbOrderController(DhbOrderService service, DhbOrderManualSyncService manualSyncService) {
         this.service = service;
-        this.syncService = syncService;
+        this.manualSyncService = manualSyncService;
     }
 
     @GetMapping
@@ -52,12 +52,18 @@ public class DhbOrderController {
         return ApiResponse.success(service.detail(tenantId(), orderSn));
     }
 
-    /** 前端立即同步入口；请求只进入Order Center，不允许前端直接调用Integration执行接口。 */
+    /** 前端立即同步入口；按当前登录租户自动选择唯一启用的订货宝连接器。 */
+    @PostMapping("/sync")
+    public ApiResponse<DhbOrderSyncResult> sync(@RequestBody(required = false) DhbOrderSyncCommand command) {
+        return ApiResponse.success(manualSyncService.run(command));
+    }
+
+    /** 兼容旧入口；connectorId必须先经Integration sync-targets校验。 */
     @PostMapping("/sync/{connectorId}")
     public ApiResponse<DhbOrderSyncResult> sync(
             @PathVariable UUID connectorId,
             @RequestBody(required = false) DhbOrderSyncCommand command) {
-        return ApiResponse.success(syncService.run(connectorId, command));
+        return ApiResponse.success(manualSyncService.run(connectorId, command));
     }
 
     private static DhbOrderService.OrderQuery query(int begin, int step, String orderStatusVal, String starttime,

@@ -61,6 +61,20 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
         Objects.requireNonNull(caller, "caller不能为空");
         Objects.requireNonNull(connectorId, "connectorId不能为空");
         DhbOrderSyncCommand effective = command == null ? new DhbOrderSyncCommand(null, null) : command;
+        return switch (effective.scope()) {
+            case ORDER -> collectOrdersOnly(caller, connectorId, effective);
+            case RETURN -> collectReturnsOnly(caller, connectorId, effective);
+            case SHIPMENT -> collectShipmentsOnly(caller, connectorId, effective);
+            case SHIPMENT_LOGISTICS -> collectShipmentLogisticsOnly(caller, connectorId, effective);
+            case RECEIPT -> collectReceiptsOnly(caller, connectorId, effective);
+            case PAYMENT -> collectPaymentsOnly(caller, connectorId, effective);
+            case ALL -> collectAll(caller, connectorId, effective);
+        };
+    }
+
+    /** 历史聚合同步：保留订单域当前已接入对象的完整调用链。 */
+    private Collected collectAll(CallerIdentity caller, UUID connectorId,
+                                 DhbOrderSyncCommand effective) {
         List<DhbOrderImportBatch.OrderItem> orders = new ArrayList<>();
         List<DhbOrderImportBatch.ShipmentItem> shipments = new ArrayList<>();
         List<DhbOrderImportBatch.ShipmentLogisticsItem> shipmentLogistics = new ArrayList<>();
@@ -175,6 +189,178 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
         DhbOrderImportBatch batch = new DhbOrderImportBatch(
                 orders, shipments, shipmentLogistics, returns, financialDocuments);
         return new Collected(UUID.randomUUID(), "ORDER_DOMAIN", total, completed, batch);
+    }
+
+    /** 订单页同步：只访问订货宝订单列表和可选的订单详情接口。 */
+    private Collected collectOrdersOnly(CallerIdentity caller, UUID connectorId,
+                                        DhbOrderSyncCommand effective) {
+        List<DhbOrderImportBatch.OrderItem> orders = new ArrayList<>();
+        Set<String> completed = new LinkedHashSet<>();
+        long total = 0;
+        boolean truncatedByMaxPages = false;
+        for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
+            int begin = pageNumber * PAGE_SIZE;
+            DhbApiModels.OrderPageView page = query(caller, connectorId, effective, begin);
+            if (page == null || page.items() == null || page.items().isEmpty()) break;
+            if (pageNumber == 0) total = page.total();
+            for (DhbApiModels.OrderView summary : page.items()) {
+                DhbApiModels.OrderContentView detail = effective.includeDetails()
+                        ? content(caller, connectorId, summary.orderNumber()) : null;
+                orders.add(order(summary, detail));
+            }
+            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
+            truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+        }
+        if (truncatedByMaxPages) {
+            throw new IllegalStateException("订货宝订单同步达到maxPages=" + effective.maxPages()
+                    + "，但供应商仍有后续数据；本次不推进增量游标");
+        }
+        completed.add("ORDER");
+        if (effective.includeDetails()) completed.add("ORDER_DETAIL");
+        DhbOrderImportBatch batch = new DhbOrderImportBatch(orders, null, null, null, null);
+        return new Collected(UUID.randomUUID(), "ORDER", total, completed, batch);
+    }
+
+    /** 退货页同步：只访问订货宝退货单列表和可选的退货单详情接口。 */
+    private Collected collectReturnsOnly(CallerIdentity caller, UUID connectorId,
+                                         DhbOrderSyncCommand effective) {
+        List<DhbOrderImportBatch.ReturnItem> returns = new ArrayList<>();
+        Set<String> completed = new LinkedHashSet<>();
+        long total = 0;
+        boolean truncatedByMaxPages = false;
+        for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
+            int begin = pageNumber * PAGE_SIZE;
+            DhbApiModels.ReturnPageView page = queryReturns(caller, connectorId, effective, begin);
+            if (page == null || page.items() == null || page.items().isEmpty()) break;
+            if (pageNumber == 0) total = page.total();
+            for (DhbApiModels.ReturnView summary : page.items()) {
+                DhbApiModels.ReturnContentView detail = effective.includeDetails()
+                        ? returnContent(caller, connectorId, summary.returnNumber()) : null;
+                returns.add(returnItem(summary, detail));
+            }
+            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
+            truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+        }
+        if (truncatedByMaxPages) {
+            throw new IllegalStateException("订货宝退货单同步达到maxPages=" + effective.maxPages()
+                    + "，但供应商仍有后续数据；本次不推进增量游标");
+        }
+        completed.add("RETURN");
+        if (effective.includeDetails()) completed.add("RETURN_DETAIL");
+        DhbOrderImportBatch batch = new DhbOrderImportBatch(null, null, null, returns, null);
+        return new Collected(UUID.randomUUID(), "RETURN", total, completed, batch);
+    }
+
+    /** 出库/发货页同步：只访问订货宝出库/发货单列表和可选详情。 */
+    private Collected collectShipmentsOnly(CallerIdentity caller, UUID connectorId,
+                                           DhbOrderSyncCommand effective) {
+        List<DhbOrderImportBatch.ShipmentItem> shipments = new ArrayList<>();
+        Set<String> completed = new LinkedHashSet<>();
+        long total = 0;
+        boolean truncatedByMaxPages = false;
+        for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
+            int begin = pageNumber * PAGE_SIZE;
+            DhbApiModels.ShipmentPageView page = queryShipments(caller, connectorId, effective, begin);
+            if (page == null || page.items() == null || page.items().isEmpty()) break;
+            if (pageNumber == 0) total = page.total();
+            for (DhbApiModels.ShipmentView summary : page.items()) {
+                DhbApiModels.ShipmentContentView detail = effective.includeDetails()
+                        ? shipmentContent(caller, connectorId, summary.shipmentNumber()) : null;
+                shipments.add(shipment(summary, detail));
+            }
+            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
+            truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+        }
+        if (truncatedByMaxPages) {
+            throw new IllegalStateException("订货宝出库/发货单同步达到maxPages=" + effective.maxPages()
+                    + "，但供应商仍有后续数据；本次不推进增量游标");
+        }
+        completed.add("SHIPMENT");
+        if (effective.includeDetails()) completed.add("SHIPMENT_DETAIL");
+        DhbOrderImportBatch batch = new DhbOrderImportBatch(null, shipments, null, null, null);
+        return new Collected(UUID.randomUUID(), "SHIPMENT", total, completed, batch);
+    }
+
+    /** 物流页同步：先通过订单列表发现订单号，再只落库getWaitShips物流快照。 */
+    private Collected collectShipmentLogisticsOnly(CallerIdentity caller, UUID connectorId,
+                                                   DhbOrderSyncCommand effective) {
+        List<DhbOrderImportBatch.ShipmentLogisticsItem> shipmentLogistics = new ArrayList<>();
+        Set<String> completed = new LinkedHashSet<>();
+        long total = 0;
+        boolean truncatedByMaxPages = false;
+        for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
+            int begin = pageNumber * PAGE_SIZE;
+            DhbApiModels.OrderPageView page = query(caller, connectorId, effective, begin);
+            if (page == null || page.items() == null || page.items().isEmpty()) break;
+            if (pageNumber == 0) total = page.total();
+            for (DhbApiModels.OrderView summary : page.items()) {
+                shipmentLogistics.add(logisticsSnapshot(summary.orderNumber(),
+                        waitShips(caller, connectorId, summary.orderNumber())));
+            }
+            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
+            truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+        }
+        if (truncatedByMaxPages) {
+            throw new IllegalStateException("订货宝物流同步达到maxPages=" + effective.maxPages()
+                    + "，但供应商仍有后续订单；本次不推进增量游标");
+        }
+        completed.add("SHIPMENT_LOGISTICS");
+        DhbOrderImportBatch batch = new DhbOrderImportBatch(null, null, shipmentLogistics, null, null);
+        return new Collected(UUID.randomUUID(), "SHIPMENT_LOGISTICS", total, completed, batch);
+    }
+
+    /** 收款页同步：只访问订货宝收款单列表。 */
+    private Collected collectReceiptsOnly(CallerIdentity caller, UUID connectorId,
+                                          DhbOrderSyncCommand effective) {
+        List<DhbOrderImportBatch.FinancialItem> financialDocuments = new ArrayList<>();
+        long total = collectFinancialPage(caller, connectorId, effective, financialDocuments, true);
+        Set<String> completed = new LinkedHashSet<>();
+        completed.add("RECEIPT");
+        DhbOrderImportBatch batch = new DhbOrderImportBatch(null, null, null, null, financialDocuments);
+        return new Collected(UUID.randomUUID(), "RECEIPT", total, completed, batch);
+    }
+
+    /** 付款页同步：只访问订货宝付款单列表。 */
+    private Collected collectPaymentsOnly(CallerIdentity caller, UUID connectorId,
+                                          DhbOrderSyncCommand effective) {
+        List<DhbOrderImportBatch.FinancialItem> financialDocuments = new ArrayList<>();
+        long total = collectFinancialPage(caller, connectorId, effective, financialDocuments, false);
+        Set<String> completed = new LinkedHashSet<>();
+        completed.add("PAYMENT");
+        DhbOrderImportBatch batch = new DhbOrderImportBatch(null, null, null, null, financialDocuments);
+        return new Collected(UUID.randomUUID(), "PAYMENT", total, completed, batch);
+    }
+
+    private long collectFinancialPage(CallerIdentity caller, UUID connectorId,
+                                      DhbOrderSyncCommand effective,
+                                      List<DhbOrderImportBatch.FinancialItem> financialDocuments,
+                                      boolean receipts) {
+        long total = 0;
+        boolean truncatedByMaxPages = false;
+        for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
+            int begin = pageNumber * PAGE_SIZE;
+            if (receipts) {
+                DhbApiModels.ReceiptPageView page = queryReceipts(caller, connectorId, effective, begin);
+                if (page == null || page.items() == null || page.items().isEmpty()) break;
+                if (pageNumber == 0) total = page.total();
+                page.items().stream().map(this::receipt).forEach(financialDocuments::add);
+                if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
+                truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+            } else {
+                DhbApiModels.PaymentPageView page = queryPayments(caller, connectorId, effective, begin);
+                if (page == null || page.items() == null || page.items().isEmpty()) break;
+                if (pageNumber == 0) total = page.total();
+                page.items().stream().map(this::payment).forEach(financialDocuments::add);
+                if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
+                truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+            }
+        }
+        if (truncatedByMaxPages) {
+            throw new IllegalStateException((receipts ? "订货宝收款单" : "订货宝付款单")
+                    + "同步达到maxPages=" + effective.maxPages()
+                    + "，但供应商仍有后续数据；本次不推进增量游标");
+        }
+        return total;
     }
 
     private DhbApiModels.OrderPageView query(CallerIdentity caller, UUID connectorId,

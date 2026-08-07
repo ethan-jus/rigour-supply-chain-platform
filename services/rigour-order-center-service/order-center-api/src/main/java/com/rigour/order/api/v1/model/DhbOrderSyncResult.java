@@ -6,7 +6,7 @@ import java.util.UUID;
 /** Order Center 完成外部查询和本地业务落库后的同步结果。 */
 public record DhbOrderSyncResult(
         /** Integration 同步运行 UUID。 */ UUID runId,
-        /** ORDER、SHIPMENT、RETURN、RECEIPT、PAYMENT 或 ORDER_DOMAIN。 */ String objectType,
+        /** ORDER、RETURN、SHIPMENT、SHIPMENT_LOGISTICS、RECEIPT、PAYMENT 或 ORDER_DOMAIN。 */ String objectType,
         /** 外部查询与本地落库均完成时固定为 SUCCEEDED。 */ String status,
         /** 订货宝订单、出库/发货、退货、收款和付款列表接口返回记录数之和，不重复统计详情。 */ long fetched,
         /** 五类业务数据实际新增或内容变化数量之和。 */ int changed,
