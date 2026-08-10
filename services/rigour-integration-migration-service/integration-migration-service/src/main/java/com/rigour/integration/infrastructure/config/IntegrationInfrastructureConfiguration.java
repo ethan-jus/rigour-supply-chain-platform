@@ -54,7 +54,8 @@ public final class IntegrationInfrastructureConfiguration {
     @Bean
     FeishuJsapiSignService feishuJsapiSignService(
             FeishuJsapiClient client, FeishuClientProperties properties) {
-        return new FeishuJsapiSignService(client, properties.getAppId(), properties.allowedOriginValues());
+        return new FeishuJsapiSignService(client, properties.getAppId(),
+                properties.allowedOriginValues(), properties.isAllowInsecureLan());
     }
 
     @Bean

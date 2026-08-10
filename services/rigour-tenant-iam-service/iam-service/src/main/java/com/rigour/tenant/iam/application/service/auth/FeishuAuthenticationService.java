@@ -14,9 +14,13 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** 飞书H5免登：验证一次性code、解析已绑定IAM用户、创建会话并签发平台令牌。 */
 public final class FeishuAuthenticationService {
+
+    private static final Logger log = LoggerFactory.getLogger(FeishuAuthenticationService.class);
 
     private final FeishuIdentityProvider identityProvider;
     private final FeishuIdentityStore identityStore;
@@ -59,7 +63,12 @@ public final class FeishuAuthenticationService {
 
         FeishuIdentityStore.BoundIdentity bound = identityStore
                 .findActive(verified.tenantKey(), verified.openId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.FEISHU_IDENTITY_NOT_BOUND));
+                .orElseThrow(() -> {
+                    // 绑定排障需要定位外部身份；openId/tenantKey 不是令牌或密钥，且成功响应本就会回传 openId。
+                    log.warn("飞书身份未绑定平台用户 externalTenantKey={} externalUserId={}",
+                            verified.tenantKey(), verified.openId());
+                    return new BusinessException(ErrorCode.FEISHU_IDENTITY_NOT_BOUND);
+                });
         Instant now = clock.instant();
         AuthSession session = new AuthSession(
                 identifierGenerator.nextId(), PrincipalScope.TENANT, bound.tenantId(), bound.userId(),

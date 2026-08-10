@@ -27,6 +27,7 @@ dev,local
 
 - `dev`加载远端DEV Nacos Namespace和其中的数据源配置。
 - `local`覆盖IAM、Gateway、Portal回调为本机localhost，并默认禁止把开发者电脑注册到共享Nacos服务发现。
+- `local`同时为IAM和Integration提供局域网开发开关：只动态匹配RFC1918私网HTTP来源，不保存任何开发者电脑IP；生产配置必须关闭。
 - 两者同时生效，不是二选一；`local`在这里是“本机运行覆盖层”，不是本地数据库环境。
 - 只使用`dev`会读取Nacos，但不会启用本机loopback HTTP边界；只使用`local`则没有DEV Nacos数据源。
 
@@ -44,7 +45,7 @@ spring:
 
 因此本机服务读取共享Nacos配置，但不会把开发者A/B的局域网地址混入共享注册中心。当前Gateway使用固定localhost端口路由本机服务。如果以后确实需要本地实例参加服务发现，必须先设计按开发者隔离的group/cluster，再显式设置`NACOS_DISCOVERY_REGISTER_ENABLED=true`。
 
-## 所有人一致的本机地址
+## 本机与局域网访问地址
 
 ```text
 Portal:  http://localhost:5100
@@ -60,6 +61,17 @@ http://localhost:5100/
 ```
 
 开发者A登录时访问A电脑的localhost，开发者B登录时访问B电脑的localhost，二者不会互相跳转。
+
+Portal和Sales Workbench的Vite开发服务器都绑定`0.0.0.0`，这表示监听所有网卡，不是固定服务器IP。启动Sales Workbench后，`[ViteTrace] server-listening`日志会动态列出：
+
+```text
+localUrl: http://localhost:5200
+lanUrls:  [http://<当前网卡地址>:5200, ...]
+```
+
+同一局域网设备使用日志中的`lanUrls`访问，不要把当前`192.168.x.x`复制进配置文件。Portal打开Sales Workbench时，本地开发的`localhost:5200`会自动替换为当前Portal页面主机名，因此从局域网地址进入门户时不会把手机带到手机自己的localhost。
+
+注意：当前本地OIDC客户端仍按安全边界精确注册`http://localhost:5100/oidc/callback`和`http://localhost:5100/`，适合本机浏览器登录。要让外部手机完成Portal的OIDC登录，必须给IAM和Portal提供稳定的HTTPS域名并在IAM客户端中注册对应回调，不能把任意局域网IP作为生产OIDC回调。
 
 ## 共享Secret
 
@@ -115,6 +127,8 @@ VITE_OIDC_CLIENT_ID=rigour-portal-browser
 VITE_OIDC_REDIRECT_URI=http://localhost:5100/oidc/callback
 VITE_OIDC_POST_LOGOUT_REDIRECT_URI=http://localhost:5100/
 ```
+
+`VITE_API_TARGET`只由本机Vite开发服务器读取，用于把浏览器的相对路径`/api`转发给Gateway；换服务器时在`.env.local`覆盖它，不修改Vite源码，也不让手机直接访问该地址。
 
 ## 共享DEV一次性初始化
 

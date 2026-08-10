@@ -65,7 +65,9 @@ rigour:
         issuer: http://localhost:26881
         allowed-origins:
           - http://localhost:5100
-        # 仅允许浏览器本机loopback HTTP；远程IP和非loopback HTTP仍会失败关闭。
+        # true时由IAM代码动态允许RFC1918私网HTTP来源，不需要填写当前电脑IP。
+        # 仅local开发使用；生产必须改为false，并在allowed-origins中填写明确HTTPS来源。
+        allow-insecure-lan: true
         allow-insecure-loopback: true
       signing:
         # JWT/ID Token签名运行开关：加载iam_signing_key的ACTIVE RSA私钥并发布JWKS。

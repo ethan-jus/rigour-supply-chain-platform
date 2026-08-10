@@ -43,6 +43,9 @@ rigour:
         # 保存加密的授权请求上下文；不是生成密钥的开关。
         enabled: true
         allow-insecure-loopback: true
+        # 仅本机开发允许RFC1918私有网段的HTTP Portal来源；代码会动态匹配当前局域网IP，
+        # 不要把某台电脑的192.168.x.x写入这里。生产环境必须关闭并使用HTTPS精确来源。
+        allow-insecure-lan: true
         issuer: http://localhost:26881
         allowed-origins:
           - http://localhost:5100

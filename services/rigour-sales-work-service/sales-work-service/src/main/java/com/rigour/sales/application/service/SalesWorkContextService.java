@@ -78,7 +78,8 @@ public final class SalesWorkContextService {
                 policy.checkOutWindowEnd(), policy.standardWorkMinutes(), policy.minimumWorkMinutes(),
                 policy.requireCheckOut(), policy.allowAdjustment(), policy.adjustmentDeadlineHours(),
                 policy.locationEnabled(), policy.locationIntervalMinutes(),
-                policy.minimumLocationAccuracyMeters(), policy.offlineUploadDeadlineMinutes());
+                policy.minimumLocationAccuracyMeters(), policy.offlineUploadDeadlineMinutes(),
+                policy.effectiveFrom());
     }
 
     private static VisitTargetView targetView(SalesWorkQueryRepository.VisitTarget target) {

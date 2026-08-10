@@ -6,7 +6,9 @@ import com.rigour.sales.api.v1.model.SalesWorkApiModels.CheckOutCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.InterruptionCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.LocationBatchCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.LocationBatchResult;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.WorkDayTrackView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.WorkDayView;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.AttendanceMonthView;
 import com.rigour.sales.application.service.SalesWorkAttendanceService;
 import com.rigour.shared.core.api.ApiResponse;
 import java.time.LocalDate;
@@ -53,5 +55,16 @@ public final class SalesWorkAttendanceController {
     @GetMapping(SalesWorkApi.WORK_DAY_PATH)
     public ApiResponse<WorkDayView> workDay(@PathVariable("date") LocalDate date) {
         return ApiResponse.success(service.workDay(date));
+    }
+
+    @GetMapping(SalesWorkApi.WORK_DAY_MONTH_PATH)
+    public ApiResponse<AttendanceMonthView> attendanceMonth(
+            @org.springframework.web.bind.annotation.RequestParam("month") String month) {
+        return ApiResponse.success(service.attendanceMonth(month));
+    }
+
+    @GetMapping(SalesWorkApi.WORK_DAY_TRACK_PATH)
+    public ApiResponse<WorkDayTrackView> workDayTrack(@PathVariable("date") LocalDate date) {
+        return ApiResponse.success(service.track(date));
     }
 }

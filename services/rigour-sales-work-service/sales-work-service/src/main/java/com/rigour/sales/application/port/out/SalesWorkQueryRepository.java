@@ -18,6 +18,16 @@ public interface SalesWorkQueryRepository {
 
     Optional<FieldPolicy> findFieldPolicy(UUID tenantId, UUID fieldPolicyVersionId);
 
+    Optional<VisitPolicy> findActiveVisitPolicy(UUID tenantId, UUID salesProfileId, UUID cityOrgId, Instant at);
+
+    Optional<VisitPolicy> findVisitPolicy(UUID tenantId, UUID visitPolicyVersionId);
+
+    Optional<StoreProjection> findStoreById(UUID tenantId, UUID storeId);
+
+    boolean isStoreAssignedToProfile(UUID tenantId, UUID salesProfileId, UUID storeId);
+
+    boolean existsStore(UUID tenantId, UUID storeId);
+
     List<VisitTarget> findAssignedStoreTargets(UUID tenantId, UUID salesProfileId,
                                                 String query, int limit, int offset);
 
@@ -36,12 +46,23 @@ public interface SalesWorkQueryRepository {
                        int standardWorkMinutes, int minimumWorkMinutes, boolean requireCheckOut,
                        boolean allowAdjustment, Integer adjustmentDeadlineHours, boolean locationEnabled,
                        int locationIntervalMinutes, BigDecimal minimumLocationAccuracyMeters,
-                       int offlineUploadDeadlineMinutes) {
+                       int offlineUploadDeadlineMinutes, Instant effectiveFrom) {
     }
 
     record VisitTarget(UUID projectionId, String targetType, UUID customerId, UUID storeId,
                        String customerName, String storeName, String storeAddress,
                        BigDecimal longitude, BigDecimal latitude, String storeStatus,
                        long sourceVersion, Instant sourceUpdatedAt) {
+    }
+
+    record VisitPolicy(UUID id, String policyCode, String policyName, int versionNo,
+                       String publishStatus, boolean requireAssignedTarget, boolean allowProspectTarget,
+                       int checkInRadiusMeters, int minimumDwellMinutes, int requiredPhotoCount,
+                       boolean recordingEnabled, int minimumRecordingSeconds, int maximumClipGapSeconds) {
+    }
+
+    record StoreProjection(UUID storeId, UUID customerId, String customerName, String storeName,
+                           String storeAddress, BigDecimal longitude, BigDecimal latitude,
+                           String storeStatus) {
     }
 }

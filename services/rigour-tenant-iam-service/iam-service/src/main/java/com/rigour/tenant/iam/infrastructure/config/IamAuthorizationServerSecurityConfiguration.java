@@ -112,7 +112,9 @@ public class IamAuthorizationServerSecurityConfiguration {
     @ConditionalOnProperty(prefix = "rigour.iam.oidc.server", name = "enabled", havingValue = "true")
     CorsConfigurationSource oidcCorsConfigurationSource(OidcServerProperties properties) {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(properties.requireAllowedOrigins());
+        // 生产只返回明确配置的HTTPS来源；local打开allow-insecure-lan后，属性类会追加私有网段模式。
+        // Spring会把匹配到的真实Origin回写到响应头，不会把通配符本身暴露给浏览器。
+        configuration.setAllowedOriginPatterns(properties.requireAllowedOriginPatterns());
         configuration.setAllowedMethods(java.util.List.of("GET", "POST"));
         configuration.setAllowedHeaders(java.util.List.of("Accept", "Content-Type"));
         configuration.setAllowCredentials(false);

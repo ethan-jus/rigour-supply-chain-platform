@@ -16,4 +16,7 @@ rigour:
     feishu:
       # 本机真机调试使用的非敏感应用标识与 H5 来源；App Secret 仍只从进程环境注入。
       app-id: cli_aafff3a596b89cdc
-      allowed-origins: http://172.20.10.2:5200
+      # 显式保留localhost；局域网HTTP来源由allow-insecure-lan按私网网段动态匹配，不写死电脑IP。
+      allowed-origins: http://localhost:5200
+      # 仅local开发开启；生产必须关闭，并把实际HTTPS域名配置到allowed-origins。
+      allow-insecure-lan: true

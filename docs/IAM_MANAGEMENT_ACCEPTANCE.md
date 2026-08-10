@@ -3,6 +3,7 @@
 ## 前提与边界
 
 - 当前无IAM、Gateway、Portal域名；每位开发者分别在自己的电脑使用`localhost:26881`、`localhost:26880`、`localhost:5100`。
+- 本机开发服务也可通过Vite日志中的动态`lanUrls`被同一局域网访问；IAM的`allow-insecure-lan`只允许local调试时的RFC1918私网HTTP来源，生产必须关闭。
 - 服务在各开发者本机运行，配置和数据使用共享DEV Nacos/真实DEV数据库；不启用运行时Mock。完整模式见`docs/SHARED_DEV_LOCAL_RUNTIME.md`。
 - 本机`local`覆盖层默认不向共享Nacos注册服务实例，防止开发者A/B的电脑地址互相污染；共享Nacos仍正常提供配置。
 - V7-V11、初始管理员、OIDC客户端和签名密钥都会改变共享DEV，必须先备份、评审并单次执行。
@@ -41,6 +42,7 @@ pnpm dev
 ## 功能验收清单
 
 1. 首次访问`http://localhost:5100`，Portal跳到IAM；登录成功后回到`/apps`。
+   局域网访问只应使用启动日志提供的当前地址；OIDC登录回调仍必须使用IAM已精确注册的HTTPS或localhost地址。
 2. ID Token签名、issuer、audience、azp、nonce和时间声明验证通过；Access/ID Token不出现在localStorage/sessionStorage。
 3. 平台管理员只看到平台级卡片与菜单，可管理租户、套餐/不可变版本、应用、公开PKCE客户端、MENU/PAGE/BUTTON/API资源和审计。
 4. 租户管理员看到系统管理、供应链和订货宝商城系统卡片；订货宝商城卡片只负责直达第三方管理端，订货宝数据同步仍位于供应链菜单，可管理组织、用户、角色、数据范围、租户设置和审计。

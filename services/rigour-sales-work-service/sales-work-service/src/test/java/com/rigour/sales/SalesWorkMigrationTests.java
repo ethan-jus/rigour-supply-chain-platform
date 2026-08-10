@@ -52,8 +52,8 @@ class SalesWorkMigrationTests {
                  WHERE table_schema=DATABASE() AND table_name='sales_store'
                 """, Integer.class);
 
-        assertThat(migrationCount).isEqualTo(2);
-        assertThat(tableCount).isEqualTo(31);
+        assertThat(migrationCount).isEqualTo(7);
+        assertThat(tableCount).isEqualTo(32);
         assertThat(editableStoreTableCount).isZero();
     }
 }

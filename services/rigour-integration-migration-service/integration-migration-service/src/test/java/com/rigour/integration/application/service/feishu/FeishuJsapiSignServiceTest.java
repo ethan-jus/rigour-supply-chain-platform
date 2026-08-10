@@ -22,15 +22,17 @@ class FeishuJsapiSignServiceTest {
     private static final Instant NOW = Instant.parse("2026-08-07T07:00:00Z");
 
     @Test
-    void signsExactPageUrlWithCachedTicketValue() throws Exception {
+    void signsExactPageUrlWithMillisecondTimestamp() throws Exception {
         FeishuJsapiSignService service = service(() -> "ticket-fixture");
         String pageUrl = ORIGIN + "/?entry=feishu";
 
         FeishuJsapiSignService.SignResult result = service.sign(pageUrl);
 
         assertThat(result.appId()).isEqualTo(APP_ID);
-        assertThat(result.timestamp()).isEqualTo(NOW.toEpochMilli());
+        // 飞书官方示例使用毫秒级时间戳；秒级会被校验服务按毫秒解析成 1970 年而判定过期。
+        assertThat(result.timestamp()).isEqualTo(Long.toString(NOW.toEpochMilli()));
         assertThat(result.nonceStr()).isNotBlank();
+        assertThat(result.nonceStr()).matches("[A-Za-z0-9]+");
         String plainText = "jsapi_ticket=ticket-fixture"
                 + "&noncestr=" + result.nonceStr()
                 + "&timestamp=" + result.timestamp()
@@ -48,6 +50,15 @@ class FeishuJsapiSignServiceTest {
                 .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getErrorCode())
                                 .isEqualTo(ErrorCode.FEISHU_JSAPI_ORIGIN_NOT_ALLOWED));
+    }
+
+    @Test
+    void allowsChangedPrivateLanAddressWhenLocalLanModeIsEnabled() {
+        FeishuJsapiSignService service = localLanService(() -> "ticket-fixture");
+
+        FeishuJsapiSignService.SignResult result = service.sign("http://10.24.7.19:5200/");
+
+        assertThat(result.signedUrl()).isEqualTo("http://10.24.7.19:5200/");
     }
 
     @Test
@@ -75,6 +86,12 @@ class FeishuJsapiSignServiceTest {
     private static FeishuJsapiSignService service(
             com.rigour.integration.application.port.out.FeishuJsapiClient client) {
         return new FeishuJsapiSignService(client, APP_ID, List.of(ORIGIN),
+                Clock.fixed(NOW, ZoneOffset.UTC), new java.security.SecureRandom());
+    }
+
+    private static FeishuJsapiSignService localLanService(
+            com.rigour.integration.application.port.out.FeishuJsapiClient client) {
+        return new FeishuJsapiSignService(client, APP_ID, List.of("http://localhost:5200"), true,
                 Clock.fixed(NOW, ZoneOffset.UTC), new java.security.SecureRandom());
     }
 }

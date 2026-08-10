@@ -4,6 +4,10 @@ server:
 spring:
   application:
     name: rigour-sales-work-service
+  servlet:
+    multipart:
+      max-file-size: 25MB
+      max-request-size: 30MB
 
 management:
   endpoints:
@@ -30,3 +34,29 @@ rigour:
       active-key-id: v1
       keys-base64:
         v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}
+  amap:
+    base-url: ${RIGOUR_AMAP_BASE_URL:https://restapi.amap.com/v3}
+    web-key: ${RIGOUR_AMAP_WEB_KEY:}
+    connect-timeout: 3s
+    read-timeout: 5s
+
+sales:
+  recording:
+    # 非敏感运行参数由 application/Nacos 管理；生产在 Nacos 中切换为 cos。
+    storage-type: filesystem
+    storage-dir: ./data/sales-recordings
+    max-clip-bytes: 26214400
+    # 30秒以下按误触/噪声处理：不保存音频，只登记审计元数据。
+    minimum-clip-seconds: 30
+    cos:
+      # region 和 bucket 是非敏感资源标识，由环境配置文件覆盖。
+      region:
+      bucket:
+      # 只有腾讯云访问凭据从进程 Secret/环境变量注入。
+      secret-id: ${RIGOUR_SALES_RECORDING_COS_SECRET_ID:}
+      secret-key: ${RIGOUR_SALES_RECORDING_COS_SECRET_KEY:}
+      # 仅 STS 临时凭据模式需要；长期 CAM 密钥模式为空。
+      session-token: ${RIGOUR_SALES_RECORDING_COS_SESSION_TOKEN:}
+      connection-timeout-ms: 5000
+      socket-timeout-ms: 30000
+      server-side-encryption: true
