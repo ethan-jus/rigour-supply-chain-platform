@@ -22,8 +22,9 @@ import org.slf4j.LoggerFactory;
 /**
  * 飞书 tenant_access_token 与 jsapi_ticket 适配器。
  *
- * <p>两类票据只在进程内缓存，并在过期前安全窗口内刷新；不落库、不写日志，也不把
- * 飞书上游原始响应透传给浏览器。</p>
+ * <p>tenant_access_token 在进程内缓存并在过期前安全窗口内刷新；jsapi_ticket 每次签名实时获取，
+ * 因为飞书会在有效期到达前轮换 ticket，旧值会被校验服务拒绝（表现为“签名已过期”）。
+ * 票据不落库、不写日志，也不把飞书上游原始响应透传给浏览器。</p>
  */
 public final class FeishuJsapiClientAdapter implements FeishuJsapiClient {
 
@@ -33,13 +34,10 @@ public final class FeishuJsapiClientAdapter implements FeishuJsapiClient {
             "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal");
     private static final URI JSAPI_TICKET_URI = URI.create(
             "https://open.feishu.cn/open-apis/jssdk/ticket/get");
-    private static final long DEFAULT_JSAPI_TICKET_TTL_SECONDS = Duration.ofHours(2).toSeconds();
-
     private final RestClient restClient;
     private final FeishuClientProperties properties;
     private final Object cacheLock = new Object();
     private volatile CachedToken tenantToken;
-    private volatile CachedTicket jsapiTicket;
 
     public FeishuJsapiClientAdapter(RestClient.Builder builder, FeishuClientProperties properties) {
         this(createRestClient(builder, properties), properties);
@@ -59,37 +57,16 @@ public final class FeishuJsapiClientAdapter implements FeishuJsapiClient {
         }
 
         Instant now = Instant.now();
-        CachedTicket cached = jsapiTicket;
-        if (cached != null && cached.validAt(now, properties.getTokenSafetyWindow())) {
-            log.debug("飞书 JSSDK ticket 缓存命中 cache=ticket");
-            return cached.value();
+        String accessToken = tenantAccessToken(now);
+        Map<?, ?> response = post(JSAPI_TICKET_URI, Map.of(), accessToken);
+        assertSuccess(response, "FEISHU_JSAPI_TICKET_FAILED");
+        Map<?, ?> data = mapValue(response.get("data"));
+        String ticket = text(data.get("ticket"));
+        if (ticket == null) {
+            throw new FeishuJsapiClientException("FEISHU_JSAPI_TICKET_INVALID", 200);
         }
-        log.info("飞书 JSSDK ticket 缓存未命中，开始刷新 cache=ticket");
-        synchronized (cacheLock) {
-            now = Instant.now();
-            cached = jsapiTicket;
-            if (cached != null && cached.validAt(now, properties.getTokenSafetyWindow())) {
-                return cached.value();
-            }
-            String accessToken = tenantAccessToken(now);
-            Map<?, ?> response = post(JSAPI_TICKET_URI, Map.of(), accessToken);
-            assertSuccess(response, "FEISHU_JSAPI_TICKET_FAILED");
-            Map<?, ?> data = mapValue(response.get("data"));
-            String ticket = text(data.get("ticket"));
-            if (ticket == null) {
-                throw new FeishuJsapiClientException("FEISHU_JSAPI_TICKET_INVALID", 200);
-            }
-            long upstreamExpiresIn = firstPositiveLong(0L,
-                    data.get("expire"), data.get("expires_in"), data.get("expiresIn"),
-                    response.get("expire"), response.get("expires_in"), response.get("expiresIn"));
-            boolean expiryFallback = upstreamExpiresIn <= 0L;
-            long expiresIn = expiryFallback ? DEFAULT_JSAPI_TICKET_TTL_SECONDS : upstreamExpiresIn;
-            log.info("飞书 JSSDK ticket 获取成功 expiresIn={} expiryFallback={}",
-                    expiresIn, expiryFallback);
-            CachedTicket fresh = new CachedTicket(ticket, Instant.now().plusSeconds(expiresIn));
-            jsapiTicket = fresh;
-            return fresh.value();
-        }
+        log.info("飞书 JSSDK ticket 每次签名实时获取，避免轮换后旧 ticket 失效");
+        return ticket;
     }
 
     private String tenantAccessToken(Instant now) {
@@ -184,16 +161,6 @@ public final class FeishuJsapiClientAdapter implements FeishuJsapiClient {
         }
     }
 
-    private static long firstPositiveLong(long fallback, Object... values) {
-        for (Object value : values) {
-            long parsed = positiveLong(value, 0L);
-            if (parsed > 0L) {
-                return parsed;
-            }
-        }
-        return fallback;
-    }
-
     private static long longValue(Object value, long fallback) {
         if (value instanceof Number number) {
             return number.longValue();
@@ -221,9 +188,4 @@ public final class FeishuJsapiClientAdapter implements FeishuJsapiClient {
         }
     }
 
-    private record CachedTicket(String value, Instant expiresAt) {
-        boolean validAt(Instant now, Duration safetyWindow) {
-            return expiresAt.isAfter(now.plus(safetyWindow));
-        }
-    }
 }

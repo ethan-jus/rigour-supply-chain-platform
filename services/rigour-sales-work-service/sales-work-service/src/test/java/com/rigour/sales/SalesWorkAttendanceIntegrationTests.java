@@ -49,12 +49,12 @@ class SalesWorkAttendanceIntegrationTests {
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", MYSQL::getJdbcUrl);
+        registry.add("spring.datasource.url", () -> utcJdbcUrl(MYSQL));
         registry.add("spring.datasource.username", MYSQL::getUsername);
         registry.add("spring.datasource.password", MYSQL::getPassword);
         registry.add("spring.datasource.driver-class-name", MYSQL::getDriverClassName);
         registry.add("spring.flyway.enabled", () -> true);
-        registry.add("spring.flyway.url", MYSQL::getJdbcUrl);
+        registry.add("spring.flyway.url", () -> utcJdbcUrl(MYSQL));
         registry.add("spring.flyway.user", MYSQL::getUsername);
         registry.add("spring.flyway.password", MYSQL::getPassword);
     }
@@ -229,5 +229,9 @@ class SalesWorkAttendanceIntegrationTests {
     private static byte[] bin(UUID value) {
         return ByteBuffer.allocate(16).putLong(value.getMostSignificantBits())
                 .putLong(value.getLeastSignificantBits()).array();
+    }
+
+    private static String utcJdbcUrl(MySQLContainer container) {
+        return container.getJdbcUrl() + "?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true";
     }
 }

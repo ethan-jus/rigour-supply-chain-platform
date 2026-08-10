@@ -77,6 +77,8 @@ rigour:
         enabled: false
         issuer: https://iam.dev.rigour.local
         allowed-origins: []
+        # 生产默认关闭：只允许allowed-origins中明确配置的HTTPS来源；禁止任意局域网HTTP访问。
+        allow-insecure-lan: false
       signing:
         enabled: false
         minimum-rsa-bits: 3072

@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -36,6 +37,16 @@ public class JdbcSalesWorkAttendanceRepository implements SalesWorkAttendanceRep
         List<WorkDaySnapshot> rows = jdbc.query(workDaySql("d.business_date=?"), (rs, row) -> snapshot(rs),
                 bin(tenantId), bin(salesProfileId), businessDate);
         return rows.stream().findFirst();
+    }
+
+    @Override
+    public List<WorkDaySnapshot> findWorkDays(UUID tenantId, UUID salesProfileId,
+                                               LocalDate from, LocalDate to) {
+        return jdbc.query(workDaySelect() + """
+                 WHERE d.tenant_id=? AND d.sales_profile_id=?
+                   AND d.business_date BETWEEN ? AND ?
+                 ORDER BY d.business_date
+                """, (rs, row) -> snapshot(rs), bin(tenantId), bin(salesProfileId), from, to);
     }
 
     @Override
@@ -148,8 +159,38 @@ public class JdbcSalesWorkAttendanceRepository implements SalesWorkAttendanceRep
                 UPDATE sales_work_day
                    SET status='FINISHED', checked_out_at=?, verified_work_minutes=?,
                        version=version+1, updated_at=UTC_TIMESTAMP(6)
-                 WHERE tenant_id=? AND id=? AND status='ACTIVE'
+                WHERE tenant_id=? AND id=? AND status='ACTIVE'
                 """, timestamp(checkedOutAt), verifiedWorkMinutes, bin(tenantId), bin(workDayId));
+    }
+
+    @Override
+    public int reopenWorkDay(UUID tenantId, UUID workDayId) {
+        return jdbc.update("""
+                UPDATE sales_work_day
+                   SET status='ACTIVE', checked_out_at=NULL, version=version+1,
+                       updated_at=UTC_TIMESTAMP(6)
+                 WHERE tenant_id=? AND id=? AND status='FINISHED'
+                """, bin(tenantId), bin(workDayId));
+    }
+
+    @Override
+    public Optional<Instant> findLatestPunchReceivedAt(UUID tenantId, UUID workDayId, String eventType) {
+        List<Instant> rows = jdbc.query("""
+                SELECT server_received_at FROM sales_punch_event
+                 WHERE tenant_id=? AND work_day_id=? AND event_type=?
+                 ORDER BY server_received_at DESC LIMIT 1
+                """, (rs, row) -> rs.getTimestamp("server_received_at").toInstant(),
+                bin(tenantId), bin(workDayId), eventType);
+        return rows.stream().findFirst();
+    }
+
+    @Override
+    public int nextSummaryVersion(UUID tenantId, UUID workDayId) {
+        Integer current = jdbc.queryForObject("""
+                SELECT COALESCE(MAX(summary_version), 0) FROM sales_work_day_summary
+                 WHERE tenant_id=? AND work_day_id=?
+                """, Integer.class, bin(tenantId), bin(workDayId));
+        return (current == null ? 0 : current) + 1;
     }
 
     @Override
@@ -165,17 +206,51 @@ public class JdbcSalesWorkAttendanceRepository implements SalesWorkAttendanceRep
     @Override
     public void insertWorkDaySummary(UUID id, UUID tenantId, UUID workDayId, Instant checkInAt,
                                      Instant checkOutAt, int verifiedWorkMinutes, int locationPointCount,
-                                     int interruptionCount, String evidenceQuality, Instant finalizedAt) {
+                                     int interruptionCount, String evidenceQuality, Instant finalizedAt,
+                                     int summaryVersion) {
         jdbc.update("""
                 INSERT INTO sales_work_day_summary
                     (id, tenant_id, work_day_id, summary_version, status, check_in_at, check_out_at,
                      verified_work_minutes, location_point_count, interruption_count,
                      submitted_visit_count, effective_visit_count, pending_review_visit_count,
                      evidence_quality, exception_codes_json, finalized_at, created_at)
-                VALUES (?, ?, ?, 1, 'PENDING_REVIEW', ?, ?, ?, ?, ?, 0, 0, 0, ?, JSON_ARRAY(), ?, UTC_TIMESTAMP(6))
-                """, bin(id), bin(tenantId), bin(workDayId), timestamp(checkInAt), timestamp(checkOutAt),
+                VALUES (?, ?, ?, ?, 'PENDING_REVIEW', ?, ?, ?, ?, ?, 0, 0, 0, ?, JSON_ARRAY(), ?, UTC_TIMESTAMP(6))
+                """, bin(id), bin(tenantId), bin(workDayId), summaryVersion,
+                timestamp(checkInAt), timestamp(checkOutAt),
                 verifiedWorkMinutes, locationPointCount, interruptionCount, evidenceQuality,
                 timestamp(finalizedAt));
+    }
+
+    @Override
+    public List<LocationPointRow> findLocationPoints(UUID tenantId, UUID workDayId) {
+        return jdbc.query("""
+                SELECT longitude, latitude, accuracy_meters, client_occurred_at, server_received_at,
+                       source, quality_status
+                  FROM sales_location_point
+                 WHERE tenant_id=? AND work_day_id=?
+                 ORDER BY server_received_at ASC, created_at ASC
+                """, (rs, row) -> new LocationPointRow(
+                        rs.getBigDecimal("longitude"), rs.getBigDecimal("latitude"),
+                        rs.getBigDecimal("accuracy_meters"), instant(rs.getTimestamp("client_occurred_at")),
+                        instant(rs.getTimestamp("server_received_at")), rs.getString("source"),
+                        rs.getString("quality_status")),
+                bin(tenantId), bin(workDayId));
+    }
+
+    @Override
+    public List<PunchEventRow> findPunchEvents(UUID tenantId, UUID workDayId) {
+        return jdbc.query("""
+                SELECT event_type, client_occurred_at, server_received_at, longitude, latitude,
+                       accuracy_meters, evidence_status
+                  FROM sales_punch_event
+                 WHERE tenant_id=? AND work_day_id=?
+                 ORDER BY server_received_at ASC, created_at ASC
+                """, (rs, row) -> new PunchEventRow(
+                        rs.getString("event_type"), instant(rs.getTimestamp("client_occurred_at")),
+                        instant(rs.getTimestamp("server_received_at")), rs.getBigDecimal("longitude"),
+                        rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
+                        rs.getString("evidence_status")),
+                bin(tenantId), bin(workDayId));
     }
 
     @Override
@@ -188,18 +263,28 @@ public class JdbcSalesWorkAttendanceRepository implements SalesWorkAttendanceRep
     }
 
     private static String workDaySql(String predicate) {
+        return workDaySelect() + """
+                 WHERE d.tenant_id=? AND d.sales_profile_id=? AND
+                """ + " " + predicate + "\n ORDER BY d.business_date DESC LIMIT 1";
+    }
+
+    /** 多次重新签到会产生多个定位会话；月历和当日卡片都展示累计采样事实。 */
+    private static String workDaySelect() {
         return """
                 SELECT d.id, d.employee_id, d.sales_profile_id, d.business_date, d.timezone_id,
                        d.field_policy_version_id, d.status, d.checked_in_at, d.checked_out_at,
                        d.verified_work_minutes, d.evidence_quality,
-                       session.id AS location_session_id,
-                       COALESCE(session.point_count, 0) AS location_point_count,
-                       COALESCE(session.interruption_count, 0) AS interruption_count
+                       (SELECT session.id FROM sales_location_session session
+                         WHERE session.tenant_id=d.tenant_id AND session.work_day_id=d.id
+                         ORDER BY session.created_at DESC LIMIT 1) AS location_session_id,
+                       COALESCE((SELECT SUM(session.point_count) FROM sales_location_session session
+                         WHERE session.tenant_id=d.tenant_id AND session.work_day_id=d.id), 0)
+                         AS location_point_count,
+                       COALESCE((SELECT SUM(session.interruption_count) FROM sales_location_session session
+                         WHERE session.tenant_id=d.tenant_id AND session.work_day_id=d.id), 0)
+                         AS interruption_count
                   FROM sales_work_day d
-                  LEFT JOIN sales_location_session session
-                    ON session.tenant_id=d.tenant_id AND session.work_day_id=d.id
-                 WHERE d.tenant_id=? AND d.sales_profile_id=? AND """ + " " + predicate + "\n"
-                + " ORDER BY session.created_at DESC LIMIT 1";
+                """;
     }
 
     private static WorkDaySnapshot snapshot(ResultSet rs) throws SQLException {

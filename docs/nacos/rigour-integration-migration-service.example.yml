@@ -25,6 +25,12 @@ spring:
     locations: classpath:db/migration
 
 rigour:
+  integration:
+    feishu:
+      # DEV/local调试保留localhost；私网HTTP来源由服务动态匹配，不填写任何开发机IP。
+      allowed-origins: http://localhost:5200
+      # 只适用于共享DEV；生产必须为false，并配置明确HTTPS来源。
+      allow-insecure-lan: true
   context:
     trust:
       active-key-id: v1

@@ -19,7 +19,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class FeishuJsapiClientAdapterTest {
 
     @Test
-    void obtainsAndCachesTicketWhenFeishuOmitsExpiration() {
+    void fetchesFreshTicketOnEveryCallWhileCachingTenantToken() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         server.expect(requestTo("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"))
@@ -36,11 +36,17 @@ class FeishuJsapiClientAdapterTest {
                 .andRespond(withSuccess("""
                         {"code":0,"msg":"ok","data":{"ticket":"ticket-fixture"}}
                         """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://open.feishu.cn/open-apis/jssdk/ticket/get"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header(HttpHeaders.AUTHORIZATION, "Bearer tenant-token"))
+                .andRespond(withSuccess("""
+                        {"code":0,"msg":"ok","data":{"ticket":"ticket-fixture-rotated"}}
+                        """, MediaType.APPLICATION_JSON));
 
         FeishuJsapiClientAdapter client = new FeishuJsapiClientAdapter(builder.build(), properties());
 
         assertThat(client.getJsapiTicket()).isEqualTo("ticket-fixture");
-        assertThat(client.getJsapiTicket()).isEqualTo("ticket-fixture");
+        assertThat(client.getJsapiTicket()).isEqualTo("ticket-fixture-rotated");
         server.verify();
     }
 

@@ -1,5 +1,93 @@
 # 工作日志
 
+## 2026-08-09 - 真机回归后的拜访权限与执行页状态机修复
+
+### 问题与根因
+
+- 真机日志确认拜访详情和结果保存为 200，但录音会话与当日轨迹查询为 403；工作日签退 409 是服务端正确阻止“存在进行中拜访时结束工作日”。
+- IAM V30/V31 已登记轨迹与录音权限，却只自动授予租户超级管理员；普通销售角色虽然已有 `sales:visit:own:write`，仍没有新增能力，导致拜访无法录音并进一步无法离店。
+- H5 将录音会话加载成功作为按钮启用条件，却没有可恢复权限错误；拜访结果保存后按钮文案不变；到店签到与离店签退同时以禁用按钮呈现，无法表达真实状态和下一步。
+
+### 修复结果
+
+- 新增 IAM V32：以既有 `sales:visit:own:write` 授权作为 H5 销售角色判据，补授 `sales:track:own:read`、`sales:recording:own:read`、`sales:recording:own:write`，不依赖角色名称且不扩散管理端权限；同时递增租户策略版本令旧会话失效。
+- 拜访执行页重构为“已到店 → 拜访记录 → 完成离店”状态流；到店只显示为事实，不再同时出现两个灰色签到/签退按钮。
+- 底部只保留一个上下文主操作：重新加载录音权限、开始/停止录音、填写或保存记录、完成拜访并离店；录音加载失败提供明确错误和重试。
+- KP、联系电话、合作意向与沟通纪要保存成功后显示保存时间和摘要；仅再次修改时出现“保存修改”，未保存修改会阻止离店，避免用户误以为新内容已归档。
+- 录音显示已上传时长、规则要求、剩余秒数和片段列表；录音/上传进行中阻止离开页面。390×844 Mock 视觉 QA 修复了卡片按钮与固定操作栏重复、遮挡以及小字号问题。
+
+### 验证边界
+
+- Workbench 新增 3 项拜访页状态测试，覆盖进行中动作互斥、材料齐全后的离店主操作、权限失败恢复；ESLint、vue-tsc、70 项 Vitest 与 Vite 生产构建通过。
+- Platform 全量 46 模块 `./mvnw verify` 与 5 项架构门禁通过；本机无 Docker，MySQL 顺序迁移和普通销售角色实际授权仍需部署 IAM 后验证。
+- V32 生效后必须重启 IAM/Flyway，并让销售重新进入飞书工作台获取新会话；只重启 Sales Work 或刷新旧页面不能消除 403。
+
+## 2026-08-09 - 销售拜访执行、录音与轨迹恢复闭环
+
+### 实施计划
+
+1. 复核 H5 → Gateway → Sales Work 的创建拜访、录音、结果、签退和轨迹链路，修复页面仍停留在能力演示/骨架的入口。
+2. 拜访结果由服务端主写，KP 称呼、电话和合作意向必填；签退前由服务端校验结果、停留时长、位置和固化拜访规则要求的录音时长。
+3. 录音采用飞书 `RecorderManager` 单段10分钟自动切片续录；H5通过`FileSystemManager.readFile`读取临时音频后走同源HTTPS multipart，片段携带客户端幂等标识；元数据落Sales Work，开发使用文件系统，生产通过同一`FileStorage`端口切换腾讯云COS。
+4. 定位采样从考勤页面局部生命周期提升为应用级 Store 会话；免登后若服务端工作日仍为 ACTIVE 自动恢复，页面跳转不停止，工作日签退/登出才停止。
+5. 当日轨迹从服务端定位点和签到/签退 Punch 生成高德 GCJ-02 轨迹图；地图配置不可用时保留时间线降级。
+6. 增加拜访单一进行中约束、录音重试幂等、上传时序校验和前后端回归测试；完成 Maven、ESLint、TypeScript、Vitest 和生产构建门禁。
+
+### 完成结果
+
+- H5 拜访页已支持真实飞书现场录音、停止后自动上传、失败重试、片段列表与规则最低时长提示；不再以 Mock 模式作为录音按钮启用条件。
+- 新增 KP 称呼、电话号码、合作意向和结果备注表单；前三项由前后端共同校验，服务端拒绝未保存结果或未满足录音规则的拜访签退。
+- 录音上传新增 `clientClipId` 幂等键和 Flyway V4；同键同内容重放返回原片段，同键不同内容拒绝。客户端时长与起止时间只记为上传事实，`verified_total_duration_ms` 保持 0，等待后续媒体验证/人工复核。
+- 同一销售只能存在一个 `CHECKED_IN` 拜访；创建时锁定销售画像并检查进行中拜访，避免并发重复到店；存在进行中拜访时服务端同时拒绝工作日签退，防止考勤先结束而拜访悬挂。
+- 新增腾讯云 COS `FileStorage` 实现，支持启动时提供临时凭据、连接/读取超时、服务端加密和租户对象键隔离；当前未实现 STS 自动续期，生产先使用最小权限专用 CAM 长期密钥。默认文件系统用于本地/共享持久卷，生产必须显式切换 COS。
+- COS 配置已按安全属性拆分：存储类型、地域、Bucket、大小限制、超时和 SSE 开关保存在 application/Nacos；只有 `SecretId`、`SecretKey` 和可选临时 `SessionToken` 由部署 Secret 注入，并新增创建、最小权限和验收指引。
+- 定位采样已改为应用级会话：签到启动、应用刷新自动恢复、页面跳转保持、工作日签退和登出停止。首页展示真实进行中拜访，不再显示“接口待接入”占位。
+- 当日轨迹接口与地图展示保持服务端事实驱动；飞书定位固定使用 GCJ-02，与高德底图一致。
+
+### 验证与边界
+
+- Sales Work 及依赖模块编译、可运行单元/上下文测试通过；本机无 Docker，新增 MySQL V3/V4 迁移、录音幂等和完整拜访集成测试仍按 `disabledWithoutDocker` 跳过，不能记为数据库验收通过。
+- Workbench ESLint、vue-tsc、67 项 Vitest 测试和 Vite 生产构建通过；Platform 46 个 reactor 模块全量 `./mvnw verify` 与 5 项架构门禁通过。
+- 真实飞书`FileSystemManager.readFile`、10分钟自动续段、前后台切换、移动网络重试、高德Key、共享DEV Gateway/IAM V29～V31、COS Bucket/CAM/SSE配置仍需部署环境与真机验收；当前H5经后端上传COS，不需要开放浏览器CORS。自动化测试不替代这些外部验收。
+- 录音 AI 真实性/服务端媒体时长验证、ASR、主管复核和“最终有效拜访”结论不在本切片伪造；当前只完成可上线采集与待复核事实链路。
+
+## 2026-08-08 - 销售工作阶段 3 前置维护 API、重新签到与当日轨迹
+
+### 实施计划
+
+1. 前置开发：merchant-crm-service 尚为空壳，Sales Work 的身份绑定、销售画像、外勤/拜访规则、CRM 门店与归属投影没有任何写入方，H5 无法联调。按 V18 已登记的“销售管理”权限模型，在 Sales Work 内新增 `/api/v1/sales/admin` 维护 API（身份绑定、画像、规则发布、门店投影、归属），门店/归属投影写入标注为 CRM 事件消费者上线前的临时前置，消费者投产后下线。
+2. 缺陷修复：签退后同一业务日禁止再次签到导致“考勤一直已签退、无法签到、无法拜访”。改为签退（FINISHED）后允许重新签到：重开同一工作日聚合、新建定位会话、Punch 追加 CHECK_IN，可验证工作时长按最近一次签到起算并累加，日结 summary 版本递增，不改写历史。
+3. 功能补齐：新增本人当日轨迹查询 API（定位点 + 签到/签退 Punch 打点），Workbench 轨迹页接入高德 JS API 地图展示轨迹线与打点，无 Key 时降级为时间序列表。
+4. Workbench 修复：考勤页 FINISHED 状态展示“重新签到”；发起拜访前显式校验工作日 ACTIVE，否则引导先签到。
+5. IAM 新增 V30 登记 `sales:track:own:read`（H5）与 `sales:profile:write`、`sales:identity:bind`、`sales:store-projection:write`、`sales:assignment:write`（销售管理），沿用 V29 模式授予租户超管联调；不改写历史迁移。
+6. 每个切片完成后执行定向 Maven 测试与 Workbench 门禁（lint/typecheck/test/build），全部通过后停止并汇报残余风险。
+
+### KPI 边界
+
+- 本阶段仍不计算绩效指标；重新签到只追加可追溯事实（Punch、会话、summary 版本），verifiedWorkMinutes 是事实累计，不是考勤结论。
+
+### 完成结果
+
+- 新增 `/api/v1/sales/admin` 维护 API：身份绑定（`sales:identity:bind`）、销售画像（`sales:profile:write`）、外勤/拜访规则版本与发布（`sales:policy:write`+`sales:policy:publish`，含适用范围）、门店投影与归属（`sales:store-projection:write`/`sales:assignment:write`，标注临时前置）。所有写入幂等覆盖或版本递增，审计留痕且不含经纬度。
+- 签退（FINISHED）后允许重新签到：`sales_work_day` 条件更新重开为 ACTIVE，保留首次签到时间与累计工时，新建定位会话，追加 CHECK_IN Punch，Outbox 追加 `SalesWorkDayReopened`；非 FINISHED（如复核中）仍拒绝。签退工时按最近一次签到起算并与历史段累计，日结 `summary_version` 递增不改写历史。
+- 新增本人当日轨迹 API `GET /api/v1/sales/me/work-days/{date}/track`（`sales:track:own:read`），返回定位点与签到/签退打点，仅限本人工作日。
+- IAM 新增 V30 登记 5 项权限并沿用 V29 模式补授租户超管；未改写历史迁移。
+- Workbench：考勤页 FINISHED 展示“重新签到”；发起拜访前显式校验工作日 ACTIVE，否则提示并引导至考勤页；轨迹页接入高德 JS API 地图（轨迹线+打卡打点，`VITE_AMAP_JS_KEY`/`VITE_AMAP_SECURITY_CODE` 注入），未配置 Key 或加载失败时降级为时间线视图；新增 `loadTrack` store 与契约类型。
+- 运行时缺陷修复：`JdbcSalesOutboxStore.append` 聚合版本误固定查询 `sales_work_day`，`SALES_VISIT` 聚合（创建/签退拜访）查不到行抛 `EmptyResultDataAccessException` 导致 500。改为按聚合类型路由版本表（SALES_WORK_DAY/SALES_VISIT），聚合行缺失记 0 不升级为业务异常；拜访集成测试补充 Outbox 写入断言。
+
+### 验证记录
+
+- 后端：`sales-work-service -am` 编译与测试通过；Spring 上下文测试（含新增 Admin Service/Repository/Controller 装配）通过；`RestAmapPoiClientTest` 3 项通过。
+- 本机无 Docker，Testcontainers 集成测试（含新增重开/轨迹 2 项、Admin 3 项）按 `disabledWithoutDocker` 跳过，未执行真实 MySQL 闭环；IAM V30 未做空库顺序迁移验证。
+- Workbench：ESLint、vue-tsc、62 项测试、Vite build 通过。
+
+### 已知边界
+
+- 集成测试需在有 Docker 的环境执行 `./mvnw -pl services/rigour-sales-work-service/sales-work-service -am test` 后方可视为数据库闭环验收。
+- 地图坐标按服务端保存值原样渲染；飞书定位坐标系与高德底图（GCJ-02）若不一致，需服务端统一转换（当前阶段未做）。
+- 门店/归属投影维护 API 是临时前置；CRM 服务与事件消费者投产后应下线并删除对应权限资源。
+- Portal 销售管理页面仍是骨架，本阶段只交付 API 层；页面接入另行排期。
+
 ## 2026-08-06 - 销售工作阶段 0 至阶段 2 纵向闭环实施
 
 ### 实施计划

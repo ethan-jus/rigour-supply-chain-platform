@@ -19,6 +19,8 @@ public final class FeishuClientProperties {
     private String appId = "";
     private String appSecret = "";
     private String allowedOrigins = "";
+    /** 仅本机local调试时动态允许RFC1918私网HTTP来源；生产必须关闭。 */
+    private boolean allowInsecureLan;
     private Duration connectTimeout = Duration.ofSeconds(3);
     private Duration readTimeout = Duration.ofSeconds(5);
     private Duration tokenSafetyWindow = Duration.ofSeconds(60);
@@ -29,6 +31,8 @@ public final class FeishuClientProperties {
     public void setAppSecret(String value) { appSecret = value; }
     public String getAllowedOrigins() { return allowedOrigins; }
     public void setAllowedOrigins(String value) { allowedOrigins = value; }
+    public boolean isAllowInsecureLan() { return allowInsecureLan; }
+    public void setAllowInsecureLan(boolean value) { allowInsecureLan = value; }
     public Duration getConnectTimeout() { return connectTimeout; }
     public void setConnectTimeout(Duration value) { connectTimeout = value; }
     public Duration getReadTimeout() { return readTimeout; }
