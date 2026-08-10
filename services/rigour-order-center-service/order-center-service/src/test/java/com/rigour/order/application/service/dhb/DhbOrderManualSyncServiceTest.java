@@ -20,6 +20,7 @@ import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class DhbOrderManualSyncServiceTest {
     private static final UUID TENANT_ID = UUID.fromString("019fb000-0000-7000-8000-000000000002");
@@ -66,6 +67,13 @@ class DhbOrderManualSyncServiceTest {
 
         assertThat(service.run(new DhbOrderSyncCommand(true, 1))).isEqualTo(result);
         verify(syncService).run(CONNECTOR_ID, new DhbOrderSyncCommand(true, 1));
+
+        ArgumentCaptor<CallerIdentity> serviceCaller = ArgumentCaptor.forClass(CallerIdentity.class);
+        verify(discovery).discover(serviceCaller.capture());
+        assertThat(serviceCaller.getValue().principalScope()).isEqualTo("SERVICE");
+        assertThat(serviceCaller.getValue().tenantId()).isNull();
+        assertThat(serviceCaller.getValue().userId()).isNull();
+        assertThat(serviceCaller.getValue().permissions()).contains("integration:dhb:sync-discovery");
     }
 
     @Test

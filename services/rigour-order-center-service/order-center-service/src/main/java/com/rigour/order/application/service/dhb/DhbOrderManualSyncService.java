@@ -66,7 +66,7 @@ public final class DhbOrderManualSyncService {
     }
 
     private List<SyncTargetView> targetsFor(CallerIdentity caller) {
-        return targetDiscoveryClient.discover(serviceCaller(caller.tenantId())).stream()
+        return targetDiscoveryClient.discover(serviceCaller()).stream()
                 .filter(target -> target != null && caller.tenantId().equals(target.tenantId())
                         && target.connectorId() != null)
                 .collect(Collectors.collectingAndThen(
@@ -85,8 +85,8 @@ public final class DhbOrderManualSyncService {
         return caller;
     }
 
-    private static CallerIdentity serviceCaller(UUID tenantId) {
-        return new CallerIdentity("SERVICE", SERVICE_PRINCIPAL_ID, tenantId, null, null,
+    private static CallerIdentity serviceCaller() {
+        return new CallerIdentity("SERVICE", SERVICE_PRINCIPAL_ID, null, null, null,
                 UUID.randomUUID(), 0, 0, 0, Set.of("ORDER_SYNC_SERVICE"), SERVICE_PERMISSIONS);
     }
 }
