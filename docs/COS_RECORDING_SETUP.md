@@ -64,6 +64,10 @@ sales:
 
 当前已按实际存储桶写入 `ap-beijing` 和 `rigour-sales-recordings-1361731487`。请求域名由 COS SDK 根据地域和 Bucket 自动生成，不需要另配。`storage-dir` 在 COS 模式不会参与对象写入，保留它用于紧急切回本地持久卷。
 
+该 Bucket 同时供 Integration 和 ERP 商品图片链路使用，但必须按对象前缀隔离：Sales Work 使用
+`{tenantId}/visits/`，商品图片使用 `{tenantId}/product-images/`。Sales Work 的 Secret 只授予录音
+前缀所需权限；Integration 和 ERP 使用各自的 Secret，分别授予商品图片写入或读取/签名权限，不能因为共用 Bucket 而共用密钥。
+
 ## 四、注入部署 Secret
 
 `rigour-sales-work-service` 进程只需获得以下凭据变量：

@@ -99,16 +99,37 @@ public class MybatisPlusOrderRepository implements OrderRepository {
         LocalDateTime now = LocalDateTime.now(clock);
         InternalOrderEntity existing = findEntity(incoming.tenantId(), incoming.sourceOrderNo());
         boolean changed = existing == null || !Objects.equals(existing.sourcePayloadHash, imported.payloadHash());
+        boolean detailNeedsImport = imported.detailIncluded()
+                && (existing == null || existing.detailSyncedAt == null || changed
+                || !orderDetailsComplete(existing.id, imported.lines().size(), imported.shipments().size()));
+        if (existing != null && !changed && !detailNeedsImport) {
+            // 来源摘要和本地详情均已存在时，重复同步不得触碰主表、明细、来源记录或事件。
+            return new ImportResult(existing.id, false, false);
+        }
         InternalOrderEntity entity = toEntity(incoming, imported.payloadHash(), existing, now);
         if (existing == null) orderMapper.insert(entity);
-        else if (changed || imported.detailIncluded()) orderMapper.updateById(entity);
+        else if (changed || detailNeedsImport) orderMapper.updateById(entity);
 
-        if (imported.detailIncluded()) replaceDetails(entity.id, imported.lines(), imported.shipments(), now);
+        if (detailNeedsImport) replaceDetails(entity.id, imported.lines(), imported.shipments(), now);
         if (changed) {
             appendSourceRecord(entity, incoming, imported, now);
             appendOrderEvent(entity, changed && existing == null, now);
         }
-        return new ImportResult(entity.id, existing == null, changed);
+        return new ImportResult(entity.id, existing == null, changed || detailNeedsImport);
+    }
+
+    /** 来源摘要未变化时仍校验本地明细行数，修复被人工删除或部分落库的明细。 */
+    private boolean orderDetailsComplete(String orderId, int expectedLineCount, int expectedShipmentCount) {
+        Long lineCount = lineMapper.selectCount(Wrappers.<InternalOrderLineEntity>query()
+                .eq("order_id", orderId));
+        Long shipmentCount = shipmentMapper.selectCount(Wrappers.<InternalOrderShipmentEntity>query()
+                .eq("order_id", orderId));
+        return countOrZero(lineCount) == expectedLineCount
+                && countOrZero(shipmentCount) == expectedShipmentCount;
+    }
+
+    private static long countOrZero(Long count) {
+        return count == null ? 0L : count;
     }
 
     private void replaceDetails(String orderId, List<OrderLine> lines, List<OrderShipment> shipments,

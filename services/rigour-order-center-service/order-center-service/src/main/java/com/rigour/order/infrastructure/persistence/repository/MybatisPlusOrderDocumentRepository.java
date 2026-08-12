@@ -88,7 +88,7 @@ public class MybatisPlusOrderDocumentRepository implements OrderDocumentReposito
             DhbShipmentEntity existing = findShipmentEntity(tenantId, item.shipmentNo());
             boolean changed = existing == null
                     || !Objects.equals(existing.payloadHash, item.payloadHash())
-                    || item.detailIncluded() && !Boolean.TRUE.equals(existing.detailAvailable);
+                    || item.detailIncluded() && shipmentDetailsIncomplete(existing, item.lines().size());
             DhbShipmentEntity entity = shipmentEntity(tenantId, item, existing, now);
             if (existing == null) shipmentMapper.insert(entity);
             else if (changed) shipmentMapper.updateById(entity);
@@ -120,7 +120,7 @@ public class MybatisPlusOrderDocumentRepository implements OrderDocumentReposito
             DhbReturnEntity existing = findReturnEntity(tenantId, item.returnNo());
             boolean changed = existing == null
                     || !Objects.equals(existing.payloadHash, item.payloadHash())
-                    || item.detailIncluded() && !Boolean.TRUE.equals(existing.detailAvailable);
+                    || item.detailIncluded() && returnDetailsIncomplete(existing, item.lines().size());
             DhbReturnEntity entity = returnEntity(tenantId, item, existing, now);
             if (existing == null) returnMapper.insert(entity);
             else if (changed) returnMapper.updateById(entity);
@@ -134,6 +134,28 @@ public class MybatisPlusOrderDocumentRepository implements OrderDocumentReposito
             }
         }
         return changedCount;
+    }
+
+    /** 来源摘要未变化时校验发货明细数量，避免 detail_available 因本地明细被删除而失真。 */
+    private boolean shipmentDetailsIncomplete(DhbShipmentEntity existing, int expectedLineCount) {
+        if (existing == null) return false;
+        if (!Boolean.TRUE.equals(existing.detailAvailable)) return true;
+        Long lineCount = shipmentLineMapper.selectCount(Wrappers.<DhbShipmentLineEntity>query()
+                .eq("shipment_id", existing.id));
+        return countOrZero(lineCount) != expectedLineCount;
+    }
+
+    /** 来源摘要未变化时校验退货明细数量，避免 detail_available 因本地明细被删除而失真。 */
+    private boolean returnDetailsIncomplete(DhbReturnEntity existing, int expectedLineCount) {
+        if (existing == null) return false;
+        if (!Boolean.TRUE.equals(existing.detailAvailable)) return true;
+        Long lineCount = returnLineMapper.selectCount(Wrappers.<DhbReturnLineEntity>query()
+                .eq("return_id", existing.id));
+        return countOrZero(lineCount) != expectedLineCount;
+    }
+
+    private static long countOrZero(Long count) {
+        return count == null ? 0L : count;
     }
 
     /**

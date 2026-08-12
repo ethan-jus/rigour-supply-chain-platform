@@ -23,7 +23,11 @@ public interface DhbIntegrationStore {
     ConnectorView createConnector(UUID tenantId, UUID actorId, ConnectorCommand command);
     ConnectorView updateConnector(UUID tenantId, UUID actorId, UUID id, ConnectorCommand command);
     List<SyncTaskView> syncTasks(UUID tenantId);
-    List<SyncTargetView> activeOrderSyncTargets();
+    List<SyncTargetView> activeSyncTargets(String objectType);
+
+    default List<SyncTargetView> activeOrderSyncTargets() {
+        return activeSyncTargets("ORDER");
+    }
     SyncTaskView createSyncTask(UUID tenantId, UUID actorId, SyncTaskCommand command);
     SyncTaskView updateSyncTask(UUID tenantId, UUID actorId, UUID id, SyncTaskCommand command);
     List<OrderMirrorView> orderMirrors(UUID tenantId, int limit, int offset);

@@ -31,6 +31,8 @@ import tools.jackson.databind.ObjectMapper;
 /** 订货宝同步JDBC仓储；所有查询强制绑定tenantId，跨租户访问直接拒绝。 */
 public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
     private static final String DEFAULT_ORDER_TASK_CODE = "DHB_ORDER_DEFAULT";
+    private static final String DEFAULT_PRODUCT_MASTER_TASK_CODE = "DHB_PRODUCT_MASTER_DEFAULT";
+    private static final String DEFAULT_SUPPLY_CHAIN_TASK_CODE = "DHB_SUPPLY_CHAIN_DEFAULT";
     private static final Set<String> CONNECTOR_STATUSES = Set.of("ACTIVE", "DISABLED");
     private static final Set<String> TASK_STATUSES = Set.of("IDLE", "RUNNING", "PAUSED", "FAILED", "COMPLETED");
     private static final Set<String> TRANSFORM_TYPES = Set.of("DIRECT", "CONSTANT", "EXPRESSION", "DICTIONARY");
@@ -106,7 +108,7 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
                     """, bin(id), bin(tenantId), normalizedCode(command.code()), required(command.name(), "name"),
                     blankToNull(command.baseUrl()), blankToNull(command.authSecretRef()),
                     allowed(command.status(), CONNECTOR_STATUSES, "status"), bin(actorId), bin(actorId));
-            ensureDefaultOrderSyncTask(tenantId, actorId, id);
+            ensureDefaultSyncTasks(tenantId, actorId, id);
         });
         return connectorById(tenantId, id);
     }
@@ -125,7 +127,7 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
                     blankToNull(command.authSecretRef()), connectorStatus,
                     bin(actorId), bin(tenantId), bin(id), normalizedCode(command.code()), command.version());
             requireChanged(changed);
-            if ("ACTIVE".equals(connectorStatus)) ensureDefaultOrderSyncTask(tenantId, actorId, id);
+            if ("ACTIVE".equals(connectorStatus)) ensureDefaultSyncTasks(tenantId, actorId, id);
         });
         return connectorById(tenantId, id);
     }
@@ -142,13 +144,14 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
     }
 
     @Override
-    public List<SyncTargetView> activeOrderSyncTargets() {
+    public List<SyncTargetView> activeSyncTargets(String objectType) {
+        String normalizedType = normalizedObjectType(objectType);
         return jdbc.query("""
                 SELECT t.id AS task_id, t.tenant_id, t.connector_id
                   FROM integration_sync_task t
                   JOIN integration_dhb_connector c
                     ON c.tenant_id=t.tenant_id AND c.id=t.connector_id
-                 WHERE t.object_type='ORDER'
+                 WHERE t.object_type=?
                    AND t.enabled=1
                    AND t.task_status<>'PAUSED'
                    AND t.deleted_at IS NULL
@@ -158,7 +161,7 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
                 """, (rs, row) -> new SyncTargetView(
                 IntegrationUuidCodec.decode(rs, "task_id"),
                 IntegrationUuidCodec.decode(rs, "tenant_id"),
-                IntegrationUuidCodec.decode(rs, "connector_id")));
+                IntegrationUuidCodec.decode(rs, "connector_id")), normalizedType);
     }
 
     @Override
@@ -192,6 +195,14 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
         String objectType = normalizedObjectType(command.objectType());
         if (DEFAULT_ORDER_TASK_CODE.equals(taskCode) && !"ORDER".equals(objectType)) {
             throw new IllegalArgumentException("系统默认订单同步任务不能修改对象类型");
+        }
+        if (DEFAULT_PRODUCT_MASTER_TASK_CODE.equals(taskCode)
+                && !"PRODUCT_MASTER_DATA".equals(objectType)) {
+            throw new IllegalArgumentException("系统默认商品主数据同步任务不能修改对象类型");
+        }
+        if (DEFAULT_SUPPLY_CHAIN_TASK_CODE.equals(taskCode)
+                && !"SUPPLY_CHAIN_DATA".equals(objectType)) {
+            throw new IllegalArgumentException("系统默认供应链数据同步任务不能修改对象类型");
         }
         if ("ORDER".equals(objectType)) {
             requireNoExistingOrderSyncTask(tenantId, command.connectorId(), id);
@@ -364,6 +375,63 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
                 VALUES (?, ?, ?, ?, 'ORDER', 'IDLE', NULL, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
                 """, bin(UUID.randomUUID()), bin(tenantId), bin(connectorId), DEFAULT_ORDER_TASK_CODE,
                 bin(actorId), bin(actorId));
+    }
+
+    private void ensureDefaultSyncTasks(UUID tenantId, UUID actorId, UUID connectorId) {
+        ensureDefaultOrderSyncTask(tenantId, actorId, connectorId);
+        ensureDefaultProductMasterSyncTask(tenantId, actorId, connectorId);
+        ensureDefaultSupplyChainSyncTask(tenantId, actorId, connectorId);
+    }
+
+    private void ensureDefaultSupplyChainSyncTask(UUID tenantId, UUID actorId, UUID connectorId) {
+        if (count("""
+                SELECT COUNT(*) FROM integration_sync_task
+                 WHERE tenant_id=? AND connector_id=? AND object_type='SUPPLY_CHAIN_DATA'
+                   AND deleted_at IS NULL
+                """, bin(tenantId), bin(connectorId)) > 0) return;
+        int restored = jdbc.update("""
+                UPDATE integration_sync_task
+                   SET object_type='SUPPLY_CHAIN_DATA', task_status='IDLE', enabled=1,
+                       deleted_at=NULL, deleted_by=NULL, delete_reason=NULL,
+                       version=version+1, updated_at=UTC_TIMESTAMP(6), updated_by=?
+                 WHERE tenant_id=? AND connector_id=? AND task_code=? AND deleted_at IS NOT NULL
+                """, bin(actorId), bin(tenantId), bin(connectorId), DEFAULT_SUPPLY_CHAIN_TASK_CODE);
+        if (restored == 1) return;
+        jdbc.update("""
+                INSERT INTO integration_sync_task
+                    (id, tenant_id, connector_id, task_code, object_type, task_status,
+                     next_run_at, created_at, created_by, updated_at, updated_by)
+                VALUES (?, ?, ?, ?, 'SUPPLY_CHAIN_DATA', 'IDLE', NULL,
+                        UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
+                """, bin(UUID.randomUUID()), bin(tenantId), bin(connectorId),
+                DEFAULT_SUPPLY_CHAIN_TASK_CODE, bin(actorId), bin(actorId));
+    }
+
+    private void ensureDefaultProductMasterSyncTask(UUID tenantId, UUID actorId, UUID connectorId) {
+        if (count("""
+                SELECT COUNT(*) FROM integration_sync_task
+                 WHERE tenant_id=? AND connector_id=? AND object_type='PRODUCT_MASTER_DATA'
+                   AND deleted_at IS NULL
+                """, bin(tenantId), bin(connectorId)) > 0) {
+            return;
+        }
+        int restored = jdbc.update("""
+                UPDATE integration_sync_task
+                   SET object_type='PRODUCT_MASTER_DATA', task_status='IDLE', enabled=1,
+                       deleted_at=NULL, deleted_by=NULL, delete_reason=NULL,
+                       version=version+1, updated_at=UTC_TIMESTAMP(6), updated_by=?
+                 WHERE tenant_id=? AND connector_id=? AND task_code=? AND deleted_at IS NOT NULL
+                """, bin(actorId), bin(tenantId), bin(connectorId), DEFAULT_PRODUCT_MASTER_TASK_CODE);
+        if (restored == 1) return;
+
+        jdbc.update("""
+                INSERT INTO integration_sync_task
+                    (id, tenant_id, connector_id, task_code, object_type, task_status,
+                     next_run_at, created_at, created_by, updated_at, updated_by)
+                VALUES (?, ?, ?, ?, 'PRODUCT_MASTER_DATA', 'IDLE', NULL,
+                        UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
+                """, bin(UUID.randomUUID()), bin(tenantId), bin(connectorId),
+                DEFAULT_PRODUCT_MASTER_TASK_CODE, bin(actorId), bin(actorId));
     }
 
     private void requireNoExistingOrderSyncTask(UUID tenantId, UUID connectorId, UUID ignoredTaskId) {

@@ -9,9 +9,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotWritableException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import java.io.IOException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -72,5 +74,27 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().code()).isEqualTo("NOT_FOUND");
         assertThat(response.getBody().requestId()).isEqualTo("request-not-found");
+    }
+
+    @Test
+    void ignoresBrokenPipeAsClientDisconnectInsteadOfServerError() {
+        RequestContext.set("request-client-abort", "zh-CN");
+
+        ResponseEntity<ApiResponse<Void>> response = handler.handleUnexpectedException(
+                new HttpMessageNotWritableException("response write failed", new IOException("Broken pipe")));
+
+        assertThat(response).isNull();
+    }
+
+    @Test
+    void stillMapsUnexpectedExceptionToInternalError() {
+        RequestContext.set("request-unexpected", "zh-CN");
+
+        ResponseEntity<ApiResponse<Void>> response = handler.handleUnexpectedException(
+                new IllegalStateException("unexpected failure"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(500);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().code()).isEqualTo("INTERNAL_ERROR");
     }
 }

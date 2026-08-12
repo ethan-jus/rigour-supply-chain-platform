@@ -24,8 +24,15 @@ Group：DEFAULT_GROUP
 | `rigour-city-operations-service.example.yml` | `rigour-city-operations-service.yaml` | `CITY_DB_APP_PASSWORD` / `CITY_DB_MIGRATOR_PASSWORD` |
 | `rigour-channel-agent-service.example.yml` | `rigour-channel-agent-service.yaml` | `CHANNEL_DB_APP_PASSWORD` / `CHANNEL_DB_MIGRATOR_PASSWORD` |
 
-Order Center 和 Sales Work 已包含正式业务迁移，其模板将 `spring.flyway.enabled` 设为 `true`。其他仍为空 Schema 的领域服务保持 `false`；完成首个迁移并接入 JDBC/Flyway 后再切换。模板变更不等于共享DEV Nacos已发布。
+ERP、Order Center 和 Sales Work 已包含正式业务迁移，其模板将 `spring.flyway.enabled` 设为 `true`。其他仍为空 Schema 的领域服务保持 `false`；完成首个迁移并接入 JDBC/Flyway 后再切换。模板变更不等于共享DEV Nacos已发布。
 
 启动时只需要在本机或 IDEA Run Configuration 设置对应的两个数据库密码变量；Nacos 只保存 `${...}` 占位符，不解析也不保存密码明文。所有领域服务还需要注入同一份 `RIGOUR_CONTEXT_TRUST_KEY_V1`；该变量的属性映射保留在各服务本地 `application.yml`，不写入 Nacos Data ID。
+
+Sales Work、Integration 和 ERP Core 共用同一个 COS 私桶，但按对象 Key 前缀隔离用途：Sales Work
+使用 `tenantId/visits/`，商品图片使用 `tenantId/product-images/`。当前共享 DEV 桶为
+`ap-beijing / rigour-sales-recordings-1361731487`。三个服务仍使用各自的 Secret ID、Secret Key
+和可选 Session Token，并分别授予所需的前缀权限；商品图片前缀由各自配置中的
+`rigour.*.product-media.cos.object-prefix` 管理，三端必须保持一致。缺失配置时服务会直接启动失败，
+不会降级为本地文件存储。
 
 Gateway 不拥有业务数据库，因此只有安全和路由配置，不增加 datasource 配置。

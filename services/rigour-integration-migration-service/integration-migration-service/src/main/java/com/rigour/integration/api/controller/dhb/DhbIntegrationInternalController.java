@@ -6,6 +6,7 @@ import com.rigour.integration.application.service.dhb.DhbIntegrationService;
 import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** 仅供内部服务调度使用的订货宝目标发现接口，不经过Gateway浏览器路由。 */
@@ -21,7 +22,8 @@ public final class DhbIntegrationInternalController implements DhbIntegrationInt
 
     @GetMapping("/sync-targets")
     @Override
-    public List<SyncTargetView> syncTargets() {
-        return service.syncTargets();
+    public List<SyncTargetView> syncTargets(
+            @RequestParam(name = "objectType", defaultValue = "ORDER") String objectType) {
+        return service.syncTargets(objectType);
     }
 }

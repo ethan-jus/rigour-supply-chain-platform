@@ -118,6 +118,54 @@ Secret values only:
 RIGOUR_CONTEXT_TRUST_KEY_V1=<同一共享HMAC密钥>
 ```
 
+ERP Core 使用相同Profile。本机 IDEA Run Configuration 的环境变量配置为：
+
+```text
+Active profiles:
+dev,local
+
+Non-secret values:
+NACOS_SERVER_ADDR=82.157.4.176:18848
+NACOS_USERNAME=nacos
+NACOS_NAMESPACE=3aa03547-8948-4254-bd94-47c630db128b
+NACOS_CONFIG_GROUP=DEFAULT_GROUP
+NACOS_DISCOVERY_GROUP=DEFAULT_GROUP
+NACOS_DISCOVERY_REGISTER_ENABLED=false
+RIGOUR_INTEGRATION_BASE_URL=http://localhost:26882
+RIGOUR_INTEGRATION_DHB_IMAGE_BASE_URL=https://img.dhb168.com/
+RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_OBJECT_PREFIX=product-images
+RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_REGION=ap-beijing
+RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_BUCKET=rigour-sales-recordings-1361731487
+RIGOUR_ERP_PRODUCT_MEDIA_COS_OBJECT_PREFIX=product-images
+RIGOUR_ERP_PRODUCT_MEDIA_COS_REGION=ap-beijing
+RIGOUR_ERP_PRODUCT_MEDIA_COS_BUCKET=rigour-sales-recordings-1361731487
+
+Secret values only:
+NACOS_PASSWORD=<负责人分发的Nacos密码>
+ERP_DB_APP_PASSWORD=<rigour_erp_app密码>
+ERP_DB_MIGRATOR_PASSWORD=<rigour_erp_migrator密码>
+RIGOUR_CONTEXT_TRUST_KEY_V1=<同一共享HMAC密钥>
+RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_ID=<商品图片私桶只读密钥ID>
+RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_KEY=<商品图片私桶只读密钥>
+```
+
+ERP 的 Nacos Data ID 是 `rigour-erp-core-service.yaml`，Namespace 必须使用上面的实际 ID，
+不能填写控制台显示名称 `dev`。本机默认不注册到共享服务发现；ERP 调用本机 Integration 的地址
+由 `RIGOUR_INTEGRATION_BASE_URL` 指定。密码变量必须由进程环境解析，不能把明文发布到 Nacos。
+
+商品图片不提供本地文件降级。Integration 下载订货宝返回的全部有效图片并写入 COS 私桶，ERP
+只从数据库读取对象 Key，并在每次商品查询时签发新的短时 URL。Sales Work、Integration 和 ERP
+必须指向同一个地域和私桶，并保持 `object-prefix` 一致：
+
+| 服务 | 必填非敏感变量 | 必填 Secret |
+|---|---|---|
+| Integration | `ap-beijing`、`rigour-sales-recordings-1361731487`、`product-images` | `RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_ID`、`RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_KEY` |
+| ERP Core | `ap-beijing`、`rigour-sales-recordings-1361731487`、`product-images` | `RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_ID`、`RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_KEY` |
+
+临时凭据还需分别注入对应的 `*_COS_SESSION_TOKEN`。Integration 凭据需要对象写权限，ERP
+只需要对象读/签名所需权限；禁止把 Secret 写入 Git、Nacos 或日志。任一必填 COS 参数缺失时，
+服务应启动失败，防止订货宝图片误落本机或返回第三方永久地址。
+
 Portal使用仓库已有`.env.development`：
 
 ```text
