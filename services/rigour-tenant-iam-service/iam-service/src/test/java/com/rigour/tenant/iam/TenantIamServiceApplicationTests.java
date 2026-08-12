@@ -223,7 +223,7 @@ class TenantIamServiceApplicationTests {
                 + "AND display_name='对账差异'", 1);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE resource_id BETWEEN "
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000167') AND "
-                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000267') AND visible=1", 84);
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000267') AND visible=1", 101);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.integration.%'", 10);
         org.assertj.core.api.Assertions.assertThat(applicationMapper.selectById(
                         UUID.fromString("019facf1-0000-7000-8000-000000000003")))
