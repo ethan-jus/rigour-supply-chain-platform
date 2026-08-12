@@ -21,9 +21,13 @@ public interface SalesWorkRecordingRepository {
     void insertClip(UUID id, UUID tenantId, UUID sessionId, String clientClipId,
                     int clipIndex, String objectKey,
                     String mediaType, long objectSizeBytes, String sha256, Long clientDurationMs,
+                    Long verifiedDurationMs, String verifyStatus,
                     Instant recordedFrom, Instant recordedTo, Instant now);
 
     int incrementSessionClipCount(UUID tenantId, UUID sessionId);
+
+    /** 按已核验片段重算会话可信时长和证据状态。 */
+    int refreshSessionVerification(UUID tenantId, UUID sessionId, Instant verifiedAt);
 
     long uploadedTotalDurationMs(UUID tenantId, UUID sessionId);
 
@@ -37,13 +41,14 @@ public interface SalesWorkRecordingRepository {
                        String reason, Instant now);
 
     record RecordingSessionRow(
-            UUID id, UUID visitId, String status, int clipCount, long verifiedTotalDurationMs) {
+            UUID id, UUID visitId, String status, String evidenceStatus,
+            int clipCount, long verifiedTotalDurationMs) {
     }
 
     record RecordingClipRow(
             UUID id, UUID sessionId, String clientClipId, int clipIndex, String objectKey, String mediaType,
             long objectSizeBytes, String sha256, Long clientDurationMs,
-            String uploadStatus, Instant createdAt) {
+            Long verifiedDurationMs, String uploadStatus, String verifyStatus, Instant createdAt) {
     }
 
     record RecordingDiscardRow(

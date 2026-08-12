@@ -10,7 +10,7 @@ import java.util.UUID;
 /** Sales Work 阶段 1 查询端口；只读取本服务的身份、规则和CRM只读投影。 */
 public interface SalesWorkQueryRepository {
 
-    Optional<IdentityProjection> findIdentityProjection(UUID tenantId, UUID platformUserId);
+    Optional<IdentityProjection> findIdentityProjection(UUID tenantId, UUID platformUserId, Instant at);
 
     Optional<SalesProfile> findActiveSalesProfile(UUID tenantId, UUID employeeId, Instant at);
 
@@ -24,14 +24,14 @@ public interface SalesWorkQueryRepository {
 
     Optional<StoreProjection> findStoreById(UUID tenantId, UUID storeId);
 
-    boolean isStoreAssignedToProfile(UUID tenantId, UUID salesProfileId, UUID storeId);
+    boolean isStoreAssignedToProfile(UUID tenantId, UUID salesProfileId, UUID storeId, Instant at);
 
     boolean existsStore(UUID tenantId, UUID storeId);
 
     List<VisitTarget> findAssignedStoreTargets(UUID tenantId, UUID salesProfileId,
-                                                String query, int limit, int offset);
+                                                String query, int limit, int offset, Instant at);
 
-    long countAssignedStoreTargets(UUID tenantId, UUID salesProfileId, String query);
+    long countAssignedStoreTargets(UUID tenantId, UUID salesProfileId, String query, Instant at);
 
     record IdentityProjection(UUID platformUserId, UUID employeeId, String status) {
     }

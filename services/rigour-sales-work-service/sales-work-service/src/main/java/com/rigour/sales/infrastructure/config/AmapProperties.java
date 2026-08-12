@@ -11,6 +11,8 @@ public class AmapProperties {
     private String webKey;
     private Duration connectTimeout = Duration.ofSeconds(3);
     private Duration readTimeout = Duration.ofSeconds(5);
+    private Duration nearbyCacheTtl = Duration.ofSeconds(60);
+    private int nearbyCacheMaxEntries = 500;
 
     public String getBaseUrl() {
         return baseUrl;
@@ -42,5 +44,21 @@ public class AmapProperties {
 
     public void setReadTimeout(Duration readTimeout) {
         this.readTimeout = readTimeout;
+    }
+
+    public Duration getNearbyCacheTtl() {
+        return nearbyCacheTtl;
+    }
+
+    public void setNearbyCacheTtl(Duration nearbyCacheTtl) {
+        this.nearbyCacheTtl = nearbyCacheTtl;
+    }
+
+    public int getNearbyCacheMaxEntries() {
+        return nearbyCacheMaxEntries;
+    }
+
+    public void setNearbyCacheMaxEntries(int nearbyCacheMaxEntries) {
+        this.nearbyCacheMaxEntries = nearbyCacheMaxEntries;
     }
 }

@@ -24,11 +24,12 @@ VALUES
      UUID_TO_BIN('019FBAF9CFB5740DB347739D29765D8E'),
      UUID_TO_BIN('3C3C0000000000000000000000000005'), 1, 'PUBLISHED',
      1, 1, 500,
-     0, 0, 1,
+     0, 1, 1,
      600, 30,
      1, 1, 1, NULL,
      NULL, NULL, NULL, NULL, UUID_TO_BIN('019FBC5796817C68BC7B96C4A7F456C3'), UTC_TIMESTAMP(6))
 ON DUPLICATE KEY UPDATE
     publish_status='PUBLISHED',
+    required_photo_count=1,
     recording_enabled=1,
     minimum_recording_seconds=600;

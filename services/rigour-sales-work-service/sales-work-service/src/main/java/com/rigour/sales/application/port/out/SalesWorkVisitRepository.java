@@ -33,7 +33,7 @@ public interface SalesWorkVisitRepository {
 
     Optional<VisitSnapshot> findActiveVisit(UUID tenantId, UUID salesProfileId);
 
-    void insertVisit(UUID id, UUID tenantId, UUID workDayId, UUID salesProfileId,
+    void insertVisit(UUID id, UUID tenantId, UUID workDayId, UUID visitPlanId, UUID salesProfileId,
                      String targetType, UUID customerId, UUID storeId,
                      UUID visitPolicyVersionId, Instant checkedInAt);
 

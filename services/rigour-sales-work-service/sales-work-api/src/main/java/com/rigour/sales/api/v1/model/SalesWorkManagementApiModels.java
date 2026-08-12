@@ -1,5 +1,6 @@
 package com.rigour.sales.api.v1.model;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
@@ -35,12 +36,45 @@ public final class SalesWorkManagementApiModels {
         }
     }
 
+    public record VisitPlanProfileOptionView(
+            UUID salesProfileId, UUID employeeId, String salesNo, UUID cityOrgId) {
+    }
+
+    public record ManagementVisitPlanView(
+            UUID planId, UUID salesProfileId, String salesNo, LocalDate plannedDate,
+            String targetType, UUID customerId, UUID storeId,
+            String customerName, String storeName, String storeAddress,
+            String objective, String status, UUID visitId, long version,
+            Instant createdAt, Instant updatedAt) {
+    }
+
+    public record ManagementVisitPlanPageView(
+            LocalDate from, LocalDate to, String status,
+            List<ManagementVisitPlanView> items, int page, int pageSize, long total) {
+        public ManagementVisitPlanPageView {
+            items = items == null ? List.of() : List.copyOf(items);
+        }
+    }
+
+    /** 新建时 version 为空；修改时必须回传当前 version 做乐观锁。 */
+    public record UpsertVisitPlanCommand(
+            UUID salesProfileId, LocalDate plannedDate, UUID storeId,
+            String objective, Long version) {
+    }
+
+    public record CancelVisitPlanCommand(Long version) {
+    }
+
     public record VisitReviewQueueItemView(
             UUID visitId, UUID salesProfileId, String salesNo, String storeName,
             Instant checkedInAt, Instant checkedOutAt, int dwellMinutes,
-            int minimumDwellMinutes, int uploadedRecordingSeconds, int minimumRecordingSeconds,
+            int minimumDwellMinutes, int uploadedRecordingSeconds, int verifiedRecordingSeconds,
+            int minimumRecordingSeconds, int verifiedStorefrontPhotoCount, int requiredStorefrontPhotoCount,
             String contactOutcome, String kpName, String intentionLevel,
-            String resultNote, String visitType) {
+            String resultNote, String visitType, List<String> anomalyCodes) {
+        public VisitReviewQueueItemView {
+            anomalyCodes = anomalyCodes == null ? List.of() : List.copyOf(anomalyCodes);
+        }
     }
 
     public record VisitReviewQueueView(
@@ -61,6 +95,20 @@ public final class SalesWorkManagementApiModels {
             List<ManagementRecordingClipView> clips) {
         public ManagementRecordingSessionView {
             clips = clips == null ? List.of() : List.copyOf(clips);
+        }
+    }
+
+    public record ManagementPhotoEvidenceView(
+            UUID evidenceId, String evidenceRole, String captureSource, Instant capturedAt,
+            String mediaType, long objectSizeBytes, BigDecimal distanceToTargetMeters,
+            String evidenceStatus, Instant serverReceivedAt) {
+    }
+
+    public record ManagementVisitEvidenceView(
+            UUID visitId, int requiredStorefrontPhotoCount, int verifiedStorefrontPhotoCount,
+            List<ManagementPhotoEvidenceView> photos) {
+        public ManagementVisitEvidenceView {
+            photos = photos == null ? List.of() : List.copyOf(photos);
         }
     }
 

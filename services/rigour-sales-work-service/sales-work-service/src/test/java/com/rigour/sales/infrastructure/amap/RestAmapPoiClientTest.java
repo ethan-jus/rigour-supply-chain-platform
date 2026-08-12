@@ -52,6 +52,9 @@ class RestAmapPoiClientTest {
         assertThat(page.items().get(0).name()).isEqualTo("测试便利店A");
         assertThat(page.items().get(0).distanceMeters()).isEqualByComparingTo("120");
         assertThat(page.items().get(1).longitude()).isEqualByComparingTo("120.101000");
+        NearbyPoiPage cached = client.searchAround("便利店", new BigDecimal("120.10004"),
+                new BigDecimal("30.20004"), 3000, 1, 20);
+        assertThat(cached).isEqualTo(page);
         server.verify();
     }
 

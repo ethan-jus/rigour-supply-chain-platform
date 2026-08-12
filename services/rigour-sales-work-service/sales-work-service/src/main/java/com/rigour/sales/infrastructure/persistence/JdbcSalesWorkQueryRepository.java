@@ -23,18 +23,19 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
     }
 
     @Override
-    public java.util.Optional<IdentityProjection> findIdentityProjection(UUID tenantId, UUID platformUserId) {
+    public java.util.Optional<IdentityProjection> findIdentityProjection(UUID tenantId, UUID platformUserId,
+                                                                          Instant at) {
         List<IdentityProjection> rows = jdbc.query("""
                 SELECT platform_user_id, employee_id, status
                   FROM sales_identity_projection
                  WHERE tenant_id=? AND platform_user_id=? AND status='ACTIVE'
-                   AND effective_from <= UTC_TIMESTAMP(6)
-                   AND (effective_to IS NULL OR effective_to > UTC_TIMESTAMP(6))
+                   AND effective_from <= ?
+                   AND (effective_to IS NULL OR effective_to > ?)
                  ORDER BY effective_from DESC
                  LIMIT 1
                 """, (rs, row) -> new IdentityProjection(
                 uuid(rs, "platform_user_id"), uuid(rs, "employee_id"), rs.getString("status")),
-                bin(tenantId), bin(platformUserId));
+                bin(tenantId), bin(platformUserId), timestamp(at), timestamp(at));
         return rows.stream().findFirst();
     }
 
@@ -216,15 +217,15 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
     }
 
     @Override
-    public boolean isStoreAssignedToProfile(UUID tenantId, UUID salesProfileId, UUID storeId) {
+    public boolean isStoreAssignedToProfile(UUID tenantId, UUID salesProfileId, UUID storeId, Instant at) {
         Integer count = jdbc.queryForObject("""
                 SELECT COUNT(*)
                   FROM crm_sales_assignment_projection assignment
                  WHERE assignment.tenant_id=? AND assignment.sales_profile_id=?
                    AND assignment.store_id=? AND assignment.status='ACTIVE'
-                   AND assignment.effective_from <= UTC_TIMESTAMP(6)
-                   AND (assignment.effective_to IS NULL OR assignment.effective_to > UTC_TIMESTAMP(6))
-                """, Integer.class, bin(tenantId), bin(salesProfileId), bin(storeId));
+                   AND assignment.effective_from <= ?
+                   AND (assignment.effective_to IS NULL OR assignment.effective_to > ?)
+                """, Integer.class, bin(tenantId), bin(salesProfileId), bin(storeId), timestamp(at), timestamp(at));
         return count != null && count > 0;
     }
 
@@ -239,7 +240,7 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
 
     @Override
     public List<VisitTarget> findAssignedStoreTargets(UUID tenantId, UUID salesProfileId,
-                                                       String query, int limit, int offset) {
+                                                       String query, int limit, int offset, Instant at) {
         String pattern = likePattern(query);
         return jdbc.query("""
                 SELECT store.id AS projection_id, assignment.assignment_type, store.customer_id, store.store_id,
@@ -251,19 +252,19 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
                     ON store.tenant_id=assignment.tenant_id AND store.store_id=assignment.store_id
                  WHERE assignment.tenant_id=? AND assignment.sales_profile_id=?
                    AND assignment.status='ACTIVE'
-                   AND assignment.effective_from <= UTC_TIMESTAMP(6)
-                   AND (assignment.effective_to IS NULL OR assignment.effective_to > UTC_TIMESTAMP(6))
+                   AND assignment.effective_from <= ?
+                   AND (assignment.effective_to IS NULL OR assignment.effective_to > ?)
                    AND store.store_status='ACTIVE'
                    AND (store.store_name LIKE ? OR COALESCE(store.customer_name,'') LIKE ?
                         OR COALESCE(store.store_address,'') LIKE ?)
                  ORDER BY store.store_name, store.store_id
                  LIMIT ? OFFSET ?
-                """, (rs, row) -> target(rs), bin(tenantId), bin(salesProfileId),
+                """, (rs, row) -> target(rs), bin(tenantId), bin(salesProfileId), timestamp(at), timestamp(at),
                 pattern, pattern, pattern, limit, offset);
     }
 
     @Override
-    public long countAssignedStoreTargets(UUID tenantId, UUID salesProfileId, String query) {
+    public long countAssignedStoreTargets(UUID tenantId, UUID salesProfileId, String query, Instant at) {
         String pattern = likePattern(query);
         Long count = jdbc.queryForObject("""
                 SELECT COUNT(*)
@@ -272,12 +273,13 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
                     ON store.tenant_id=assignment.tenant_id AND store.store_id=assignment.store_id
                  WHERE assignment.tenant_id=? AND assignment.sales_profile_id=?
                    AND assignment.status='ACTIVE'
-                   AND assignment.effective_from <= UTC_TIMESTAMP(6)
-                   AND (assignment.effective_to IS NULL OR assignment.effective_to > UTC_TIMESTAMP(6))
+                   AND assignment.effective_from <= ?
+                   AND (assignment.effective_to IS NULL OR assignment.effective_to > ?)
                    AND store.store_status='ACTIVE'
                    AND (store.store_name LIKE ? OR COALESCE(store.customer_name,'') LIKE ?
                         OR COALESCE(store.store_address,'') LIKE ?)
-                """, Long.class, bin(tenantId), bin(salesProfileId), pattern, pattern, pattern);
+                """, Long.class, bin(tenantId), bin(salesProfileId), timestamp(at), timestamp(at),
+                pattern, pattern, pattern);
         return count == null ? 0L : count;
     }
 

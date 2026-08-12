@@ -207,16 +207,16 @@ public class JdbcSalesWorkVisitRepository implements SalesWorkVisitRepository {
     }
 
     @Override
-    public void insertVisit(UUID id, UUID tenantId, UUID workDayId, UUID salesProfileId,
+    public void insertVisit(UUID id, UUID tenantId, UUID workDayId, UUID visitPlanId, UUID salesProfileId,
                             String targetType, UUID customerId, UUID storeId,
                             UUID visitPolicyVersionId, Instant checkedInAt) {
         jdbc.update("""
                 INSERT INTO sales_visit
-                    (id, tenant_id, work_day_id, sales_profile_id, target_type,
+                    (id, tenant_id, work_day_id, visit_plan_id, sales_profile_id, target_type,
                      customer_id, store_id, visit_policy_version_id, status,
                      checked_in_at, version, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CHECKED_IN', ?, 0, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))
-                """, bin(id), bin(tenantId), bin(workDayId), bin(salesProfileId), targetType,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'CHECKED_IN', ?, 0, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))
+                """, bin(id), bin(tenantId), bin(workDayId), bin(visitPlanId), bin(salesProfileId), targetType,
                 bin(customerId), bin(storeId), bin(visitPolicyVersionId), timestamp(checkedInAt));
     }
 

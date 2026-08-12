@@ -17,6 +17,9 @@ import com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitTargetPageView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitPageView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitActivitySummaryView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitResultCommand;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitEvidenceSummaryView;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitPhotoEvidenceView;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitPlanListView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.WorkDayTrackView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.WorkDayView;
@@ -52,11 +55,13 @@ public interface SalesWorkApi {
     String WORK_DAY_TRACK_PATH = WORK_DAY_PATH + "/track";
     String NEARBY_STORES_PATH = BASE_PATH + "/me/nearby-stores";
     String VISITS_PATH = BASE_PATH + "/me/visits";
+    String VISIT_PLANS_PATH = BASE_PATH + "/me/visit-plans";
     String ACTIVITY_SUMMARY_PATH = BASE_PATH + "/me/activity-summary";
     String VISIT_PATH = BASE_PATH + "/me/visits/{visitId}";
     String VISIT_CHECK_OUT_PATH = BASE_PATH + "/me/visits/{visitId}/check-out";
     String VISIT_RESULT_PATH = BASE_PATH + "/me/visits/{visitId}/result";
     String VISIT_RECORDINGS_PATH = BASE_PATH + "/me/visits/{visitId}/recordings";
+    String VISIT_EVIDENCE_PATH = BASE_PATH + "/me/visits/{visitId}/evidence";
 
     @GetMapping(CONTEXT_PATH)
     ApiResponse<SalesContextView> context();
@@ -102,6 +107,9 @@ public interface SalesWorkApi {
     @PostMapping(VISITS_PATH)
     ApiResponse<VisitView> createVisit(@RequestBody CreateVisitCommand command);
 
+    @GetMapping(VISIT_PLANS_PATH)
+    ApiResponse<VisitPlanListView> visitPlans(@RequestParam("date") LocalDate date);
+
     @GetMapping(VISITS_PATH)
     ApiResponse<VisitPageView> visits(
             @RequestParam(name = "date", required = false) LocalDate date,
@@ -143,4 +151,20 @@ public interface SalesWorkApi {
 
     @GetMapping(VISIT_RECORDINGS_PATH)
     ApiResponse<RecordingSessionView> recordings(@PathVariable("visitId") UUID visitId);
+
+    @PostMapping(path = VISIT_EVIDENCE_PATH + "/photos",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    ApiResponse<VisitPhotoEvidenceView> uploadStorefrontPhoto(
+            @PathVariable("visitId") UUID visitId,
+            @RequestPart("file") MultipartFile file,
+            @RequestParam("clientEvidenceId") String clientEvidenceId,
+            @RequestParam("captureSource") String captureSource,
+            @RequestParam("capturedAt")
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant capturedAt,
+            @RequestParam("longitude") BigDecimal longitude,
+            @RequestParam("latitude") BigDecimal latitude,
+            @RequestParam("accuracyMeters") BigDecimal accuracyMeters);
+
+    @GetMapping(VISIT_EVIDENCE_PATH)
+    ApiResponse<VisitEvidenceSummaryView> visitEvidence(@PathVariable("visitId") UUID visitId);
 }

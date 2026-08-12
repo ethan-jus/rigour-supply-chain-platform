@@ -51,9 +51,30 @@ class SalesWorkMigrationTests {
                 SELECT COUNT(*) FROM information_schema.tables
                  WHERE table_schema=DATABASE() AND table_name='sales_store'
                 """, Integer.class);
+        Integer storefrontEvidenceColumnCount = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema=DATABASE() AND table_name='sales_visit_evidence'
+                   AND column_name IN ('client_evidence_id','evidence_role','capture_source','captured_at',
+                                       'media_type','object_size_bytes','longitude','latitude',
+                                       'accuracy_meters','distance_to_target_meters')
+                """, Integer.class);
+        Integer visitPlanExecutionConstraintCount = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.table_constraints
+                 WHERE constraint_schema=DATABASE()
+                   AND constraint_name IN ('uk_sales_visit_plan_execution','ck_sales_visit_plan_status',
+                                           'uk_sales_visit_plan_active_store')
+                """, Integer.class);
+        Integer activePlanGeneratedColumnCount = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema=DATABASE() AND table_name='sales_visit_plan'
+                   AND column_name='active_store_id' AND extra LIKE '%STORED GENERATED%'
+                """, Integer.class);
 
-        assertThat(migrationCount).isEqualTo(7);
+        assertThat(migrationCount).isEqualTo(10);
         assertThat(tableCount).isEqualTo(32);
         assertThat(editableStoreTableCount).isZero();
+        assertThat(storefrontEvidenceColumnCount).isEqualTo(10);
+        assertThat(visitPlanExecutionConstraintCount).isEqualTo(3);
+        assertThat(activePlanGeneratedColumnCount).isEqualTo(1);
     }
 }

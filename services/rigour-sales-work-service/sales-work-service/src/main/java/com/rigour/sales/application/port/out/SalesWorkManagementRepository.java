@@ -1,5 +1,7 @@
 package com.rigour.sales.application.port.out;
 
+import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -23,7 +25,15 @@ public interface SalesWorkManagementRepository {
 
     void insertReview(UUID id, UUID tenantId, UUID visitId, UUID reviewerId,
                       String decision, String reasonCode, String reviewNote,
-                      java.time.Instant decidedAt);
+                      Instant decidedAt);
+
+    /** 锁定拜访后读取自动判定所需的服务端事实，不接收客户端计算结论。 */
+    java.util.Optional<VisitAssessmentRow> findVisitAssessment(UUID tenantId, UUID visitId);
+
+    /** 保存当前自动判定结果；异常仍由主管在既有复核接口形成最终结论。 */
+    void upsertAutomaticAssessment(UUID id, UUID tenantId, UUID visitId,
+                                   String reviewStatus, String decision,
+                                   String reasonCode, String assessmentNote, Instant assessedAt);
 
     record ManagementTotalsRow(
             long activeSalesCount, long attendedSalesCount, long workingSalesCount,
@@ -44,13 +54,29 @@ public interface SalesWorkManagementRepository {
     record VisitReviewRow(
             UUID visitId, UUID salesProfileId, String salesNo, String storeName,
             java.time.Instant checkedInAt, java.time.Instant checkedOutAt, int dwellMinutes,
-            int minimumDwellMinutes, int uploadedRecordingSeconds, int minimumRecordingSeconds,
+            int minimumDwellMinutes, int uploadedRecordingSeconds, int verifiedRecordingSeconds,
+            int minimumRecordingSeconds, int verifiedStorefrontPhotoCount,
+            int requiredStorefrontPhotoCount,
             String contactOutcome, String kpName, String intentionLevel,
-            String resultNote, String visitType) {
+            String resultNote, String visitType, List<String> anomalyCodes) {
+        public VisitReviewRow {
+            anomalyCodes = anomalyCodes == null ? List.of() : List.copyOf(anomalyCodes);
+        }
     }
 
     record ReviewTargetRow(
             UUID visitId, String finalReasonCode, String reviewReasonCode,
-            java.time.Instant finalizedAt) {
+            Instant finalizedAt) {
+    }
+
+    record VisitAssessmentRow(
+            UUID visitId, Instant checkedInAt, Instant checkedOutAt, Instant finalizedAt,
+            String contactOutcome, Instant resultSubmittedAt,
+            int minimumDwellMinutes, int requiredPhotoCount, long verifiedStorefrontPhotoCount,
+            boolean recordingEnabled, int minimumRecordingSeconds,
+            Long verifiedRecordingDurationMs, String recordingEvidenceStatus,
+            boolean aiAsrEnabled, boolean aiRelevanceEnabled, boolean aiDuplicateEnabled,
+            BigDecimal aiAutoConfirmThreshold, String aiRecommendation,
+            BigDecimal aiConfidenceScore, boolean aiResultAdopted) {
     }
 }

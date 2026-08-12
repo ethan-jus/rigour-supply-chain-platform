@@ -236,9 +236,9 @@ public class SalesWorkAdminService {
         if (command.checkInRadiusMeters() <= 0) {
             throw invalid("checkInRadiusMeters必须大于0");
         }
-        if (command.minimumDwellMinutes() < 0 || command.requiredPhotoCount() < 0
+        if (command.minimumDwellMinutes() < 0 || command.requiredPhotoCount() < 1
                 || command.minimumRecordingSeconds() < 0 || command.maximumClipGapSeconds() < 0) {
-            throw invalid("拜访规则的阈值不能为负数");
+            throw invalid("拜访停留/录音阈值不能为负数，门头照至少要求1张");
         }
         if (command.recordingEnabled() && command.minimumRecordingSeconds() <= 0) {
             throw invalid("启用录音时minimumRecordingSeconds必须大于0");

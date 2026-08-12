@@ -29,6 +29,8 @@ rigour:
     web-key: ${RIGOUR_AMAP_WEB_KEY}
     connect-timeout: 3s
     read-timeout: 5s
+    nearby-cache-ttl: 60s
+    nearby-cache-max-entries: 500
   context:
     trust:
       active-key-id: v1
@@ -36,6 +38,11 @@ rigour:
         v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}
 
 sales:
+  evidence:
+    max-photo-bytes: 12582912
+    min-photo-width: 320
+    min-photo-height: 240
+    max-photo-pixels: 25000000
   recording:
     # 非敏感项直接保存在 Nacos；当前环境使用北京地域的私有 COS 存储桶。
     storage-type: cos

@@ -22,13 +22,13 @@ public class JdbcSalesWorkRecordingRepository implements SalesWorkRecordingRepos
     @Override
     public Optional<RecordingSessionRow> findSession(UUID tenantId, UUID visitId) {
         List<RecordingSessionRow> rows = jdbc.query("""
-                SELECT id, visit_id, status, clip_count, verified_total_duration_ms
+                SELECT id, visit_id, status, evidence_status, clip_count, verified_total_duration_ms
                   FROM sales_recording_session
                  WHERE tenant_id=? AND visit_id=?
                  LIMIT 1
                 """, (rs, row) -> new RecordingSessionRow(
                         SalesUuidCodec.decode(rs.getBytes("id")), SalesUuidCodec.decode(rs.getBytes("visit_id")),
-                        rs.getString("status"), rs.getInt("clip_count"),
+                        rs.getString("status"), rs.getString("evidence_status"), rs.getInt("clip_count"),
                         rs.getLong("verified_total_duration_ms")),
                 bin(tenantId), bin(visitId));
         return rows.stream().findFirst();
@@ -63,7 +63,8 @@ public class JdbcSalesWorkRecordingRepository implements SalesWorkRecordingRepos
             UUID tenantId, UUID sessionId, String clientClipId) {
         List<RecordingClipRow> rows = jdbc.query("""
                 SELECT id, recording_session_id, client_clip_id, clip_index, object_key, media_type,
-                       object_size_bytes, sha256, client_duration_ms, upload_status, created_at
+                       object_size_bytes, sha256, client_duration_ms, verified_duration_ms,
+                       upload_status, verify_status, created_at
                   FROM sales_recording_clip
                  WHERE tenant_id=? AND recording_session_id=? AND client_clip_id=?
                  LIMIT 1
@@ -84,6 +85,7 @@ public class JdbcSalesWorkRecordingRepository implements SalesWorkRecordingRepos
     public void insertClip(UUID id, UUID tenantId, UUID sessionId, String clientClipId,
                            int clipIndex, String objectKey,
                            String mediaType, long objectSizeBytes, String sha256, Long clientDurationMs,
+                           Long verifiedDurationMs, String verifyStatus,
                            Instant recordedFrom, Instant recordedTo, Instant now) {
         jdbc.update("""
                 INSERT INTO sales_recording_clip
@@ -91,11 +93,11 @@ public class JdbcSalesWorkRecordingRepository implements SalesWorkRecordingRepos
                      object_size_bytes, sha256, perceptual_hash, client_duration_ms,
                      verified_duration_ms, recorded_from, recorded_to, upload_status,
                      verify_status, created_at, verified_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, 'RECEIVED', 'PENDING',
-                        UTC_TIMESTAMP(6), NULL)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 'RECEIVED', ?, ?, ?)
                 """, bin(id), bin(tenantId), bin(sessionId), clientClipId, clipIndex, objectKey, mediaType,
-                objectSizeBytes, sha256, clientDurationMs, timestamp(recordedFrom),
-                timestamp(recordedTo));
+                objectSizeBytes, sha256, clientDurationMs, verifiedDurationMs, timestamp(recordedFrom),
+                timestamp(recordedTo), verifyStatus, timestamp(now),
+                "PENDING".equals(verifyStatus) ? null : timestamp(now));
     }
 
     @Override
@@ -106,6 +108,31 @@ public class JdbcSalesWorkRecordingRepository implements SalesWorkRecordingRepos
                        version=version+1, updated_at=UTC_TIMESTAMP(6)
                  WHERE tenant_id=? AND id=?
                 """, bin(tenantId), bin(sessionId));
+    }
+
+    @Override
+    public int refreshSessionVerification(UUID tenantId, UUID sessionId, Instant verifiedAt) {
+        return jdbc.update("""
+                UPDATE sales_recording_session session
+                   SET verified_total_duration_ms=(
+                           SELECT COALESCE(SUM(clip.verified_duration_ms), 0)
+                             FROM sales_recording_clip clip
+                            WHERE clip.tenant_id=session.tenant_id
+                              AND clip.recording_session_id=session.id
+                              AND clip.verify_status='VERIFIED'),
+                       evidence_status=CASE
+                           WHEN EXISTS (SELECT 1 FROM sales_recording_clip clip
+                                         WHERE clip.tenant_id=session.tenant_id
+                                           AND clip.recording_session_id=session.id
+                                           AND clip.verify_status<>'VERIFIED') THEN 'PENDING'
+                           WHEN EXISTS (SELECT 1 FROM sales_recording_clip clip
+                                         WHERE clip.tenant_id=session.tenant_id
+                                           AND clip.recording_session_id=session.id
+                                           AND clip.verify_status='VERIFIED') THEN 'TECHNICALLY_VERIFIED'
+                           ELSE 'PENDING' END,
+                       version=version+1, updated_at=?
+                 WHERE session.tenant_id=? AND session.id=?
+                """, timestamp(verifiedAt), bin(tenantId), bin(sessionId));
     }
 
     @Override
@@ -122,7 +149,8 @@ public class JdbcSalesWorkRecordingRepository implements SalesWorkRecordingRepos
     public List<RecordingClipRow> findClips(UUID tenantId, UUID sessionId) {
         return jdbc.query("""
                 SELECT id, recording_session_id, client_clip_id, clip_index, object_key, media_type,
-                       object_size_bytes, sha256, client_duration_ms, upload_status, created_at
+                       object_size_bytes, sha256, client_duration_ms, verified_duration_ms,
+                       upload_status, verify_status, created_at
                   FROM sales_recording_clip
                  WHERE tenant_id=? AND recording_session_id=?
                  ORDER BY clip_index ASC
@@ -172,7 +200,9 @@ public class JdbcSalesWorkRecordingRepository implements SalesWorkRecordingRepos
                 rs.getString("object_key"), rs.getString("media_type"),
                 rs.getLong("object_size_bytes"), rs.getString("sha256"),
                 rs.getObject("client_duration_ms", Long.class),
-                rs.getString("upload_status"), rs.getTimestamp("created_at").toInstant());
+                rs.getObject("verified_duration_ms", Long.class),
+                rs.getString("upload_status"), rs.getString("verify_status"),
+                rs.getTimestamp("created_at").toInstant());
     }
 
     private static Timestamp timestamp(Instant value) {

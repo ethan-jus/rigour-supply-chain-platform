@@ -20,6 +20,8 @@ import com.rigour.sales.application.port.out.SalesWorkQueryRepository;
 import com.rigour.sales.application.port.out.SalesWorkQueryRepository.StoreProjection;
 import com.rigour.sales.application.port.out.SalesWorkQueryRepository.VisitPolicy;
 import com.rigour.sales.application.port.out.SalesWorkVisitRepository;
+import com.rigour.sales.application.port.out.SalesWorkVisitPlanRepository;
+import com.rigour.sales.application.port.out.SalesWorkVisitPlanRepository.VisitPlanRow;
 import com.rigour.sales.application.port.out.SalesWorkVisitRepository.VisitCheckpointSnapshot;
 import com.rigour.sales.application.port.out.SalesWorkVisitRepository.VisitSnapshot;
 import com.rigour.sales.application.port.out.SalesWorkVisitRepository.VisitTargetSnapshot;
@@ -43,6 +45,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -56,8 +59,8 @@ import tools.jackson.databind.ObjectMapper;
 /**
  * 拜访用例：附近门店（高德）、创建拜访（到店）、离店、本人拜访列表/详情。
  *
- * <p>目标双来源：① 我的门店（CRM 归属投影）② 附近 POI（高德）。POI 首次拜访成功后
- * 沉淀进 CRM 投影，第二次起从“我的门店”选择。创建与签退均按固化规则执行距离校验。</p>
+ * <p>目标三来源：① 主管计划（CRM负责门店）② 本人负责门店临时拜访 ③ 附近 POI 临时拜访。
+ * POI 首次拜访成功后沉淀进 CRM 投影，第二次起从“我的门店”选择。创建与签退均按固化规则执行距离校验。</p>
  */
 @Service
 public class SalesWorkVisitService {
@@ -75,9 +78,11 @@ public class SalesWorkVisitService {
     private final SalesWorkContextService contextService;
     private final SalesWorkAttendanceRepository attendanceRepository;
     private final SalesWorkVisitRepository visitRepository;
+    private final SalesWorkVisitPlanRepository planRepository;
     private final SalesWorkQueryRepository queryRepository;
     private final AmapPoiClient amapPoiClient;
     private final JdbcSalesIdempotencyStore idempotencyStore;
+    private final SalesWorkVisitAssessmentService assessmentService;
     private final OutboxStore outboxStore;
     private final AuditSink auditSink;
     private final ObjectMapper objectMapper;
@@ -86,9 +91,11 @@ public class SalesWorkVisitService {
     public SalesWorkVisitService(SalesWorkContextService contextService,
                                  SalesWorkAttendanceRepository attendanceRepository,
                                  SalesWorkVisitRepository visitRepository,
+                                 SalesWorkVisitPlanRepository planRepository,
                                  SalesWorkQueryRepository queryRepository,
                                  AmapPoiClient amapPoiClient,
                                  JdbcSalesIdempotencyStore idempotencyStore,
+                                 SalesWorkVisitAssessmentService assessmentService,
                                  OutboxStore outboxStore,
                                  AuditSink auditSink,
                                  ObjectMapper objectMapper,
@@ -96,9 +103,11 @@ public class SalesWorkVisitService {
         this.contextService = contextService;
         this.attendanceRepository = attendanceRepository;
         this.visitRepository = visitRepository;
+        this.planRepository = planRepository;
         this.queryRepository = queryRepository;
         this.amapPoiClient = amapPoiClient;
         this.idempotencyStore = idempotencyStore;
+        this.assessmentService = assessmentService;
         this.outboxStore = outboxStore;
         this.auditSink = auditSink;
         this.objectMapper = objectMapper;
@@ -140,7 +149,20 @@ public class SalesWorkVisitService {
                 .findActiveVisitPolicy(caller.tenantId(), identity.profile().id(),
                         identity.profile().cityOrgId(), receivedAt)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_POLICY_NOT_FOUND));
-        Target target = resolveTarget(caller, identity, command, policy);
+
+        String key = key(command.idempotencyKey());
+        Reservation reservation = reserve(caller, "VISIT_CREATE", key, command);
+        if (reservation.status() == Status.COMPLETED) {
+            return replayVisit(caller, identity.profile().id(), reservation);
+        }
+        throwIfNotReserved(reservation);
+
+        VisitPlanRow requestedPlan = command.visitPlanId() == null ? null
+                : requireExecutablePlan(caller, identity, command.visitPlanId(), workDay.businessDate(),
+                policy, receivedAt, false);
+        Target target = requestedPlan == null
+                ? resolveTarget(caller, identity, command, policy, receivedAt)
+                : targetFromPlan(requestedPlan);
         validateLocation(command.location());
         double distance = distanceMeters(command.location().longitude(), command.location().latitude(),
                 target.longitude(), target.latitude());
@@ -151,13 +173,6 @@ public class SalesWorkVisitService {
                             + policy.checkInRadiusMeters() + " 米", List.of());
         }
 
-        String key = key(command.idempotencyKey());
-        Reservation reservation = reserve(caller, "VISIT_CREATE", key, command);
-        if (reservation.status() == Status.COMPLETED) {
-            return replayVisit(caller, identity.profile().id(), reservation);
-        }
-        throwIfNotReserved(reservation);
-
         visitRepository.lockSalesProfile(caller.tenantId(), identity.profile().id());
         visitRepository.findActiveVisit(caller.tenantId(), identity.profile().id())
                 .ifPresent(active -> {
@@ -165,10 +180,30 @@ public class SalesWorkVisitService {
                             "请先结束当前进行中的拜访", List.of());
                 });
 
+        if (command.visitPlanId() != null) {
+            requestedPlan = requireExecutablePlan(caller, identity, command.visitPlanId(),
+                    workDay.businessDate(), policy, receivedAt, true);
+            target = targetFromPlan(requestedPlan);
+            distance = distanceMeters(command.location().longitude(), command.location().latitude(),
+                    target.longitude(), target.latitude());
+            if (BigDecimal.valueOf(distance)
+                    .compareTo(BigDecimal.valueOf(policy.checkInRadiusMeters())) > 0) {
+                throw new BusinessException(ErrorCode.SALES_VISIT_OUTSIDE_RADIUS,
+                        "当前位置距离计划门店 " + Math.round(distance) + " 米，超过规则允许的 "
+                                + policy.checkInRadiusMeters() + " 米", List.of());
+            }
+        }
+
         UUID visitId = UUID.randomUUID();
         try {
-            visitRepository.insertVisit(visitId, caller.tenantId(), workDay.id(), identity.profile().id(),
+            visitRepository.insertVisit(visitId, caller.tenantId(), workDay.id(), command.visitPlanId(),
+                    identity.profile().id(),
                     target.targetType(), target.customerId(), target.storeId(), policy.id(), receivedAt);
+            if (command.visitPlanId() != null && planRepository.markInProgress(
+                    caller.tenantId(), identity.profile().id(), command.visitPlanId(), receivedAt) != 1) {
+                throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE,
+                        "计划状态已变化，请刷新今日计划", List.of());
+            }
             visitRepository.insertTargetSnapshot(UUID.randomUUID(), caller.tenantId(), visitId,
                     target.targetType(), target.customerId(), target.customerName(), target.storeId(),
                     target.storeName(), target.storeAddress(), target.longitude(), target.latitude(),
@@ -189,18 +224,26 @@ public class SalesWorkVisitService {
                     "设备事件或拜访目标已被占用", List.of());
         }
 
-        appendOutbox(caller, visitId, "SalesVisitCreated", Map.of(
+        Map<String, Object> createdPayload = new LinkedHashMap<>(Map.of(
                 "visitId", visitId.toString(),
                 "workDayId", workDay.id().toString(),
                 "salesProfileId", identity.profile().id().toString(),
                 "targetType", target.targetType(),
                 "storeId", target.storeId().toString(),
                 "checkedInAt", receivedAt.toString(),
-                "visitPolicyVersionId", policy.id().toString()));
-        appendAudit(caller, "SALES_VISIT_CREATE", visitId, Map.of(
+                "visitPolicyVersionId", policy.id().toString(),
+                "visitSource", command.visitPlanId() == null ? "TEMPORARY" : "MANAGER_PLAN"));
+        Map<String, String> createdAudit = new LinkedHashMap<>(Map.of(
                 "targetType", target.targetType(),
                 "storeId", target.storeId().toString(),
-                "visitPolicyVersionId", policy.id().toString()));
+                "visitPolicyVersionId", policy.id().toString(),
+                "visitSource", command.visitPlanId() == null ? "TEMPORARY" : "MANAGER_PLAN"));
+        if (command.visitPlanId() != null) {
+            createdPayload.put("visitPlanId", command.visitPlanId().toString());
+            createdAudit.put("visitPlanId", command.visitPlanId().toString());
+        }
+        appendOutbox(caller, visitId, "SalesVisitCreated", createdPayload);
+        appendAudit(caller, "SALES_VISIT_CREATE", visitId, createdAudit);
         complete(caller, "VISIT_CREATE", key, visitId.toString());
         return visitView(caller.tenantId(), identity.profile().id(), visitId);
     }
@@ -211,6 +254,14 @@ public class SalesWorkVisitService {
         validateCheckOutCommand(visitId, command);
         Instant receivedAt = clock.instant();
         SalesWorkContextService.SalesIdentity identity = contextService.resolveIdentity(caller, receivedAt);
+
+        String key = key(command.idempotencyKey());
+        Reservation reservation = reserve(caller, "VISIT_CHECK_OUT", key, command);
+        if (reservation.status() == Status.COMPLETED) {
+            return replayVisit(caller, identity.profile().id(), reservation);
+        }
+        throwIfNotReserved(reservation);
+
         VisitSnapshot visit = visitRepository.findVisit(caller.tenantId(), identity.profile().id(), visitId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_NOT_FOUND));
         if (!"CHECKED_IN".equals(visit.status())) {
@@ -237,13 +288,6 @@ public class SalesWorkVisitService {
                             + policy.checkInRadiusMeters() + " 米", List.of());
         }
 
-        String key = key(command.idempotencyKey());
-        Reservation reservation = reserve(caller, "VISIT_CHECK_OUT", key, command);
-        if (reservation.status() == Status.COMPLETED) {
-            return replayVisit(caller, identity.profile().id(), reservation);
-        }
-        throwIfNotReserved(reservation);
-
         if (visitRepository.checkOutVisit(caller.tenantId(), identity.profile().id(), visitId, receivedAt) != 1) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE);
         }
@@ -251,14 +295,25 @@ public class SalesWorkVisitService {
                 deviceEventKey("visit-check-out", key), command.clientOccurredAt(), receivedAt,
                 command.location().longitude(), command.location().latitude(),
                 command.location().accuracyMeters(), BigDecimal.valueOf(distance), "RECEIVED");
+        UUID completedPlanId = planRepository.findPlanIdByVisit(caller.tenantId(), visitId).orElse(null);
+        if (completedPlanId != null
+                && planRepository.markCompletedByVisit(caller.tenantId(), visitId, receivedAt) == 0
+                && !"COMPLETED".equals(planRepository.findStatusByVisit(caller.tenantId(), visitId)
+                .orElse(null))) {
+            throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE,
+                    "拜访已离店但主管计划状态未能完成，请刷新后重试", List.of());
+        }
 
-        appendOutbox(caller, visitId, "SalesVisitCheckedOut", Map.of(
+        Map<String, Object> checkedOutPayload = new LinkedHashMap<>(Map.of(
                 "visitId", visitId.toString(),
                 "workDayId", visit.workDayId().toString(),
                 "checkedOutAt", receivedAt.toString(),
                 "dwellMinutes", dwellMinutes));
+        if (completedPlanId != null) checkedOutPayload.put("visitPlanId", completedPlanId.toString());
+        appendOutbox(caller, visitId, "SalesVisitCheckedOut", checkedOutPayload);
         appendAudit(caller, "SALES_VISIT_CHECK_OUT", visitId, Map.of(
                 "dwellMinutes", Long.toString(dwellMinutes)));
+        assessmentService.assess(caller, visitId);
         complete(caller, "VISIT_CHECK_OUT", key, visitId.toString());
         return visitView(caller.tenantId(), identity.profile().id(), visitId);
     }
@@ -355,6 +410,7 @@ public class SalesWorkVisitService {
                 "contactOutcome", contactOutcome,
                 "hasKp", Boolean.toString(contacted),
                 "intentionLevel", intention == null ? "" : intention));
+        if ("CHECKED_OUT".equals(visit.status())) assessmentService.assess(caller, visitId);
         return visitView(caller.tenantId(), identity.profile().id(), visitId);
     }
 
@@ -411,7 +467,7 @@ public class SalesWorkVisitService {
     }
 
     private Target resolveTarget(CallerIdentity caller, SalesWorkContextService.SalesIdentity identity,
-                                 CreateVisitCommand command, VisitPolicy policy) {
+                                 CreateVisitCommand command, VisitPolicy policy, Instant at) {
         String targetType = required(command.targetType(), "targetType", 24).toUpperCase(Locale.ROOT);
         if ("MY_STORE".equals(targetType)) {
             if (command.storeId() == null) throw targetInvalid("门店ID不能为空");
@@ -419,7 +475,7 @@ public class SalesWorkVisitService {
                     .orElseThrow(() -> targetInvalid("门店不存在或已停用"));
             if (policy.requireAssignedTarget()
                     && !queryRepository.isStoreAssignedToProfile(caller.tenantId(),
-                    identity.profile().id(), store.storeId())) {
+                    identity.profile().id(), store.storeId(), at)) {
                 throw targetInvalid("当前门店不在本人负责范围内");
             }
             if (store.longitude() == null || store.latitude() == null) {
@@ -439,6 +495,36 @@ public class SalesWorkVisitService {
                     bounded(poi.address(), 512), poi.longitude(), poi.latitude());
         }
         throw targetInvalid("targetType仅支持MY_STORE或POI");
+    }
+
+    private VisitPlanRow requireExecutablePlan(
+            CallerIdentity caller, SalesWorkContextService.SalesIdentity identity,
+            UUID planId, LocalDate businessDate, VisitPolicy policy, Instant at, boolean lock) {
+        VisitPlanRow plan = planRepository.findOwnPlan(
+                        caller.tenantId(), identity.profile().id(), planId, lock)
+                .orElseThrow(() -> targetInvalid("今日拜访计划不存在"));
+        if (!"PLANNED".equals(plan.status())) {
+            throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE,
+                    "该计划已开始、完成或取消", List.of());
+        }
+        if (!businessDate.equals(plan.plannedDate())) {
+            throw targetInvalid("该计划不属于当前工作日");
+        }
+        if (!"MY_STORE".equals(plan.targetType()) || plan.storeId() == null
+                || plan.longitude() == null || plan.latitude() == null
+                || !StringUtils.hasText(plan.storeName())) {
+            throw targetInvalid("计划门店资料不完整，请联系主管调整计划");
+        }
+        if (policy.requireAssignedTarget() && !queryRepository.isStoreAssignedToProfile(
+                caller.tenantId(), identity.profile().id(), plan.storeId(), at)) {
+            throw targetInvalid("计划门店已不在本人负责范围内，请联系主管调整计划");
+        }
+        return plan;
+    }
+
+    private static Target targetFromPlan(VisitPlanRow plan) {
+        return new Target("MY_STORE", plan.customerId(), plan.storeId(), plan.customerName(),
+                plan.storeName(), plan.storeAddress(), plan.longitude(), plan.latitude());
     }
 
     private static UUID stablePoiStoreId(String poiId) {
@@ -510,7 +596,7 @@ public class SalesWorkVisitService {
         if (command == null) throw badRequest("拜访请求不能为空");
         required(command.idempotencyKey(), "idempotencyKey", 128);
         if (command.workDayId() == null) throw badRequest("workDayId不能为空");
-        required(command.targetType(), "targetType", 24);
+        if (command.visitPlanId() == null) required(command.targetType(), "targetType", 24);
         if (command.clientOccurredAt() == null) throw badRequest("clientOccurredAt不能为空");
         required(command.deviceEventId(), "deviceEventId", 128);
     }

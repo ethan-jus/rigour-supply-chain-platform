@@ -4,8 +4,12 @@ import com.rigour.sales.application.port.out.AmapPoiClient;
 import com.rigour.sales.application.port.out.AmapPoiException;
 import com.rigour.sales.infrastructure.config.AmapProperties;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +31,7 @@ public class RestAmapPoiClient implements AmapPoiClient {
     private final RestClient restClient;
     private final AmapProperties properties;
     private final ObjectMapper objectMapper;
+    private final ConcurrentMap<CacheKey, CacheEntry> nearbyCache = new ConcurrentHashMap<>();
 
     @Autowired
     public RestAmapPoiClient(RestClient.Builder builder, AmapProperties properties, ObjectMapper objectMapper) {
@@ -52,6 +57,13 @@ public class RestAmapPoiClient implements AmapPoiClient {
         if (!StringUtils.hasText(properties.getWebKey())) {
             throw new AmapPoiException("高德 Web 服务 key 未配置");
         }
+        CacheKey cacheKey = cacheKey(keyword, longitude, latitude, radiusMeters, page, pageSize);
+        long now = System.nanoTime();
+        CacheEntry cached = nearbyCache.get(cacheKey);
+        if (cached != null && cached.expiresAtNanos() > now) {
+            return cached.page();
+        }
+        if (cached != null) nearbyCache.remove(cacheKey, cached);
         long startedAt = System.nanoTime();
         try {
             String body = restClient.get().uri(uriBuilder -> {
@@ -82,7 +94,9 @@ public class RestAmapPoiClient implements AmapPoiClient {
             long total = parseCount(response.count());
             log.info("高德附近门店查询成功 endpoint=/place/around radiusMeters={} items={} elapsedMs={}",
                     radiusMeters, pois.size(), (System.nanoTime() - startedAt) / 1_000_000);
-            return new NearbyPoiPage(pois, page, pageSize, total);
+            NearbyPoiPage result = new NearbyPoiPage(pois, page, pageSize, total);
+            cache(cacheKey, result, now);
+            return result;
         } catch (RestClientResponseException exception) {
             log.warn("高德附近门店HTTP失败 endpoint=/place/around httpStatus={}",
                     exception.getStatusCode().value());
@@ -133,6 +147,29 @@ public class RestAmapPoiClient implements AmapPoiClient {
         }
     }
 
+    private void cache(CacheKey key, NearbyPoiPage page, long nowNanos) {
+        Duration ttl = properties.getNearbyCacheTtl();
+        int maxEntries = properties.getNearbyCacheMaxEntries();
+        if (ttl == null || ttl.isZero() || ttl.isNegative() || maxEntries <= 0) return;
+        nearbyCache.entrySet().removeIf(entry -> entry.getValue().expiresAtNanos() <= nowNanos);
+        if (nearbyCache.size() >= maxEntries) {
+            nearbyCache.keySet().stream().findFirst().ifPresent(nearbyCache::remove);
+        }
+        nearbyCache.put(key, new CacheEntry(page, nowNanos + ttl.toNanos()));
+    }
+
+    private static CacheKey cacheKey(String keyword, BigDecimal longitude, BigDecimal latitude,
+                                     int radiusMeters, int page, int pageSize) {
+        return new CacheKey(normalizeCoordinate(longitude), normalizeCoordinate(latitude),
+                StringUtils.hasText(keyword) ? keyword.trim().toLowerCase(Locale.ROOT) : "",
+                radiusMeters, page, pageSize);
+    }
+
+    private static BigDecimal normalizeCoordinate(BigDecimal value) {
+        // 约11米网格吸收手机定位抖动；门店排序仍由首次真实坐标请求高德计算。
+        return value.setScale(4, RoundingMode.HALF_UP);
+    }
+
     private static int toMillis(Duration duration) {
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, duration.toMillis()));
     }
@@ -142,5 +179,12 @@ public class RestAmapPoiClient implements AmapPoiClient {
 
     private record AmapPoi(String id, String name, String type, String typecode,
                            String address, String location, String distance) {
+    }
+
+    private record CacheKey(BigDecimal longitude, BigDecimal latitude, String keyword,
+                            int radiusMeters, int page, int pageSize) {
+    }
+
+    private record CacheEntry(NearbyPoiPage page, long expiresAtNanos) {
     }
 }

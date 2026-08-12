@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.DiscardRecordingClipCommand;
 import com.rigour.sales.application.port.out.SalesWorkQueryRepository;
+import com.rigour.sales.application.port.out.RecordingMediaVerifier;
 import com.rigour.sales.application.port.out.SalesWorkQueryRepository.IdentityProjection;
 import com.rigour.sales.application.port.out.SalesWorkQueryRepository.SalesProfile;
 import com.rigour.sales.application.port.out.SalesWorkRecordingRepository;
@@ -56,6 +57,8 @@ class SalesWorkRecordingServiceTest {
         SalesWorkVisitRepository visitRepository = mock(SalesWorkVisitRepository.class);
         SalesWorkQueryRepository queryRepository = mock(SalesWorkQueryRepository.class);
         SalesWorkContextService contextService = mock(SalesWorkContextService.class);
+        RecordingMediaVerifier mediaVerifier = mock(RecordingMediaVerifier.class);
+        SalesWorkVisitAssessmentService assessmentService = mock(SalesWorkVisitAssessmentService.class);
         fileStorage = mock(FileStorage.class);
         auditSink = mock(AuditSink.class);
         SalesRecordingProperties properties = new SalesRecordingProperties();
@@ -82,7 +85,7 @@ class SalesWorkRecordingServiceTest {
                         null, null, null, null, null, null, null, null, null)));
 
         service = new SalesWorkRecordingService(recordingRepository, visitRepository, queryRepository,
-                contextService, fileStorage, properties, auditSink,
+                contextService, mediaVerifier, assessmentService, fileStorage, properties, auditSink,
                 Clock.fixed(now, ZoneOffset.UTC));
     }
 

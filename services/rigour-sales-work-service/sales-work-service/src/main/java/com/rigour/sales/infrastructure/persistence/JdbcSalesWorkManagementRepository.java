@@ -216,9 +216,28 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                                   WHERE session.tenant_id=current_visit.tenant_id
                                     AND session.visit_id=current_visit.id
                                     AND clip.upload_status='RECEIVED'), 0) AS uploaded_recording_seconds,
-                       policy.minimum_dwell_minutes, policy.minimum_recording_seconds,
+                       COALESCE((SELECT FLOOR(session.verified_total_duration_ms / 1000)
+                                   FROM sales_recording_session session
+                                  WHERE session.tenant_id=current_visit.tenant_id
+                                    AND session.visit_id=current_visit.id), 0)
+                           AS verified_recording_seconds,
+                       policy.minimum_dwell_minutes,
+                       CASE WHEN policy.recording_enabled=1 THEN policy.minimum_recording_seconds ELSE 0 END
+                           AS minimum_recording_seconds,
+                       (SELECT COUNT(*) FROM sales_visit_evidence evidence
+                         WHERE evidence.tenant_id=current_visit.tenant_id
+                           AND evidence.visit_id=current_visit.id
+                           AND evidence.evidence_type='PHOTO' AND evidence.evidence_role='STOREFRONT'
+                           AND evidence.evidence_status='TECHNICALLY_VERIFIED')
+                           AS verified_storefront_photo_count,
+                       GREATEST(policy.required_photo_count, 1) AS required_storefront_photo_count,
                        current_visit.contact_outcome, current_visit.kp_name,
                        current_visit.intention_level, current_visit.result_note,
+                       (SELECT assessment.review_note FROM sales_visit_review assessment
+                         WHERE assessment.tenant_id=current_visit.tenant_id
+                           AND assessment.visit_id=current_visit.id
+                           AND assessment.review_type='AUTOMATIC_ASSESSMENT'
+                         ORDER BY assessment.assigned_at DESC LIMIT 1) AS anomaly_codes,
                        CASE WHEN EXISTS (SELECT 1 FROM sales_visit previous
                                           WHERE previous.tenant_id=current_visit.tenant_id
                                             AND previous.sales_profile_id=current_visit.sales_profile_id
@@ -245,9 +264,12 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                         rs.getString("store_name"), instant(rs.getTimestamp("checked_in_at")),
                         instant(rs.getTimestamp("checked_out_at")), rs.getInt("dwell_minutes"),
                         rs.getInt("minimum_dwell_minutes"), rs.getInt("uploaded_recording_seconds"),
-                        rs.getInt("minimum_recording_seconds"), rs.getString("contact_outcome"),
+                        rs.getInt("verified_recording_seconds"), rs.getInt("minimum_recording_seconds"),
+                        rs.getInt("verified_storefront_photo_count"),
+                        rs.getInt("required_storefront_photo_count"), rs.getString("contact_outcome"),
                         rs.getString("kp_name"), rs.getString("intention_level"), rs.getString("result_note"),
-                        rs.getString("visit_type")), bin(tenantId), Date.valueOf(from), Date.valueOf(to),
+                        rs.getString("visit_type"), codes(rs.getString("anomaly_codes"))),
+                bin(tenantId), Date.valueOf(from), Date.valueOf(to),
                 limit, offset);
     }
 
@@ -304,8 +326,78 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                 reasonCode, reviewNote, timestamp(decidedAt), timestamp(decidedAt));
     }
 
+    @Override
+    public java.util.Optional<VisitAssessmentRow> findVisitAssessment(UUID tenantId, UUID visitId) {
+        return jdbc.query("""
+                SELECT visit.id, visit.checked_in_at, visit.checked_out_at, visit.finalized_at,
+                       visit.contact_outcome, visit.result_submitted_at,
+                       policy.minimum_dwell_minutes, policy.required_photo_count,
+                       (SELECT COUNT(*) FROM sales_visit_evidence evidence
+                         WHERE evidence.tenant_id=visit.tenant_id AND evidence.visit_id=visit.id
+                           AND evidence.evidence_type='PHOTO' AND evidence.evidence_role='STOREFRONT'
+                           AND evidence.evidence_status='TECHNICALLY_VERIFIED')
+                           AS verified_storefront_photo_count,
+                       policy.recording_enabled, policy.minimum_recording_seconds,
+                       recording.verified_total_duration_ms,
+                       recording.evidence_status AS recording_evidence_status,
+                       policy.ai_asr_enabled, policy.ai_relevance_enabled, policy.ai_duplicate_enabled,
+                       policy.ai_auto_confirm_threshold, ai.recommendation AS ai_recommendation,
+                       ai.confidence_score AS ai_confidence_score,
+                       COALESCE(ai.adopted, 0) AS ai_result_adopted
+                  FROM sales_visit visit
+                  JOIN sales_visit_policy_version policy
+                    ON policy.tenant_id=visit.tenant_id AND policy.id=visit.visit_policy_version_id
+                  LEFT JOIN sales_recording_session recording
+                    ON recording.tenant_id=visit.tenant_id AND recording.visit_id=visit.id
+                  LEFT JOIN sales_ai_result_snapshot ai
+                    ON ai.id=(SELECT candidate.id FROM sales_ai_result_snapshot candidate
+                               WHERE candidate.tenant_id=visit.tenant_id
+                                 AND candidate.visit_id=visit.id AND candidate.adopted=1
+                               ORDER BY candidate.result_version DESC LIMIT 1)
+                 WHERE visit.tenant_id=? AND visit.id=?
+                 LIMIT 1
+                """, (rs, row) -> new VisitAssessmentRow(
+                        uuid(rs.getBytes("id")), instant(rs.getTimestamp("checked_in_at")),
+                        instant(rs.getTimestamp("checked_out_at")), instant(rs.getTimestamp("finalized_at")),
+                        rs.getString("contact_outcome"), instant(rs.getTimestamp("result_submitted_at")),
+                        rs.getInt("minimum_dwell_minutes"), rs.getInt("required_photo_count"),
+                        rs.getLong("verified_storefront_photo_count"), rs.getBoolean("recording_enabled"),
+                        rs.getInt("minimum_recording_seconds"),
+                        rs.getObject("verified_total_duration_ms", Long.class),
+                        rs.getString("recording_evidence_status"), rs.getBoolean("ai_asr_enabled"),
+                        rs.getBoolean("ai_relevance_enabled"), rs.getBoolean("ai_duplicate_enabled"),
+                        rs.getBigDecimal("ai_auto_confirm_threshold"), rs.getString("ai_recommendation"),
+                        rs.getBigDecimal("ai_confidence_score"), rs.getBoolean("ai_result_adopted")),
+                bin(tenantId), bin(visitId)).stream().findFirst();
+    }
+
+    @Override
+    public void upsertAutomaticAssessment(
+            UUID id, UUID tenantId, UUID visitId, String reviewStatus, String decision,
+            String reasonCode, String assessmentNote, Instant assessedAt) {
+        jdbc.update("""
+                INSERT INTO sales_visit_review
+                    (id, tenant_id, visit_id, review_type, review_status, reviewer_id,
+                     decision, reason_code, review_note, assigned_at, decided_at, version)
+                VALUES (?, ?, ?, 'AUTOMATIC_ASSESSMENT', ?, NULL, ?, ?, ?, ?, ?, 0)
+                ON DUPLICATE KEY UPDATE
+                    review_status=VALUES(review_status), decision=VALUES(decision),
+                    reason_code=VALUES(reason_code), review_note=VALUES(review_note),
+                    assigned_at=VALUES(assigned_at), decided_at=VALUES(decided_at),
+                    version=version+1
+                """, bin(id), bin(tenantId), bin(visitId), reviewStatus, decision,
+                reasonCode, assessmentNote, timestamp(assessedAt),
+                "DECIDED".equals(reviewStatus) ? timestamp(assessedAt) : null);
+    }
+
     private static long value(Long value) {
         return value == null ? 0L : value;
+    }
+
+    private static List<String> codes(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        return java.util.Arrays.stream(value.split(","))
+                .map(String::trim).filter(code -> !code.isEmpty()).distinct().toList();
     }
 
     private static byte[] bin(UUID value) {

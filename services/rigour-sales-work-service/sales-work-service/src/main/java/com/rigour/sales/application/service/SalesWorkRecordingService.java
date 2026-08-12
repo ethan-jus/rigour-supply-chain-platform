@@ -5,6 +5,7 @@ import com.rigour.sales.api.v1.model.SalesWorkApiModels.RecordingSessionView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.DiscardRecordingClipCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.DiscardRecordingClipView;
 import com.rigour.sales.application.port.out.SalesWorkRecordingRepository;
+import com.rigour.sales.application.port.out.RecordingMediaVerifier;
 import com.rigour.sales.application.port.out.SalesWorkRecordingRepository.RecordingClipRow;
 import com.rigour.sales.application.port.out.SalesWorkRecordingRepository.RecordingDiscardRow;
 import com.rigour.sales.application.port.out.SalesWorkRecordingRepository.RecordingSessionRow;
@@ -42,7 +43,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 /**
  * 拜访录音采集用例：片段字节走 FileStorage，会话/片段事实落 Sales Work 库。
- * 录音由销售在拜访中主动开启；上传只做接收登记，不做 AI 判定。
+ * 录音由销售在拜访中主动开启；ADTS AAC由服务端解析真实时长，其他格式等待后续验证，不做客户端自证。
  */
 @Service
 public class SalesWorkRecordingService {
@@ -64,6 +65,8 @@ public class SalesWorkRecordingService {
     private final SalesWorkVisitRepository visitRepository;
     private final SalesWorkQueryRepository queryRepository;
     private final SalesWorkContextService contextService;
+    private final RecordingMediaVerifier mediaVerifier;
+    private final SalesWorkVisitAssessmentService assessmentService;
     private final FileStorage fileStorage;
     private final SalesRecordingProperties properties;
     private final AuditSink auditSink;
@@ -73,6 +76,8 @@ public class SalesWorkRecordingService {
                                      SalesWorkVisitRepository visitRepository,
                                      SalesWorkQueryRepository queryRepository,
                                      SalesWorkContextService contextService,
+                                     RecordingMediaVerifier mediaVerifier,
+                                     SalesWorkVisitAssessmentService assessmentService,
                                      FileStorage fileStorage,
                                      SalesRecordingProperties properties,
                                      AuditSink auditSink,
@@ -81,6 +86,8 @@ public class SalesWorkRecordingService {
         this.visitRepository = visitRepository;
         this.queryRepository = queryRepository;
         this.contextService = contextService;
+        this.mediaVerifier = mediaVerifier;
+        this.assessmentService = assessmentService;
         this.fileStorage = fileStorage;
         this.properties = properties;
         this.auditSink = auditSink;
@@ -126,6 +133,16 @@ public class SalesWorkRecordingService {
         if (!AUDIO_EXTENSIONS.containsKey(contentType)) {
             throw invalid("不支持的录音媒体类型: " + contentType);
         }
+        var verification = mediaVerifier.verify(contentType, bytes);
+        if ("INVALID".equals(verification.status())) {
+            throw invalid("录音文件不是完整有效的AAC音频");
+        }
+        Long verifiedDurationMs = verification.verifiedDurationMs();
+        String verifyStatus = "VERIFIED".equals(verification.status()) ? "VERIFIED" : "PENDING";
+        if ("VERIFIED".equals(verifyStatus)
+                && Math.abs(verifiedDurationMs - durationMs) > durationVerificationTolerance(durationMs)) {
+            verifyStatus = "DURATION_MISMATCH";
+        }
         UUID sessionId = recordingRepository.ensureSession(UUID.randomUUID(), caller.tenantId(),
                 visitId, receivedAt);
         recordingRepository.lockSession(caller.tenantId(), sessionId);
@@ -152,11 +169,15 @@ public class SalesWorkRecordingService {
 
         recordingRepository.insertClip(clipId, caller.tenantId(), sessionId, normalizedClientClipId,
                 clipIndex, objectKey, contentType, bytes.length, sha256, durationMs,
+                verifiedDurationMs, verifyStatus,
                 recordedFrom, recordedTo, receivedAt);
         recordingRepository.incrementSessionClipCount(caller.tenantId(), sessionId);
+        recordingRepository.refreshSessionVerification(caller.tenantId(), sessionId, receivedAt);
         appendAudit(caller, "SALES_RECORDING_CLIP_UPLOADED", visitId, Map.of(
                 "clipIndex", Integer.toString(clipIndex),
-                "objectSizeBytes", Long.toString(bytes.length)));
+                "objectSizeBytes", Long.toString(bytes.length),
+                "verifyStatus", verifyStatus));
+        if ("CHECKED_OUT".equals(visit.status())) assessmentService.assess(caller, visitId);
         return new RecordingClipView(clipId, sessionId, normalizedClientClipId,
                 clipIndex, bytes.length, durationMs,
                 "RECEIVED", receivedAt);
@@ -171,13 +192,14 @@ public class SalesWorkRecordingService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_POLICY_NOT_FOUND));
         return recordingRepository.findSession(caller.tenantId(), visitId)
                 .map(session -> new RecordingSessionView(session.id(), visitId, session.status(),
+                        session.evidenceStatus(),
                         session.clipCount(), recordingRepository.uploadedTotalDurationMs(
                                 caller.tenantId(), session.id()), session.verifiedTotalDurationMs(),
                         policy.recordingEnabled(), policy.minimumRecordingSeconds(),
                         properties.getMinimumClipSeconds(),
                         recordingRepository.findClips(caller.tenantId(), session.id()).stream()
                                 .map(SalesWorkRecordingService::clipView).toList()))
-                .orElseGet(() -> new RecordingSessionView(null, visitId, "NOT_STARTED", 0,
+                .orElseGet(() -> new RecordingSessionView(null, visitId, "NOT_STARTED", "PENDING", 0,
                         0L, 0L, policy.recordingEnabled(), policy.minimumRecordingSeconds(),
                         properties.getMinimumClipSeconds(), List.of()));
     }
@@ -284,6 +306,10 @@ public class SalesWorkRecordingService {
             throw new IllegalStateException("sales.recording.minimum-clip-seconds必须在1到600之间");
         }
         return properties.getMinimumClipSeconds() * 1_000L;
+    }
+
+    private static long durationVerificationTolerance(long clientDurationMs) {
+        return Math.max(DURATION_CLOCK_TOLERANCE_MS, clientDurationMs / 10L);
     }
 
     private byte[] readBytes(MultipartFile file) {

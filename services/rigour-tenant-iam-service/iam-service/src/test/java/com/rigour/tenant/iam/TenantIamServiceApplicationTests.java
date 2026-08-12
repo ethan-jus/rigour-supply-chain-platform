@@ -143,14 +143,21 @@ class TenantIamServiceApplicationTests {
 
     @Test
     void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 32);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 38);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1 AND ("
+                + "(version='33' AND script='V33__iam_erp_product_master_data_permissions.sql') OR "
+                + "(version='34' AND script='V34__iam_align_erp_product_center_menu.sql') OR "
+                + "(version='35' AND script='V35__iam_backfill_erp_product_center_menu_config.sql') OR "
+                + "(version='36' AND script='V36__iam_erp_supply_data_pages_and_permissions.sql') OR "
+                + "(version='39' AND script='V39__iam_sales_visit_photo_evidence_capabilities.sql') OR "
+                + "(version='40' AND script='V40__iam_sales_visit_plan_capabilities.sql'))", 6);
         assertCount("SELECT COUNT(*) FROM information_schema.tables "
                 + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 36);
         assertCount("SELECT COUNT(*) FROM iam_application", 6);
-        assertCount("SELECT COUNT(*) FROM iam_resource", 280);
-        assertCount("SELECT COUNT(permission_code) FROM iam_resource", 58);
-        assertCount("SELECT COUNT(*) FROM iam_package_resource", 253);
-        assertCount("SELECT COUNT(*) FROM iam_resource_ui", 216);
+        assertCount("SELECT COUNT(*) FROM iam_resource", 293);
+        assertCount("SELECT COUNT(permission_code) FROM iam_resource", 68);
+        assertCount("SELECT COUNT(*) FROM iam_package_resource", 266);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui", 219);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='PLATFORM_ADMIN' AND target_uri='/platform-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='SYSTEM_ADMIN' AND target_uri='/system-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application "
@@ -167,6 +174,16 @@ class TenantIamServiceApplicationTests {
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000058')) OR id BETWEEN "
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000121') AND "
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000166'))", 48);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND permission_code IN ("
+                + "'sales:evidence:own:read','sales:evidence:own:write','sales:evidence:sensitive:read')", 3);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND permission_code IN ("
+                + "'sales:visit-plan:own:read','sales:visit-plan:read','sales:visit-plan:write')", 3);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND permission_code IN ("
+                + "'erp:product:read','erp:product:write','erp:supply:read','erp:supply:write')", 4);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND resource_code IN ("
+                + "'SUPPLY_CHAIN.PAGE.ERP_MASTER_DATA_TAGS',"
+                + "'SUPPLY_CHAIN.MENU.ERP_MASTER_DATA_ATTRIBUTES',"
+                + "'SUPPLY_CHAIN.PAGE.ERP_MASTER_DATA_SYNC')", 3);
         assertCount("SELECT COUNT(*) FROM iam_resource WHERE parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000049') "
                 + "AND display_name IN ('供应链首页','ERP','CRM','订单管理','销售管理','城市运营','BI 数据看板',"
                 + "'人事与绩效','渠道代理','外部集成与数据同步','业务设置')", 11);
@@ -206,7 +223,7 @@ class TenantIamServiceApplicationTests {
                 + "AND display_name='对账差异'", 1);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE resource_id BETWEEN "
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000167') AND "
-                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000267') AND visible=1", 101);
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000267') AND visible=1", 84);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.integration.%'", 10);
         org.assertj.core.api.Assertions.assertThat(applicationMapper.selectById(
                         UUID.fromString("019facf1-0000-7000-8000-000000000003")))
@@ -995,7 +1012,7 @@ class TenantIamServiceApplicationTests {
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM iam_package_resource
                  WHERE package_version_id=UUID_TO_BIN('019facf3-0000-7000-8000-000000000002')
-                """, Integer.class)).isEqualTo(253);
+                """, Integer.class)).isEqualTo(266);
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM iam_package_resource package_resource
                  JOIN iam_resource resource_record ON resource_record.id=package_resource.resource_id

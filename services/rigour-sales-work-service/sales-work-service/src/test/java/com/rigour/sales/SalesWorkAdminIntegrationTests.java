@@ -117,7 +117,7 @@ class SalesWorkAdminIntegrationTests {
         assertThat(fieldPolicy.versionNo()).isEqualTo(1);
 
         var visitPolicy = adminService.upsertVisitPolicy(new VisitPolicyCommand(
-                "VISIT-ADMIN", "默认拜访规则", false, true, 500, 5, 0,
+                "VISIT-ADMIN", "默认拜访规则", false, true, 500, 5, 1,
                 true, 600, 30, true, true, true, null, "ALL", null, true));
         assertThat(visitPolicy.publishStatus()).isEqualTo("PUBLISHED");
 
@@ -169,7 +169,7 @@ class SalesWorkAdminIntegrationTests {
     @Test
     void enabledRecordingPolicyRejectsZeroMinimumDuration() {
         assertThatThrownBy(() -> adminService.upsertVisitPolicy(new VisitPolicyCommand(
-                "VISIT-ZERO-RECORDING", "错误录音规则", false, true, 500, 5, 0,
+                "VISIT-ZERO-RECORDING", "错误录音规则", false, true, 500, 5, 1,
                 true, 0, 30, true, true, true, null, "ALL", null, true)))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SALES_ADMIN_INVALID));

@@ -45,16 +45,17 @@ public final class SalesWorkContextService {
         CallerIdentity caller = requireTenantCaller();
         AuthorizationContext.requirePermission("sales:visit-target:read");
         validatePage(page, pageSize);
-        SalesIdentity identity = resolveIdentity(caller, clock.instant());
+        Instant now = clock.instant();
+        SalesIdentity identity = resolveIdentity(caller, now);
         int offset = Math.multiplyExact(page - 1, pageSize);
-        long total = repository.countAssignedStoreTargets(caller.tenantId(), identity.profile.id(), query);
+        long total = repository.countAssignedStoreTargets(caller.tenantId(), identity.profile.id(), query, now);
         var targets = repository.findAssignedStoreTargets(caller.tenantId(), identity.profile.id(), query,
-                pageSize, offset).stream().map(SalesWorkContextService::targetView).toList();
+                pageSize, offset, now).stream().map(SalesWorkContextService::targetView).toList();
         return new VisitTargetPageView(targets, page, pageSize, total);
     }
 
     SalesIdentity resolveIdentity(CallerIdentity caller, Instant now) {
-        IdentityProjection projection = repository.findIdentityProjection(caller.tenantId(), caller.userId())
+        IdentityProjection projection = repository.findIdentityProjection(caller.tenantId(), caller.userId(), now)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_IDENTITY_UNBOUND));
         SalesProfile profile = repository.findActiveSalesProfile(caller.tenantId(), projection.employeeId(), now)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_PROFILE_INACTIVE));

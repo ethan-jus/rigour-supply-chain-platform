@@ -9,7 +9,11 @@ import org.springframework.web.client.RestClient;
 
 /** Sales Work 基础设施最小装配；时钟作为依赖注入以便规则和用例可测试。 */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties({AmapProperties.class, SalesRecordingProperties.class})
+@EnableConfigurationProperties({
+        AmapProperties.class,
+        SalesRecordingProperties.class,
+        SalesEvidenceProperties.class
+})
 public class SalesWorkInfrastructureConfiguration {
 
     @Bean

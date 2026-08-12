@@ -3,6 +3,7 @@ package com.rigour.sales.api;
 import com.rigour.sales.api.v1.SalesWorkManagementApi;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ManagementDashboardView;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ManagementRecordingSessionView;
+import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ManagementVisitEvidenceView;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ReviewVisitCommand;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ReviewVisitResultView;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.VisitReviewQueueView;
@@ -76,6 +77,27 @@ public final class SalesWorkManagementController {
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         "inline; filename=\"recording-" + clipId + "\"")
+                .body(bytes);
+    }
+
+    @GetMapping(SalesWorkManagementApi.REVIEW_EVIDENCE_PATH)
+    public ApiResponse<ManagementVisitEvidenceView> reviewEvidence(
+            @PathVariable("visitId") UUID visitId) {
+        return ApiResponse.success(service.reviewEvidence(visitId));
+    }
+
+    @GetMapping(SalesWorkManagementApi.REVIEW_EVIDENCE_PHOTO_PATH)
+    public ResponseEntity<byte[]> reviewEvidencePhoto(
+            @PathVariable("visitId") UUID visitId,
+            @PathVariable("evidenceId") UUID evidenceId) {
+        var content = service.reviewEvidencePhoto(visitId, evidenceId);
+        byte[] bytes = content.bytes();
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(content.mediaType()))
+                .contentLength(bytes.length)
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "inline; filename=\"storefront-" + evidenceId + "\"")
                 .body(bytes);
     }
 

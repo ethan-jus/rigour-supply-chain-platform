@@ -115,13 +115,27 @@ public final class SalesWorkApiModels {
         }
     }
 
+    /** 主管计划在销售本人侧的只读视图；临时拜访不生成计划记录。 */
+    public record VisitPlanView(
+            UUID planId, LocalDate plannedDate, String targetType,
+            UUID customerId, UUID storeId, String customerName, String storeName,
+            String storeAddress, BigDecimal longitude, BigDecimal latitude,
+            String objective, String status, UUID visitId, long version) {
+    }
+
+    public record VisitPlanListView(LocalDate date, List<VisitPlanView> items) {
+        public VisitPlanListView {
+            items = items == null ? List.of() : List.copyOf(items);
+        }
+    }
+
     public record PoiTargetCommand(
             String poiId, String name, String address,
             BigDecimal longitude, BigDecimal latitude, BigDecimal distanceMeters) {
     }
 
     public record CreateVisitCommand(
-            String idempotencyKey, UUID workDayId, String targetType, UUID storeId,
+            String idempotencyKey, UUID workDayId, UUID visitPlanId, String targetType, UUID storeId,
             PoiTargetCommand poi, LocationEvidence location,
             Instant clientOccurredAt, String deviceEventId) {
     }
@@ -177,12 +191,29 @@ public final class SalesWorkApiModels {
     }
 
     public record RecordingSessionView(
-            UUID sessionId, UUID visitId, String status, int clipCount,
+            UUID sessionId, UUID visitId, String status, String evidenceStatus, int clipCount,
             long uploadedTotalDurationMs, long verifiedTotalDurationMs,
             boolean recordingEnabled, int minimumRecordingSeconds, int minimumClipSeconds,
             List<RecordingClipView> clips) {
         public RecordingSessionView {
             clips = clips == null ? List.of() : List.copyOf(clips);
+        }
+    }
+
+    /** 现场门头照的技术证据；图片内容语义仍由后续AI或主管复核，不由客户端自证。 */
+    public record VisitPhotoEvidenceView(
+            UUID evidenceId, UUID visitId, String clientEvidenceId,
+            String evidenceRole, String captureSource, Instant capturedAt,
+            String mediaType, long objectSizeBytes, String contentHash,
+            BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
+            BigDecimal distanceToTargetMeters, String evidenceStatus, Instant serverReceivedAt) {
+    }
+
+    public record VisitEvidenceSummaryView(
+            UUID visitId, int requiredStorefrontPhotoCount, int storefrontPhotoCount,
+            boolean storefrontPhotoSatisfied, List<VisitPhotoEvidenceView> photos) {
+        public VisitEvidenceSummaryView {
+            photos = photos == null ? List.of() : List.copyOf(photos);
         }
     }
 

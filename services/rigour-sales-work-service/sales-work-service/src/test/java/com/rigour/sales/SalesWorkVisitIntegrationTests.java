@@ -14,21 +14,30 @@ import com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitResultCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.WorkDayView;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ReviewVisitCommand;
+import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.CancelVisitPlanCommand;
+import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.UpsertVisitPlanCommand;
 import com.rigour.sales.application.service.SalesWorkAttendanceService;
+import com.rigour.sales.application.service.SalesWorkEvidenceService;
 import com.rigour.sales.application.service.SalesWorkRecordingService;
 import com.rigour.sales.application.service.SalesWorkManagementService;
 import com.rigour.sales.application.service.SalesWorkVisitService;
+import com.rigour.sales.application.service.SalesWorkVisitPlanService;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
+import java.awt.Color;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.Set;
 import java.util.UUID;
+import javax.imageio.ImageIO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -93,7 +102,13 @@ class SalesWorkVisitIntegrationTests {
     private SalesWorkRecordingService recordingService;
 
     @Autowired
+    private SalesWorkEvidenceService evidenceService;
+
+    @Autowired
     private SalesWorkManagementService managementService;
+
+    @Autowired
+    private SalesWorkVisitPlanService visitPlanService;
 
     @BeforeEach
     void seed() {
@@ -148,21 +163,21 @@ class SalesWorkVisitIntegrationTests {
 
         Instant visitReceivedAt = Instant.now();
         VisitView myStore = visitService.createVisit(new CreateVisitCommand("visit-create-my-store-1",
-                workDay.id(), "MY_STORE", storeId, null, location("120.1000000", "30.2000000"),
+                workDay.id(), null, "MY_STORE", storeId, null, location("120.1000000", "30.2000000"),
                 visitReceivedAt, "device-visit-check-in-1"));
         assertThat(myStore.status()).isEqualTo("CHECKED_IN");
         assertThat(myStore.targetSnapshot().storeId()).isEqualTo(storeId);
         assertThat(myStore.targetSnapshot().customerName()).isEqualTo("测试客户");
 
         VisitView replayed = visitService.createVisit(new CreateVisitCommand("visit-create-my-store-1",
-                workDay.id(), "MY_STORE", storeId, null, location("120.1000000", "30.2000000"),
+                workDay.id(), null, "MY_STORE", storeId, null, location("120.1000000", "30.2000000"),
                 visitReceivedAt, "device-visit-check-in-1"));
         assertThat(replayed.id()).isEqualTo(myStore.id());
 
         VisitView outside = null;
         try {
             outside = visitService.createVisit(new CreateVisitCommand("visit-create-my-store-outside",
-                    workDay.id(), "MY_STORE", storeId, null,
+                    workDay.id(), null, "MY_STORE", storeId, null,
                     location("121.5000000", "31.5000000"), Instant.now(), "device-visit-outside-1"));
         } catch (BusinessException error) {
             assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SALES_VISIT_OUTSIDE_RADIUS);
@@ -172,7 +187,7 @@ class SalesWorkVisitIntegrationTests {
         PoiTargetCommand poi = new PoiTargetCommand("TESTPOI-0001", "附近测试便利店", "科技园路88号",
                 new BigDecimal("120.1100000"), new BigDecimal("30.2100000"), new BigDecimal("80"));
         assertThatThrownBy(() -> visitService.createVisit(new CreateVisitCommand("visit-create-poi-overlap",
-                workDay.id(), "POI", null, poi, location("120.1100000", "30.2100000"),
+                workDay.id(), null, "POI", null, poi, location("120.1100000", "30.2100000"),
                 Instant.now(), "device-visit-overlap")))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SALES_VISIT_INVALID_STATE));
@@ -189,7 +204,7 @@ class SalesWorkVisitIntegrationTests {
                         location("120.1000000", "30.2000000"), "device-visit-check-out-1"));
 
         VisitView poiVisit = visitService.createVisit(new CreateVisitCommand("visit-create-poi-1",
-                workDay.id(), "POI", null, poi, location("120.1100000", "30.2100000"),
+                workDay.id(), null, "POI", null, poi, location("120.1100000", "30.2100000"),
                 Instant.now(), "device-visit-check-in-2"));
         assertThat(poiVisit.status()).isEqualTo("CHECKED_IN");
         assertThat(poiVisit.targetSnapshot().storeName()).isEqualTo("附近测试便利店");
@@ -272,7 +287,8 @@ class SalesWorkVisitIntegrationTests {
         var reviewedManagement = managementService.dashboard(workDay.businessDate(), workDay.businessDate());
         assertThat(reviewedManagement.totals().effectiveVisitCount()).isEqualTo(1);
         assertThat(reviewedManagement.totals().pendingReviewVisitCount()).isEqualTo(1);
-        assertThat(count("SELECT COUNT(*) FROM sales_visit_review WHERE tenant_id=?", tenantId)).isEqualTo(1);
+        assertThat(count("SELECT COUNT(*) FROM sales_visit_review WHERE tenant_id=? "
+                + "AND review_type='MANUAL'", tenantId)).isEqualTo(1);
         assertThat(count("SELECT COUNT(*) FROM sales_outbox_event WHERE tenant_id=? "
                 + "AND event_type='SalesVisitFinalized'", tenantId)).isEqualTo(1);
 
@@ -284,11 +300,68 @@ class SalesWorkVisitIntegrationTests {
     }
 
     @Test
+    void managerPlanFlowsToOwnTodayPlanExecutionAndCompletion() {
+        LocalDate today = LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
+        var planned = visitPlanService.create(new UpsertVisitPlanCommand(
+                profileId, today, storeId, "核对陈列并确认下月补货计划", null));
+        assertThat(planned.status()).isEqualTo("PLANNED");
+        assertThatThrownBy(() -> visitPlanService.create(new UpsertVisitPlanCommand(
+                profileId, today, storeId, "重复计划", null)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SALES_ADMIN_INVALID));
+        assertThat(visitPlanService.ownPlans(today).items()).singleElement()
+                .satisfies(item -> {
+                    assertThat(item.planId()).isEqualTo(planned.planId());
+                    assertThat(item.storeName()).isEqualTo("我的测试门店");
+                    assertThat(item.visitId()).isNull();
+                });
+
+        WorkDayView workDay = attendanceService.checkIn(new CheckInCommand("plan-check-in-day-1",
+                "plan-client-1", Instant.now(), location("120.1000000", "30.2000000"), null, "ONLINE"));
+        CreateVisitCommand createCommand = new CreateVisitCommand("plan-visit-create-1",
+                workDay.id(), planned.planId(), null, null, null,
+                location("120.1000000", "30.2000000"), Instant.now(), "plan-device-1");
+        VisitView visit = visitService.createVisit(createCommand);
+        assertThat(visitService.createVisit(createCommand).id()).isEqualTo(visit.id());
+        assertThat(visit.targetSnapshot().storeName()).isEqualTo("我的测试门店");
+        assertThat(visitPlanService.ownPlans(today).items()).singleElement()
+                .satisfies(item -> {
+                    assertThat(item.status()).isEqualTo("IN_PROGRESS");
+                    assertThat(item.visitId()).isEqualTo(visit.id());
+                });
+
+        visitService.submitVisitResult(visit.id(),
+                new VisitResultCommand("CONTACTED", "计划KP", "13800000006", "MEDIUM", "计划已执行"));
+        CheckOutVisitCommand checkOutCommand = new CheckOutVisitCommand("plan-check-out-1",
+                Instant.now(), location("120.1000000", "30.2000000"), "plan-device-out-1");
+        VisitView completed = visitService.checkOutVisit(visit.id(), checkOutCommand);
+        assertThat(visitService.checkOutVisit(visit.id(), checkOutCommand).id()).isEqualTo(completed.id());
+        assertThat(visitPlanService.ownPlans(today).items()).singleElement()
+                .satisfies(item -> assertThat(item.status()).isEqualTo("COMPLETED"));
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM sales_outbox_event
+                 WHERE tenant_id=? AND aggregate_id=?
+                   AND event_type IN ('SalesVisitCreated','SalesVisitCheckedOut')
+                   AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.visitPlanId'))=?
+                """, Integer.class, bin(tenantId), bin(visit.id()), planned.planId().toString()))
+                .isEqualTo(2);
+
+        var cancellable = visitPlanService.create(new UpsertVisitPlanCommand(
+                profileId, today.plusDays(1), storeId, "次日复访", null));
+        var cancelled = visitPlanService.cancel(cancellable.planId(),
+                new CancelVisitPlanCommand(cancellable.version()));
+        assertThat(cancelled.status()).isEqualTo("CANCELLED");
+        assertThat(visitPlanService.create(new UpsertVisitPlanCommand(
+                profileId, today.plusDays(1), storeId, "取消后重新安排", null)).status())
+                .isEqualTo("PLANNED");
+    }
+
+    @Test
     void visitResultAndRecordingClipArePersisted() {
         WorkDayView workDay = attendanceService.checkIn(new CheckInCommand("result-check-in-day-1",
                 "client-1", Instant.now(), location("120.1000000", "30.2000000"), null, "ONLINE"));
         VisitView visit = visitService.createVisit(new CreateVisitCommand("result-visit-create-1",
-                workDay.id(), "MY_STORE", storeId, null, location("120.1000000", "30.2000000"),
+                workDay.id(), null, "MY_STORE", storeId, null, location("120.1000000", "30.2000000"),
                 Instant.now(), "device-result-visit-1"));
 
         // 拜访结果：进行中即可录入，签退后仍可补录。
@@ -378,7 +451,7 @@ class SalesWorkVisitIntegrationTests {
 
         // 关门/KP不在等未接触场景不伪造KP资料，保存现场说明后可直接离店。
         VisitView closedStoreVisit = visitService.createVisit(new CreateVisitCommand("closed-store-create-1",
-                workDay.id(), "MY_STORE", storeId, null, location("120.1000000", "30.2000000"),
+                workDay.id(), null, "MY_STORE", storeId, null, location("120.1000000", "30.2000000"),
                 Instant.now(), "device-closed-store-create-1"));
         VisitView closedStoreResult = visitService.submitVisitResult(closedStoreVisit.id(),
                 new VisitResultCommand("STORE_CLOSED", null, null, null, "门店卷帘门关闭，现场无人"));
@@ -391,9 +464,121 @@ class SalesWorkVisitIntegrationTests {
     }
 
     @Test
+    void storefrontPhotoRequiresCameraValidImageGeofenceAndIsIdempotent() {
+        WorkDayView workDay = attendanceService.checkIn(new CheckInCommand("photo-check-in-day-1",
+                "client-photo-1", Instant.now(), location("120.1000000", "30.2000000"), null, "ONLINE"));
+        VisitView visit = visitService.createVisit(new CreateVisitCommand("photo-visit-create-1",
+                workDay.id(), null, "MY_STORE", storeId, null, location("120.1000000", "30.2000000"),
+                Instant.now(), "device-photo-visit-1"));
+
+        byte[] jpeg = jpegBytes(new Color(42, 103, 180));
+        var file = new MockMultipartFile("file", "storefront.jpg", "image/jpeg", jpeg);
+        Instant capturedAt = Instant.now();
+        var uploaded = evidenceService.uploadStorefrontPhoto(visit.id(), file, "client-photo-evidence-1",
+                "FEISHU_CAMERA", capturedAt, new BigDecimal("120.1000000"),
+                new BigDecimal("30.2000000"), new BigDecimal("12.00"));
+        assertThat(uploaded.evidenceRole()).isEqualTo("STOREFRONT");
+        assertThat(uploaded.captureSource()).isEqualTo("FEISHU_CAMERA");
+        assertThat(uploaded.evidenceStatus()).isEqualTo("TECHNICALLY_VERIFIED");
+
+        var summary = evidenceService.evidence(visit.id());
+        assertThat(summary.requiredStorefrontPhotoCount()).isEqualTo(1);
+        assertThat(summary.storefrontPhotoCount()).isEqualTo(1);
+        assertThat(summary.storefrontPhotoSatisfied()).isTrue();
+
+        var replayed = evidenceService.uploadStorefrontPhoto(visit.id(), file, "client-photo-evidence-1",
+                "FEISHU_CAMERA", capturedAt, new BigDecimal("120.1000000"),
+                new BigDecimal("30.2000000"), new BigDecimal("12.00"));
+        assertThat(replayed.evidenceId()).isEqualTo(uploaded.evidenceId());
+        assertThat(count("SELECT COUNT(*) FROM sales_visit_evidence WHERE tenant_id=?", tenantId))
+                .isEqualTo(1);
+
+        var differentJpeg = new MockMultipartFile("file", "different.jpg", "image/jpeg",
+                new byte[] {(byte) 0xff, (byte) 0xd8, (byte) 0xff, 0x01});
+        assertThatThrownBy(() -> evidenceService.uploadStorefrontPhoto(visit.id(), differentJpeg,
+                "client-photo-evidence-1", "FEISHU_CAMERA", capturedAt,
+                new BigDecimal("120.1000000"), new BigDecimal("30.2000000"), new BigDecimal("12.00")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SALES_EVIDENCE_INVALID));
+        assertThatThrownBy(() -> evidenceService.uploadStorefrontPhoto(visit.id(), file,
+                "client-photo-album", "ALBUM", capturedAt,
+                new BigDecimal("120.1000000"), new BigDecimal("30.2000000"), new BigDecimal("12.00")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SALES_EVIDENCE_INVALID));
+        assertThatThrownBy(() -> evidenceService.uploadStorefrontPhoto(visit.id(), file,
+                "client-photo-offsite", "FEISHU_CAMERA", capturedAt,
+                new BigDecimal("121.5000000"), new BigDecimal("31.5000000"), new BigDecimal("12.00")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SALES_VISIT_OUTSIDE_RADIUS));
+    }
+
+    @Test
+    void completeServerVerifiedEvidenceAutoConfirmsWhileAnomalyStaysForSupervisor() {
+        jdbc.update("""
+                UPDATE sales_visit_policy_version
+                   SET recording_enabled=1, minimum_recording_seconds=30,
+                       ai_asr_enabled=0, ai_relevance_enabled=0, ai_duplicate_enabled=0
+                 WHERE tenant_id=? AND id=?
+                """, bin(tenantId), bin(visitPolicyVersionId));
+        WorkDayView workDay = attendanceService.checkIn(new CheckInCommand("auto-day-1",
+                "auto-client-1", Instant.now(), location("120.1000000", "30.2000000"), null, "ONLINE"));
+        VisitView completeVisit = visitService.createVisit(new CreateVisitCommand("auto-visit-1",
+                workDay.id(), null, "MY_STORE", storeId, null, location("120.1000000", "30.2000000"),
+                Instant.now(), "auto-device-1"));
+        byte[] jpeg = jpegBytes(new Color(42, 103, 180));
+        var uploadedPhoto = evidenceService.uploadStorefrontPhoto(completeVisit.id(),
+                new MockMultipartFile("file", "storefront.jpg", "image/jpeg", jpeg),
+                "auto-photo-1", "FEISHU_CAMERA", Instant.now(),
+                new BigDecimal("120.1000000"), new BigDecimal("30.2000000"), new BigDecimal("10"));
+
+        int frameCount = 1_508;
+        long verifiedDurationMs = Math.round(frameCount * 1024d * 1_000d / 44_100d);
+        Instant recordedTo = Instant.now();
+        recordingService.uploadClip(completeVisit.id(),
+                new MockMultipartFile("file", "verified.aac", "audio/aac", adtsFrames(frameCount)),
+                "auto-recording-1", verifiedDurationMs,
+                recordedTo.minusMillis(verifiedDurationMs), recordedTo);
+        visitService.submitVisitResult(completeVisit.id(),
+                new VisitResultCommand("CONTACTED", "自动判定KP", "13800000002", "HIGH", "证据完整"));
+        VisitView effective = visitService.checkOutVisit(completeVisit.id(),
+                new CheckOutVisitCommand("auto-check-out-1", Instant.now(),
+                        location("120.1000000", "30.2000000"), "auto-device-out-1"));
+        assertThat(effective.reviewStatus()).isEqualTo("EFFECTIVE");
+        var managementEvidence = managementService.reviewEvidence(completeVisit.id());
+        assertThat(managementEvidence.verifiedStorefrontPhotoCount()).isEqualTo(1);
+        assertThat(managementService.reviewEvidencePhoto(completeVisit.id(), uploadedPhoto.evidenceId()).bytes())
+                .isEqualTo(jpeg);
+        assertThat(count("SELECT COUNT(*) FROM sales_visit_review WHERE tenant_id=? "
+                + "AND review_type='AUTOMATIC_ASSESSMENT' AND review_status='DECIDED' "
+                + "AND reason_code='AUTO_EVIDENCE_COMPLETE'", tenantId)).isEqualTo(1);
+        assertThat(count("SELECT COUNT(*) FROM sales_outbox_event WHERE tenant_id=? "
+                + "AND event_type='SalesVisitFinalized'", tenantId)).isEqualTo(1);
+
+        jdbc.update("""
+                UPDATE sales_visit_policy_version
+                   SET recording_enabled=0, minimum_recording_seconds=0
+                 WHERE tenant_id=? AND id=?
+                """, bin(tenantId), bin(visitPolicyVersionId));
+        VisitView missingPhoto = visitService.createVisit(new CreateVisitCommand("anomaly-visit-1",
+                workDay.id(), null, "MY_STORE", storeId, null, location("120.1000000", "30.2000000"),
+                Instant.now(), "anomaly-device-1"));
+        visitService.submitVisitResult(missingPhoto.id(),
+                new VisitResultCommand("CONTACTED", "异常KP", "13800000003", "LOW", "缺少门头照"));
+        VisitView pending = visitService.checkOutVisit(missingPhoto.id(),
+                new CheckOutVisitCommand("anomaly-check-out-1", Instant.now(),
+                        location("120.1000000", "30.2000000"), "anomaly-device-out-1"));
+        assertThat(pending.reviewStatus()).isEqualTo("PENDING_REVIEW");
+        assertThat(count("SELECT COUNT(*) FROM sales_visit_review WHERE tenant_id=? "
+                + "AND review_type='AUTOMATIC_ASSESSMENT' AND review_status='PENDING' "
+                + "AND reason_code='STOREFRONT_PHOTO_MISSING'", tenantId)).isEqualTo(1);
+        assertThat(managementService.reviewQueue(workDay.businessDate(), workDay.businessDate(), 1, 20)
+                .items()).extracting(item -> item.visitId()).contains(missingPhoto.id());
+    }
+
+    @Test
     void cannotCreateVisitWithoutActiveWorkDay() {
         assertThatThrownBy(() -> visitService.createVisit(new CreateVisitCommand("visit-no-day-1",
-                UUID.randomUUID(), "MY_STORE", storeId, null,
+                UUID.randomUUID(), null, "MY_STORE", storeId, null,
                 location("120.1000000", "30.2000000"), Instant.now(), "device-visit-no-day-1")))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SALES_WORK_DAY_NOT_FOUND));
@@ -437,7 +622,7 @@ class SalesWorkVisitIntegrationTests {
                      ai_asr_enabled, ai_relevance_enabled, ai_duplicate_enabled,
                      ai_auto_confirm_threshold, effective_from, effective_to,
                      approved_by, approved_at, created_by, created_at)
-                VALUES (?, ?, ?, 1, 'PUBLISHED', 1, 1, 500, 0, 0, 0, 0, 30,
+                VALUES (?, ?, ?, 1, 'PUBLISHED', 1, 1, 500, 0, 1, 0, 0, 30,
                         1, 1, 1, NULL, ?, NULL, NULL, NULL, ?, ?)
                 """, bin(visitPolicyVersionId), bin(tenantId), bin(visitPolicyId),
                 timestamp(now.minusSeconds(60)), bin(userId), timestamp(now));
@@ -450,8 +635,10 @@ class SalesWorkVisitIntegrationTests {
                     "sales:context:read", "sales:visit-target:read", "sales:work-day:write",
                     "sales:location:write", "sales:visit:own:read", "sales:visit:own:write", "sales:poi:read",
                     "sales:recording:own:read", "sales:recording:own:write", "sales:track:own:read",
+                    "sales:evidence:own:read", "sales:evidence:own:write", "sales:evidence:sensitive:read",
                     "sales:dashboard:read", "sales:visit:review", "sales:recording:sensitive:play",
-                    "sales:location:sensitive:read"));
+                    "sales:location:sensitive:read", "sales:visit-plan:own:read",
+                    "sales:visit-plan:read", "sales:visit-plan:write"));
             Method set = AuthorizationContext.class.getDeclaredMethod("set", CallerIdentity.class);
             set.setAccessible(true);
             set.invoke(null, caller);
@@ -482,6 +669,40 @@ class SalesWorkVisitIntegrationTests {
 
     private static Timestamp timestamp(Instant value) {
         return Timestamp.from(value);
+    }
+
+    private static byte[] adtsFrames(int frameCount) {
+        ByteArrayOutputStream output = new ByteArrayOutputStream(frameCount * 9);
+        int frameLength = 9;
+        for (int index = 0; index < frameCount; index++) {
+            output.write(0xff);
+            output.write(0xf1);
+            output.write((1 << 6) | (4 << 2));
+            output.write((2 << 6) | ((frameLength >>> 11) & 0x03));
+            output.write((frameLength >>> 3) & 0xff);
+            output.write(((frameLength & 0x07) << 5) | 0x1f);
+            output.write(0xfc);
+            output.write(index & 0xff);
+            output.write((index >>> 8) & 0xff);
+        }
+        return output.toByteArray();
+    }
+
+    private static byte[] jpegBytes(Color color) {
+        BufferedImage image = new BufferedImage(320, 240, BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        graphics.setColor(color);
+        graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
+        graphics.dispose();
+        try {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            if (!ImageIO.write(image, "jpg", output)) {
+                throw new IllegalStateException("测试环境缺少JPEG编码器");
+            }
+            return output.toByteArray();
+        } catch (java.io.IOException error) {
+            throw new IllegalStateException("测试JPEG生成失败", error);
+        }
     }
 
     private static byte[] bin(UUID value) {

@@ -4,12 +4,15 @@ import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ManagementDash
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ManagementDashboardView;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ManagementRecordingClipView;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ManagementRecordingSessionView;
+import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ManagementPhotoEvidenceView;
+import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ManagementVisitEvidenceView;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.SalesPersonActivityView;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ReviewVisitCommand;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.ReviewVisitResultView;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.VisitReviewQueueItemView;
 import com.rigour.sales.api.v1.model.SalesWorkManagementApiModels.VisitReviewQueueView;
 import com.rigour.sales.application.port.out.SalesWorkManagementRepository;
+import com.rigour.sales.application.port.out.SalesWorkEvidenceRepository;
 import com.rigour.sales.application.port.out.SalesWorkRecordingRepository;
 import com.rigour.shared.audit.AuditEvent;
 import com.rigour.shared.audit.AuditSink;
@@ -23,12 +26,15 @@ import com.rigour.shared.outbox.OutboxMessage;
 import com.rigour.shared.outbox.OutboxStore;
 import java.nio.charset.StandardCharsets;
 import java.io.IOException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -44,6 +50,7 @@ public class SalesWorkManagementService {
 
     private final SalesWorkManagementRepository repository;
     private final SalesWorkRecordingRepository recordingRepository;
+    private final SalesWorkEvidenceRepository evidenceRepository;
     private final FileStorage fileStorage;
     private final OutboxStore outboxStore;
     private final AuditSink auditSink;
@@ -52,6 +59,7 @@ public class SalesWorkManagementService {
 
     public SalesWorkManagementService(SalesWorkManagementRepository repository,
                                       SalesWorkRecordingRepository recordingRepository,
+                                      SalesWorkEvidenceRepository evidenceRepository,
                                       FileStorage fileStorage,
                                       OutboxStore outboxStore,
                                       AuditSink auditSink,
@@ -59,6 +67,7 @@ public class SalesWorkManagementService {
                                       Clock clock) {
         this.repository = repository;
         this.recordingRepository = recordingRepository;
+        this.evidenceRepository = evidenceRepository;
         this.fileStorage = fileStorage;
         this.outboxStore = outboxStore;
         this.auditSink = auditSink;
@@ -99,8 +108,10 @@ public class SalesWorkManagementService {
                 .map(row -> new VisitReviewQueueItemView(row.visitId(), row.salesProfileId(),
                         row.salesNo(), row.storeName(), row.checkedInAt(), row.checkedOutAt(),
                         row.dwellMinutes(), row.minimumDwellMinutes(), row.uploadedRecordingSeconds(),
-                        row.minimumRecordingSeconds(), row.contactOutcome(), row.kpName(),
-                        row.intentionLevel(), row.resultNote(), row.visitType()))
+                        row.verifiedRecordingSeconds(), row.minimumRecordingSeconds(),
+                        row.verifiedStorefrontPhotoCount(), row.requiredStorefrontPhotoCount(),
+                        row.contactOutcome(), row.kpName(), row.intentionLevel(), row.resultNote(),
+                        row.visitType(), row.anomalyCodes()))
                 .toList();
         return new VisitReviewQueueView(from, to, items, page, pageSize,
                 repository.countReviewQueue(caller.tenantId(), from, to));
@@ -147,6 +158,51 @@ public class SalesWorkManagementService {
         } catch (IOException error) {
             throw new BusinessException(ErrorCode.SALES_RECORDING_STORAGE_FAILED,
                     "录音片段读取失败", List.of());
+        }
+    }
+
+    public ManagementVisitEvidenceView reviewEvidence(UUID visitId) {
+        CallerIdentity caller = SalesWorkContextService.requireTenantCaller();
+        AuthorizationContext.requirePermission("sales:evidence:sensitive:read");
+        requireReviewTarget(caller, visitId);
+        var assessment = repository.findVisitAssessment(caller.tenantId(), visitId)
+                .orElseThrow(() -> invalid("拜访证据规则不存在"));
+        var photos = evidenceRepository.findStorefrontPhotos(caller.tenantId(), visitId).stream()
+                .map(photo -> new ManagementPhotoEvidenceView(photo.id(), photo.evidenceRole(),
+                        photo.captureSource(), photo.capturedAt(), photo.mediaType(), photo.objectSizeBytes(),
+                        photo.distanceToTargetMeters(), photo.evidenceStatus(), photo.serverReceivedAt()))
+                .toList();
+        return new ManagementVisitEvidenceView(visitId, Math.max(1, assessment.requiredPhotoCount()),
+                Math.toIntExact(assessment.verifiedStorefrontPhotoCount()), photos);
+    }
+
+    public EvidenceContent reviewEvidencePhoto(UUID visitId, UUID evidenceId) {
+        CallerIdentity caller = SalesWorkContextService.requireTenantCaller();
+        AuthorizationContext.requirePermission("sales:evidence:sensitive:read");
+        requireReviewTarget(caller, visitId);
+        if (evidenceId == null) throw invalid("照片证据不能为空");
+        var photo = evidenceRepository.findStorefrontPhotos(caller.tenantId(), visitId).stream()
+                .filter(item -> evidenceId.equals(item.id()))
+                .findFirst()
+                .orElseThrow(() -> invalid("照片证据不存在"));
+        try (var input = fileStorage.open(caller.tenantId().toString(), photo.objectKey())) {
+            byte[] bytes = input.readAllBytes();
+            if (bytes.length != photo.objectSizeBytes() || !sha256Hex(bytes).equals(photo.contentHash())) {
+                throw new IllegalStateException("门头照对象与登记事实不一致");
+            }
+            auditSink.append(new AuditEvent(caller.tenantId().toString(), RequestContext.getRequestId(),
+                    caller.userId().toString(), "SALES_EVIDENCE_REVIEW_VIEW", "SALES_VISIT",
+                    visitId.toString(), Map.of("evidenceId", evidenceId.toString()),
+                    OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC)));
+            return new EvidenceContent(photo.mediaType(), bytes);
+        } catch (IOException error) {
+            throw new BusinessException(ErrorCode.SALES_EVIDENCE_STORAGE_FAILED,
+                    "门头照片读取失败", List.of());
+        } catch (BusinessException error) {
+            BusinessException mapped = new BusinessException(ErrorCode.SALES_EVIDENCE_STORAGE_FAILED,
+                    "门头照片读取失败", List.of());
+            mapped.initCause(error);
+            throw mapped;
         }
     }
 
@@ -235,12 +291,31 @@ public class SalesWorkManagementService {
         return trimmed.substring(0, Math.min(maxLength, trimmed.length()));
     }
 
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException error) {
+            throw new IllegalStateException("SHA-256不可用", error);
+        }
+    }
+
     private static BusinessException invalid(String message) {
         return new BusinessException(ErrorCode.SALES_ADMIN_INVALID, message, List.of());
     }
 
     public record RecordingContent(String mediaType, byte[] bytes) {
         public RecordingContent {
+            bytes = bytes == null ? new byte[0] : bytes.clone();
+        }
+
+        @Override
+        public byte[] bytes() {
+            return bytes.clone();
+        }
+    }
+
+    public record EvidenceContent(String mediaType, byte[] bytes) {
+        public EvidenceContent {
             bytes = bytes == null ? new byte[0] : bytes.clone();
         }
 

@@ -39,8 +39,15 @@ rigour:
     web-key: ${RIGOUR_AMAP_WEB_KEY:}
     connect-timeout: 3s
     read-timeout: 5s
+    nearby-cache-ttl: 60s
+    nearby-cache-max-entries: 500
 
 sales:
+  evidence:
+    max-photo-bytes: 12582912
+    min-photo-width: 320
+    min-photo-height: 240
+    max-photo-pixels: 25000000
   recording:
     # 非敏感运行参数由 application/Nacos 管理；生产在 Nacos 中切换为 cos。
     storage-type: filesystem
