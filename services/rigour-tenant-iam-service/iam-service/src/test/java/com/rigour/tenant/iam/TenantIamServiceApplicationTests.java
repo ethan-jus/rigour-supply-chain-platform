@@ -143,7 +143,7 @@ class TenantIamServiceApplicationTests {
 
     @Test
     void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 38);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 40);
         assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1 AND ("
                 + "(version='33' AND script='V33__iam_erp_product_master_data_permissions.sql') OR "
                 + "(version='34' AND script='V34__iam_align_erp_product_center_menu.sql') OR "
