@@ -45,7 +45,9 @@ public class MybatisPlusDhbShipmentLogisticsRepository implements DhbShipmentLog
             requireText(item.orderNo(), "shipmentLogistics.orderNo");
             requireText(item.payloadHash(), "shipmentLogistics.payloadHash");
             DhbShipmentLogisticsEntity existing = findEntity(tenantId, item.orderNo());
-            boolean changed = existing == null || !Objects.equals(existing.payloadHash, item.payloadHash());
+            boolean changed = existing == null
+                    || !Objects.equals(existing.payloadHash, item.payloadHash())
+                    || logisticsDetailsIncomplete(existing, expectedLineCount(item));
             DhbShipmentLogisticsEntity entity = toEntity(tenantId, item, existing, now);
             if (changed) entity.updatedAt = now;
             if (existing == null) mapper.insert(entity);
@@ -56,6 +58,22 @@ public class MybatisPlusDhbShipmentLogisticsRepository implements DhbShipmentLog
             }
         }
         return changedCount;
+    }
+
+    /** 来源摘要未变化时校验发货和待出库明细总行数，修复本地部分明细缺失。 */
+    private boolean logisticsDetailsIncomplete(DhbShipmentLogisticsEntity existing, int expectedLineCount) {
+        if (existing == null) return false;
+        Long lineCount = lineMapper.selectCount(Wrappers.<DhbShipmentLogisticsLineEntity>query()
+                .eq("logistics_id", existing.id));
+        return (lineCount == null ? 0L : lineCount) != expectedLineCount;
+    }
+
+    private static int expectedLineCount(DhbOrderImportBatch.ShipmentLogisticsItem item) {
+        int count = item.waitStock().size();
+        for (DhbOrderImportBatch.ShipmentLogisticsRecord shipment : item.shipped()) {
+            count += shipment.lines().size();
+        }
+        return count;
     }
 
     @Override

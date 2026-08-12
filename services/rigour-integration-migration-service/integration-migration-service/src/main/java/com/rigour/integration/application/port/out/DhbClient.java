@@ -21,6 +21,39 @@ public interface DhbClient {
 
     Page<Product> getProducts(Connector connector, ProductQuery query);
 
+    /** 下载订货宝商品图片；实际字节只在 Integration 内部流转，不跨服务返回。 */
+    DownloadedImage downloadProductImage(Connector connector, String sourceUrl);
+
+    /** 查询订货宝 getSite 商品分类；供应商接口为全量数组，不返回父级关系。 */
+    List<ProductCategory> getProductCategories(Connector connector);
+
+    /** 查询订货宝 getBrands 商品品牌；供应商接口为全量数组。 */
+    List<ProductBrand> getProductBrands(Connector connector);
+
+    /** 查询订货宝 getMultiOptionsList 规格维度及规格值。 */
+    Page<ProductSpecification> getProductSpecifications(Connector connector, PageRequest page);
+
+    /** 查询订货宝 getGoodsTag 商品标签；不同版本字段名由适配器兼容。 */
+    Page<ProductTag> getProductTags(Connector connector, PageRequest page);
+
+    /** 查询 getSupplierList 供应商；地址、联系方式、税号和银行账号按当前同步要求输出完整值。 */
+    Page<Supplier> getSuppliers(Connector connector, PageRequest page);
+
+    /** 查询 getPurchaseList 后逐单补齐 getPurchaseContent 明细。 */
+    Page<PurchaseOrder> getPurchaseOrders(Connector connector, PageRequest page);
+
+    /** 查询 getPurchaseReturnList 后逐单补齐 getPurchaseReturnContent 明细。 */
+    Page<PurchaseReturn> getPurchaseReturns(Connector connector, PageRequest page);
+
+    /** 查询 getWarehousingList 后逐单补齐 getWarehousingContent 明细。 */
+    Page<WarehousingReceipt> getWarehousingReceipts(Connector connector, PageRequest page);
+
+    /** 查询 getStockInfo 仓库档案。 */
+    Page<Warehouse> getWarehouses(Connector connector, PageRequest page);
+
+    /** 调用 batchGetStock；调用方必须显式传入商品编码。 */
+    List<InventoryBalance> getInventory(Connector connector, List<String> goodsCodes);
+
     Page<Customer> getCustomers(Connector connector, CustomerQuery query);
 
     Page<OrderSummary> getOrders(Connector connector, OrderQuery query);
@@ -106,7 +139,7 @@ public interface DhbClient {
     }
 
     record ProductQuery(PageRequest page, String status, String putaway, String goodsCode,
-                        TimeWindow updatedWindow, String barcode) {
+                        String barcode, Instant updatedFrom, Instant updatedTo) {
         public ProductQuery {
             if (page == null) {
                 throw new IllegalArgumentException("page is required");
@@ -114,12 +147,128 @@ public interface DhbClient {
         }
 
         public ProductQuery(PageRequest page, String status, String putaway, String goodsCode) {
-            this(page, status, putaway, goodsCode, null, null);
+            this(page, status, putaway, goodsCode, null, null, null);
         }
 
         public static ProductQuery first(int step) {
-            return new ProductQuery(PageRequest.first(step), null, null, null, null, null);
+            return new ProductQuery(PageRequest.first(step), null, null, null, null, null, null);
         }
+    }
+
+    /** 供应商原始业务模型；跨服务转换时地址、联系方式、税号和银行账号按当前同步要求保留完整值。 */
+    record Supplier(String sourceId, String sourceGuid, String code, String name,
+                    String areaName, String address, String contactName, String mobile,
+                    String phone, String email, String accountName, String bankName,
+                    String bankAccount, String invoiceTitle, String taxpayerNumber,
+                    String remark, Instant sourceUpdatedAt, Map<String, Object> attributes) {
+        public Supplier { attributes = immutableAttributes(attributes); }
+    }
+
+    record Warehouse(String sourceId, String sourceGuid, String code, String name,
+                     String status, Boolean defaultFlag, BigDecimal acreage, String phone,
+                     String address, String collaboratorSourceId, String remark,
+                     Map<String, Object> attributes) {
+        public Warehouse { attributes = immutableAttributes(attributes); }
+    }
+
+    record PurchaseOrder(String sourceId, String number, String supplierSourceId,
+                         String supplierCode, String supplierName, String warehouseSourceId,
+                         String warehouseCode, String warehouseName, String staffSourceId,
+                         String staffName, String status, String statusName, String paymentStatus,
+                         String paymentStatusName, Instant deliveryAt, Instant createdAt,
+                         Instant updatedAt, BigDecimal totalAmount, BigDecimal paidAmount,
+                         BigDecimal goodsCount, Boolean downloaded, String remark,
+                         String internalCommunication, List<PurchaseOrderLine> lines,
+                         Map<String, Object> attributes) {
+        public PurchaseOrder {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    record PurchaseOrderLine(String sourceLineId, String sourceGoodsId, String sourceGoodsGuid,
+                             String goodsCode, String goodsName, String optionsId,
+                             String optionsGoodsCode, String optionsSummary,
+                             BigDecimal baseQuantity, BigDecimal unitPrice,
+                             String purchaseUnitCode, String purchaseUnitName,
+                             BigDecimal purchaseUnitQuantity, BigDecimal warehousedQuantity,
+                             BigDecimal returnedQuantity, String remark,
+                             Map<String, Object> attributes) {
+        public PurchaseOrderLine { attributes = immutableAttributes(attributes); }
+    }
+
+    record PurchaseReturn(String sourceId, String number, String supplierSourceId,
+                          String supplierCode, String supplierName, String warehouseSourceId,
+                          String warehouseCode, String warehouseName, String staffSourceId,
+                          String staffName, String status, String statusName,
+                          BigDecimal returnAmount, BigDecimal discountAmount, String reason,
+                          Instant createdAt, Instant sendAt, String internalCommunication,
+                          String remark, Integer detailCount, String contactName,
+                          String contactPhone, String contactAddress, List<String> cityIds,
+                          List<String> cityNames, String sourceDevice,
+                          String parentReturnSourceId, String parentCompanySourceId,
+                          Boolean downloaded, List<PurchaseReturnLine> lines,
+                          Map<String, Object> attributes) {
+        public PurchaseReturn {
+            cityIds = cityIds == null ? List.of() : List.copyOf(cityIds);
+            cityNames = cityNames == null ? List.of() : List.copyOf(cityNames);
+            lines = lines == null ? List.of() : List.copyOf(lines);
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    record PurchaseReturnLine(String sourceLineId, String sourceGoodsId, String goodsCode,
+                              String goodsName, String optionsId, String optionsGoodsCode,
+                              String optionsSummary, BigDecimal requestedQuantity,
+                              BigDecimal confirmedQuantity, BigDecimal returnPrice,
+                              BigDecimal confirmedPrice, String unitCode, String unitName,
+                              BigDecimal unitQuantity, BigDecimal confirmedUnitQuantity,
+                              BigDecimal conversionNumber, BigDecimal amount,
+                              BigDecimal costPrice, String purchaseOrderNo,
+                              String categoryName, String brandName, String remark,
+                              Map<String, Object> attributes) {
+        public PurchaseReturnLine { attributes = immutableAttributes(attributes); }
+    }
+
+    record WarehousingReceipt(String sourceId, String number, String warehouseSourceId,
+                              String warehouseName, String supplierSourceId, String supplierName,
+                              String typeId, String typeName, String status, String statusName,
+                              String staffName, String clientSourceId, String accountSourceId,
+                              String collaboratorSourceId, String collaboratorName,
+                              String logisticsSourceId, String expressNumber, Instant storageAt,
+                              Instant createdAt, Instant updatedAt, BigDecimal freightAmount,
+                              BigDecimal totalAmount, BigDecimal costAmount, Boolean apiFlag,
+                              String splitType, String remark, List<WarehousingLine> lines,
+                              List<PurchaseLink> purchaseLinks, Map<String, Object> attributes) {
+        public WarehousingReceipt {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+            purchaseLinks = purchaseLinks == null ? List.of() : List.copyOf(purchaseLinks);
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    record WarehousingLine(String sourceLineId, String sourceGoodsId, String goodsCode,
+                           String goodsName, String optionsId, String optionsGoodsCode,
+                           String optionsSummary, BigDecimal baseQuantity,
+                           BigDecimal unitQuantity, String unitCode, String unitName,
+                           BigDecimal conversionNumber, BigDecimal costPrice,
+                           BigDecimal unitCostPrice, BigDecimal purchasePrice,
+                           BigDecimal wholesalePrice, String allocation, String barcode,
+                           String goodsModel, BigDecimal sourceRealQuantity,
+                           BigDecimal sourceAvailableQuantity, String collaboratorSourceId,
+                           String collaboratorName, String remark, Map<String, Object> attributes) {
+        public WarehousingLine { attributes = immutableAttributes(attributes); }
+    }
+
+    record PurchaseLink(String sourcePurchaseId, String purchaseOrderNo) { }
+
+    record InventoryBalance(String goodsGuid, String goodsCode, String goodsName,
+                            String warehouseGuid, String warehouseCode, String warehouseName,
+                            String firstOptionGuid, String firstOptionCode, String firstOptionName,
+                            String secondOptionGuid, String secondOptionCode, String secondOptionName,
+                            BigDecimal availableQuantity, BigDecimal realQuantity,
+                            Map<String, Object> attributes) {
+        public InventoryBalance { attributes = immutableAttributes(attributes); }
     }
 
     record CustomerQuery(PageRequest page, Integer status, Integer dataType,
@@ -239,8 +388,131 @@ public interface DhbClient {
     }
 
     record Product(String sourceId, String code, String name, String putaway,
+                   String barcode, String unit, String categorySourceId,
+                   String brandSourceId, String model, String subtitle, String keywords,
+                   String allocation, String mainImageSource, String multiId,
+                   BigDecimal orderPrice, BigDecimal marketPrice, BigDecimal purchasePrice,
+                   BigDecimal price4, String middleUnit, String bigUnit, String middleBarcode,
+                   String bigBarcode, String conversionBarcode, BigDecimal baseToMiddleRate,
+                   BigDecimal baseToBigRate, BigDecimal minimumOrder, String minimumOrderUnit,
+                   BigDecimal inventoryLower, BigDecimal inventoryUpper,
+                   BigDecimal safetyInventory, BigDecimal middleOrderPrice,
+                   BigDecimal bigOrderPrice, List<ProductImage> images,
+                   Map<String, String> customFields, List<ProductSku> skus,
                    Map<String, Object> attributes) {
+        public Product(String sourceId, String code, String name, String putaway,
+                       String barcode, String unit, String categorySourceId,
+                       String brandSourceId, List<ProductSku> skus,
+                       Map<String, Object> attributes) {
+            this(sourceId, code, name, putaway, barcode, unit, categorySourceId, brandSourceId,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null,
+                    List.<ProductImage>of(), Map.<String, String>of(), skus, attributes);
+        }
+
         public Product {
+            images = images == null ? List.of() : List.copyOf(images);
+            customFields = customFields == null ? Map.of() : Map.copyOf(customFields);
+            skus = skus == null ? List.of() : List.copyOf(skus);
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    record ProductSku(String sourceId, String code, String barcode,
+                      String firstSpecificationValueSourceId,
+                      String secondSpecificationValueSourceId,
+                      String specificationName, String optionsId, BigDecimal orderPrice,
+                      BigDecimal marketPrice, BigDecimal purchasePrice,
+                      BigDecimal middleOrderPrice, BigDecimal bigOrderPrice,
+                      String middleBarcode, String bigBarcode,
+                      Map<String, Object> attributes) {
+        public ProductSku(String sourceId, String code, String barcode,
+                          String firstSpecificationValueSourceId,
+                          String secondSpecificationValueSourceId,
+                          String specificationName, Map<String, Object> attributes) {
+            this(sourceId, code, barcode, firstSpecificationValueSourceId,
+                    secondSpecificationValueSourceId, specificationName, null, null, null, null,
+                    null, null, null, null, attributes);
+        }
+
+        public ProductSku {
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    record DownloadedImage(byte[] content, String contentType) {
+        public DownloadedImage {
+            if (content == null || content.length == 0) {
+                throw new IllegalArgumentException("商品图片内容不能为空");
+            }
+        }
+    }
+
+    record ProductImage(String sourceResourceId, String sourceGoodsId, String originalName,
+                        String fileName, Integer sortOrder, String sourceUrl) {
+        public ProductImage(String sourceResourceId, String sourceGoodsId, String originalName,
+                            String fileName, Integer sortOrder) {
+            this(sourceResourceId, sourceGoodsId, originalName, fileName, sortOrder, null);
+        }
+    }
+
+    record ProductCategory(String sourceId, String externalReferenceId, String name,
+                           String categoryNumber, String parentSourceId, Boolean defaultCategory,
+                           Map<String, Object> attributes) {
+        public ProductCategory(String sourceId, String externalReferenceId, String name,
+                               Map<String, Object> attributes) {
+            this(sourceId, externalReferenceId, name, null, null, null, attributes);
+        }
+
+        public ProductCategory {
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    record ProductBrand(String sourceId, String externalReferenceId, String name,
+                         String brandNumber, Integer sortOrder, String description,
+                         Map<String, Object> attributes) {
+        public ProductBrand(String sourceId, String externalReferenceId, String name,
+                            Map<String, Object> attributes) {
+            this(sourceId, externalReferenceId, name, null, null, null, attributes);
+        }
+
+        public ProductBrand {
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    record ProductSpecification(String sourceId, String code, String name,
+                                String parentSourceId, List<ProductSpecificationValue> values,
+                                Map<String, Object> attributes) {
+        public ProductSpecification(String sourceId, String code, String name,
+                                    List<ProductSpecificationValue> values,
+                                    Map<String, Object> attributes) {
+            this(sourceId, code, name, null, values, attributes);
+        }
+
+        public ProductSpecification {
+            values = values == null ? List.of() : List.copyOf(values);
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    record ProductSpecificationValue(String sourceId, String code, String name,
+                                     String parentSourceId, Map<String, Object> attributes) {
+        public ProductSpecificationValue {
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    record ProductTag(String sourceId, String code, String name, Integer sortOrder,
+                      Integer relationCount, Instant createdAt, Instant updatedAt,
+                      String groupSourceId, String groupName, Map<String, Object> attributes) {
+        public ProductTag(String sourceId, String code, String name,
+                          Map<String, Object> attributes) {
+            this(sourceId, code, name, null, null, null, null, null, null, attributes);
+        }
+
+        public ProductTag {
             attributes = immutableAttributes(attributes);
         }
     }

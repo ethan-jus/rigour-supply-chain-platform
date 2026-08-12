@@ -1,7 +1,7 @@
 # 订货宝 Integration 接口边界
 
-本文档记录当前代码依据的订货宝资料和未确认项。资料来源包括：
-`05_公共资源/API文档/订货宝API标准对接接口V1-1.docx`，以及订货宝官方
+本文档记录当前代码依据的订货宝资料和未确认项。本地资料为
+`../../docs/订货宝API标准对接接口V1-1.docx`，以及订货宝官方
 [ERP 接口文档目录](https://docs.dhb168.com/books/erp/)、[基础说明](https://docs.dhb168.com/books/erp/page/cb70a)、
 [getTokenValue](https://docs.dhb168.com/books/erp/page/gettokenvalue)、
 [getGoodsList](https://docs.dhb168.com/books/erp/page/getgoodslist)、
@@ -27,6 +27,10 @@
 
 本次实现使用每个租户连接器保存的完整 `base_url`，不把后台地址
 `https://pc.dhb168.com` 当作 API 地址，也不在代码里自动拼接未确认的路径。
+订货宝商品图片相对地址不复用 API `base_url`，由
+`rigour.integration.dhb.client.image-base-url` 独立配置；当前 DEV 默认使用
+`https://img.dhb168.com/`。接口文档中的 `file_name` 示例是完整 URL，当前租户回执
+也可能返回相对路径；解析器兼容两种格式，绝对图片 URL 保持原样。
 
 ## 当前已实现的协议
 
@@ -51,7 +55,11 @@
 
 | 能力 | 订货宝函数 | 分页/增量 |
 | --- | --- | --- |
-| 商品 | `getGoodsList` | `begin + step`，`step` 最大 1000；支持更新时间、商品编号和条码筛选 |
+| 商品/SPU + SKU | `getGoodsList` | `begin + step`，`step` 最大 1000；支持 `status`、`putaway`、`goodsCode`；`multi` 返回 SKU 组合 |
+| 商品分类 | `getSite` | 全量；V1.1 返回 `SiteID/SiteName/ERPID`，不返回父分类 |
+| 商品品牌 | `getBrands` | 全量；返回 `brandID/brandName/erpID` |
+| 规格/规格值 | `getMultiOptionsList` | `begin + step`，`step` 最大 1000；父规格通过 `children` 返回规格值 |
+| 商品标签 | `getGoodsTag` | 由项目对接要求确认；当前 V1.1 本地文档未提供字段表，需真实账号验证 |
 | 客户 | `getDealersList` | `begin + step`；支持创建/更新时间、客户编号、地区和客户类型筛选 |
 | 订单摘要 | `getOrderList` | `begin + step`；支持创建/更新时间、订单状态、下载状态、异常状态、付款状态和拆单类型筛选 |
 | 订单明细 | `getOrderContent` | 单订单号查询；`isAutoSign`/`isAutoAudit` 显式控制外部标记和审核副作用 |
@@ -80,8 +88,9 @@ Controller 分别实现这些契约。
 其他微服务的调用方向固定为：
 
 ```text
-Portal/ERP立即同步 -> integration-migration-api 契约 -> Gateway/Integration -> 订货宝
+Portal -> ERP 单一同步入口 -> integration-migration-api 契约 -> Integration -> 订货宝
 Order Center定时任务 -> 内部目标发现/可信 SERVICE 契约 -> Integration -> 订货宝
+ERP定时任务 -> 内部目标发现/租户范围 SERVICE 契约 -> Integration -> 订货宝
 ```
 
 调用方使用 `integration-migration-api` 中的 DTO 组织 HTTP 请求，例如商品查询调用
@@ -90,7 +99,8 @@ Order Center定时任务 -> 内部目标发现/可信 SERVICE 契约 -> Integrat
 版本化契约；调用方自己的 HTTP 客户端、服务编排和领域落库仍由 ERP/Order Center 实现，不能依赖
 Integration 的 JDBC 表。Order Center 定时任务使用独立的可信 `SERVICE` 身份调用未配置到 Gateway
 的 `/internal/v1/integration/dhb/sync-targets` 动态发现启用订单任务，再以目标 `tenantId` 调用上述
-查询契约；各领域服务不得复制订货宝认证逻辑。
+查询契约；ERP 定时任务同样先按 `PRODUCT_MASTER_DATA` 和 `SUPPLY_CHAIN_DATA` 动态发现目标，
+再以目标 `tenantId` 调用统一 ERP 同步应用服务；各领域服务不得复制订货宝认证逻辑。
 
 Integration 暴露 `POST /api/v1/integration/dhb/connectors/{id}/test` 作为连接测试入口，
 仅返回成功/稳定错误码和 token 到期时间，不返回 token 或 Secret；该动作需要
@@ -114,6 +124,24 @@ POST /api/v1/integration/dhb/orders/{connectorId}/receipts/query
 POST /api/v1/integration/dhb/orders/{connectorId}/payments/query
 GET  /internal/v1/integration/dhb/sync-targets  (仅服务间目标发现，不经过 Gateway)
 ```
+
+ERP 商品主数据使用的 Integration 查询契约为：
+
+```text
+POST /api/v1/integration/dhb/products/{connectorId}/media-sync
+GET  /api/v1/integration/dhb/products/{connectorId}/media-sync/{jobId}
+POST /api/v1/integration/dhb/products/{connectorId}/query
+POST /api/v1/integration/dhb/products/{connectorId}/categories/query
+POST /api/v1/integration/dhb/products/{connectorId}/brands/query
+POST /api/v1/integration/dhb/products/{connectorId}/specifications/query
+POST /api/v1/integration/dhb/products/{connectorId}/tags/query
+GET  /internal/v1/integration/dhb/sync-targets?objectType=PRODUCT_MASTER_DATA
+```
+
+商品图片先创建 `media-sync` 任务，Integration 将图片明细持久化后由固定并发消费者处理；
+任务状态为 `SUCCEEDED` 后，ERP 在商品查询请求中携带 `mediaJobId` 获取已完成的 COS
+object key。每个实例默认4个图片消费者，失败最多重试3次；任务使用数据库行锁和
+`SKIP LOCKED` 领取，服务重启后可继续处理。
 
 退货单状态原值为 `return_audit`（待退货审核）、`shipp_cust`（待客户发货）、
 `shipped`（待收货）、`refunded`（待退款）、`finished`（已完成）和 `cancelled`（已取消）。
@@ -209,6 +237,6 @@ RIGOUR_DHB_DEV_PASSWORD=<订货宝接口密码>
 5. `rData` 在异常或大数据量场景是否始终为 JSON 数组/对象，还是可能返回 JSON 字符串；
 6. 真实账号返回字段是否存在租户级扩展字段，尤其是订单明细中的 `Invoice`、`Ships`、`Payment` 和 `body` 子结构。
 
-当前 Worker 已先实现订单手动拉取：从 `integration_sync_checkpoint` 读取订单更新时间窗口，按页拉取，
-写入 Raw Landing，幂等更新订单镜像并发布 Integration Outbox 事件。Order Center 的本地定时编排和
-订单投影增量游标已落地；商品同步、客户/仓库/员工目录、死信重放以及下游消费仍待后续实现。
+订单 Worker 已实现 Raw Landing、订单镜像、Outbox 和 Order Center 本地投影。
+ERP 已实现商品/SPU、SKU、分类、品牌、规格/规格值和标签的手动同步、幂等落库和本地查询。
+客户/仓库/员工目录、商品自动增量调度、死信重放以及下游消费仍待后续实现。

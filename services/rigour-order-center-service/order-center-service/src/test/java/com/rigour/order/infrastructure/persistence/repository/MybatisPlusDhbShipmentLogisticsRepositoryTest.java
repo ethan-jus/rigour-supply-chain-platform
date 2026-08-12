@@ -77,4 +77,26 @@ class MybatisPlusDhbShipmentLogisticsRepositoryTest {
         verify(mapper, never()).updateById(any(DhbShipmentLogisticsEntity.class));
         verify(lineMapper, never()).delete(any());
     }
+
+    @Test
+    void repairsMissingLogisticsDetailsWhenSourcePayloadHasNotChanged() {
+        DhbShipmentLogisticsEntity existing = new DhbShipmentLogisticsEntity();
+        existing.id = "existing-id";
+        existing.payloadHash = "same-hash";
+        when(mapper.selectOne(any())).thenReturn(existing);
+        when(lineMapper.selectCount(any())).thenReturn(0L);
+        DhbOrderImportBatch.WaitStockItem wait = new DhbOrderImportBatch.WaitStockItem(
+                "WAIT_STOCK", "ORDER-LINE-1", "G-1", "SKU-1", "buy", "P-1", "商品一", "红色",
+                "件", "箱", new BigDecimal("10"), "W-1", "主仓", new BigDecimal("1"),
+                new BigDecimal("0"), new BigDecimal("1"), new BigDecimal("1"), "待出库");
+
+        int changed = repository.importSnapshots("tenant-1", List.of(
+                new DhbOrderImportBatch.ShipmentLogisticsItem(
+                        "DH-1", List.of(), List.of(wait), "{}", "same-hash")));
+
+        assertThat(changed).isEqualTo(1);
+        verify(mapper).updateById(any(DhbShipmentLogisticsEntity.class));
+        verify(lineMapper).delete(any());
+        verify(lineMapper).insert(any(DhbShipmentLogisticsLineEntity.class));
+    }
 }

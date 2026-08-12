@@ -12,7 +12,24 @@ import com.rigour.integration.application.port.out.DhbClient.Payment;
 import com.rigour.integration.application.port.out.DhbClient.PaymentQuery;
 import com.rigour.integration.application.port.out.DhbClient.Page;
 import com.rigour.integration.application.port.out.DhbClient.Product;
+import com.rigour.integration.application.port.out.DhbClient.ProductBrand;
+import com.rigour.integration.application.port.out.DhbClient.ProductCategory;
+import com.rigour.integration.application.port.out.DhbClient.ProductImage;
 import com.rigour.integration.application.port.out.DhbClient.ProductQuery;
+import com.rigour.integration.application.port.out.DhbClient.ProductSku;
+import com.rigour.integration.application.port.out.DhbClient.ProductSpecification;
+import com.rigour.integration.application.port.out.DhbClient.ProductSpecificationValue;
+import com.rigour.integration.application.port.out.DhbClient.ProductTag;
+import com.rigour.integration.application.port.out.DhbClient.Supplier;
+import com.rigour.integration.application.port.out.DhbClient.Warehouse;
+import com.rigour.integration.application.port.out.DhbClient.PurchaseOrder;
+import com.rigour.integration.application.port.out.DhbClient.PurchaseOrderLine;
+import com.rigour.integration.application.port.out.DhbClient.PurchaseReturn;
+import com.rigour.integration.application.port.out.DhbClient.PurchaseReturnLine;
+import com.rigour.integration.application.port.out.DhbClient.WarehousingReceipt;
+import com.rigour.integration.application.port.out.DhbClient.WarehousingLine;
+import com.rigour.integration.application.port.out.DhbClient.PurchaseLink;
+import com.rigour.integration.application.port.out.DhbClient.InventoryBalance;
 import com.rigour.integration.application.port.out.DhbClient.Receipt;
 import com.rigour.integration.application.port.out.DhbClient.ReceiptQuery;
 import com.rigour.integration.application.port.out.DhbClient.ReturnDetail;
@@ -41,6 +58,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -64,6 +82,7 @@ import org.springframework.web.client.RestClientResponseException;
  * 映射。业务服务不得复制这些规则，也不得直接访问订货宝。</p>
  */
 public final class DhbClientAdapter implements DhbClient {
+    private static final int PURCHASE_RETURN_MAX_PAGE_SIZE = 99;
 
     private static final Logger log = LoggerFactory.getLogger(DhbClientAdapter.class);
     private static final DateTimeFormatter DHB_TIME =
@@ -76,6 +95,7 @@ public final class DhbClientAdapter implements DhbClient {
     private final RestClient restClient;
     private final DhbSecretResolver secretResolver;
     private final DhbClientProperties properties;
+    private final URI imageBaseUri;
     private final ConcurrentMap<String, CachedToken> tokenCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Object> tokenLocks = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, PermitBucket> rateLimiters = new ConcurrentHashMap<>();
@@ -93,6 +113,7 @@ public final class DhbClientAdapter implements DhbClient {
         this.secretResolver = Objects.requireNonNull(secretResolver, "secretResolver cannot be null");
         this.properties = Objects.requireNonNull(properties, "properties cannot be null");
         properties.validate();
+        this.imageBaseUri = endpoint(properties.getImageBaseUrl());
         this.restClient = Objects.requireNonNull(restClient, "restClient cannot be null");
     }
 
@@ -131,13 +152,222 @@ public final class DhbClientAdapter implements DhbClient {
         putIfPresent(values, "status", query.status());
         putIfPresent(values, "putaway", query.putaway());
         putIfPresent(values, "goodsCode", query.goodsCode());
-        putWindow(values, query.updatedWindow(), "updateGe", "updateLe");
         putIfPresent(values, "barcode", query.barcode());
+        putInstant(values, "updateGe", query.updatedFrom());
+        putInstant(values, "updateLe", query.updatedTo());
         ApiEnvelope response = callBusiness(connector, "getGoodsList", values);
         List<Map<String, Object>> rows = rows(response, "getGoodsList");
         List<Product> items = rows.stream().map(DhbClientAdapter::product).toList();
         logPage(connector, "getGoodsList", query.page(), response, items.size());
+        log.info("订货宝拉取数据量:{}", items.size());
         return new Page<>(query.page(), response.total(), items);
+    }
+
+    @Override
+    public DownloadedImage downloadProductImage(Connector connector, String sourceUrl) {
+        if (sourceUrl == null || sourceUrl.isBlank()) {
+            DhbClientException exception = new DhbClientException(
+                    "DHB_IMAGE_URL_MISSING", "订货宝商品图片地址为空", false, null, null);
+            logImageDownloadFailure(connector, null, exception);
+            throw exception;
+        }
+        URI uri;
+        try {
+            uri = resolveImageUri(imageBaseUri, sourceUrl);
+        } catch (DhbClientException exception) {
+            logImageDownloadFailure(connector, null, exception);
+            throw exception;
+        }
+        try {
+            var response = restClient.get().uri(uri)
+                    .header(HttpHeaders.ACCEPT, MediaType.ALL_VALUE)
+                    .retrieve().toEntity(byte[].class);
+            byte[] content = response.getBody();
+            if (content == null || content.length == 0) {
+                throw new DhbClientException("DHB_IMAGE_EMPTY", "订货宝商品图片内容为空",
+                        false, response.getStatusCode().value(), null);
+            }
+            String contentType = response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE);
+            return new DownloadedImage(content, contentType);
+        } catch (DhbClientException exception) {
+            logImageDownloadFailure(connector, uri, exception);
+            throw exception;
+        } catch (RestClientResponseException exception) {
+            DhbClientException imageException = new DhbClientException(
+                    "DHB_IMAGE_HTTP_ERROR", "订货宝商品图片下载失败",
+                    exception.getStatusCode().is5xxServerError(), exception.getStatusCode().value(), null);
+            logImageDownloadFailure(connector, uri, imageException);
+            throw imageException;
+        } catch (ResourceAccessException exception) {
+            DhbClientException imageException = new DhbClientException(
+                    "DHB_IMAGE_NETWORK_ERROR", "订货宝商品图片网络请求失败", true, null, null);
+            logImageDownloadFailure(connector, uri, imageException);
+            throw imageException;
+        }
+    }
+
+    /** 只记录图片源站域名，不记录完整 URL、路径、查询参数或可能包含签名的片段。 */
+    private static void logImageDownloadFailure(Connector connector, URI uri,
+                                                 DhbClientException exception) {
+        log.warn("订货宝商品图片下载失败 tenantId={} connectorId={} imageHost={} httpStatus={} errorType={}",
+                connector.tenantId(), connector.connectorId(), redactedImageHost(uri),
+                exception.httpStatus(), exception.code());
+    }
+
+    private static String redactedImageHost(URI uri) {
+        if (uri == null || uri.getHost() == null || uri.getHost().isBlank()) {
+            return "unknown";
+        }
+        return uri.getHost().toLowerCase(Locale.ROOT);
+    }
+
+    @Override
+    public List<ProductCategory> getProductCategories(Connector connector) {
+        ApiEnvelope response = callBusiness(connector, "getSite", new LinkedHashMap<>());
+        List<ProductCategory> items = rows(response, "getSite").stream()
+                .map(DhbClientAdapter::productCategory).toList();
+        logPage(connector, "getSite", PageRequest.first(Math.max(1, Math.min(1000, items.size()))),
+                response, items.size());
+        return items;
+    }
+
+    @Override
+    public List<ProductBrand> getProductBrands(Connector connector) {
+        ApiEnvelope response = callBusiness(connector, "getBrands", new LinkedHashMap<>());
+        List<ProductBrand> items = rows(response, "getBrands").stream()
+                .map(DhbClientAdapter::productBrand).toList();
+        logPage(connector, "getBrands", PageRequest.first(Math.max(1, Math.min(1000, items.size()))),
+                response, items.size());
+        return items;
+    }
+
+    @Override
+    public Page<ProductSpecification> getProductSpecifications(Connector connector, PageRequest page) {
+        Objects.requireNonNull(page, "page cannot be null");
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("begin", page.begin());
+        values.put("step", page.step());
+        ApiEnvelope response = callBusiness(connector, "getMultiOptionsList", values);
+        List<ProductSpecification> items = rows(response, "getMultiOptionsList").stream()
+                .map(DhbClientAdapter::productSpecification).toList();
+        logPage(connector, "getMultiOptionsList", page, response, items.size());
+        return new Page<>(page, response.total(), items);
+    }
+
+    @Override
+    public Page<ProductTag> getProductTags(Connector connector, PageRequest page) {
+        Objects.requireNonNull(page, "page cannot be null");
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("page", page.begin() / page.step() + 1);
+        values.put("page_size", page.step());
+        ApiEnvelope response = callBusiness(connector, "getGoodsTag", values);
+        List<Map<String, Object>> rawItems = pageRows(response, "getGoodsTag");
+        List<ProductTag> items = rawItems.stream()
+                .map(DhbClientAdapter::productTag).toList();
+        logPage(connector, "getGoodsTag", page, response, items.size(), pageTotal(response, "getGoodsTag"));
+        return new Page<>(page, pageTotal(response, "getGoodsTag"), items);
+    }
+
+    @Override
+    public Page<Supplier> getSuppliers(Connector connector, PageRequest page) {
+        Objects.requireNonNull(page, "page cannot be null");
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("begin", page.begin());
+        values.put("step", page.step());
+        values.put("data_type", 3);
+        ApiEnvelope response = callBusiness(connector, "getSupplierList", values);
+        List<Supplier> items = businessRows(response, "getSupplierList").stream()
+                .map(DhbClientAdapter::supplier).toList();
+        long total = businessTotal(response, "getSupplierList");
+        logPage(connector, "getSupplierList", page, response, items.size(), total);
+        return new Page<>(page, total, items);
+    }
+
+    @Override
+    public Page<PurchaseOrder> getPurchaseOrders(Connector connector, PageRequest page) {
+        Objects.requireNonNull(page, "page cannot be null");
+        Map<String, Object> values = pageValues(page);
+        values.put("is_erp_api", 2);
+        ApiEnvelope response = callBusiness(connector, "getPurchaseList", values);
+        List<PurchaseOrder> items = new ArrayList<>();
+        for (Map<String, Object> summary : businessRows(response, "getPurchaseList")) {
+            String number = first(summary, "purchase_num");
+            if (number == null) continue;
+            ApiEnvelope detailResponse = callBusiness(connector, "getPurchaseContent",
+                    Map.of("purchase_num", number));
+            Map<String, Object> detail = businessObject(detailResponse, "getPurchaseContent");
+            items.add(purchaseOrder(summary, detail));
+        }
+        long total = businessTotal(response, "getPurchaseList");
+        logPage(connector, "getPurchaseList", page, response, items.size(), total);
+        return new Page<>(page, total, items);
+    }
+
+    @Override
+    public Page<PurchaseReturn> getPurchaseReturns(Connector connector, PageRequest page) {
+        Objects.requireNonNull(page, "page cannot be null");
+        PageRequest effectivePage = page.step() > PURCHASE_RETURN_MAX_PAGE_SIZE
+                ? new PageRequest(page.begin(), PURCHASE_RETURN_MAX_PAGE_SIZE) : page;
+        ApiEnvelope response = callBusiness(connector, "getPurchaseReturnList", pageValues(effectivePage));
+        List<PurchaseReturn> items = new ArrayList<>();
+        for (Map<String, Object> summary : businessRows(response, "getPurchaseReturnList")) {
+            String number = first(summary, "returns_num");
+            if (number == null) continue;
+            ApiEnvelope detailResponse = callBusiness(connector, "getPurchaseReturnContent",
+                    Map.of("purchase_num", number));
+            Map<String, Object> detail = businessObject(detailResponse, "getPurchaseReturnContent");
+            items.add(purchaseReturn(summary, detail));
+        }
+        long total = businessTotal(response, "getPurchaseReturnList");
+        logPage(connector, "getPurchaseReturnList", effectivePage, response, items.size(), total);
+        return new Page<>(effectivePage, total, items);
+    }
+
+    @Override
+    public Page<WarehousingReceipt> getWarehousingReceipts(Connector connector, PageRequest page) {
+        Objects.requireNonNull(page, "page cannot be null");
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("page", page.begin() / page.step() + 1);
+        values.put("pageSize", page.step());
+        values.put("is_erp_api", 2);
+        ApiEnvelope response = callBusiness(connector, "getWarehousingList", values);
+        List<WarehousingReceipt> items = new ArrayList<>();
+        for (Map<String, Object> summary : businessRows(response, "getWarehousingList")) {
+            String number = first(summary, "warehousing_num");
+            if (number == null) continue;
+            ApiEnvelope detailResponse = callBusiness(connector, "getWarehousingContent",
+                    Map.of("warehousing_num", number));
+            Map<String, Object> detail = businessObject(detailResponse, "getWarehousingContent");
+            items.add(warehousingReceipt(summary, detail));
+        }
+        long total = businessTotal(response, "getWarehousingList");
+        logPage(connector, "getWarehousingList", page, response, items.size(), total);
+        return new Page<>(page, total, items);
+    }
+
+    @Override
+    public Page<Warehouse> getWarehouses(Connector connector, PageRequest page) {
+        Objects.requireNonNull(page, "page cannot be null");
+        ApiEnvelope response = callBusiness(connector, "getStockInfo", pageValues(page));
+        List<Warehouse> items = businessRows(response, "getStockInfo").stream()
+                .map(DhbClientAdapter::warehouse).toList();
+        long total = businessTotal(response, "getStockInfo");
+        logPage(connector, "getStockInfo", page, response, items.size(), total);
+        return new Page<>(page, total, items);
+    }
+
+    @Override
+    public List<InventoryBalance> getInventory(Connector connector, List<String> goodsCodes) {
+        if (goodsCodes == null || goodsCodes.isEmpty()) return List.of();
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("goods_num", goodsCodes.stream().filter(Objects::nonNull)
+                .map(String::strip).filter(value -> !value.isEmpty()).distinct().toList());
+        ApiEnvelope response = callBusiness(connector, "batchGetStock", values);
+        List<InventoryBalance> items = businessRows(response, "batchGetStock").stream()
+                .map(DhbClientAdapter::inventoryBalance).toList();
+        log.info("订货宝接口调用成功 tenantId={} connectorId={} function=batchGetStock requestedGoods={} returned={} elapsedMs={}",
+                connector.tenantId(), connector.connectorId(), goodsCodes.size(), items.size(), response.elapsedMs());
+        return items;
     }
 
     @Override
@@ -503,7 +733,7 @@ public final class DhbClientAdapter implements DhbClient {
         return rows;
     }
 
-    /** 解析 getShipsList 的 rData 分页对象：{page_size,page,total_page,total,data:[...]}。 */
+    /** 解析订货宝分页对象：{page_size,page,total_page,total,data:[...]}。 */
     private static List<Map<String, Object>> pageRows(ApiEnvelope response, String function) {
         Map<String, Object> data = object(response.data(), function);
         Object value = data.get("data");
@@ -519,6 +749,75 @@ public final class DhbClientAdapter implements DhbClient {
     private static long pageTotal(ApiEnvelope response, String function) {
         Map<String, Object> data = object(response.data(), function);
         return number(data, "total", response.total());
+    }
+
+    private static Map<String, Object> pageValues(PageRequest page) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("page", page.begin() / page.step() + 1);
+        values.put("page_size", page.step());
+        return values;
+    }
+
+    /** 兼容供应链接口中数组、data.list、data.listsData 三种分页信封。 */
+    private static List<Map<String, Object>> businessRows(ApiEnvelope response, String function) {
+        Object value = response.data();
+        for (int depth = 0; depth < 4; depth++) {
+            if (value == null) return List.of();
+            if (value instanceof Iterable<?> iterable) {
+                List<Map<String, Object>> result = new ArrayList<>();
+                for (Object item : iterable) result.add(object(item, function));
+                return result;
+            }
+            Map<String, Object> map = object(value, function);
+            Object list = firstObject(map, "list", "listsData", "items");
+            if (list != null) {
+                value = list;
+                continue;
+            }
+            Object data = map.get("data");
+            if (data == null) return List.of();
+            value = data;
+        }
+        throw protocolError(function, "订货宝分页回执嵌套层级超限");
+    }
+
+    private static long businessTotal(ApiEnvelope response, String function) {
+        long fallback = response.total();
+        Object value = response.data();
+        for (int depth = 0; depth < 4 && value instanceof Map<?, ?>; depth++) {
+            Map<String, Object> map = object(value, function);
+            long total = number(map, "count", number(map, "total", Long.MIN_VALUE));
+            if (total != Long.MIN_VALUE) return total;
+            value = map.get("data");
+        }
+        return fallback >= 0 ? fallback : businessRows(response, function).size();
+    }
+
+    /** 获取详情接口的业务对象，自动剥离 code/message/data 外层。 */
+    private static Map<String, Object> businessObject(ApiEnvelope response, String function) {
+        Object value = response.data();
+        for (int depth = 0; depth < 4; depth++) {
+            Map<String, Object> map = object(value, function);
+            Object data = map.get("data");
+            if (data instanceof Map<?, ?> && onlyEnvelopeFields(map)) {
+                value = data;
+                continue;
+            }
+            return map;
+        }
+        throw protocolError(function, "订货宝详情回执嵌套层级超限");
+    }
+
+    private static boolean onlyEnvelopeFields(Map<String, Object> map) {
+        return map.keySet().stream().allMatch(key -> List.of("code", "message", "data").contains(key));
+    }
+
+    private static Object firstObject(Map<String, Object> values, String... keys) {
+        for (String key : keys) {
+            Object value = values.get(key);
+            if (value != null) return value;
+        }
+        return null;
     }
 
     private static List<Map<String, Object>> childRows(Map<String, Object> parent, String key, String function) {
@@ -572,9 +871,252 @@ public final class DhbClientAdapter implements DhbClient {
         return text.isEmpty() || "null".equalsIgnoreCase(text) ? null : text;
     }
 
+    private static Supplier supplier(Map<String, Object> row) {
+        return new Supplier(first(row, "guid", "client_id"), first(row, "guid"),
+                first(row, "client_num"), first(row, "client_name"), first(row, "area_name"),
+                first(row, "address"), first(row, "contact"), first(row, "mobile"),
+                first(row, "phone"), first(row, "email"), first(row, "account_name"),
+                first(row, "bank"), first(row, "bank_account"), first(row, "invoice_title"),
+                first(row, "taxpayer_number"), first(row, "remark"), instant(row, "update_date"), row);
+    }
+
+    private static Warehouse warehouse(Map<String, Object> row) {
+        return new Warehouse(first(row, "stock_id", "stock_guid", "stock_num"),
+                first(row, "stock_guid"), first(row, "stock_num"), first(row, "stock_name"),
+                first(row, "status"), booleanFlag(row, "is_default"), decimal(row, "acreages"),
+                first(row, "phone"), first(row, "address"), first(row, "collaborator_id"),
+                first(row, "remark"), row);
+    }
+
+    private static PurchaseOrder purchaseOrder(Map<String, Object> summary,
+                                                Map<String, Object> detail) {
+        Map<String, Object> main = nestedObjectOrSelf(detail, "main");
+        List<PurchaseOrderLine> lines = childRows(detail, "list", "getPurchaseContent").stream()
+                .map(DhbClientAdapter::purchaseOrderLine).toList();
+        return new PurchaseOrder(first(main, "purchase_id", "purchase_num"),
+                first(main, "purchase_num"), first(main, "supplier_id", "supplier_guid"),
+                first(main, "supplier_num"), first(main, "supplier_name"),
+                first(main, "stock_id", "stock_guid"), first(main, "stock_num"),
+                first(main, "stock_name"), first(main, "staff_id"), first(main, "staff_name"),
+                first(main, "status"), first(main, "status_name"), first(main, "pay_status"),
+                first(main, "pay_status_name"), instant(main, "delivery_date"),
+                instant(main, "create_date"), instant(main, "update_date"),
+                decimal(main, "total"), decimal(main, "account_paid"), decimal(main, "goods_count"),
+                booleanFlag(main, "is_erp_api"), first(main, "remark"),
+                first(main, "internal_comtion"), lines, merged(summary, detail));
+    }
+
+    private static PurchaseOrderLine purchaseOrderLine(Map<String, Object> row) {
+        Map<String, Object> options = nestedObjectOrSelf(row, "options_info");
+        return new PurchaseOrderLine(first(row, "purchase_list_id"), first(row, "goods_id"),
+                first(row, "goods_guid"), first(row, "goods_num"), first(row, "goods_name"),
+                first(row, "options_id"), first(row, "options_goods_num"),
+                first(options, "options_name", "name"), decimal(row, "number"),
+                decimal(row, "price"), first(row, "purchase_units"),
+                first(row, "purchase_units_name"), decimal(row, "purchase_units_number"),
+                decimal(row, "wh_number"), decimal(row, "returns_number"),
+                first(row, "remark"), row);
+    }
+
+    private static PurchaseReturn purchaseReturn(Map<String, Object> summary,
+                                                  Map<String, Object> detail) {
+        Map<String, Object> main = nestedObjectOrSelf(detail, "main");
+        List<PurchaseReturnLine> lines = childRows(detail, "list", "getPurchaseReturnContent")
+                .stream().map(DhbClientAdapter::purchaseReturnLine).toList();
+        return new PurchaseReturn(first(main, "returns_id", "returns_num"),
+                first(main, "returns_num"), first(main, "supplier_id"),
+                first(main, "supplier_num"), first(main, "supplier_name"),
+                first(main, "stock_id"), first(main, "stock_num"), first(main, "stock_name"),
+                first(main, "staff_id"), first(main, "staff_name"), first(main, "status"),
+                first(main, "status_name"), decimal(main, "returns_total"),
+                decimal(main, "discount_total"), first(main, "returns_reason"),
+                instant(main, "create_date"), instant(main, "returns_send_date"),
+                first(main, "internal_comtion"), first(main, "remark"),
+                integer(main, "returns_details_count"), first(main, "contact_name", "returns_contact"),
+                first(main, "returns_phone"), first(main, "returns_address"),
+                stringList(main.get("returns_cityid")), stringList(main.get("returns_city_name")),
+                first(main, "source_device"), first(main, "parent_returnsid"),
+                first(main, "parent_companyid"), booleanFlag(main, "is_erp_api"),
+                lines, merged(summary, detail));
+    }
+
+    private static PurchaseReturnLine purchaseReturnLine(Map<String, Object> row) {
+        return new PurchaseReturnLine(first(row, "returns_list_id"), first(row, "goods_id"),
+                first(row, "goods_num"), first(row, "goods_name"), first(row, "options_id"),
+                first(row, "options_goods_num"), first(row, "options_name"),
+                decimal(row, "returns_number"), decimal(row, "confirm_number"),
+                decimal(row, "returns_price"), decimal(row, "confirm_price"),
+                first(row, "returns_units"), first(row, "returns_units_name"),
+                decimal(row, "returns_units_number"), decimal(row, "returns_confirm_units_number"),
+                decimal(row, "conversion_number"), decimal(row, "amount"), decimal(row, "cost_price"),
+                first(row, "purchase_num"), first(row, "category_name"), first(row, "brand_name"),
+                first(row, "remark"), row);
+    }
+
+    private static WarehousingReceipt warehousingReceipt(Map<String, Object> summary,
+                                                          Map<String, Object> detail) {
+        Map<String, Object> info = nestedObjectOrSelf(detail, "info");
+        List<WarehousingLine> lines = childRows(detail, "list_detail", "getWarehousingContent")
+                .stream().map(DhbClientAdapter::warehousingLine).toList();
+        List<PurchaseLink> links = childRows(detail, "order_num", "getWarehousingContent")
+                .stream().map(row -> new PurchaseLink(first(row, "orderid"), first(row, "ordernum")))
+                .filter(link -> link.purchaseOrderNo() != null).toList();
+        return new WarehousingReceipt(first(info, "warehousing_id", "warehousing_num"),
+                first(info, "warehousing_num"), first(info, "stock_id"), first(info, "stock_name"),
+                first(info, "client_id"), first(info, "supplier_name"), first(info, "type_id"),
+                first(info, "type_name"), first(info, "status"), first(info, "status_name"),
+                first(info, "staff_name"), first(info, "client_id"), first(info, "accounts_id"),
+                first(info, "collaborator_id"), first(info, "collaborator_name"),
+                first(info, "logistics_id"), valueText(info, "express_num"),
+                instant(info, "storage_date"), instant(info, "create_date"), instant(info, "update_date"),
+                decimal(info, "freight"), firstDecimal(info, "total_amounts", "total"),
+                decimal(info, "cost_total"), booleanFlag(info, "is_api"), first(info, "split_type"),
+                first(info, "remark"), lines, links, merged(summary, detail));
+    }
+
+    private static WarehousingLine warehousingLine(Map<String, Object> row) {
+        return new WarehousingLine(first(row, "warehousing_list_id"), first(row, "goods_id"),
+                first(row, "goods_num"), first(row, "goods_name"), first(row, "options_id"),
+                first(row, "options_goods_num"), first(row, "options_name"),
+                decimal(row, "warehousing_number"), decimal(row, "warehousing_list_units_number"),
+                first(row, "warehousing_list_units"), first(row, "warehousing_list_units_name"),
+                decimal(row, "warehousing_list_conversion_number"), decimal(row, "cost_price"),
+                decimal(row, "warehousing_list_units_cost_price"), decimal(row, "purchase_price"),
+                decimal(row, "whole_price"), first(row, "goods_allocation"), first(row, "base_barcode"),
+                first(row, "goods_model"), decimal(row, "real_number"), decimal(row, "available_number"),
+                first(row, "collaborator_id"), first(row, "collaborator_name"), first(row, "remark"), row);
+    }
+
+    private static InventoryBalance inventoryBalance(Map<String, Object> row) {
+        return new InventoryBalance(first(row, "goods_guid"), first(row, "goods_num"),
+                first(row, "goods_name"), first(row, "stock_guid"), first(row, "stock_num"),
+                first(row, "stock_name"), first(row, "multi_first"), first(row, "multi_first_num"),
+                first(row, "multi_first_name"), first(row, "multi_second"),
+                first(row, "multi_second_num"), first(row, "multi_second_name"),
+                decimal(row, "available_number"), decimal(row, "real_number"), row);
+    }
+
+    private static Map<String, Object> nestedObjectOrSelf(Map<String, Object> values, String key) {
+        Object nested = values.get(key);
+        return nested instanceof Map<?, ?> ? object(nested, key) : values;
+    }
+
+    private static Map<String, Object> merged(Map<String, Object> first,
+                                              Map<String, Object> second) {
+        Map<String, Object> result = new LinkedHashMap<>(first);
+        result.putAll(second);
+        return immutable(result);
+    }
+
+    private static List<String> stringList(Object value) {
+        if (value == null) return List.of();
+        if (value instanceof Iterable<?> iterable) {
+            List<String> result = new ArrayList<>();
+            for (Object item : iterable) if (item != null) result.add(String.valueOf(item));
+            return List.copyOf(result);
+        }
+        return List.of(String.valueOf(value));
+    }
+
+    private static BigDecimal firstDecimal(Map<String, Object> values, String... keys) {
+        for (String key : keys) {
+            BigDecimal value = decimal(values, key);
+            if (value != null) return value;
+        }
+        return null;
+    }
+
     private static Product product(Map<String, Object> row) {
-        return new Product(first(row, "guid", "coding"), text(row, "coding"), text(row, "name"),
-                text(row, "putaway"), row);
+        String sourceId = first(row, "guid", "coding");
+        List<ProductSku> skus = childRows(row, "multi", "getGoodsList").stream()
+                .map(DhbClientAdapter::productSku).toList();
+        List<ProductImage> images = new ArrayList<>(childRows(row, "goods_imgs", "getGoodsList").stream()
+                .map(DhbClientAdapter::productImage).toList());
+        String mainImageSource = text(row, "goods_picture");
+        boolean mainImageIncluded = images.stream()
+                .anyMatch(image -> Objects.equals(mainImageSource, image.sourceUrl()));
+        if (mainImageSource != null && !mainImageIncluded) {
+            images.addFirst(new ProductImage(sourceId + "/main", sourceId, null, null, 0,
+                    mainImageSource));
+        }
+        return new Product(sourceId, text(row, "coding"), text(row, "name"),
+                text(row, "putaway"), text(row, "barcode"), text(row, "units"),
+                first(row, "siteID", "SiteID"), first(row, "brandID", "BrandID"),
+                text(row, "model"), text(row, "subtitle"), text(row, "keywords"),
+                text(row, "goods_allocation"), mainImageSource, text(row, "multi_id"),
+                decimal(row, "price1"), decimal(row, "price2"), decimal(row, "price3"),
+                decimal(row, "price4"), text(row, "middle_units"), text(row, "bigunits"),
+                text(row, "middle_barcode"), text(row, "conversion_barcode"),
+                text(row, "big_barcode"), decimal(row, "base2middle_unit_rate"),
+                decimal(row, "conversionnumber"), decimal(row, "package"),
+                text(row, "minorder"), decimal(row, "librarydown"), decimal(row, "libraryup"),
+                decimal(row, "librarysafe"), decimal(row, "middle_unit_whole_price"),
+                decimal(row, "big_unit_whole_price"), images, customFields(row), skus, row);
+    }
+
+    private static ProductSku productSku(Map<String, Object> row) {
+        return new ProductSku(first(row, "options_id", "options_goods_num", "barcode"),
+                first(row, "options_goods_num"), first(row, "barcode"),
+                first(row, "multiFirst"), first(row, "multiSecond"), first(row, "multiName"),
+                text(row, "options_id"), decimal(row, "whole"), decimal(row, "selling"),
+                decimal(row, "purchase"), decimal(row, "middle_unit_whole_price"),
+                decimal(row, "big_unit_whole_price"), text(row, "options_middle_barcode"),
+                text(row, "options_big_barcode"), row);
+    }
+
+    private static ProductCategory productCategory(Map<String, Object> row) {
+        return new ProductCategory(first(row, "SiteID", "siteID"), first(row, "ERPID", "erpID"),
+                first(row, "SiteName", "siteName"), first(row, "SiteNum", "siteNum"),
+                first(row, "ParentId", "parentId"), booleanFlag(row, "IsDefault", "isDefault"), row);
+    }
+
+    private static ProductBrand productBrand(Map<String, Object> row) {
+        return new ProductBrand(first(row, "brandID", "BrandID"), first(row, "erpID", "ERPID"),
+                first(row, "brandName", "BrandName"), first(row, "brandNum", "BrandNum"),
+                integer(row, "orderNum"), first(row, "brandAbout", "BrandAbout"), row);
+    }
+
+    private static ProductSpecification productSpecification(Map<String, Object> row) {
+        String sourceId = first(row, "multiID", "MultiID");
+        List<ProductSpecificationValue> values = childRows(row, "children", "getMultiOptionsList")
+                .stream().map(DhbClientAdapter::productSpecificationValue).toList();
+        return new ProductSpecification(sourceId, first(row, "multiNum", "MultiNum"),
+                first(row, "name", "Name"), first(row, "parentMultiID", "ParentMultiID"), values, row);
+    }
+
+    private static ProductSpecificationValue productSpecificationValue(Map<String, Object> row) {
+        return new ProductSpecificationValue(first(row, "multiID", "MultiID"),
+                first(row, "multiNum", "MultiNum"), first(row, "name", "Name"),
+                first(row, "parentMultiID", "ParentMultiID"), row);
+    }
+
+    private static ProductTag productTag(Map<String, Object> row) {
+        String sourceId = first(row, "tag_id", "tagID", "tagId", "TagID", "commendID", "commendId",
+                "id", "code", "tagCode");
+        String code = first(row, "tag_code", "tagCode", "code", "commendCode", "commendID", "tagID", "id");
+        String name = first(row, "tag_name", "tagName", "name", "TagName", "commendName", "title");
+        return new ProductTag(sourceId == null ? (code == null ? name : code) : sourceId,
+                code, name, integer(row, "sort"), integer(row, "relation_count"),
+                instant(row, "create_date"), instant(row, "update_date"),
+                first(row, "group_id", "groupID"), first(row, "group_name", "groupName"), row);
+    }
+
+    private static ProductImage productImage(Map<String, Object> row) {
+        String sourceUrl = first(row, "url", "image_url", "file_url", "file_name", "fileName");
+        return new ProductImage(first(row, "resource_id", "resourceId"),
+                first(row, "goods_id", "goodsId"), first(row, "old_name", "oldName"),
+                first(row, "file_name", "fileName"), integer(row, "order_num", "orderNum"),
+                sourceUrl);
+    }
+
+    private static Map<String, String> customFields(Map<String, Object> row) {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (int index = 1; index <= 6; index++) {
+            String key = "field_" + index;
+            String value = text(row, key);
+            if (value != null) values.put(key, value);
+        }
+        return Collections.unmodifiableMap(values);
     }
 
     private static Customer customer(Map<String, Object> row) {
@@ -769,6 +1311,42 @@ public final class DhbClientAdapter implements DhbClient {
         }
     }
 
+    private static Integer integer(Map<String, Object> values, String... keys) {
+        for (String key : keys) {
+            Object value = values.get(key);
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof Number number) {
+                return number.intValue();
+            }
+            try {
+                return Integer.valueOf(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+                // 兼容订货宝偶尔返回空字符串或非数字排序值。
+            }
+        }
+        return null;
+    }
+
+    private static Boolean booleanFlag(Map<String, Object> values, String... keys) {
+        for (String key : keys) {
+            String value = text(values, key);
+            if (value == null) {
+                continue;
+            }
+            if ("1".equals(value) || "true".equalsIgnoreCase(value)
+                    || "yes".equalsIgnoreCase(value) || "y".equalsIgnoreCase(value)) {
+                return Boolean.TRUE;
+            }
+            if ("0".equals(value) || "false".equalsIgnoreCase(value)
+                    || "no".equalsIgnoreCase(value) || "n".equalsIgnoreCase(value)) {
+                return Boolean.FALSE;
+            }
+        }
+        return null;
+    }
+
     private static Instant instant(Map<String, Object> values, String key) {
         Object value = values.get(key);
         if (value == null) {
@@ -841,6 +1419,21 @@ public final class DhbClientAdapter implements DhbClient {
 
     private static String safeBusinessKey(String value) {
         return value.length() > 64 ? value.substring(0, 64) : value;
+    }
+
+    private static URI resolveImageUri(URI imageBaseUri, String sourceUrl) {
+        try {
+            URI source = URI.create(sourceUrl.strip());
+            URI resolved = source.isAbsolute() ? source : imageBaseUri.resolve(source);
+            if (!"http".equalsIgnoreCase(resolved.getScheme())
+                    && !"https".equalsIgnoreCase(resolved.getScheme())) {
+                throw new IllegalArgumentException("商品图片地址协议不受支持");
+            }
+            return resolved;
+        } catch (IllegalArgumentException exception) {
+            throw new DhbClientException("DHB_IMAGE_URL_INVALID", "订货宝商品图片地址无效",
+                    false, null, null);
+        }
     }
 
     private void logPage(Connector connector, String function, PageRequest request,

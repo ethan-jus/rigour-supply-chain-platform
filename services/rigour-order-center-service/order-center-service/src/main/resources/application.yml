@@ -37,7 +37,7 @@ rigour:
     dhb:
       sync:
         # Order Center内部定时同步开关；启用后从Integration动态发现租户目标。
-        enabled: ${RIGOUR_ORDER_DHB_SYNC_ENABLED:false}
+        enabled: ${RIGOUR_ORDER_DHB_SYNC_ENABLED:true}
         # Spring六字段cron：每小时00分和30分执行，秒 分 时 日 月 周。
         cron: ${RIGOUR_ORDER_DHB_SYNC_CRON:0 0/30 * * * ?}
         # 单次同步最大页数，范围1..100；供应商数据过大时分批运行。
