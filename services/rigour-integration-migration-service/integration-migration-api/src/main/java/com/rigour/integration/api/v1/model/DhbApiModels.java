@@ -70,8 +70,16 @@ public final class DhbApiModels {
 
     /** 商品查询参数，对应订货宝 getGoodsList 的非认证参数。 */
     public record ProductQueryCommand(Integer begin, Integer step, String status, String putaway,
-                                      String goodsCode, Instant updatedFrom, Instant updatedTo,
-                                      String barcode) {
+                                      String goodsCode, String barcode, Instant updatedFrom,
+                                      Instant updatedTo, UUID mediaJobId) {
+        public ProductQueryCommand(Integer begin, Integer step, String status, String putaway,
+                                   String goodsCode) {
+            this(begin, step, status, putaway, goodsCode, null, null, null, null);
+        }
+    }
+
+    /** 分类、品牌、规格、标签读取参数；全量接口会忽略 begin/step。 */
+    public record ProductMasterDataQueryCommand(Integer begin, Integer step) {
     }
 
     /** 客户查询参数，对应订货宝 getDealersList 的非认证参数。 */
@@ -152,8 +160,143 @@ public final class DhbApiModels {
     public record ProductPageView(long total, List<ProductView> items) {
     }
 
+    /** 商品图片异步上传任务状态；任务完成后 ERP 再按 mediaJobId 查询商品对象 Key。 */
+    public record ProductMediaSyncView(UUID jobId, UUID connectorId, String status,
+                                       long totalImages, long completedImages, long failedImages,
+                                       Instant createdAt, Instant startedAt, Instant finishedAt,
+                                       String errorCode, String errorMessage) {
+    }
+
     public record ProductView(String sourceId, String code, String name, String putaway,
+                              String barcode, String unit, String categorySourceId,
+                              String brandSourceId, String model, String subtitle,
+                              String keywords, String allocation, String mainImageKey,
+                              String multiId, BigDecimal orderPrice, BigDecimal marketPrice,
+                              BigDecimal purchasePrice, BigDecimal price4, String middleUnit,
+                              String bigUnit, String middleBarcode, String bigBarcode,
+                              String conversionBarcode, BigDecimal baseToMiddleRate,
+                              BigDecimal baseToBigRate, BigDecimal minimumOrder,
+                              String minimumOrderUnit, BigDecimal inventoryLower,
+                              BigDecimal inventoryUpper, BigDecimal safetyInventory,
+                              BigDecimal middleOrderPrice, BigDecimal bigOrderPrice,
+                              List<ProductImageView> images, Map<String, String> customFields,
+                              List<ProductSkuView> skus, Map<String, Object> sourceFields) {
+        public ProductView(String sourceId, String code, String name, String putaway,
+                           String barcode, String unit, String categorySourceId,
+                           String brandSourceId, List<ProductSkuView> skus,
+                           Map<String, Object> sourceFields) {
+            this(sourceId, code, name, putaway, barcode, unit, categorySourceId, brandSourceId,
+                    null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null,
+                    List.of(), Map.of(), skus,
+                    sourceFields);
+        }
+
+        public ProductView {
+            images = images == null ? List.of() : List.copyOf(images);
+            customFields = customFields == null ? Map.of() : Map.copyOf(customFields);
+            skus = skus == null ? List.of() : List.copyOf(skus);
+        }
+    }
+
+    public record ProductSkuView(String sourceId, String code, String barcode,
+                                 String firstSpecificationValueSourceId,
+                                 String secondSpecificationValueSourceId,
+                                 String specificationName, String optionsId,
+                                 BigDecimal orderPrice, BigDecimal marketPrice,
+                                 BigDecimal purchasePrice, BigDecimal middleOrderPrice,
+                                 BigDecimal bigOrderPrice, String middleBarcode,
+                                 String bigBarcode,
+                                 Map<String, Object> sourceFields) {
+        public ProductSkuView(String sourceId, String code, String barcode,
+                              String firstSpecificationValueSourceId,
+                              String secondSpecificationValueSourceId,
+                              String specificationName, Map<String, Object> sourceFields) {
+            this(sourceId, code, barcode, firstSpecificationValueSourceId,
+                    secondSpecificationValueSourceId, specificationName, null, null, null, null,
+                    null, null, null, null, sourceFields);
+        }
+    }
+
+    public record ProductImageView(String sourceResourceId, String sourceGoodsId,
+                                   String originalName, String fileName, Integer sortOrder,
+                                   String objectKey) {
+        public ProductImageView(String sourceResourceId, String sourceGoodsId,
+                                String originalName, String fileName, Integer sortOrder) {
+            this(sourceResourceId, sourceGoodsId, originalName, fileName, sortOrder, null);
+        }
+    }
+
+    public record ProductCategoryListView(List<ProductCategoryView> items) {
+        public ProductCategoryListView {
+            items = items == null ? List.of() : List.copyOf(items);
+        }
+    }
+
+    public record ProductCategoryView(String sourceId, String externalReferenceId, String name,
+                                      String categoryNumber, String parentSourceId,
+                                      Boolean defaultCategory, Map<String, Object> sourceFields) {
+        public ProductCategoryView(String sourceId, String externalReferenceId, String name,
+                                   Map<String, Object> sourceFields) {
+            this(sourceId, externalReferenceId, name, null, null, null, sourceFields);
+        }
+    }
+
+    public record ProductBrandListView(List<ProductBrandView> items) {
+        public ProductBrandListView {
+            items = items == null ? List.of() : List.copyOf(items);
+        }
+    }
+
+    public record ProductBrandView(String sourceId, String externalReferenceId, String name,
+                                   String brandNumber, Integer sortOrder, String description,
+                                   Map<String, Object> sourceFields) {
+        public ProductBrandView(String sourceId, String externalReferenceId, String name,
+                                Map<String, Object> sourceFields) {
+            this(sourceId, externalReferenceId, name, null, null, null, sourceFields);
+        }
+    }
+
+    public record ProductSpecificationPageView(long total, List<ProductSpecificationView> items) {
+        public ProductSpecificationPageView {
+            items = items == null ? List.of() : List.copyOf(items);
+        }
+    }
+
+    public record ProductSpecificationView(String sourceId, String code, String name,
+                                           String parentSourceId,
+                                           List<ProductSpecificationValueView> values,
+                                           Map<String, Object> sourceFields) {
+        public ProductSpecificationView(String sourceId, String code, String name,
+                                        List<ProductSpecificationValueView> values,
+                                        Map<String, Object> sourceFields) {
+            this(sourceId, code, name, null, values, sourceFields);
+        }
+
+        public ProductSpecificationView {
+            values = values == null ? List.of() : List.copyOf(values);
+        }
+    }
+
+    public record ProductSpecificationValueView(String sourceId, String code, String name,
+                                                String parentSourceId,
+                                                Map<String, Object> sourceFields) {
+    }
+
+    public record ProductTagPageView(long total, List<ProductTagView> items) {
+        public ProductTagPageView {
+            items = items == null ? List.of() : List.copyOf(items);
+        }
+    }
+
+    public record ProductTagView(String sourceId, String code, String name,
+                                 Integer sortOrder, Integer relationCount, Instant createdAt,
+                                 Instant updatedAt, String groupSourceId, String groupName,
+                                 Map<String, Object> sourceFields) {
+        public ProductTagView(String sourceId, String code, String name,
                               Map<String, Object> sourceFields) {
+            this(sourceId, code, name, null, null, null, null, null, null, sourceFields);
+        }
     }
 
     public record CustomerPageView(long total, List<CustomerView> items) {

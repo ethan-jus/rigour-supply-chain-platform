@@ -9,6 +9,8 @@ import static org.mockito.Mockito.when;
 
 import com.rigour.order.api.v1.model.DhbOrderImportBatch;
 import com.rigour.order.infrastructure.persistence.entity.DhbFinancialDocumentEntity;
+import com.rigour.order.infrastructure.persistence.entity.DhbReturnEntity;
+import com.rigour.order.infrastructure.persistence.entity.DhbReturnLineEntity;
 import com.rigour.order.infrastructure.persistence.entity.DhbShipmentEntity;
 import com.rigour.order.infrastructure.persistence.entity.DhbShipmentLineEntity;
 import com.rigour.order.infrastructure.persistence.mapper.DhbFinancialDocumentMapper;
@@ -30,6 +32,8 @@ import tools.jackson.databind.json.JsonMapper;
 class MybatisPlusOrderDocumentRepositoryTest {
     private DhbShipmentMapper shipmentMapper;
     private DhbShipmentLineMapper shipmentLineMapper;
+    private DhbReturnMapper returnMapper;
+    private DhbReturnLineMapper returnLineMapper;
     private DhbFinancialDocumentMapper financialMapper;
     private MybatisPlusOrderDocumentRepository repository;
 
@@ -37,9 +41,11 @@ class MybatisPlusOrderDocumentRepositoryTest {
     void setUp() {
         shipmentMapper = mock(DhbShipmentMapper.class);
         shipmentLineMapper = mock(DhbShipmentLineMapper.class);
+        returnMapper = mock(DhbReturnMapper.class);
+        returnLineMapper = mock(DhbReturnLineMapper.class);
         financialMapper = mock(DhbFinancialDocumentMapper.class);
         repository = new MybatisPlusOrderDocumentRepository(shipmentMapper, shipmentLineMapper,
-                mock(DhbReturnMapper.class), mock(DhbReturnLineMapper.class), financialMapper,
+                returnMapper, returnLineMapper, financialMapper,
                 mock(OutboxStore.class), JsonMapper.builder().build(),
                 Clock.fixed(Instant.parse("2026-08-04T10:00:00Z"), ZoneOffset.UTC));
     }
@@ -79,6 +85,55 @@ class MybatisPlusOrderDocumentRepositoryTest {
         assertThat(changed).isZero();
         verify(shipmentMapper, never()).updateById(any(DhbShipmentEntity.class));
         verify(shipmentLineMapper, never()).delete(any());
+    }
+
+    @Test
+    void repairsMissingShipmentDetailsWhenSourcePayloadHasNotChanged() {
+        DhbShipmentEntity existing = new DhbShipmentEntity();
+        existing.id = "existing-id";
+        existing.payloadHash = "same-hash";
+        existing.detailAvailable = true;
+        existing.createdAt = java.time.LocalDateTime.of(2026, 8, 1, 0, 0);
+        when(shipmentMapper.selectOne(any())).thenReturn(existing);
+        when(shipmentLineMapper.selectCount(any())).thenReturn(0L);
+        DhbOrderImportBatch.ShipmentLineItem line = new DhbOrderImportBatch.ShipmentLineItem(
+                "LINE-1", "G-1", "SKU-1", "P-1", "商品一", new BigDecimal("2"),
+                new BigDecimal("10"), new BigDecimal("20"), "件", "W-1", "完整发货");
+
+        int changed = repository.importShipments("tenant-1",
+                List.of(shipment(List.of(line), true, "same-hash")));
+
+        assertThat(changed).isEqualTo(1);
+        verify(shipmentMapper).updateById(any(DhbShipmentEntity.class));
+        verify(shipmentLineMapper).delete(any());
+        verify(shipmentLineMapper).insert(any(DhbShipmentLineEntity.class));
+    }
+
+    @Test
+    void repairsMissingReturnDetailsWhenSourcePayloadHasNotChanged() {
+        DhbReturnEntity existing = new DhbReturnEntity();
+        existing.id = "existing-id";
+        existing.payloadHash = "same-hash";
+        existing.detailAvailable = true;
+        existing.createdAt = java.time.LocalDateTime.of(2026, 8, 1, 0, 0);
+        when(returnMapper.selectOne(any())).thenReturn(existing);
+        when(returnLineMapper.selectCount(any())).thenReturn(0L);
+        DhbOrderImportBatch.ReturnLineItem line = new DhbOrderImportBatch.ReturnLineItem(
+                "LINE-1", "G-1", "SKU-1", "P-1", "商品一", new BigDecimal("1"),
+                new BigDecimal("1"), new BigDecimal("10"), new BigDecimal("10"), "件", "W-1",
+                "主仓", "退货");
+        DhbOrderImportBatch.ReturnItem item = new DhbOrderImportBatch.ReturnItem(
+                "RET-1", "ORDER-1", "finished", "员工", new BigDecimal("10"),
+                new BigDecimal("10"), Instant.parse("2026-08-04T02:00:00Z"),
+                Instant.parse("2026-08-04T02:00:00Z"), "质量问题", "C-1", "CG-1", "客户一",
+                null, null, "顺丰", "SF-1", "1", "快递", List.of(line), "{}", "same-hash", true);
+
+        int changed = repository.importReturns("tenant-1", List.of(item));
+
+        assertThat(changed).isEqualTo(1);
+        verify(returnMapper).updateById(any(DhbReturnEntity.class));
+        verify(returnLineMapper).delete(any());
+        verify(returnLineMapper).insert(any(DhbReturnLineEntity.class));
     }
 
     @Test

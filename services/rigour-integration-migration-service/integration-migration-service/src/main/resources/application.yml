@@ -22,9 +22,28 @@ logging:
 
 rigour:
   integration:
+    product-media:
+      # 订货宝图片强制写入 COS 私桶；缺少 COS 配置时服务启动失败，不降级到本地文件。
+      max-bytes: 10485760
+      # 图片任务由持久化队列驱动；每个实例最多4个并发下载/上传任务。
+      worker-concurrency: 4
+      worker-poll-interval-ms: 1000
+      worker-max-attempts: 3
+      cos:
+        # 非敏感项由 Nacos/环境配置；Secret 只从部署环境注入。
+        object-prefix: ${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_OBJECT_PREFIX:product-images}
+        region:
+        bucket:
+        secret-id: ${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_ID:}
+        secret-key: ${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_KEY:}
+        session-token: ${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SESSION_TOKEN:}
+        connection-timeout-ms: 5000
+        socket-timeout-ms: 60000
+        server-side-encryption: true
     dhb:
       client:
-        # 订货宝正式 API 基础 URL 必须配置在租户连接器的 base_url 中；文档未给出固定 URL，禁止硬编码。
+        # 订货宝正式 API 基础 URL 必须配置在租户连接器的 base_url 中；商品图片相对地址使用独立源站。
+        image-base-url: ${RIGOUR_INTEGRATION_DHB_IMAGE_BASE_URL:https://img.dhb168.com/}
         # 下面是本地客户端策略，不是订货宝官方承诺的限流值。正式上线前以订货宝确认的阈值覆盖。
         connect-timeout: 3s
         read-timeout: 15s

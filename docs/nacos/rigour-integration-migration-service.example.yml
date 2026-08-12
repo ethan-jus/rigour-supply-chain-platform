@@ -26,6 +26,27 @@ spring:
 
 rigour:
   integration:
+    dhb:
+      client:
+        # 订货宝 API base_url 仍由租户连接器保存；相对商品图片地址单独解析到图片源站。
+        image-base-url: ${RIGOUR_INTEGRATION_DHB_IMAGE_BASE_URL:https://img.dhb168.com/}
+    product-media:
+      # Integration 只负责下载订货宝图片并上传私桶，不向 Portal 返回永久公开地址。
+      max-bytes: 10485760
+      # 持久化图片任务由固定并发消费者处理；不要配置成无限并发。
+      worker-concurrency: 4
+      worker-poll-interval-ms: 1000
+      worker-max-attempts: 3
+      cos:
+        object-prefix: product-images
+        region: ap-beijing
+        bucket: rigour-sales-recordings-1361731487
+        secret-id: ${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_ID:}
+        secret-key: ${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_KEY:}
+#        session-token: ${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SESSION_TOKEN:}
+        connection-timeout-ms: 5000
+        socket-timeout-ms: 60000
+        server-side-encryption: true
     feishu:
       # DEV/local调试保留localhost；私网HTTP来源由服务动态匹配，不填写任何开发机IP。
       allowed-origins: http://localhost:5200

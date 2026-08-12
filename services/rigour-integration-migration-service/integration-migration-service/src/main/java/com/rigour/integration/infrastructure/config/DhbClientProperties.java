@@ -1,5 +1,6 @@
 package com.rigour.integration.infrastructure.config;
 
+import java.net.URI;
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -9,6 +10,8 @@ public final class DhbClientProperties {
 
     private Duration connectTimeout = Duration.ofSeconds(3);
     private Duration readTimeout = Duration.ofSeconds(15);
+    /** 订货宝相对商品图片地址的独立源站；不能复用 ERP API base_url。 */
+    private String imageBaseUrl = "https://img.dhb168.com/";
     private int maxAttempts = 3;
     private Duration initialBackoff = Duration.ofMillis(200);
     private Duration maxBackoff = Duration.ofSeconds(3);
@@ -20,6 +23,8 @@ public final class DhbClientProperties {
     public void setConnectTimeout(Duration value) { connectTimeout = value; }
     public Duration getReadTimeout() { return readTimeout; }
     public void setReadTimeout(Duration value) { readTimeout = value; }
+    public String getImageBaseUrl() { return imageBaseUrl; }
+    public void setImageBaseUrl(String value) { imageBaseUrl = value; }
     public int getMaxAttempts() { return maxAttempts; }
     public void setMaxAttempts(int value) { maxAttempts = value; }
     public Duration getInitialBackoff() { return initialBackoff; }
@@ -36,6 +41,7 @@ public final class DhbClientProperties {
     public void validate() {
         positive(connectTimeout, "connect-timeout", 30);
         positive(readTimeout, "read-timeout", 120);
+        validateImageBaseUrl(imageBaseUrl);
         if (maxAttempts < 1 || maxAttempts > 8) {
             throw new IllegalStateException("订货宝 max-attempts 必须在1到8之间");
         }
@@ -57,6 +63,20 @@ public final class DhbClientProperties {
         if (value == null || value.isZero() || value.isNegative()
                 || value.compareTo(Duration.ofSeconds(maxSeconds)) > 0) {
             throw new IllegalStateException("订货宝 " + name + " 必须在1ms到" + maxSeconds + "s之间");
+        }
+    }
+
+    private static void validateImageBaseUrl(String value) {
+        try {
+            URI uri = URI.create(value == null ? "" : value.strip());
+            if (!("http".equalsIgnoreCase(uri.getScheme())
+                    || "https".equalsIgnoreCase(uri.getScheme()))
+                    || uri.getHost() == null || uri.getUserInfo() != null
+                    || uri.getQuery() != null || uri.getFragment() != null) {
+                throw new IllegalArgumentException();
+            }
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalStateException("订货宝 image-base-url 必须是无查询参数的 HTTP(S) 地址");
         }
     }
 }

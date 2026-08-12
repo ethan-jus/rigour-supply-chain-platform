@@ -19,6 +19,35 @@ logging:
     com.rigour: INFO
 
 rigour:
+  integration:
+    # ERP 只调用 Integration 版本化契约，不直接访问订货宝或 Integration 数据库。
+    base-url: ${RIGOUR_INTEGRATION_BASE_URL:http://localhost:26882}
+    http:
+      connect-timeout: ${RIGOUR_INTEGRATION_CONNECT_TIMEOUT:3s}
+      # 商品图片会在 Integration 返回商品页前完成下载和 COS 上传，允许一个批次最多等待 120 秒。
+      read-timeout: ${RIGOUR_INTEGRATION_READ_TIMEOUT:120s}
+  erp:
+    sync:
+      # ERP内部统一定时同步开关；启用后从Integration动态发现商品主数据和供应链目标。
+      enabled: ${RIGOUR_ERP_SYNC_ENABLED:true}
+      # Spring六字段cron：每小时00分和30分执行，秒 分 时 日 月 周。
+      cron: ${RIGOUR_ERP_SYNC_CRON:0 0/30 * * * ?}
+      # 单类数据同步最大读取页数或库存批次数，范围1..100。
+      max-pages: ${RIGOUR_ERP_SYNC_MAX_PAGES:100}
+    product-media:
+      # 数据库仅保存 object key；每次查询都由 ERP 重新生成 COS 私桶短时 URL。
+      url-ttl: 10m
+      cos:
+        # region 和 bucket 是非敏感资源标识，通常由 Nacos 注入；环境变量可覆盖本地配置。
+        object-prefix: ${RIGOUR_ERP_PRODUCT_MEDIA_COS_OBJECT_PREFIX:product-images}
+        region: ap-beijing
+        bucket: rigour-sales-recordings-1361731487
+        # SecretId/SecretKey 只从部署 Secret 注入；长期 CAM 密钥模式不配置 session-token。
+        secret-id: ${RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_ID:}
+        secret-key: ${RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_KEY:}
+        session-token: ${RIGOUR_ERP_PRODUCT_MEDIA_COS_SESSION_TOKEN:}
+        connection-timeout-ms: 5000
+        socket-timeout-ms: 30000
   context:
     trust:
       active-key-id: v1
