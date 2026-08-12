@@ -6,6 +6,7 @@ import com.rigour.integration.application.port.out.DhbSyncStore;
 import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
 import com.rigour.integration.application.service.dhb.DhbOrderSyncService;
+import com.rigour.integration.infrastructure.media.ProductMediaSyncWorker;
 import com.rigour.integration.infrastructure.persistence.IntegrationUuidCodec;
 import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorView;
@@ -26,6 +27,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -55,6 +57,10 @@ class IntegrationMigrationServiceApplicationTests {
         registry.add("spring.flyway.url", MYSQL::getJdbcUrl);
         registry.add("spring.flyway.user", MYSQL::getUsername);
         registry.add("spring.flyway.password", MYSQL::getPassword);
+        registry.add("rigour.integration.product-media.cos.region", () -> "ap-beijing");
+        registry.add("rigour.integration.product-media.cos.bucket", () -> "rigour-test-1250000000");
+        registry.add("rigour.integration.product-media.cos.secret-id", () -> "test-secret-id");
+        registry.add("rigour.integration.product-media.cos.secret-key", () -> "test-secret-key");
     }
 
     @Autowired
@@ -65,6 +71,9 @@ class IntegrationMigrationServiceApplicationTests {
 
     @Autowired
     private DhbSyncStore syncStore;
+
+    @MockitoBean
+    private ProductMediaSyncWorker productMediaSyncWorker;
 
     @Test
     void contextLoadsAndMigratesIntegrationSchema() {
@@ -107,7 +116,11 @@ class IntegrationMigrationServiceApplicationTests {
 
         assertThat(store.connectors(tenantA)).extracting(ConnectorView::code).contains("DHB_MAIN");
         assertThat(store.connectors(tenantB)).isEmpty();
-        assertThat(store.syncTasks(tenantA)).singleElement().satisfies(task -> {
+        List<SyncTaskView> defaultTasks = store.syncTasks(tenantA);
+        assertThat(defaultTasks).extracting(SyncTaskView::code).containsExactlyInAnyOrder(
+                "DHB_ORDER_DEFAULT", "DHB_PRODUCT_MASTER_DEFAULT", "DHB_SUPPLY_CHAIN_DEFAULT");
+        assertThat(defaultTasks).filteredOn(task -> "ORDER".equals(task.objectType()))
+                .singleElement().satisfies(task -> {
             assertThat(task.connectorId()).isEqualTo(connector.id());
             assertThat(task.code()).isEqualTo("DHB_ORDER_DEFAULT");
             assertThat(task.objectType()).isEqualTo("ORDER");
