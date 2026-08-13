@@ -1,10 +1,13 @@
 package com.rigour.integration.application.service.dhb;
 
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
+import com.rigour.integration.application.port.out.DhbIntegrationStore.RawLanding;
 import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
 import com.rigour.integration.application.port.out.DhbClient.Customer;
+import com.rigour.integration.application.port.out.DhbClient.CustomerArea;
 import com.rigour.integration.application.port.out.DhbClient.CustomerQuery;
+import com.rigour.integration.application.port.out.DhbClient.CustomerType;
 import com.rigour.integration.application.port.out.DhbClient.OrderDetail;
 import com.rigour.integration.application.port.out.DhbClient.OrderQuery;
 import com.rigour.integration.application.port.out.DhbClient.OrderSummary;
@@ -29,12 +32,26 @@ import com.rigour.integration.application.port.out.DhbClient.ReturnQuery;
 import com.rigour.integration.application.port.out.DhbClient.ReturnSummary;
 import com.rigour.integration.application.port.out.DhbClient.Shipment;
 import com.rigour.integration.application.port.out.DhbClient.ShipmentQuery;
+import com.rigour.integration.application.port.out.DhbClient.ShippingAddress;
+import com.rigour.integration.application.port.out.DhbClient.ShippingAddressQuery;
+import com.rigour.integration.application.port.out.DhbClient.Staff;
+import com.rigour.integration.application.port.out.DhbClient.StaffQuery;
 import com.rigour.integration.application.port.out.DhbClient.TimeWindow;
 import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorView;
-import com.rigour.integration.api.v1.model.DhbApiModels.CustomerPageView;
-import com.rigour.integration.api.v1.model.DhbApiModels.CustomerQueryCommand;
-import com.rigour.integration.api.v1.model.DhbApiModels.CustomerView;
+import com.rigour.integration.api.v1.model.CustomerAreaListView;
+import com.rigour.integration.api.v1.model.CustomerAreaView;
+import com.rigour.integration.api.v1.model.CustomerPageView;
+import com.rigour.integration.api.v1.model.CustomerQueryCommand;
+import com.rigour.integration.api.v1.model.CustomerTypeListView;
+import com.rigour.integration.api.v1.model.CustomerTypeView;
+import com.rigour.integration.api.v1.model.CustomerView;
+import com.rigour.integration.api.v1.model.ShippingAddressPageView;
+import com.rigour.integration.api.v1.model.ShippingAddressQueryCommand;
+import com.rigour.integration.api.v1.model.ShippingAddressView;
+import com.rigour.integration.api.v1.model.StaffPageView;
+import com.rigour.integration.api.v1.model.StaffQueryCommand;
+import com.rigour.integration.api.v1.model.StaffView;
 import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingView;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderContentCommand;
@@ -87,6 +104,7 @@ import com.rigour.integration.api.v1.model.DhbConnectionTestResult;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -341,31 +359,124 @@ public final class DhbIntegrationService {
     }
 
     /** 查询订货宝客户；联系方式等来源字段仅在调用方已有 Integration 权限时返回。 */
-    public CustomerPageView customers(UUID connectorId, CustomerQueryCommand command) {
+    public com.rigour.integration.api.v1.model.DhbApiModels.CustomerPageView customers(
+            UUID connectorId, com.rigour.integration.api.v1.model.DhbApiModels.CustomerQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
         CustomerQuery query = command == null
-                ? new CustomerQuery(PageRequest.first(100), null, null, null, null, null, null, null)
-                : new CustomerQuery(page(command.begin(), command.step()), command.status(),
-                command.dataType(), command.timeType(), window("客户时间",
+                ? new CustomerQuery(PageRequest.first(100), 3, 3, null, null, null, null, null)
+                : new CustomerQuery(page(command.begin(), command.step()),
+                command.status() == null ? 3 : command.status(),
+                command.dataType() == null ? 3 : command.dataType(), command.timeType(), window("客户时间",
                 command.updatedFrom(), command.updatedTo()), command.clientNo(), command.clientArea(),
                 command.typeId());
         Page<Customer> page = client.getCustomers(connector(caller, connectorId), query);
-        return new CustomerPageView(page.total(), page.items().stream()
-                .map(item -> new CustomerView(item.sourceId(), item.account(), item.number(), item.name(),
+        page.items().forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
+                "CUSTOMER", firstNonBlank(item.sourceId(), item.number(), item.account()),
+                item.updatedAt(), item.attributes()));
+        return new com.rigour.integration.api.v1.model.DhbApiModels.CustomerPageView(page.total(), page.items().stream()
+                .map(item -> new com.rigour.integration.api.v1.model.DhbApiModels.CustomerView(
+                        item.sourceId(), item.account(), item.number(), item.name(),
                         item.status(), item.createdAt(), item.updatedAt(), item.attributes()))
                 .toList());
+    }
+
+    public CustomerTypeListView customerTypes(UUID connectorId) {
+        CallerIdentity caller = requireReadCaller();
+        List<CustomerType> items = client.getCustomerTypes(connector(caller, connectorId));
+        store.persistRawLandings(caller.tenantId(), connectorId, items.stream().map(item -> new RawLanding(
+                "CUSTOMER_TYPE", firstNonBlank(item.sourceId(), item.erpId(), item.name()),
+                null, item.attributes())).toList());
+        return new CustomerTypeListView(items.stream()
+                .map(item -> new CustomerTypeView(item.sourceId(), item.name(),
+                        item.erpId(), item.attributes())).toList());
+    }
+
+    public CustomerAreaListView customerAreas(UUID connectorId) {
+        CallerIdentity caller = requireReadCaller();
+        List<CustomerArea> items = client.getCustomerAreas(connector(caller, connectorId));
+        store.persistRawLandings(caller.tenantId(), connectorId, items.stream().map(item -> new RawLanding(
+                "CUSTOMER_AREA", firstNonBlank(item.sourceId(), item.erpId(), item.name()),
+                null, item.attributes())).toList());
+        return new CustomerAreaListView(items.stream()
+                .map(item -> new CustomerAreaView(item.sourceId(), item.name(),
+                        item.erpId(), item.parentSourceId(), item.attributes())).toList());
+    }
+
+    public CustomerPageView crmCustomers(UUID connectorId, CustomerQueryCommand command) {
+        CallerIdentity caller = requireReadCaller();
+        CustomerQuery query = command == null
+                ? new CustomerQuery(PageRequest.first(100), 3, 3, null, null, null, null, null)
+                : new CustomerQuery(page(command.begin(), command.step()),
+                command.status() == null ? 3 : command.status(),
+                command.dataType() == null ? 3 : command.dataType(), command.timeType(),
+                window("客户时间", command.from(), command.to()), command.clientNo(),
+                command.clientArea(), command.typeId());
+        Page<Customer> result = client.getCustomers(connector(caller, connectorId), query);
+        store.persistRawLandings(caller.tenantId(), connectorId, result.items().stream().map(item -> new RawLanding(
+                "CUSTOMER", firstNonBlank(item.sourceId(), item.number(), item.account()),
+                item.updatedAt(), item.attributes())).toList());
+        return new CustomerPageView(result.total(), result.items().stream()
+                .map(DhbIntegrationService::crmCustomer).toList());
+    }
+
+    public ShippingAddressPageView shippingAddresses(
+            UUID connectorId, ShippingAddressQueryCommand command) {
+        CallerIdentity caller = requireReadCaller();
+        ShippingAddressQuery query = command == null
+                ? new ShippingAddressQuery(PageRequest.first(100), null, null, null, null)
+                : new ShippingAddressQuery(page(command.begin(), command.step()),
+                command.addressAbout(), command.clientGuid(), command.isDefault(),
+                window("收货地址更新时间", command.updatedFrom(), command.updatedTo()));
+        Page<ShippingAddress> result = client.getShippingAddresses(
+                connector(caller, connectorId), query);
+        store.persistRawLandings(caller.tenantId(), connectorId, result.items().stream().map(item -> new RawLanding(
+                "CUSTOMER_ADDRESS", firstNonBlank(item.sourceId(), item.addressGuid(), item.addressId()),
+                item.updatedAt(), item.attributes())).toList());
+        return new ShippingAddressPageView(result.total(), result.items().stream()
+                .map(DhbIntegrationService::shippingAddressView).toList());
+    }
+
+    public StaffPageView staff(UUID connectorId, StaffQueryCommand command) {
+        CallerIdentity caller = requireReadCaller();
+        StaffQuery query = command == null
+                ? new StaffQuery(PageRequest.first(100), null, null, null, null, null)
+                : new StaffQuery(page(command.begin(), command.step()), command.staffType(),
+                command.status(), command.keywords(),
+                window("员工创建时间", command.createdFrom(), command.createdTo()),
+                window("员工更新时间", command.updatedFrom(), command.updatedTo()));
+        Page<Staff> result = client.getStaff(connector(caller, connectorId), query);
+        store.persistRawLandings(caller.tenantId(), connectorId, result.items().stream().map(item -> new RawLanding(
+                "STAFF", firstNonBlank(item.sourceId(), item.staffId(), item.accountId()),
+                item.updatedAt(), item.attributes())).toList());
+        return new StaffPageView(result.total(), result.items().stream()
+                .map(DhbIntegrationService::staffView).toList());
+    }
+
+    public StaffView staffInfo(UUID connectorId, String accountId) {
+        CallerIdentity caller = requireReadCaller();
+        Staff item = client.getStaffInfo(connector(caller, connectorId), accountId);
+        store.persistRawLanding(caller.tenantId(), connectorId, "STAFF_DETAIL",
+                firstNonBlank(item.accountId(), item.sourceId(), item.staffId()),
+                item.updatedAt(), item.attributes());
+        return staffView(item);
     }
 
     /** 查询订货宝订单摘要；调用 getOrderList，不会调用订单明细副作用接口。 */
     public OrderPageView orders(UUID connectorId, OrderQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
         OrderQuery query = command == null
-                ? new OrderQuery(PageRequest.first(100), null, null, null, null, null, null, null)
-                : new OrderQuery(page(command.begin(), command.step()), command.orderStatus(),
+                ? new OrderQuery(PageRequest.first(100), "all", null, null, "all", "all", null, null)
+                : new OrderQuery(page(command.begin(), command.step()),
+                command.orderStatus() == null ? "all" : command.orderStatus(),
                 window("订单创建时间", command.createdFrom(), command.createdTo()),
                 window("订单更新时间", command.updatedFrom(), command.updatedTo()),
-                command.exceptionStatus(), command.apiStatus(), command.payStatus(), command.splitType());
+                command.exceptionStatus() == null ? "all" : command.exceptionStatus(),
+                command.apiStatus() == null ? "all" : command.apiStatus(),
+                command.payStatus(), command.splitType());
         Page<OrderSummary> page = client.getOrders(connector(caller, connectorId), query);
+        page.items().forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
+                "ORDER_LIST", firstNonBlank(item.orderNumber(), item.sourceId()),
+                item.updatedAt(), item.attributes()));
         return new OrderPageView(page.total(), page.items().stream()
                 .map(item -> new OrderView(item.sourceId(), item.orderNumber(), item.status(), item.amount(),
                         item.createdAt(), item.updatedAt(), item.customerNumber(), item.paymentStatus(),
@@ -387,6 +498,8 @@ public final class DhbIntegrationService {
         boolean autoAudit = command != null && Boolean.TRUE.equals(command.autoAudit());
         OrderDetail detail = client.getOrderContent(connector(caller, connectorId), orderNumber,
                 autoMarkDownloaded, autoAudit);
+        store.persistRawLanding(caller.tenantId(), connectorId, "ORDER_DETAIL",
+                firstNonBlank(detail.orderNumber(), orderNumber), null, detail.attributes());
         return new OrderContentView(detail.orderNumber(), detail.status(), detail.amount(), detail.attributes());
     }
 
@@ -610,6 +723,50 @@ public final class DhbIntegrationService {
             throw new IllegalArgumentException(field + " from 和 to 必须同时提供");
         }
         return new TimeWindow(from, to);
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value;
+        }
+        throw new IllegalStateException("订货宝响应缺少可用来源业务键，拒绝静默丢弃 Raw Landing");
+    }
+
+    private static CustomerView crmCustomer(Customer item) {
+        Map<String, Object> source = item.attributes();
+        return new CustomerView(item.sourceId(), sourceText(source, "clientGUID"),
+                item.account(), item.name(), item.number(), sourceText(source, "clientType"),
+                sourceText(source, "clientArea"), sourceText(source, "clientAreaGUID"),
+                sourceText(source, "clientAbout"), sourceText(source, "clientTrueName"),
+                sourceText(source, "clientEmail"), sourceText(source, "clientPhone"),
+                sourceText(source, "clientAdd"), sourceText(source, "staffName"),
+                sourceText(source, "clientTypeName"), sourceText(source, "clientAreaName"),
+                sourceText(source, "Inviter"), sourceText(source, "staffID"), item.createdAt(),
+                item.updatedAt(), item.status(), sourceText(source, "clientClearingForm"),
+                sourceText(source, "clientCity"), source);
+    }
+
+    private static ShippingAddressView shippingAddressView(ShippingAddress item) {
+        return new ShippingAddressView(item.sourceId(), item.addressId(),
+                item.addressGuid(), item.clientId(), item.clientGuid(), item.clientNumber(),
+                item.consignee(), item.contact(), item.phone(), item.regionText(),
+                item.defaultAddress(), item.updatedAt(), item.addressDetail(), item.areaName(),
+                item.attributes());
+    }
+
+    private static StaffView staffView(Staff item) {
+        return new StaffView(item.sourceId(), item.staffId(), item.accountId(),
+                item.staffType(), item.accountName(), item.staffName(), item.title(),
+                item.branchName(), item.accountMobile(), item.remark(), item.roleName(),
+                item.inviteCode(), item.mobile(), item.email(), item.qq(), item.status(),
+                item.createdAt(), item.updatedAt(), item.attributes());
+    }
+
+    private static String sourceText(Map<String, Object> values, String key) {
+        Object value = values.get(key);
+        if (value == null) return null;
+        String text = String.valueOf(value).strip();
+        return text.isEmpty() || "null".equalsIgnoreCase(text) ? null : text;
     }
 
     private static CallerIdentity requireReadCaller() {

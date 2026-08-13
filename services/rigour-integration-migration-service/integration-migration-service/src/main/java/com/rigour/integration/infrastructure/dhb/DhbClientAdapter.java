@@ -4,7 +4,9 @@ import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbClient.Connector;
 import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
 import com.rigour.integration.application.port.out.DhbClient.Customer;
+import com.rigour.integration.application.port.out.DhbClient.CustomerArea;
 import com.rigour.integration.application.port.out.DhbClient.CustomerQuery;
+import com.rigour.integration.application.port.out.DhbClient.CustomerType;
 import com.rigour.integration.application.port.out.DhbClient.OrderDetail;
 import com.rigour.integration.application.port.out.DhbClient.OrderQuery;
 import com.rigour.integration.application.port.out.DhbClient.OrderSummary;
@@ -39,6 +41,10 @@ import com.rigour.integration.application.port.out.DhbClient.ReturnSummary;
 import com.rigour.integration.application.port.out.DhbClient.Shipment;
 import com.rigour.integration.application.port.out.DhbClient.ShipmentDetail;
 import com.rigour.integration.application.port.out.DhbClient.ShipmentQuery;
+import com.rigour.integration.application.port.out.DhbClient.ShippingAddress;
+import com.rigour.integration.application.port.out.DhbClient.ShippingAddressQuery;
+import com.rigour.integration.application.port.out.DhbClient.Staff;
+import com.rigour.integration.application.port.out.DhbClient.StaffQuery;
 import com.rigour.integration.application.port.out.DhbClient.TimeWindow;
 import com.rigour.integration.application.port.out.DhbClient.WaitShipment;
 import com.rigour.integration.application.port.out.DhbClient.WaitShipmentLine;
@@ -61,6 +67,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -292,7 +299,9 @@ public final class DhbClientAdapter implements DhbClient {
         List<PurchaseOrder> items = new ArrayList<>();
         for (Map<String, Object> summary : businessRows(response, "getPurchaseList")) {
             String number = first(summary, "purchase_num");
-            if (number == null) continue;
+            if (number == null) {
+                throw protocolError("getPurchaseList", "响应行缺少 purchase_num，拒绝静默跳过");
+            }
             ApiEnvelope detailResponse = callBusiness(connector, "getPurchaseContent",
                     Map.of("purchase_num", number));
             Map<String, Object> detail = businessObject(detailResponse, "getPurchaseContent");
@@ -312,7 +321,9 @@ public final class DhbClientAdapter implements DhbClient {
         List<PurchaseReturn> items = new ArrayList<>();
         for (Map<String, Object> summary : businessRows(response, "getPurchaseReturnList")) {
             String number = first(summary, "returns_num");
-            if (number == null) continue;
+            if (number == null) {
+                throw protocolError("getPurchaseReturnList", "响应行缺少 returns_num，拒绝静默跳过");
+            }
             ApiEnvelope detailResponse = callBusiness(connector, "getPurchaseReturnContent",
                     Map.of("purchase_num", number));
             Map<String, Object> detail = businessObject(detailResponse, "getPurchaseReturnContent");
@@ -334,7 +345,9 @@ public final class DhbClientAdapter implements DhbClient {
         List<WarehousingReceipt> items = new ArrayList<>();
         for (Map<String, Object> summary : businessRows(response, "getWarehousingList")) {
             String number = first(summary, "warehousing_num");
-            if (number == null) continue;
+            if (number == null) {
+                throw protocolError("getWarehousingList", "响应行缺少 warehousing_num，拒绝静默跳过");
+            }
             ApiEnvelope detailResponse = callBusiness(connector, "getWarehousingContent",
                     Map.of("warehousing_num", number));
             Map<String, Object> detail = businessObject(detailResponse, "getWarehousingContent");
@@ -388,6 +401,71 @@ public final class DhbClientAdapter implements DhbClient {
         List<Customer> items = rows.stream().map(DhbClientAdapter::customer).toList();
         logPage(connector, "getDealersList", query.page(), response, items.size());
         return new Page<>(query.page(), response.total(), items);
+    }
+
+    @Override
+    public List<CustomerType> getCustomerTypes(Connector connector) {
+        ApiEnvelope response = callBusiness(connector, "getClientTypeList", Map.of());
+        List<CustomerType> items = rows(response, "getClientTypeList").stream()
+                .map(DhbClientAdapter::customerType).toList();
+        log.info("订货宝接口调用成功 tenantId={} connectorId={} function=getClientTypeList returned={} elapsedMs={}",
+                connector.tenantId(), connector.connectorId(), items.size(), response.elapsedMs());
+        return items;
+    }
+
+    @Override
+    public List<CustomerArea> getCustomerAreas(Connector connector) {
+        ApiEnvelope response = callBusiness(connector, "getArea", Map.of());
+        List<CustomerArea> items = rows(response, "getArea").stream()
+                .map(DhbClientAdapter::customerArea).toList();
+        log.info("订货宝接口调用成功 tenantId={} connectorId={} function=getArea returned={} elapsedMs={}",
+                connector.tenantId(), connector.connectorId(), items.size(), response.elapsedMs());
+        return items;
+    }
+
+    @Override
+    public Page<ShippingAddress> getShippingAddresses(Connector connector,
+                                                       ShippingAddressQuery query) {
+        Objects.requireNonNull(query, "query cannot be null");
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("begin", query.page().begin());
+        values.put("step", query.page().step());
+        putIfPresent(values, "addressAbout", query.addressAbout());
+        putIfPresent(values, "clientGuid", query.clientGuid());
+        putIfPresent(values, "isDefault", query.isDefault());
+        putWindow(values, query.updatedWindow(), "startTime", "endTime");
+        ApiEnvelope response = callBusiness(connector, "getShippingAddressList", values);
+        List<ShippingAddress> items = rows(response, "getShippingAddressList").stream()
+                .map(DhbClientAdapter::shippingAddress).toList();
+        logPage(connector, "getShippingAddressList", query.page(), response, items.size());
+        return new Page<>(query.page(), response.total(), items);
+    }
+
+    @Override
+    public Page<Staff> getStaff(Connector connector, StaffQuery query) {
+        Objects.requireNonNull(query, "query cannot be null");
+        Map<String, Object> values = pageValues(query.page());
+        putIfPresent(values, "staff_type", query.staffType());
+        putIfPresent(values, "status", query.status());
+        putIfPresent(values, "keywords", query.keywords());
+        putWindow(values, query.createdWindow(), "create_date_start", "create_date_end");
+        putWindow(values, query.updatedWindow(), "update_date_start", "update_date_end");
+        ApiEnvelope response = callBusiness(connector, "getStaffList", values);
+        List<Staff> items = pageRows(response, "getStaffList").stream()
+                .map(DhbClientAdapter::staff).toList();
+        long total = pageTotal(response, "getStaffList");
+        logPage(connector, "getStaffList", query.page(), response, items.size(), total);
+        return new Page<>(query.page(), total, items);
+    }
+
+    @Override
+    public Staff getStaffInfo(Connector connector, String accountId) {
+        if (accountId == null || accountId.isBlank()) {
+            throw new IllegalArgumentException("accountId cannot be blank");
+        }
+        ApiEnvelope response = callBusiness(connector, "getStaffInfo",
+                Map.of("accounts_id", accountId.strip()));
+        return staff(businessObject(response, "getStaffInfo"));
     }
 
     @Override
@@ -1125,6 +1203,47 @@ public final class DhbClientAdapter implements DhbClient {
                 instant(row, "createDate"), instant(row, "updateDate"), row);
     }
 
+    private static CustomerType customerType(Map<String, Object> row) {
+        return new CustomerType(first(row, "typeID", "erpID"), text(row, "typeName"),
+                text(row, "erpID"), row);
+    }
+
+    private static CustomerArea customerArea(Map<String, Object> row) {
+        String parentSourceId = normalizeAreaParent(first(row, "parentID", "parentId", "ParentID", "parent_id"));
+        return new CustomerArea(first(row, "AreaID", "ERPID"), text(row, "AreaName"),
+                text(row, "ERPID"), parentSourceId, row);
+    }
+
+    /** 订货宝响应中可能把未提供的 parentID 回显成字段名，不能把它当作真实地区编码。 */
+    private static String normalizeAreaParent(String value) {
+        if (value == null) return null;
+        String normalized = value.strip();
+        if (normalized.isEmpty() || Set.of("parentid", "parent_id", "parent-id", "null", "undefined")
+                .contains(normalized.toLowerCase(Locale.ROOT))) {
+            return null;
+        }
+        return normalized;
+    }
+
+    private static ShippingAddress shippingAddress(Map<String, Object> row) {
+        return new ShippingAddress(first(row, "addressGuid", "addressId"),
+                text(row, "addressId"), text(row, "addressGuid"), text(row, "clientId"),
+                text(row, "clientGuid"), text(row, "clientNum"), text(row, "consignee"),
+                text(row, "contact"), text(row, "phone"), text(row, "address"),
+                booleanFlag(row, "isDefault"), instant(row, "updateDate"),
+                text(row, "addressDetail"), text(row, "areaName"), row);
+    }
+
+    private static Staff staff(Map<String, Object> row) {
+        return new Staff(first(row, "staff_id", "accounts_id"), text(row, "staff_id"),
+                text(row, "accounts_id"), text(row, "staff_type"), text(row, "accounts_name"),
+                text(row, "staff_name"), text(row, "title"), text(row, "branch_name"),
+                text(row, "accounts_mobile"), text(row, "about"), text(row, "role"),
+                text(row, "invite_code"), text(row, "mobile"), text(row, "email"),
+                text(row, "qq"), text(row, "status"), instant(row, "create_date"),
+                instant(row, "update_date"), row);
+    }
+
     private static OrderSummary order(Map<String, Object> row) {
         return new OrderSummary(first(row, "OrderSN"), text(row, "OrderSN"), text(row, "OrderStatus"),
                 decimal(row, "OrderTotal"), instant(row, "OrderDate"), instant(row, "OrderUpdateDate"),
@@ -1336,11 +1455,13 @@ public final class DhbClientAdapter implements DhbClient {
                 continue;
             }
             if ("1".equals(value) || "true".equalsIgnoreCase(value)
-                    || "yes".equalsIgnoreCase(value) || "y".equalsIgnoreCase(value)) {
+                    || "yes".equalsIgnoreCase(value) || "y".equalsIgnoreCase(value)
+                    || "t".equalsIgnoreCase(value)) {
                 return Boolean.TRUE;
             }
             if ("0".equals(value) || "false".equalsIgnoreCase(value)
-                    || "no".equalsIgnoreCase(value) || "n".equalsIgnoreCase(value)) {
+                    || "no".equalsIgnoreCase(value) || "n".equalsIgnoreCase(value)
+                    || "f".equalsIgnoreCase(value)) {
                 return Boolean.FALSE;
             }
         }

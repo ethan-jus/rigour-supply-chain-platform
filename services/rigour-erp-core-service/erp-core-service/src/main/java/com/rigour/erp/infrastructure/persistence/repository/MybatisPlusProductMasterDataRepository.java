@@ -86,6 +86,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.SerializationFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * ERP 商品主数据 MyBatis-Plus Repository。
@@ -98,6 +101,9 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     private static final Logger log = LoggerFactory.getLogger(MybatisPlusProductMasterDataRepository.class);
     private static final String SOURCE_SYSTEM = "DINGHUOBAO";
     private static final String EXTERNAL_PRIMARY = "EXTERNAL_PRIMARY";
+    private static final ObjectMapper SOURCE_FIELDS_MAPPER = JsonMapper.builder()
+            .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
+            .build();
 
     private final ProductSpuMapper productSpuMapper;
     private final ProductSkuMapper productSkuMapper;
@@ -454,14 +460,18 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         if (missing(product.sourceId()) || missing(product.name())) return ImportResult.rejected(1);
         MasterSourceBindingEntity existingBinding = binding(tenantId, "PRODUCT_SPU", product.sourceId());
         boolean payloadChanged = existingBinding == null
-                || !Objects.equals(existingBinding.sourcePayloadHash, requiredHash(product.payloadHash()));
+                || !Objects.equals(existingBinding.sourcePayloadHash, requiredHash(product.payloadHash()))
+                || "SOURCE_ABSENT".equals(existingBinding.sourcePresence);
         String spuId = existingBinding == null ? UUID.randomUUID().toString() : existingBinding.targetId;
         ProductSpuEntity existing = existingBinding == null ? null : productSpuMapper.selectById(spuId);
         if (existing != null && !Objects.equals(tenantId, existing.tenantId)) existing = null;
+        String productSourceFieldsJson = sourceFieldsJson(product.sourceFields());
+        boolean sourcePayloadNeedsRepair = existing != null && !payloadChanged
+                && !Objects.equals(existing.attributesJson, productSourceFieldsJson);
         boolean productNeedsRepair = existing != null && !payloadChanged
                 && externalPrimary(existing.ownershipState)
                 && !productAuxiliaryComplete(tenantId, spuId, product);
-        if (existing != null && !payloadChanged && !productNeedsRepair) {
+        if (existing != null && !payloadChanged && !productNeedsRepair && !sourcePayloadNeedsRepair) {
             // 商品摘要未变化且本地商品辅助数据完整时，不写商品；仍继续检查 SKU，避免漏修复 SKU 辅助数据。
             ImportResult result = ImportResult.duplicate(1);
             for (Sku sku : product.skus()) result = result.plus(importSku(tenantId, runId, spuId, product, sku));
@@ -499,14 +509,18 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.defaultBarcode = product.barcode();
             entity.minimumOrder = product.minimumOrder();
             entity.minimumOrderUnit = product.minimumOrderUnit();
+            entity.attributesJson = productSourceFieldsJson;
             entity.internalStatus = putawayStatus(product.putaway());
             if (existing != null) entity.version = nextVersion(entity.version);
+            entity.updatedAt = now;
+        } else if (existing != null && (payloadChanged || sourcePayloadNeedsRepair)) {
+            entity.attributesJson = productSourceFieldsJson;
             entity.updatedAt = now;
         } else if (existing != null) {
             entity.updatedAt = now;
         }
         if (existing == null) productSpuMapper.insert(entity);
-        else if (external && payloadChanged) productSpuMapper.updateById(entity);
+        else if (payloadChanged || sourcePayloadNeedsRepair) productSpuMapper.updateById(entity);
         upsertBinding(tenantId, runId, "PRODUCT_SPU", product.sourceId(), "SPU", spuId,
                 product.code(), product.name(), null, product.putaway(), product.payloadHash(), now);
         if (external && categoryId != null) assignPrimaryCategory(tenantId, spuId, categoryId, now);
@@ -529,6 +543,32 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 productNeedsRepair ? "REPAIRED" : importAction(existing, payloadChanged));
         for (Sku sku : product.skus()) result = result.plus(importSku(tenantId, runId, spuId, product, sku));
         return result;
+    }
+
+    @Override
+    @Transactional
+    public void reconcileSourcePresence(String tenantId, UUID runId,
+                                        Map<String, Set<String>> seenSourceIds) {
+        LocalDateTime now = now();
+        seenSourceIds.forEach((sourceType, seenIds) -> {
+            Set<String> seen = seenIds == null ? Set.of() : seenIds;
+            List<MasterSourceBindingEntity> bindings = bindingMapper.selectList(
+                    Wrappers.<MasterSourceBindingEntity>query()
+                            .eq("tenant_id", tenantId)
+                            .eq("source_system", SOURCE_SYSTEM)
+                            .eq("source_object_type", sourceType));
+            for (MasterSourceBindingEntity binding : bindings) {
+                boolean present = seen.contains(binding.sourceObjectId);
+                String desired = present ? "PRESENT" : "SOURCE_ABSENT";
+                if (Objects.equals(desired, binding.sourcePresence)) continue;
+                binding.sourcePresence = desired;
+                binding.sourceAbsentAt = present ? null : now;
+                binding.lastSyncRunId = text(runId);
+                binding.version = nextVersion(binding.version);
+                binding.updatedAt = now;
+                bindingMapper.updateById(binding);
+            }
+        });
     }
 
     @Override
@@ -557,6 +597,9 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity = new CategoryEntity();
             existing = null;
         }
+        String sourceFieldsJson = sourceFieldsJson(value.sourceFields());
+        boolean sourceFieldsNeedRepair = existing != null
+                && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         if (existing == null) {
             entity.id = id;
             entity.tenantId = tenantId;
@@ -571,16 +614,22 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.updatedAt = now;
             entity.createdBy = null;
             entity.name = value.name();
+            entity.attributesJson = sourceFieldsJson;
             categoryMapper.insert(entity);
         } else if (changed && externalPrimary(entity.ownershipState)) {
             entity.name = value.name();
+            entity.attributesJson = sourceFieldsJson;
             entity.version = nextVersion(entity.version);
+            entity.updatedAt = now;
+            categoryMapper.updateById(entity);
+        } else if (changed || sourceFieldsNeedRepair) {
+            entity.attributesJson = sourceFieldsJson;
             entity.updatedAt = now;
             categoryMapper.updateById(entity);
         }
         upsertBinding(tenantId, runId, "CATEGORY", value.sourceId(), "CATEGORY", id,
                 value.externalReferenceId(), value.name(), null, null, value.payloadHash(), now);
-        return new BindingResult(id, result(existing, changed));
+        return new BindingResult(id, result(existing, changed || sourceFieldsNeedRepair));
     }
 
     private BindingResult upsertBrand(String tenantId, UUID runId, Brand value) {
@@ -594,6 +643,9 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity = new BrandEntity();
             existing = null;
         }
+        String sourceFieldsJson = sourceFieldsJson(value.sourceFields());
+        boolean sourceFieldsNeedRepair = existing != null
+                && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         if (existing == null) {
             entity.id = id;
             entity.tenantId = tenantId;
@@ -605,16 +657,22 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.version = 0L;
             entity.createdAt = now;
             entity.updatedAt = now;
+            entity.attributesJson = sourceFieldsJson;
             brandMapper.insert(entity);
         } else if (changed && externalPrimary(entity.ownershipState)) {
             entity.name = value.name();
+            entity.attributesJson = sourceFieldsJson;
             entity.version = nextVersion(entity.version);
+            entity.updatedAt = now;
+            brandMapper.updateById(entity);
+        } else if (changed || sourceFieldsNeedRepair) {
+            entity.attributesJson = sourceFieldsJson;
             entity.updatedAt = now;
             brandMapper.updateById(entity);
         }
         upsertBinding(tenantId, runId, "BRAND", value.sourceId(), "BRAND", id,
                 value.externalReferenceId(), value.name(), null, null, value.payloadHash(), now);
-        return new BindingResult(id, result(existing, changed));
+        return new BindingResult(id, result(existing, changed || sourceFieldsNeedRepair));
     }
 
     private BindingResult upsertTag(String tenantId, UUID runId, Tag value) {
@@ -628,6 +686,9 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity = new ProductTagEntity();
             existing = null;
         }
+        String sourceFieldsJson = sourceFieldsJson(value.sourceFields());
+        boolean sourceFieldsNeedRepair = existing != null
+                && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         if (existing == null) {
             entity.id = id;
             entity.tenantId = tenantId;
@@ -639,16 +700,22 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.version = 0L;
             entity.createdAt = now;
             entity.updatedAt = now;
+            entity.attributesJson = sourceFieldsJson;
             productTagMapper.insert(entity);
         } else if (changed && externalPrimary(entity.ownershipState)) {
             entity.name = value.name();
+            entity.attributesJson = sourceFieldsJson;
             entity.version = nextVersion(entity.version);
+            entity.updatedAt = now;
+            productTagMapper.updateById(entity);
+        } else if (changed || sourceFieldsNeedRepair) {
+            entity.attributesJson = sourceFieldsJson;
             entity.updatedAt = now;
             productTagMapper.updateById(entity);
         }
         upsertBinding(tenantId, runId, "TAG", value.sourceId(), "TAG", id,
                 value.code(), value.name(), null, null, value.payloadHash(), now);
-        return new BindingResult(id, result(existing, changed));
+        return new BindingResult(id, result(existing, changed || sourceFieldsNeedRepair));
     }
 
     private BindingResult upsertSpecification(String tenantId, UUID runId, Specification value) {
@@ -663,6 +730,9 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity = new SpecificationEntity();
             existing = null;
         }
+        String sourceFieldsJson = sourceFieldsJson(value.sourceFields());
+        boolean sourceFieldsNeedRepair = existing != null
+                && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         if (existing == null) {
             entity.id = id;
             entity.tenantId = tenantId;
@@ -675,16 +745,22 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.version = 0L;
             entity.createdAt = now;
             entity.updatedAt = now;
+            entity.attributesJson = sourceFieldsJson;
             specificationMapper.insert(entity);
         } else if (changed && externalPrimary(entity.ownershipState)) {
             entity.name = value.name();
+            entity.attributesJson = sourceFieldsJson;
             entity.version = nextVersion(entity.version);
+            entity.updatedAt = now;
+            specificationMapper.updateById(entity);
+        } else if (changed || sourceFieldsNeedRepair) {
+            entity.attributesJson = sourceFieldsJson;
             entity.updatedAt = now;
             specificationMapper.updateById(entity);
         }
         upsertBinding(tenantId, runId, "SPECIFICATION", value.sourceId(), "SPECIFICATION", id,
                 value.code(), value.name(), null, null, value.payloadHash(), now);
-        return new BindingResult(id, result(existing, changed));
+        return new BindingResult(id, result(existing, changed || sourceFieldsNeedRepair));
     }
 
     private ImportResult importSpecificationValue(String tenantId, UUID runId,
@@ -701,6 +777,9 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity = new SpecificationValueEntity();
             existing = null;
         }
+        String sourceFieldsJson = sourceFieldsJson(value.sourceFields());
+        boolean sourceFieldsNeedRepair = existing != null
+                && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         if (existing == null) {
             entity.id = id;
             entity.tenantId = tenantId;
@@ -715,18 +794,24 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.version = 0L;
             entity.createdAt = now;
             entity.updatedAt = now;
+            entity.attributesJson = sourceFieldsJson;
             specificationValueMapper.insert(entity);
         } else if (changed && externalPrimary(entity.ownershipState)) {
             entity.sourceParentId = value.parentSourceId();
             entity.valueName = value.name();
+            entity.attributesJson = sourceFieldsJson;
             entity.version = nextVersion(entity.version);
+            entity.updatedAt = now;
+            specificationValueMapper.updateById(entity);
+        } else if (changed || sourceFieldsNeedRepair) {
+            entity.attributesJson = sourceFieldsJson;
             entity.updatedAt = now;
             specificationValueMapper.updateById(entity);
         }
         upsertBinding(tenantId, runId, "SPECIFICATION_VALUE", value.sourceId(),
                 "SPECIFICATION_VALUE", id, value.code(), value.name(), null, null,
                 value.payloadHash(), now);
-        return result(existing, changed);
+        return result(existing, changed || sourceFieldsNeedRepair);
     }
 
     private ImportResult importSku(String tenantId, UUID runId, String spuId,
@@ -753,16 +838,20 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             }
         }
         boolean payloadChanged = existingBinding == null
-                || !Objects.equals(existingBinding.sourcePayloadHash, requiredHash(value.payloadHash()));
+                || !Objects.equals(existingBinding.sourcePayloadHash, requiredHash(value.payloadHash()))
+                || "SOURCE_ABSENT".equals(existingBinding.sourcePresence);
         String id = targetId(existingBinding);
         ProductSkuEntity existing = existingBinding == null ? null : productSkuMapper.selectById(id);
         if (existing != null && !Objects.equals(tenantId, existing.tenantId)) existing = null;
+        String skuSourceFieldsJson = sourceFieldsJson(value.sourceFields());
+        boolean sourcePayloadNeedsRepair = existing != null && !payloadChanged
+                && !Objects.equals(existing.attributesJson, skuSourceFieldsJson);
         boolean skuNeedsRepair = existing != null && !payloadChanged
                 && externalPrimary(existing.ownershipState)
                 && (!skuCoreComplete(existing, spuId, product, value)
                 || !skuAuxiliaryComplete(tenantId, spuId, id, product, value)
                 || !skuSpecificationRelationsComplete(tenantId, id, value));
-        if (existing != null && !payloadChanged && !skuNeedsRepair) {
+        if (existing != null && !payloadChanged && !skuNeedsRepair && !sourcePayloadNeedsRepair) {
             // 来源摘要未变化且本地 SKU 及其辅助数据完整时不触碰数据库。
             return ImportResult.duplicate(1);
         }
@@ -778,7 +867,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.version = 0L;
             entity.createdAt = now;
         }
-        boolean writeSku = existing == null || payloadChanged || skuNeedsRepair;
+        boolean writeSku = existing == null || payloadChanged || skuNeedsRepair || sourcePayloadNeedsRepair;
         if (externalPrimary(entity.ownershipState) && writeSku) {
             entity.sourceOptionsId = value.optionsId();
             entity.firstSpecificationValueSourceId = value.firstSpecificationValueSourceId();
@@ -788,12 +877,18 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.bigBarcode = value.bigBarcode();
             entity.unit = product.unit();
             entity.specificationSummary = value.specificationName();
+            entity.attributesJson = skuSourceFieldsJson;
             entity.internalStatus = putawayStatus(product.putaway());
             if (existing != null) entity.version = nextVersion(entity.version);
+            entity.updatedAt = now;
+        } else if (existing != null && (payloadChanged || sourcePayloadNeedsRepair)) {
+            entity.attributesJson = skuSourceFieldsJson;
             entity.updatedAt = now;
         }
         if (existing == null) productSkuMapper.insert(entity);
         else if (writeSku && externalPrimary(entity.ownershipState)) {
+            productSkuMapper.updateById(entity);
+        } else if (!externalPrimary(entity.ownershipState) && (payloadChanged || sourcePayloadNeedsRepair)) {
             productSkuMapper.updateById(entity);
         }
         upsertBinding(tenantId, runId, "PRODUCT_SKU", value.sourceId(), "SKU", id,
@@ -901,6 +996,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 && Objects.equals(existing.bigBarcode, sku.bigBarcode())
                 && Objects.equals(existing.unit, product.unit())
                 && Objects.equals(existing.specificationSummary, sku.specificationName())
+                && !missing(existing.attributesJson)
                 && Objects.equals(existing.internalStatus, putawayStatus(product.putaway()));
     }
 
@@ -1214,7 +1310,8 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                                LocalDateTime now) {
         MasterSourceBindingEntity entity = binding(tenantId, sourceType, sourceId);
         String normalizedHash = requiredHash(payloadHash);
-        if (entity != null && Objects.equals(entity.sourcePayloadHash, normalizedHash)) {
+        if (entity != null && Objects.equals(entity.sourcePayloadHash, normalizedHash)
+                && !"SOURCE_ABSENT".equals(entity.sourcePresence)) {
             // 来源快照未变化时不刷新版本、同步时间或最后同步批次，保持同步真正幂等。
             return;
         }
@@ -1237,6 +1334,8 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         entity.sourceStatus = blank(sourceStatus);
         entity.sourcePutaway = blank(sourcePutaway);
         entity.sourcePayloadHash = normalizedHash;
+        entity.sourcePresence = "PRESENT";
+        entity.sourceAbsentAt = null;
         entity.lastSyncRunId = text(runId);
         entity.syncedAt = now;
         entity.updatedAt = now;
@@ -1592,7 +1691,8 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private static boolean changed(MasterSourceBindingEntity binding, String payloadHash) {
-        return binding == null || !Objects.equals(binding.sourcePayloadHash, requiredHash(payloadHash));
+        return binding == null || !Objects.equals(binding.sourcePayloadHash, requiredHash(payloadHash))
+                || "SOURCE_ABSENT".equals(binding.sourcePresence);
     }
 
     private static String legacySkuSourceId(String productSourceId, String sourceId) {
@@ -1643,6 +1743,14 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
 
     private static String requiredHash(String value) {
         return missing(value) ? shortHash("missing") + "0".repeat(48) : value;
+    }
+
+    private static String sourceFieldsJson(Map<String, Object> sourceFields) {
+        try {
+            return SOURCE_FIELDS_MAPPER.writeValueAsString(sourceFields == null ? Map.of() : sourceFields);
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("订货宝商品原始字段序列化失败", exception);
+        }
     }
 
     private static String shortHash(String value) {

@@ -18,9 +18,10 @@ ERP：主数据模型、幂等导入、内部状态、同步批次、本地查�
 Portal：只查询 ERP 本地列表，通过单一 ERP 同步接口传对象类型
 ```
 
-ERP 不保存订货宝账号、密码、Token、API Key、连接器 Secret 或订货宝完整原始报文。
-原始报文仍由 Integration 的 Raw Landing 保存；ERP 只保存商品业务字段、来源标识和
-幂等所需的摘要字段。
+ERP 不保存订货宝账号、密码、Token、API Key 或连接器 Secret。
+Integration 的 Raw Landing 继续保存协议层原始报文；ERP 同时保存商品/SPU、SKU 的完整
+业务来源字段到商品实体的 `attributes_json`，并将常用字段结构化到商品业务表，保证 ERP
+脱离原始接口也能追溯和展示订货宝商品数据。
 
 ## 2. 当前第一阶段范围与建表策略
 
@@ -36,7 +37,7 @@ ERP 不保存订货宝账号、密码、Token、API Key、连接器 Secret 或�
 | `category/brand` | `getSite/getBrands` 归一化后的分类、品牌 |
 | `specification/values` | `getMultiOptionsList` 归一化后的规格维度和规格值 |
 | `tag` | `getGoodsTag` 标签；当前字段别名是兼容映射，需真实账号回执验证 |
-| `sourceFields` | 仅在 Integration Raw Landing 保存；ERP 不复制订货宝原始报文 |
+| `sourceFields` | Integration Raw Landing 保存协议原文；ERP 商品/SPU、SKU 保存完整业务字段到 `attributes_json` |
 
 ## 3. 历史对照：单表最小方案（未采用）
 

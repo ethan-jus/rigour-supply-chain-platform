@@ -34,6 +34,10 @@ public class MasterSourceBindingEntity {
     public LocalDateTime sourceUpdatedAt;
     /** 归一化来源字段 SHA-256，用于幂等和变更检测。 */
     public String sourcePayloadHash;
+    /** 完整快照中的来源存在状态：PRESENT 或 SOURCE_ABSENT。 */
+    public String sourcePresence;
+    /** 首次在完整成功快照中未出现的时间。 */
+    public LocalDateTime sourceAbsentAt;
     /** 最近处理该绑定的 ERP 同步批次 UUID。 */
     public String lastSyncRunId;
     /** 最近一次成功处理来源对象的时间，UTC。 */

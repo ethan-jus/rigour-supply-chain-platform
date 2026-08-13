@@ -14,7 +14,7 @@ public record WarehouseView(
         /** 订货宝仓库状态原值。 */ String sourceStatusCode,
         /** 是否为订货宝默认仓。 */ boolean defaultFlag,
         /** 仓库面积。 */ BigDecimal acreage,
-        /** 脱敏联系电话。 */ String phoneMasked,
+        /** 完整联系电话。 */ String phone,
         /** 仓库地址。 */ String address,
         /** 订货宝协作方主键。 */ String collaboratorSourceId,
         /** 仓库备注。 */ String remark,

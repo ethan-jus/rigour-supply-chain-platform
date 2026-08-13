@@ -23,7 +23,10 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -112,7 +115,7 @@ public class MybatisPlusOrderRepository implements OrderRepository {
 
         if (detailNeedsImport) replaceDetails(entity.id, imported.lines(), imported.shipments(), now);
         if (changed) {
-            appendSourceRecord(entity, incoming, imported, now);
+            appendSourceRecords(entity, incoming, imported, now);
             appendOrderEvent(entity, changed && existing == null, now);
         }
         return new ImportResult(entity.id, existing == null, changed || detailNeedsImport);
@@ -173,9 +176,17 @@ public class MybatisPlusOrderRepository implements OrderRepository {
         }
     }
 
-    private void appendSourceRecord(InternalOrderEntity entity, Order order, ImportedOrder imported,
-                                    LocalDateTime now) {
-        String payload = imported.detailIncluded() ? imported.rawDetailPayload() : imported.rawListPayload();
+    private void appendSourceRecords(InternalOrderEntity entity, Order order, ImportedOrder imported,
+                                     LocalDateTime now) {
+        appendSourceRecord(entity, order, "LIST", imported.rawListPayload(), now);
+        if (imported.detailIncluded()) {
+            appendSourceRecord(entity, order, "DETAIL", imported.rawDetailPayload(), now);
+        }
+    }
+
+    private void appendSourceRecord(InternalOrderEntity entity, Order order, String payloadType,
+                                    String rawPayload, LocalDateTime now) {
+        String payload = rawPayload;
         if (payload == null || payload.isBlank()) payload = "{}";
         OrderSourceRecordEntity record = new OrderSourceRecordEntity();
         record.id = UUID.randomUUID().toString();
@@ -183,9 +194,9 @@ public class MybatisPlusOrderRepository implements OrderRepository {
         record.orderId = entity.id;
         record.sourceSystem = order.sourceSystem();
         record.sourceOrderNo = order.sourceOrderNo();
-        record.payloadType = imported.detailIncluded() ? "DETAIL" : "LIST";
+        record.payloadType = payloadType;
         record.payloadJson = payload;
-        record.payloadHash = imported.payloadHash();
+        record.payloadHash = sha256(payload);
         record.receivedAt = now;
         Long existing = sourceRecordMapper.selectCount(Wrappers.<OrderSourceRecordEntity>query()
                 .eq("tenant_id", record.tenantId)
@@ -195,6 +206,15 @@ public class MybatisPlusOrderRepository implements OrderRepository {
                 .eq("payload_hash", record.payloadHash));
         if (existing != null && existing > 0) return;
         sourceRecordMapper.insert(record);
+    }
+
+    private static String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256不可用", exception);
+        }
     }
 
     private void appendOrderEvent(InternalOrderEntity entity, boolean created, LocalDateTime now) {

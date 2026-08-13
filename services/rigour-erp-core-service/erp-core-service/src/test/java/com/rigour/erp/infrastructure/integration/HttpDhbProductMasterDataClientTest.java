@@ -43,6 +43,8 @@ class HttpDhbProductMasterDataClientTest {
                 .andExpect(header(RequestHeaders.PRINCIPAL_SCOPE, "SERVICE"))
                 .andExpect(jsonPath("$.begin").value(0))
                 .andExpect(jsonPath("$.step").value(50))
+                .andExpect(jsonPath("$.status").value("C"))
+                .andExpect(jsonPath("$.putaway").value("A"))
                 .andRespond(withSuccess("""
                         {
                           "jobId": "%s",
@@ -55,6 +57,8 @@ class HttpDhbProductMasterDataClientTest {
                         """.formatted(JOB_ID, CONNECTOR_ID), MediaType.APPLICATION_JSON));
         server.expect(requestTo(base + DhbProductApi.BASE_PATH + "/" + CONNECTOR_ID + "/query"))
                 .andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$.status").value("C"))
+                .andExpect(jsonPath("$.putaway").value("A"))
                 .andExpect(jsonPath("$.mediaJobId").value(JOB_ID.toString()))
                 .andRespond(withSuccess("""
                         {
@@ -74,7 +78,10 @@ class HttpDhbProductMasterDataClientTest {
                             }],
                             "customFields": {},
                             "skus": [],
-                            "sourceFields": {}
+                          "sourceFields": {
+                            "units": "件",
+                            "goods_tag": ["TAG-1"]
+                          }
                           }]
                         }
                         """, MediaType.APPLICATION_JSON));
@@ -84,6 +91,8 @@ class HttpDhbProductMasterDataClientTest {
 
         assertThat(collected.products()).singleElement().satisfies(product -> {
             assertThat(product.sourceId()).isEqualTo("P-1");
+            assertThat(product.sourceFields()).containsEntry("units", "件");
+            assertThat(product.sourceFields()).containsKey("goods_tag");
             assertThat(product.images()).singleElement().satisfies(image ->
                     assertThat(image.objectKey()).isEqualTo("tenant/product-images/P-1/IMG-1/hash.png"));
         });

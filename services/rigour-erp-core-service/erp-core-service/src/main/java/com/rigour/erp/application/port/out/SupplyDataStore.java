@@ -18,6 +18,8 @@ import com.rigour.erp.domain.model.supply.SupplyDataObjectType;
 import com.rigour.erp.domain.model.supply.Warehouse;
 import com.rigour.erp.domain.model.supply.WarehousingReceipt;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /** ERP 供应链 MyBatis 持久化端口；实现必须在每条查询中绑定 tenantId。 */
@@ -45,6 +47,8 @@ public interface SupplyDataStore {
     ImportResult importWarehousingReceipt(String tenantId, UUID runId, WarehousingReceipt item);
     ImportResult importWarehouse(String tenantId, UUID runId, Warehouse item);
     ImportResult importInventory(String tenantId, UUID runId, InventoryBalance item);
+    /** 仅在完整且无拒绝记录的全量快照后标记来源存在/缺失，不删除业务记录。 */
+    void reconcileSourcePresence(String tenantId, UUID runId, Map<String, Set<String>> seenSourceIds);
     void completeRun(String tenantId, UUID runId, RunStatistics statistics);
     void failRun(String tenantId, UUID runId, RunStatistics statistics, RuntimeException error);
 

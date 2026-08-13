@@ -13,6 +13,8 @@ import com.rigour.erp.domain.model.product.MasterDataObjectType;
 import com.rigour.erp.domain.model.product.Product;
 import com.rigour.erp.domain.model.product.Specification;
 import com.rigour.erp.domain.model.product.Tag;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /** ERP 商品主数据持久化端口；实现是 ERP Schema 的唯一写者。 */
@@ -54,6 +56,9 @@ public interface ProductMasterDataStore {
     ImportResult importSpecification(String tenantId, UUID runId, Specification specification);
 
     ImportResult importTag(String tenantId, UUID runId, Tag tag);
+
+    /** 仅在完整且无拒绝记录的全量快照后标记来源存在/缺失，不删除业务记录。 */
+    void reconcileSourcePresence(String tenantId, UUID runId, Map<String, Set<String>> seenSourceIds);
 
     void completeRun(String tenantId, UUID runId, RunStatistics statistics);
 

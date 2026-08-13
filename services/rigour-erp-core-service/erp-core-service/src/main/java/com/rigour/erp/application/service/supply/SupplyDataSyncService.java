@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -84,7 +85,11 @@ public final class SupplyDataSyncService {
             collected.warehousingReceipts().forEach(item -> counts.add(store.importWarehousingReceipt(tenantId, runId, item)));
             collected.warehouses().forEach(item -> counts.add(store.importWarehouse(tenantId, runId, item)));
             collected.inventoryBalances().forEach(item -> counts.add(store.importInventory(tenantId, runId, item)));
-            RunStatistics stats = counts.statistics(); store.completeRun(tenantId, runId, stats);
+            RunStatistics stats = counts.statistics();
+            if (stats.rejected() == 0) {
+                store.reconcileSourcePresence(tenantId, runId, seenSourceIds(type, collected));
+            }
+            store.completeRun(tenantId, runId, stats);
             log.info("ERP供应链数据同步批次完成 tenantId={} objectType={} connectorId={} runId={} fetched={} created={} changed={} duplicates={} rejected={} pages={}",
                     tenantId, type, connectorId, runId, stats.fetched(), stats.created(),
                     stats.changed(), stats.duplicates(), stats.rejected(), stats.pages());
@@ -142,6 +147,20 @@ public final class SupplyDataSyncService {
         }
         RunStatistics statistics() { return new RunStatistics(fetched, created, changed, duplicates, rejected, pages); }
     }
+
+    private static Map<String, Set<String>> seenSourceIds(SupplyDataObjectType type,
+                                                           DhbSupplyDataClient.Collected collected) {
+        Set<String> ids = switch (type) {
+            case SUPPLIER -> collected.suppliers().stream().map(item -> item.sourceId()).collect(Collectors.toSet());
+            case PURCHASE_ORDER -> collected.purchaseOrders().stream().map(item -> item.sourceId()).collect(Collectors.toSet());
+            case PURCHASE_RETURN -> collected.purchaseReturns().stream().map(item -> item.sourceId()).collect(Collectors.toSet());
+            case WAREHOUSING_RECEIPT -> collected.warehousingReceipts().stream().map(item -> item.sourceId()).collect(Collectors.toSet());
+            case WAREHOUSE -> collected.warehouses().stream().map(item -> item.sourceId()).collect(Collectors.toSet());
+            case INVENTORY -> Set.of();
+        };
+        return type == SupplyDataObjectType.INVENTORY ? Map.of() : Map.of(type.name(), ids);
+    }
+
     private static String oneLine(String value) {
         return value == null ? "-" : value.replace('\r', ' ').replace('\n', ' ');
     }

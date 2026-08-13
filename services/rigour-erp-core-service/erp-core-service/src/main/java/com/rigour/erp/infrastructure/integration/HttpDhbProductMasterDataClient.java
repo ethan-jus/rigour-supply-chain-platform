@@ -86,8 +86,8 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
             if (pageNumber == 0) total = page.total();
             List<DhbApiModels.ProductView> items = page.items() == null ? List.of() : page.items();
             items.stream().map(this::product).forEach(result::add);
-            if (items.isEmpty() || items.size() < PAGE_SIZE
-                    || (total >= 0 && begin + items.size() >= total)) {
+            boolean complete = total >= 0 ? begin + PAGE_SIZE >= total : items.size() < PAGE_SIZE;
+            if (complete) {
                 return collected(MasterDataObjectType.PRODUCT_SPU, Math.max(0, total), pages, result,
                         null, null, null, null);
             }
@@ -135,7 +135,7 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
         List<Category> items = page.items().stream()
                 .map(item -> new Category(item.sourceId(), item.externalReferenceId(),
                         item.name(), item.categoryNumber(), item.parentSourceId(),
-                        item.defaultCategory(), hash(item))).toList();
+                        item.defaultCategory(), item.sourceFields(), hash(item))).toList();
         return collected(MasterDataObjectType.CATEGORY, items.size(), 1,
                 null, items, null, null, null);
     }
@@ -148,7 +148,7 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
         List<Brand> items = page.items().stream()
                 .map(item -> new Brand(item.sourceId(), item.externalReferenceId(),
                         item.name(), item.brandNumber(), item.sortOrder(), item.description(),
-                        hash(item))).toList();
+                        item.sourceFields(), hash(item))).toList();
         return collected(MasterDataObjectType.BRAND, items.size(), 1,
                 null, null, items, null, null);
     }
@@ -168,8 +168,8 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
             List<DhbApiModels.ProductSpecificationView> items =
                     page.items() == null ? List.of() : page.items();
             items.stream().map(this::specification).forEach(result::add);
-            if (items.isEmpty() || items.size() < PAGE_SIZE
-                    || (total >= 0 && begin + items.size() >= total)) {
+            boolean complete = total >= 0 ? begin + PAGE_SIZE >= total : items.size() < PAGE_SIZE;
+            if (complete) {
                 return collected(MasterDataObjectType.SPECIFICATION, Math.max(0, total), pages,
                         null, null, null, result, null);
             }
@@ -192,8 +192,8 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
             if (pageNumber == 0) total = page.total();
             List<DhbApiModels.ProductTagView> items = page.items() == null ? List.of() : page.items();
             items.stream().map(this::tag).forEach(result::add);
-            if (items.isEmpty() || items.size() < PAGE_SIZE
-                    || (total >= 0 && begin + items.size() >= total)) {
+            boolean complete = total >= 0 ? begin + PAGE_SIZE >= total : items.size() < PAGE_SIZE;
+            if (complete) {
                 return collected(MasterDataObjectType.TAG, Math.max(0, total), pages,
                         null, null, null, null, result);
             }
@@ -208,7 +208,7 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
                         sku.firstSpecificationValueSourceId(), sku.secondSpecificationValueSourceId(),
                         sku.specificationName(), sku.optionsId(), sku.orderPrice(), sku.marketPrice(),
                         sku.purchasePrice(), sku.middleOrderPrice(), sku.bigOrderPrice(),
-                        sku.middleBarcode(), sku.bigBarcode(), hash(sku))).toList();
+                        sku.middleBarcode(), sku.bigBarcode(), sku.sourceFields(), hash(sku))).toList();
         List<ProductImage> images = item.images().stream()
                 .map(image -> new ProductImage(image.sourceResourceId(), image.sourceGoodsId(),
                         image.originalName(), image.fileName(), image.sortOrder(), image.objectKey()))
@@ -221,20 +221,21 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
                 item.conversionBarcode(), item.baseToMiddleRate(), item.baseToBigRate(), item.minimumOrder(),
                 item.minimumOrderUnit(), item.inventoryLower(), item.inventoryUpper(), item.safetyInventory(),
                 item.middleOrderPrice(), item.bigOrderPrice(),
-                images, item.customFields(), skus, hash(item));
+                images, item.customFields(), skus, item.sourceFields(), hash(item));
     }
 
     private Specification specification(DhbApiModels.ProductSpecificationView item) {
         List<SpecificationValue> values = item.values().stream()
                 .map(value -> new SpecificationValue(value.sourceId(), value.code(),
-                        value.name(), value.parentSourceId(), hash(value))).toList();
+                        value.name(), value.parentSourceId(), value.sourceFields(), hash(value))).toList();
         return new Specification(item.sourceId(), item.code(), item.name(),
-                item.parentSourceId(), values, hash(item));
+                item.parentSourceId(), values, item.sourceFields(), hash(item));
     }
 
     private Tag tag(DhbApiModels.ProductTagView item) {
         return new Tag(item.sourceId(), item.code(), item.name(), item.sortOrder(), item.relationCount(),
-                item.createdAt(), item.updatedAt(), item.groupSourceId(), item.groupName(), hash(item));
+                item.createdAt(), item.updatedAt(), item.groupSourceId(), item.groupName(),
+                item.sourceFields(), hash(item));
     }
 
     private <T> T post(CallerIdentity caller, URI uri, Object body, Class<T> responseType) {

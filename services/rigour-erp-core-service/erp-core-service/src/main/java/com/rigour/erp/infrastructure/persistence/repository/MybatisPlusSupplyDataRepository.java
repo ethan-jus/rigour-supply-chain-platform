@@ -61,6 +61,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -71,6 +72,9 @@ import java.util.stream.Collectors;
 import org.springframework.stereotype.Repository;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.SerializationFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * ERP 供应链唯一 MyBatis-Plus 仓储实现。
@@ -81,6 +85,9 @@ import org.springframework.transaction.annotation.Transactional;
 public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
     private static final String SOURCE_SYSTEM = "DINGHUOBAO";
     private static final String EXTERNAL_PRIMARY = "EXTERNAL_PRIMARY";
+    private static final ObjectMapper SOURCE_FIELDS_MAPPER = JsonMapper.builder()
+            .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
+            .build();
     private final SupplierMapper supplierMapper;
     private final WarehouseMapper warehouseMapper;
     private final PurchaseOrderMapper purchaseOrderMapper;
@@ -151,7 +158,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         return new SupplyDataPageView<>(total, begin, step, page.stream().map(item ->
                 new WarehouseView(item.id, item.sourceWarehouseId, item.sourceWarehouseGuid,
                         item.warehouseCode, item.name, warehouseStatus(item.sourceStatus), item.sourceStatus,
-                        Boolean.TRUE.equals(item.sourceDefaultFlag), item.acreage, item.phoneMasked,
+                        Boolean.TRUE.equals(item.sourceDefaultFlag), item.acreage, item.phone,
                         item.address, item.collaboratorSourceId, item.remark, item.internalStatus,
                         item.ownershipState, instant(item.sourceSyncedAt))).toList());
     }
@@ -188,7 +195,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                 entity.sourcePaymentStatus, entity.sourcePaymentName, instant(entity.deliveryAt),
                 instant(entity.sourceCreatedAt), instant(entity.sourceUpdatedAt), entity.totalAmount,
                 entity.paidAmount, entity.goodsCount, entity.sourceDownloaded, entity.remark,
-                entity.internalCommunication,
+                entity.internalCommunication, parseSourceFields(entity.attributesJson),
                 lines.stream().map(MybatisPlusSupplyDataRepository::purchaseOrderLine).toList());
     }
 
@@ -223,10 +230,11 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                 entity.staffName, entity.sourceStatus, entity.sourceStatusName, entity.returnAmount,
                 entity.discountAmount, entity.returnReason, instant(entity.sourceCreatedAt),
                 instant(entity.returnSendAt), entity.internalCommunication, entity.remark,
-                entity.detailCount, entity.contactName, entity.contactPhoneMasked,
-                entity.contactAddressMasked, parseJsonList(entity.cityIdsJson),
+                entity.detailCount, entity.contactName, entity.contactPhone,
+                entity.contactAddress, parseJsonList(entity.cityIdsJson),
                 parseJsonList(entity.cityNamesJson), entity.sourceDevice, entity.parentReturnSourceId,
                 entity.parentCompanySourceId, entity.sourceDownloaded,
+                parseSourceFields(entity.attributesJson),
                 lines.stream().map(MybatisPlusSupplyDataRepository::purchaseReturnLine).toList());
     }
 
@@ -274,6 +282,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                 entity.expressNumber, instant(entity.storageAt), instant(entity.sourceCreatedAt),
                 instant(entity.sourceUpdatedAt), entity.freightAmount, entity.totalAmount, entity.costAmount,
                 entity.sourceApiFlag, entity.splitType, entity.remark,
+                parseSourceFields(entity.attributesJson),
                 lines.stream().map(MybatisPlusSupplyDataRepository::warehousingLine).toList(),
                 links.stream().map(item -> new PurchaseLinkView(item.sourcePurchaseId, item.purchaseOrderNo)).toList());
     }
@@ -303,7 +312,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
     public List<String> sourceProductCodes(String tenantId) {
         return bindingMapper.selectList(Wrappers.<MasterSourceBindingEntity>query()
                 .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
-                .eq("source_object_type", "PRODUCT_SPU").isNotNull("source_code"))
+                .eq("source_object_type", "PRODUCT_SPU").eq("source_presence", "PRESENT")
+                .isNotNull("source_code"))
                 .stream().map(item -> item.sourceCode).filter(value -> !missing(value)).distinct().toList();
     }
 
@@ -352,9 +362,11 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         SupplierEntity entity = binding.existing() ? supplierMapper.selectById(binding.targetId()) : null;
         boolean created = entity == null;
         if (entity == null) entity = new SupplierEntity();
+        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
+        boolean sourceFieldsNeedRepair = !created && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         LocalDateTime now = now();
         if (created) initializeSupplier(entity, tenantId, binding.targetId(), item, now);
-        if (created || binding.changed()) {
+        if (created || binding.changed() || sourceFieldsNeedRepair) {
             entity.sourceSupplierGuid = item.sourceGuid();
             entity.name = item.name();
             entity.areaName = item.areaName();
@@ -370,15 +382,15 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.taxpayerNumber = item.taxpayerNumber();
             entity.remark = item.remark();
             entity.sourceUpdatedAt = local(item.sourceUpdatedAt());
-            entity.attributesJson = hashJson(item.payloadHash());
+            entity.attributesJson = sourceFieldsJson;
             entity.sourceSyncedAt = now;
             entity.updatedAt = now;
-            if (!created) entity.version = next(entity.version);
+            if (!created && binding.changed()) entity.version = next(entity.version);
             if (created) supplierMapper.insert(entity); else supplierMapper.updateById(entity);
-        } else touchSupplier(entity, now);
+        }
         saveBinding(tenantId, runId, "SUPPLIER", item.sourceId(), "SUPPLIER", entity.id,
                 item.code(), item.name(), null, item.sourceUpdatedAt(), item.payloadHash(), now, binding.entity());
-        return outcome(created, binding.changed());
+        return outcome(created, binding.changed() || sourceFieldsNeedRepair);
     }
 
     @Transactional
@@ -389,6 +401,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         WarehouseEntity entity = binding.existing() ? warehouseMapper.selectById(binding.targetId()) : null;
         boolean created = entity == null;
         if (entity == null) entity = new WarehouseEntity();
+        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
+        boolean sourceFieldsNeedRepair = !created && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         LocalDateTime now = now();
         if (created) {
             entity.id = binding.targetId(); entity.tenantId = tenantId;
@@ -397,19 +411,19 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.ownershipState = EXTERNAL_PRIMARY; entity.recordOrigin = "IMPORTED";
             entity.version = 0L; entity.createdAt = now;
         }
-        if (created || binding.changed()) {
+        if (created || binding.changed() || sourceFieldsNeedRepair) {
             entity.name = item.name(); entity.sourceWarehouseGuid = item.sourceGuid();
             entity.sourceStatus = item.sourceStatus(); entity.sourceDefaultFlag = item.defaultFlag();
-            entity.acreage = item.acreage(); entity.phoneMasked = item.phoneMasked();
+            entity.acreage = item.acreage(); entity.phone = item.phone();
             entity.address = item.address(); entity.collaboratorSourceId = item.collaboratorSourceId();
-            entity.remark = item.remark(); entity.attributesJson = hashJson(item.payloadHash());
+            entity.remark = item.remark(); entity.attributesJson = sourceFieldsJson;
             entity.sourceSyncedAt = now; entity.updatedAt = now;
-            if (!created) entity.version = next(entity.version);
+            if (!created && binding.changed()) entity.version = next(entity.version);
             if (created) warehouseMapper.insert(entity); else warehouseMapper.updateById(entity);
-        } else { entity.sourceSyncedAt = now; entity.updatedAt = now; warehouseMapper.updateById(entity); }
+        }
         saveBinding(tenantId, runId, "WAREHOUSE", item.sourceId(), "WAREHOUSE", entity.id,
                 item.code(), item.name(), item.sourceStatus(), null, item.payloadHash(), now, binding.entity());
-        return outcome(created, binding.changed());
+        return outcome(created, binding.changed() || sourceFieldsNeedRepair);
     }
 
     @Transactional
@@ -420,9 +434,11 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         PurchaseOrderEntity entity = binding.existing() ? purchaseOrderMapper.selectById(binding.targetId()) : null;
         boolean created = entity == null;
         if (entity == null) entity = new PurchaseOrderEntity();
+        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
+        boolean sourceFieldsNeedRepair = !created && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         LocalDateTime now = now();
         if (created) initializeDocument(entity, tenantId, binding.targetId(), item.number(), item.sourceId(), now);
-        if (created || binding.changed()) {
+        if (created || binding.changed() || sourceFieldsNeedRepair) {
             entity.sourceSupplierId = item.supplierSourceId();
             entity.sourceWarehouseId = item.warehouseSourceId();
             entity.supplierId = supplierId(tenantId, item.supplierSourceId(), item.supplierCode());
@@ -436,16 +452,18 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.sourceUpdatedAt = local(item.sourceUpdatedAt()); entity.totalAmount = zero(item.totalAmount());
             entity.paidAmount = zero(item.paidAmount()); entity.goodsCount = zero(item.goodsCount());
             entity.sourceDownloaded = item.downloaded(); entity.remark = item.remark();
-            entity.internalCommunication = item.internalCommunication(); entity.attributesJson = hashJson(item.payloadHash());
+            entity.internalCommunication = item.internalCommunication(); entity.attributesJson = sourceFieldsJson;
             entity.sourceSyncedAt = now; entity.updatedAt = now;
-            if (!created) entity.version = next(entity.version);
+            if (!created && binding.changed()) entity.version = next(entity.version);
             if (created) purchaseOrderMapper.insert(entity); else purchaseOrderMapper.updateById(entity);
-            replacePurchaseLines(tenantId, entity.id, item.lines(), now);
-        } else touchPurchase(entity, now);
+            if (created || binding.changed() || sourceFieldsNeedRepair) {
+                replacePurchaseLines(tenantId, entity.id, item.lines(), now);
+            }
+        }
         saveBinding(tenantId, runId, "PURCHASE_ORDER", item.sourceId(), "PURCHASE_ORDER", entity.id,
                 item.number(), item.number(), item.sourceStatus(), item.sourceUpdatedAt(), item.payloadHash(), now,
                 binding.entity());
-        return outcome(created, binding.changed());
+        return outcome(created, binding.changed() || sourceFieldsNeedRepair);
     }
 
     @Transactional
@@ -456,6 +474,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         PurchaseReturnEntity entity = binding.existing() ? purchaseReturnMapper.selectById(binding.targetId()) : null;
         boolean created = entity == null;
         if (entity == null) entity = new PurchaseReturnEntity();
+        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
+        boolean sourceFieldsNeedRepair = !created && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         LocalDateTime now = now();
         if (created) {
             entity.id = binding.targetId(); entity.tenantId = tenantId; entity.purchaseReturnNo = item.number();
@@ -463,7 +483,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.ownershipState = EXTERNAL_PRIMARY; entity.recordOrigin = "IMPORTED";
             entity.version = 0L; entity.createdAt = now;
         }
-        if (created || binding.changed()) {
+        if (created || binding.changed() || sourceFieldsNeedRepair) {
             entity.sourceSupplierId = item.supplierSourceId();
             entity.sourceWarehouseId = item.warehouseSourceId();
             entity.supplierId = supplierId(tenantId, item.supplierSourceId(), item.supplierCode());
@@ -476,20 +496,22 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.returnReason = item.reason(); entity.sourceCreatedAt = local(item.sourceCreatedAt());
             entity.returnSendAt = local(item.sendAt()); entity.internalCommunication = item.internalCommunication();
             entity.remark = item.remark(); entity.detailCount = item.detailCount() == null ? item.lines().size() : item.detailCount();
-            entity.contactName = item.contactName(); entity.contactPhoneMasked = item.contactPhoneMasked();
-            entity.contactAddressMasked = item.contactAddressMasked(); entity.cityIdsJson = jsonList(item.cityIds());
+            entity.contactName = item.contactName(); entity.contactPhone = item.contactPhone();
+            entity.contactAddress = item.contactAddress(); entity.cityIdsJson = jsonList(item.cityIds());
             entity.cityNamesJson = jsonList(item.cityNames()); entity.sourceDevice = item.sourceDevice();
             entity.parentReturnSourceId = item.parentReturnSourceId();
             entity.parentCompanySourceId = item.parentCompanySourceId(); entity.sourceDownloaded = item.downloaded();
-            entity.attributesJson = hashJson(item.payloadHash()); entity.sourceSyncedAt = now; entity.updatedAt = now;
-            if (!created) entity.version = next(entity.version);
+            entity.attributesJson = sourceFieldsJson; entity.sourceSyncedAt = now; entity.updatedAt = now;
+            if (!created && binding.changed()) entity.version = next(entity.version);
             if (created) purchaseReturnMapper.insert(entity); else purchaseReturnMapper.updateById(entity);
-            replaceReturnLines(tenantId, entity.id, item.lines(), now);
-        } else { entity.sourceSyncedAt = now; entity.updatedAt = now; purchaseReturnMapper.updateById(entity); }
+            if (created || binding.changed() || sourceFieldsNeedRepair) {
+                replaceReturnLines(tenantId, entity.id, item.lines(), now);
+            }
+        }
         saveBinding(tenantId, runId, "PURCHASE_RETURN", item.sourceId(), "PURCHASE_RETURN", entity.id,
                 item.number(), item.number(), item.sourceStatus(), item.sourceCreatedAt(), item.payloadHash(), now,
                 binding.entity());
-        return outcome(created, binding.changed());
+        return outcome(created, binding.changed() || sourceFieldsNeedRepair);
     }
 
     @Transactional
@@ -501,6 +523,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         WarehousingReceiptEntity entity = binding.existing() ? warehousingReceiptMapper.selectById(binding.targetId()) : null;
         boolean created = entity == null;
         if (entity == null) entity = new WarehousingReceiptEntity();
+        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
+        boolean sourceFieldsNeedRepair = !created && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         LocalDateTime now = now();
         if (created) {
             entity.id = binding.targetId(); entity.tenantId = tenantId; entity.warehousingNo = item.number();
@@ -508,7 +532,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.ownershipState = EXTERNAL_PRIMARY; entity.recordOrigin = "IMPORTED";
             entity.version = 0L; entity.createdAt = now;
         }
-        if (created || binding.changed()) {
+        if (created || binding.changed() || sourceFieldsNeedRepair) {
             entity.sourceWarehouseId = item.warehouseSourceId();
             entity.sourceSupplierId = item.supplierSourceId();
             entity.warehouseId = warehouseId(tenantId, item.warehouseSourceId(), null);
@@ -524,16 +548,18 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.freightAmount = zero(item.freightAmount()); entity.totalAmount = zero(item.totalAmount());
             entity.costAmount = zero(item.costAmount()); entity.sourceApiFlag = item.apiFlag();
             entity.splitType = item.splitType(); entity.remark = item.remark();
-            entity.attributesJson = hashJson(item.payloadHash()); entity.sourceSyncedAt = now; entity.updatedAt = now;
-            if (!created) entity.version = next(entity.version);
+            entity.attributesJson = sourceFieldsJson; entity.sourceSyncedAt = now; entity.updatedAt = now;
+            if (!created && binding.changed()) entity.version = next(entity.version);
             if (created) warehousingReceiptMapper.insert(entity); else warehousingReceiptMapper.updateById(entity);
-            replaceWarehousingLines(tenantId, entity.id, item.lines(), now);
-            replacePurchaseLinks(tenantId, entity.id, item.purchaseLinks(), now);
-        } else { entity.sourceSyncedAt = now; entity.updatedAt = now; warehousingReceiptMapper.updateById(entity); }
+            if (created || binding.changed() || sourceFieldsNeedRepair) {
+                replaceWarehousingLines(tenantId, entity.id, item.lines(), now);
+                replacePurchaseLinks(tenantId, entity.id, item.purchaseLinks(), now);
+            }
+        }
         saveBinding(tenantId, runId, "WAREHOUSING_RECEIPT", item.sourceId(), "WAREHOUSING_RECEIPT",
                 entity.id, item.number(), item.number(), item.sourceStatus(), item.sourceUpdatedAt(),
                 item.payloadHash(), now, binding.entity());
-        return outcome(created, binding.changed());
+        return outcome(created, binding.changed() || sourceFieldsNeedRepair);
     }
 
     @Transactional
@@ -548,8 +574,10 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                         .eq("source_warehouse_key", warehouseKey).eq("source_product_key", productKey)
                         .eq("source_variant_key", variantKey).last("LIMIT 1"));
         boolean created = entity == null;
-        boolean changed = created || !Objects.equals(entity.attributesJson, hashJson(item.payloadHash()));
+        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
+        boolean changed = created || !Objects.equals(entity.attributesJson, sourceFieldsJson);
         LocalDateTime now = now();
+        if (!created && !changed) return ImportResult.oneDuplicate();
         if (entity == null) {
             entity = new InventoryBalanceEntity(); entity.id = UUID.randomUUID().toString();
             entity.tenantId = tenantId; entity.sourceWarehouseKey = warehouseKey;
@@ -568,10 +596,36 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         entity.firstOptionName = item.firstOptionName(); entity.secondOptionGuid = item.secondOptionGuid();
         entity.secondOptionCode = item.secondOptionCode(); entity.secondOptionName = item.secondOptionName();
         entity.realQuantity = zero(item.realQuantity()); entity.availableQuantity = zero(item.availableQuantity());
-        entity.attributesJson = hashJson(item.payloadHash()); entity.sourceSyncedAt = now; entity.updatedAt = now;
+        entity.attributesJson = sourceFieldsJson; entity.sourceSyncedAt = now; entity.updatedAt = now;
         if (!created && changed) entity.version = next(entity.version);
         if (created) inventoryBalanceMapper.insert(entity); else inventoryBalanceMapper.updateById(entity);
         return outcome(created, changed);
+    }
+
+    @Transactional
+    @Override
+    public void reconcileSourcePresence(String tenantId, UUID runId,
+                                        Map<String, Set<String>> seenSourceIds) {
+        LocalDateTime now = now();
+        seenSourceIds.forEach((sourceType, seenIds) -> {
+            Set<String> seen = seenIds == null ? Set.of() : seenIds;
+            List<MasterSourceBindingEntity> bindings = bindingMapper.selectList(
+                    Wrappers.<MasterSourceBindingEntity>query()
+                            .eq("tenant_id", tenantId)
+                            .eq("source_system", SOURCE_SYSTEM)
+                            .eq("source_object_type", sourceType));
+            for (MasterSourceBindingEntity binding : bindings) {
+                boolean present = seen.contains(binding.sourceObjectId);
+                String desired = present ? "PRESENT" : "SOURCE_ABSENT";
+                if (Objects.equals(desired, binding.sourcePresence)) continue;
+                binding.sourcePresence = desired;
+                binding.sourceAbsentAt = present ? null : now;
+                binding.lastSyncRunId = runId.toString();
+                binding.version = next(binding.version);
+                binding.updatedAt = now;
+                bindingMapper.updateById(binding);
+            }
+        });
     }
 
     @Transactional
@@ -621,7 +675,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.purchaseUnitName = line.unitName(); entity.purchaseUnitQuantity = zero(line.unitQuantity());
             entity.warehousedQuantity = zero(line.warehousedQuantity());
             entity.returnedQuantity = zero(line.returnedQuantity()); entity.remark = line.remark();
-            entity.attributesJson = hashJson(line.payloadHash()); entity.createdAt = now; entity.updatedAt = now;
+            entity.attributesJson = sourceFieldsJson(line.sourceFields()); entity.createdAt = now; entity.updatedAt = now;
             purchaseOrderLineMapper.insert(entity);
         }
     }
@@ -648,7 +702,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.conversionNumber = zero(line.conversionNumber()); entity.amount = zero(line.amount());
             entity.costPrice = zero(line.costPrice()); entity.purchaseOrderNo = line.purchaseOrderNo();
             entity.categoryNameSnapshot = line.categoryName(); entity.brandNameSnapshot = line.brandName();
-            entity.remark = line.remark(); entity.attributesJson = hashJson(line.payloadHash());
+            entity.remark = line.remark(); entity.attributesJson = sourceFieldsJson(line.sourceFields());
             entity.createdAt = now; entity.updatedAt = now; purchaseReturnLineMapper.insert(entity);
         }
     }
@@ -676,7 +730,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.sourceRealQuantity = line.sourceRealQuantity();
             entity.sourceAvailableQuantity = line.sourceAvailableQuantity();
             entity.collaboratorSourceId = line.collaboratorSourceId(); entity.collaboratorName = line.collaboratorName();
-            entity.remark = line.remark(); entity.attributesJson = hashJson(line.payloadHash());
+            entity.remark = line.remark(); entity.attributesJson = sourceFieldsJson(line.sourceFields());
             entity.createdAt = now; entity.updatedAt = now; warehousingReceiptLineMapper.insert(entity);
         }
     }
@@ -703,7 +757,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                 .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
                 .eq("source_object_type", sourceType).eq("source_object_id", sourceId).last("LIMIT 1"));
         return new Binding(entity, entity == null ? UUID.randomUUID().toString() : entity.targetId,
-                entity == null || !Objects.equals(entity.sourcePayloadHash, requiredHash(payloadHash)),
+                entity == null || !Objects.equals(entity.sourcePayloadHash, requiredHash(payloadHash))
+                        || "SOURCE_ABSENT".equals(entity.sourcePresence),
                 entity != null);
     }
 
@@ -711,6 +766,9 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                              String targetType, String targetId, String code, String name,
                              String status, Instant sourceUpdatedAt, String payloadHash,
                              LocalDateTime now, MasterSourceBindingEntity existing) {
+        String normalizedHash = requiredHash(payloadHash);
+        if (existing != null && Objects.equals(existing.sourcePayloadHash, normalizedHash)
+                && !"SOURCE_ABSENT".equals(existing.sourcePresence)) return;
         MasterSourceBindingEntity entity = existing == null ? new MasterSourceBindingEntity() : existing;
         if (existing == null) {
             entity.id = UUID.randomUUID().toString(); entity.tenantId = tenantId;
@@ -719,7 +777,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.version = 0L; entity.createdAt = now;
         } else entity.version = next(entity.version);
         entity.sourceCode = code; entity.sourceName = name; entity.sourceStatus = status;
-        entity.sourceUpdatedAt = local(sourceUpdatedAt); entity.sourcePayloadHash = requiredHash(payloadHash);
+        entity.sourceUpdatedAt = local(sourceUpdatedAt); entity.sourcePayloadHash = normalizedHash;
+        entity.sourcePresence = "PRESENT"; entity.sourceAbsentAt = null;
         entity.lastSyncRunId = runId.toString(); entity.syncedAt = now; entity.updatedAt = now;
         if (existing == null) bindingMapper.insert(entity); else bindingMapper.updateById(entity);
     }
@@ -778,7 +837,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                 item.sourceGoodsCode, item.sourceGoodsName, item.sourceOptionsId,
                 item.sourceOptionsGoodsCode, item.optionsSummary, item.baseQuantity, item.unitPrice,
                 item.purchaseUnitCode, item.purchaseUnitName, item.purchaseUnitQuantity,
-                item.warehousedQuantity, item.returnedQuantity, item.remark);
+                item.warehousedQuantity, item.returnedQuantity, item.remark,
+                parseSourceFields(item.attributesJson));
     }
 
     private static PurchaseReturnView purchaseReturnView(PurchaseReturnEntity item, int lineCount) {
@@ -788,8 +848,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                 item.staffSourceId, item.staffName, item.sourceStatus, item.sourceStatusName,
                 item.internalStatus, item.returnAmount, item.discountAmount, item.returnReason,
                 instant(item.sourceCreatedAt), instant(item.returnSendAt), item.internalCommunication,
-                item.remark, item.detailCount, item.contactName, item.contactPhoneMasked,
-                item.contactAddressMasked, parseJsonList(item.cityIdsJson), parseJsonList(item.cityNamesJson),
+                item.remark, item.detailCount, item.contactName, item.contactPhone,
+                item.contactAddress, parseJsonList(item.cityIdsJson), parseJsonList(item.cityNamesJson),
                 item.sourceDevice, item.parentReturnSourceId, item.parentCompanySourceId,
                 item.sourceDownloaded, lineCount, instant(item.sourceSyncedAt));
     }
@@ -801,7 +861,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                 item.conversionNumber, item.costPrice, item.unitCostPrice, item.purchasePrice,
                 item.wholesalePrice, item.allocation, item.barcode, item.goodsModel,
                 item.sourceRealQuantity, item.sourceAvailableQuantity, item.collaboratorSourceId,
-                item.collaboratorName, item.remark);
+                item.collaboratorName, item.remark, parseSourceFields(item.attributesJson));
     }
 
     private static PurchaseReturnLineView purchaseReturnLine(PurchaseReturnLineEntity item) {
@@ -810,7 +870,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                 item.optionsSummary, item.requestedQuantity, item.confirmedQuantity, item.returnPrice,
                 item.confirmedPrice, item.returnUnitCode, item.returnUnitName, item.returnUnitQuantity,
                 item.confirmedUnitQuantity, item.conversionNumber, item.amount, item.costPrice,
-                item.purchaseOrderNo, item.categoryNameSnapshot, item.brandNameSnapshot, item.remark);
+                item.purchaseOrderNo, item.categoryNameSnapshot, item.brandNameSnapshot, item.remark,
+                parseSourceFields(item.attributesJson));
     }
 
     private static BusinessException notFound(String message) {
@@ -866,13 +927,6 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                     com.rigour.shared.core.api.ErrorCode.CONFLICT,
                     "当前租户该类 ERP 数据已有同步任务运行中", java.util.List.of());
         }
-    }
-
-    private void touchSupplier(SupplierEntity entity, LocalDateTime now) {
-        entity.sourceSyncedAt = now; entity.updatedAt = now; supplierMapper.updateById(entity);
-    }
-    private void touchPurchase(PurchaseOrderEntity entity, LocalDateTime now) {
-        entity.sourceSyncedAt = now; entity.updatedAt = now; purchaseOrderMapper.updateById(entity);
     }
 
     private String uniqueSupplierCode(String tenantId, String preferred, String sourceId) {
@@ -962,7 +1016,25 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         return value;
     }
     private static String requiredHash(String value) { return missing(value) ? shortHash("missing") : value; }
-    private static String hashJson(String hash) { return "{\"payloadHash\":\"" + requiredHash(hash) + "\"}"; }
+    private static String sourceFieldsJson(Map<String, Object> sourceFields) {
+        try {
+            return SOURCE_FIELDS_MAPPER.writeValueAsString(sourceFields == null ? Map.of() : sourceFields);
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("订货宝供应链原始字段序列化失败", exception);
+        }
+    }
+    private static Map<String, Object> parseSourceFields(String json) {
+        if (missing(json)) return Map.of();
+        try {
+            Object decoded = SOURCE_FIELDS_MAPPER.readValue(json, Object.class);
+            if (!(decoded instanceof Map<?, ?> values)) return Map.of();
+            Map<String, Object> result = new LinkedHashMap<>();
+            values.forEach((key, value) -> result.put(String.valueOf(key), value));
+            return result;
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("订货宝供应链原始字段反序列化失败", exception);
+        }
+    }
     private static String jsonList(List<String> values) {
         if (values == null || values.isEmpty()) return "[]";
         return "[\"" + String.join("\",\"", values.stream()

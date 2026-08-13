@@ -19,6 +19,7 @@ import java.security.NoSuchAlgorithmException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.sql.Types;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
@@ -33,9 +34,18 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
     private static final String DEFAULT_ORDER_TASK_CODE = "DHB_ORDER_DEFAULT";
     private static final String DEFAULT_PRODUCT_MASTER_TASK_CODE = "DHB_PRODUCT_MASTER_DEFAULT";
     private static final String DEFAULT_SUPPLY_CHAIN_TASK_CODE = "DHB_SUPPLY_CHAIN_DEFAULT";
+    private static final String DEFAULT_CRM_MASTER_TASK_CODE = "DHB_CRM_MASTER_DEFAULT";
     private static final Set<String> CONNECTOR_STATUSES = Set.of("ACTIVE", "DISABLED");
     private static final Set<String> TASK_STATUSES = Set.of("IDLE", "RUNNING", "PAUSED", "FAILED", "COMPLETED");
     private static final Set<String> TRANSFORM_TYPES = Set.of("DIRECT", "CONSTANT", "EXPRESSION", "DICTIONARY");
+    private static final String RAW_LANDING_INSERT_SQL = """
+            INSERT INTO integration_raw_landing
+                (id, tenant_id, connector_id, source_system, source_object_type, source_id,
+                 source_version, source_updated_at, payload_json, payload_checksum,
+                 received_at, landing_status, attempts, last_attempt_at)
+            VALUES (?, ?, ?, 'DHB', ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), 'RECEIVED', 0, NULL)
+            ON DUPLICATE KEY UPDATE id=id
+            """;
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
@@ -204,6 +214,10 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
                 && !"SUPPLY_CHAIN_DATA".equals(objectType)) {
             throw new IllegalArgumentException("系统默认供应链数据同步任务不能修改对象类型");
         }
+        if (DEFAULT_CRM_MASTER_TASK_CODE.equals(taskCode)
+                && !"CRM_MASTER_DATA".equals(objectType)) {
+            throw new IllegalArgumentException("系统默认CRM主数据同步任务不能修改对象类型");
+        }
         if ("ORDER".equals(objectType)) {
             requireNoExistingOrderSyncTask(tenantId, command.connectorId(), id);
         }
@@ -294,26 +308,56 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
     public void persistRawLanding(UUID tenantId, UUID connectorId, String sourceObjectType,
                                   String sourceId, Instant sourceUpdatedAt,
                                   java.util.Map<String, Object> payload) {
-        String objectType = required(sourceObjectType, "sourceObjectType");
-        String businessId = required(sourceId, "sourceId");
-        if (payload == null) throw new IllegalArgumentException("payload is required");
+        persistRawLandings(tenantId, connectorId, List.of(
+                new RawLanding(sourceObjectType, sourceId, sourceUpdatedAt, payload)));
+    }
+
+    @Override
+    public void persistRawLandings(UUID tenantId, UUID connectorId, List<RawLanding> values) {
+        if (values == null || values.isEmpty()) return;
+        List<RawLandingRow> rows = values.stream().map(this::prepareRawLanding).toList();
+        transaction.executeWithoutResult(status -> jdbc.batchUpdate(RAW_LANDING_INSERT_SQL,
+                new org.springframework.jdbc.core.BatchPreparedStatementSetter() {
+                    @Override
+                    public void setValues(java.sql.PreparedStatement statement, int index)
+                            throws SQLException {
+                        RawLandingRow row = rows.get(index);
+                        statement.setBytes(1, bin(row.id()));
+                        statement.setBytes(2, bin(tenantId));
+                        statement.setBytes(3, bin(connectorId));
+                        statement.setString(4, row.objectType());
+                        statement.setString(5, row.sourceId());
+                        if (row.sourceVersion() == null) statement.setNull(6, Types.VARCHAR);
+                        else statement.setString(6, row.sourceVersion());
+                        if (row.sourceUpdatedAt() == null) statement.setNull(7, Types.TIMESTAMP);
+                        else statement.setTimestamp(7, Timestamp.from(row.sourceUpdatedAt()));
+                        statement.setString(8, row.payloadJson());
+                        statement.setString(9, row.checksum());
+                    }
+
+                    @Override
+                    public int getBatchSize() { return rows.size(); }
+                }));
+    }
+
+    private RawLandingRow prepareRawLanding(RawLanding value) {
+        String objectType = required(value.sourceObjectType(), "sourceObjectType");
+        String sourceId = required(value.sourceId(), "sourceId");
+        if (value.payload() == null) throw new IllegalArgumentException("payload is required");
         String payloadJson;
         try {
-            payloadJson = objectMapper.writeValueAsString(payload);
+            payloadJson = objectMapper.writeValueAsString(value.payload());
         } catch (RuntimeException exception) {
             throw new IllegalStateException("订货宝原始回执序列化失败", exception);
         }
-        String checksum = sha256(payloadJson);
-        transaction.executeWithoutResult(status -> jdbc.update("""
-                INSERT INTO integration_raw_landing
-                    (id, tenant_id, connector_id, source_system, source_object_type, source_id,
-                     source_version, source_updated_at, payload_json, payload_checksum,
-                     received_at, landing_status, attempts, last_attempt_at)
-                VALUES (?, ?, ?, 'DHB', ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), 'RECEIVED', 0, NULL)
-                ON DUPLICATE KEY UPDATE id=id
-                """, bin(UUID.randomUUID()), bin(tenantId), bin(connectorId), objectType, businessId,
-                sourceUpdatedAt == null ? null : sourceUpdatedAt.toString(), timestamp(sourceUpdatedAt),
-                payloadJson, checksum));
+        return new RawLandingRow(UUID.randomUUID(), objectType, sourceId, value.sourceUpdatedAt(),
+                value.sourceUpdatedAt() == null ? null : value.sourceUpdatedAt().toString(),
+                payloadJson, sha256(payloadJson));
+    }
+
+    private record RawLandingRow(UUID id, String objectType, String sourceId,
+                                 Instant sourceUpdatedAt, String sourceVersion,
+                                 String payloadJson, String checksum) {
     }
 
     private ConnectorView connectorById(UUID tenantId, UUID id) {
@@ -381,6 +425,31 @@ public final class JdbcDhbIntegrationStore implements DhbIntegrationStore {
         ensureDefaultOrderSyncTask(tenantId, actorId, connectorId);
         ensureDefaultProductMasterSyncTask(tenantId, actorId, connectorId);
         ensureDefaultSupplyChainSyncTask(tenantId, actorId, connectorId);
+        ensureDefaultCrmMasterSyncTask(tenantId, actorId, connectorId);
+    }
+
+    private void ensureDefaultCrmMasterSyncTask(UUID tenantId, UUID actorId, UUID connectorId) {
+        if (count("""
+                SELECT COUNT(*) FROM integration_sync_task
+                 WHERE tenant_id=? AND connector_id=? AND object_type='CRM_MASTER_DATA'
+                   AND deleted_at IS NULL
+                """, bin(tenantId), bin(connectorId)) > 0) return;
+        int restored = jdbc.update("""
+                UPDATE integration_sync_task
+                   SET object_type='CRM_MASTER_DATA', task_status='IDLE', enabled=1,
+                       deleted_at=NULL, deleted_by=NULL, delete_reason=NULL,
+                       version=version+1, updated_at=UTC_TIMESTAMP(6), updated_by=?
+                 WHERE tenant_id=? AND connector_id=? AND task_code=? AND deleted_at IS NOT NULL
+                """, bin(actorId), bin(tenantId), bin(connectorId), DEFAULT_CRM_MASTER_TASK_CODE);
+        if (restored == 1) return;
+        jdbc.update("""
+                INSERT INTO integration_sync_task
+                    (id, tenant_id, connector_id, task_code, object_type, task_status,
+                     next_run_at, created_at, created_by, updated_at, updated_by)
+                VALUES (?, ?, ?, ?, 'CRM_MASTER_DATA', 'IDLE', NULL,
+                        UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?)
+                """, bin(UUID.randomUUID()), bin(tenantId), bin(connectorId),
+                DEFAULT_CRM_MASTER_TASK_CODE, bin(actorId), bin(actorId));
     }
 
     private void ensureDefaultSupplyChainSyncTask(UUID tenantId, UUID actorId, UUID connectorId) {

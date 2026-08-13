@@ -2,7 +2,10 @@ package com.rigour.erp.domain.model.supply;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** ERP 采购退货导入模型。 */
 public record PurchaseReturn(String sourceId, String number, String supplierSourceId,
@@ -12,14 +15,16 @@ public record PurchaseReturn(String sourceId, String number, String supplierSour
                              BigDecimal returnAmount, BigDecimal discountAmount, String reason,
                              Instant sourceCreatedAt, Instant sendAt, String internalCommunication,
                              String remark, Integer detailCount, String contactName,
-                             String contactPhoneMasked, String contactAddressMasked,
+                             String contactPhone, String contactAddress,
                              List<String> cityIds, List<String> cityNames, String sourceDevice,
                              String parentReturnSourceId, String parentCompanySourceId,
-                             Boolean downloaded, List<Line> lines, String payloadHash) {
+                             Boolean downloaded, List<Line> lines,
+                             Map<String, Object> sourceFields, String payloadHash) {
     public PurchaseReturn {
         cityIds = cityIds == null ? List.of() : List.copyOf(cityIds);
         cityNames = cityNames == null ? List.of() : List.copyOf(cityNames);
         lines = lines == null ? List.of() : List.copyOf(lines);
+        sourceFields = immutable(sourceFields);
     }
 
     /** 采购退货商品明细。 */
@@ -31,5 +36,11 @@ public record PurchaseReturn(String sourceId, String number, String supplierSour
                        BigDecimal unitQuantity, BigDecimal confirmedUnitQuantity,
                        BigDecimal conversionNumber, BigDecimal amount, BigDecimal costPrice,
                        String purchaseOrderNo, String categoryName, String brandName,
-                       String remark, String payloadHash) { }
+                       String remark, Map<String, Object> sourceFields, String payloadHash) {
+        public Line { sourceFields = immutable(sourceFields); }
+    }
+
+    private static Map<String, Object> immutable(Map<String, Object> value) {
+        return value == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(value));
+    }
 }

@@ -28,6 +28,8 @@ public record DhbOrderLineView(
         BigDecimal unitPrice,
         /** 数量。 */
         BigDecimal quantity,
+        /** 来源明细金额。 */
+        BigDecimal lineAmount,
         /** 计量单位。 */
         String unit,
         /** 明细备注。 */

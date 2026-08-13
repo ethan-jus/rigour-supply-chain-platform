@@ -2,7 +2,10 @@ package com.rigour.erp.api.v1.model;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** ERP 采购单详情；字段方向与 Integration 的订货宝标准化采购单保持一致。 */
 public record PurchaseOrderDetailView(
@@ -30,8 +33,11 @@ public record PurchaseOrderDetailView(
         /** 来源下载标记。 */ Boolean downloaded,
         /** 单据备注。 */ String remark,
         /** 内部沟通内容。 */ String internalCommunication,
+        /** 订货宝单据原始字段，仅详情查询返回。 */ Map<String, Object> sourceFields,
         /** 采购单明细。 */ List<PurchaseOrderLineView> lines) {
     public PurchaseOrderDetailView {
+        sourceFields = sourceFields == null ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(sourceFields));
         lines = lines == null ? List.of() : List.copyOf(lines);
     }
 }

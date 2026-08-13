@@ -88,7 +88,7 @@ public class DhbOrderService {
         return new DhbOrderLineView(line.sourceLineId(), line.sourceProductGuid(), line.skuNo(),
                 line.sourceOptionsGoodsNo(), line.sourceBarcode(), line.productName(), line.productCode(),
                 line.specificationFirst(), line.specificationSecond(), line.specificationName(), line.unitPrice(),
-                line.quantity(), line.unit(), line.remark());
+                line.quantity(), line.lineAmount(), line.unit(), line.remark());
     }
 
     private static DhbShipmentView shipmentView(OrderShipment shipment) {

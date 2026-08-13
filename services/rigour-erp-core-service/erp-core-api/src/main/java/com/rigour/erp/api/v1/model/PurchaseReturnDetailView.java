@@ -2,7 +2,10 @@ package com.rigour.erp.api.v1.model;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** ERP 采购退货单详情；字段方向与 Integration 的订货宝标准化退货单保持一致。 */
 public record PurchaseReturnDetailView(
@@ -28,18 +31,21 @@ public record PurchaseReturnDetailView(
         /** 单据备注。 */ String remark,
         /** 来源明细数量。 */ Integer detailCount,
         /** 联系人名称。 */ String contactName,
-        /** 脱敏联系电话。 */ String contactPhoneMasked,
-        /** 脱敏联系地址。 */ String contactAddressMasked,
+        /** 完整联系电话。 */ String contactPhone,
+        /** 完整联系地址。 */ String contactAddress,
         /** 来源城市主键路径。 */ List<String> cityIds,
         /** 来源城市名称路径。 */ List<String> cityNames,
         /** 来源设备类型。 */ String sourceDevice,
         /** 父退货单来源主键。 */ String parentReturnSourceId,
         /** 父公司来源主键。 */ String parentCompanySourceId,
         /** 来源下载标记。 */ Boolean downloaded,
+        /** 订货宝单据原始字段，仅详情查询返回。 */ Map<String, Object> sourceFields,
         /** 采购退货明细。 */ List<PurchaseReturnLineView> lines) {
     public PurchaseReturnDetailView {
         cityIds = cityIds == null ? List.of() : List.copyOf(cityIds);
         cityNames = cityNames == null ? List.of() : List.copyOf(cityNames);
+        sourceFields = sourceFields == null ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(sourceFields));
         lines = lines == null ? List.of() : List.copyOf(lines);
     }
 }

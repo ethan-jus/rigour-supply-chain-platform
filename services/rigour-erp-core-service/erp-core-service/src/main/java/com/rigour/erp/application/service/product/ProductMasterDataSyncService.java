@@ -18,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -83,6 +84,9 @@ public final class ProductMasterDataSyncService {
             counts.pages = collected.pages();
             importCollected(tenantId, runId, collected, counts);
             RunStatistics statistics = counts.statistics();
+            if (statistics.rejected() == 0) {
+                store.reconcileSourcePresence(tenantId, runId, seenSourceIds(objectType, collected));
+            }
             store.completeRun(tenantId, runId, statistics);
             log.info("ERP商品主数据同步批次完成 tenantId={} objectType={} connectorId={} runId={} fetched={} created={} changed={} duplicates={} rejected={} pages={}",
                     tenantId, objectType, connectorId, runId, statistics.fetched(),
@@ -178,6 +182,37 @@ public final class ProductMasterDataSyncService {
         RunStatistics statistics() {
             return new RunStatistics(fetched, created, changed, duplicates, rejected, pages);
         }
+    }
+
+    private static Map<String, Set<String>> seenSourceIds(MasterDataObjectType objectType,
+                                                           Collected collected) {
+        Map<String, Set<String>> seen = new LinkedHashMap<>();
+        switch (objectType) {
+            case PRODUCT_SPU -> {
+                seen.put("PRODUCT_SPU", collected.products().stream()
+                        .map(item -> item.sourceId()).collect(Collectors.toSet()));
+                seen.put("PRODUCT_SKU", collected.products().stream().flatMap(item -> item.skus().stream())
+                        .map(item -> item.sourceId()).collect(Collectors.toSet()));
+            }
+            case CATEGORY -> seen.put("CATEGORY", collected.categories().stream()
+                    .map(item -> item.sourceId()).collect(Collectors.toSet()));
+            case BRAND -> seen.put("BRAND", collected.brands().stream()
+                    .map(item -> item.sourceId()).collect(Collectors.toSet()));
+            case SPECIFICATION -> {
+                seen.put("SPECIFICATION", collected.specifications().stream()
+                        .map(item -> item.sourceId()).collect(Collectors.toSet()));
+                seen.put("SPECIFICATION_VALUE", collected.specifications().stream()
+                        .flatMap(item -> item.values().stream()).map(item -> item.sourceId())
+                        .collect(Collectors.toSet()));
+            }
+            case TAG -> {
+                seen.put("TAG", collected.tags().stream()
+                        .map(item -> item.sourceId()).collect(Collectors.toSet()));
+                seen.put("TAG_GROUP", collected.tags().stream().map(item -> item.groupSourceId())
+                        .filter(java.util.Objects::nonNull).collect(Collectors.toSet()));
+            }
+        }
+        return Map.copyOf(seen);
     }
 
     private static String oneLine(String value) {

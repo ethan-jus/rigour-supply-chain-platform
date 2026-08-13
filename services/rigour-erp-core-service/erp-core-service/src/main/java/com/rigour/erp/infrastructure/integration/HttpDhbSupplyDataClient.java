@@ -71,7 +71,7 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
                 item -> new Supplier(item.sourceId(), item.sourceGuid(), item.code(), item.name(),
                         item.areaName(), item.address(), item.contactName(), item.mobile(), item.phone(), item.email(),
                         item.accountName(), item.bankName(), item.bankAccount(), item.invoiceTitle(), item.taxpayerNumber(),
-                        item.remark(), item.sourceUpdatedAt(), hash(item)));
+                        item.remark(), item.sourceUpdatedAt(), item.sourceFields(), hash(item)));
         return collected(SupplyDataObjectType.SUPPLIER, result.size(), pages(result.size()), result,
                 null, null, null, null, null);
     }
@@ -90,7 +90,7 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
                         line.goodsName(), line.optionsId(), line.optionsGoodsCode(), line.optionsSummary(),
                         line.baseQuantity(), line.unitPrice(), line.purchaseUnitCode(), line.purchaseUnitName(),
                         line.purchaseUnitQuantity(), line.warehousedQuantity(), line.returnedQuantity(),
-                        line.remark(), hash(line))).toList(), hash(item)));
+                        line.remark(), line.sourceFields(), hash(line))).toList(), item.sourceFields(), hash(item)));
         return collected(SupplyDataObjectType.PURCHASE_ORDER, result.size(), pages(result.size()), null,
                 result, null, null, null, null);
     }
@@ -104,7 +104,7 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
                         item.warehouseName(), item.staffSourceId(), item.staffName(), item.sourceStatus(),
                         item.sourceStatusName(), item.returnAmount(), item.discountAmount(), item.reason(),
                         item.sourceCreatedAt(), item.sendAt(), item.internalCommunication(), item.remark(),
-                        item.detailCount(), item.contactName(), item.contactPhoneMasked(), item.contactAddressMasked(),
+                        item.detailCount(), item.contactName(), item.contactPhone(), item.contactAddress(),
                         item.cityIds(), item.cityNames(), item.sourceDevice(), item.parentReturnSourceId(),
                         item.parentCompanySourceId(), item.downloaded(), item.lines().stream().map(line ->
                         new PurchaseReturn.Line(line.sourceLineId(), line.sourceGoodsId(), line.goodsCode(),
@@ -112,8 +112,8 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
                         line.requestedQuantity(), line.confirmedQuantity(), line.returnPrice(),
                         line.confirmedPrice(), line.unitCode(), line.unitName(), line.unitQuantity(),
                         line.confirmedUnitQuantity(), line.conversionNumber(), line.amount(), line.costPrice(),
-                        line.purchaseOrderNo(), line.categoryName(), line.brandName(), line.remark(), hash(line)))
-                        .toList(), hash(item)));
+                        line.purchaseOrderNo(), line.categoryName(), line.brandName(), line.remark(),
+                        line.sourceFields(), hash(line))).toList(), item.sourceFields(), hash(item)));
         return collected(SupplyDataObjectType.PURCHASE_RETURN, result.size(),
                 pages(result.size(), PURCHASE_RETURN_PAGE_SIZE), null,
                 null, result, null, null, null);
@@ -135,9 +135,9 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
                         line.conversionNumber(), line.costPrice(), line.unitCostPrice(), line.purchasePrice(),
                         line.wholesalePrice(), line.allocation(), line.barcode(), line.goodsModel(),
                         line.sourceRealQuantity(), line.sourceAvailableQuantity(), line.collaboratorSourceId(),
-                        line.collaboratorName(), line.remark(), hash(line))).toList(), item.purchaseLinks().stream()
+                        line.collaboratorName(), line.remark(), line.sourceFields(), hash(line))).toList(), item.purchaseLinks().stream()
                         .map(link -> new WarehousingReceipt.PurchaseLink(
-                                link.sourcePurchaseId(), link.purchaseOrderNo())).toList(), hash(item)));
+                                link.sourcePurchaseId(), link.purchaseOrderNo())).toList(), item.sourceFields(), hash(item)));
         return collected(SupplyDataObjectType.WAREHOUSING_RECEIPT, result.size(), pages(result.size()), null,
                 null, null, result, null, null);
     }
@@ -146,8 +146,8 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
         List<Warehouse> result = collectPages(caller, id, "warehouses", maxPages, PAGE_SIZE,
                 new ParameterizedTypeReference<DhbSupplyPageView<DhbWarehouseView>>() { },
                 item -> new Warehouse(item.sourceId(), item.sourceGuid(), item.code(), item.name(),
-                        item.sourceStatus(), item.defaultFlag(), item.acreage(), item.phoneMasked(),
-                        item.address(), item.collaboratorSourceId(), item.remark(), hash(item)));
+                        item.sourceStatus(), item.defaultFlag(), item.acreage(), item.phone(),
+                        item.address(), item.collaboratorSourceId(), item.remark(), item.sourceFields(), hash(item)));
         return collected(SupplyDataObjectType.WAREHOUSE, result.size(), pages(result.size()), null,
                 null, null, null, result, null);
     }
@@ -168,7 +168,7 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
                     item.goodsName(), item.warehouseGuid(), item.warehouseCode(), item.warehouseName(),
                     item.firstOptionGuid(), item.firstOptionCode(), item.firstOptionName(),
                     item.secondOptionGuid(), item.secondOptionCode(), item.secondOptionName(),
-                    item.availableQuantity(), item.realQuantity(), hash(item))).forEach(result::add);
+                    item.availableQuantity(), item.realQuantity(), item.sourceFields(), hash(item))).forEach(result::add);
         }
         return collected(SupplyDataObjectType.INVENTORY, result.size(), required, null,
                 null, null, null, null, result);
@@ -187,7 +187,8 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
             if (pageNumber == 0) total = page.total();
             List<S> items = page.items() == null ? List.of() : page.items();
             items.stream().map(mapper).forEach(result::add);
-            if (items.isEmpty() || items.size() < pageSize || (total >= 0 && begin + items.size() >= total)) {
+            boolean complete = total >= 0 ? begin + pageSize >= total : items.size() < pageSize;
+            if (complete) {
                 return result;
             }
         }

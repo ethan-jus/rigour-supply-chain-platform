@@ -56,6 +56,21 @@ public interface DhbClient {
 
     Page<Customer> getCustomers(Connector connector, CustomerQuery query);
 
+    /** 查询 getClientTypeList 客户类型全量数组。 */
+    List<CustomerType> getCustomerTypes(Connector connector);
+
+    /** 查询 getArea 客户经营归属地区全量数组。 */
+    List<CustomerArea> getCustomerAreas(Connector connector);
+
+    /** 查询 getShippingAddressList 客户收货地址。 */
+    Page<ShippingAddress> getShippingAddresses(Connector connector, ShippingAddressQuery query);
+
+    /** 查询 getStaffList 员工目录分页。 */
+    Page<Staff> getStaff(Connector connector, StaffQuery query);
+
+    /** 查询 getStaffInfo 员工详情；订货宝要求 accounts_id。 */
+    Staff getStaffInfo(Connector connector, String accountId);
+
     Page<OrderSummary> getOrders(Connector connector, OrderQuery query);
 
     /** 查询订货宝 getShipsList 出库/发货单列表；分页使用 begin/step 偏移语义。 */
@@ -116,16 +131,16 @@ public interface DhbClient {
         }
 
         public boolean hasNext() {
-            return !items.isEmpty() && (total >= 0
-                    ? request.begin() + items.size() < total
-                    : items.size() == request.step());
+            return total >= 0
+                    ? request.begin() + request.step() < total
+                    : items.size() == request.step();
         }
 
         public PageRequest nextRequest() {
             if (!hasNext()) {
                 throw new IllegalStateException("page has no next page");
             }
-            return new PageRequest(request.begin() + items.size(), request.step());
+            return new PageRequest(request.begin() + request.step(), request.step());
         }
     }
 
@@ -294,6 +309,26 @@ public interface DhbClient {
         public static CustomerQuery first(int step, String timeType, TimeWindow window) {
             return new CustomerQuery(PageRequest.first(step), null, null, timeType, window,
                     null, null, null);
+        }
+    }
+
+    record ShippingAddressQuery(PageRequest page, String addressAbout, String clientGuid,
+                                String isDefault, TimeWindow updatedWindow) {
+        public ShippingAddressQuery {
+            if (page == null) throw new IllegalArgumentException("page is required");
+            if (isDefault != null && !"T".equals(isDefault) && !"F".equals(isDefault)) {
+                throw new IllegalArgumentException("isDefault must be T or F");
+            }
+        }
+    }
+
+    record StaffQuery(PageRequest page, String staffType, String status, String keywords,
+                      TimeWindow createdWindow, TimeWindow updatedWindow) {
+        public StaffQuery {
+            if (page == null) throw new IllegalArgumentException("page is required");
+            if (status != null && !"T".equals(status) && !"F".equals(status)) {
+                throw new IllegalArgumentException("status must be T or F");
+            }
         }
     }
 
@@ -523,6 +558,32 @@ public interface DhbClient {
         public Customer {
             attributes = immutableAttributes(attributes);
         }
+    }
+
+    record CustomerType(String sourceId, String name, String erpId,
+                        Map<String, Object> attributes) {
+        public CustomerType { attributes = immutableAttributes(attributes); }
+    }
+
+    record CustomerArea(String sourceId, String name, String erpId, String parentSourceId,
+                        Map<String, Object> attributes) {
+        public CustomerArea { attributes = immutableAttributes(attributes); }
+    }
+
+    record ShippingAddress(String sourceId, String addressId, String addressGuid,
+                           String clientId, String clientGuid, String clientNumber,
+                           String consignee, String contact, String phone, String regionText,
+                           Boolean defaultAddress, Instant updatedAt, String addressDetail,
+                           String areaName, Map<String, Object> attributes) {
+        public ShippingAddress { attributes = immutableAttributes(attributes); }
+    }
+
+    record Staff(String sourceId, String staffId, String accountId, String staffType,
+                 String accountName, String staffName, String title, String branchName,
+                 String accountMobile, String remark, String roleName, String inviteCode,
+                 String mobile, String email, String qq, String status, Instant createdAt,
+                 Instant updatedAt, Map<String, Object> attributes) {
+        public Staff { attributes = immutableAttributes(attributes); }
     }
 
     record OrderSummary(String sourceId, String orderNumber, String status,

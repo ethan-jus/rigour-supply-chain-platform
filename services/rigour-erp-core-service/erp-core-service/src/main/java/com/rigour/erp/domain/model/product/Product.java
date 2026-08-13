@@ -1,6 +1,8 @@
 package com.rigour.erp.domain.model.product;
 
 import java.math.BigDecimal;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -76,6 +78,8 @@ public record Product(
         Map<String, String> customFields,
         /** getGoodsList.multi 返回的可销售 SKU 组合。 */
         List<Sku> skus,
+        /** 订货宝完整商品来源字段，包含尚未标准化的扩展字段。 */
+        Map<String, Object> sourceFields,
         /** 归一化来源字段 SHA-256，用于幂等和变更检测。 */
         String payloadHash) {
 
@@ -83,14 +87,23 @@ public record Product(
                    String unit, String categorySourceId, String brandSourceId,
                    List<Sku> skus, String payloadHash) {
         this(sourceId, code, name, putaway, barcode, unit, categorySourceId, brandSourceId,
+                skus, Map.of(), payloadHash);
+    }
+
+    public Product(String sourceId, String code, String name, String putaway, String barcode,
+                   String unit, String categorySourceId, String brandSourceId,
+                   List<Sku> skus, Map<String, Object> sourceFields, String payloadHash) {
+        this(sourceId, code, name, putaway, barcode, unit, categorySourceId, brandSourceId,
                 null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null,
-                List.<ProductImage>of(), Map.<String, String>of(), skus, payloadHash);
+                List.<ProductImage>of(), Map.<String, String>of(), skus, sourceFields, payloadHash);
     }
 
     public Product {
         images = images == null ? List.of() : List.copyOf(images);
         customFields = customFields == null ? Map.of() : Map.copyOf(customFields);
         skus = skus == null ? List.of() : List.copyOf(skus);
+        sourceFields = sourceFields == null ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(sourceFields));
     }
 }

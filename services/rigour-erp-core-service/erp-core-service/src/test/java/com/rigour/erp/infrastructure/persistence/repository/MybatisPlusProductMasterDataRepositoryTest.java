@@ -53,6 +53,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
 
 /** 商品主数据查询仓储的空关联回归测试。 */
@@ -130,6 +131,7 @@ class MybatisPlusProductMasterDataRepositoryTest {
         entity.id = "spu-id";
         entity.tenantId = "tenant-id";
         entity.ownershipState = "EXTERNAL_PRIMARY";
+        entity.attributesJson = "{}";
 
         when(bindingMapper.selectOne(any())).thenReturn(binding);
         when(productSpuMapper.selectById("spu-id")).thenReturn(entity);
@@ -170,6 +172,7 @@ class MybatisPlusProductMasterDataRepositoryTest {
         entity.id = "spu-id";
         entity.tenantId = "tenant-id";
         entity.ownershipState = "EXTERNAL_PRIMARY";
+        entity.attributesJson = "{}";
 
         when(bindingMapper.selectOne(any())).thenReturn(binding);
         when(productSpuMapper.selectById("spu-id")).thenReturn(entity);
@@ -256,7 +259,7 @@ class MybatisPlusProductMasterDataRepositoryTest {
         when(clock.getZone()).thenReturn(ZoneOffset.UTC);
 
         SpecificationValue specificationValue = new SpecificationValue("value-source", "RED", "红色",
-                "spec-source", "v".repeat(64));
+                "spec-source", Map.of("options_id", "value-source"), "v".repeat(64));
 
         ImportResult result = ReflectionTestUtils.invokeMethod(repository, "importSpecificationValue",
                 "tenant-id", UUID.fromString("019fb100-0000-7000-8000-000000000005"),
@@ -268,6 +271,7 @@ class MybatisPlusProductMasterDataRepositoryTest {
         verify(specificationValueMapper).insert(value.capture());
         assertThat(value.getValue().createdAt).isEqualTo(now);
         assertThat(value.getValue().updatedAt).isEqualTo(now);
+        assertThat(value.getValue().attributesJson).isEqualTo("{\"options_id\":\"value-source\"}");
     }
 
     @Test
@@ -276,8 +280,8 @@ class MybatisPlusProductMasterDataRepositoryTest {
         when(clock.instant()).thenReturn(Instant.parse("2026-08-11T02:00:00Z"));
         when(clock.getZone()).thenReturn(ZoneOffset.UTC);
 
-        Specification specification = new Specification("spec-source", "COLOR", "颜色", List.of(),
-                "s".repeat(64));
+        Specification specification = new Specification("spec-source", "COLOR", "颜色", null,
+                List.of(), Map.of("multi_id", "spec-source"), "s".repeat(64));
 
         ReflectionTestUtils.invokeMethod(repository, "upsertSpecification", "tenant-id",
                 UUID.fromString("019fb100-0000-7000-8000-000000000005"), specification);
@@ -286,6 +290,53 @@ class MybatisPlusProductMasterDataRepositoryTest {
         verify(specificationMapper).insert(value.capture());
         assertThat(value.getValue().createdAt).isEqualTo(now);
         assertThat(value.getValue().updatedAt).isEqualTo(now);
+        assertThat(value.getValue().attributesJson).isEqualTo("{\"multi_id\":\"spec-source\"}");
+    }
+
+    @Test
+    void persistsCompleteProductSourceFieldsWhenProductIsImported() {
+        when(clock.instant()).thenReturn(Instant.parse("2026-08-11T02:00:00Z"));
+        when(clock.getZone()).thenReturn(ZoneOffset.UTC);
+        when(bindingMapper.selectOne(any())).thenReturn(null);
+
+        Product product = new Product("product-source", "SPU-1", "商品一", "T", "6900000000001",
+                "件", null, null, List.of(),
+                Map.of("coding", "SPU-1", "units", "件", "goods_tag", List.of("TAG-1")),
+                "p".repeat(64));
+
+        ImportResult result = repository.importProduct("tenant-id",
+                UUID.fromString("019fb100-0000-7000-8000-000000000005"), product);
+
+        assertThat(result).isEqualTo(ImportResult.created(1));
+        ArgumentCaptor<ProductSpuEntity> captor = ArgumentCaptor.forClass(ProductSpuEntity.class);
+        verify(productSpuMapper).insert(captor.capture());
+        assertThat(captor.getValue().attributesJson)
+                .contains("\"coding\":\"SPU-1\"")
+                .contains("\"units\":\"件\"")
+                .contains("\"goods_tag\"");
+    }
+
+    @Test
+    void persistsCompleteSkuSourceFieldsWhenSkuChanges() {
+        MasterSourceBindingEntity binding = binding("a".repeat(64));
+        ProductSkuEntity entity = skuEntity();
+        stubExistingSku(binding, entity);
+
+        Product product = new Product("product-source", "SPU-1", "商品一", "T", null,
+                "件", null, null, List.of(), "p".repeat(64));
+        Sku sku = new Sku("sku-source", "SKU-1", "6900000000001", "spec-value-1",
+                "spec-value-2", "红色,L", "options-1", null, null, null, null, null,
+                "mid-690", "big-690", Map.of("options_id", "options-1", "whole", "12",
+                "goods_tag", List.of("TAG-1")), "b".repeat(64));
+
+        ImportResult result = ReflectionTestUtils.invokeMethod(repository, "importSku", "tenant-id",
+                UUID.fromString("019fb100-0000-7000-8000-000000000005"), "spu-id", product, sku);
+
+        assertThat(result).isEqualTo(ImportResult.changed(1));
+        verify(productSkuMapper).updateById(entity);
+        assertThat(entity.attributesJson)
+                .contains("\"options_id\":\"options-1\"")
+                .contains("\"goods_tag\"");
     }
 
     private ImportResult importSku(String hash, String specificationName) {
@@ -345,6 +396,7 @@ class MybatisPlusProductMasterDataRepositoryTest {
         entity.barcode = "6900000000001";
         entity.unit = "件";
         entity.specificationSummary = "红色,L";
+        entity.attributesJson = "{}";
         entity.internalStatus = "ACTIVE";
         entity.ownershipState = "EXTERNAL_PRIMARY";
         entity.version = 1L;

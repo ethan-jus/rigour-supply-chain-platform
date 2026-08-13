@@ -18,7 +18,7 @@ public class WarehouseEntity {
     /** 订货宝仓库状态。 */ public String sourceStatus;
     /** 订货宝默认仓标记。 */ public Boolean sourceDefaultFlag;
     /** 仓库面积。 */ public BigDecimal acreage;
-    /** 脱敏电话。 */ public String phoneMasked;
+    /** 完整电话。 */ public String phone;
     /** 仓库地址。 */ public String address;
     /** 协作方来源 ID。 */ public String collaboratorSourceId;
     /** 来源备注。 */ public String remark;

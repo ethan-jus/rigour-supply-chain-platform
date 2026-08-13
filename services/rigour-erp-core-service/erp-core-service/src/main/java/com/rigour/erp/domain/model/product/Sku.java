@@ -1,6 +1,9 @@
 package com.rigour.erp.domain.model.product;
 
 import java.math.BigDecimal;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /** 来源商品下的一组可销售规格组合。 */
 public record Sku(
@@ -32,6 +35,8 @@ public record Sku(
         String middleBarcode,
         /** 大包装条码。 */
         String bigBarcode,
+        /** 订货宝完整 SKU 来源字段，包含尚未标准化的扩展字段。 */
+        Map<String, Object> sourceFields,
         /** 归一化 SKU 字段 SHA-256。 */
         String payloadHash) {
     public Sku(String sourceId, String code, String barcode,
@@ -39,6 +44,23 @@ public record Sku(
                String specificationName, String payloadHash) {
         this(sourceId, code, barcode, firstSpecificationValueSourceId,
                 secondSpecificationValueSourceId, specificationName, null, null, null, null,
-                null, null, null, null, payloadHash);
+                null, null, null, null, Map.<String, Object>of(), payloadHash);
+    }
+
+    public Sku(String sourceId, String code, String barcode,
+               String firstSpecificationValueSourceId, String secondSpecificationValueSourceId,
+               String specificationName, String optionsId, BigDecimal orderPrice,
+               BigDecimal marketPrice, BigDecimal purchasePrice, BigDecimal middleOrderPrice,
+               BigDecimal bigOrderPrice, String middleBarcode, String bigBarcode,
+               String payloadHash) {
+        this(sourceId, code, barcode, firstSpecificationValueSourceId,
+                secondSpecificationValueSourceId, specificationName, optionsId, orderPrice,
+                marketPrice, purchasePrice, middleOrderPrice, bigOrderPrice, middleBarcode,
+                bigBarcode, Map.of(), payloadHash);
+    }
+
+    public Sku {
+        sourceFields = sourceFields == null ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(sourceFields));
     }
 }

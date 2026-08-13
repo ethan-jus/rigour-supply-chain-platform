@@ -2,13 +2,16 @@ package com.rigour.erp.infrastructure.persistence.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.rigour.erp.api.v1.model.WarehouseView;
 import com.rigour.erp.api.v1.model.SupplierView;
+import com.rigour.erp.domain.model.supply.Supplier;
 import com.rigour.erp.infrastructure.persistence.entity.InventoryBalanceEntity;
+import com.rigour.erp.infrastructure.persistence.entity.MasterSourceBindingEntity;
 import com.rigour.erp.infrastructure.persistence.entity.PurchaseOrderEntity;
 import com.rigour.erp.infrastructure.persistence.entity.PurchaseOrderLineEntity;
 import com.rigour.erp.infrastructure.persistence.entity.PurchaseReturnEntity;
@@ -32,7 +35,12 @@ import com.rigour.erp.infrastructure.persistence.mapper.WarehousingPurchaseLinkM
 import com.rigour.erp.infrastructure.persistence.mapper.WarehousingReceiptLineMapper;
 import com.rigour.erp.infrastructure.persistence.mapper.WarehousingReceiptMapper;
 import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -87,6 +95,68 @@ class MybatisPlusSupplyDataRepositoryTest {
             assertThat(((SupplierView) item).bankAccount()).isEqualTo("6222000012345678");
             assertThat(((SupplierView) item).taxpayerNumber()).isEqualTo("91310000");
         });
+    }
+
+    @Test
+    void persistsCompleteSupplierSourceFieldsAndRawContactValues() {
+        fixedClock();
+        when(supplierMapper.selectCount(any())).thenReturn(0L);
+        Supplier source = supplier("payload-1", Map.of(
+                "SupplierId", "SUP-1",
+                "BankAccount", "6222000012345678"));
+
+        var result = repository.importSupplier("tenant-id", UUID.randomUUID(), source);
+
+        assertThat(result.created()).isEqualTo(1);
+        ArgumentCaptor<SupplierEntity> supplier = ArgumentCaptor.forClass(SupplierEntity.class);
+        verify(supplierMapper).insert(supplier.capture());
+        assertThat(supplier.getValue()).satisfies(entity -> {
+            assertThat(entity.mobile).isEqualTo("13800000000");
+            assertThat(entity.bankAccount).isEqualTo("6222000012345678");
+            assertThat(entity.taxpayerNumber).isEqualTo("91310000");
+            assertThat(entity.attributesJson)
+                    .isEqualTo("{\"BankAccount\":\"6222000012345678\",\"SupplierId\":\"SUP-1\"}");
+        });
+    }
+
+    @Test
+    void doesNotWriteUnchangedSupplierOrSourceBinding() {
+        fixedClock();
+        MasterSourceBindingEntity binding = binding("SUPPLIER", "SUP-1", "supplier-id", "payload-1");
+        SupplierEntity entity = new SupplierEntity();
+        entity.id = "supplier-id";
+        entity.tenantId = "tenant-id";
+        entity.attributesJson = "{\"BankAccount\":\"6222000012345678\",\"SupplierId\":\"SUP-1\"}";
+        when(bindingMapper.selectOne(any())).thenReturn(binding);
+        when(supplierMapper.selectById("supplier-id")).thenReturn(entity);
+
+        var result = repository.importSupplier("tenant-id", UUID.randomUUID(), supplier(
+                "payload-1", Map.of("SupplierId", "SUP-1", "BankAccount", "6222000012345678")));
+
+        assertThat(result.duplicates()).isEqualTo(1);
+        verify(supplierMapper, never()).updateById(any(SupplierEntity.class));
+        verify(bindingMapper, never()).updateById(any(MasterSourceBindingEntity.class));
+    }
+
+    @Test
+    void marksOnlyMissingSourceBindingsAbsentAfterCompleteSnapshot() {
+        fixedClock();
+        MasterSourceBindingEntity seen = binding("SUPPLIER", "SUP-1", "supplier-1", "hash-1");
+        MasterSourceBindingEntity missing = binding("SUPPLIER", "SUP-2", "supplier-2", "hash-2");
+        when(bindingMapper.selectList(any())).thenReturn(List.of(seen, missing));
+        UUID runId = UUID.randomUUID();
+
+        repository.reconcileSourcePresence("tenant-id", runId,
+                Map.of("SUPPLIER", Set.of("SUP-1")));
+
+        ArgumentCaptor<MasterSourceBindingEntity> updated =
+                ArgumentCaptor.forClass(MasterSourceBindingEntity.class);
+        verify(bindingMapper).updateById(updated.capture());
+        assertThat(updated.getValue()).isSameAs(missing);
+        assertThat(missing.sourcePresence).isEqualTo("SOURCE_ABSENT");
+        assertThat(missing.sourceAbsentAt).isNotNull();
+        assertThat(missing.lastSyncRunId).isEqualTo(runId.toString());
+        assertThat(seen.sourcePresence).isEqualTo("PRESENT");
     }
 
     @Test
@@ -155,12 +225,14 @@ class MybatisPlusSupplyDataRepositoryTest {
         order.sourceWarehouseId = "WH-1";
         order.supplierNameSnapshot = "供应商一";
         order.remark = "订单备注";
+        order.attributesJson = "{\"PurchaseId\":\"PURCHASE-1\"}";
         PurchaseOrderLineEntity line = new PurchaseOrderLineEntity();
         line.id = "line-1";
         line.purchaseOrderId = order.id;
         line.sourceGoodsCode = "G-1";
         line.sourceGoodsName = "商品一";
         line.baseQuantity = java.math.BigDecimal.TEN;
+        line.attributesJson = "{\"GoodsId\":\"G-1\"}";
         when(purchaseOrderMapper.selectOne(any())).thenReturn(order);
         when(purchaseOrderLineMapper.selectList(any())).thenReturn(List.of(line));
 
@@ -171,9 +243,11 @@ class MybatisPlusSupplyDataRepositoryTest {
         assertThat(result.warehouseSourceId()).isEqualTo("WH-1");
         assertThat(result.number()).isEqualTo("PO-1");
         assertThat(result.remark()).isEqualTo("订单备注");
+        assertThat(result.sourceFields()).containsEntry("PurchaseId", "PURCHASE-1");
         assertThat(result.lines()).singleElement().satisfies(item -> {
             assertThat(item.goodsCode()).isEqualTo("G-1");
             assertThat(item.baseQuantity()).isEqualByComparingTo("10");
+            assertThat(item.sourceFields()).containsEntry("GoodsId", "G-1");
         });
     }
 
@@ -248,5 +322,34 @@ class MybatisPlusSupplyDataRepositoryTest {
             assertThat(item.sourcePurchaseId()).isEqualTo("PURCHASE-1");
             assertThat(item.purchaseOrderNo()).isEqualTo("PO-1");
         });
+    }
+
+    private void fixedClock() {
+        when(clock.instant()).thenReturn(Instant.parse("2026-08-12T08:00:00Z"));
+        when(clock.getZone()).thenReturn(ZoneOffset.UTC);
+    }
+
+    private static MasterSourceBindingEntity binding(String sourceType, String sourceId,
+                                                       String targetId, String payloadHash) {
+        MasterSourceBindingEntity binding = new MasterSourceBindingEntity();
+        binding.id = UUID.randomUUID().toString();
+        binding.tenantId = "tenant-id";
+        binding.sourceSystem = "DINGHUOBAO";
+        binding.sourceObjectType = sourceType;
+        binding.sourceObjectId = sourceId;
+        binding.targetType = sourceType;
+        binding.targetId = targetId;
+        binding.sourcePayloadHash = payloadHash;
+        binding.sourcePresence = "PRESENT";
+        binding.version = 0L;
+        return binding;
+    }
+
+    private static Supplier supplier(String payloadHash, Map<String, Object> sourceFields) {
+        return new Supplier("SUP-1", "SUP-GUID-1", "S-001", "供应商一", "上海",
+                "完整地址", "联系人", "13800000000", "021-12345678",
+                "supplier@test.com", "供应商一", "测试银行", "6222000012345678",
+                "供应商一", "91310000", "备注", Instant.parse("2026-08-12T07:00:00Z"),
+                sourceFields, payloadHash);
     }
 }

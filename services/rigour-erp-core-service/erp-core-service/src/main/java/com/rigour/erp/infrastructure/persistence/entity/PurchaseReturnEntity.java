@@ -35,8 +35,8 @@ public class PurchaseReturnEntity {
     public String remark;
     public Integer detailCount;
     public String contactName;
-    public String contactPhoneMasked;
-    public String contactAddressMasked;
+    public String contactPhone;
+    public String contactAddress;
     public String cityIdsJson;
     public String cityNamesJson;
     public String sourceDevice;

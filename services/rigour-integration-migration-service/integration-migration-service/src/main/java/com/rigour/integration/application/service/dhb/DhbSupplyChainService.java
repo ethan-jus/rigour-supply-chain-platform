@@ -163,13 +163,13 @@ public final class DhbSupplyChainService {
         return new DhbSupplierView(item.sourceId(), item.sourceGuid(), item.code(), item.name(),
                 item.areaName(), item.address(), item.contactName(), item.mobile(), item.phone(), item.email(),
                 item.accountName(), item.bankName(), item.bankAccount(), item.invoiceTitle(), item.taxpayerNumber(),
-                item.remark(), item.sourceUpdatedAt(), Map.of());
+                item.remark(), item.sourceUpdatedAt(), item.attributes());
     }
 
     private static DhbWarehouseView warehouse(DhbClient.Warehouse item) {
         return new DhbWarehouseView(item.sourceId(), item.sourceGuid(), item.code(), item.name(),
-                item.status(), item.defaultFlag(), item.acreage(), maskPhone(item.phone()), item.address(),
-                item.collaboratorSourceId(), item.remark(), Map.of());
+                item.status(), item.defaultFlag(), item.acreage(), item.phone(), item.address(),
+                item.collaboratorSourceId(), item.remark(), item.attributes());
     }
 
     private static DhbPurchaseOrderView purchaseOrder(DhbClient.PurchaseOrder item) {
@@ -183,7 +183,7 @@ public final class DhbSupplyChainService {
                 line.goodsName(), line.optionsId(), line.optionsGoodsCode(), line.optionsSummary(),
                 line.baseQuantity(), line.unitPrice(), line.purchaseUnitCode(), line.purchaseUnitName(),
                 line.purchaseUnitQuantity(), line.warehousedQuantity(), line.returnedQuantity(),
-                line.remark(), Map.of())).toList(), Map.of());
+                line.remark(), line.attributes())).toList(), item.attributes());
     }
 
     private static DhbPurchaseReturnView purchaseReturn(DhbClient.PurchaseReturn item) {
@@ -192,7 +192,7 @@ public final class DhbSupplyChainService {
                 item.warehouseName(), item.staffSourceId(), item.staffName(), item.status(), item.statusName(),
                 item.returnAmount(), item.discountAmount(), item.reason(), item.createdAt(), item.sendAt(),
                 item.internalCommunication(), item.remark(), item.detailCount(), item.contactName(),
-                maskPhone(item.contactPhone()), maskAddress(item.contactAddress()), item.cityIds(), item.cityNames(),
+                item.contactPhone(), item.contactAddress(), item.cityIds(), item.cityNames(),
                 item.sourceDevice(), item.parentReturnSourceId(), item.parentCompanySourceId(), item.downloaded(),
                 item.lines().stream().map(line -> new DhbPurchaseReturnLineView(line.sourceLineId(),
                 line.sourceGoodsId(), line.goodsCode(), line.goodsName(), line.optionsId(),
@@ -200,7 +200,7 @@ public final class DhbSupplyChainService {
                 line.confirmedQuantity(), line.returnPrice(), line.confirmedPrice(), line.unitCode(),
                 line.unitName(), line.unitQuantity(), line.confirmedUnitQuantity(), line.conversionNumber(),
                 line.amount(), line.costPrice(), line.purchaseOrderNo(), line.categoryName(), line.brandName(),
-                line.remark(), Map.of())).toList(), Map.of());
+                line.remark(), line.attributes())).toList(), item.attributes());
     }
 
     private static DhbWarehousingReceiptView warehousingReceipt(DhbClient.WarehousingReceipt item) {
@@ -215,16 +215,16 @@ public final class DhbSupplyChainService {
                 line.unitQuantity(), line.unitCode(), line.unitName(), line.conversionNumber(), line.costPrice(),
                 line.unitCostPrice(), line.purchasePrice(), line.wholesalePrice(), line.allocation(), line.barcode(),
                 line.goodsModel(), line.sourceRealQuantity(), line.sourceAvailableQuantity(),
-                line.collaboratorSourceId(), line.collaboratorName(), line.remark(), Map.of())).toList(),
+                line.collaboratorSourceId(), line.collaboratorName(), line.remark(), line.attributes())).toList(),
                 item.purchaseLinks().stream().map(link -> new DhbPurchaseLinkView(
-                        link.sourcePurchaseId(), link.purchaseOrderNo())).toList(), Map.of());
+                        link.sourcePurchaseId(), link.purchaseOrderNo())).toList(), item.attributes());
     }
 
     private static DhbInventoryBalanceView inventory(DhbClient.InventoryBalance item) {
         return new DhbInventoryBalanceView(item.goodsGuid(), item.goodsCode(), item.goodsName(),
                 item.warehouseGuid(), item.warehouseCode(), item.warehouseName(), item.firstOptionGuid(),
                 item.firstOptionCode(), item.firstOptionName(), item.secondOptionGuid(), item.secondOptionCode(),
-                item.secondOptionName(), item.availableQuantity(), item.realQuantity(), Map.of());
+                item.secondOptionName(), item.availableQuantity(), item.realQuantity(), item.attributes());
     }
 
     private static String inventoryKey(DhbClient.InventoryBalance item) {
@@ -237,34 +237,4 @@ public final class DhbSupplyChainService {
         return first != null && !first.isBlank() ? first : (second == null ? "BASE" : second);
     }
 
-    private static String maskPhone(String value) {
-        if (value == null || value.isBlank()) return null;
-        String text = value.strip();
-        if (text.length() <= 4) return "****";
-        return text.substring(0, Math.min(3, text.length())) + "****" + text.substring(text.length() - 4);
-    }
-
-    private static String maskEmail(String value) {
-        if (value == null || value.isBlank()) return null;
-        int at = value.indexOf('@');
-        return at <= 0 ? "***" : value.substring(0, 1) + "***" + value.substring(at);
-    }
-
-    private static String maskAddress(String value) {
-        if (value == null || value.isBlank()) return null;
-        String text = value.strip();
-        return text.length() <= 6 ? "******" : text.substring(0, Math.min(6, text.length())) + "***";
-    }
-
-    private static String maskIdentifier(String value) {
-        if (value == null || value.isBlank()) return null;
-        String text = value.strip();
-        return text.length() <= 8 ? "********" : text.substring(0, 4) + "********" + text.substring(text.length() - 4);
-    }
-
-    private static String last4(String value) {
-        if (value == null || value.isBlank()) return null;
-        String text = value.strip();
-        return text.substring(Math.max(0, text.length() - 4));
-    }
 }

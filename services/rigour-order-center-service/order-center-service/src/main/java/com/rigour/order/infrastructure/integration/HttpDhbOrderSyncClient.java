@@ -366,8 +366,8 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
     private DhbApiModels.OrderPageView query(CallerIdentity caller, UUID connectorId,
                                              DhbOrderSyncCommand command, int begin) {
         DhbApiModels.OrderQueryCommand request = new DhbApiModels.OrderQueryCommand(
-                begin, PAGE_SIZE, null, null, null, command.updatedFrom(), command.updatedTo(),
-                null, null, null, null);
+                begin, PAGE_SIZE, "all", null, null, command.updatedFrom(), command.updatedTo(),
+                "all", "all", null, null);
         URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
                 .path(DhbOrderApi.QUERY_PATH)
                 .buildAndExpand(connectorId)
@@ -524,7 +524,10 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
         Map<String, Object> content = detail == null ? Map.of() : map(detail.sourceFields());
         String rawList = json(list);
         String rawDetail = detail == null ? null : json(content);
-        String effectiveRaw = rawDetail == null ? rawList : rawDetail;
+        Map<String, Object> revision = new LinkedHashMap<>();
+        revision.put("list", list);
+        if (detail != null) revision.put("detail", content);
+        String effectiveRaw = json(revision);
         return new DhbOrderImportBatch.OrderItem(
                 required(defaultText(first(content, list, "OrderSN", "orders_num", "orderNumber", "sourceId"),
                         summary.orderNumber()), "orderNumber"),

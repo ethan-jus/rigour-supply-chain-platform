@@ -1,6 +1,9 @@
 package com.rigour.erp.domain.model.product;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /** Integration 归一化后的来源商品标签。 */
 public record Tag(
@@ -22,9 +25,16 @@ public record Tag(
         String groupSourceId,
         /** 标签分组名称。 */
         String groupName,
+        /** 订货宝原始标签字段。 */
+        Map<String, Object> sourceFields,
         /** 归一化标签字段 SHA-256。 */
         String payloadHash) {
     public Tag(String sourceId, String code, String name, String payloadHash) {
-        this(sourceId, code, name, null, null, null, null, null, null, payloadHash);
+        this(sourceId, code, name, null, null, null, null, null, null, Map.of(), payloadHash);
+    }
+
+    public Tag {
+        sourceFields = sourceFields == null ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(sourceFields));
     }
 }

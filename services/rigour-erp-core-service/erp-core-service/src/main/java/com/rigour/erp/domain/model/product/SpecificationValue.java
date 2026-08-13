@@ -1,5 +1,9 @@
 package com.rigour.erp.domain.model.product;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /** Integration 归一化后的单个规格值。 */
 public record SpecificationValue(
         /** 订货宝规格值唯一标识。 */
@@ -10,6 +14,17 @@ public record SpecificationValue(
         String name,
         /** 所属订货宝规格维度来源 ID。 */
         String parentSourceId,
+        /** 订货宝原始规格值字段。 */
+        Map<String, Object> sourceFields,
         /** 归一化规格值字段 SHA-256。 */
         String payloadHash) {
+    public SpecificationValue(String sourceId, String code, String name,
+                              String parentSourceId, String payloadHash) {
+        this(sourceId, code, name, parentSourceId, Map.of(), payloadHash);
+    }
+
+    public SpecificationValue {
+        sourceFields = sourceFields == null ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(sourceFields));
+    }
 }

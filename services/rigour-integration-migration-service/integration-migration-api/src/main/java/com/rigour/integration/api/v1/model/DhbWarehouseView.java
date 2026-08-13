@@ -12,7 +12,7 @@ public record DhbWarehouseView(
         /** 订货宝仓库状态。 */ String sourceStatus,
         /** 是否为订货宝默认仓。 */ Boolean defaultFlag,
         /** 仓库面积。 */ BigDecimal acreage,
-        /** 脱敏联系电话。 */ String phoneMasked,
+        /** 完整联系电话。 */ String phone,
         /** 仓库地址。 */ String address,
         /** 订货宝协作方主键。 */ String collaboratorSourceId,
         /** 来源备注。 */ String remark,

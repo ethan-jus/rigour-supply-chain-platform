@@ -13,8 +13,8 @@ spring:
       connection-timeout: 30000
       validation-timeout: 5000
   flyway:
-    # 当前 CRM 还没有正式 V1 迁移；完成字段评审后改为 true。
-    enabled: false
+    # CRM 已提供正式 V1 迁移；应用启动前由专用迁移账号执行结构校验与迁移。
+    enabled: true
     url: jdbc:mysql://82.157.4.176:13306/rigour_crm?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
     user: rigour_crm_migrator
     password: ${CRM_DB_MIGRATOR_PASSWORD}
@@ -24,6 +24,17 @@ spring:
     locations: classpath:db/migration
 
 rigour:
+  integration:
+    http:
+      # 商品图片在 Integration 内完成下载和 COS 上传后才返回商品页。
+      connect-timeout: 3s
+      read-timeout: 120s
+  crm:
+    sync:
+      # ERP统一定时同步默认关闭；确认 Integration 目标和数据库后再打开。
+      enabled: true
+      cron: 0 0/30 * * * ?
+      max-pages: 100
   context:
     trust:
       active-key-id: v1

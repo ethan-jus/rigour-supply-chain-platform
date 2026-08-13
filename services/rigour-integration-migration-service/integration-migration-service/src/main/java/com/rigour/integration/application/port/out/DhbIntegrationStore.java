@@ -38,4 +38,18 @@ public interface DhbIntegrationStore {
     /** 保存订货宝技术原始业务字段；不得传入sKey、账号、密码或Token。 */
     void persistRawLanding(UUID tenantId, UUID connectorId, String sourceObjectType,
                            String sourceId, Instant sourceUpdatedAt, Map<String, Object> payload);
+
+    /**
+     * 按订货宝分页批量保存技术原始字段，避免每条记录单独开启事务。
+     * 默认实现保留其他适配器的兼容性；JDBC实现应覆盖为单事务批量写入。
+     */
+    default void persistRawLandings(UUID tenantId, UUID connectorId, List<RawLanding> values) {
+        if (values == null) return;
+        values.forEach(value -> persistRawLanding(tenantId, connectorId,
+                value.sourceObjectType(), value.sourceId(), value.sourceUpdatedAt(), value.payload()));
+    }
+
+    record RawLanding(String sourceObjectType, String sourceId, Instant sourceUpdatedAt,
+                      Map<String, Object> payload) {
+    }
 }

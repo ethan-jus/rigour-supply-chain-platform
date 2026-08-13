@@ -80,6 +80,15 @@ class DhbClientAdapterTest {
     }
 
     @Test
+    void advancesByRequestedStepWhenNormalizationFiltersItemsFromPage() {
+        DhbClient.Page<String> page = new DhbClient.Page<>(
+                new DhbClient.PageRequest(0, 100), 250, java.util.List.of("normalized-item"));
+
+        assertThat(page.hasNext()).isTrue();
+        assertThat(page.nextRequest()).isEqualTo(new DhbClient.PageRequest(100, 100));
+    }
+
+    @Test
     void capsPurchaseReturnPageSizeToDhbLimit() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

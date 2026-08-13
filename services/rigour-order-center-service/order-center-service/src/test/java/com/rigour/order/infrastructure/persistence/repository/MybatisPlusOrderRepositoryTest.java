@@ -1,9 +1,11 @@
 package com.rigour.order.infrastructure.persistence.repository;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -22,6 +24,7 @@ import java.time.Instant;
 import java.util.List;
 import java.time.ZoneOffset;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import tools.jackson.databind.json.JsonMapper;
 
 class MybatisPlusOrderRepositoryTest {
@@ -154,7 +157,15 @@ class MybatisPlusOrderRepositoryTest {
         verify(lineMapper).delete(any());
         verify(lineMapper).insert(any(InternalOrderLineEntity.class));
         verify(shipmentMapper).delete(any());
-        verify(sourceRecordMapper).insert(any(OrderSourceRecordEntity.class));
+        ArgumentCaptor<OrderSourceRecordEntity> sourceRecords =
+                ArgumentCaptor.forClass(OrderSourceRecordEntity.class);
+        verify(sourceRecordMapper, times(2)).insert(sourceRecords.capture());
+        assertEquals(List.of("LIST", "DETAIL"), sourceRecords.getAllValues().stream()
+                .map(record -> record.payloadType).toList());
+        assertEquals(List.of("{}", "{\"line\":\"changed\"}"), sourceRecords.getAllValues().stream()
+                .map(record -> record.payloadJson).toList());
+        assertNotEquals(sourceRecords.getAllValues().get(0).payloadHash,
+                sourceRecords.getAllValues().get(1).payloadHash);
         verify(outboxStore).append(any());
     }
 }

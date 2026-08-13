@@ -19,6 +19,16 @@ logging:
     com.rigour: INFO
 
 rigour:
+  integration:
+    base-url: ${RIGOUR_INTEGRATION_BASE_URL:http://localhost:26882}
+    http:
+      connect-timeout: ${RIGOUR_INTEGRATION_CONNECT_TIMEOUT:3s}
+      read-timeout: ${RIGOUR_INTEGRATION_READ_TIMEOUT:30s}
+  crm:
+    sync:
+      enabled: ${RIGOUR_CRM_SYNC_ENABLED:true}
+      cron: ${RIGOUR_CRM_SYNC_CRON:0 0/30 * * * }
+      max-pages: ${RIGOUR_CRM_SYNC_MAX_PAGES:100}
   context:
     trust:
       active-key-id: v1

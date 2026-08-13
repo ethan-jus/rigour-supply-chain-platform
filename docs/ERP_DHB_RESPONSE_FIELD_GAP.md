@@ -40,7 +40,7 @@
 
 这些不是遗漏，而是边界设计：
 
-1. `sourceFields` 留在 Integration Raw Landing，ERP 不复制到公开 API。
+1. `sourceFields` 不直接拼进商品列表公开 API；ERP 商品/SPU、SKU 会完整保存到 `attributes_json`，详情能力可按需读取。
 2. 商品图片 COS `objectKey` 是私有存储定位信息，ERP 只返回短时访问 URL 和安全的来源文件元数据。
 3. ERP 内部状态与订货宝来源状态分开返回，订货宝 `T/F` 不直接覆盖 ERP 内部业务状态。
 

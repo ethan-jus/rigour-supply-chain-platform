@@ -118,7 +118,8 @@ class IntegrationMigrationServiceApplicationTests {
         assertThat(store.connectors(tenantB)).isEmpty();
         List<SyncTaskView> defaultTasks = store.syncTasks(tenantA);
         assertThat(defaultTasks).extracting(SyncTaskView::code).containsExactlyInAnyOrder(
-                "DHB_ORDER_DEFAULT", "DHB_PRODUCT_MASTER_DEFAULT", "DHB_SUPPLY_CHAIN_DEFAULT");
+                "DHB_ORDER_DEFAULT", "DHB_PRODUCT_MASTER_DEFAULT", "DHB_SUPPLY_CHAIN_DEFAULT",
+                "DHB_CRM_MASTER_DEFAULT");
         assertThat(defaultTasks).filteredOn(task -> "ORDER".equals(task.objectType()))
                 .singleElement().satisfies(task -> {
             assertThat(task.connectorId()).isEqualTo(connector.id());

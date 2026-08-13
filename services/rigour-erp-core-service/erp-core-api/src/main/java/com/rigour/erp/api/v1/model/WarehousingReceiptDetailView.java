@@ -2,7 +2,10 @@ package com.rigour.erp.api.v1.model;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** ERP 入库单详情；字段方向与 Integration 的订货宝标准化入库单保持一致。 */
 public record WarehousingReceiptDetailView(
@@ -33,9 +36,12 @@ public record WarehousingReceiptDetailView(
         /** 来源 API 标记。 */ Boolean apiFlag,
         /** 拆单类型。 */ String splitType,
         /** 来源备注。 */ String remark,
+        /** 订货宝单据原始字段，仅详情查询返回。 */ Map<String, Object> sourceFields,
         /** 入库明细。 */ List<WarehousingLineView> lines,
         /** 关联采购单。 */ List<PurchaseLinkView> purchaseLinks) {
     public WarehousingReceiptDetailView {
+        sourceFields = sourceFields == null ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(sourceFields));
         lines = lines == null ? List.of() : List.copyOf(lines);
         purchaseLinks = purchaseLinks == null ? List.of() : List.copyOf(purchaseLinks);
     }
