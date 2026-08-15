@@ -7,11 +7,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.rigour.order.api.v1.model.DhbOrderSyncCommand;
+import com.rigour.order.api.v1.model.DhbOrderSyncMode;
 import com.rigour.order.api.v1.model.DhbOrderSyncResult;
 import com.rigour.order.application.port.out.DhbOrderSyncCheckpointStore;
 import com.rigour.order.application.port.out.DhbSyncTargetDiscoveryClient;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -55,9 +58,11 @@ class DhbOrderSyncSchedulerTest {
                 org.mockito.ArgumentMatchers.any(), eq(CONNECTOR_ID), commands.capture());
         assertThat(commands.getAllValues().get(0).updatedFrom()).isNull();
         assertThat(commands.getAllValues().get(0).updatedTo()).isNull();
+        assertThat(commands.getAllValues().get(0).mode()).isEqualTo(DhbOrderSyncMode.FULL);
         assertThat(commands.getAllValues().get(1).updatedFrom())
                 .isEqualTo(Instant.parse("2026-08-05T09:25:00Z"));
         assertThat(commands.getAllValues().get(1).updatedTo()).isEqualTo(NOW);
+        assertThat(commands.getAllValues().get(1).mode()).isEqualTo(DhbOrderSyncMode.INCREMENTAL);
         verify(checkpointStore, org.mockito.Mockito.times(2))
                 .markSucceeded(TENANT_ID, CONNECTOR_ID, "ORDER", runId, NOW);
 
@@ -105,6 +110,32 @@ class DhbOrderSyncSchedulerTest {
 
         verify(checkpointStore).markFailed(TENANT_ID, CONNECTOR_ID, "ORDER", null,
                 "provider unavailable");
+        verify(checkpointStore, org.mockito.Mockito.never()).markSucceeded(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void connectorConflictIsSkippedWithoutWritingFailureCheckpoint() {
+        DhbOrderSyncService syncService = mock(DhbOrderSyncService.class);
+        DhbOrderSyncCheckpointStore checkpointStore = mock(DhbOrderSyncCheckpointStore.class);
+        DhbSyncTargetDiscoveryClient targetDiscoveryClient = mock(DhbSyncTargetDiscoveryClient.class);
+        when(targetDiscoveryClient.discover(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(new SyncTargetView(TASK_ID, UUID.fromString(TENANT_ID), CONNECTOR_ID)));
+        when(syncService.runScheduled(org.mockito.ArgumentMatchers.any(), eq(CONNECTOR_ID),
+                org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new BusinessException(ErrorCode.SYNC_ALREADY_RUNNING,
+                        "connector busy", List.of()));
+        DhbOrderSyncScheduler scheduler = new DhbOrderSyncScheduler(syncService, checkpointStore,
+                targetDiscoveryClient, properties(), Clock.fixed(NOW, ZoneOffset.UTC));
+
+        scheduler.synchronize();
+
+        verify(checkpointStore, org.mockito.Mockito.never()).markFailed(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
         verify(checkpointStore, org.mockito.Mockito.never()).markSucceeded(
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),

@@ -4,6 +4,7 @@ import com.rigour.order.domain.model.order.ImportedOrder;
 import com.rigour.order.domain.model.order.Order;
 import com.rigour.order.domain.model.order.OrderLine;
 import com.rigour.order.domain.model.order.OrderShipment;
+import com.rigour.order.domain.model.order.OrderSourceRecord;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -25,10 +26,16 @@ public interface OrderRepository {
     record OrderFilter(int begin, int step, String sourceStatus, LocalDateTime startTime,
                        LocalDateTime endTime, LocalDateTime sourceUpdatedFrom,
                        LocalDateTime sourceUpdatedTo, String exceptionStatus, String apiStatus,
-                       String paymentStatus, Integer splitType, boolean excludeDemoData) {}
+                       String paymentStatus, Integer splitType, boolean excludeDemoData,
+                       String keyword) {}
 
     record InternalOrderDetailData(Order order, List<OrderLine> lines, List<OrderShipment> shipments,
-                                   boolean detailAvailable) {}
+                                   List<OrderSourceRecord> sourceRecords, boolean detailAvailable) {
+        public InternalOrderDetailData(Order order, List<OrderLine> lines, List<OrderShipment> shipments,
+                                       boolean detailAvailable) {
+            this(order, lines, shipments, List.of(), detailAvailable);
+        }
+    }
 
     record ImportResult(String orderId, boolean created, boolean changed) {}
 }

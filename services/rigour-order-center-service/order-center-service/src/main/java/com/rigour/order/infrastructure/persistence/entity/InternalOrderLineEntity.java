@@ -42,6 +42,16 @@ public class InternalOrderLineEntity {
     public String unit;
     /** 明细备注。 */
     public String remark;
+    /** 订货宝详情补充字段。 */
+    public BigDecimal purchasePrice;
+    public BigDecimal conversionNumber;
+    public BigDecimal offerPrice;
+    public BigDecimal actualAmount;
+    public BigDecimal goodsWeight;
+    public String preSale;
+    public String contentType;
+    public String invoiceTax;
+    public BigDecimal contentPercent;
     /** 创建时间。 */
     public LocalDateTime createdAt;
     /** 最后更新时间。 */

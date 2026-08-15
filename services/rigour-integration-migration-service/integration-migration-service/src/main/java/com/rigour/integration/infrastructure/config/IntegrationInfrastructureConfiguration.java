@@ -18,6 +18,7 @@ import com.rigour.integration.infrastructure.persistence.JdbcDhbSyncStore;
 import com.rigour.integration.infrastructure.persistence.JdbcProductMediaSyncStore;
 import com.rigour.integration.application.port.out.ProductMediaSyncStore;
 import com.rigour.integration.infrastructure.media.ProductMediaSyncWorker;
+import com.rigour.integration.infrastructure.lease.DhbConnectorLeaseProperties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -33,7 +34,7 @@ import org.springframework.web.client.RestClient;
 @Configuration(proxyBeanMethods = false)
 @EnableScheduling
 @EnableConfigurationProperties({DhbClientProperties.class, FeishuClientProperties.class,
-        ProductMediaProperties.class})
+        ProductMediaProperties.class, DhbConnectorLeaseProperties.class})
 public final class IntegrationInfrastructureConfiguration {
 
     @Bean

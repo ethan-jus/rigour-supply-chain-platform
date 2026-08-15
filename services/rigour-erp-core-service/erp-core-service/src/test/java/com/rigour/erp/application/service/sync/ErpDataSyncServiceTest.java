@@ -16,6 +16,7 @@ import com.rigour.erp.domain.model.supply.SupplyDataObjectType;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.exception.BusinessException;
 import java.time.Instant;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -89,6 +90,6 @@ class ErpDataSyncServiceTest {
 
     private static ErpDataSyncResult result(String objectType) {
         return new ErpDataSyncResult(RUN_ID, objectType, "SUCCEEDED", CONNECTOR_ID,
-                1, 1, 0, 0, 0, 1, Instant.parse("2026-08-10T12:00:00Z"));
+                1, 1, 0, 0, 0, 0, Map.of(), 1, Instant.parse("2026-08-10T12:00:00Z"));
     }
 }

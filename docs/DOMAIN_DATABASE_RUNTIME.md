@@ -8,7 +8,7 @@
 
 ## 当前范围
 
-当前后端是一个 Gateway 加 11 个领域服务。Gateway 只负责路由和安全上下文，不拥有业务 Schema。IAM 与 Integration 已有自己的数据库和迁移，以下 9 个领域库是本次补齐的空 Schema：
+当前后端是一个 Gateway 加 12 个领域服务。Gateway 只负责路由和安全上下文，不拥有业务 Schema。IAM 与 Integration 已有自己的数据库和迁移，以下 10 个领域库由领域服务独立管理：
 
 | 服务 | Schema | 运行账号 | 迁移账号 | 密码环境变量 |
 |---|---|---|---|---|
@@ -16,6 +16,7 @@
 | `rigour-erp-core-service` | `rigour_erp` | `rigour_erp_app` | `rigour_erp_migrator` | `ERP_DB_APP_PASSWORD` / `ERP_DB_MIGRATOR_PASSWORD` |
 | `rigour-order-center-service` | `rigour_order` | `rigour_order_app` | `rigour_order_migrator` | `ORDER_DB_APP_PASSWORD` / `ORDER_DB_MIGRATOR_PASSWORD` |
 | `rigour-sales-work-service` | `rigour_sales_work` | `rigour_sales_work_app` | `rigour_sales_work_migrator` | `SALES_WORK_DB_APP_PASSWORD` / `SALES_WORK_DB_MIGRATOR_PASSWORD` |
+| `rigour-business-settings-service` | `rigour_settings` | `rigour_settings_app` | `rigour_settings_mig` | `BUSINESS_SETTINGS_DB_APP_PASSWORD` / `BUSINESS_SETTINGS_DB_MIGRATOR_PASSWORD` |
 | `rigour-ai-agent-service` | `rigour_ai` | `rigour_ai_app` | `rigour_ai_migrator` | `AI_DB_APP_PASSWORD` / `AI_DB_MIGRATOR_PASSWORD` |
 | `rigour-analytics-bi-service` | `rigour_bi` | `rigour_bi_app` | `rigour_bi_migrator` | `BI_DB_APP_PASSWORD` / `BI_DB_MIGRATOR_PASSWORD` |
 | `rigour-hr-payroll-service` | `rigour_hr` | `rigour_hr_app` | `rigour_hr_migrator` | `HR_DB_APP_PASSWORD` / `HR_DB_MIGRATOR_PASSWORD` |
@@ -33,11 +34,11 @@
 - 迁移账号只拥有本 Schema 的运行 DML 加 `CREATE/ALTER/INDEX/REFERENCES`，只供 Flyway 使用，不用于请求处理。
 - DEV 账号默认使用 `'%'` 主机范围，但入口仍由服务器防火墙限制。生产必须收紧到应用来源网段。
 - 不创建跨 Schema 外键、视图、触发器、存储过程或业务 Join。
-- 数据库账号初始化脚本本身不创建业务表，也不插入租户、订单、门店、员工或测试数据。Sales Work 和 ERP 已新增源码 Flyway V1；其他空领域仍需在字段级设计确认后再新增各自迁移。
+- 数据库账号初始化脚本本身不创建业务表，也不插入租户、订单、门店、员工或测试数据。Sales Work、ERP 和 Business Settings 已新增源码 Flyway V1；其他空领域仍需在字段级设计确认后再新增各自迁移。
 
 ## 创建和验证
 
-脚本会为 9 个缺失领域生成每个账号独立的 64 位十六进制密码，并保存到受限文件；脚本不会把密码打印到终端：
+脚本会为 10 个领域生成每个账号独立的 64 位十六进制密码，并保存到受限文件；脚本不会把密码打印到终端：
 
 ```bash
 cd "/Users/ethan/myspance/rigour/B2B供应链/自动化系统构建/06_代码工程/rigour-supply-chain-platform"
@@ -50,7 +51,7 @@ MYSQL_HOST=82.157.4.176 MYSQL_PORT=13306 \
 
 如果脚本在共享 DEV 服务器本机执行，把 `MYSQL_HOST` 改成 `127.0.0.1`、`MYSQL_PORT` 改成 `3306`，并把凭据文件放到 `/opt/rigour-dev/domain-db.env`。不要把管理员密码写入命令行、脚本、Git、Nacos 或聊天记录。
 
-脚本是幂等的：已存在的数据库和账号不会默认改密码；只有显式设置 `RIGOUR_DB_ROTATE_EXISTING_PASSWORDS=true` 才会按凭据文件轮换已有账号密码。脚本执行后会逐个用运行账号和迁移账号登录测试，并报告当前表数；新建库期望表数为 `0`。
+脚本是幂等的：已存在的数据库和账号不会默认改密码；只有显式设置 `RIGOUR_DB_ROTATE_EXISTING_PASSWORDS=true` 才会按凭据文件轮换已有账号密码。脚本执行后会逐个用运行账号和迁移账号登录测试，并报告当前表数。新建空库在 Flyway 执行前期望表数为 `0`；Business Settings 执行 V1 后应有 `biz_dict`、`biz_dict_item` 和 `flyway_schema_history`。
 
 ## 连接参数约定
 
@@ -73,7 +74,7 @@ spring:
     clean-disabled: true
 ```
 
-Sales Work 和 ERP 已加入 JDBC/Flyway 依赖及正式 V1 迁移，但尚未在共享 DEV 验证；其余未落地领域仍不能仅凭创建空库就宣称服务已接入数据库或可用。
+Sales Work、ERP 和 Business Settings 已加入 JDBC/Flyway 依赖及正式 V1 迁移，但尚未在共享 DEV 验证；其余未落地领域仍不能仅凭创建空库就宣称服务已接入数据库或可用。
 
 ## 密码查看与轮换
 

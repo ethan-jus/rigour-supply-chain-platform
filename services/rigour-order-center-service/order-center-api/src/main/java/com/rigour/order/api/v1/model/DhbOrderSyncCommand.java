@@ -8,21 +8,32 @@ public record DhbOrderSyncCommand(
         /** 最多读取页数，范围 1..100；省略时为 100。 */ Integer maxPages,
         /** 可选的订货宝订单更新时间窗口起点；必须与updatedTo成对出现。 */ Instant updatedFrom,
         /** 可选的订货宝订单更新时间窗口终点；必须与updatedFrom成对出现。 */ Instant updatedTo,
-        /** 同步对象范围；省略时为ALL，Portal按当前页面选择具体范围。 */ DhbOrderSyncScope scope) {
+        /** 同步对象范围；省略时为ALL，Portal按当前页面选择具体范围。 */ DhbOrderSyncScope scope,
+        /** 全量或增量策略；未提供窗口时默认FULL，提供窗口时兼容为INCREMENTAL。 */ DhbOrderSyncMode mode) {
 
     public DhbOrderSyncCommand(Boolean includeDetails, Integer maxPages) {
-        this(includeDetails, maxPages, null, null, DhbOrderSyncScope.ALL);
+        this(includeDetails, maxPages, null, null, DhbOrderSyncScope.ALL, DhbOrderSyncMode.FULL);
     }
 
     public DhbOrderSyncCommand(Boolean includeDetails, Integer maxPages,
                                Instant updatedFrom, Instant updatedTo) {
-        this(includeDetails, maxPages, updatedFrom, updatedTo, DhbOrderSyncScope.ALL);
+        this(includeDetails, maxPages, updatedFrom, updatedTo, DhbOrderSyncScope.ALL,
+                DhbOrderSyncMode.INCREMENTAL);
+    }
+
+    public DhbOrderSyncCommand(Boolean includeDetails, Integer maxPages,
+                               Instant updatedFrom, Instant updatedTo, DhbOrderSyncScope scope) {
+        this(includeDetails, maxPages, updatedFrom, updatedTo, scope,
+                updatedFrom == null ? DhbOrderSyncMode.FULL : DhbOrderSyncMode.INCREMENTAL);
     }
 
     public DhbOrderSyncCommand {
         includeDetails = includeDetails == null ? Boolean.TRUE : includeDetails;
         maxPages = maxPages == null ? 100 : maxPages;
         scope = scope == null ? DhbOrderSyncScope.ALL : scope;
+        mode = mode == null
+                ? (updatedFrom == null ? DhbOrderSyncMode.FULL : DhbOrderSyncMode.INCREMENTAL)
+                : mode;
         if (maxPages < 1 || maxPages > 100) {
             throw new IllegalArgumentException("maxPages必须在1到100之间");
         }

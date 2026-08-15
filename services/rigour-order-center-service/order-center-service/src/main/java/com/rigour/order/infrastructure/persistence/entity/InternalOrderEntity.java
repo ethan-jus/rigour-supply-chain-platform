@@ -83,6 +83,33 @@ public class InternalOrderEntity {
     public LocalDateTime importedAt;
     /** 最近同步成功时间。 */
     public LocalDateTime syncedAt;
+    /** 订货宝详情补充字段。 */
+    public String customerType;
+    public String customerArea;
+    public String adminUser;
+    public String operationName;
+    public String salesPerson;
+    public String salesPersonMobile;
+    public String assistantSalesPersons;
+    public String auditAt;
+    public String settlementMethod;
+    public BigDecimal goodsWeight;
+    public BigDecimal taxAmount;
+    public BigDecimal discountPrice;
+    public BigDecimal discountTotal;
+    public BigDecimal freightAmount;
+    public BigDecimal applyTotal;
+    public BigDecimal couponDiscountedAmount;
+    public String customerRemark;
+    public String internalComment;
+    public String invoiceTitle;
+    public String invoiceContent;
+    public String invoiceBank;
+    public String invoiceBankAccount;
+    public String taxpayerNumber;
+    /** 订货宝详情扩展字段。 */
+    public String customerTag;
+    public String invoiceType;
     /** 内部乐观版本号。 */
     public Long version;
     /** 记录创建时间。 */

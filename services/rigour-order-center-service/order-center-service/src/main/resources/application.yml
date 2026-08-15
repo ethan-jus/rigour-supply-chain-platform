@@ -33,17 +33,22 @@ mybatis-plus:
     banner: false
 
 rigour:
+  business-settings:
+    # Order通过公共客户端批量补齐明确白名单字典；不读取rawJson猜测字段。
+    base-url: ${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://localhost:26892}
   order:
     dhb:
       sync:
         # Order Center内部定时同步开关；启用后从Integration动态发现租户目标。
         enabled: ${RIGOUR_ORDER_DHB_SYNC_ENABLED:true}
-        # Spring六字段cron：每小时00分和30分执行，秒 分 时 日 月 周。
-        cron: ${RIGOUR_ORDER_DHB_SYNC_CRON:0 0/30 * * * ?}
+        # Spring六字段cron：默认每小时20分和50分执行，与ERP、CRM错峰。
+        cron: ${RIGOUR_ORDER_DHB_SYNC_CRON:0 20/30 * * * ?}
         # 单次同步最大页数，范围1..100；供应商数据过大时分批运行。
         max-pages: ${RIGOUR_ORDER_DHB_SYNC_MAX_PAGES:100}
         # 增量窗口向前重叠分钟数，默认5分钟；依靠业务键和payloadHash幂等。
         overlap-minutes: ${RIGOUR_ORDER_DHB_SYNC_OVERLAP_MINUTES:5}
+        # 付款单没有可靠更新时间条件，默认每天做一次完整对账。
+        full-reconcile-hours: ${RIGOUR_ORDER_DHB_SYNC_FULL_RECONCILE_HOURS:24}
   integration:
     # Order Center只调用Integration版本化HTTP契约，不直接访问订货宝或Integration数据库。
     base-url: ${RIGOUR_INTEGRATION_BASE_URL:http://localhost:26882}

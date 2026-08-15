@@ -19,6 +19,9 @@ logging:
     com.rigour: INFO
 
 rigour:
+  business-settings:
+    # ERP 对明确白名单字段按字典批量自动补齐，不逐条远程解析业务数据。
+    base-url: ${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://localhost:26892}
   integration:
     # ERP 只调用 Integration 版本化契约，不直接访问订货宝或 Integration 数据库。
     base-url: ${RIGOUR_INTEGRATION_BASE_URL:http://localhost:26882}

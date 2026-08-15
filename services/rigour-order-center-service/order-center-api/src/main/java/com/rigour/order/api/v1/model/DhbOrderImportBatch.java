@@ -71,7 +71,34 @@ public record DhbOrderImportBatch(
             /** getOrderList 单条原始 JSON，不含认证字段。 */ String rawListJson,
             /** getOrderContent 单条原始 JSON；未补拉详情时为空。 */ String rawDetailJson,
             /** 当前有效原始 JSON 的 SHA-256。 */ String payloadHash,
-            /** 是否已调用并包含 getOrderContent 详情。 */ boolean detailIncluded) {
+            /** 是否已调用并包含 getOrderContent 详情。 */ boolean detailIncluded,
+            String customerType,
+            String customerArea,
+            String adminUser,
+            String operationName,
+            String salesPerson,
+            String salesPersonMobile,
+            String assistantSalesPersons,
+            String auditAt,
+            String settlementMethod,
+            BigDecimal goodsWeight,
+            BigDecimal taxAmount,
+            BigDecimal discountPrice,
+            BigDecimal discountTotal,
+            BigDecimal freightAmount,
+            BigDecimal applyTotal,
+            BigDecimal couponDiscountedAmount,
+            String customerRemark,
+            String internalComment,
+            String invoiceTitle,
+            String invoiceContent,
+            String invoiceBank,
+            String invoiceBankAccount,
+            String taxpayerNumber,
+            /** 订货宝客户标签。 */
+            String customerTag,
+            /** 订货宝发票类型。 */
+            String invoiceType) {
         public OrderItem {
             lines = lines == null ? List.of() : List.copyOf(lines);
             shipmentSnapshots = shipmentSnapshots == null ? List.of() : List.copyOf(shipmentSnapshots);
@@ -93,7 +120,16 @@ public record DhbOrderImportBatch(
             /** 来源订购数量。 */ BigDecimal quantity,
             /** 来源明细金额。 */ BigDecimal lineAmount,
             /** 来源计量单位。 */ String unit,
-            /** 订单明细备注。 */ String remark) {
+            /** 订单明细备注。 */ String remark,
+            BigDecimal purchasePrice,
+            BigDecimal conversionNumber,
+            BigDecimal offerPrice,
+            BigDecimal actualAmount,
+            BigDecimal goodsWeight,
+            String preSale,
+            String contentType,
+            String invoiceTax,
+            BigDecimal contentPercent) {
     }
 
     public record OrderShipmentItem(

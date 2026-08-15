@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.rigour</groupId>
+        <artifactId>rigour-supply-chain-platform</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+    <artifactId>rigour-business-settings-service</artifactId>
+    <packaging>pom</packaging>
+    <name>rigour-business-settings-service</name>
+    <description>公共业务设置接口契约与业务实现的聚合工程</description>
+    <modules>
+        <module>business-settings-api</module>
+        <module>business-settings-client</module>
+        <module>business-settings-service</module>
+    </modules>
+</project>

@@ -13,6 +13,7 @@ import com.rigour.erp.application.port.out.DhbProductMasterDataClient.Collected;
 import com.rigour.erp.application.port.out.DhbProductSyncTargetDiscoveryClient;
 import com.rigour.erp.application.port.out.ProductMasterDataStore;
 import com.rigour.erp.application.port.out.ProductMasterDataStore.ImportResult;
+import com.rigour.erp.application.service.sync.BusinessDictionaryCoverageService;
 import com.rigour.erp.domain.model.product.Brand;
 import com.rigour.erp.domain.model.product.Category;
 import com.rigour.erp.domain.model.product.MasterDataObjectType;
@@ -20,12 +21,14 @@ import com.rigour.erp.domain.model.product.Product;
 import com.rigour.erp.domain.model.product.Specification;
 import com.rigour.erp.domain.model.product.Tag;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
+import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -50,8 +53,9 @@ class ProductMasterDataSyncServiceTest {
         DhbProductMasterDataClient integration = mock(DhbProductMasterDataClient.class);
         DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
         ProductMasterDataStore store = mock(ProductMasterDataStore.class);
+        BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
         ProductMasterDataSyncService service = new ProductMasterDataSyncService(
-                integration, discovery, store);
+                integration, discovery, store, dictionaryCoverage, passthroughLease());
         when(discovery.discover(any())).thenReturn(List.of(
                 new SyncTargetView(TASK_ID, TENANT_ID, CONNECTOR_ID)));
         when(store.startRun(TENANT_ID.toString(), CONNECTOR_ID, USER_ID, objectType, 3))
@@ -81,8 +85,9 @@ class ProductMasterDataSyncServiceTest {
         DhbProductMasterDataClient integration = mock(DhbProductMasterDataClient.class);
         DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
         ProductMasterDataStore store = mock(ProductMasterDataStore.class);
+        BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
         ProductMasterDataSyncService service = new ProductMasterDataSyncService(
-                integration, discovery, store);
+                integration, discovery, store, dictionaryCoverage, passthroughLease());
         Collected collected = collected(MasterDataObjectType.BRAND);
         when(store.startScheduledRun(TENANT_ID.toString(), CONNECTOR_ID, null,
                 MasterDataObjectType.BRAND, 3)).thenReturn(RUN_ID);
@@ -115,6 +120,13 @@ class ProductMasterDataSyncServiceTest {
                 objectType == MasterDataObjectType.BRAND ? List.of(brand) : List.of(),
                 objectType == MasterDataObjectType.SPECIFICATION ? List.of(specification) : List.of(),
                 objectType == MasterDataObjectType.TAG ? List.of(tag) : List.of());
+    }
+
+    private static ConnectorSyncLeaseClient passthroughLease() {
+        ConnectorSyncLeaseClient lease = mock(ConnectorSyncLeaseClient.class);
+        when(lease.execute(any(), any(), any())).thenAnswer(invocation ->
+                ((Supplier<?>) invocation.getArgument(2)).get());
+        return lease;
     }
 
     private static void stubImport(ProductMasterDataStore store, MasterDataObjectType objectType,

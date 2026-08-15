@@ -7,6 +7,7 @@ import com.rigour.erp.api.v1.model.ProductPageView;
 import com.rigour.erp.api.v1.model.SkuPageView;
 import com.rigour.erp.api.v1.model.SpecificationView;
 import com.rigour.erp.api.v1.model.TagView;
+import com.rigour.erp.application.model.DictionaryMappingAudit;
 import com.rigour.erp.domain.model.product.Brand;
 import com.rigour.erp.domain.model.product.Category;
 import com.rigour.erp.domain.model.product.MasterDataObjectType;
@@ -98,6 +99,11 @@ public interface ProductMasterDataStore {
             /** 因缺少必要字段而拒绝落库的来源记录数量。 */
             long rejected,
             /** 从 Integration 读取的页数。 */
-            int pages) {
+            int pages,
+            /** 本批次字典快照版本与未映射来源枚举汇总。 */
+            DictionaryMappingAudit dictionaryAudit) {
+        public RunStatistics {
+            dictionaryAudit = dictionaryAudit == null ? DictionaryMappingAudit.empty() : dictionaryAudit;
+        }
     }
 }

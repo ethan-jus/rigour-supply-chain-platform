@@ -61,10 +61,10 @@ class ReactorArchitectureTest {
                 .filter(module -> module.startsWith("services/"))
                 .forEach(serviceModules::add);
 
-        assertEquals(12, serviceModules.size(), "必须保持 Gateway + 11 个领域服务");
+        assertEquals(13, serviceModules.size(), "必须保持 Gateway + 12 个领域服务");
         assertTrue(serviceModules.contains("services/rigour-api-gateway"));
         assertTrue(serviceModules.stream().noneMatch(module -> module.equals("services/rigour-gateway")));
-        assertEquals(12, applicationModules().size(), "聚合父模块和API模块不得被误计为启动应用");
+        assertEquals(13, applicationModules().size(), "聚合父模块和API模块不得被误计为启动应用");
     }
 
     @Test

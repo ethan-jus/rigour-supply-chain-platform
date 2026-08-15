@@ -64,5 +64,30 @@ public record DhbOrderView(
         /** 是否已经通过getOrderContent取得明细。 */
         boolean detailAvailable,
         /** 最近一次本地同步时间。 */
-        Instant syncedAt) {
+        Instant syncedAt,
+        String customerType,
+        String customerArea,
+        String adminUser,
+        String operationName,
+        String salesPerson,
+        String salesPersonMobile,
+        String assistantSalesPersons,
+        String auditAt,
+        String settlementMethod,
+        BigDecimal goodsWeight,
+        BigDecimal taxAmount,
+        BigDecimal discountPrice,
+        BigDecimal discountTotal,
+        BigDecimal freightAmount,
+        BigDecimal applyTotal,
+        BigDecimal couponDiscountedAmount,
+        String customerRemark,
+        String internalComment,
+        String invoiceTitle,
+        String invoiceContent,
+        String invoiceBank,
+        String invoiceBankAccount,
+        String taxpayerNumber,
+        String customerTag,
+        String invoiceType) {
 }

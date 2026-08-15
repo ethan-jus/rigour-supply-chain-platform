@@ -10,7 +10,7 @@
 - `platform/rigour-platform-starter`：HTTP 服务最小基线，只聚合 core/context/logging/Web/Validation/Actuator。
 - `platform/rigour-architecture-tests`：reactor 和服务依赖边界门禁。
 - `shared/`：横切契约或最小自动配置，禁止领域逻辑、万能数据服务和共享业务表。
-- `services/`：`rigour-api-gateway` 加 11 个领域服务；每个领域服务是其 Schema 的单一写者。
+- `services/`：`rigour-api-gateway` 加 12 个领域服务；每个领域服务是其 Schema 的单一写者。
 
 `audit/idempotency/outbox/cache/file` 是可选库，不得加入 platform-starter。具体持久化和中间件适配归使用它们的领域服务所有。
 

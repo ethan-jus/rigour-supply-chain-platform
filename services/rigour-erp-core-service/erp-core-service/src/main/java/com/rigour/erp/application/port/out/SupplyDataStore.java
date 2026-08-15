@@ -10,6 +10,7 @@ import com.rigour.erp.api.v1.model.SupplyDataPageView;
 import com.rigour.erp.api.v1.model.WarehouseView;
 import com.rigour.erp.api.v1.model.WarehousingReceiptDetailView;
 import com.rigour.erp.api.v1.model.WarehousingReceiptView;
+import com.rigour.erp.application.model.DictionaryMappingAudit;
 import com.rigour.erp.domain.model.supply.InventoryBalance;
 import com.rigour.erp.domain.model.supply.PurchaseOrder;
 import com.rigour.erp.domain.model.supply.PurchaseReturn;
@@ -32,7 +33,7 @@ public interface SupplyDataStore {
     SupplyDataPageView<WarehousingReceiptView> warehousingReceipts(String tenantId, int begin, int step, String query, String status);
     WarehousingReceiptDetailView warehousingReceipt(String tenantId, String id);
     SupplyDataPageView<WarehouseView> warehouses(String tenantId, int begin, int step, String query, String status);
-    SupplyDataPageView<InventoryBalanceView> inventory(String tenantId, int begin, int step, String query, String warehouseCode);
+    SupplyDataPageView<InventoryBalanceView> inventory(String tenantId, int begin, int step, String query, String warehouseCode, String status);
 
     List<String> sourceProductCodes(String tenantId);
     UUID startRun(String tenantId, UUID connectorId, UUID actorId, SupplyDataObjectType type, int maxPages);
@@ -60,5 +61,9 @@ public interface SupplyDataStore {
     }
     /** 本批次交给 ERP 导入流程并完成统计的记录总数。 */
     record RunStatistics(long fetched, long created, long changed, long duplicates,
-                         long rejected, int pages) { }
+                         long rejected, int pages, DictionaryMappingAudit dictionaryAudit) {
+        public RunStatistics {
+            dictionaryAudit = dictionaryAudit == null ? DictionaryMappingAudit.empty() : dictionaryAudit;
+        }
+    }
 }

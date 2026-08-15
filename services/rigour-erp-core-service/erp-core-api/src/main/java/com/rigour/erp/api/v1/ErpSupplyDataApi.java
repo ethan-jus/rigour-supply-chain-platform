@@ -61,10 +61,11 @@ public interface ErpSupplyDataApi {
                                                      @RequestParam(required = false) String q,
                                                      @RequestParam(required = false) String status);
 
-    /** 按仓库和商品条件分页查询 ERP 本地库存余额快照。 */
+    /** 按仓库、库存状态和商品条件分页查询 ERP 本地库存余额快照；warehouseCode支持逗号分隔多个仓库编码，status支持AVAILABLE/NO_AVAILABLE。 */
     @GetMapping(BASE_PATH + "/inventory-balances")
     ApiResponse<SupplyDataPageView<InventoryBalanceView>> inventory(@RequestParam int begin, @RequestParam int step,
                                                            @RequestParam(required = false) String q,
-                                                           @RequestParam(required = false) String warehouseCode);
+                                                           @RequestParam(required = false) String warehouseCode,
+                                                           @RequestParam(required = false) String status);
 
 }

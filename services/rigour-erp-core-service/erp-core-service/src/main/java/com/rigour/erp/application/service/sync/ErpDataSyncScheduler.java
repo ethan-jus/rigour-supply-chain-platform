@@ -6,6 +6,7 @@ import com.rigour.erp.application.port.out.DhbProductSyncTargetDiscoveryClient;
 import com.rigour.erp.application.port.out.DhbSupplySyncTargetDiscoveryClient;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.core.sync.SyncConflictClassifier;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -93,6 +94,11 @@ public final class ErpDataSyncScheduler {
                         result.runId(), result.fetched(), result.created(), result.changed(),
                         result.duplicates(), result.rejected(), result.pages());
             } catch (RuntimeException error) {
+                if (SyncConflictClassifier.isAlreadyRunning(error)) {
+                    log.info("ERP定时同步跳过，已有同范围任务运行 taskType={} taskId={} tenantId={} connectorId={} objectType={}",
+                            taskType, target.taskId(), target.tenantId(), target.connectorId(), objectType);
+                    continue;
+                }
                 log.error("ERP定时同步失败 taskType={} taskId={} tenantId={} connectorId={} objectType={} reason={}",
                         taskType, target.taskId(), target.tenantId(), target.connectorId(), objectType,
                         oneLine(error.getMessage()));

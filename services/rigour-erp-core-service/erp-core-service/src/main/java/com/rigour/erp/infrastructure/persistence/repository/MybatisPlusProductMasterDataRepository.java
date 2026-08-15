@@ -7,6 +7,8 @@ import com.rigour.erp.api.v1.model.CategoryView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.api.v1.model.ProductImageView;
 import com.rigour.erp.api.v1.model.ProductPageView;
+import com.rigour.erp.api.v1.model.ProductPriceView;
+import com.rigour.erp.api.v1.model.ProductQuantityView;
 import com.rigour.erp.api.v1.model.ProductView;
 import com.rigour.erp.api.v1.model.SkuPageView;
 import com.rigour.erp.api.v1.model.SkuView;
@@ -63,6 +65,7 @@ import com.rigour.erp.infrastructure.persistence.mapper.SpecificationMapper;
 import com.rigour.erp.infrastructure.persistence.mapper.SpecificationValueMapper;
 import com.rigour.erp.infrastructure.persistence.mapper.TagGroupMapper;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -72,6 +75,7 @@ import java.time.LocalDateTime;
 import java.time.Duration;
 import java.time.ZoneOffset;
 import java.util.HexFormat;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -234,13 +238,15 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 ids(page, item -> item.id));
         Map<String, MasterSourceBindingEntity> productBindings = bindingMap(tenantId, "PRODUCT_SPU", spuIds);
         Map<String, PriceValues> skuPrices = pricesByTarget(tenantId, "SKU", ids(page, item -> item.id));
+        Map<String, Map<String, ProductUnitEntity>> productUnits = unitsByTarget(tenantId, "SPU", spuIds);
         List<SkuView> views = page.stream().map(item -> {
             ProductSpuEntity product = products.get(item.spuId);
             if (product == null) return null;
             MasterSourceBindingEntity binding = sourceBinding(skuBindings, item.id);
             if (binding == null) binding = sourceBinding(productBindings, item.spuId);
             PriceValues prices = skuPrices.getOrDefault(item.id, PriceValues.empty());
-            return skuView(item, product, binding, prices);
+            return skuView(item, product, binding, prices,
+                    productUnits.getOrDefault(product.id, Map.of()));
         }).filter(Objects::nonNull).toList();
         return new SkuPageView(total, begin, step, views);
     }
@@ -574,7 +580,9 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     @Override
     @Transactional
     public void completeRun(String tenantId, UUID runId, RunStatistics statistics) {
-        finishRun(tenantId, runId, "SUCCEEDED", statistics, null, null);
+        String status = statistics.dictionaryAudit().unmapped() == 0
+                ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
+        finishRun(tenantId, runId, status, statistics, null, null);
     }
 
     @Override
@@ -1358,6 +1366,9 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         entity.changedCount = value.changed();
         entity.duplicateCount = value.duplicates();
         entity.rejectedCount = value.rejected();
+        entity.unmappedCount = value.dictionaryAudit().unmapped();
+        entity.dictSnapshotJson = auditJson(value.dictionaryAudit().revisions());
+        entity.mappingIssuesJson = auditJson(value.dictionaryAudit().issues());
         entity.errorCode = errorCode;
         entity.errorMessage = errorMessage;
         entity.finishedAt = now;
@@ -1365,6 +1376,14 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         syncRunMapper.updateById(entity);
         syncLockMapper.delete(Wrappers.<MasterDataSyncLockEntity>query()
                 .eq("tenant_id", tenantId).eq("run_id", runId.toString()));
+    }
+
+    private static String auditJson(Object value) {
+        try {
+            return SOURCE_FIELDS_MAPPER.writeValueAsString(value);
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("ERP同步字典审计序列化失败", exception);
+        }
     }
 
     private void acquireRunLock(String tenantId, String objectType, UUID runId, LocalDateTime now) {
@@ -1383,7 +1402,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             syncLockMapper.insert(lock);
         } catch (DuplicateKeyException exception) {
             throw new com.rigour.shared.core.exception.BusinessException(
-                    com.rigour.shared.core.api.ErrorCode.CONFLICT,
+                    com.rigour.shared.core.api.ErrorCode.SYNC_ALREADY_RUNNING,
                     "当前租户该类 ERP 数据已有同步任务运行中", java.util.List.of());
         }
     }
@@ -1419,17 +1438,15 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 policy == null ? null : policy.safetyStock, prices.middleOrder, prices.bigOrder,
                 details.images().getOrDefault(item.id, List.of()),
                 details.skuViews().getOrDefault(item.id, List.of()),
-                details.customFields().getOrDefault(item.id, Map.of()));
+                details.customFields().getOrDefault(item.id, Map.of()),
+                priceViews(prices, units),
+                quantityViews(item, policy, units));
     }
 
     private ProductViewDetails productViewDetails(String tenantId, Set<String> spuIds) {
         if (spuIds.isEmpty()) return ProductViewDetails.empty();
         Map<String, PriceValues> prices = pricesByTarget(tenantId, "SPU", spuIds);
-        Map<String, Map<String, ProductUnitEntity>> units = productUnitMapper.selectList(
-                        Wrappers.<ProductUnitEntity>query().eq("tenant_id", tenantId)
-                                .eq("target_type", "SPU").in("target_id", spuIds))
-                .stream().collect(Collectors.groupingBy(item -> item.targetId,
-                        Collectors.toMap(item -> item.unitLevel, Function.identity(), (a, b) -> a)));
+        Map<String, Map<String, ProductUnitEntity>> units = unitsByTarget(tenantId, "SPU", spuIds);
         Map<String, ProductInventoryPolicyEntity> policies = productInventoryPolicyMapper.selectList(
                         Wrappers.<ProductInventoryPolicyEntity>query().eq("tenant_id", tenantId)
                                 .in("spu_id", spuIds))
@@ -1454,7 +1471,8 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             if (product == null) continue;
             skuViews.computeIfAbsent(item.spuId, ignored -> new java.util.ArrayList<>())
                     .add(skuView(item, product, sourceBinding(nestedSkuBindings, item.id),
-                            nestedSkuPrices.getOrDefault(item.id, PriceValues.empty())));
+                            nestedSkuPrices.getOrDefault(item.id, PriceValues.empty()),
+                            units.getOrDefault(product.id, Map.of())));
         }
         Map<String, List<ProductImageView>> images = productImageMapper.selectList(
                         Wrappers.<ProductImageEntity>query().eq("tenant_id", tenantId)
@@ -1476,14 +1494,16 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private static SkuView skuView(ProductSkuEntity item, ProductSpuEntity product,
-                                   MasterSourceBindingEntity binding, PriceValues prices) {
+                                   MasterSourceBindingEntity binding, PriceValues prices,
+                                   Map<String, ProductUnitEntity> units) {
         return new SkuView(item.id, binding == null ? null : binding.sourceObjectId, item.skuCode,
                 product.spuCode, product.name, item.barcode, item.unit, item.specificationSummary,
                 binding == null ? null : binding.sourcePutaway, item.internalStatus,
                 item.ownershipState, instant(binding == null ? null : binding.syncedAt),
                 item.sourceOptionsId, item.firstSpecificationValueSourceId,
                 item.secondSpecificationValueSourceId, item.middleBarcode, item.bigBarcode,
-                prices.order, prices.market, prices.purchase, prices.middleOrder, prices.bigOrder);
+                prices.order, prices.market, prices.purchase, prices.middleOrder, prices.bigOrder,
+                priceViews(prices, units));
     }
 
     private Map<String, List<SpecificationValueView>> specificationValues(String tenantId,
@@ -1514,6 +1534,82 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                         .eq("tenant_id", tenantId).eq("target_type", targetType).in("target_id", targetIds))
                 .stream().collect(Collectors.groupingBy(item -> item.targetId,
                         Collectors.collectingAndThen(Collectors.toList(), this::priceValues)));
+    }
+
+    private Map<String, Map<String, ProductUnitEntity>> unitsByTarget(String tenantId,
+                                                                       String targetType,
+                                                                       Set<String> targetIds) {
+        if (targetIds.isEmpty()) return Map.of();
+        return productUnitMapper.selectList(Wrappers.<ProductUnitEntity>query()
+                        .eq("tenant_id", tenantId).eq("target_type", targetType)
+                        .in("target_id", targetIds))
+                .stream().collect(Collectors.groupingBy(item -> item.targetId,
+                        Collectors.toMap(item -> item.unitLevel, Function.identity(), (a, b) -> a)));
+    }
+
+    private static List<ProductPriceView> priceViews(PriceValues prices,
+                                                     Map<String, ProductUnitEntity> units) {
+        List<ProductPriceView> values = new ArrayList<>();
+        addPrice(values, "ORDER", "BASE", prices.order, unitName(units, "BASE"), "订货价");
+        addPrice(values, "MARKET", "BASE", prices.market, unitName(units, "BASE"), "市场价");
+        addPrice(values, "PURCHASE", "BASE", prices.purchase, unitName(units, "BASE"), "采购价");
+        addPrice(values, "OTHER", "BASE", prices.other, unitName(units, "BASE"), "其他价");
+        addPrice(values, "ORDER", "MIDDLE", prices.middleOrder, unitName(units, "MIDDLE"),
+                "中包装订货价");
+        addPrice(values, "ORDER", "BIG", prices.bigOrder, unitName(units, "BIG"),
+                "大包装订货价");
+        return List.copyOf(values);
+    }
+
+    private static void addPrice(List<ProductPriceView> values, String priceType, String unitLevel,
+                                 BigDecimal amount, String unitName, String label) {
+        if (amount == null) return;
+        values.add(new ProductPriceView(priceType, unitLevel, amount, unitName, label,
+                displayPrice(amount, unitName)));
+    }
+
+    private static List<ProductQuantityView> quantityViews(ProductSpuEntity product,
+                                                           ProductInventoryPolicyEntity policy,
+                                                           Map<String, ProductUnitEntity> units) {
+        List<ProductQuantityView> values = new ArrayList<>();
+        addQuantity(values, "MIN_ORDER", product.minimumOrder,
+                minimumOrderUnitName(product.minimumOrderUnit, units), "起订量");
+        addQuantity(values, "INVENTORY_LOWER", policy == null ? null : policy.lowerBound,
+                unitName(units, "BASE"), "库存下限");
+        addQuantity(values, "INVENTORY_SAFETY", policy == null ? null : policy.safetyStock,
+                unitName(units, "BASE"), "安全库存");
+        addQuantity(values, "INVENTORY_UPPER", policy == null ? null : policy.upperBound,
+                unitName(units, "BASE"), "库存上限");
+        return List.copyOf(values);
+    }
+
+    private static void addQuantity(List<ProductQuantityView> values, String quantityType,
+                                    BigDecimal amount, String unitName, String label) {
+        if (amount == null) return;
+        values.add(new ProductQuantityView(quantityType, amount, unitName, label,
+                displayQuantity(amount, unitName)));
+    }
+
+    private static String minimumOrderUnitName(String minimumOrderUnit,
+                                               Map<String, ProductUnitEntity> units) {
+        if ("middle_units".equals(minimumOrderUnit)) return unitName(units, "MIDDLE");
+        if ("container_units".equals(minimumOrderUnit)) return unitName(units, "BIG");
+        return unitName(units, "BASE");
+    }
+
+    private static String unitName(Map<String, ProductUnitEntity> units, String level) {
+        ProductUnitEntity unit = units.get(level);
+        return unit == null || missing(unit.unitName) ? null : unit.unitName;
+    }
+
+    private static String displayPrice(BigDecimal amount, String unitName) {
+        String value = "¥" + amount.setScale(2, RoundingMode.HALF_UP).toPlainString();
+        return unitName == null ? value + "（计量单位未配置）" : value + "/" + unitName;
+    }
+
+    private static String displayQuantity(BigDecimal amount, String unitName) {
+        String value = amount.stripTrailingZeros().toPlainString();
+        return unitName == null ? value + "（计量单位未配置）" : value + unitName;
     }
 
     private PriceValues priceValues(List<ProductPriceEntity> rows) {

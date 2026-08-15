@@ -83,8 +83,8 @@ public final class ErpSupplyDataController implements ErpSupplyDataApi {
     /** {@inheritDoc} */
     @Override
     public ApiResponse<SupplyDataPageView<InventoryBalanceView>> inventory(
-            int begin, int step, String q, String warehouseCode) {
-        return ApiResponse.success(query.inventory(tenantId(), begin, step, q, warehouseCode));
+            int begin, int step, String q, String warehouseCode, String status) {
+        return ApiResponse.success(query.inventory(tenantId(), begin, step, q, warehouseCode, status));
     }
 
     private static String tenantId() {

@@ -14,7 +14,10 @@ import com.rigour.erp.application.port.out.DhbProductSyncTargetDiscoveryClient;
 import com.rigour.erp.application.port.out.DhbSupplySyncTargetDiscoveryClient;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 import java.time.Instant;
+import java.util.Map;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -76,6 +79,30 @@ class ErpDataSyncSchedulerTest {
     }
 
     @Test
+    void connectorConflictSkipsCurrentObjectAndContinuesFollowingObjects() {
+        ErpDataSyncService syncService = mock(ErpDataSyncService.class);
+        DhbProductSyncTargetDiscoveryClient productDiscovery = mock(DhbProductSyncTargetDiscoveryClient.class);
+        DhbSupplySyncTargetDiscoveryClient supplyDiscovery = mock(DhbSupplySyncTargetDiscoveryClient.class);
+        SyncTargetView target = new SyncTargetView(TASK_ID, TENANT_ID, CONNECTOR_ID);
+        when(productDiscovery.discover(any())).thenReturn(List.of(target));
+        when(supplyDiscovery.discover(any())).thenReturn(List.of(target));
+        when(syncService.runScheduled(any(), any(), any(ErpDataSyncCommand.class)))
+                .thenAnswer(invocation -> {
+                    ErpDataSyncCommand command = invocation.getArgument(2);
+                    if ("CATEGORY".equals(command.objectType())) {
+                        throw new BusinessException(ErrorCode.SYNC_ALREADY_RUNNING,
+                                "connector busy", List.of());
+                    }
+                    return result(command);
+                });
+
+        new ErpDataSyncScheduler(syncService, productDiscovery, supplyDiscovery,
+                enabledProperties()).synchronize();
+
+        verify(syncService, org.mockito.Mockito.times(11)).runScheduled(any(), any(), any());
+    }
+
+    @Test
     void disabledScheduleDoesNotDiscoverTargets() {
         ErpDataSyncService syncService = mock(ErpDataSyncService.class);
         DhbProductSyncTargetDiscoveryClient productDiscovery = mock(DhbProductSyncTargetDiscoveryClient.class);
@@ -133,6 +160,6 @@ class ErpDataSyncSchedulerTest {
 
     private static ErpDataSyncResult result(ErpDataSyncCommand command) {
         return new ErpDataSyncResult(UUID.randomUUID(), command.objectType(), "SUCCEEDED", CONNECTOR_ID,
-                1, 1, 0, 0, 0, 1, Instant.parse("2026-08-12T03:00:00Z"));
+                1, 1, 0, 0, 0, 0, Map.of(), 1, Instant.parse("2026-08-12T03:00:00Z"));
     }
 }

@@ -149,7 +149,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         try {
             lockMapper.insert(lock);
         } catch (DataIntegrityViolationException exception) {
-            throw new BusinessException(ErrorCode.CONFLICT,
+            throw new BusinessException(ErrorCode.SYNC_ALREADY_RUNNING,
                     "相同租户、连接器和数据类型已有同步任务运行中", List.of());
         }
         CrmSyncRunEntity run = new CrmSyncRunEntity();

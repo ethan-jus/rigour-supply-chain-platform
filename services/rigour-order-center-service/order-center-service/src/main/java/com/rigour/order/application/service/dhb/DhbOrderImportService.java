@@ -70,12 +70,19 @@ public class DhbOrderImportService {
                 item.receiverAddress(), item.province(), item.city(), item.district(), item.sourceApiStatus(),
                 item.sourceExceptionStatus(), item.sourceSendType(), item.sourceLastOrderAt(), item.sourceDevice(),
                 item.sourceAdminOrder(), item.splitType(), item.splitTypeName(), item.payloadHash(),
-                item.detailIncluded() ? now : null, null, now);
+                item.detailIncluded() ? now : null, null, now, item.customerType(), item.customerArea(),
+                item.adminUser(), item.operationName(), item.salesPerson(), item.salesPersonMobile(),
+                item.assistantSalesPersons(), item.auditAt(), item.settlementMethod(), item.goodsWeight(),
+                item.taxAmount(), item.discountPrice(), item.discountTotal(), item.freightAmount(),
+                item.applyTotal(), item.couponDiscountedAmount(), item.customerRemark(), item.internalComment(), item.invoiceTitle(), item.invoiceContent(),
+                item.invoiceBank(), item.invoiceBankAccount(), item.taxpayerNumber(), item.customerTag(), item.invoiceType());
         List<OrderLine> lines = item.lines().stream().map(line -> new OrderLine(null, line.sourceLineId(),
                 line.sourceProductGuid(), line.skuNo(), line.sourceOptionsGoodsNo(), line.sourceBarcode(),
                 line.productName(), line.productCode(), line.specificationFirst(), line.specificationSecond(),
                 line.specificationName(), line.unitPrice(), line.quantity(), line.lineAmount(), line.unit(),
-                line.remark())).toList();
+                line.remark(), line.purchasePrice(), line.conversionNumber(), line.offerPrice(),
+                line.actualAmount(), line.goodsWeight(), line.preSale(), line.contentType(), line.invoiceTax(),
+                line.contentPercent())).toList();
         List<OrderShipment> shipments = item.shipmentSnapshots().stream().map(shipment -> new OrderShipment(
                 null, shipment.sourceShipmentNo(), shipment.status(), shipment.shipmentDate(),
                 shipment.stockUpTime())).toList();

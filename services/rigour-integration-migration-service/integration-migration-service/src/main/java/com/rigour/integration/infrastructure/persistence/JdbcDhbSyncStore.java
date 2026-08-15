@@ -2,6 +2,8 @@ package com.rigour.integration.infrastructure.persistence;
 
 import com.rigour.integration.application.port.out.DhbClient.OrderSummary;
 import com.rigour.integration.application.port.out.DhbSyncStore;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -69,7 +71,7 @@ public final class JdbcDhbSyncStore implements DhbSyncStore {
                 throw new IllegalArgumentException("订货宝同步任务不存在");
             }
             if ("RUNNING".equalsIgnoreCase(task.taskStatus())) {
-                throw new IllegalStateException("订货宝同步任务正在运行");
+                throw alreadyRunning();
             }
             if (!task.enabled() || !"ACTIVE".equalsIgnoreCase(task.connectorStatus())) {
                 throw new IllegalStateException("订货宝同步任务或连接器未启用");
@@ -92,7 +94,7 @@ public final class JdbcDhbSyncStore implements DhbSyncStore {
                            version=version+1, updated_at=UTC_TIMESTAMP(6), updated_by=?
                      WHERE tenant_id=? AND id=? AND task_status<>'RUNNING' AND deleted_at IS NULL
                     """, bin(actorId), bin(tenantId), bin(taskId));
-            requireChanged(changed);
+            if (changed != 1) throw alreadyRunning();
             return new SyncRunStarted(runId, cursorBefore);
         });
     }
@@ -397,5 +399,10 @@ public final class JdbcDhbSyncStore implements DhbSyncStore {
 
     private static void requireChanged(int changed) {
         if (changed != 1) throw new IllegalStateException("同步批次状态已被其他执行者改变");
+    }
+
+    private static BusinessException alreadyRunning() {
+        return new BusinessException(ErrorCode.SYNC_ALREADY_RUNNING,
+                "相同租户和订货宝任务已有同步批次运行中", java.util.List.of());
     }
 }

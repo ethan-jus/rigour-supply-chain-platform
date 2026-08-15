@@ -67,7 +67,7 @@ class HttpDhbProductMasterDataClientTest {
                             "sourceId": "P-1",
                             "code": "SPU-1",
                             "name": "商品一",
-                            "putaway": "A",
+                            "putaway": "F",
                             "images": [{
                               "sourceResourceId": "IMG-1",
                               "sourceGoodsId": "P-1",

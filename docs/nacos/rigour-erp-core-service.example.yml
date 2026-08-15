@@ -24,14 +24,17 @@ spring:
     locations: classpath:db/migration
 
 rigour:
+  business-settings:
+    base-url: http://rigour-business-settings-service:26892
   integration:
+    base-url: http://rigour-integration-migration-service:26882
     http:
       # 商品图片在 Integration 内完成下载和 COS 上传后才返回商品页。
       connect-timeout: 3s
       read-timeout: 120s
   erp:
     sync:
-      # ERP统一定时同步默认关闭；确认 Integration 目标和数据库后再打开。
+      # ERP默认每小时00分、30分执行；CRM和Order分别错开10、20分钟。
       enabled: true
       cron: 0 0/30 * * * ?
       max-pages: 100

@@ -22,6 +22,9 @@ logging:
 
 rigour:
   integration:
+    connector-lease:
+      # ERP、CRM、Order及多实例对同一租户连接器共用此分布式租约。
+      ttl: ${RIGOUR_INTEGRATION_CONNECTOR_LEASE_TTL:2m}
     product-media:
       # 订货宝图片强制写入 COS 私桶；缺少 COS 配置时服务启动失败，不降级到本地文件。
       max-bytes: 10485760

@@ -2,6 +2,7 @@ package com.rigour.erp.api.v1.model;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 
 /** ERP SKU 列表投影；SKU 是一组规格值组合的可销售单元，不等同于规格字典。 */
 public record SkuView(
@@ -48,5 +49,10 @@ public record SkuView(
         /** 中包装订货价。 */
         BigDecimal middleOrderPrice,
         /** 大包装订货价。 */
-        BigDecimal bigOrderPrice) {
+        BigDecimal bigOrderPrice,
+        /** ERP 已解释计价类型和计量单位的业务价格投影。 */
+        List<ProductPriceView> priceItems) {
+    public SkuView {
+        priceItems = priceItems == null ? List.of() : List.copyOf(priceItems);
+    }
 }

@@ -35,5 +35,24 @@ public record OrderLine(
         /** 计量单位。 */
         String unit,
         /** 明细备注。 */
-        String remark) {
+        String remark,
+        BigDecimal purchasePrice,
+        BigDecimal conversionNumber,
+        BigDecimal offerPrice,
+        BigDecimal actualAmount,
+        BigDecimal goodsWeight,
+        String preSale,
+        String contentType,
+        String invoiceTax,
+        BigDecimal contentPercent) {
+
+    public OrderLine(String id, String sourceLineId, String sourceProductGuid, String skuNo,
+                     String sourceOptionsGoodsNo, String sourceBarcode, String productName,
+                     String productCode, String specificationFirst, String specificationSecond,
+                     String specificationName, BigDecimal unitPrice, BigDecimal quantity,
+                     BigDecimal lineAmount, String unit, String remark) {
+        this(id, sourceLineId, sourceProductGuid, skuNo, sourceOptionsGoodsNo, sourceBarcode, productName,
+                productCode, specificationFirst, specificationSecond, specificationName, unitPrice, quantity,
+                lineAmount, unit, remark, null, null, null, null, null, null, null, null, null);
+    }
 }

@@ -1,6 +1,7 @@
 package com.rigour.order.infrastructure.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
@@ -10,6 +11,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 
 import com.rigour.order.api.v1.model.DhbOrderImportBatch;
 import com.rigour.order.api.v1.model.DhbOrderSyncCommand;
+import com.rigour.order.api.v1.model.DhbOrderSyncMode;
 import com.rigour.order.api.v1.model.DhbOrderSyncScope;
 import com.rigour.order.application.port.out.DhbOrderSyncClient;
 import com.rigour.shared.context.CallerIdentity;
@@ -45,7 +47,7 @@ class HttpDhbOrderSyncClientTest {
                 .andExpect(jsonPath("$.orderStatus").value("all"))
                 .andExpect(jsonPath("$.exceptionStatus").value("all"))
                 .andExpect(jsonPath("$.apiStatus").value("all"))
-                .andExpect(jsonPath("$.updatedFrom").value("2026-08-01T00:00:00Z"))
+                .andExpect(jsonPath("$.updatedFrom").doesNotExist())
                 .andExpect(header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE))
                 .andExpect(header(RequestHeaders.CONTEXT_KEY_ID, "v1"))
                 .andExpect(header(RequestHeaders.PERMISSIONS,
@@ -91,8 +93,39 @@ class HttpDhbOrderSyncClientTest {
                               "Name": "商品一",
                               "ContentPrice": "12.50",
                               "ContentNumber": "1",
-                              "ActualAmount": "12.50"
+                              "ActualAmount": "12.50",
+                              "ContentPurchasePrice": "8.00",
+                              "ConversionNumber": "12",
+                              "OfferPrice": "1.00",
+                              "GoodsWeight": "2.50",
+                              "ContentPercent": "1.0000",
+                              "isPre": 1,
+                              "conType": "g",
+                              "InvoiceTax": "13%"
                             }],
+                            "UpdateDate": "2026-08-02 09:30:00",
+                            "OrderPayStatus": "unoblig",
+                            "OrderUpdateTime": "2026-08-02 09:00:00",
+                            "OrderException": "T",
+                            "OrderSendType": "express",
+                            "lastOrderAt": "2026-08-02 08:30:00",
+                            "ClientTypeName": "批发客户",
+                            "ClientTagName": "重点客户",
+                            "ClientAreaName": "华北区",
+                            "StaffName": "业务员甲",
+                            "StaffMobile": "13800000000",
+                            "AssistStaff": [{"StaffName": "辅助员乙"}],
+                            "OrderAuditTime": "2026-08-02 09:00:00",
+                            "PayForm": "后付",
+                            "GoodsWeight": "2.5000",
+                            "Taxation": "1.2000",
+                            "DiscountTotal": "10.3000",
+                            "OrderFreight": "5.0000",
+                            "ApplyTotal": "0.0000",
+                            "CouponDiscountedAmount": "0.5000",
+                            "ClientRemark": [{"content": "请尽快发货"}],
+                            "internalComm": "内部备注",
+                            "Invoice": {"invoice_title": "客户公司", "invoice_content": "商品", "bank": "银行", "bank_account": "123", "taxpayer_number": "税号", "invoice_type": "增值税专用发票"},
                             "Ships": [{"ships_num": "SHIP-1", "status": "received"}]
                           }
                         }
@@ -136,7 +169,7 @@ class HttpDhbOrderSyncClientTest {
                 .andExpect(jsonPath("$.begin").value(0))
                 .andExpect(jsonPath("$.step").value(100))
                 .andExpect(jsonPath("$.isApi").value("F,T"))
-                .andExpect(jsonPath("$.updatedFrom").value("2026-08-01T00:00:00Z"))
+                .andExpect(jsonPath("$.updatedFrom").doesNotExist())
                 .andExpect(header(RequestHeaders.CONTEXT_KEY_ID, "v1"))
                 .andRespond(withSuccess("""
                         {
@@ -200,8 +233,8 @@ class HttpDhbOrderSyncClientTest {
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.begin").value(0))
                 .andExpect(jsonPath("$.step").value(100))
-                .andExpect(jsonPath("$.isApi").value("F,T"))
-                .andExpect(jsonPath("$.updatedFrom").value("2026-08-01T00:00:00Z"))
+                .andExpect(jsonPath("$.isApi").value("All"))
+                .andExpect(jsonPath("$.updatedFrom").doesNotExist())
                 .andRespond(withSuccess("""
                         {
                           "total": 1,
@@ -259,7 +292,8 @@ class HttpDhbOrderSyncClientTest {
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.begin").value(0))
                 .andExpect(jsonPath("$.step").value(100))
-                .andExpect(jsonPath("$.updatedFrom").value("2026-08-01T00:00:00Z"))
+                .andExpect(jsonPath("$.updatedFrom").doesNotExist())
+                .andExpect(jsonPath("$.status").value("all"))
                 .andRespond(withSuccess("""
                         {
                           "total": 1,
@@ -286,8 +320,9 @@ class HttpDhbOrderSyncClientTest {
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.begin").value(0))
                 .andExpect(jsonPath("$.step").value(100))
-                .andExpect(jsonPath("$.createdFrom").value("2026-08-01T00:00:00Z"))
-                .andExpect(jsonPath("$.createdTo").value("2026-08-02T00:00:00Z"))
+                .andExpect(jsonPath("$.createdFrom").doesNotExist())
+                .andExpect(jsonPath("$.createdTo").doesNotExist())
+                .andExpect(jsonPath("$.status").value("all"))
                 .andRespond(withSuccess("""
                         {
                           "total": 1,
@@ -315,7 +350,8 @@ class HttpDhbOrderSyncClientTest {
         DhbOrderSyncClient.Collected collected = client.collect(caller(), CONNECTOR_ID,
                 new DhbOrderSyncCommand(true, 1,
                         java.time.Instant.parse("2026-08-01T00:00:00Z"),
-                        java.time.Instant.parse("2026-08-02T00:00:00Z")));
+                        java.time.Instant.parse("2026-08-02T00:00:00Z"),
+                        com.rigour.order.api.v1.model.DhbOrderSyncScope.ALL, DhbOrderSyncMode.FULL));
 
         assertThat(collected.fetched()).isEqualTo(5);
         assertThat(collected.completedObjects()).containsExactlyInAnyOrder(
@@ -324,9 +360,32 @@ class HttpDhbOrderSyncClientTest {
         DhbOrderImportBatch.OrderItem order = collected.batch().orders().getFirst();
         assertThat(order.sourceOrderNo()).isEqualTo("ORD-1");
         assertThat(order.detailIncluded()).isTrue();
+        assertThat(order.paymentStatus()).isEqualTo("unoblig");
+        assertThat(order.sourceUpdateTime()).isEqualTo("2026-08-02 09:30:00");
+        assertThat(order.sourceUpdatedAt()).isEqualTo(java.time.Instant.parse("2026-08-02T01:30:00Z"));
+        assertThat(order.sourceExceptionStatus()).isEqualTo("T");
+        assertThat(order.sourceSendType()).isEqualTo("express");
+        assertThat(order.sourceLastOrderAt()).isEqualTo("2026-08-02 08:30:00");
+        assertThat(order.customerType()).isEqualTo("批发客户");
+        assertThat(order.customerTag()).isEqualTo("重点客户");
+        assertThat(order.customerArea()).isEqualTo("华北区");
+        assertThat(order.salesPerson()).isEqualTo("业务员甲");
+        assertThat(order.assistantSalesPersons()).isEqualTo("辅助员乙");
+        assertThat(order.settlementMethod()).isEqualTo("后付");
+        assertThat(order.goodsWeight()).isEqualByComparingTo("2.5000");
+        assertThat(order.freightAmount()).isEqualByComparingTo("5.0000");
+        assertThat(order.couponDiscountedAmount()).isEqualByComparingTo("0.5000");
+        assertThat(order.customerRemark()).contains("请尽快发货");
+        assertThat(order.invoiceTitle()).isEqualTo("客户公司");
+        assertThat(order.invoiceType()).isEqualTo("增值税专用发票");
         assertThat(order.lines()).singleElement().satisfies(line -> {
             assertThat(line.sourceLineId()).isEqualTo("LINE-1");
             assertThat(line.skuNo()).isEqualTo("SKU-1");
+            assertThat(line.purchasePrice()).isEqualByComparingTo("8.00");
+            assertThat(line.preSale()).isEqualTo("1");
+            assertThat(line.contentType()).isEqualTo("g");
+            assertThat(line.invoiceTax()).isEqualTo("13%");
+            assertThat(line.contentPercent()).isEqualByComparingTo("1.0000");
         });
         assertThat(order.shipmentSnapshots()).singleElement()
                 .extracting(DhbOrderImportBatch.OrderShipmentItem::sourceShipmentNo)
@@ -455,6 +514,62 @@ class HttpDhbOrderSyncClientTest {
         assertThat(collected.batch().shipments()).isEmpty();
         assertThat(collected.batch().shipmentLogistics()).isEmpty();
         assertThat(collected.batch().financialDocuments()).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    void returnDetailBackfillsNestedOrderNumberAndGeneratesDistinctKeysForDuplicateLines() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        String base = "https://integration.test";
+
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID + "/returns/query"))
+                .andRespond(withSuccess("""
+                        {"total":1,"items":[{"returnNumber":"RET-NESTED-1","sourceFields":{}}]}
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID
+                + "/returns/RET-NESTED-1/content"))
+                .andRespond(withSuccess("""
+                        {
+                          "returnNumber":"RET-NESTED-1",
+                          "sourceFields":{"body":[{"OrdersNum":"ORD-NESTED-1"}]},
+                          "lines":[
+                            {"productGuid":"G-1","skuNumber":"SKU-1","productName":"商品","quantity":1},
+                            {"productGuid":"G-1","skuNumber":"SKU-1","productName":"商品","quantity":1}
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        HttpDhbOrderSyncClient client = new HttpDhbOrderSyncClient(builder, signer(),
+                JsonMapper.builder().build(), base);
+        DhbOrderSyncClient.Collected collected = client.collect(caller(), CONNECTOR_ID,
+                new DhbOrderSyncCommand(true, 1, null, null, DhbOrderSyncScope.RETURN));
+
+        assertThat(collected.batch().returns()).singleElement().satisfies(item -> {
+            assertThat(item.orderNo()).isEqualTo("ORD-NESTED-1");
+            assertThat(item.lines()).hasSize(2);
+            assertThat(item.lines().get(0).sourceLineId())
+                    .isNotEqualTo(item.lines().get(1).sourceLineId());
+        });
+        server.verify();
+    }
+
+    @Test
+    void rejectsProviderPageThatReportsMoreRowsThanFetched() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        String base = "https://integration.test";
+        server.expect(requestTo(base + "/api/v1/integration/dhb/orders/" + CONNECTOR_ID + "/query"))
+                .andRespond(withSuccess("""
+                        {"total":2,"items":[{"orderNumber":"ORD-INCOMPLETE-1"}]}
+                        """, MediaType.APPLICATION_JSON));
+
+        HttpDhbOrderSyncClient client = new HttpDhbOrderSyncClient(builder, signer(),
+                JsonMapper.builder().build(), base);
+        assertThatThrownBy(() -> client.collect(caller(), CONNECTOR_ID,
+                new DhbOrderSyncCommand(false, 1, null, null, DhbOrderSyncScope.ORDER)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("maxPages");
         server.verify();
     }
 

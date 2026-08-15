@@ -13,6 +13,7 @@ public enum ErrorCode {
     FORBIDDEN("FORBIDDEN", "无权执行当前操作", HttpStatus.FORBIDDEN),
     NOT_FOUND("NOT_FOUND", "资源不存在", HttpStatus.NOT_FOUND),
     CONFLICT("CONFLICT", "资源状态冲突", HttpStatus.CONFLICT),
+    SYNC_ALREADY_RUNNING("SYNC_ALREADY_RUNNING", "相同范围的同步任务正在运行", HttpStatus.CONFLICT),
     SALES_IDENTITY_UNBOUND("SALES_IDENTITY_UNBOUND", "销售身份尚未完成绑定", HttpStatus.FORBIDDEN),
     SALES_PROFILE_INACTIVE("SALES_PROFILE_INACTIVE", "销售业务身份未生效", HttpStatus.FORBIDDEN),
     SALES_POLICY_NOT_FOUND("SALES_POLICY_NOT_FOUND", "当前没有生效的销售外勤规则", HttpStatus.CONFLICT),

@@ -1,5 +1,6 @@
 package com.rigour.order.api.v1.model;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -15,10 +16,13 @@ public record DhbOrderSyncResult(
         /** 本次实际新增或内容发生变化的getWaitShips物流快照数量。 */ int shipmentLogisticsChanged,
         /** 本次实际新增或内容发生变化的退货单数量。 */ int returnsChanged,
         /** 本次实际新增或内容发生变化的收款单和付款单总数量。 */ int financialDocumentsChanged,
-        /** 已完成拉取及落库的对象集合。 */ Set<String> completedObjects) {
+        /** 已完成拉取及落库的对象集合。 */ Set<String> completedObjects,
+        /** 未能从有效字典精确解析的来源值出现次数。 */ long unmapped,
+        /** 本批次各字典使用的整本修订号。 */ Map<String, Long> dictionaryRevisions) {
 
     public DhbOrderSyncResult {
         completedObjects = completedObjects == null ? Set.of() : Set.copyOf(completedObjects);
+        dictionaryRevisions = dictionaryRevisions == null ? Map.of() : Map.copyOf(dictionaryRevisions);
         changed = ordersChanged + shipmentsChanged + shipmentLogisticsChanged
                 + returnsChanged + financialDocumentsChanged;
     }
@@ -28,7 +32,17 @@ public record DhbOrderSyncResult(
                               int ordersChanged, int shipmentsChanged, int returnsChanged,
                               int financialDocumentsChanged, Set<String> completedObjects) {
         this(runId, objectType, status, fetched, changed, ordersChanged, shipmentsChanged, 0,
-                returnsChanged, financialDocumentsChanged, completedObjects);
+                returnsChanged, financialDocumentsChanged, completedObjects, 0, Map.of());
+    }
+
+    /** 兼容尚未返回字典审计字段的五类单据同步结果构造方式。 */
+    public DhbOrderSyncResult(UUID runId, String objectType, String status, long fetched, int changed,
+                              int ordersChanged, int shipmentsChanged, int shipmentLogisticsChanged,
+                              int returnsChanged, int financialDocumentsChanged,
+                              Set<String> completedObjects) {
+        this(runId, objectType, status, fetched, changed, ordersChanged, shipmentsChanged,
+                shipmentLogisticsChanged, returnsChanged, financialDocumentsChanged,
+                completedObjects, 0, Map.of());
     }
 
 }

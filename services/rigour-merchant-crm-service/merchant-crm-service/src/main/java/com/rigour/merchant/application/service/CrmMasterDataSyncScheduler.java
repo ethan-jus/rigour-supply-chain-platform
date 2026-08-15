@@ -3,6 +3,7 @@ package com.rigour.merchant.application.service;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.merchant.application.port.out.DhbCrmSyncTargetDiscoveryClient;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.core.sync.SyncConflictClassifier;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +47,11 @@ public final class CrmMasterDataSyncScheduler {
             try {
                 service.runScheduled(caller, target.connectorId(), properties.getMaxPages());
             } catch (RuntimeException error) {
+                if (SyncConflictClassifier.isAlreadyRunning(error)) {
+                    log.info("CRM定时同步跳过，已有同范围任务运行 taskId={} tenantId={} connectorId={}",
+                            target.taskId(), target.tenantId(), target.connectorId());
+                    continue;
+                }
                 log.error("CRM定时同步失败 taskId={} tenantId={} connectorId={} reason={}",
                         target.taskId(), target.tenantId(), target.connectorId(),
                         oneLine(error.getMessage()));

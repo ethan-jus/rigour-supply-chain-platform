@@ -34,6 +34,7 @@
         <module>services/rigour-hr-payroll-service</module>
         <module>services/rigour-city-operations-service</module>
         <module>services/rigour-channel-agent-service</module>
+        <module>services/rigour-business-settings-service</module>
         <module>platform/rigour-architecture-tests</module>
     </modules>
 
@@ -104,6 +105,11 @@
             </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
+                <artifactId>integration-migration-client</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
                 <artifactId>merchant-crm-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -145,6 +151,16 @@
             <dependency>
                 <groupId>com.rigour</groupId>
                 <artifactId>channel-agent-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>business-settings-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>business-settings-client</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

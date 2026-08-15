@@ -9,6 +9,7 @@ import com.rigour.order.domain.model.order.ImportedOrder;
 import com.rigour.order.domain.model.order.Order;
 import com.rigour.order.domain.model.order.OrderLine;
 import com.rigour.order.domain.model.order.OrderShipment;
+import com.rigour.order.domain.model.order.OrderSourceRecord;
 import com.rigour.order.infrastructure.persistence.entity.InternalOrderEntity;
 import com.rigour.order.infrastructure.persistence.entity.InternalOrderLineEntity;
 import com.rigour.order.infrastructure.persistence.entity.InternalOrderShipmentEntity;
@@ -92,7 +93,16 @@ public class MybatisPlusOrderRepository implements OrderRepository {
         List<OrderShipment> shipments = shipmentMapper.selectList(Wrappers.<InternalOrderShipmentEntity>query()
                         .eq("order_id", entity.id).orderByAsc("source_shipment_no"))
                 .stream().map(MybatisPlusOrderRepository::toDomain).toList();
-        return new InternalOrderDetailData(toDomain(entity), lines, shipments, entity.detailSyncedAt != null);
+        List<OrderSourceRecordEntity> sourceRecordEntities = sourceRecordMapper.selectList(Wrappers.<OrderSourceRecordEntity>query()
+                        .eq("tenant_id", tenantId)
+                        .eq("source_system", Order.SOURCE_DINGHUOBAO)
+                        .eq("source_order_no", sourceOrderNo)
+                        .orderByAsc("received_at")
+                        .orderByAsc("id"));
+        List<OrderSourceRecord> sourceRecords = (sourceRecordEntities == null ? List.<OrderSourceRecordEntity>of()
+                : sourceRecordEntities).stream().map(MybatisPlusOrderRepository::toSourceRecord).toList();
+        return new InternalOrderDetailData(toDomain(entity), lines, shipments, sourceRecords,
+                entity.detailSyncedAt != null);
     }
 
     @Transactional
@@ -157,6 +167,15 @@ public class MybatisPlusOrderRepository implements OrderRepository {
             entity.lineAmount = line.lineAmount();
             entity.unit = line.unit();
             entity.remark = line.remark();
+            entity.purchasePrice = line.purchasePrice();
+            entity.conversionNumber = line.conversionNumber();
+            entity.offerPrice = line.offerPrice();
+            entity.actualAmount = line.actualAmount();
+            entity.goodsWeight = line.goodsWeight();
+            entity.preSale = line.preSale();
+            entity.contentType = line.contentType();
+            entity.invoiceTax = line.invoiceTax();
+            entity.contentPercent = line.contentPercent();
             entity.createdAt = now;
             entity.updatedAt = now;
             lineMapper.insert(entity);
@@ -271,12 +290,44 @@ public class MybatisPlusOrderRepository implements OrderRepository {
         entity.sourcePayloadHash = payloadHash;
         entity.detailSyncedAt = order.detailSyncedAt() == null && existing != null
                 ? existing.detailSyncedAt : order.detailSyncedAt();
+        boolean detailIncluded = order.detailSyncedAt() != null;
+        entity.customerType = detailValue(order.customerType(), existing, existing == null ? null : existing.customerType, detailIncluded);
+        entity.customerArea = detailValue(order.customerArea(), existing, existing == null ? null : existing.customerArea, detailIncluded);
+        entity.adminUser = detailValue(order.adminUser(), existing, existing == null ? null : existing.adminUser, detailIncluded);
+        entity.operationName = detailValue(order.operationName(), existing, existing == null ? null : existing.operationName, detailIncluded);
+        entity.salesPerson = detailValue(order.salesPerson(), existing, existing == null ? null : existing.salesPerson, detailIncluded);
+        entity.salesPersonMobile = detailValue(order.salesPersonMobile(), existing, existing == null ? null : existing.salesPersonMobile, detailIncluded);
+        entity.assistantSalesPersons = detailValue(order.assistantSalesPersons(), existing, existing == null ? null : existing.assistantSalesPersons, detailIncluded);
+        entity.auditAt = detailValue(order.auditAt(), existing, existing == null ? null : existing.auditAt, detailIncluded);
+        entity.settlementMethod = detailValue(order.settlementMethod(), existing, existing == null ? null : existing.settlementMethod, detailIncluded);
+        entity.goodsWeight = detailValue(order.goodsWeight(), existing, existing == null ? null : existing.goodsWeight, detailIncluded);
+        entity.taxAmount = detailValue(order.taxAmount(), existing, existing == null ? null : existing.taxAmount, detailIncluded);
+        entity.discountPrice = detailValue(order.discountPrice(), existing, existing == null ? null : existing.discountPrice, detailIncluded);
+        entity.discountTotal = detailValue(order.discountTotal(), existing, existing == null ? null : existing.discountTotal, detailIncluded);
+        entity.freightAmount = detailValue(order.freightAmount(), existing, existing == null ? null : existing.freightAmount, detailIncluded);
+        entity.applyTotal = detailValue(order.applyTotal(), existing, existing == null ? null : existing.applyTotal, detailIncluded);
+        entity.couponDiscountedAmount = detailValue(order.couponDiscountedAmount(), existing,
+                existing == null ? null : existing.couponDiscountedAmount, detailIncluded);
+        entity.customerRemark = detailValue(order.customerRemark(), existing, existing == null ? null : existing.customerRemark, detailIncluded);
+        entity.internalComment = detailValue(order.internalComment(), existing, existing == null ? null : existing.internalComment, detailIncluded);
+        entity.invoiceTitle = detailValue(order.invoiceTitle(), existing, existing == null ? null : existing.invoiceTitle, detailIncluded);
+        entity.invoiceContent = detailValue(order.invoiceContent(), existing, existing == null ? null : existing.invoiceContent, detailIncluded);
+        entity.invoiceBank = detailValue(order.invoiceBank(), existing, existing == null ? null : existing.invoiceBank, detailIncluded);
+        entity.invoiceBankAccount = detailValue(order.invoiceBankAccount(), existing, existing == null ? null : existing.invoiceBankAccount, detailIncluded);
+        entity.taxpayerNumber = detailValue(order.taxpayerNumber(), existing, existing == null ? null : existing.taxpayerNumber, detailIncluded);
+        entity.customerTag = detailValue(order.customerTag(), existing, existing == null ? null : existing.customerTag, detailIncluded);
+        entity.invoiceType = detailValue(order.invoiceType(), existing, existing == null ? null : existing.invoiceType, detailIncluded);
         entity.importedAt = existing == null ? now : existing.importedAt;
         entity.syncedAt = now;
         entity.version = existing == null || existing.version == null ? 0 : existing.version + 1;
         entity.createdAt = existing == null ? now : existing.createdAt;
         entity.updatedAt = now;
         return entity;
+    }
+
+    /** 列表摘要同步不得用空详情字段覆盖已落库的订单详情。 */
+    private static <T> T detailValue(T incoming, InternalOrderEntity existing, T previous, boolean detailIncluded) {
+        return existing != null && !detailIncluded && incoming == null ? previous : incoming;
     }
 
     private InternalOrderEntity findEntity(String tenantId, String sourceOrderNo) {
@@ -310,6 +361,17 @@ public class MybatisPlusOrderRepository implements OrderRepository {
             query.eq("payment_status", filter.paymentStatus());
         }
         if (filter.splitType() != null) query.eq("split_type", filter.splitType().toString());
+        if (filter.keyword() != null && !filter.keyword().isBlank()) {
+            String keyword = filter.keyword().strip();
+            query.and(wrapper -> wrapper.like("order_no", keyword)
+                    .or().like("source_customer_no", keyword)
+                    .or().like("customer_name", keyword)
+                    .or().like("receiver_company", keyword)
+                    .or().like("receiver_name", keyword)
+                    .or().like("receiver_phone", keyword)
+                    .or().like("remark", keyword)
+                    .or().like("internal_comment", keyword));
+        }
     }
 
     /**
@@ -344,18 +406,31 @@ public class MybatisPlusOrderRepository implements OrderRepository {
                 entity.receiverPhone, entity.receiverAddress, entity.province, entity.city, entity.district,
                 entity.sourceApiStatus, entity.sourceExceptionStatus, entity.sourceSendType, entity.sourceLastOrderAt,
                 entity.sourceDevice, entity.sourceAdminOrder, entity.splitType, entity.splitTypeName,
-                entity.sourcePayloadHash, entity.detailSyncedAt, entity.importedAt, entity.syncedAt);
+                entity.sourcePayloadHash, entity.detailSyncedAt, entity.importedAt, entity.syncedAt,
+                entity.customerType, entity.customerArea, entity.adminUser, entity.operationName,
+                entity.salesPerson, entity.salesPersonMobile, entity.assistantSalesPersons, entity.auditAt,
+                entity.settlementMethod, entity.goodsWeight, entity.taxAmount, entity.discountPrice,
+                entity.discountTotal, entity.freightAmount, entity.applyTotal, entity.couponDiscountedAmount,
+                entity.customerRemark, entity.internalComment,
+                entity.invoiceTitle, entity.invoiceContent, entity.invoiceBank, entity.invoiceBankAccount,
+                entity.taxpayerNumber, entity.customerTag, entity.invoiceType);
     }
 
     private static OrderLine toDomain(InternalOrderLineEntity entity) {
         return new OrderLine(entity.id, entity.sourceLineId, entity.sourceProductGuid, entity.skuNo,
                 entity.sourceOptionsGoodsNo, entity.sourceBarcode,
                 entity.productName, entity.productCode, entity.specificationFirst, entity.specificationSecond,
-                entity.specificationName, entity.unitPrice, entity.quantity, entity.lineAmount, entity.unit, entity.remark);
+                entity.specificationName, entity.unitPrice, entity.quantity, entity.lineAmount, entity.unit, entity.remark,
+                entity.purchasePrice, entity.conversionNumber, entity.offerPrice, entity.actualAmount,
+                entity.goodsWeight, entity.preSale, entity.contentType, entity.invoiceTax, entity.contentPercent);
     }
 
     private static OrderShipment toDomain(InternalOrderShipmentEntity entity) {
         return new OrderShipment(entity.id, entity.sourceShipmentNo, entity.status, entity.shipmentDate, entity.stockUpTime);
+    }
+
+    private static OrderSourceRecord toSourceRecord(OrderSourceRecordEntity entity) {
+        return new OrderSourceRecord(entity.payloadType, entity.payloadJson, entity.payloadHash, entity.receivedAt);
     }
 
 }

@@ -12,10 +12,13 @@ import com.rigour.order.api.v1.model.DhbOrderImportResult;
 import com.rigour.order.api.v1.model.DhbOrderSyncCommand;
 import com.rigour.order.application.port.out.DhbOrderSyncCheckpointStore;
 import com.rigour.order.application.port.out.DhbOrderSyncClient;
+import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.settings.client.BusinessDictionaryBatchClient.Audit;
 import java.time.Clock;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 
@@ -28,14 +31,17 @@ class DhbOrderSyncServiceTest {
     void schedulerEntryCallsIntegrationBeforeImportingIntoOrderCenter() {
         DhbOrderSyncClient integration = mock(DhbOrderSyncClient.class);
         DhbOrderImportService importer = mock(DhbOrderImportService.class);
+        OrderDictionaryCoverageService dictionaries = mock(OrderDictionaryCoverageService.class);
         DhbOrderSyncService service = new DhbOrderSyncService(integration, importer,
-                mock(DhbOrderSyncCheckpointStore.class), Clock.systemUTC());
+                mock(DhbOrderSyncCheckpointStore.class), Clock.systemUTC(), dictionaries,
+                passthroughLease());
         DhbOrderImportBatch batch = new DhbOrderImportBatch(null, null, null, null);
         when(integration.collect(any(), eq(CONNECTOR_ID), any())).thenReturn(new DhbOrderSyncClient.Collected(
                 UUID.fromString("019fb000-0000-7000-8000-000000000011"), "ORDER", 8,
                 Set.of("ORDER", "ORDER_DETAIL"), batch));
         when(importer.importBatchInternal(TENANT_ID.toString(), batch))
                 .thenReturn(new DhbOrderImportResult(2, 1, 1, 2));
+        when(dictionaries.sync(eq(TENANT_ID), eq("ORDER"), eq(batch))).thenReturn(Audit.empty());
 
         var result = service.runScheduled(caller(), CONNECTOR_ID, new DhbOrderSyncCommand(true, 5));
 
@@ -51,5 +57,12 @@ class DhbOrderSyncServiceTest {
         return new CallerIdentity("TENANT", USER_ID, TENANT_ID, USER_ID, null,
                 UUID.fromString("019fb000-0000-7000-8000-000000000003"), 0, 0, 0,
                 Set.of("ORDER_OPERATOR"), Set.of("integration:dhb:read", "integration:dhb:write"));
+    }
+
+    private static ConnectorSyncLeaseClient passthroughLease() {
+        ConnectorSyncLeaseClient lease = mock(ConnectorSyncLeaseClient.class);
+        when(lease.execute(any(), any(), any())).thenAnswer(invocation ->
+                ((Supplier<?>) invocation.getArgument(2)).get());
+        return lease;
     }
 }

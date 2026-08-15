@@ -9,7 +9,9 @@ import com.rigour.erp.infrastructure.integration.HttpDhbProductMasterDataClient;
 import com.rigour.erp.infrastructure.integration.HttpDhbProductSyncTargetDiscoveryClient;
 import com.rigour.erp.infrastructure.integration.HttpDhbSupplyDataClient;
 import com.rigour.erp.infrastructure.integration.HttpDhbSupplySyncTargetDiscoveryClient;
+import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.shared.context.TrustedContextSigner;
+import com.rigour.settings.client.BusinessDictionaryBatchClient;
 import java.time.Clock;
 import java.time.Duration;
 import org.mybatis.spring.annotation.MapperScan;
@@ -51,6 +53,24 @@ public class ErpInfrastructureConfiguration {
             SimpleClientHttpRequestFactory requestFactory) {
         return new HttpDhbProductMasterDataClient(RestClient.builder().requestFactory(requestFactory), signer, objectMapper,
                 integrationBaseUrl);
+    }
+
+    @Bean
+    BusinessDictionaryBatchClient businessDictionaryBatchClient(
+            TrustedContextSigner signer,
+            @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory) {
+        return new BusinessDictionaryBatchClient(
+                RestClient.builder().requestFactory(requestFactory), signer, baseUrl);
+    }
+
+    @Bean(destroyMethod = "close")
+    ConnectorSyncLeaseClient connectorSyncLeaseClient(
+            TrustedContextSigner signer,
+            @Value("${rigour.integration.base-url:http://localhost:26882}") String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory) {
+        return new ConnectorSyncLeaseClient(RestClient.builder().requestFactory(requestFactory), signer,
+                baseUrl, "rigour-erp-core-service");
     }
 
     @Bean

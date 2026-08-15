@@ -84,7 +84,81 @@ public record Order(
         /** 首次导入内部订单的时间。 */
         LocalDateTime importedAt,
         /** 最近一次从来源同步成功的时间。 */
-        LocalDateTime syncedAt) {
+        LocalDateTime syncedAt,
+        String customerType,
+        String customerArea,
+        String adminUser,
+        String operationName,
+        String salesPerson,
+        String salesPersonMobile,
+        String assistantSalesPersons,
+        String auditAt,
+        String settlementMethod,
+        BigDecimal goodsWeight,
+        BigDecimal taxAmount,
+        BigDecimal discountPrice,
+        BigDecimal discountTotal,
+        BigDecimal freightAmount,
+        BigDecimal applyTotal,
+        BigDecimal couponDiscountedAmount,
+        String customerRemark,
+        String internalComment,
+        String invoiceTitle,
+        String invoiceContent,
+        String invoiceBank,
+        String invoiceBankAccount,
+        String taxpayerNumber,
+        String customerTag,
+        String invoiceType) {
+
+    /** 订货宝详情增量字段；旧调用方仍可使用原有构造参数。 */
+    public Order(String id, String tenantId, String orderNo, String sourceSystem, String sourceOrderNo,
+                 String internalStatus, String sourceStatus, String paymentStatus, String orderType,
+                 BigDecimal totalAmount, LocalDateTime orderedAt, LocalDateTime sourceUpdatedAt,
+                 String sourceUpdateTime, String deliveryDate, String remark, String sourceCustomerNo,
+                 String sourceCustomerGuid, String customerName, String receiverName, String receiverCompany,
+                 String receiverPhone, String receiverAddress, String province, String city, String district,
+                 String sourceApiStatus, String sourceExceptionStatus, String sourceSendType,
+                 String sourceLastOrderAt, String sourceDevice, String sourceAdminOrder, String splitType,
+                 String splitTypeName, String sourcePayloadHash, LocalDateTime detailSyncedAt,
+                 LocalDateTime importedAt, LocalDateTime syncedAt) {
+        this(id, tenantId, orderNo, sourceSystem, sourceOrderNo, internalStatus, sourceStatus, paymentStatus,
+                orderType, totalAmount, orderedAt, sourceUpdatedAt, sourceUpdateTime, deliveryDate, remark,
+                sourceCustomerNo, sourceCustomerGuid, customerName, receiverName, receiverCompany, receiverPhone,
+                receiverAddress, province, city, district, sourceApiStatus, sourceExceptionStatus, sourceSendType,
+                sourceLastOrderAt, sourceDevice, sourceAdminOrder, splitType, splitTypeName, sourcePayloadHash,
+                detailSyncedAt, importedAt, syncedAt, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+    }
+
+    /** 兼容补充客户标签和发票类型前的详情构造方式。 */
+    public Order(String id, String tenantId, String orderNo, String sourceSystem, String sourceOrderNo,
+                 String internalStatus, String sourceStatus, String paymentStatus, String orderType,
+                 BigDecimal totalAmount, LocalDateTime orderedAt, LocalDateTime sourceUpdatedAt,
+                 String sourceUpdateTime, String deliveryDate, String remark, String sourceCustomerNo,
+                 String sourceCustomerGuid, String customerName, String receiverName, String receiverCompany,
+                 String receiverPhone, String receiverAddress, String province, String city, String district,
+                 String sourceApiStatus, String sourceExceptionStatus, String sourceSendType,
+                 String sourceLastOrderAt, String sourceDevice, String sourceAdminOrder, String splitType,
+                 String splitTypeName, String sourcePayloadHash, LocalDateTime detailSyncedAt,
+                 LocalDateTime importedAt, LocalDateTime syncedAt, String customerType, String customerArea,
+                 String adminUser, String operationName, String salesPerson, String salesPersonMobile,
+                 String assistantSalesPersons, String auditAt, String settlementMethod, BigDecimal goodsWeight,
+                 BigDecimal taxAmount, BigDecimal discountPrice, BigDecimal discountTotal, BigDecimal freightAmount,
+                 BigDecimal applyTotal, BigDecimal couponDiscountedAmount, String customerRemark,
+                 String internalComment, String invoiceTitle, String invoiceContent, String invoiceBank,
+                 String invoiceBankAccount, String taxpayerNumber) {
+        this(id, tenantId, orderNo, sourceSystem, sourceOrderNo, internalStatus, sourceStatus, paymentStatus,
+                orderType, totalAmount, orderedAt, sourceUpdatedAt, sourceUpdateTime, deliveryDate, remark,
+                sourceCustomerNo, sourceCustomerGuid, customerName, receiverName, receiverCompany, receiverPhone,
+                receiverAddress, province, city, district, sourceApiStatus, sourceExceptionStatus, sourceSendType,
+                sourceLastOrderAt, sourceDevice, sourceAdminOrder, splitType, splitTypeName, sourcePayloadHash,
+                detailSyncedAt, importedAt, syncedAt, customerType, customerArea, adminUser, operationName,
+                salesPerson, salesPersonMobile, assistantSalesPersons, auditAt, settlementMethod, goodsWeight,
+                taxAmount, discountPrice, discountTotal, freightAmount, applyTotal, couponDiscountedAmount,
+                customerRemark, internalComment, invoiceTitle, invoiceContent, invoiceBank, invoiceBankAccount,
+                taxpayerNumber, null, null);
+    }
 
     public static final String SOURCE_DINGHUOBAO = OrderSourceSystem.DINGHUOBAO.code();
     public static final String STATUS_RECEIVED = OrderStatus.RECEIVED.code();

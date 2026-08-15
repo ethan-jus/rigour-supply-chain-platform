@@ -15,6 +15,7 @@
     <description>Integration Migration接口契约与业务实现的聚合工程</description>
     <modules>
         <module>integration-migration-api</module>
+        <module>integration-migration-client</module>
         <module>integration-migration-service</module>
     </modules>
 </project>

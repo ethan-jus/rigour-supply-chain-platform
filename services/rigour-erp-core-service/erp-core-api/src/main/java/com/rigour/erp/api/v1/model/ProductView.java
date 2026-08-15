@@ -88,10 +88,16 @@ public record ProductView(
         /** 当前 SPU 下的可销售 SKU。 */
         List<SkuView> skus,
         /** 订货宝 field_1 至 field_6 扩展字段。 */
-        Map<String, String> customFields) {
+        Map<String, String> customFields,
+        /** ERP 已解释计价类型和计量单位的业务价格投影。 */
+        List<ProductPriceView> priceItems,
+        /** ERP 已解释数量类型和计量单位的业务数量投影。 */
+        List<ProductQuantityView> quantityItems) {
     public ProductView {
         images = images == null ? List.of() : List.copyOf(images);
         skus = skus == null ? List.of() : List.copyOf(skus);
         customFields = customFields == null ? Map.of() : Map.copyOf(customFields);
+        priceItems = priceItems == null ? List.of() : List.copyOf(priceItems);
+        quantityItems = quantityItems == null ? List.of() : List.copyOf(quantityItems);
     }
 }

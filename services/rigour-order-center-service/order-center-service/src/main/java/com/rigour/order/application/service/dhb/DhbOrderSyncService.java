@@ -5,9 +5,11 @@ import com.rigour.order.api.v1.model.DhbOrderSyncCommand;
 import com.rigour.order.api.v1.model.DhbOrderSyncResult;
 import com.rigour.order.application.port.out.DhbOrderSyncCheckpointStore;
 import com.rigour.order.application.port.out.DhbOrderSyncClient;
+import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.settings.client.BusinessDictionaryBatchClient.Audit;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Objects;
@@ -21,13 +23,19 @@ public final class DhbOrderSyncService {
     private final DhbOrderImportService importer;
     private final DhbOrderSyncCheckpointStore checkpointStore;
     private final Clock clock;
+    private final OrderDictionaryCoverageService dictionaryCoverage;
+    private final ConnectorSyncLeaseClient connectorLease;
 
     public DhbOrderSyncService(DhbOrderSyncClient integration, DhbOrderImportService importer,
-                               DhbOrderSyncCheckpointStore checkpointStore, Clock clock) {
+                               DhbOrderSyncCheckpointStore checkpointStore, Clock clock,
+                               OrderDictionaryCoverageService dictionaryCoverage,
+                               ConnectorSyncLeaseClient connectorLease) {
         this.integration = integration;
         this.importer = importer;
         this.checkpointStore = checkpointStore;
         this.clock = clock;
+        this.dictionaryCoverage = dictionaryCoverage;
+        this.connectorLease = connectorLease;
     }
 
     /** 前端立即同步入口的应用用例；认证和权限来自Gateway签名上下文。 */
@@ -65,14 +73,22 @@ public final class DhbOrderSyncService {
     private DhbOrderSyncResult runWithCaller(CallerIdentity caller, UUID connectorId,
                                              DhbOrderSyncCommand command) {
         if (connectorId == null) throw new IllegalArgumentException("connectorId不能为空");
+        return connectorLease.execute(caller.tenantId(), connectorId,
+                () -> runUnderLease(caller, connectorId, command));
+    }
+
+    private DhbOrderSyncResult runUnderLease(CallerIdentity caller, UUID connectorId,
+                                              DhbOrderSyncCommand command) {
         DhbOrderSyncCommand effective = command == null ? new DhbOrderSyncCommand(null, null) : command;
         DhbOrderSyncClient.Collected collected = integration.collect(caller, connectorId, effective);
         String tenantId = caller.tenantId().toString();
         DhbOrderImportResult imported = importer.importBatchInternal(tenantId, collected.batch());
-        return new DhbOrderSyncResult(collected.runId(), collected.objectType(), "SUCCEEDED",
+        Audit dictionaryAudit = dictionaryCoverage.sync(caller.tenantId(), collected.objectType(), collected.batch());
+        String status = dictionaryAudit.unmapped() == 0 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
+        return new DhbOrderSyncResult(collected.runId(), collected.objectType(), status,
                 collected.fetched(), imported.totalChanged(), imported.orders(), imported.shipments(),
                 imported.shipmentLogistics(), imported.returns(), imported.financialDocuments(),
-                collected.completedObjects());
+                collected.completedObjects(), dictionaryAudit.unmapped(), dictionaryAudit.revisions());
     }
 
     private static CallerIdentity requireCaller() {

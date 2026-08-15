@@ -5,7 +5,9 @@ import com.rigour.order.application.port.out.DhbSyncTargetDiscoveryClient;
 import com.rigour.order.application.service.dhb.DhbOrderSyncScheduleProperties;
 import com.rigour.order.infrastructure.integration.HttpDhbOrderSyncClient;
 import com.rigour.order.infrastructure.integration.HttpDhbSyncTargetDiscoveryClient;
+import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.shared.context.TrustedContextSigner;
+import com.rigour.settings.client.BusinessDictionaryBatchClient;
 import java.time.Clock;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.mybatis.spring.annotation.MapperScan;
@@ -34,5 +36,20 @@ public class OrderInfrastructureConfiguration {
             TrustedContextSigner signer,
             @Value("${rigour.integration.base-url:http://localhost:26882}") String integrationBaseUrl) {
         return new HttpDhbSyncTargetDiscoveryClient(RestClient.builder(), signer, integrationBaseUrl);
+    }
+
+    @Bean
+    BusinessDictionaryBatchClient businessDictionaryBatchClient(
+            TrustedContextSigner signer,
+            @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl) {
+        return new BusinessDictionaryBatchClient(RestClient.builder(), signer, baseUrl);
+    }
+
+    @Bean(destroyMethod = "close")
+    ConnectorSyncLeaseClient connectorSyncLeaseClient(
+            TrustedContextSigner signer,
+            @Value("${rigour.integration.base-url:http://localhost:26882}") String baseUrl) {
+        return new ConnectorSyncLeaseClient(RestClient.builder(), signer, baseUrl,
+                "rigour-order-center-service");
     }
 }

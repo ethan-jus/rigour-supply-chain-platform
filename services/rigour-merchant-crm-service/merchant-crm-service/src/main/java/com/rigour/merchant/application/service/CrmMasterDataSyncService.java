@@ -1,6 +1,7 @@
 package com.rigour.merchant.application.service;
 
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
+import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.merchant.api.v1.model.SyncCommand;
 import com.rigour.merchant.api.v1.model.SyncObjectResult;
 import com.rigour.merchant.api.v1.model.SyncResult;
@@ -14,6 +15,7 @@ import com.rigour.merchant.domain.model.CrmMasterDataObjectType;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.settings.client.BusinessDictionaryBatchClient.Audit;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -39,13 +41,19 @@ public final class CrmMasterDataSyncService {
     private final DhbCrmMasterDataClient client;
     private final DhbCrmSyncTargetDiscoveryClient discovery;
     private final CrmMasterDataStore store;
+    private final CrmDictionaryCoverageService dictionaryCoverage;
+    private final ConnectorSyncLeaseClient connectorLease;
 
     public CrmMasterDataSyncService(DhbCrmMasterDataClient client,
                                     DhbCrmSyncTargetDiscoveryClient discovery,
-                                    CrmMasterDataStore store) {
+                                    CrmMasterDataStore store,
+                                    CrmDictionaryCoverageService dictionaryCoverage,
+                                    ConnectorSyncLeaseClient connectorLease) {
         this.client = client;
         this.discovery = discovery;
         this.store = store;
+        this.dictionaryCoverage = dictionaryCoverage;
+        this.connectorLease = connectorLease;
     }
 
     public SyncResult run(SyncCommand command) {
@@ -72,12 +80,21 @@ public final class CrmMasterDataSyncService {
     private SyncResult runBatch(UUID tenantId, UUID connectorId, UUID actorId,
                                 List<CrmMasterDataObjectType> objectTypes,
                                 int maxPages, String triggerType) {
+        return connectorLease.execute(tenantId, connectorId,
+                () -> runBatchUnderLease(tenantId, connectorId, actorId, objectTypes, maxPages, triggerType));
+    }
+
+    private SyncResult runBatchUnderLease(UUID tenantId, UUID connectorId, UUID actorId,
+                                          List<CrmMasterDataObjectType> objectTypes,
+                                          int maxPages, String triggerType) {
         UUID batchId = UUID.randomUUID();
         List<SyncObjectResult> results = new ArrayList<>();
         for (CrmMasterDataObjectType objectType : objectTypes) {
             results.add(runObject(tenantId, connectorId, actorId, objectType, maxPages, triggerType));
         }
-        return new SyncResult(batchId, "SUCCEEDED", results);
+        String status = results.stream().anyMatch(item -> "SUCCEEDED_WITH_WARNINGS".equals(item.status()))
+                ? "SUCCEEDED_WITH_WARNINGS" : "SUCCEEDED";
+        return new SyncResult(batchId, status, results);
     }
 
     private SyncObjectResult runObject(UUID tenantId, UUID connectorId, UUID actorId,
@@ -95,14 +112,16 @@ public final class CrmMasterDataSyncService {
                 store.importRecords(tenantId, connectorId, runId, objectType,
                         collected.items().subList(begin, end)).forEach(counts::add);
             }
+            Audit dictionaryAudit = dictionaryCoverage.sync(tenantId, collected);
             RunStatistics statistics = store.completeRun(tenantId, connectorId, runId,
                     objectType, counts.statistics(), counts.rejected == 0);
-            log.info("CRM订货宝同步完成 tenantId={} connectorId={} objectType={} runId={} fetched={} created={} changed={} repaired={} duplicates={} absent={} rejected={} pages={}",
+            String status = dictionaryAudit.unmapped() == 0 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
+            log.info("CRM订货宝同步完成 tenantId={} connectorId={} objectType={} runId={} fetched={} created={} changed={} repaired={} duplicates={} absent={} rejected={} pages={} unmapped={} dictionaryRevisions={}",
                     tenantId, connectorId, objectType, runId, statistics.fetched(),
                     statistics.created(), statistics.changed(), statistics.repaired(),
                     statistics.duplicates(), statistics.absent(), statistics.rejected(),
-                    statistics.pages());
-            return result(runId, objectType, "SUCCEEDED", statistics);
+                    statistics.pages(), dictionaryAudit.unmapped(), dictionaryAudit.revisions());
+            return result(runId, objectType, status, statistics, dictionaryAudit);
         } catch (RuntimeException error) {
             RunStatistics statistics = counts.statistics();
             store.failRun(tenantId, connectorId, runId, statistics, error);
@@ -130,10 +149,10 @@ public final class CrmMasterDataSyncService {
     }
 
     private static SyncObjectResult result(UUID runId, CrmMasterDataObjectType type,
-                                           String status, RunStatistics value) {
+                                           String status, RunStatistics value, Audit audit) {
         return new SyncObjectResult(runId, type.name(), status, value.fetched(), value.created(),
                 value.changed(), value.repaired(), value.duplicates(), value.absent(),
-                value.rejected(), value.pages(), Instant.now());
+                value.rejected(), value.pages(), Instant.now(), audit.unmapped(), audit.revisions());
     }
 
     private static int maxPages(Integer value) {

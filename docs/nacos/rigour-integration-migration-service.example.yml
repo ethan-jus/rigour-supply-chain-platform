@@ -26,6 +26,9 @@ spring:
 
 rigour:
   integration:
+    connector-lease:
+      # ERP、CRM、Order及各自多实例的一整轮同步共享同一租户连接器租约。
+      ttl: 2m
     dhb:
       client:
         # 订货宝 API base_url 仍由租户连接器保存；相对商品图片地址单独解析到图片源站。

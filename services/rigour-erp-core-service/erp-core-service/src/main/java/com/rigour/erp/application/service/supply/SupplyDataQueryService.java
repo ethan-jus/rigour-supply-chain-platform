@@ -47,8 +47,8 @@ public final class SupplyDataQueryService {
     public SupplyDataPageView<WarehouseView> warehouses(String tenantId, int begin, int step, String q, String status) {
         check(begin, step); return store.warehouses(tenantId, begin, step, q, status);
     }
-    public SupplyDataPageView<InventoryBalanceView> inventory(String tenantId, int begin, int step, String q, String warehouseCode) {
-        check(begin, step); return store.inventory(tenantId, begin, step, q, warehouseCode);
+    public SupplyDataPageView<InventoryBalanceView> inventory(String tenantId, int begin, int step, String q, String warehouseCode, String status) {
+        check(begin, step); return store.inventory(tenantId, begin, step, q, warehouseCode, status);
     }
 
     private static void check(int begin, int step) {

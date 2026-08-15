@@ -14,6 +14,7 @@
 | rigour-hr-payroll-service | 26889 | `rigour_hr` | 任职、工资、绩效、提成、月结和冲回 |
 | rigour-city-operations-service | 26890 | `rigour_city` | 城市成本、预算、活动、合作方、营销、复盘和培训 |
 | rigour-channel-agent-service | 26891 | `rigour_channel` | 代理等级、关系树、额度、审批、占用和释放流水 |
+| rigour-business-settings-service | 26892 | `rigour_settings` | 系统级、模块级和租户级业务字典及层级条目；不持有ERP、CRM、订单业务事实 |
 
 每个领域服务独占自己的Schema、数据库账号和写权限。2026-08-06 18:52只读核验的共享DEV运行时为：`rigour_iam`的Flyway V1～V21、34张业务表，`rigour_integration`最近已确认的基线为V1～V2、13张业务表。Sales Work V1尚未发布共享DEV；运行账号和迁移账号必须分离，密码通过环境Secret注入而不是写入Nacos。
 

@@ -2,10 +2,12 @@ package com.rigour.order.application.service.dhb;
 
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.order.api.v1.model.DhbOrderSyncCommand;
+import com.rigour.order.api.v1.model.DhbOrderSyncMode;
 import com.rigour.order.api.v1.model.DhbOrderSyncResult;
 import com.rigour.order.application.port.out.DhbOrderSyncCheckpointStore;
 import com.rigour.order.application.port.out.DhbSyncTargetDiscoveryClient;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.core.sync.SyncConflictClassifier;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -53,8 +55,8 @@ public final class DhbOrderSyncScheduler {
         this.clock = clock;
     }
 
-    /** 每小时00分和30分触发，逐个处理Integration动态发现的租户任务。 */
-    @Scheduled(cron = "${rigour.order.dhb.sync.cron:0 0/30 * * * ?}")
+    /** 默认每小时20分和50分触发，逐个处理Integration动态发现的租户任务。 */
+    @Scheduled(cron = "${rigour.order.dhb.sync.cron:0 20/30 * * * ?}")
     public void synchronize() {
         if (!properties.isEnabled()) {
             log.info("DHB订单定时同步未启用，跳过本次调度");
@@ -92,9 +94,14 @@ public final class DhbOrderSyncScheduler {
         try {
             CallerIdentity caller = serviceCaller(target.tenantId());
             Instant lastSuccessAt = checkpointStore.lastSuccessAt(tenantId, connectorId, OBJECT_TYPE);
-            Instant windowFrom = incrementalFrom(lastSuccessAt, windowTo);
+            boolean fullReconcile = lastSuccessAt == null || !lastSuccessAt.isBefore(windowTo)
+                    || !lastSuccessAt.plus(Duration.ofHours(properties.getFullReconcileHours()))
+                    .isAfter(windowTo);
+            Instant windowFrom = fullReconcile ? null : incrementalFrom(lastSuccessAt, windowTo);
             DhbOrderSyncCommand command = new DhbOrderSyncCommand(
-                    Boolean.TRUE, properties.getMaxPages(), windowFrom, windowFrom == null ? null : windowTo);
+                    Boolean.TRUE, properties.getMaxPages(), windowFrom,
+                    windowFrom == null ? null : windowTo, null,
+                    fullReconcile ? DhbOrderSyncMode.FULL : DhbOrderSyncMode.INCREMENTAL);
             DhbOrderSyncResult result = syncService.runScheduled(caller, connectorId, command);
             runId = result.runId();
             if (!result.completedObjects().containsAll(REQUIRED_COMPLETION)) {
@@ -103,8 +110,13 @@ public final class DhbOrderSyncScheduler {
             checkpointStore.markSucceeded(tenantId, connectorId, OBJECT_TYPE, runId, windowTo);
             log.info("DHB订单定时同步成功 taskId={} tenantId={} connectorId={} runId={} fetched={} changed={} incremental={}",
                     target.taskId(), tenantId, connectorId, runId, result.fetched(), result.changed(),
-                    windowFrom != null);
+                    !fullReconcile);
         } catch (RuntimeException error) {
+            if (SyncConflictClassifier.isAlreadyRunning(error)) {
+                log.info("DHB订单定时同步跳过，已有同范围任务运行 taskId={} tenantId={} connectorId={}",
+                        target.taskId(), tenantId, connectorId);
+                return;
+            }
             checkpointStore.markFailed(tenantId, connectorId, OBJECT_TYPE, runId, error.getMessage());
             log.error("DHB订单定时同步失败 taskId={} tenantId={} connectorId={} runId={} reason={}",
                     target.taskId(), tenantId, connectorId, runId, error.getMessage());
@@ -117,6 +129,9 @@ public final class DhbOrderSyncScheduler {
         }
         if (properties.getOverlapMinutes() < 0 || properties.getOverlapMinutes() > 24 * 60) {
             throw new IllegalStateException("rigour.order.dhb.sync.overlap-minutes必须在0到1440之间");
+        }
+        if (properties.getFullReconcileHours() < 1 || properties.getFullReconcileHours() > 24 * 30) {
+            throw new IllegalStateException("rigour.order.dhb.sync.full-reconcile-hours必须在1到720之间");
         }
     }
 

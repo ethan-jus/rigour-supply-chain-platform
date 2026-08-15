@@ -65,6 +65,10 @@ spring:
               uri: ${CHANNEL_SERVICE_URL:http://localhost:26891}
               predicates:
                 - Path=/api/v1/channels/**
+            - id: business-settings
+              uri: ${BUSINESS_SETTINGS_SERVICE_URL:http://localhost:26892}
+              predicates:
+                - Path=/api/v1/business-settings/**
 
 management:
   endpoints:

@@ -66,6 +66,7 @@
 
 ```text
 integration-migration-api/       # 可供跨服务依赖的版本化契约
+integration-migration-client/    # 一整轮同步使用的连接器租约公共客户端
 integration-migration-service/
 ├── api/controller/              # 入站 HTTP
 ├── application/                 # 同步用例和出站端口
@@ -80,6 +81,12 @@ integration-migration-service/
 `com.rigour.integration.api.v1.DhbIntegrationApi`、`DhbProductApi`、`DhbOrderApi` 和
 `com.rigour.integration.api.v1.model.DhbApiModels`。该 API 模块只包含本平台契约，
 不包含账号、密码、Token、Secret Resolver 或第三方 HTTP 实现。
+
+ERP、CRM、Order 在调用订货宝数据接口前，通过 `integration-migration-client` 获取
+`tenantId + connectorId` 唯一租约。租约覆盖一整轮领域同步并由客户端定时续租；释放、续租都必须
+精确匹配随机 token，进程异常后由 TTL 回收。并发获取返回稳定 `SYNC_ALREADY_RUNNING`：手工请求
+保留 HTTP 409，定时任务只记录跳过，不写失败检查点。领域服务本地对象锁继续保留，负责防止同一
+领域对象在本服务内重入。
 
 调用方向为 `ERP/Order Center -> Gateway/Integration -> 订货宝`；调用方只使用 API 模块的 DTO
 和 HTTP 路径，不读取 `rigour_integration` 表。Order Center 定时调度器另通过未配置到 Gateway

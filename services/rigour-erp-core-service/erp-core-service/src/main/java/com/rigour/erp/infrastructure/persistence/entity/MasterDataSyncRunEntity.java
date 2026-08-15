@@ -20,7 +20,7 @@ public class MasterDataSyncRunEntity {
     public String objectType;
     /** 触发方式：MANUAL、SCHEDULED 或 RETRY。 */
     public String triggerType;
-    /** 批次状态：RUNNING、SUCCEEDED 或 FAILED。 */
+    /** 批次状态：RUNNING、SUCCEEDED、SUCCEEDED_WITH_WARNINGS 或 FAILED。 */
     public String status;
     /** 预留的来源增量窗口起点；一期手动全量同步为空。 */
     public LocalDateTime windowFrom;
@@ -40,6 +40,12 @@ public class MasterDataSyncRunEntity {
     public Long duplicateCount;
     /** 缺少必要字段而拒绝落库的记录数量。 */
     public Long rejectedCount;
+    /** 已落库但尚未找到唯一有效字典映射的来源枚举出现次数。 */
+    public Long unmappedCount;
+    /** 本批次使用的字典编码及内容版本 JSON。 */
+    public String dictSnapshotJson;
+    /** 按字典、字段和来源值聚合的未映射项 JSON。 */
+    public String mappingIssuesJson;
     /** 脱敏后的稳定错误码。 */
     public String errorCode;
     /** 脱敏后的失败说明，禁止写入 Token、密码和原始请求体。 */

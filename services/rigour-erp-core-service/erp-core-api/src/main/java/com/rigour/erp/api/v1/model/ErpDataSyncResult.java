@@ -1,6 +1,7 @@
 package com.rigour.erp.api.v1.model;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 
 /** ERP 完成 Integration 查询和本地幂等落库后的统一同步结果。 */
@@ -23,8 +24,15 @@ public record ErpDataSyncResult(
         long duplicates,
         /** 因缺少必要来源标识或字段而拒绝落库的记录数量。 */
         long rejected,
+        /** 已完整落库但尚未找到唯一有效业务字典映射的来源枚举出现次数。 */
+        long unmapped,
+        /** 本批次使用的字典内容版本；-1表示对应字典不可用或未配置。 */
+        Map<String, Long> dictionaryRevisions,
         /** 本次从 Integration 读取的页数或库存批次数。 */
         int pages,
         /** ERP 完成本批次的时间。 */
         Instant completedAt) {
+    public ErpDataSyncResult {
+        dictionaryRevisions = dictionaryRevisions == null ? Map.of() : Map.copyOf(dictionaryRevisions);
+    }
 }

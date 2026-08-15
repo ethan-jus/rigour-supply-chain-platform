@@ -1,0 +1,32 @@
+server:
+  port: 26892
+
+spring:
+  application:
+    name: rigour-business-settings-service
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when_authorized
+
+logging:
+  level:
+    com.rigour: INFO
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
+rigour:
+  context:
+    trust:
+      active-key-id: v1
+      keys-base64:
+        v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}

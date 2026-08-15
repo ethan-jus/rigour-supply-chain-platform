@@ -7,11 +7,14 @@ import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient.Collected
 import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient.SourceRecord;
 import com.rigour.merchant.application.port.out.DhbCrmSyncTargetDiscoveryClient;
 import com.rigour.merchant.domain.model.CrmMasterDataObjectType;
+import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.settings.client.BusinessDictionaryBatchClient.Audit;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
@@ -36,7 +39,10 @@ class CrmMasterDataSyncServiceTest {
         DhbCrmMasterDataClient client = mock(DhbCrmMasterDataClient.class);
         DhbCrmSyncTargetDiscoveryClient discovery = mock(DhbCrmSyncTargetDiscoveryClient.class);
         CrmMasterDataStore store = mock(CrmMasterDataStore.class);
-        CrmMasterDataSyncService service = new CrmMasterDataSyncService(client, discovery, store);
+        CrmDictionaryCoverageService dictionaries = mock(CrmDictionaryCoverageService.class);
+        CrmMasterDataSyncService service = new CrmMasterDataSyncService(
+                client, discovery, store, dictionaries, passthroughLease());
+        when(dictionaries.sync(eq(TENANT_ID), any())).thenReturn(Audit.empty());
         when(store.startRun(eq(TENANT_ID), eq(CONNECTOR_ID), eq(null), any(), eq(10), eq("SCHEDULED")))
                 .thenAnswer(invocation -> UUID.randomUUID());
         when(client.collect(any(), eq(CONNECTOR_ID), any(), eq(10)))
@@ -79,7 +85,9 @@ class CrmMasterDataSyncServiceTest {
         DhbCrmMasterDataClient client = mock(DhbCrmMasterDataClient.class);
         DhbCrmSyncTargetDiscoveryClient discovery = mock(DhbCrmSyncTargetDiscoveryClient.class);
         CrmMasterDataStore store = mock(CrmMasterDataStore.class);
-        CrmMasterDataSyncService service = new CrmMasterDataSyncService(client, discovery, store);
+        CrmDictionaryCoverageService dictionaries = mock(CrmDictionaryCoverageService.class);
+        CrmMasterDataSyncService service = new CrmMasterDataSyncService(
+                client, discovery, store, dictionaries, passthroughLease());
         UUID runId = UUID.randomUUID();
         when(store.startRun(eq(TENANT_ID), eq(CONNECTOR_ID), eq(null),
                 eq(CrmMasterDataObjectType.CUSTOMER_TYPE), eq(10), eq("SCHEDULED"))).thenReturn(runId);
@@ -98,5 +106,12 @@ class CrmMasterDataSyncServiceTest {
         return new CallerIdentity("SERVICE", UUID.randomUUID(), TENANT_ID,
                 null, null, UUID.randomUUID(), 0, 0, 0,
                 Set.of("CRM_SYNC_SERVICE"), Set.of("integration:dhb:read"));
+    }
+
+    private static ConnectorSyncLeaseClient passthroughLease() {
+        ConnectorSyncLeaseClient lease = mock(ConnectorSyncLeaseClient.class);
+        when(lease.execute(any(), any(), any())).thenAnswer(invocation ->
+                ((Supplier<?>) invocation.getArgument(2)).get());
+        return lease;
     }
 }

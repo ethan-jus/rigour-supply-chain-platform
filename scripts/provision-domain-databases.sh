@@ -16,6 +16,7 @@ services=(
   "erp|rigour_erp|rigour_erp_app|rigour_erp_migrator|ERP_DB_APP_PASSWORD|ERP_DB_MIGRATOR_PASSWORD"
   "order|rigour_order|rigour_order_app|rigour_order_migrator|ORDER_DB_APP_PASSWORD|ORDER_DB_MIGRATOR_PASSWORD"
   "sales_work|rigour_sales_work|rigour_sales_work_app|rigour_sales_work_migrator|SALES_WORK_DB_APP_PASSWORD|SALES_WORK_DB_MIGRATOR_PASSWORD"
+  "business_settings|rigour_settings|rigour_settings_app|rigour_settings_mig|BUSINESS_SETTINGS_DB_APP_PASSWORD|BUSINESS_SETTINGS_DB_MIGRATOR_PASSWORD"
   "ai|rigour_ai|rigour_ai_app|rigour_ai_migrator|AI_DB_APP_PASSWORD|AI_DB_MIGRATOR_PASSWORD"
   "bi|rigour_bi|rigour_bi_app|rigour_bi_migrator|BI_DB_APP_PASSWORD|BI_DB_MIGRATOR_PASSWORD"
   "hr|rigour_hr|rigour_hr_app|rigour_hr_migrator|HR_DB_APP_PASSWORD|HR_DB_MIGRATOR_PASSWORD"

@@ -62,7 +62,8 @@ rigour:
     dhb:
       sync:
         enabled: true
-        cron: "0 0/30 * * * ?"
+        # ERP 00/30、CRM 10/40、Order 20/50，降低同一连接器的计划任务碰撞。
+        cron: "0 20/30 * * * ?"
         max-pages: 100
         overlap-minutes: 5
 ```

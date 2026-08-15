@@ -24,9 +24,10 @@ shared/
 └── rigour-shared-file/           # 可选：文件元数据与存储端口
 services/
 ├── rigour-api-gateway/           # 统一 API 入口，端口 26880
-└── rigour-<domain>-service/      # 11个领域服务聚合工程
+└── rigour-<domain>-service/      # 12个领域服务聚合工程
     ├── <domain>-api/             # 版本化接口和请求/响应模型
-    └── <domain>-service/         # 业务实现和启动应用，端口26881-26891
+    ├── <domain>-client/          # 仅在确有跨服务公共调用策略时提供，无领域实现
+    └── <domain>-service/         # 业务实现和启动应用，端口26881-26892
 ```
 
 `rigour-platform-starter` 只聚合 `core/context/logging`、Spring Web、Validation 和 Actuator。`audit/idempotency/outbox/cache/file` 不会被强制带入服务，领域服务必须按实际需求显式依赖并提供基础设施实现。
@@ -44,10 +45,10 @@ services/
 CI 执行同一命令。`verify` 会同时检查：
 
 - Java 21 与 Maven Wrapper 版本；
-- 46个reactor项目的编译和测试；
+- 51个reactor项目的编译和测试；
 - 所有 `pom.xml` 都属于根 reactor；
 - artifactId 唯一；
-- 应用集合为一个 Gateway 加 11 个领域服务；
+- 应用集合为一个 Gateway 加 12 个领域服务；
 - 领域服务之间没有直接 Maven 依赖。
 
 领域 API 模块只保存已确认的跨服务契约，未确认的接口和 DTO 不提前创建。IAM、Integration、订单中心和 Sales Work 已分别具备已提交的 Schema/迁移；其余领域服务的空 DEV Schema/账号初始化见[`docs/DOMAIN_DATABASE_RUNTIME.md`](docs/DOMAIN_DATABASE_RUNTIME.md)，在各自字段级设计确认前不接入业务表、MyBatis-Plus 或 Flyway。Sales Work 的当前边界见 [`services/rigour-sales-work-service/README.md`](services/rigour-sales-work-service/README.md)。

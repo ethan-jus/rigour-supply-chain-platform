@@ -1,6 +1,7 @@
 package com.rigour.erp.application.service.supply;
 
 import com.rigour.erp.api.v1.model.ErpDataSyncResult;
+import com.rigour.erp.application.model.DictionaryMappingAudit;
 import com.rigour.erp.application.port.out.DhbSupplySyncTargetDiscoveryClient;
 import com.rigour.erp.application.port.out.DhbSupplyDataClient;
 import com.rigour.erp.application.port.out.SupplyDataStore;
@@ -8,6 +9,8 @@ import com.rigour.erp.application.port.out.SupplyDataStore.ImportResult;
 import com.rigour.erp.application.port.out.SupplyDataStore.RunStatistics;
 import com.rigour.erp.domain.model.supply.SupplyDataObjectType;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
+import com.rigour.integration.client.ConnectorSyncLeaseClient;
+import com.rigour.erp.application.service.sync.BusinessDictionaryCoverageService;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
@@ -34,11 +37,17 @@ public final class SupplyDataSyncService {
     private final DhbSupplyDataClient client;
     private final DhbSupplySyncTargetDiscoveryClient discovery;
     private final SupplyDataStore store;
+    private final BusinessDictionaryCoverageService dictionaryCoverage;
+    private final ConnectorSyncLeaseClient connectorLease;
 
     public SupplyDataSyncService(DhbSupplyDataClient client,
                                  DhbSupplySyncTargetDiscoveryClient discovery,
-                                 SupplyDataStore store) {
+                                 SupplyDataStore store,
+                                 BusinessDictionaryCoverageService dictionaryCoverage,
+                                 ConnectorSyncLeaseClient connectorLease) {
         this.client = client; this.discovery = discovery; this.store = store;
+        this.dictionaryCoverage = dictionaryCoverage;
+        this.connectorLease = connectorLease;
     }
 
     public ErpDataSyncResult run(SupplyDataObjectType type, int maxPages) {
@@ -66,6 +75,13 @@ public final class SupplyDataSyncService {
     private ErpDataSyncResult runWithCaller(CallerIdentity caller, UUID connectorId, UUID actorId,
                                              SupplyDataObjectType type, int maxPages,
                                              boolean scheduled) {
+        return connectorLease.execute(caller.tenantId(), connectorId,
+                () -> runUnderLease(caller, connectorId, actorId, type, maxPages, scheduled));
+    }
+
+    private ErpDataSyncResult runUnderLease(CallerIdentity caller, UUID connectorId, UUID actorId,
+                                             SupplyDataObjectType type, int maxPages,
+                                             boolean scheduled) {
         String tenantId = caller.tenantId().toString();
         UUID runId = scheduled
                 ? store.startScheduledRun(tenantId, connectorId, actorId, type, maxPages)
@@ -85,17 +101,21 @@ public final class SupplyDataSyncService {
             collected.warehousingReceipts().forEach(item -> counts.add(store.importWarehousingReceipt(tenantId, runId, item)));
             collected.warehouses().forEach(item -> counts.add(store.importWarehouse(tenantId, runId, item)));
             collected.inventoryBalances().forEach(item -> counts.add(store.importInventory(tenantId, runId, item)));
-            RunStatistics stats = counts.statistics();
-            if (stats.rejected() == 0) {
+            if (counts.rejected == 0) {
                 store.reconcileSourcePresence(tenantId, runId, seenSourceIds(type, collected));
             }
+            counts.dictionaryAudit = dictionaryCoverage.inspect(caller.tenantId(), collected);
+            RunStatistics stats = counts.statistics();
             store.completeRun(tenantId, runId, stats);
             log.info("ERP供应链数据同步批次完成 tenantId={} objectType={} connectorId={} runId={} fetched={} created={} changed={} duplicates={} rejected={} pages={}",
                     tenantId, type, connectorId, runId, stats.fetched(), stats.created(),
                     stats.changed(), stats.duplicates(), stats.rejected(), stats.pages());
-            return new ErpDataSyncResult(runId, type.name(), "SUCCEEDED", connectorId,
+            String status = stats.dictionaryAudit().unmapped() == 0
+                    ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
+            return new ErpDataSyncResult(runId, type.name(), status, connectorId,
                     stats.fetched(), stats.created(), stats.changed(), stats.duplicates(),
-                    stats.rejected(), stats.pages(), Instant.now());
+                    stats.rejected(), stats.dictionaryAudit().unmapped(),
+                    stats.dictionaryAudit().revisions(), stats.pages(), Instant.now());
         } catch (RuntimeException error) {
             store.failRun(tenantId, runId, counts.statistics(), error);
             log.error("ERP供应链数据同步批次失败 tenantId={} objectType={} connectorId={} runId={} errorType={} reason={}",
@@ -140,12 +160,16 @@ public final class SupplyDataSyncService {
 
     private static final class Counts {
         long fetched; long created; long changed; long duplicates; long rejected; int pages;
+        DictionaryMappingAudit dictionaryAudit = DictionaryMappingAudit.empty();
         void add(ImportResult value) {
             created += value.created(); changed += value.changed();
             duplicates += value.duplicates(); rejected += value.rejected();
             fetched += value.created() + value.changed() + value.duplicates() + value.rejected();
         }
-        RunStatistics statistics() { return new RunStatistics(fetched, created, changed, duplicates, rejected, pages); }
+        RunStatistics statistics() {
+            return new RunStatistics(fetched, created, changed, duplicates, rejected, pages,
+                    dictionaryAudit);
+        }
     }
 
     private static Map<String, Set<String>> seenSourceIds(SupplyDataObjectType type,

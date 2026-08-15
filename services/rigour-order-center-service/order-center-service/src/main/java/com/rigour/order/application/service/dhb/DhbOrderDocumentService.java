@@ -112,10 +112,11 @@ public class DhbOrderDocumentService {
     }
 
     private static DhbReturnDocumentView returnView(DhbOrderDocuments.ReturnDocument value) {
-        return new DhbReturnDocumentView(value.returnNo(), value.orderNo(), value.status(), value.returnAmount(),
-                value.settlementAmount(), instant(value.returnedAt()), value.reason(), value.customerNo(),
-                value.consignee(), value.logisticsCompany(), value.logisticsNo(), value.detailAvailable(),
-                instant(value.syncedAt()));
+        return new DhbReturnDocumentView(value.returnNo(), value.orderNo(), value.status(), value.staffName(),
+                value.returnAmount(), value.settlementAmount(), instant(value.returnedAt()),
+                instant(value.sourceUpdatedAt()), value.reason(), value.customerNo(), value.customerGuid(),
+                value.consignee(), value.phone(), value.address(), value.logisticsCompany(), value.logisticsNo(),
+                value.returnType(), value.deliveryMode(), value.detailAvailable(), instant(value.syncedAt()));
     }
 
     private static DhbFinancialDocumentView financial(DhbOrderDocuments.FinancialDocument value) {

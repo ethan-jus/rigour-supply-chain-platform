@@ -22,7 +22,9 @@ import com.rigour.merchant.infrastructure.persistence.mapper.SalesAssignmentMapp
 import com.rigour.merchant.infrastructure.persistence.mapper.SourceBindingMapper;
 import com.rigour.merchant.infrastructure.persistence.mapper.SourceIdentityAliasMapper;
 import com.rigour.merchant.infrastructure.persistence.repository.MybatisPlusCrmRepository;
+import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.shared.context.TrustedContextSigner;
+import com.rigour.settings.client.BusinessDictionaryBatchClient;
 import java.time.Clock;
 import java.time.Duration;
 import org.mybatis.spring.annotation.MapperScan;
@@ -66,6 +68,24 @@ public class CrmInfrastructureConfiguration {
             SimpleClientHttpRequestFactory requestFactory) {
         return new HttpDhbCrmMasterDataClient(
                 RestClient.builder().requestFactory(requestFactory), signer, integrationBaseUrl);
+    }
+
+    @Bean
+    BusinessDictionaryBatchClient businessDictionaryBatchClient(
+            TrustedContextSigner signer,
+            @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory) {
+        return new BusinessDictionaryBatchClient(
+                RestClient.builder().requestFactory(requestFactory), signer, baseUrl);
+    }
+
+    @Bean(destroyMethod = "close")
+    ConnectorSyncLeaseClient connectorSyncLeaseClient(
+            TrustedContextSigner signer,
+            @Value("${rigour.integration.base-url:http://localhost:26882}") String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory) {
+        return new ConnectorSyncLeaseClient(RestClient.builder().requestFactory(requestFactory), signer,
+                baseUrl, "rigour-merchant-crm-service");
     }
 
     @Bean

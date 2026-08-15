@@ -33,6 +33,9 @@ import tools.jackson.databind.ObjectMapper;
 public final class HttpDhbProductMasterDataClient implements DhbProductMasterDataClient {
     /** 商品图片先异步处理；较小的商品页避免一次任务积压过多图片。 */
     private static final int PAGE_SIZE = 50;
+    /** 订货宝全量状态筛选：C=全部商品状态，A=全部上下架状态。 */
+    private static final String ALL_PRODUCT_STATUSES = "C";
+    private static final String ALL_PUTAWAY_STATUSES = "A";
     private static final Duration MEDIA_SYNC_POLL_INTERVAL = Duration.ofSeconds(1);
     private static final Duration MEDIA_SYNC_MAX_WAIT = Duration.ofMinutes(30);
 
@@ -70,13 +73,15 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
         for (int pageNumber = 0; pageNumber < maxPages; pageNumber++) {
             int begin = pageNumber * PAGE_SIZE;
             DhbApiModels.ProductQueryCommand command =
-                    new DhbApiModels.ProductQueryCommand(begin, PAGE_SIZE, "C", "A", null);
+                    new DhbApiModels.ProductQueryCommand(begin, PAGE_SIZE,
+                            ALL_PRODUCT_STATUSES, ALL_PUTAWAY_STATUSES, null);
             DhbApiModels.ProductMediaSyncView mediaJob = post(caller,
                     path(connectorId, "media-sync"), command,
                     DhbApiModels.ProductMediaSyncView.class);
             awaitMediaSync(caller, connectorId, mediaJob);
             DhbApiModels.ProductQueryCommand completedCommand =
-                    new DhbApiModels.ProductQueryCommand(begin, PAGE_SIZE, "C", "A", null,
+                    new DhbApiModels.ProductQueryCommand(begin, PAGE_SIZE,
+                            ALL_PRODUCT_STATUSES, ALL_PUTAWAY_STATUSES, null,
                             null, null, null, mediaJob.jobId());
             DhbApiModels.ProductPageView page = post(caller,
                     path(connectorId, "query"),

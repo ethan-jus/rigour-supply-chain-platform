@@ -42,9 +42,10 @@ public class DhbOrderController {
             @RequestParam(required = false) String exceptionStatus,
             @RequestParam(required = false) String apiStatus,
             @RequestParam(required = false) String payStatus,
-            @RequestParam(required = false) Integer splitType) {
+            @RequestParam(required = false) Integer splitType,
+            @RequestParam(required = false) String keyword) {
         return ApiResponse.success(service.list(tenantId(), query(begin, step, orderStatusVal, starttime, endtime,
-                updateGe, updateLe, exceptionStatus, apiStatus, payStatus, splitType)));
+                updateGe, updateLe, exceptionStatus, apiStatus, payStatus, splitType, keyword)));
     }
 
     @GetMapping("/{orderSn}")
@@ -69,9 +70,9 @@ public class DhbOrderController {
     private static DhbOrderService.OrderQuery query(int begin, int step, String orderStatusVal, String starttime,
                                                     String endtime, String updateGe, String updateLe,
                                                     String exceptionStatus, String apiStatus, String payStatus,
-                                                    Integer splitType) {
+                                                    Integer splitType, String keyword) {
         return new DhbOrderService.OrderQuery(begin, step, orderStatusVal, starttime, endtime, updateGe, updateLe,
-                exceptionStatus, apiStatus, payStatus, splitType);
+                exceptionStatus, apiStatus, payStatus, splitType, keyword);
     }
 
     private static String tenantId() {

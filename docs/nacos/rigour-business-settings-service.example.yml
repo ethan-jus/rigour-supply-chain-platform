@@ -1,0 +1,19 @@
+# Nacos Data ID: rigour-business-settings-service.yaml
+spring:
+  datasource:
+    url: jdbc:mysql://82.157.4.176:13306/rigour_settings?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
+    username: rigour_settings_app
+    password: ${BUSINESS_SETTINGS_DB_APP_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    enabled: true
+    url: jdbc:mysql://82.157.4.176:13306/rigour_settings?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
+    user: rigour_settings_mig
+    password: ${BUSINESS_SETTINGS_DB_MIGRATOR_PASSWORD}
+
+rigour:
+  context:
+    trust:
+      active-key-id: v1
+      keys-base64:
+        v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1}

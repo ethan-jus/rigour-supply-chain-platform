@@ -143,7 +143,7 @@ class TenantIamServiceApplicationTests {
 
     @Test
     void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 45);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 48);
         assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1 AND ("
                 + "(version='33' AND script='V33__iam_erp_product_master_data_permissions.sql') OR "
                 + "(version='34' AND script='V34__iam_align_erp_product_center_menu.sql') OR "
@@ -155,14 +155,25 @@ class TenantIamServiceApplicationTests {
                 + "(version='42' AND script='V42__iam_crm_customer_permissions.sql') OR "
                 + "(version='43' AND script='V43__iam_hide_crm_customer_360_navigation.sql') OR "
                 + "(version='44' AND script='V44__iam_split_crm_master_data_navigation.sql') OR "
-                + "(version='45' AND script='V45__iam_customer_management_navigation.sql'))", 11);
+                + "(version='45' AND script='V45__iam_customer_management_navigation.sql') OR "
+                + "(version='46' AND script='V46__iam_replace_erp_warehouse_navigation.sql') OR "
+                + "(version='47' AND script='V47__iam_hide_legacy_erp_inventory_navigation.sql') OR "
+                + "(version='48' AND script='V48__iam_business_dictionary_permissions.sql'))", 14);
         assertCount("SELECT COUNT(*) FROM information_schema.tables "
                 + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 36);
         assertCount("SELECT COUNT(*) FROM iam_application", 6);
-        assertCount("SELECT COUNT(*) FROM iam_resource", 298);
-        assertCount("SELECT COUNT(permission_code) FROM iam_resource", 70);
-        assertCount("SELECT COUNT(*) FROM iam_package_resource", 271);
+        assertCount("SELECT COUNT(*) FROM iam_resource", 300);
+        assertCount("SELECT COUNT(permission_code) FROM iam_resource", 72);
+        assertCount("SELECT COUNT(*) FROM iam_package_resource", 273);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui", 222);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE permission_code IN ("
+                + "'business-settings:dict:read','business-settings:dict:write') "
+                + "AND status='ACTIVE'", 2);
+        assertCount("SELECT COUNT(*) FROM iam_resource resource_record "
+                + "JOIN iam_resource_ui ui_record ON ui_record.resource_id=resource_record.id "
+                + "WHERE resource_record.resource_code='SUPPLY_CHAIN.SETTINGS.NUMBERING_DICTIONARIES' "
+                + "AND resource_record.display_name='业务字典' AND resource_record.status='ACTIVE' "
+                + "AND ui_record.visible=1", 1);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='PLATFORM_ADMIN' AND target_uri='/platform-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='SYSTEM_ADMIN' AND target_uri='/system-admin'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application "
@@ -312,6 +323,17 @@ class TenantIamServiceApplicationTests {
                 .anyMatch(node -> "/system-admin".equals(node.routePath()));
         assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
                 .anyMatch(node -> "/supply-chain".equals(node.routePath()));
+        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
+                .anyMatch(root -> root.children().stream().anyMatch(menu ->
+                        "仓库管理".equals(menu.displayName())
+                                && menu.children().stream().map(NavigationNode::displayName).toList().equals(List.of(
+                                "库存看板", "库存", "入库单", "出库单", "出入库流水", "库存调拨", "库存盘点", "仓库信息"))));
+        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
+                .noneMatch(root -> root.children().stream().anyMatch(menu ->
+                        "仓库作业".equals(menu.displayName())
+                                || menu.children().stream().anyMatch(page ->
+                                "/supply-chain/erp/warehouse/locations".equals(page.routePath())
+                                        || "/supply-chain/erp/warehouse/inbound".equals(page.routePath()))));
         assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
                 .anyMatch(node -> node.children().stream().anyMatch(menu ->
                         "履约编排".equals(menu.displayName())

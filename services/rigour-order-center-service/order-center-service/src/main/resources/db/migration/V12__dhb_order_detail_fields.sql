@@ -1,0 +1,36 @@
+-- 补齐订货宝订单详情中已有的业务字段；原始报文仍由 order_source_record 完整保留。
+ALTER TABLE order_order
+    ADD COLUMN customer_type VARCHAR(100) NULL COMMENT '订货宝客户类型名称' AFTER synced_at,
+    ADD COLUMN customer_area VARCHAR(160) NULL COMMENT '订货宝客户区域名称' AFTER customer_type,
+    ADD COLUMN admin_user VARCHAR(160) NULL COMMENT '订货宝管理员名称' AFTER customer_area,
+    ADD COLUMN operation_name VARCHAR(160) NULL COMMENT '订货宝操作人名称' AFTER admin_user,
+    ADD COLUMN sales_person VARCHAR(160) NULL COMMENT '订货宝业务员名称' AFTER operation_name,
+    ADD COLUMN sales_person_mobile VARCHAR(64) NULL COMMENT '订货宝业务员电话' AFTER sales_person,
+    ADD COLUMN assistant_sales_persons VARCHAR(1000) NULL COMMENT '订货宝辅助业务员名称快照' AFTER sales_person_mobile,
+    ADD COLUMN audit_at VARCHAR(32) NULL COMMENT '订货宝审核时间原值' AFTER assistant_sales_persons,
+    ADD COLUMN settlement_method VARCHAR(80) NULL COMMENT '订货宝支付/结算方式' AFTER audit_at,
+    ADD COLUMN goods_weight DECIMAL(18,4) NULL COMMENT '订货宝订单商品重量合计' AFTER settlement_method,
+    ADD COLUMN tax_amount DECIMAL(18,4) NULL COMMENT '订货宝税费' AFTER goods_weight,
+    ADD COLUMN discount_price DECIMAL(18,4) NULL COMMENT '订货宝特批优惠价' AFTER tax_amount,
+    ADD COLUMN discount_total DECIMAL(18,4) NULL COMMENT '订货宝结算价' AFTER discount_price,
+    ADD COLUMN freight_amount DECIMAL(18,4) NULL COMMENT '订货宝运费' AFTER discount_total,
+    ADD COLUMN apply_total DECIMAL(18,4) NULL COMMENT '订货宝申请优惠合计' AFTER freight_amount,
+    ADD COLUMN coupon_discounted_amount DECIMAL(18,4) NULL COMMENT '订货宝优惠券优惠金额' AFTER apply_total,
+    ADD COLUMN customer_remark VARCHAR(2000) NULL COMMENT '订货宝客户留言' AFTER coupon_discounted_amount,
+    ADD COLUMN internal_comment VARCHAR(2000) NULL COMMENT '订货宝内部沟通' AFTER customer_remark,
+    ADD COLUMN invoice_title VARCHAR(200) NULL COMMENT '订货宝发票抬头' AFTER internal_comment,
+    ADD COLUMN invoice_content VARCHAR(500) NULL COMMENT '订货宝发票内容' AFTER invoice_title,
+    ADD COLUMN invoice_bank VARCHAR(200) NULL COMMENT '订货宝发票开户行' AFTER invoice_content,
+    ADD COLUMN invoice_bank_account VARCHAR(100) NULL COMMENT '订货宝发票银行账号' AFTER invoice_bank,
+    ADD COLUMN taxpayer_number VARCHAR(100) NULL COMMENT '订货宝发票纳税人识别号' AFTER invoice_bank_account;
+
+ALTER TABLE order_order_line
+    ADD COLUMN purchase_price DECIMAL(18,4) NULL COMMENT '订货宝进货价' AFTER remark,
+    ADD COLUMN conversion_number DECIMAL(18,4) NULL COMMENT '订货宝换算关系' AFTER purchase_price,
+    ADD COLUMN offer_price DECIMAL(18,4) NULL COMMENT '订货宝整箱优惠总价' AFTER conversion_number,
+    ADD COLUMN actual_amount DECIMAL(18,4) NULL COMMENT '订货宝明细折后总价' AFTER offer_price,
+    ADD COLUMN goods_weight DECIMAL(18,4) NULL COMMENT '订货宝明细商品重量' AFTER actual_amount,
+    ADD COLUMN pre_sale VARCHAR(8) NULL COMMENT '订货宝是否预售' AFTER goods_weight,
+    ADD COLUMN content_type VARCHAR(8) NULL COMMENT '订货宝商品类型' AFTER pre_sale,
+    ADD COLUMN invoice_tax VARCHAR(32) NULL COMMENT '订货宝明细发票税率' AFTER content_type,
+    ADD COLUMN content_percent DECIMAL(18,4) NULL COMMENT '订货宝明细折扣比例' AFTER invoice_tax;

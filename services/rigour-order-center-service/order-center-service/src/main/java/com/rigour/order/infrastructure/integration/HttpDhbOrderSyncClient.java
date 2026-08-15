@@ -4,6 +4,7 @@ import com.rigour.integration.api.v1.DhbOrderApi;
 import com.rigour.integration.api.v1.model.DhbApiModels;
 import com.rigour.order.api.v1.model.DhbOrderImportBatch;
 import com.rigour.order.api.v1.model.DhbOrderSyncCommand;
+import com.rigour.order.api.v1.model.DhbOrderSyncMode;
 import com.rigour.order.application.port.out.DhbOrderSyncClient;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.context.RequestContext;
@@ -83,106 +84,124 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
         Set<String> completed = new LinkedHashSet<>();
         long total = 0;
 
-        boolean truncatedByMaxPages = false;
+        long orderExpected = -1;
+        Set<String> orderKeys = new LinkedHashSet<>();
         for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
             int begin = pageNumber * PAGE_SIZE;
             DhbApiModels.OrderPageView page = query(caller, connectorId, effective, begin);
-            if (page == null || page.items() == null || page.items().isEmpty()) break;
-            if (pageNumber == 0) total += page.total();
-            for (DhbApiModels.OrderView summary : page.items()) {
+            requiredResponse(page, "订单列表");
+            orderExpected = expectedTotal(orderExpected, page.total(), "订单");
+            List<DhbApiModels.OrderView> items = pageItems(page.items(), page.total(), begin, "订单");
+            if (items.isEmpty()) break;
+            for (DhbApiModels.OrderView summary : items) {
+                String orderNumber = required(summaryOrderNumber(summary), "orderNumber");
+                requireUnique(orderKeys, orderNumber, "订单");
                 DhbApiModels.OrderContentView detail = effective.includeDetails()
-                        ? content(caller, connectorId, summary.orderNumber()) : null;
+                        ? content(caller, connectorId, orderNumber) : null;
                 orders.add(order(summary, detail));
-                DhbApiModels.WaitShipsView waitShips = waitShips(caller, connectorId, summary.orderNumber());
-                shipmentLogistics.add(logisticsSnapshot(summary.orderNumber(), waitShips));
+                DhbApiModels.WaitShipsView waitShips = waitShips(caller, connectorId, orderNumber);
+                shipmentLogistics.add(logisticsSnapshot(orderNumber, waitShips));
             }
-            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
-            truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+            if (begin + items.size() >= orderExpected) break;
+            if (pageNumber + 1 >= effective.maxPages()) throw maxPages("订单", effective.maxPages());
         }
-
-        if (truncatedByMaxPages) {
-            throw new IllegalStateException("订货宝订单同步达到maxPages=" + effective.maxPages()
-                    + "，但供应商仍有后续数据；本次不推进增量游标");
-        }
+        requireComplete(orderKeys, orderExpected, "订单");
+        total += orderExpected;
         completed.add("ORDER");
         completed.add("SHIPMENT_LOGISTICS");
         if (effective.includeDetails()) completed.add("ORDER_DETAIL");
 
-        boolean shipmentsTruncatedByMaxPages = false;
+        long shipmentExpected = -1;
+        Set<String> shipmentKeys = new LinkedHashSet<>();
         for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
             int begin = pageNumber * PAGE_SIZE;
             DhbApiModels.ShipmentPageView page = queryShipments(caller, connectorId, effective, begin);
-            if (page == null || page.items() == null || page.items().isEmpty()) break;
-            if (pageNumber == 0) total += page.total();
-            for (DhbApiModels.ShipmentView summary : page.items()) {
+            requiredResponse(page, "发货单列表");
+            shipmentExpected = expectedTotal(shipmentExpected, page.total(), "发货单");
+            List<DhbApiModels.ShipmentView> items = pageItems(page.items(), page.total(), begin, "发货单");
+            if (items.isEmpty()) break;
+            for (DhbApiModels.ShipmentView summary : items) {
+                String shipmentNumber = required(summaryShipmentNumber(summary), "shipmentNumber");
+                requireUnique(shipmentKeys, shipmentNumber, "发货单");
                 DhbApiModels.ShipmentContentView detail = effective.includeDetails()
-                        ? shipmentContent(caller, connectorId, summary.shipmentNumber()) : null;
+                        ? shipmentContent(caller, connectorId, shipmentNumber) : null;
                 shipments.add(shipment(summary, detail));
             }
-            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= page.total()) break;
-            shipmentsTruncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+            if (begin + items.size() >= shipmentExpected) break;
+            if (pageNumber + 1 >= effective.maxPages()) throw maxPages("发货单", effective.maxPages());
         }
-
-        if (shipmentsTruncatedByMaxPages) {
-            throw new IllegalStateException("订货宝出库/发货单同步达到maxPages=" + effective.maxPages()
-                    + "，但供应商仍有后续数据；本次不推进增量游标");
-        }
+        requireComplete(shipmentKeys, shipmentExpected, "发货单");
+        total += shipmentExpected;
         completed.add("SHIPMENT");
         if (effective.includeDetails()) completed.add("SHIPMENT_DETAIL");
 
-        boolean returnsTruncatedByMaxPages = false;
+        long returnExpected = -1;
+        Set<String> returnKeys = new LinkedHashSet<>();
         for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
             int begin = pageNumber * PAGE_SIZE;
             DhbApiModels.ReturnPageView page = queryReturns(caller, connectorId, effective, begin);
-            if (page == null || page.items() == null || page.items().isEmpty()) break;
-            if (pageNumber == 0) total += page.total();
-            for (DhbApiModels.ReturnView summary : page.items()) {
+            requiredResponse(page, "退货单列表");
+            returnExpected = expectedTotal(returnExpected, page.total(), "退货单");
+            List<DhbApiModels.ReturnView> items = pageItems(page.items(), page.total(), begin, "退货单");
+            if (items.isEmpty()) break;
+            for (DhbApiModels.ReturnView summary : items) {
+                String returnNumber = required(summaryReturnNumber(summary), "returnNumber");
+                requireUnique(returnKeys, returnNumber, "退货单");
                 DhbApiModels.ReturnContentView detail = effective.includeDetails()
-                        ? returnContent(caller, connectorId, summary.returnNumber()) : null;
+                        ? returnContent(caller, connectorId, returnNumber) : null;
                 returns.add(returnItem(summary, detail));
             }
-            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= page.total()) break;
-            returnsTruncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+            if (begin + items.size() >= returnExpected) break;
+            if (pageNumber + 1 >= effective.maxPages()) throw maxPages("退货单", effective.maxPages());
         }
-
-        if (returnsTruncatedByMaxPages) {
-            throw new IllegalStateException("订货宝退货单同步达到maxPages=" + effective.maxPages()
-                    + "，但供应商仍有后续数据；本次不推进增量游标");
-        }
+        requireComplete(returnKeys, returnExpected, "退货单");
+        total += returnExpected;
         completed.add("RETURN");
         if (effective.includeDetails()) completed.add("RETURN_DETAIL");
 
-        boolean receiptsTruncatedByMaxPages = false;
+        long receiptExpected = -1;
+        Set<String> receiptKeys = new LinkedHashSet<>();
         for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
             int begin = pageNumber * PAGE_SIZE;
             DhbApiModels.ReceiptPageView page = queryReceipts(caller, connectorId, effective, begin);
-            if (page == null || page.items() == null || page.items().isEmpty()) break;
-            if (pageNumber == 0) total += page.total();
-            page.items().stream().map(this::receipt).forEach(financialDocuments::add);
-            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= page.total()) break;
-            receiptsTruncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+            requiredResponse(page, "收款单列表");
+            receiptExpected = expectedTotal(receiptExpected, page.total(), "收款单");
+            List<DhbApiModels.ReceiptView> items = pageItems(page.items(), page.total(), begin, "收款单");
+            if (items.isEmpty()) break;
+            for (DhbApiModels.ReceiptView item : items) {
+                requireUnique(receiptKeys, required(defaultText(item.receiptNumber(), item.sourceId()),
+                        "receiptNumber"), "收款单");
+                financialDocuments.add(receipt(item));
+            }
+            if (begin + items.size() >= receiptExpected) break;
+            if (pageNumber + 1 >= effective.maxPages()) throw maxPages("收款单", effective.maxPages());
         }
-
-        if (receiptsTruncatedByMaxPages) {
-            throw new IllegalStateException("订货宝收款单同步达到maxPages=" + effective.maxPages()
-                    + "，但供应商仍有后续数据；本次不推进增量游标");
-        }
+        requireComplete(receiptKeys, receiptExpected, "收款单");
+        total += receiptExpected;
         completed.add("RECEIPT");
 
-        boolean paymentsTruncatedByMaxPages = false;
-        for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
-            int begin = pageNumber * PAGE_SIZE;
-            DhbApiModels.PaymentPageView page = queryPayments(caller, connectorId, effective, begin);
-            if (page == null || page.items() == null || page.items().isEmpty()) break;
-            if (pageNumber == 0) total += page.total();
-            page.items().stream().map(this::payment).forEach(financialDocuments::add);
-            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= page.total()) break;
-            paymentsTruncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
-        }
-
-        if (paymentsTruncatedByMaxPages) {
-            throw new IllegalStateException("订货宝付款单同步达到maxPages=" + effective.maxPages()
-                    + "，但供应商仍有后续数据；本次不推进增量游标");
+        if (effective.mode() == DhbOrderSyncMode.FULL) {
+            long paymentExpected = -1;
+            Set<String> paymentKeys = new LinkedHashSet<>();
+            for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
+                int begin = pageNumber * PAGE_SIZE;
+                DhbApiModels.PaymentPageView page = queryPayments(caller, connectorId, effective, begin);
+                requiredResponse(page, "付款单列表");
+                paymentExpected = expectedTotal(paymentExpected, page.total(), "付款单");
+                List<DhbApiModels.PaymentView> items = pageItems(page.items(), page.total(), begin, "付款单");
+                if (items.isEmpty()) break;
+                for (DhbApiModels.PaymentView item : items) {
+                    requireUnique(paymentKeys, required(defaultText(item.paymentNumber(), item.sourceId()),
+                            "paymentNumber"), "付款单");
+                    financialDocuments.add(payment(item));
+                }
+                if (begin + items.size() >= paymentExpected) break;
+                if (pageNumber + 1 >= effective.maxPages()) throw maxPages("付款单", effective.maxPages());
+            }
+            requireComplete(paymentKeys, paymentExpected, "付款单");
+            total += paymentExpected;
+        } else {
+            log.debug("订货宝增量同步跳过付款单；付款单将在下一次FULL对账中重新核对");
         }
         completed.add("PAYMENT");
 
@@ -196,25 +215,26 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                                         DhbOrderSyncCommand effective) {
         List<DhbOrderImportBatch.OrderItem> orders = new ArrayList<>();
         Set<String> completed = new LinkedHashSet<>();
-        long total = 0;
-        boolean truncatedByMaxPages = false;
+        long total = -1;
+        Set<String> keys = new LinkedHashSet<>();
         for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
             int begin = pageNumber * PAGE_SIZE;
             DhbApiModels.OrderPageView page = query(caller, connectorId, effective, begin);
-            if (page == null || page.items() == null || page.items().isEmpty()) break;
-            if (pageNumber == 0) total = page.total();
-            for (DhbApiModels.OrderView summary : page.items()) {
+            requiredResponse(page, "订单列表");
+            total = expectedTotal(total, page.total(), "订单");
+            List<DhbApiModels.OrderView> items = pageItems(page.items(), page.total(), begin, "订单");
+            if (items.isEmpty()) break;
+            for (DhbApiModels.OrderView summary : items) {
+                String orderNumber = required(summaryOrderNumber(summary), "orderNumber");
+                requireUnique(keys, orderNumber, "订单");
                 DhbApiModels.OrderContentView detail = effective.includeDetails()
-                        ? content(caller, connectorId, summary.orderNumber()) : null;
+                        ? content(caller, connectorId, orderNumber) : null;
                 orders.add(order(summary, detail));
             }
-            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
-            truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+            if (begin + items.size() >= total) break;
+            if (pageNumber + 1 >= effective.maxPages()) throw maxPages("订单", effective.maxPages());
         }
-        if (truncatedByMaxPages) {
-            throw new IllegalStateException("订货宝订单同步达到maxPages=" + effective.maxPages()
-                    + "，但供应商仍有后续数据；本次不推进增量游标");
-        }
+        requireComplete(keys, total, "订单");
         completed.add("ORDER");
         if (effective.includeDetails()) completed.add("ORDER_DETAIL");
         DhbOrderImportBatch batch = new DhbOrderImportBatch(orders, null, null, null, null);
@@ -226,25 +246,26 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                                          DhbOrderSyncCommand effective) {
         List<DhbOrderImportBatch.ReturnItem> returns = new ArrayList<>();
         Set<String> completed = new LinkedHashSet<>();
-        long total = 0;
-        boolean truncatedByMaxPages = false;
+        long total = -1;
+        Set<String> keys = new LinkedHashSet<>();
         for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
             int begin = pageNumber * PAGE_SIZE;
             DhbApiModels.ReturnPageView page = queryReturns(caller, connectorId, effective, begin);
-            if (page == null || page.items() == null || page.items().isEmpty()) break;
-            if (pageNumber == 0) total = page.total();
-            for (DhbApiModels.ReturnView summary : page.items()) {
+            requiredResponse(page, "退货单列表");
+            total = expectedTotal(total, page.total(), "退货单");
+            List<DhbApiModels.ReturnView> items = pageItems(page.items(), page.total(), begin, "退货单");
+            if (items.isEmpty()) break;
+            for (DhbApiModels.ReturnView summary : items) {
+                String returnNumber = required(summaryReturnNumber(summary), "returnNumber");
+                requireUnique(keys, returnNumber, "退货单");
                 DhbApiModels.ReturnContentView detail = effective.includeDetails()
-                        ? returnContent(caller, connectorId, summary.returnNumber()) : null;
+                        ? returnContent(caller, connectorId, returnNumber) : null;
                 returns.add(returnItem(summary, detail));
             }
-            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
-            truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+            if (begin + items.size() >= total) break;
+            if (pageNumber + 1 >= effective.maxPages()) throw maxPages("退货单", effective.maxPages());
         }
-        if (truncatedByMaxPages) {
-            throw new IllegalStateException("订货宝退货单同步达到maxPages=" + effective.maxPages()
-                    + "，但供应商仍有后续数据；本次不推进增量游标");
-        }
+        requireComplete(keys, total, "退货单");
         completed.add("RETURN");
         if (effective.includeDetails()) completed.add("RETURN_DETAIL");
         DhbOrderImportBatch batch = new DhbOrderImportBatch(null, null, null, returns, null);
@@ -256,25 +277,26 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                                            DhbOrderSyncCommand effective) {
         List<DhbOrderImportBatch.ShipmentItem> shipments = new ArrayList<>();
         Set<String> completed = new LinkedHashSet<>();
-        long total = 0;
-        boolean truncatedByMaxPages = false;
+        long total = -1;
+        Set<String> keys = new LinkedHashSet<>();
         for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
             int begin = pageNumber * PAGE_SIZE;
             DhbApiModels.ShipmentPageView page = queryShipments(caller, connectorId, effective, begin);
-            if (page == null || page.items() == null || page.items().isEmpty()) break;
-            if (pageNumber == 0) total = page.total();
-            for (DhbApiModels.ShipmentView summary : page.items()) {
+            requiredResponse(page, "发货单列表");
+            total = expectedTotal(total, page.total(), "发货单");
+            List<DhbApiModels.ShipmentView> items = pageItems(page.items(), page.total(), begin, "发货单");
+            if (items.isEmpty()) break;
+            for (DhbApiModels.ShipmentView summary : items) {
+                String shipmentNumber = required(summaryShipmentNumber(summary), "shipmentNumber");
+                requireUnique(keys, shipmentNumber, "发货单");
                 DhbApiModels.ShipmentContentView detail = effective.includeDetails()
-                        ? shipmentContent(caller, connectorId, summary.shipmentNumber()) : null;
+                        ? shipmentContent(caller, connectorId, shipmentNumber) : null;
                 shipments.add(shipment(summary, detail));
             }
-            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
-            truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+            if (begin + items.size() >= total) break;
+            if (pageNumber + 1 >= effective.maxPages()) throw maxPages("发货单", effective.maxPages());
         }
-        if (truncatedByMaxPages) {
-            throw new IllegalStateException("订货宝出库/发货单同步达到maxPages=" + effective.maxPages()
-                    + "，但供应商仍有后续数据；本次不推进增量游标");
-        }
+        requireComplete(keys, total, "发货单");
         completed.add("SHIPMENT");
         if (effective.includeDetails()) completed.add("SHIPMENT_DETAIL");
         DhbOrderImportBatch batch = new DhbOrderImportBatch(null, shipments, null, null, null);
@@ -286,24 +308,25 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                                                    DhbOrderSyncCommand effective) {
         List<DhbOrderImportBatch.ShipmentLogisticsItem> shipmentLogistics = new ArrayList<>();
         Set<String> completed = new LinkedHashSet<>();
-        long total = 0;
-        boolean truncatedByMaxPages = false;
+        long total = -1;
+        Set<String> keys = new LinkedHashSet<>();
         for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
             int begin = pageNumber * PAGE_SIZE;
             DhbApiModels.OrderPageView page = query(caller, connectorId, effective, begin);
-            if (page == null || page.items() == null || page.items().isEmpty()) break;
-            if (pageNumber == 0) total = page.total();
-            for (DhbApiModels.OrderView summary : page.items()) {
-                shipmentLogistics.add(logisticsSnapshot(summary.orderNumber(),
-                        waitShips(caller, connectorId, summary.orderNumber())));
+            requiredResponse(page, "订单列表");
+            total = expectedTotal(total, page.total(), "物流订单");
+            List<DhbApiModels.OrderView> items = pageItems(page.items(), page.total(), begin, "物流订单");
+            if (items.isEmpty()) break;
+            for (DhbApiModels.OrderView summary : items) {
+                String orderNumber = required(summaryOrderNumber(summary), "orderNumber");
+                requireUnique(keys, orderNumber, "物流订单");
+                shipmentLogistics.add(logisticsSnapshot(orderNumber,
+                        waitShips(caller, connectorId, orderNumber)));
             }
-            if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
-            truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+            if (begin + items.size() >= total) break;
+            if (pageNumber + 1 >= effective.maxPages()) throw maxPages("物流订单", effective.maxPages());
         }
-        if (truncatedByMaxPages) {
-            throw new IllegalStateException("订货宝物流同步达到maxPages=" + effective.maxPages()
-                    + "，但供应商仍有后续订单；本次不推进增量游标");
-        }
+        requireComplete(keys, total, "物流订单");
         completed.add("SHIPMENT_LOGISTICS");
         DhbOrderImportBatch batch = new DhbOrderImportBatch(null, null, shipmentLogistics, null, null);
         return new Collected(UUID.randomUUID(), "SHIPMENT_LOGISTICS", total, completed, batch);
@@ -335,38 +358,46 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                                       DhbOrderSyncCommand effective,
                                       List<DhbOrderImportBatch.FinancialItem> financialDocuments,
                                       boolean receipts) {
-        long total = 0;
-        boolean truncatedByMaxPages = false;
+        long total = -1;
+        Set<String> keys = new LinkedHashSet<>();
         for (int pageNumber = 0; pageNumber < effective.maxPages(); pageNumber++) {
             int begin = pageNumber * PAGE_SIZE;
             if (receipts) {
                 DhbApiModels.ReceiptPageView page = queryReceipts(caller, connectorId, effective, begin);
-                if (page == null || page.items() == null || page.items().isEmpty()) break;
-                if (pageNumber == 0) total = page.total();
-                page.items().stream().map(this::receipt).forEach(financialDocuments::add);
-                if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
-                truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+                requiredResponse(page, "收款单列表");
+                total = expectedTotal(total, page.total(), "收款单");
+                List<DhbApiModels.ReceiptView> items = pageItems(page.items(), page.total(), begin, "收款单");
+                if (items.isEmpty()) break;
+                for (DhbApiModels.ReceiptView item : items) {
+                    requireUnique(keys, required(defaultText(item.receiptNumber(), item.sourceId()),
+                            "receiptNumber"), "收款单");
+                    financialDocuments.add(receipt(item));
+                }
+                if (begin + items.size() >= total) break;
+                if (pageNumber + 1 >= effective.maxPages()) throw maxPages("收款单", effective.maxPages());
             } else {
                 DhbApiModels.PaymentPageView page = queryPayments(caller, connectorId, effective, begin);
-                if (page == null || page.items() == null || page.items().isEmpty()) break;
-                if (pageNumber == 0) total = page.total();
-                page.items().stream().map(this::payment).forEach(financialDocuments::add);
-                if (page.items().size() < PAGE_SIZE || begin + page.items().size() >= total) break;
-                truncatedByMaxPages = pageNumber + 1 >= effective.maxPages();
+                requiredResponse(page, "付款单列表");
+                total = expectedTotal(total, page.total(), "付款单");
+                List<DhbApiModels.PaymentView> items = pageItems(page.items(), page.total(), begin, "付款单");
+                if (items.isEmpty()) break;
+                for (DhbApiModels.PaymentView item : items) {
+                    requireUnique(keys, required(defaultText(item.paymentNumber(), item.sourceId()),
+                            "paymentNumber"), "付款单");
+                    financialDocuments.add(payment(item));
+                }
+                if (begin + items.size() >= total) break;
+                if (pageNumber + 1 >= effective.maxPages()) throw maxPages("付款单", effective.maxPages());
             }
         }
-        if (truncatedByMaxPages) {
-            throw new IllegalStateException((receipts ? "订货宝收款单" : "订货宝付款单")
-                    + "同步达到maxPages=" + effective.maxPages()
-                    + "，但供应商仍有后续数据；本次不推进增量游标");
-        }
+        requireComplete(keys, total, receipts ? "收款单" : "付款单");
         return total;
     }
 
     private DhbApiModels.OrderPageView query(CallerIdentity caller, UUID connectorId,
                                              DhbOrderSyncCommand command, int begin) {
         DhbApiModels.OrderQueryCommand request = new DhbApiModels.OrderQueryCommand(
-                begin, PAGE_SIZE, "all", null, null, command.updatedFrom(), command.updatedTo(),
+                begin, PAGE_SIZE, "all", null, null, incrementalFrom(command), incrementalTo(command),
                 "all", "all", null, null);
         URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
                 .path(DhbOrderApi.QUERY_PATH)
@@ -383,8 +414,8 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                 .buildAndExpand(connectorId, orderNumber)
                 .encode()
                 .toUri();
-        return post(caller, uri, new DhbApiModels.OrderContentCommand(false, false),
-                DhbApiModels.OrderContentView.class);
+        return requiredResponse(post(caller, uri, new DhbApiModels.OrderContentCommand(false, false),
+                DhbApiModels.OrderContentView.class), "订单详情");
     }
 
     /** 通过Integration调用订货宝getShipsList，查询独立出库/发货单。 */
@@ -392,7 +423,7 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                                                           DhbOrderSyncCommand command, int begin) {
         DhbApiModels.ShipmentQueryCommand request = new DhbApiModels.ShipmentQueryCommand(
                 begin, PAGE_SIZE, null, "F,T", null, null, null,
-                command.updatedFrom(), command.updatedTo(), null, null, null);
+                incrementalFrom(command), incrementalTo(command), null, null, null);
         URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
                 .path(DhbOrderApi.SHIPMENT_QUERY_PATH)
                 .buildAndExpand(connectorId)
@@ -409,7 +440,8 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                 .buildAndExpand(connectorId, shipmentNumber)
                 .encode()
                 .toUri();
-        return post(caller, uri, Map.of(), DhbApiModels.ShipmentContentView.class);
+        return requiredResponse(post(caller, uri, Map.of(), DhbApiModels.ShipmentContentView.class),
+                "发货单详情");
     }
 
     /** 通过Integration调用订货宝getWaitShips，查询指定订单的出库/发货物流。 */
@@ -420,15 +452,16 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                 .buildAndExpand(connectorId, orderNumber)
                 .encode()
                 .toUri();
-        return post(caller, uri, Map.of(), DhbApiModels.WaitShipsView.class);
+        return requiredResponse(post(caller, uri, Map.of(), DhbApiModels.WaitShipsView.class),
+                "订单物流详情");
     }
 
     /** 通过Integration调用订货宝getReturnsList，查询退货单列表。 */
     private DhbApiModels.ReturnPageView queryReturns(CallerIdentity caller, UUID connectorId,
                                                       DhbOrderSyncCommand command, int begin) {
         DhbApiModels.ReturnQueryCommand request = new DhbApiModels.ReturnQueryCommand(
-                begin, PAGE_SIZE, null, "F,T", null, null,
-                command.updatedFrom(), command.updatedTo(), null, null);
+                begin, PAGE_SIZE, null, "All", null, null,
+                incrementalFrom(command), incrementalTo(command), null, null);
         URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
                 .path(DhbOrderApi.RETURN_QUERY_PATH)
                 .buildAndExpand(connectorId)
@@ -445,14 +478,15 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                 .buildAndExpand(connectorId, returnNumber)
                 .encode()
                 .toUri();
-        return post(caller, uri, Map.of(), DhbApiModels.ReturnContentView.class);
+        return requiredResponse(post(caller, uri, Map.of(), DhbApiModels.ReturnContentView.class),
+                "退货单详情");
     }
 
     /** 通过Integration调用订货宝getReceiptsList，查询收款单列表。 */
     private DhbApiModels.ReceiptPageView queryReceipts(CallerIdentity caller, UUID connectorId,
                                                         DhbOrderSyncCommand command, int begin) {
         DhbApiModels.ReceiptQueryCommand request = new DhbApiModels.ReceiptQueryCommand(
-                null, begin, PAGE_SIZE, null, null, command.updatedFrom(), null);
+                null, begin, PAGE_SIZE, null, null, incrementalFrom(command), "all");
         URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
                 .path(DhbOrderApi.RECEIPT_QUERY_PATH)
                 .buildAndExpand(connectorId)
@@ -465,7 +499,7 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
     private DhbApiModels.PaymentPageView queryPayments(CallerIdentity caller, UUID connectorId,
                                                         DhbOrderSyncCommand command, int begin) {
         DhbApiModels.PaymentQueryCommand request = new DhbApiModels.PaymentQueryCommand(
-                null, begin, PAGE_SIZE, command.updatedFrom(), command.updatedTo(), null);
+                null, begin, PAGE_SIZE, null, null, "all");
         URI uri = UriComponentsBuilder.fromUri(integrationBaseUri)
                 .path(DhbOrderApi.PAYMENT_QUERY_PATH)
                 .buildAndExpand(connectorId)
@@ -518,6 +552,21 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
         return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
+    private static String summaryOrderNumber(DhbApiModels.OrderView summary) {
+        return defaultText(summary.orderNumber(), first(map(summary.sourceFields()),
+                "OrderSN", "orders_num", "orderNumber", "sourceId"));
+    }
+
+    private static String summaryShipmentNumber(DhbApiModels.ShipmentView summary) {
+        return defaultText(summary.shipmentNumber(), first(map(summary.sourceFields()),
+                "ships_num", "ShipsNum", "shipmentNumber"));
+    }
+
+    private static String summaryReturnNumber(DhbApiModels.ReturnView summary) {
+        return defaultText(summary.returnNumber(), first(map(summary.sourceFields()),
+                "ReturnsSN", "returnsSn", "returnNumber", "return_no"));
+    }
+
     private DhbOrderImportBatch.OrderItem order(DhbApiModels.OrderView summary,
                                                  DhbApiModels.OrderContentView detail) {
         Map<String, Object> list = map(summary.sourceFields());
@@ -532,12 +581,14 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                 required(defaultText(first(content, list, "OrderSN", "orders_num", "orderNumber", "sourceId"),
                         summary.orderNumber()), "orderNumber"),
                 defaultText(first(content, list, "OrderStatus", "order_status", "status"), summary.status()),
-                defaultText(first(content, list, "PayStatus", "pay_status", "paymentStatus"), summary.paymentStatus()),
+                defaultText(first(content, list, "OrderPayStatus", "PayStatus", "pay_status", "paymentStatus"),
+                        summary.paymentStatus()),
                 first(content, list, "OrderType", "order_type", "TypeName"),
                 firstDecimal(content, list, summary.amount(), "OrderTotal", "order_total", "Total", "amount"),
                 firstInstant(content, list, summary.createdAt(), "OrderDate", "order_date", "createdAt"),
-                firstInstant(content, list, summary.updatedAt(), "OrderUpdateDate", "update_date", "updatedAt"),
-                first(content, list, "OrderUpdateDate", "update_date", "updatedAt"),
+                firstInstant(content, list, summary.updatedAt(), "UpdateDate", "OrderUpdateTime", "OrderUpdateDate",
+                        "update_date", "updatedAt"),
+                first(content, list, "UpdateDate", "OrderUpdateTime", "OrderUpdateDate", "update_date", "updatedAt"),
                 first(content, list, "DeliveryDate", "SendDate", "delivery_date"),
                 first(content, list, "OrderRemark", "Remark", "remark"),
                 defaultText(first(content, list, "ClientNO", "ClientNum", "client_num", "customerNumber"),
@@ -552,16 +603,43 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                 first(content, list, "City", "city"),
                 first(content, list, "District", "Area", "district"),
                 first(content, list, "OrderApi", "ApiStatus", "apiStatus", "api_status"),
-                first(content, list, "ExceptionStatus", "exceptionStatus", "exception_status"),
-                first(content, list, "SendType", "send_type"),
-                first(content, list, "LastOrderDate", "last_order_at"),
+                first(content, list, "OrderException", "OrderExceptionStatus", "ExceptionStatus",
+                        "exceptionStatus", "exception_status"),
+                first(content, list, "OrderSendType", "SendType", "send_type"),
+                first(content, list, "lastOrderAt", "LastOrderAt", "LastOrderDate", "last_order_at"),
                 first(content, list, "SourceDevice", "Device", "device"),
                 first(content, list, "IsAdminOrder", "AdminOrder", "admin_order"),
                 first(content, list, "SplitType", "splitType", "split_type"),
                 first(content, list, "SplitTypeName", "split_type_name"),
                 detail == null ? List.of() : orderLines(content),
                 detail == null ? List.of() : orderShipments(content),
-                rawList, rawDetail, sha256(effectiveRaw), detail != null);
+                rawList, rawDetail, sha256(effectiveRaw), detail != null,
+                first(content, list, "ClientTypeName", "client_type_name"),
+                first(content, list, "ClientAreaName", "client_area_name"),
+                first(content, list, "AdminUser", "admin_user"),
+                first(content, list, "OperationName", "operation_name"),
+                first(content, list, "StaffName", "staff_name"),
+                first(content, list, "StaffMobile", "staff_mobile"),
+                assistantNames(content),
+                first(content, list, "OrderAuditTime", "audit_at"),
+                first(content, list, "PayForm", "pay_form", "settlement_method"),
+                firstDecimal(content, list, null, "GoodsWeight", "goods_weight"),
+                firstDecimal(content, list, null, "Taxation", "taxation", "tax_amount"),
+                firstDecimal(content, list, null, "DiscountPrice", "discount_price"),
+                firstDecimal(content, list, null, "DiscountTotal", "discount_total"),
+                firstDecimal(content, list, null, "OrderFreight", "order_freight", "freight_amount"),
+                firstDecimal(content, list, null, "ApplyTotal", "apply_total"),
+                firstDecimal(content, list, null, "CouponDiscountedAmount", "coupon_discounted_amount"),
+                jsonValue(content, "ClientRemark", "client_remark"),
+                first(content, list, "internalComm", "InternalComm", "internal_comment"),
+                nestedText(content, "Invoice", "invoice_title"),
+                nestedText(content, "Invoice", "invoice_content"),
+                nestedText(content, "Invoice", "bank"),
+                nestedText(content, "Invoice", "bank_account"),
+                nestedText(content, "Invoice", "taxpayer_number"),
+                first(content, list, "ClientTag", "ClientTagName", "CustomerTag", "CustomerTagName", "customer_tag"),
+                defaultText(nestedText(content, "Invoice", "InvoiceType", "invoice_type", "TypeName", "type_name"),
+                        first(content, list, "InvoiceType", "invoice_type", "InvoiceTypeName", "invoice_type_name")));
     }
 
     private DhbOrderImportBatch.ShipmentItem shipment(DhbApiModels.ShipmentView summary,
@@ -608,12 +686,18 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                 ? summary : detail.summary();
         String returnNumber = defaultText(first(merged, "ReturnsSN", "returnsSn", "returnNumber", "return_no"),
                 defaultText(effective.returnNumber(), effective.sourceId()));
+        String orderNumber = consistentOrderNumber(merged, effective, detail);
         List<DhbOrderImportBatch.ReturnLineItem> lines = detail == null
-                ? List.of() : detail.lines().stream().map(this::returnLine).toList();
-        String rawJson = json(merged);
+                ? List.of() : returnLines(detail.lines());
+        Map<String, Object> revision = new LinkedHashMap<>(merged);
+        if (detail != null) {
+            revision.put("detail", content);
+            revision.put("lines", detail.lines());
+        }
+        String rawJson = json(revision);
         return new DhbOrderImportBatch.ReturnItem(
                 required(returnNumber, "returnNumber"),
-                defaultText(first(merged, "OrdersNum", "orders_num", "orderNumber"), effective.orderNumber()),
+                orderNumber,
                 defaultText(first(merged, "ReturnsStatus", "return_status", "status"), effective.status()),
                 defaultText(first(merged, "StaffName", "staffName"), effective.staffName()),
                 firstDecimal(merged, Map.of(), effective.returnAmount(),
@@ -641,11 +725,48 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                 lines, rawJson, sha256(rawJson), detail != null);
     }
 
-    private DhbOrderImportBatch.ReturnLineItem returnLine(DhbApiModels.ReturnLineView line) {
+    private List<DhbOrderImportBatch.ReturnLineItem> returnLines(List<DhbApiModels.ReturnLineView> source) {
+        Map<String, Integer> occurrences = new LinkedHashMap<>();
+        return source.stream().map(line -> {
+            String normalized = normalizedReturnLine(line);
+            int ordinal = occurrences.merge(normalized, 1, Integer::sum) - 1;
+            return returnLine(line, normalized, ordinal);
+        }).toList();
+    }
+
+    private DhbOrderImportBatch.ReturnLineItem returnLine(DhbApiModels.ReturnLineView line,
+                                                           String normalized, int ordinal) {
         return new DhbOrderImportBatch.ReturnLineItem(
-                line.sourceId(), line.productGuid(), line.skuNumber(), line.productCode(), line.productName(),
+                "RETURN-LINE-" + sha256(normalized) + "#" + ordinal,
+                line.productGuid(), line.skuNumber(), line.productCode(), line.productName(),
                 line.quantity(), line.confirmedQuantity(), line.unitPrice(), line.confirmedPrice(), line.unit(),
                 defaultText(line.warehouseNumber(), line.warehouseGuid()), line.warehouseName(), line.remark());
+    }
+
+    private String consistentOrderNumber(Map<String, Object> merged, DhbApiModels.ReturnView effective,
+                                         DhbApiModels.ReturnContentView detail) {
+        Set<String> values = new LinkedHashSet<>();
+        addIfPresent(values, first(merged, "OrdersNum", "orders_num", "orderNumber"));
+        addIfPresent(values, effective.orderNumber());
+        if (detail != null) {
+            collectTextValues(detail.sourceFields(), values, "OrdersNum", "orders_num", "orderNumber");
+            if (detail.summary() != null) {
+                collectTextValues(detail.summary().sourceFields(), values,
+                        "OrdersNum", "orders_num", "orderNumber");
+            }
+        }
+        if (values.size() > 1) {
+            throw new IllegalStateException("订货宝退货单关联订单号不一致: " + values);
+        }
+        return values.stream().findFirst().orElse(null);
+    }
+
+    private String normalizedReturnLine(DhbApiModels.ReturnLineView line) {
+        return String.join("\u001f", normalized(line.productGuid()), normalized(line.skuNumber()),
+                normalized(line.productCode()), normalized(line.productName()), normalized(line.quantity()),
+                normalized(line.confirmedQuantity()), normalized(line.unitPrice()),
+                normalized(line.confirmedPrice()), normalized(line.unit()), normalized(line.warehouseNumber()),
+                normalized(line.warehouseName()), normalized(line.remark()));
     }
 
     private DhbOrderImportBatch.FinancialItem receipt(DhbApiModels.ReceiptView item) {
@@ -771,7 +892,16 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                     decimal(firstObject(row, "ContentNumber", "order_units_number", "Number", "OrderNumber", "Quantity")),
                     decimal(firstObject(row, "ActualAmount", "Total", "OrderTotal", "Amount")),
                     first(row, "order_units_name", "base_units_name", "Units", "UnitsName", "Unit", "unit_name"),
-                    first(row, "remark", "Remark")));
+                    first(row, "remark", "Remark"),
+                    decimal(firstObject(row, "ContentPurchasePrice", "PurchasePrice", "purchase_price")),
+                    decimal(firstObject(row, "ConversionNumber", "conversion_number")),
+                    decimal(firstObject(row, "OfferPrice", "offer_price")),
+                    decimal(firstObject(row, "ActualAmount", "actual_amount")),
+                    decimal(firstObject(row, "GoodsWeight", "goods_weight")),
+                    first(row, "isPre", "IsPre", "pre_sale"),
+                    first(row, "conType", "ConType", "content_type"),
+                    first(row, "InvoiceTax", "invoice_tax"),
+                    decimal(firstObject(row, "ContentPercent", "content_percent"))));
         }
         return List.copyOf(result);
     }
@@ -782,6 +912,35 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
                         first(row, "ships_num", "ShipsNum"), first(row, "status", "Status"),
                         first(row, "ships_date", "ShipsDate"), first(row, "stock_up_time", "StockUpTime")))
                 .toList();
+    }
+
+    private String assistantNames(Map<String, Object> content) {
+        Object value = firstObject(content, "AssistStaff", "assistStaff", "assistant_sales_persons");
+        if (value instanceof Map<?, ?> map) {
+            return first(stringMap(map), "StaffName", "staffName", "name");
+        }
+        if (!(value instanceof Iterable<?> iterable)) return text(value);
+        List<String> names = new ArrayList<>();
+        for (Object item : iterable) {
+            if (item instanceof Map<?, ?> map) {
+                String name = first(stringMap(map), "StaffName", "staffName", "name");
+                if (name != null) names.add(name);
+            } else if (text(item) != null) {
+                names.add(text(item));
+            }
+        }
+        return names.isEmpty() ? null : String.join("、", names);
+    }
+
+    private String nestedText(Map<String, Object> root, String objectKey, String... keys) {
+        return first(nestedMap(root, objectKey), keys);
+    }
+
+    private String jsonValue(Map<String, Object> root, String... keys) {
+        Object value = firstObject(root, keys);
+        if (value == null) return null;
+        if (value instanceof String string) return string.isBlank() ? null : string;
+        return json(value);
     }
 
     private String json(Object value) {
@@ -880,6 +1039,84 @@ public final class HttpDhbOrderSyncClient implements DhbOrderSyncClient {
 
     private static String defaultText(String value, String fallback) {
         return value == null ? fallback : value;
+    }
+
+    private static String normalized(Object value) {
+        String text = text(value);
+        return text == null ? "" : text.replaceAll("\\s+", " ").strip();
+    }
+
+    private static void addIfPresent(Set<String> values, String value) {
+        if (value != null && !value.isBlank()) values.add(value.strip());
+    }
+
+    private static void collectTextValues(Object value, Set<String> values, String... keys) {
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                String key = String.valueOf(entry.getKey());
+                for (String expected : keys) {
+                    if (key.equalsIgnoreCase(expected)) {
+                        addIfPresent(values, text(entry.getValue()));
+                        break;
+                    }
+                }
+                collectTextValues(entry.getValue(), values, keys);
+            }
+        } else if (value instanceof Iterable<?> iterable) {
+            for (Object item : iterable) collectTextValues(item, values, keys);
+        }
+    }
+
+    private static <T> T requiredResponse(T value, String objectName) {
+        if (value == null) throw new IllegalStateException("订货宝" + objectName + "响应为空");
+        return value;
+    }
+
+    private static long expectedTotal(long expected, long actual, String objectName) {
+        if (actual < 0) throw new IllegalStateException("订货宝" + objectName + "分页total不能为负数");
+        if (expected >= 0 && expected != actual) {
+            throw new IllegalStateException("订货宝" + objectName + "分页total不一致 expected="
+                    + expected + " actual=" + actual);
+        }
+        return actual;
+    }
+
+    private static <T> List<T> pageItems(List<T> items, long total, int begin, String objectName) {
+        if (items == null) throw new IllegalStateException("订货宝" + objectName + "分页items为空");
+        if (begin > total || begin + items.size() > total) {
+            throw new IllegalStateException("订货宝" + objectName + "分页数量越界 begin=" + begin
+                    + " size=" + items.size() + " total=" + total);
+        }
+        if (items.isEmpty() && begin < total) {
+            throw new IllegalStateException("订货宝" + objectName + "分页提前返回空页 begin=" + begin
+                    + " total=" + total);
+        }
+        return items;
+    }
+
+    private static void requireUnique(Set<String> keys, String key, String objectName) {
+        if (!keys.add(key)) throw new IllegalStateException("订货宝" + objectName + "分页出现重复业务键=" + key);
+    }
+
+    private static void requireComplete(Set<String> keys, long expected, String objectName) {
+        if (expected < 0) throw new IllegalStateException("订货宝" + objectName + "未收到分页响应");
+        if (keys.size() != expected) {
+            throw new IllegalStateException("订货宝" + objectName + "去重后数量不完整 expected="
+                    + expected + " distinct=" + keys.size());
+        }
+    }
+
+    private static IllegalStateException maxPages(String objectName, int maxPages) {
+        return new IllegalStateException("订货宝" + objectName + "同步达到maxPages=" + maxPages
+                + "，但供应商仍有后续数据；本次不推进增量游标");
+    }
+
+    private static Instant incrementalFrom(DhbOrderSyncCommand command) {
+        return command.mode() == DhbOrderSyncMode.INCREMENTAL ? command.updatedFrom() : null;
+    }
+
+    private static Instant incrementalTo(DhbOrderSyncCommand command) {
+        return command.mode() == DhbOrderSyncMode.INCREMENTAL ? command.updatedTo() : null;
     }
 
     private static BigDecimal decimal(Object value) {

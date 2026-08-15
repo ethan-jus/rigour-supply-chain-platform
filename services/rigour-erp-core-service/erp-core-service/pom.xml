@@ -23,6 +23,14 @@
         </dependency>
         <dependency>
             <groupId>com.rigour</groupId>
+            <artifactId>integration-migration-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.rigour</groupId>
+            <artifactId>business-settings-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.rigour</groupId>
             <artifactId>rigour-platform-starter</artifactId>
         </dependency>
         <dependency>

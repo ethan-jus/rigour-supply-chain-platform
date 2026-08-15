@@ -289,11 +289,14 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
 
     @Override
     public SupplyDataPageView<InventoryBalanceView> inventory(String tenantId, int begin, int step,
-                                                     String query, String warehouseCode) {
+                                                     String query, String warehouseCode, String status) {
         var wrapper = Wrappers.<InventoryBalanceEntity>query().eq("tenant_id", tenantId);
         applySearch(wrapper, query, "source_goods_code", "source_goods_name",
                 "first_option_name", "second_option_name");
-        if (!missing(warehouseCode)) wrapper.eq("source_warehouse_code", warehouseCode.strip());
+        List<String> warehouseCodes = splitValues(warehouseCode);
+        if (warehouseCodes.size() == 1) wrapper.eq("source_warehouse_code", warehouseCodes.getFirst());
+        else if (!warehouseCodes.isEmpty()) wrapper.in("source_warehouse_code", warehouseCodes);
+        applyInventoryStatus(wrapper, status);
         long total = inventoryBalanceMapper.selectCount(wrapper);
         List<InventoryBalanceEntity> page = inventoryBalanceMapper.selectList(wrapper
                 .orderByAsc("CAST(source_warehouse_code AS UNSIGNED)")
@@ -630,7 +633,9 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
 
     @Transactional
     @Override public void completeRun(String tenantId, UUID runId, RunStatistics value) {
-        finishRun(tenantId, runId, "SUCCEEDED", value, null, null);
+        String status = value.dictionaryAudit().unmapped() == 0
+                ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
+        finishRun(tenantId, runId, status, value, null, null);
     }
 
     @Transactional
@@ -905,10 +910,21 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         LocalDateTime now = now(); entity.status = status; entity.fetchedCount = value.fetched();
         entity.createdCount = value.created(); entity.changedCount = value.changed();
         entity.duplicateCount = value.duplicates(); entity.rejectedCount = value.rejected();
+        entity.unmappedCount = value.dictionaryAudit().unmapped();
+        entity.dictSnapshotJson = auditJson(value.dictionaryAudit().revisions());
+        entity.mappingIssuesJson = auditJson(value.dictionaryAudit().issues());
         entity.errorCode = errorCode; entity.errorMessage = errorMessage; entity.finishedAt = now;
         entity.updatedAt = now; syncRunMapper.updateById(entity);
         syncLockMapper.delete(Wrappers.<MasterDataSyncLockEntity>query()
                 .eq("tenant_id", tenantId).eq("run_id", runId.toString()));
+    }
+
+    private static String auditJson(Object value) {
+        try {
+            return SOURCE_FIELDS_MAPPER.writeValueAsString(value);
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("ERP同步字典审计序列化失败", exception);
+        }
     }
 
     private void acquireRunLock(String tenantId, String objectType, UUID runId, LocalDateTime now) {
@@ -924,7 +940,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             syncLockMapper.insert(lock);
         } catch (DuplicateKeyException exception) {
             throw new com.rigour.shared.core.exception.BusinessException(
-                    com.rigour.shared.core.api.ErrorCode.CONFLICT,
+                    com.rigour.shared.core.api.ErrorCode.SYNC_ALREADY_RUNNING,
                     "当前租户该类 ERP 数据已有同步任务运行中", java.util.List.of());
         }
     }
@@ -963,6 +979,12 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         });
     }
 
+    private static List<String> splitValues(String value) {
+        if (missing(value)) return List.of();
+        return java.util.Arrays.stream(value.split(","))
+                .map(String::strip).filter(item -> !item.isBlank()).distinct().toList();
+    }
+
     private static <T> void applyStatus(com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<T> wrapper,
                                          String status, String... columns) {
         if (missing(status)) return;
@@ -971,6 +993,17 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             w.eq(columns[0], value);
             for (int index = 1; index < columns.length; index++) w.or().eq(columns[index], value);
         });
+    }
+
+    private static void applyInventoryStatus(
+            com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<InventoryBalanceEntity> wrapper,
+            String status) {
+        if (missing(status)) return;
+        switch (status.strip().toUpperCase(java.util.Locale.ROOT)) {
+            case "AVAILABLE" -> wrapper.gt("available_quantity", BigDecimal.ZERO);
+            case "NO_AVAILABLE" -> wrapper.le("available_quantity", BigDecimal.ZERO);
+            default -> { }
+        }
     }
 
     private static <T> Set<String> ids(List<T> values, Function<T, String> key) {

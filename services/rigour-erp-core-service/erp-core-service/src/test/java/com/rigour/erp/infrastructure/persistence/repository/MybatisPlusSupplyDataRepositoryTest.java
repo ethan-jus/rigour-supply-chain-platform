@@ -180,7 +180,7 @@ class MybatisPlusSupplyDataRepositoryTest {
         when(inventoryBalanceMapper.selectCount(any())).thenReturn(0L);
         when(inventoryBalanceMapper.selectList(any())).thenReturn(List.of());
 
-        repository.inventory("tenant-id", 20, 10, null, null);
+        repository.inventory("tenant-id", 20, 10, null, null, null);
 
         ArgumentCaptor<QueryWrapper<InventoryBalanceEntity>> captor =
                 ArgumentCaptor.forClass(QueryWrapper.class);
@@ -190,6 +190,46 @@ class MybatisPlusSupplyDataRepositoryTest {
                 .contains("source_warehouse_code ASC")
                 .contains("id ASC")
                 .contains("LIMIT 20,10");
+    }
+
+    @Test
+    void filtersInventoryBalancesByMultipleWarehouseCodes() {
+        when(inventoryBalanceMapper.selectCount(any())).thenReturn(0L);
+        when(inventoryBalanceMapper.selectList(any())).thenReturn(List.of());
+
+        repository.inventory("tenant-id", 0, 20, null, " 12, 13,12 ", null);
+
+        ArgumentCaptor<QueryWrapper<InventoryBalanceEntity>> captor =
+                ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(inventoryBalanceMapper).selectCount(captor.capture());
+        assertThat(captor.getValue().getSqlSegment())
+                .contains("source_warehouse_code IN");
+    }
+
+    @Test
+    void filtersInventoryBalancesByAvailableQuantityStatus() {
+        when(inventoryBalanceMapper.selectCount(any())).thenReturn(0L);
+        when(inventoryBalanceMapper.selectList(any())).thenReturn(List.of());
+
+        repository.inventory("tenant-id", 0, 20, null, null, "AVAILABLE");
+
+        ArgumentCaptor<QueryWrapper<InventoryBalanceEntity>> captor =
+                ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(inventoryBalanceMapper).selectCount(captor.capture());
+        assertThat(captor.getValue().getSqlSegment()).contains("available_quantity >");
+    }
+
+    @Test
+    void filtersInventoryBalancesByNoAvailableQuantityStatus() {
+        when(inventoryBalanceMapper.selectCount(any())).thenReturn(0L);
+        when(inventoryBalanceMapper.selectList(any())).thenReturn(List.of());
+
+        repository.inventory("tenant-id", 0, 20, null, null, "NO_AVAILABLE");
+
+        ArgumentCaptor<QueryWrapper<InventoryBalanceEntity>> captor =
+                ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(inventoryBalanceMapper).selectCount(captor.capture());
+        assertThat(captor.getValue().getSqlSegment()).contains("available_quantity <=");
     }
 
     @Test

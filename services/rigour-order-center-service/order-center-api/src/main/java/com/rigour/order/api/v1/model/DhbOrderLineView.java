@@ -33,5 +33,14 @@ public record DhbOrderLineView(
         /** 计量单位。 */
         String unit,
         /** 明细备注。 */
-        String remark) {
+        String remark,
+        BigDecimal purchasePrice,
+        BigDecimal conversionNumber,
+        BigDecimal offerPrice,
+        BigDecimal actualAmount,
+        BigDecimal goodsWeight,
+        String preSale,
+        String contentType,
+        String invoiceTax,
+        BigDecimal contentPercent) {
 }
