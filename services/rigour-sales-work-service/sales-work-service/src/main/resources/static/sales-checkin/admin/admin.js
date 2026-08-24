@@ -15,7 +15,8 @@
         total: 0,
         totalPages: 1,
         loading: false,
-        controller: null
+        controller: null,
+        previewTrigger: null
     };
 
     const $ = (selector, root = document) => root.querySelector(selector);
@@ -53,6 +54,24 @@
         $("#retry-button").addEventListener("click", loadSubmissions);
         $("#previous-page").addEventListener("click", () => changePage(state.page - 1));
         $("#next-page").addEventListener("click", () => changePage(state.page + 1));
+        $("#image-preview-close").addEventListener("click", closeImagePreview);
+        $("#image-preview-dialog").addEventListener("click", (event) => {
+            if (event.target === event.currentTarget) closeImagePreview();
+        });
+        $("#image-preview-dialog").addEventListener("close", cleanupImagePreview);
+        $("#image-preview-content").addEventListener("load", () => {
+            $("#image-preview-content").hidden = false;
+            $("#image-preview-error").hidden = true;
+        });
+        $("#image-preview-content").addEventListener("error", () => {
+            $("#image-preview-content").hidden = true;
+            $("#image-preview-error").hidden = false;
+        });
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape" && $("#image-preview-dialog").hasAttribute("open")) {
+                closeImagePreview();
+            }
+        });
     }
 
     function applyOptions(payload) {
@@ -159,6 +178,11 @@
     function renderRows(items) {
         const root = $("#submission-rows");
         const template = $("#submission-row-template");
+        root.querySelectorAll("audio.media-audio").forEach((audio) => {
+            audio.pause();
+            audio.removeAttribute("src");
+            audio.load();
+        });
         root.replaceChildren();
         items.forEach((item) => {
             const row = template.content.firstElementChild.cloneNode(true);
@@ -218,26 +242,155 @@
     function renderMedia(root, item) {
         root.replaceChildren();
         const id = cleanText(item.id || item.submissionId);
-        const media = [
-            ["storefront-photo", "现场照片", item.storefrontPhotoAvailable],
-            ["wechat-screenshot", "企微截图", item.wechatScreenshotAvailable],
-            ["audio", "拜访录音", item.audioAvailable]
-        ];
-        media.forEach(([kind, label, available]) => {
-            if (!id || available !== true) return;
-            const link = document.createElement("a");
-            link.className = "media-link";
-            link.href = `${MEDIA_PATH}/${encodeURIComponent(id)}/media/${kind}`;
-            link.textContent = label;
-            link.setAttribute("download", "");
-            root.appendChild(link);
-        });
-        if (!root.hasChildNodes()) {
-            const empty = document.createElement("span");
-            empty.className = "media-empty";
-            empty.textContent = "无可下载材料";
-            root.appendChild(empty);
+        if (!isUuid(id)) return renderEmptyMedia(root);
+        if (item.storefrontPhotoAvailable === true) {
+            root.appendChild(createImageMedia(id, "storefront-photo", "门店打卡照"));
         }
+        if (item.wechatScreenshotAvailable === true) {
+            root.appendChild(createImageMedia(id, "wechat-screenshot", "企微截图"));
+        }
+        if (item.audioAvailable === true) {
+            root.appendChild(createAudioMedia(id));
+        }
+        if (!root.hasChildNodes()) {
+            renderEmptyMedia(root);
+        }
+    }
+
+    function createImageMedia(id, kind, label) {
+        const card = document.createElement("section");
+        card.className = "media-card media-card--image";
+        const title = document.createElement("strong");
+        title.className = "media-title";
+        title.textContent = label;
+
+        const previewUrl = mediaUrl(id, kind);
+        const downloadUrl = mediaUrl(id, kind, { download: true });
+        const button = document.createElement("button");
+        button.className = "media-thumbnail-button";
+        button.type = "button";
+        button.setAttribute("aria-label", `放大预览${label}`);
+
+        const image = document.createElement("img");
+        image.className = "media-thumbnail";
+        image.src = mediaUrl(id, kind, { thumbnail: true });
+        image.alt = `${label}缩略图`;
+        image.loading = "lazy";
+        image.decoding = "async";
+        image.addEventListener("error", () => {
+            if (image.dataset.fallback !== "original") {
+                image.dataset.fallback = "original";
+                image.src = previewUrl;
+                return;
+            }
+            button.classList.add("is-unavailable");
+            image.hidden = true;
+            const fallback = document.createElement("span");
+            fallback.className = "media-thumbnail-fallback";
+            fallback.textContent = "点击查看原图";
+            button.appendChild(fallback);
+        });
+        button.addEventListener("click", () => openImagePreview(previewUrl, downloadUrl, label, button));
+        button.appendChild(image);
+
+        const hint = document.createElement("span");
+        hint.className = "media-preview-hint";
+        hint.textContent = "点击放大";
+        button.appendChild(hint);
+        card.append(title, button, createDownloadLink(downloadUrl, `下载${label}`));
+        return card;
+    }
+
+    function createAudioMedia(id) {
+        const card = document.createElement("section");
+        card.className = "media-card media-card--audio";
+        const title = document.createElement("strong");
+        title.className = "media-title";
+        title.textContent = "拜访录音";
+
+        const audio = document.createElement("audio");
+        audio.className = "media-audio";
+        audio.controls = true;
+        audio.preload = "none";
+        audio.src = mediaUrl(id, "audio");
+        audio.setAttribute("controlslist", "nodownload");
+        audio.setAttribute("aria-label", "播放拜访录音");
+        audio.addEventListener("play", () => {
+            document.querySelectorAll("audio.media-audio").forEach((other) => {
+                if (other !== audio) other.pause();
+            });
+        });
+
+        const hint = document.createElement("span");
+        hint.className = "media-audio-hint";
+        hint.textContent = "点击播放，可拖动进度";
+        card.append(title, audio, hint,
+            createDownloadLink(mediaUrl(id, "audio", { download: true }), "下载录音"));
+        return card;
+    }
+
+    function createDownloadLink(url, label) {
+        const link = document.createElement("a");
+        link.className = "media-download";
+        link.href = url;
+        link.textContent = label;
+        link.setAttribute("download", "");
+        return link;
+    }
+
+    function renderEmptyMedia(root) {
+        const empty = document.createElement("span");
+        empty.className = "media-empty";
+        empty.textContent = "暂无现场材料";
+        root.appendChild(empty);
+    }
+
+    function mediaUrl(id, kind, options = {}) {
+        const base = `${MEDIA_PATH}/${encodeURIComponent(id)}/media/${kind}`;
+        if (options.thumbnail) return `${base}/thumbnail`;
+        return options.download ? `${base}?download=true` : base;
+    }
+
+    function openImagePreview(previewUrl, downloadUrl, label, trigger) {
+        const dialog = $("#image-preview-dialog");
+        const image = $("#image-preview-content");
+        state.previewTrigger = trigger;
+        $("#image-preview-title").textContent = label;
+        $("#image-preview-download").href = downloadUrl;
+        $("#image-preview-error").hidden = true;
+        image.hidden = true;
+        image.alt = `${label}大图预览`;
+        image.src = previewUrl;
+        document.body.classList.add("preview-open");
+        if (typeof dialog.showModal === "function") dialog.showModal();
+        else dialog.setAttribute("open", "");
+        $("#image-preview-close").focus();
+    }
+
+    function closeImagePreview() {
+        const dialog = $("#image-preview-dialog");
+        if (!dialog.hasAttribute("open")) return;
+        if (typeof dialog.close === "function") dialog.close();
+        else {
+            dialog.removeAttribute("open");
+            cleanupImagePreview();
+        }
+    }
+
+    function cleanupImagePreview() {
+        const image = $("#image-preview-content");
+        image.removeAttribute("src");
+        image.alt = "";
+        image.hidden = true;
+        $("#image-preview-error").hidden = true;
+        $("#image-preview-download").href = "#";
+        document.body.classList.remove("preview-open");
+        if (state.previewTrigger && document.contains(state.previewTrigger)) state.previewTrigger.focus();
+        state.previewTrigger = null;
+    }
+
+    function isUuid(value) {
+        return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
     }
 
     function renderResultSummary(visibleCount) {

@@ -3,7 +3,9 @@ package com.rigour.sales.temporarycheckin;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.startsWith;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
@@ -12,6 +14,8 @@ import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.forwardedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -22,6 +26,9 @@ import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateSubmission
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.LocationCommand;
 import com.rigour.shared.file.FileMetadata;
 import com.rigour.shared.file.FileStorage;
+import java.awt.Color;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.math.BigDecimal;
@@ -30,6 +37,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import javax.imageio.ImageIO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -427,6 +435,83 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(status().isOk());
     }
 
+    @Test
+    void previewsImagesAndAudioInlineWithExplicitDownloadsThumbnailsAndRanges() throws Exception {
+        UUID submissionId = insertAdminSubmission(
+                "北京", VISITOR_ID, STORE_ID, "北京门店", "媒体预览客户", "媒体预览验收");
+        byte[] jpeg = jpeg(960, 640);
+        byte[] wav = new byte[] {'R', 'I', 'F', 'F', 4, 0, 0, 0, 'W', 'A', 'V', 'E'};
+        jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET storefront_photo_size_bytes=?,
+                       audio_object_key='tenant/beijing.wav', audio_content_type='audio/wav',
+                       audio_size_bytes=?, audio_sha256=?, audio_original_filename='visit.wav'
+                 WHERE id=?
+                """, jpeg.length, wav.length, "c".repeat(64), bin(submissionId));
+        when(fileStorage.open(TENANT_ID.toString(), "tenant/beijing.jpg"))
+                .thenAnswer(invocation -> new ByteArrayInputStream(jpeg));
+        when(fileStorage.open(TENANT_ID.toString(), "tenant/beijing.wav"))
+                .thenAnswer(invocation -> new ByteArrayInputStream(wav));
+
+        mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/storefront-photo", submissionId)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", startsWith("inline;")))
+                .andExpect(header().string("Accept-Ranges", "bytes"))
+                .andExpect(header().string("Cache-Control", "private, no-store"))
+                .andExpect(content().contentType(MediaType.IMAGE_JPEG))
+                .andExpect(content().bytes(jpeg));
+
+        MvcResult thumbnail = mockMvc.perform(get(
+                        "/sales-checkin/admin/submissions/{id}/media/storefront-photo/thumbnail", submissionId)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", startsWith("inline;")))
+                .andExpect(content().contentType(MediaType.IMAGE_JPEG))
+                .andReturn();
+        BufferedImage thumbnailImage = ImageIO.read(
+                new ByteArrayInputStream(thumbnail.getResponse().getContentAsByteArray()));
+        assertThat(thumbnailImage).isNotNull();
+        assertThat(Math.max(thumbnailImage.getWidth(), thumbnailImage.getHeight())).isLessThanOrEqualTo(320);
+        assertThat(thumbnail.getResponse().getContentAsByteArray().length).isLessThan(jpeg.length);
+
+        mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio", submissionId)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .header("Range", "bytes=0-3"))
+                .andExpect(status().isPartialContent())
+                .andExpect(header().string("Content-Range", "bytes 0-3/12"))
+                .andExpect(header().longValue("Content-Length", 4))
+                .andExpect(header().string("Accept-Ranges", "bytes"))
+                .andExpect(header().string("Content-Disposition", startsWith("inline;")))
+                .andExpect(content().bytes(new byte[] {'R', 'I', 'F', 'F'}));
+
+        mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio", submissionId)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .header("Range", "bytes=-4"))
+                .andExpect(status().isPartialContent())
+                .andExpect(header().string("Content-Range", "bytes 8-11/12"))
+                .andExpect(content().bytes(new byte[] {'W', 'A', 'V', 'E'}));
+
+        mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio", submissionId)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .param("download", "true"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", startsWith("attachment;")))
+                .andExpect(content().contentType("audio/wav"))
+                .andExpect(content().bytes(wav));
+
+        clearInvocations(fileStorage);
+        mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio", submissionId)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .header("Range", "bytes=0-1,4-5"))
+                .andExpect(status().isRequestedRangeNotSatisfiable())
+                .andExpect(header().string("Content-Range", "bytes */12"));
+        mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio/thumbnail", submissionId)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                .andExpect(status().isBadRequest());
+        verify(fileStorage, never()).open(any(String.class), any(String.class));
+    }
+
     private ResultActions upload(UUID submissionId, String kind, MockMultipartFile file) throws Exception {
         return mockMvc.perform(multipart("/sales-checkin/api/v1/submissions/{id}/media/{kind}", submissionId, kind)
                 .file(file)
@@ -536,5 +621,19 @@ class TemporaryCheckinApiIntegrationTests {
 
     private static byte[] bin(UUID value) {
         return SalesUuidCodec.encode(value);
+    }
+
+    private static byte[] jpeg(int width, int height) throws Exception {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        try {
+            graphics.setColor(new Color(16, 110, 104));
+            graphics.fillRect(0, 0, width, height);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        assertThat(ImageIO.write(image, "jpeg", output)).isTrue();
+        return output.toByteArray();
     }
 }

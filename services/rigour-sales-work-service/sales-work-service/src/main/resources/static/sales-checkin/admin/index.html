@@ -151,6 +151,22 @@
     </aside>
 </main>
 
+<dialog id="image-preview-dialog" class="image-preview-dialog" aria-labelledby="image-preview-title">
+    <section class="image-preview-panel">
+        <header class="image-preview-header">
+            <h2 id="image-preview-title">图片预览</h2>
+            <button id="image-preview-close" class="image-preview-close" type="button" aria-label="关闭图片预览">×</button>
+        </header>
+        <div class="image-preview-stage">
+            <img id="image-preview-content" alt="" hidden>
+            <p id="image-preview-error" class="image-preview-error" hidden>当前图片格式无法在线预览，请下载原图查看。</p>
+        </div>
+        <footer class="image-preview-footer">
+            <a id="image-preview-download" class="media-download" href="#">下载原图</a>
+        </footer>
+    </section>
+</dialog>
+
 <template id="submission-row-template">
     <tr>
         <td data-label="时间 / 状态" class="time-cell">

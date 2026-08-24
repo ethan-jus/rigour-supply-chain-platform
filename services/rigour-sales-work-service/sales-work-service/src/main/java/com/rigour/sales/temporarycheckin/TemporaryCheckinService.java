@@ -49,6 +49,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -345,13 +346,15 @@ public class TemporaryCheckinService {
         MediaKind kind = MediaKind.parse(rawKind);
         MediaReference media = repository.findMedia(tenantId, submissionId, kind.columnPrefix, scopedCity)
                 .orElseThrow(() -> TemporaryCheckinException.notFound("媒体文件不存在"));
-        try {
-            InputStream input = fileStorage.open(tenantId.toString(), media.objectKey());
-            return new AdminMedia(input, media.sizeBytes() == null ? 0 : media.sizeBytes(),
-                    media.contentType(), media.originalFilename());
-        } catch (RuntimeException exception) {
-            throw TemporaryCheckinException.storage("媒体文件读取失败");
-        }
+        Supplier<InputStream> opener = () -> {
+            try {
+                return fileStorage.open(tenantId.toString(), media.objectKey());
+            } catch (RuntimeException exception) {
+                throw TemporaryCheckinException.storage("媒体文件读取失败");
+            }
+        };
+        return new AdminMedia(opener, media.sizeBytes() == null ? 0 : media.sizeBytes(),
+                media.contentType(), media.originalFilename());
     }
 
     private AdminQuery normalizeAdminQuery(
@@ -832,7 +835,12 @@ public class TemporaryCheckinService {
         }
     }
 
-    public record AdminMedia(InputStream input, long sizeBytes, String contentType, String originalFilename) { }
+    public record AdminMedia(
+            Supplier<InputStream> opener, long sizeBytes, String contentType, String originalFilename) {
+        public InputStream open() {
+            return opener.get();
+        }
+    }
 
     private record AdminQuery(
             Instant from, Instant toExclusive, String city, UUID salespersonId, String status,
