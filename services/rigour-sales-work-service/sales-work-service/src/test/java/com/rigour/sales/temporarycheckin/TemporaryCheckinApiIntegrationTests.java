@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.forwardedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.rigour.sales.infrastructure.persistence.SalesUuidCodec;
@@ -21,6 +22,7 @@ import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateSubmission
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.LocationCommand;
 import com.rigour.shared.file.FileMetadata;
 import com.rigour.shared.file.FileStorage;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -62,6 +64,9 @@ class TemporaryCheckinApiIntegrationTests {
             UUID.fromString("20000000-0000-0000-0000-000000000003");
     private static final UUID STORE_ID = UUID.fromString("30000000-0000-0000-0000-000000000001");
     private static final UUID STORE_CLIENT_ID = UUID.fromString("31000000-0000-0000-0000-000000000001");
+    private static final UUID SHENZHEN_SALESPERSON_ID =
+            UUID.fromString("20000000-0000-0000-0000-000000000004");
+    private static final UUID SHENZHEN_STORE_ID = UUID.fromString("30000000-0000-0000-0000-000000000002");
     private static final String SUBMISSION_KEY = "temporary-checkin-browser-key-" + "a".repeat(32);
     private static final String OTHER_SUBMISSION_KEY = "temporary-checkin-browser-key-" + "b".repeat(32);
 
@@ -107,11 +112,20 @@ class TemporaryCheckinApiIntegrationTests {
         jdbc.update("DELETE FROM temp_sales_checkin_salesperson");
         insertSalesperson(TENANT_ID, CREATOR_ID, "门店创建人", "北京");
         insertSalesperson(TENANT_ID, VISITOR_ID, "当次拜访人", "北京");
+        insertSalesperson(TENANT_ID, SHENZHEN_SALESPERSON_ID, "深圳拜访人", "深圳");
         insertSalesperson(OTHER_TENANT_ID, OTHER_TENANT_SALESPERSON_ID, "外部租户销售", "北京");
         insertStore();
+        insertShenzhenStore();
         reset(fileStorage);
         when(fileStorage.put(any(FileMetadata.class), any(InputStream.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
+    }
+
+    @Test
+    void forwardsProtectedAdminPageEntryToBundledStaticPage() throws Exception {
+        mockMvc.perform(get("/sales-checkin/admin/"))
+                .andExpect(status().isOk())
+                .andExpect(forwardedUrl("/sales-checkin/admin/index.html"));
     }
 
     @Test
@@ -324,7 +338,9 @@ class TemporaryCheckinApiIntegrationTests {
     void protectsCsvFromFormulaPrefixesAndKeepsUtf8Bom() throws Exception {
         insertCsvFormulaSubmission();
 
-        MvcResult exported = mockMvc.perform(get("/sales-checkin/admin/export.csv"))
+        MvcResult exported = mockMvc.perform(get("/sales-checkin/admin/export.csv")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
+                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
                 .andExpect(status().isOk())
                 .andReturn();
         String csv = new String(exported.getResponse().getContentAsByteArray(), StandardCharsets.UTF_8);
@@ -332,6 +348,83 @@ class TemporaryCheckinApiIntegrationTests {
         assertThat(csv).startsWith("\uFEFF");
         assertThat(csv).contains("\"'=formula\"", "\"'+formula\"", "\"'-formula\"", "\"'@formula\"",
                 "\"'\tformula\"", "\"'\rformula\"", "\"'\nformula\"");
+    }
+
+    @Test
+    void scopesAdminOptionsListsExportsAndMediaToTrustedUsername() throws Exception {
+        UUID beijingSubmission = insertAdminSubmission(
+                "北京", VISITOR_ID, STORE_ID, "北京门店", "北京客户", "北京跟进");
+        UUID shenzhenSubmission = insertAdminSubmission(
+                "深圳", SHENZHEN_SALESPERSON_ID, SHENZHEN_STORE_ID, "深圳门店", "深圳客户", "深圳跟进");
+
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/options"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_ADMIN_FORBIDDEN"));
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/options")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "unknown"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/options")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.scope.username").value("city-beijing"))
+                .andExpect(jsonPath("$.scope.allCities").value(false))
+                .andExpect(jsonPath("$.scope.city").value("北京"))
+                .andExpect(jsonPath("$.cities", hasSize(1)))
+                .andExpect(jsonPath("$.cities[0]").value("北京"))
+                .andExpect(jsonPath("$.salespersons", hasSize(2)));
+
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(1))
+                .andExpect(jsonPath("$.totalElements").value(1))
+                .andExpect(jsonPath("$.items", hasSize(1)))
+                .andExpect(jsonPath("$.items[0].id").value(beijingSubmission.toString()))
+                .andExpect(jsonPath("$.items[0].city").value("北京"))
+                .andExpect(jsonPath("$.items[0].locationAddress").value("北京市东城区测试路1号"));
+
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
+                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .param("q", "深圳客户")
+                        .param("page", "0")
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.scope.allCities").value(true))
+                .andExpect(jsonPath("$.total").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(shenzhenSubmission.toString()));
+
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .param("city", "深圳"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_ADMIN_FORBIDDEN"));
+
+        String beijingCsv = new String(mockMvc.perform(get("/sales-checkin/admin/export.csv")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray(),
+                StandardCharsets.UTF_8);
+        assertThat(beijingCsv).contains("北京客户", "location_address").doesNotContain("深圳客户");
+
+        String shenzhenCsv = new String(mockMvc.perform(get("/sales-checkin/admin/export.csv")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
+                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .param("city", "深圳"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray(),
+                StandardCharsets.UTF_8);
+        assertThat(shenzhenCsv).contains("深圳客户").doesNotContain("北京客户");
+
+        when(fileStorage.open(TENANT_ID.toString(), "tenant/shenzhen.jpg"))
+                .thenReturn(new ByteArrayInputStream(new byte[] {1, 2, 3, 4}));
+        mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/storefront-photo",
+                        shenzhenSubmission)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/storefront-photo",
+                        shenzhenSubmission)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-shenzhen"))
+                .andExpect(status().isOk());
     }
 
     private ResultActions upload(UUID submissionId, String kind, MockMultipartFile file) throws Exception {
@@ -380,6 +473,46 @@ class TemporaryCheckinApiIntegrationTests {
                         116.3971280, 39.9165270, 8.50, ?, '北京市朝阳区', 'ACTIVE', ?, ?)
                 """, bin(STORE_ID), bin(TENANT_ID), bin(STORE_CLIENT_ID), bin(CREATOR_ID),
                 Timestamp.from(now.minusSeconds(60)), Timestamp.from(now), Timestamp.from(now));
+    }
+
+    private void insertShenzhenStore() {
+        Instant now = Instant.now();
+        jdbc.update("""
+                INSERT INTO temp_sales_checkin_store
+                    (id, tenant_id, client_store_id, city, creator_salesperson_id, attribute, name,
+                     operating_status, contact_name, area_range, facility_count,
+                     business_types_json, intended_businesses_json, cooperation_intent, tags_json,
+                     status, created_at, updated_at)
+                VALUES (?, ?, ?, '深圳', ?, '台球', '深圳已导入门店', '营业中', '深圳店长',
+                        '100-300平米', '8张球桌', JSON_ARRAY('竞技赛事'), JSON_ARRAY('高德业务'),
+                        '中意向', JSON_ARRAY('单店'), 'ACTIVE', ?, ?)
+                """, bin(SHENZHEN_STORE_ID), bin(TENANT_ID), bin(UUID.randomUUID()),
+                bin(SHENZHEN_SALESPERSON_ID), Timestamp.from(now), Timestamp.from(now));
+    }
+
+    private UUID insertAdminSubmission(
+            String city, UUID salespersonId, UUID storeId, String storeName, String customerName,
+            String visitResult) {
+        UUID id = UUID.randomUUID();
+        Instant now = Instant.now();
+        String objectKey = "深圳".equals(city) ? "tenant/shenzhen.jpg" : "tenant/beijing.jpg";
+        String address = city + "市东城区测试路1号";
+        jdbc.update("""
+                INSERT INTO temp_sales_checkin_submission
+                    (id, tenant_id, client_submission_id, submission_key_hash, status, city,
+                     salesperson_id, salesperson_name_snapshot, store_id, store_name_snapshot,
+                     customer_name, visit_result, longitude, latitude, accuracy_meters,
+                     location_captured_at, location_note, location_address, location_adcode,
+                     privacy_accepted, storefront_photo_object_key, storefront_photo_content_type,
+                     storefront_photo_size_bytes, storefront_photo_sha256,
+                     storefront_photo_original_filename, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, 116.3971280, 39.9165270, 8.50,
+                        ?, '现场', ?, '110101', 1, ?, 'image/jpeg', 4, ?, 'store.jpg', ?, ?)
+                """, bin(id), bin(TENANT_ID), bin(UUID.randomUUID()), "a".repeat(64), city,
+                bin(salespersonId), "深圳".equals(city) ? "深圳拜访人" : "当次拜访人",
+                bin(storeId), storeName, customerName, visitResult, Timestamp.from(now.minusSeconds(30)), address,
+                objectKey, "b".repeat(64), Timestamp.from(now), Timestamp.from(now));
+        return id;
     }
 
     private void insertCsvFormulaSubmission() {

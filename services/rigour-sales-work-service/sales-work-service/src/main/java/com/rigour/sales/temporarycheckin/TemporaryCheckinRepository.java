@@ -102,17 +102,26 @@ public class TemporaryCheckinRepository {
     }
 
     public void insertSubmission(SubmissionWrite row) {
+        GeocodeWrite geocode = row.geocode();
         jdbc.update("""
                 INSERT INTO temp_sales_checkin_submission
                     (id, tenant_id, client_submission_id, submission_key_hash, status, city,
                      salesperson_id, salesperson_name_snapshot, store_id, store_name_snapshot,
                      customer_name, customer_phone, visit_result, longitude, latitude, accuracy_meters,
-                     location_captured_at, location_note, privacy_accepted, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                     location_captured_at, location_note,
+                     location_address, location_formatted_address, location_adcode, location_province,
+                     location_city, location_district, location_township, amap_longitude, amap_latitude,
+                     geocode_status, geocode_error_code, geocoded_at,
+                     privacy_accepted, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """, bin(row.id()), bin(row.tenantId()), bin(row.clientSubmissionId()), row.keyHash(), row.city(),
                 bin(row.salespersonId()), row.salespersonName(), bin(row.storeId()), row.storeName(),
                 row.customerName(), row.customerPhone(), row.visitResult(), row.longitude(), row.latitude(),
                 row.accuracyMeters(), timestamp(row.locationCapturedAt()), row.locationNote(),
+                geocode.address(), geocode.formattedAddress(), geocode.adcode(), geocode.province(),
+                geocode.city(), geocode.district(), geocode.township(), geocode.amapLongitude(),
+                geocode.amapLatitude(), geocode.status(), geocode.errorCode(), timestamp(geocode.geocodedAt()),
                 timestamp(row.now()), timestamp(row.now()));
     }
 
@@ -141,6 +150,7 @@ public class TemporaryCheckinRepository {
                        salesperson_name_snapshot, store_id, store_name_snapshot,
                        customer_name, customer_phone, visit_result,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       location_address, location_adcode,
                        storefront_photo_original_filename, wechat_screenshot_original_filename,
                        audio_original_filename, created_at, submitted_at
                   FROM temp_sales_checkin_submission
@@ -157,17 +167,81 @@ public class TemporaryCheckinRepository {
         return jdbc.query(sql.toString(), (rs, row) -> exportRow(rs), arguments.toArray());
     }
 
-    public Optional<MediaReference> findMedia(UUID tenantId, UUID submissionId, String prefix) {
+    public long countAdminSubmissions(UUID tenantId, Instant from, Instant toExclusive, String city,
+                                      UUID salespersonId, String status, String escapedQuery) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT COUNT(*)
+                  FROM temp_sales_checkin_submission
+                 WHERE tenant_id=?
+                """);
+        List<Object> arguments = new ArrayList<>(List.of(bin(tenantId)));
+        appendAdminFilters(sql, arguments, from, toExclusive, city, salespersonId, status, escapedQuery);
+        Long count = jdbc.queryForObject(sql.toString(), Long.class, arguments.toArray());
+        return count == null ? 0 : count;
+    }
+
+    public List<AdminSubmissionRow> findAdminSubmissions(
+            UUID tenantId, Instant from, Instant toExclusive, String city, UUID salespersonId,
+            String status, String escapedQuery, int offset, int limit) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT id, status, city, salesperson_id, salesperson_name_snapshot,
+                       store_id, store_name_snapshot, customer_name, customer_phone, visit_result,
+                       longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       location_address, location_adcode,
+                       storefront_photo_object_key, wechat_screenshot_object_key, audio_object_key,
+                       created_at, submitted_at
+                  FROM temp_sales_checkin_submission
+                 WHERE tenant_id=?
+                """);
+        List<Object> arguments = new ArrayList<>(List.of(bin(tenantId)));
+        appendAdminFilters(sql, arguments, from, toExclusive, city, salespersonId, status, escapedQuery);
+        sql.append(" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?");
+        arguments.add(limit);
+        arguments.add(offset);
+        return jdbc.query(sql.toString(), (rs, row) -> adminSubmission(rs), arguments.toArray());
+    }
+
+    public Optional<MediaReference> findMedia(
+            UUID tenantId, UUID submissionId, String prefix, String city) {
         String sql = "SELECT " + prefix + "object_key AS object_key, "
                 + prefix + "content_type AS content_type, " + prefix + "size_bytes AS size_bytes, "
                 + prefix + "sha256 AS sha256, "
                 + prefix + "original_filename AS original_filename "
-                + "FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=? LIMIT 1";
+                + "FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=?"
+                + (city == null ? "" : " AND city=?") + " LIMIT 1";
+        List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(submissionId)));
+        if (city != null) arguments.add(city);
         return jdbc.query(sql, (rs, row) -> new MediaReference(rs.getString("object_key"),
                 rs.getString("content_type"), nullableLong(rs, "size_bytes"),
-                rs.getString("sha256"), rs.getString("original_filename")), bin(tenantId), bin(submissionId)).stream()
+                rs.getString("sha256"), rs.getString("original_filename")), arguments.toArray()).stream()
                 .filter(row -> row.objectKey() != null)
                 .findFirst();
+    }
+
+    private static void appendAdminFilters(
+            StringBuilder sql, List<Object> arguments, Instant from, Instant toExclusive, String city,
+            UUID salespersonId, String status, String escapedQuery) {
+        if (from != null) { sql.append(" AND created_at>=?"); arguments.add(timestamp(from)); }
+        if (toExclusive != null) { sql.append(" AND created_at<?"); arguments.add(timestamp(toExclusive)); }
+        if (city != null) { sql.append(" AND city=?"); arguments.add(city); }
+        if (salespersonId != null) {
+            sql.append(" AND salesperson_id=?");
+            arguments.add(bin(salespersonId));
+        }
+        if (status != null) { sql.append(" AND status=?"); arguments.add(status); }
+        if (escapedQuery != null) {
+            String pattern = "%" + escapedQuery + "%";
+            sql.append("""
+                     AND (store_name_snapshot LIKE ? ESCAPE '='
+                          OR customer_name LIKE ? ESCAPE '='
+                          OR salesperson_name_snapshot LIKE ? ESCAPE '='
+                          OR customer_phone LIKE ? ESCAPE '=')
+                    """);
+            arguments.add(pattern);
+            arguments.add(pattern);
+            arguments.add(pattern);
+            arguments.add(pattern);
+        }
     }
 
     private static String storeSelect() {
@@ -244,8 +318,23 @@ public class TemporaryCheckinRepository {
                 rs.getString("customer_phone"), rs.getString("visit_result"), rs.getBigDecimal("longitude"),
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
+                rs.getString("location_address"), rs.getString("location_adcode"),
                 rs.getString("storefront_photo_original_filename"),
                 rs.getString("wechat_screenshot_original_filename"), rs.getString("audio_original_filename"),
+                instant(rs, "created_at"), instant(rs, "submitted_at"));
+    }
+
+    private static AdminSubmissionRow adminSubmission(ResultSet rs) throws SQLException {
+        return new AdminSubmissionRow(uuid(rs, "id"), rs.getString("status"), rs.getString("city"),
+                uuid(rs, "salesperson_id"), rs.getString("salesperson_name_snapshot"),
+                uuid(rs, "store_id"), rs.getString("store_name_snapshot"), rs.getString("customer_name"),
+                rs.getString("customer_phone"), rs.getString("visit_result"), rs.getBigDecimal("longitude"),
+                rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
+                instant(rs, "location_captured_at"), rs.getString("location_note"),
+                rs.getString("location_address"), rs.getString("location_adcode"),
+                rs.getString("storefront_photo_object_key") != null,
+                rs.getString("wechat_screenshot_object_key") != null,
+                rs.getString("audio_object_key") != null,
                 instant(rs, "created_at"), instant(rs, "submitted_at"));
     }
 
@@ -300,7 +389,12 @@ public class TemporaryCheckinRepository {
             UUID salespersonId, String salespersonName, UUID storeId, String storeName,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, Instant now) { }
+            Instant locationCapturedAt, String locationNote, GeocodeWrite geocode, Instant now) { }
+
+    public record GeocodeWrite(
+            String status, String address, String formattedAddress, String adcode,
+            String province, String city, String district, String township,
+            BigDecimal amapLongitude, BigDecimal amapLatitude, String errorCode, Instant geocodedAt) { }
 
     public record MediaWrite(
             String objectKey, String contentType, long sizeBytes, String sha256, String originalFilename) { }
@@ -310,6 +404,15 @@ public class TemporaryCheckinRepository {
             UUID salespersonId, String salespersonName, UUID storeId, String storeName,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, String storefrontPhotoFilename,
+            Instant locationCapturedAt, String locationNote, String locationAddress, String locationAdcode,
+            String storefrontPhotoFilename,
             String wechatScreenshotFilename, String audioFilename, Instant createdAt, Instant submittedAt) { }
+
+    public record AdminSubmissionRow(
+            UUID id, String status, String city, UUID salespersonId, String salespersonName,
+            UUID storeId, String storeName, String customerName, String customerPhone, String visitResult,
+            BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
+            Instant locationCapturedAt, String locationNote, String locationAddress, String locationAdcode,
+            boolean storefrontPhotoAvailable, boolean wechatScreenshotAvailable, boolean audioAvailable,
+            Instant createdAt, Instant submittedAt) { }
 }

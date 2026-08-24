@@ -33,6 +33,10 @@ final class TemporaryCheckinException extends RuntimeException {
         return new TemporaryCheckinException(HttpStatus.FORBIDDEN, "TEMP_CHECKIN_KEY_INVALID", message);
     }
 
+    static TemporaryCheckinException adminForbidden(String message) {
+        return new TemporaryCheckinException(HttpStatus.FORBIDDEN, "TEMP_CHECKIN_ADMIN_FORBIDDEN", message);
+    }
+
     static TemporaryCheckinException storage(String message) {
         return new TemporaryCheckinException(HttpStatus.SERVICE_UNAVAILABLE, "TEMP_CHECKIN_STORAGE_FAILED", message);
     }

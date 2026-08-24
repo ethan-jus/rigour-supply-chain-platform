@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0d5c63">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <meta name="description" content="销售拜访临时采集数据管理与导出">
+    <title>销售拜访数据管理</title>
+    <link rel="stylesheet" href="/sales-checkin/admin/admin.css">
+</head>
+<body>
+<header class="topbar">
+    <div class="topbar__inner">
+        <div class="brand">
+            <span class="brand__mark" aria-hidden="true">R</span>
+            <div>
+                <p>RIGOUR · 临时采集</p>
+                <h1>销售拜访数据管理</h1>
+            </div>
+        </div>
+        <a class="collection-link" href="/sales-checkin/">返回采集页</a>
+    </div>
+</header>
+
+<main class="page-shell">
+    <section class="scope-card" aria-labelledby="scope-heading">
+        <div class="scope-card__identity">
+            <span class="identity-avatar" aria-hidden="true">管</span>
+            <div>
+                <p id="scope-heading" class="eyebrow">当前管理账号</p>
+                <strong id="scope-username">正在识别…</strong>
+            </div>
+        </div>
+        <div class="scope-card__range">
+            <span>可查看范围</span>
+            <strong id="scope-range">正在加载…</strong>
+        </div>
+        <div class="scope-card__total">
+            <span>当前条件共</span>
+            <strong><span id="result-total">--</span> 条</strong>
+        </div>
+    </section>
+
+    <div id="page-error" class="notice notice--error" role="alert" hidden>
+        <div>
+            <strong>数据加载失败</strong>
+            <p id="page-error-message"></p>
+        </div>
+        <button id="retry-button" type="button">重试</button>
+    </div>
+
+    <section class="filter-card" aria-labelledby="filter-heading">
+        <div class="section-heading">
+            <div>
+                <p class="eyebrow">数据筛选</p>
+                <h2 id="filter-heading">查看拜访记录</h2>
+            </div>
+            <button id="reset-button" class="text-button" type="button">重置条件</button>
+        </div>
+
+        <form id="filter-form" class="filter-form">
+            <label class="field">
+                <span>开始日期</span>
+                <input id="filter-from" name="from" type="date">
+            </label>
+            <label class="field">
+                <span>结束日期</span>
+                <input id="filter-to" name="to" type="date">
+            </label>
+            <label class="field">
+                <span>城市</span>
+                <select id="filter-city" name="city">
+                    <option value="">全部城市</option>
+                </select>
+                <small id="city-scope-hint" hidden>账号仅可查看本城市数据</small>
+            </label>
+            <label class="field">
+                <span>销售</span>
+                <select id="filter-salesperson" name="salespersonId">
+                    <option value="">全部销售</option>
+                </select>
+            </label>
+            <label class="field">
+                <span>状态</span>
+                <select id="filter-status" name="status">
+                    <option value="">全部状态</option>
+                    <option value="SUBMITTED">已提交</option>
+                    <option value="DRAFT">草稿</option>
+                </select>
+            </label>
+            <div class="filter-actions">
+                <button id="search-button" class="primary-button" type="submit">
+                    <span aria-hidden="true">⌕</span>
+                    查询数据
+                </button>
+                <a id="export-link" class="secondary-button" href="/sales-checkin/admin/export.csv" download>
+                    <span aria-hidden="true">↓</span>
+                    导出当前筛选 CSV
+                </a>
+            </div>
+        </form>
+    </section>
+
+    <section class="data-card" aria-labelledby="data-heading">
+        <div class="data-card__heading">
+            <div>
+                <p class="eyebrow">拜访明细</p>
+                <h2 id="data-heading">打卡拜访记录</h2>
+            </div>
+            <p id="result-summary" aria-live="polite">正在加载…</p>
+        </div>
+
+        <div id="loading-state" class="loading-state" role="status">
+            <span class="spinner" aria-hidden="true"></span>
+            <span>正在读取拜访数据…</span>
+        </div>
+
+        <div id="table-wrap" class="table-wrap" hidden>
+            <table>
+                <thead>
+                <tr>
+                    <th scope="col">时间 / 状态</th>
+                    <th scope="col">城市 / 销售</th>
+                    <th scope="col">拜访对象</th>
+                    <th scope="col">拜访结果</th>
+                    <th scope="col">实际位置</th>
+                    <th scope="col">现场材料</th>
+                </tr>
+                </thead>
+                <tbody id="submission-rows"></tbody>
+            </table>
+        </div>
+
+        <div id="empty-state" class="empty-state" hidden>
+            <span aria-hidden="true">○</span>
+            <strong>没有找到拜访数据</strong>
+            <p>请调整日期、城市或状态后重试。</p>
+        </div>
+
+        <nav id="pagination" class="pagination" aria-label="拜访记录分页" hidden>
+            <button id="previous-page" type="button">上一页</button>
+            <span id="page-indicator">第 1 / 1 页</span>
+            <button id="next-page" type="button">下一页</button>
+        </nav>
+    </section>
+
+    <aside class="data-note">
+        <strong>数据说明</strong>
+        <p>本页为临时匿名自报采集数据。位置、照片、录音和销售姓名均可能被冒用或伪造，不能单独作为考勤、KPI、奖惩或纪律证据。</p>
+    </aside>
+</main>
+
+<template id="submission-row-template">
+    <tr>
+        <td data-label="时间 / 状态" class="time-cell">
+            <strong data-field="time"></strong>
+            <span data-field="captured-time"></span>
+            <span data-field="status" class="status-badge"></span>
+        </td>
+        <td data-label="城市 / 销售">
+            <strong data-field="city"></strong>
+            <span data-field="salesperson"></span>
+        </td>
+        <td data-label="拜访对象">
+            <strong data-field="store"></strong>
+            <span data-field="customer"></span>
+            <a data-field="phone" class="inline-link" hidden></a>
+        </td>
+        <td data-label="拜访结果">
+            <p data-field="result" class="visit-result"></p>
+        </td>
+        <td data-label="实际位置" class="location-cell">
+            <strong data-field="address"></strong>
+            <span data-field="location-note"></span>
+            <code data-field="coordinates"></code>
+            <span data-field="accuracy"></span>
+        </td>
+        <td data-label="现场材料">
+            <div data-field="media" class="media-links"></div>
+        </td>
+    </tr>
+</template>
+
+<script src="/sales-checkin/admin/admin.js" defer></script>
+</body>
+</html>

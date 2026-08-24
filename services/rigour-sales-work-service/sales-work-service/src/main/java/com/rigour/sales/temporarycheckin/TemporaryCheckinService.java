@@ -1,5 +1,10 @@
 package com.rigour.sales.temporarycheckin;
 
+import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminAccessPolicy.AdminScope;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.AdminOptionsResponse;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.AdminScopeView;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.AdminSubmissionPage;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.AdminSubmissionView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CompletedSubmissionView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateStoreRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateSubmissionRequest;
@@ -9,13 +14,16 @@ import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.MediaUploadView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.OptionsResponse;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.SalespersonOption;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.StoreView;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.AdminSubmissionRow;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.ExportRow;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.GeocodeWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.MediaReference;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.MediaWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.StoreRow;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.StoreWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.SubmissionRow;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.SubmissionWrite;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinReverseGeocoder.GeocodeResult;
 import com.rigour.shared.file.FileMetadata;
 import com.rigour.shared.file.FileStorage;
 import java.io.ByteArrayInputStream;
@@ -65,6 +73,7 @@ public class TemporaryCheckinService {
     private final TemporaryCheckinRepository repository;
     private final TemporaryCheckinProperties properties;
     private final FileStorage fileStorage;
+    private final TemporaryCheckinReverseGeocoder reverseGeocoder;
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final UUID tenantId;
@@ -73,11 +82,13 @@ public class TemporaryCheckinService {
             TemporaryCheckinRepository repository,
             TemporaryCheckinProperties properties,
             FileStorage fileStorage,
+            TemporaryCheckinReverseGeocoder reverseGeocoder,
             ObjectMapper objectMapper,
             Clock clock) {
         this.repository = repository;
         this.properties = properties;
         this.fileStorage = fileStorage;
+        this.reverseGeocoder = reverseGeocoder;
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.tenantId = properties.requireTenantId();
@@ -178,12 +189,18 @@ public class TemporaryCheckinService {
         if (!city.equals(store.city())) throw TemporaryCheckinException.badRequest("门店与选择城市不一致");
         UUID id = UUID.randomUUID();
         Instant now = clock.instant();
+        GeocodeResult geocode = reverseGeocoder.resolve(
+                normalized.location().longitude(), normalized.location().latitude());
+        GeocodeWrite geocodeWrite = new GeocodeWrite(geocode.status(), geocode.address(),
+                geocode.formattedAddress(), geocode.adcode(), geocode.province(), geocode.city(),
+                geocode.district(), geocode.township(), geocode.amapLongitude(), geocode.amapLatitude(),
+                geocode.errorCode(), now);
         SubmissionWrite write = new SubmissionWrite(id, tenantId, request.clientSubmissionId(), keyHash,
                 city, salesperson.id(), salesperson.name(), store.id(), store.name(),
                 normalized.customerName(), normalized.customerPhone(), normalized.visitResult(),
                 normalized.location().longitude(), normalized.location().latitude(),
                 normalized.location().accuracyMeters(), normalized.location().capturedAt(),
-                normalized.location().note(), now);
+                normalized.location().note(), geocodeWrite, now);
         try {
             repository.insertSubmission(write);
         } catch (DataIntegrityViolationException duplicate) {
@@ -260,20 +277,47 @@ public class TemporaryCheckinService {
         return new CompletedSubmissionView(submissionId, "SUBMITTED", submittedAt);
     }
 
-    public String exportCsv(LocalDate from, LocalDate to, String city, UUID salespersonId, String status) {
-        if (from != null && to != null && from.isAfter(to)) {
-            throw TemporaryCheckinException.badRequest("from不能晚于to");
+    public AdminOptionsResponse adminOptions(AdminScope scope) {
+        String scopedCity = requireConfiguredScope(scope);
+        List<String> cities = scope.allCities() ? properties.getCities() : List.of(scopedCity);
+        List<SalespersonOption> salespersons = repository.findSalespersons(tenantId, scopedCity).stream()
+                .filter(row -> cities.contains(row.city()))
+                .map(row -> new SalespersonOption(row.id(), row.name(), row.city()))
+                .toList();
+        return new AdminOptionsResponse(scopeView(scope), cities, salespersons);
+    }
+
+    public AdminSubmissionPage findAdminSubmissions(
+            AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId,
+            String status, String query, Integer requestedPage, Integer requestedSize) {
+        AdminQuery filters = normalizeAdminQuery(scope, from, to, city, salespersonId, status, query);
+        int page = requestedPage == null ? 0 : requestedPage;
+        int size = requestedSize == null ? 20 : requestedSize;
+        if (page < 0) throw TemporaryCheckinException.badRequest("page不能小于0");
+        if (size < 1 || size > 100) {
+            throw TemporaryCheckinException.badRequest("size必须在1到100之间");
         }
-        if (from != null && to != null && Duration.between(
-                from.atStartOfDay(BUSINESS_ZONE), to.plusDays(1).atStartOfDay(BUSINESS_ZONE)).toDays() > 366) {
-            throw TemporaryCheckinException.badRequest("导出日期范围不能超过366天");
+        long longOffset = (long) page * size;
+        if (longOffset > Integer.MAX_VALUE) {
+            throw TemporaryCheckinException.badRequest("分页范围过大");
         }
-        String normalizedCity = optionalEnum(city, properties.getCities(), "city");
-        String normalizedStatus = optionalEnum(status, List.copyOf(SUBMISSION_STATUSES), "status");
-        Instant fromInstant = from == null ? null : from.atStartOfDay(BUSINESS_ZONE).toInstant();
-        Instant toExclusive = to == null ? null : to.plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant();
-        List<ExportRow> rows = repository.export(tenantId, fromInstant, toExclusive, normalizedCity,
-                salespersonId, normalizedStatus, MAX_EXPORT_ROWS + 1);
+        long total = repository.countAdminSubmissions(tenantId, filters.from(), filters.toExclusive(),
+                filters.city(), filters.salespersonId(), filters.status(), filters.escapedQuery());
+        List<AdminSubmissionView> items = repository.findAdminSubmissions(
+                        tenantId, filters.from(), filters.toExclusive(), filters.city(), filters.salespersonId(),
+                        filters.status(), filters.escapedQuery(), (int) longOffset, size).stream()
+                .map(TemporaryCheckinService::adminSubmissionView)
+                .toList();
+        long pageCount = total == 0 ? 0 : ((total - 1) / size) + 1;
+        int totalPages = (int) Math.min(Integer.MAX_VALUE, pageCount);
+        return new AdminSubmissionPage(scopeView(scope), items, total, total, page, size, totalPages);
+    }
+
+    public String exportCsv(
+            AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId, String status) {
+        AdminQuery filters = normalizeAdminQuery(scope, from, to, city, salespersonId, status, null);
+        List<ExportRow> rows = repository.export(tenantId, filters.from(), filters.toExclusive(), filters.city(),
+                filters.salespersonId(), filters.status(), MAX_EXPORT_ROWS + 1);
         if (rows.size() > MAX_EXPORT_ROWS) {
             throw TemporaryCheckinException.badRequest("导出超过20000条，请缩小日期或城市范围");
         }
@@ -281,24 +325,25 @@ public class TemporaryCheckinService {
         appendCsv(csv, List.of("submission_id", "client_submission_id", "status", "city",
                 "salesperson_id", "salesperson_name", "store_id", "store_name", "customer_name",
                 "customer_phone", "visit_result", "longitude", "latitude", "accuracy_meters",
-                "location_captured_at", "location_note", "storefront_photo", "wechat_screenshot",
-                "audio", "created_at", "submitted_at"));
+                "location_captured_at", "location_note", "location_address", "location_adcode",
+                "storefront_photo", "wechat_screenshot", "audio", "created_at", "submitted_at"));
         for (ExportRow row : rows) {
             appendCsv(csv, List.of(value(row.id()), value(row.clientSubmissionId()), value(row.status()),
                     value(row.city()), value(row.salespersonId()), value(row.salespersonName()),
                     value(row.storeId()), value(row.storeName()), value(row.customerName()),
                     value(row.customerPhone()), value(row.visitResult()), value(row.longitude()),
                     value(row.latitude()), value(row.accuracyMeters()), value(row.locationCapturedAt()),
-                    value(row.locationNote()), value(row.storefrontPhotoFilename()),
-                    value(row.wechatScreenshotFilename()), value(row.audioFilename()), value(row.createdAt()),
-                    value(row.submittedAt())));
+                    value(row.locationNote()), value(row.locationAddress()), value(row.locationAdcode()),
+                    value(row.storefrontPhotoFilename()), value(row.wechatScreenshotFilename()),
+                    value(row.audioFilename()), value(row.createdAt()), value(row.submittedAt())));
         }
         return csv.toString();
     }
 
-    public AdminMedia openAdminMedia(UUID submissionId, String rawKind) {
+    public AdminMedia openAdminMedia(AdminScope scope, UUID submissionId, String rawKind) {
+        String scopedCity = requireConfiguredScope(scope);
         MediaKind kind = MediaKind.parse(rawKind);
-        MediaReference media = repository.findMedia(tenantId, submissionId, kind.columnPrefix)
+        MediaReference media = repository.findMedia(tenantId, submissionId, kind.columnPrefix, scopedCity)
                 .orElseThrow(() -> TemporaryCheckinException.notFound("媒体文件不存在"));
         try {
             InputStream input = fileStorage.open(tenantId.toString(), media.objectKey());
@@ -307,6 +352,56 @@ public class TemporaryCheckinService {
         } catch (RuntimeException exception) {
             throw TemporaryCheckinException.storage("媒体文件读取失败");
         }
+    }
+
+    private AdminQuery normalizeAdminQuery(
+            AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId,
+            String status, String query) {
+        if (from != null && to != null && from.isAfter(to)) {
+            throw TemporaryCheckinException.badRequest("from不能晚于to");
+        }
+        if (from != null && to != null && Duration.between(
+                from.atStartOfDay(BUSINESS_ZONE), to.plusDays(1).atStartOfDay(BUSINESS_ZONE)).toDays() > 366) {
+            throw TemporaryCheckinException.badRequest("导出日期范围不能超过366天");
+        }
+        String scopedCity = requireConfiguredScope(scope);
+        String requestedCity = optionalEnum(city, properties.getCities(), "city");
+        if (!scope.allCities() && requestedCity != null && !scopedCity.equals(requestedCity)) {
+            throw TemporaryCheckinException.adminForbidden("城市账号不能访问其他城市数据");
+        }
+        String effectiveCity = scope.allCities() ? requestedCity : scopedCity;
+        String normalizedStatus = optionalEnum(status, List.copyOf(SUBMISSION_STATUSES), "status");
+        String normalizedQuery = optional(query, "q", 128);
+        String escapedQuery = normalizedQuery == null ? null
+                : normalizedQuery.replace("=", "==").replace("%", "=%").replace("_", "=_");
+        Instant fromInstant = from == null ? null : from.atStartOfDay(BUSINESS_ZONE).toInstant();
+        Instant toExclusive = to == null ? null : to.plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant();
+        return new AdminQuery(fromInstant, toExclusive, effectiveCity, salespersonId, normalizedStatus,
+                escapedQuery);
+    }
+
+    private String requireConfiguredScope(AdminScope scope) {
+        if (scope == null) {
+            throw TemporaryCheckinException.adminForbidden("缺少后台身份范围");
+        }
+        if (scope.allCities()) return null;
+        if (!properties.getCities().contains(scope.city())) {
+            throw TemporaryCheckinException.adminForbidden("后台账号城市未启用");
+        }
+        return scope.city();
+    }
+
+    private static AdminScopeView scopeView(AdminScope scope) {
+        return new AdminScopeView(scope.username(), scope.allCities(), scope.city());
+    }
+
+    private static AdminSubmissionView adminSubmissionView(AdminSubmissionRow row) {
+        return new AdminSubmissionView(row.id(), row.status(), row.city(), row.salespersonId(),
+                row.salespersonName(), row.storeId(), row.storeName(), row.customerName(), row.customerPhone(),
+                row.visitResult(), row.longitude(), row.latitude(), row.accuracyMeters(),
+                row.locationCapturedAt(), row.locationNote(), row.locationAddress(), row.locationAdcode(),
+                row.storefrontPhotoAvailable(), row.wechatScreenshotAvailable(), row.audioAvailable(),
+                row.createdAt(), row.submittedAt());
     }
 
     private OptionalStore existingStore(UUID clientStoreId, NormalizedStore normalized) {
@@ -738,6 +833,10 @@ public class TemporaryCheckinService {
     }
 
     public record AdminMedia(InputStream input, long sizeBytes, String contentType, String originalFilename) { }
+
+    private record AdminQuery(
+            Instant from, Instant toExclusive, String city, UUID salespersonId, String status,
+            String escapedQuery) { }
 
     private record NormalizedLocation(
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters, Instant capturedAt, String note) { }

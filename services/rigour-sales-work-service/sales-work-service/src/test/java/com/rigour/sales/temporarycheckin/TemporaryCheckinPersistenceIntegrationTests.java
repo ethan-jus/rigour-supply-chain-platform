@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.rigour.sales.infrastructure.persistence.SalesUuidCodec;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.GeocodeWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.MediaWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.StoreWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.SubmissionWrite;
@@ -162,6 +163,43 @@ class TemporaryCheckinPersistenceIntegrationTests {
         assertThat(repository.findSubmission(tenantId, submissionId).orElseThrow().audio().objectKey()).isNull();
     }
 
+    @Test
+    void persistsReadableAmapAddressAlongsideOriginalGpsCoordinates() {
+        UUID tenantId = UUID.randomUUID();
+        UUID salespersonId = UUID.randomUUID();
+        UUID storeId = UUID.randomUUID();
+        UUID submissionId = UUID.randomUUID();
+        insertSalesperson(tenantId, salespersonId, "地址测试销售", "北京");
+        repository.insertStore(store(storeId, tenantId, UUID.randomUUID(), salespersonId, "地址测试门店"));
+        SubmissionWrite write = new SubmissionWrite(submissionId, tenantId, UUID.randomUUID(), HASH_A,
+                "北京", salespersonId, "地址测试销售", storeId, "地址测试门店", "王经理",
+                "13900000000", "已完成沟通", new BigDecimal("116.4251234"),
+                new BigDecimal("39.8867886"), new BigDecimal("8.20"), NOW.minusSeconds(5), "门店入口",
+                new GeocodeWrite("RESOLVED",
+                        "北京市东城区夕照寺街16号；东城区龙潭路与夕照寺街交叉口东南60米",
+                        "北京市东城区夕照寺街16号", "110101", "北京市", null, "东城区",
+                        "龙潭街道", new BigDecimal("116.431200"), new BigDecimal("39.888300"),
+                        null, NOW), NOW);
+
+        repository.insertSubmission(write);
+
+        var stored = jdbc.queryForMap("""
+                SELECT longitude, latitude, location_address, location_formatted_address,
+                       location_adcode, location_district, amap_longitude, amap_latitude,
+                       geocode_status, geocode_error_code
+                  FROM temp_sales_checkin_submission
+                 WHERE tenant_id=? AND id=?
+                """, bin(tenantId), bin(submissionId));
+        assertThat(stored.get("location_address")).isEqualTo(
+                "北京市东城区夕照寺街16号；东城区龙潭路与夕照寺街交叉口东南60米");
+        assertThat(stored.get("location_adcode")).isEqualTo("110101");
+        assertThat(stored.get("location_district")).isEqualTo("东城区");
+        assertThat(stored.get("geocode_status")).isEqualTo("RESOLVED");
+        assertThat(stored.get("geocode_error_code")).isNull();
+        assertThat((BigDecimal) stored.get("longitude")).isEqualByComparingTo("116.4251234");
+        assertThat((BigDecimal) stored.get("amap_longitude")).isEqualByComparingTo("116.431200");
+    }
+
     private void insertSalesperson(UUID tenantId, UUID id, String name, String city) {
         jdbc.update("""
                 INSERT INTO temp_sales_checkin_salesperson
@@ -215,7 +253,9 @@ class TemporaryCheckinPersistenceIntegrationTests {
         return new SubmissionWrite(id, tenantId, clientSubmissionId, HASH_A, "北京", salespersonId,
                 "销售快照", storeId, "门店快照", "李经理", "13900000000", "已完成沟通",
                 new BigDecimal("116.3971280"), new BigDecimal("39.9165270"), new BigDecimal("9.80"),
-                NOW.minusSeconds(10), "门店内", NOW);
+                NOW.minusSeconds(10), "门店内",
+                new GeocodeWrite("KEY_MISSING", null, null, null, null, null, null, null,
+                        null, null, "AMAP_WEB_KEY_MISSING", NOW), NOW);
     }
 
     private static MediaWrite media(String filename, String contentType, String hash) {

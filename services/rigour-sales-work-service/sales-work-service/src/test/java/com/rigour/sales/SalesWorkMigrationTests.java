@@ -104,6 +104,15 @@ class SalesWorkMigrationTests {
                        'audio_original_filename'
                    )
                 """, Integer.class);
+        Integer temporaryReadableLocationColumnCount = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema=DATABASE() AND table_name='temp_sales_checkin_submission'
+                   AND column_name IN (
+                       'location_address','location_formatted_address','location_adcode',
+                       'location_province','location_city','location_district','location_township',
+                       'amap_longitude','amap_latitude','geocode_status','geocode_error_code','geocoded_at'
+                   )
+                """, Integer.class);
         Integer temporarySalespersonImportColumnCount = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.columns
                  WHERE table_schema=DATABASE() AND table_name='temp_sales_checkin_salesperson'
@@ -167,7 +176,7 @@ class SalesWorkMigrationTests {
                    AND constraint_name LIKE 'ck\\_temp\\_sales\\_checkin\\_%'
                 """, Integer.class);
 
-        assertThat(migrationCount).isEqualTo(12);
+        assertThat(migrationCount).isEqualTo(13);
         assertThat(tableCount).isEqualTo(35);
         assertThat(editableStoreTableCount).isZero();
         assertThat(storefrontEvidenceColumnCount).isEqualTo(10);
@@ -177,11 +186,12 @@ class SalesWorkMigrationTests {
         assertThat(temporaryTableCount).isEqualTo(3);
         assertThat(temporaryTenantColumnCount).isEqualTo(3);
         assertThat(temporaryMediaColumnCount).isEqualTo(15);
+        assertThat(temporaryReadableLocationColumnCount).isEqualTo(12);
         assertThat(temporarySalespersonImportColumnCount).isEqualTo(3);
         assertThat(temporaryStoreImportColumnCount).isEqualTo(6);
         assertThat(temporaryUniqueConstraintCount).isEqualTo(8);
         assertThat(temporaryForeignKeyCount).isEqualTo(3);
         assertThat(temporarySubmissionStoreForeignKeyColumnCount).isEqualTo(2);
-        assertThat(temporaryCheckConstraintCount).isEqualTo(13);
+        assertThat(temporaryCheckConstraintCount).isEqualTo(15);
     }
 }
