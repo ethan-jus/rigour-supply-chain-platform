@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.rigour.tenant.iam.infrastructure.persistence.mapper.StaffManagementMapper">
+
+    <resultMap id="staffListRowMap"
+               type="com.rigour.tenant.iam.infrastructure.persistence.projection.StaffListRow">
+        <id property="id" column="id"
+            typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+        <result property="primaryOrganizationId" column="primary_organization_id"
+                typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+        <result property="primaryPositionId" column="primary_position_id"
+                typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+        <result property="userId" column="user_id"
+                typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+    </resultMap>
+
+    <sql id="uuidTenantParam">
+        #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+    </sql>
+
+    <select id="countTenantPermission" resultType="int">
+        SELECT COUNT(DISTINCT resource_record.id)
+          FROM iam_user_role user_role
+          JOIN iam_role role_record
+            ON role_record.tenant_id = user_role.tenant_id
+           AND role_record.id = user_role.role_id
+          JOIN iam_role_resource role_resource
+            ON role_resource.tenant_id = user_role.tenant_id
+           AND role_resource.role_id = user_role.role_id
+          JOIN iam_resource resource_record
+            ON resource_record.id = role_resource.resource_id
+          JOIN iam_tenant_subscription subscription
+            ON subscription.tenant_id = user_role.tenant_id
+           AND subscription.status IN ('ACTIVE', 'SCHEDULED')
+           AND subscription.effective_from &lt;= UTC_TIMESTAMP(6)
+           AND subscription.effective_to &gt; UTC_TIMESTAMP(6)
+          JOIN iam_package_resource package_resource
+            ON package_resource.package_version_id = subscription.package_version_id
+           AND package_resource.resource_id = resource_record.id
+         WHERE user_role.tenant_id =
+               #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND user_role.user_id =
+               #{userId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND user_role.status = 'ACTIVE'
+           AND user_role.effective_from &lt;= UTC_TIMESTAMP(6)
+           AND (user_role.effective_to IS NULL OR user_role.effective_to &gt; UTC_TIMESTAMP(6))
+           AND role_record.status = 'ACTIVE'
+           AND role_record.deleted_at IS NULL
+           AND role_resource.status = 'ACTIVE'
+           AND resource_record.status = 'ACTIVE'
+           AND resource_record.deleted_at IS NULL
+           AND resource_record.permission_code = #{permission}
+    </select>
+
+    <select id="countOrganization" resultType="int">
+        SELECT COUNT(*)
+          FROM iam_organization
+         WHERE tenant_id =
+               #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND id =
+               #{id,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND status = 'ACTIVE'
+           AND deleted_at IS NULL
+    </select>
+
+    <select id="countPosition" resultType="int">
+        SELECT COUNT(*)
+          FROM iam_position
+         WHERE tenant_id =
+               #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND id =
+               #{id,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND status = 'ACTIVE'
+           AND deleted_at IS NULL
+    </select>
+
+    <select id="countUser" resultType="int">
+        SELECT COUNT(*)
+          FROM iam_user
+         WHERE tenant_id =
+               #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND id =
+               #{id,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND deleted_at IS NULL
+    </select>
+
+    <sql id="staffColumns">
+        staff.id,
+        staff.staff_code,
+        staff.staff_name,
+        staff.mobile,
+        staff.email,
+        staff.employment_status,
+        staff.primary_organization_id,
+        organization_record.org_name AS primary_organization_name,
+        staff.primary_position_id,
+        position_record.position_name AS primary_position_name,
+        user_binding.user_id,
+        user_record.username,
+        user_record.display_name AS user_display_name,
+        staff.record_origin,
+        staff.remark,
+        source_binding.source_system,
+        source_binding.source_staff_id,
+        source_binding.source_staff_type,
+        source_binding.source_account_name,
+        source_binding.source_title,
+        source_binding.source_branch_name,
+        source_binding.source_role,
+        source_binding.source_status,
+        source_binding.source_presence,
+        source_binding.last_seen_at,
+        staff.version
+    </sql>
+
+    <sql id="staffJoins">
+        FROM iam_staff_profile staff
+        LEFT JOIN iam_organization organization_record
+          ON organization_record.tenant_id = staff.tenant_id
+         AND organization_record.id = staff.primary_organization_id
+         AND organization_record.deleted_at IS NULL
+        LEFT JOIN iam_position position_record
+          ON position_record.tenant_id = staff.tenant_id
+         AND position_record.id = staff.primary_position_id
+         AND position_record.deleted_at IS NULL
+        LEFT JOIN iam_staff_user_binding user_binding
+          ON user_binding.tenant_id = staff.tenant_id
+         AND user_binding.staff_id = staff.id
+         AND user_binding.status = 'ACTIVE'
+         AND user_binding.deleted_at IS NULL
+        LEFT JOIN iam_user user_record
+          ON user_record.tenant_id = staff.tenant_id
+         AND user_record.id = user_binding.user_id
+         AND user_record.deleted_at IS NULL
+        LEFT JOIN iam_external_staff_binding source_binding
+          ON source_binding.tenant_id = staff.tenant_id
+         AND source_binding.staff_id = staff.id
+         AND source_binding.source_system = 'DINGHUOBAO'
+         AND source_binding.deleted_at IS NULL
+    </sql>
+
+    <select id="selectStaff" resultMap="staffListRowMap">
+        SELECT <include refid="staffColumns"/>
+        <include refid="staffJoins"/>
+        WHERE staff.tenant_id =
+              #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+          AND staff.deleted_at IS NULL
+        <if test="status != null and status != ''">
+          AND staff.employment_status = #{status}
+        </if>
+        <if test="keyword != null and keyword != ''">
+          AND (
+              staff.staff_code LIKE CONCAT('%', #{keyword}, '%')
+              OR staff.staff_name LIKE CONCAT('%', #{keyword}, '%')
+              OR staff.mobile LIKE CONCAT('%', #{keyword}, '%')
+              OR user_record.username LIKE CONCAT('%', #{keyword}, '%')
+              OR source_binding.source_account_name LIKE CONCAT('%', #{keyword}, '%')
+          )
+        </if>
+        ORDER BY staff.updated_at DESC, staff.staff_code
+        LIMIT 500
+    </select>
+
+    <select id="selectStaffById" resultMap="staffListRowMap">
+        SELECT <include refid="staffColumns"/>
+        <include refid="staffJoins"/>
+        WHERE staff.tenant_id =
+              #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+          AND staff.id =
+              #{id,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+          AND staff.deleted_at IS NULL
+    </select>
+
+    <select id="selectStaffByCodes" resultMap="staffListRowMap">
+        SELECT <include refid="staffColumns"/>
+        <include refid="staffJoins"/>
+        WHERE staff.tenant_id =
+              #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+          AND staff.deleted_at IS NULL
+          AND staff.staff_code IN
+          <foreach collection="staffCodes" item="staffCode" open="(" separator="," close=")">
+              #{staffCode}
+          </foreach>
+        ORDER BY staff.staff_code
+    </select>
+
+    <select id="selectDhbStaffBySource" resultMap="staffListRowMap">
+        SELECT <include refid="staffColumns"/>
+        <include refid="staffJoins"/>
+        WHERE staff.tenant_id =
+              #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+          AND staff.deleted_at IS NULL
+          AND source_binding.source_system = 'DINGHUOBAO'
+          AND source_binding.source_tenant_key = #{sourceTenantKey}
+          AND source_binding.source_presence = 'PRESENT'
+          AND (
+              1 = 0
+              <if test="sourceStaffIds != null and sourceStaffIds.size() > 0">
+                  OR source_binding.source_staff_id IN
+                  <foreach collection="sourceStaffIds" item="sourceStaffId" open="(" separator="," close=")">
+                      #{sourceStaffId}
+                  </foreach>
+              </if>
+              <if test="sourceStaffNames != null and sourceStaffNames.size() > 0">
+                  OR staff.staff_name IN
+                  <foreach collection="sourceStaffNames" item="sourceStaffName" open="(" separator="," close=")">
+                      #{sourceStaffName}
+                  </foreach>
+                  OR source_binding.source_account_name IN
+                  <foreach collection="sourceStaffNames" item="sourceStaffName" open="(" separator="," close=")">
+                      #{sourceStaffName}
+                  </foreach>
+                  OR user_record.display_name IN
+                  <foreach collection="sourceStaffNames" item="sourceStaffName" open="(" separator="," close=")">
+                      #{sourceStaffName}
+                  </foreach>
+              </if>
+          )
+        ORDER BY
+          <if test="sourceStaffIds != null and sourceStaffIds.size() > 0">
+          CASE WHEN source_binding.source_staff_id IN
+              <foreach collection="sourceStaffIds" item="sourceStaffId" open="(" separator="," close=")">
+                  #{sourceStaffId}
+              </foreach>
+              THEN 0 ELSE 1 END,
+          </if>
+          staff.employment_status = 'ACTIVE' DESC,
+          staff.updated_at DESC,
+          staff.staff_code
+    </select>
+
+    <insert id="insertAudit">
+        INSERT INTO iam_audit_log
+        (id, tenant_id, actor_scope, actor_id, action, target_type, target_id,
+         request_id, event_seq, result, occurred_at)
+        VALUES (
+            #{id,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            #{actorScope},
+            #{actorId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            #{action},
+            #{targetType},
+            #{targetId,jdbcType=BINARY,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            #{requestId,jdbcType=BINARY,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            1,
+            'SUCCESS',
+            UTC_TIMESTAMP(6)
+        )
+    </insert>
+</mapper>

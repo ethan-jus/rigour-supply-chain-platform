@@ -1,5 +1,6 @@
 package com.rigour.merchant.application.port.out;
 
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand;
 import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient.SourceRecord;
 import com.rigour.merchant.domain.model.CrmMasterDataObjectType;
 import java.util.List;
@@ -7,8 +8,32 @@ import java.util.UUID;
 
 /** CRM 主数据同步持久化端口；实现必须在 SQL 条件中绑定 tenant_id。 */
 public interface CrmMasterDataStore {
-    UUID startRun(UUID tenantId, UUID connectorId, UUID actorId,
+    default UUID startRun(UUID tenantId, UUID connectorId, UUID actorId,
+                          CrmMasterDataObjectType objectType, int maxPages,
+                          String triggerType) {
+        return startRun(tenantId, connectorId, actorId, null, objectType, maxPages, triggerType);
+    }
+
+    UUID startRun(UUID tenantId, UUID connectorId, UUID actorId, UUID sourceTaskId,
                   CrmMasterDataObjectType objectType, int maxPages, String triggerType);
+
+    /**
+     * 记录尚未进入对象抓取阶段的可预期跳过，保证调度冲突和配置歧义也有持久化证据。
+     */
+    UUID recordSkippedRun(UUID tenantId, UUID connectorId, UUID sourceTaskId,
+                          CrmMasterDataObjectType objectType, int maxPages,
+                          String reasonCode, String reasonMessage);
+
+    /** 同一调度目标涉及多个对象时必须原子记录，避免只留下部分跳过证据。 */
+    default List<UUID> recordSkippedRuns(UUID tenantId, UUID connectorId, UUID sourceTaskId,
+                                         List<CrmMasterDataObjectType> objectTypes, int maxPages,
+                                         String reasonCode, String reasonMessage) {
+        if (objectTypes == null || objectTypes.isEmpty()) return List.of();
+        return objectTypes.stream()
+                .map(type -> recordSkippedRun(tenantId, connectorId, sourceTaskId,
+                        type, maxPages, reasonCode, reasonMessage))
+                .toList();
+    }
 
     ImportResult importRecord(UUID tenantId, UUID connectorId, UUID runId,
                               CrmMasterDataObjectType objectType, SourceRecord record);
@@ -29,6 +54,11 @@ public interface CrmMasterDataStore {
     RunStatistics completeRun(UUID tenantId, UUID connectorId, UUID runId,
                               CrmMasterDataObjectType objectType,
                               RunStatistics statistics, boolean reconcileSourcePresence);
+
+    default List<ExternalObjectMappingCommand> externalObjectMappings(
+            UUID tenantId, UUID connectorId, UUID runId, CrmMasterDataObjectType objectType) {
+        return List.of();
+    }
 
     void failRun(UUID tenantId, UUID connectorId, UUID runId,
                  RunStatistics statistics, RuntimeException error);

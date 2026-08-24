@@ -1,8 +1,12 @@
 package com.rigour.erp.application.service.product;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.same;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -14,6 +18,8 @@ import com.rigour.erp.application.port.out.DhbProductSyncTargetDiscoveryClient;
 import com.rigour.erp.application.port.out.ProductMasterDataStore;
 import com.rigour.erp.application.port.out.ProductMasterDataStore.ImportResult;
 import com.rigour.erp.application.service.sync.BusinessDictionaryCoverageService;
+import com.rigour.erp.application.service.sync.ErpScheduledSyncSkipException;
+import com.rigour.erp.application.port.out.ErpSyncRunAuditStore.ScheduledSkipReason;
 import com.rigour.erp.domain.model.product.Brand;
 import com.rigour.erp.domain.model.product.Category;
 import com.rigour.erp.domain.model.product.MasterDataObjectType;
@@ -22,18 +28,23 @@ import com.rigour.erp.domain.model.product.Specification;
 import com.rigour.erp.domain.model.product.Tag;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.client.ConnectorSyncLeaseClient;
+import com.rigour.integration.client.ConnectorSyncLeaseClient.LeaseGuard;
+import com.rigour.integration.client.ExternalObjectMappingClient;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import java.util.function.Supplier;
+import java.util.function.Function;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 
 class ProductMasterDataSyncServiceTest {
     private static final UUID TENANT_ID = UUID.fromString("019fb100-0000-7000-8000-000000000001");
@@ -54,7 +65,7 @@ class ProductMasterDataSyncServiceTest {
         DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
         ProductMasterDataStore store = mock(ProductMasterDataStore.class);
         BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
-        ProductMasterDataSyncService service = new ProductMasterDataSyncService(
+        ProductMasterDataSyncService service = syncService(
                 integration, discovery, store, dictionaryCoverage, passthroughLease());
         when(discovery.discover(any())).thenReturn(List.of(
                 new SyncTargetView(TASK_ID, TENANT_ID, CONNECTOR_ID)));
@@ -72,7 +83,8 @@ class ProductMasterDataSyncServiceTest {
         assertThat(result.objectType()).isEqualTo(objectType.name());
         assertThat(result.fetched()).isEqualTo(1);
         assertThat(result.created()).isEqualTo(1);
-        verify(store).completeRun(eq(TENANT_ID.toString()), eq(RUN_ID), any());
+        verify(store).completeRunWithSourcePresence(eq(TENANT_ID.toString()), eq(RUN_ID),
+                any(), any());
         ArgumentCaptor<CallerIdentity> integrationCaller = ArgumentCaptor.forClass(CallerIdentity.class);
         verify(integration).collect(integrationCaller.capture(), eq(CONNECTOR_ID), eq(objectType), eq(3));
         assertThat(integrationCaller.getValue().principalScope()).isEqualTo("SERVICE");
@@ -86,17 +98,16 @@ class ProductMasterDataSyncServiceTest {
         DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
         ProductMasterDataStore store = mock(ProductMasterDataStore.class);
         BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
-        ProductMasterDataSyncService service = new ProductMasterDataSyncService(
-                integration, discovery, store, dictionaryCoverage, passthroughLease());
+        LeaseGuard guard = mock(LeaseGuard.class);
+        ProductMasterDataSyncService service = syncService(
+                integration, discovery, store, dictionaryCoverage, passthroughLease(guard));
         Collected collected = collected(MasterDataObjectType.BRAND);
         when(store.startScheduledRun(TENANT_ID.toString(), CONNECTOR_ID, null,
                 MasterDataObjectType.BRAND, 3)).thenReturn(RUN_ID);
         when(integration.collect(any(), eq(CONNECTOR_ID), eq(MasterDataObjectType.BRAND), eq(3)))
                 .thenReturn(collected);
         stubImport(store, MasterDataObjectType.BRAND, collected);
-        CallerIdentity caller = new CallerIdentity("SERVICE", UUID.randomUUID(), TENANT_ID,
-                null, null, UUID.randomUUID(), 0, 0, 0, Set.of("ERP_SYNC_SERVICE"),
-                Set.of("integration:dhb:read"));
+        CallerIdentity caller = scheduledCaller();
 
         var result = service.runScheduled(caller, CONNECTOR_ID, MasterDataObjectType.BRAND, 3);
 
@@ -104,6 +115,102 @@ class ProductMasterDataSyncServiceTest {
         verify(store).startScheduledRun(TENANT_ID.toString(), CONNECTOR_ID, null,
                 MasterDataObjectType.BRAND, 3);
         verify(discovery, never()).discover(any());
+        InOrder successBoundary = inOrder(guard, store);
+        successBoundary.verify(guard).ensureActive();
+        successBoundary.verify(store).completeRunWithSourcePresence(eq(TENANT_ID.toString()),
+                eq(RUN_ID), any(), any());
+    }
+
+    @Test
+    void scheduledAcquireConflictBecomesTypedSkipBeforeActionStarts() {
+        DhbProductMasterDataClient integration = mock(DhbProductMasterDataClient.class);
+        DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
+        ProductMasterDataStore store = mock(ProductMasterDataStore.class);
+        BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
+        ConnectorSyncLeaseClient lease = mock(ConnectorSyncLeaseClient.class);
+        when(lease.executeWithLeaseGuard(any(), any(), any()))
+                .thenThrow(alreadyRunning("connector busy"));
+        ProductMasterDataSyncService service = syncService(
+                integration, discovery, store, dictionaryCoverage, lease);
+
+        assertThatThrownBy(() -> service.runScheduled(scheduledCaller(), CONNECTOR_ID,
+                MasterDataObjectType.CATEGORY, 3))
+                .isInstanceOfSatisfying(ErpScheduledSyncSkipException.class, skip -> {
+                    assertThat(skip.blockedObjectType()).isEqualTo("CATEGORY");
+                    assertThat(skip.reason()).isEqualTo(ScheduledSkipReason.CONNECTOR_LEASE_CONFLICT);
+                });
+        verify(store, never()).startScheduledRun(any(), any(), any(), any(),
+                org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void scheduledLocalObjectLockConflictBecomesTypedSkipBeforeRunCreation() {
+        DhbProductMasterDataClient integration = mock(DhbProductMasterDataClient.class);
+        DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
+        ProductMasterDataStore store = mock(ProductMasterDataStore.class);
+        BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
+        when(store.startScheduledRun(TENANT_ID.toString(), CONNECTOR_ID, null,
+                MasterDataObjectType.BRAND, 3)).thenThrow(alreadyRunning("object lock busy"));
+        ProductMasterDataSyncService service = syncService(
+                integration, discovery, store, dictionaryCoverage, passthroughLease());
+
+        assertThatThrownBy(() -> service.runScheduled(scheduledCaller(), CONNECTOR_ID,
+                MasterDataObjectType.BRAND, 3))
+                .isInstanceOfSatisfying(ErpScheduledSyncSkipException.class, skip -> {
+                    assertThat(skip.blockedObjectType()).isEqualTo("BRAND");
+                    assertThat(skip.reason()).isEqualTo(ScheduledSkipReason.OBJECT_SYNC_LOCK_CONFLICT);
+                });
+        verify(store, never()).failRun(any(), any(), any(), any());
+    }
+
+    @Test
+    void leaseGuardFailureAfterActionMarksCreatedRunFailedAndPreventsSuccess() {
+        DhbProductMasterDataClient integration = mock(DhbProductMasterDataClient.class);
+        DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
+        ProductMasterDataStore store = mock(ProductMasterDataStore.class);
+        BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
+        LeaseGuard guard = mock(LeaseGuard.class);
+        BusinessException leaseLost = alreadyRunning("lease lost after action");
+        doThrow(leaseLost).when(guard).ensureActive();
+        when(store.startScheduledRun(TENANT_ID.toString(), CONNECTOR_ID, null,
+                MasterDataObjectType.TAG, 3)).thenReturn(RUN_ID);
+        Collected collected = collected(MasterDataObjectType.TAG);
+        when(integration.collect(any(), eq(CONNECTOR_ID), eq(MasterDataObjectType.TAG), eq(3)))
+                .thenReturn(collected);
+        stubImport(store, MasterDataObjectType.TAG, collected);
+        ProductMasterDataSyncService service = syncService(
+                integration, discovery, store, dictionaryCoverage, passthroughLease(guard));
+
+        assertThatThrownBy(() -> service.runScheduled(scheduledCaller(), CONNECTOR_ID,
+                MasterDataObjectType.TAG, 3)).isSameAs(leaseLost);
+        verify(store).failRun(eq(TENANT_ID.toString()), eq(RUN_ID), any(), same(leaseLost));
+        verify(store, never()).completeRunWithSourcePresence(any(), any(), any(), any());
+    }
+
+    @Test
+    void tagSnapshotReconcilesTagsButNotDerivedTagGroups() {
+        DhbProductMasterDataClient integration = mock(DhbProductMasterDataClient.class);
+        DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
+        ProductMasterDataStore store = mock(ProductMasterDataStore.class);
+        BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
+        when(store.startScheduledRun(TENANT_ID.toString(), CONNECTOR_ID, null,
+                MasterDataObjectType.TAG, 3)).thenReturn(RUN_ID);
+        Collected collected = collected(MasterDataObjectType.TAG);
+        when(integration.collect(any(), eq(CONNECTOR_ID), eq(MasterDataObjectType.TAG), eq(3)))
+                .thenReturn(collected);
+        stubImport(store, MasterDataObjectType.TAG, collected);
+        ProductMasterDataSyncService service = syncService(
+                integration, discovery, store, dictionaryCoverage, passthroughLease());
+
+        service.runScheduled(scheduledCaller(), CONNECTOR_ID, MasterDataObjectType.TAG, 3);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Set<String>>> seen =
+                ArgumentCaptor.forClass(java.util.Map.class);
+        verify(store).completeRunWithSourcePresence(eq(TENANT_ID.toString()), eq(RUN_ID),
+                seen.capture(), any());
+        assertThat(seen.getValue()).containsOnlyKeys("TAG");
+        assertThat(seen.getValue().get("TAG")).containsExactly("T-1");
     }
 
     private static Collected collected(MasterDataObjectType objectType) {
@@ -123,10 +230,36 @@ class ProductMasterDataSyncServiceTest {
     }
 
     private static ConnectorSyncLeaseClient passthroughLease() {
+        return passthroughLease(mock(LeaseGuard.class));
+    }
+
+    private static ConnectorSyncLeaseClient passthroughLease(LeaseGuard guard) {
         ConnectorSyncLeaseClient lease = mock(ConnectorSyncLeaseClient.class);
-        when(lease.execute(any(), any(), any())).thenAnswer(invocation ->
-                ((Supplier<?>) invocation.getArgument(2)).get());
+        when(lease.executeWithLeaseGuard(any(), any(), any())).thenAnswer(invocation -> {
+            Function<LeaseGuard, ?> action = invocation.getArgument(2);
+            return action.apply(guard);
+        });
         return lease;
+    }
+
+    private static ProductMasterDataSyncService syncService(
+            DhbProductMasterDataClient integration,
+            DhbProductSyncTargetDiscoveryClient discovery,
+            ProductMasterDataStore store,
+            BusinessDictionaryCoverageService dictionaryCoverage,
+            ConnectorSyncLeaseClient lease) {
+        return new ProductMasterDataSyncService(integration, discovery, store,
+                dictionaryCoverage, lease, mock(ExternalObjectMappingClient.class));
+    }
+
+    private static CallerIdentity scheduledCaller() {
+        return new CallerIdentity("SERVICE", UUID.randomUUID(), TENANT_ID,
+                null, null, UUID.randomUUID(), 0, 0, 0, Set.of("ERP_SYNC_SERVICE"),
+                Set.of("integration:dhb:read"));
+    }
+
+    private static BusinessException alreadyRunning(String message) {
+        return new BusinessException(ErrorCode.SYNC_ALREADY_RUNNING, message, List.of());
     }
 
     private static void stubImport(ProductMasterDataStore store, MasterDataObjectType objectType,

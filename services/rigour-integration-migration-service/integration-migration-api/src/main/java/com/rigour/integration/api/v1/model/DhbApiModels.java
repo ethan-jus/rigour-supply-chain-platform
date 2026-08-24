@@ -34,6 +34,42 @@ public final class DhbApiModels {
     public record SyncTargetView(UUID taskId, UUID tenantId, UUID connectorId) {
     }
 
+    /**
+     * 领域服务写入同步中心的外部对象映射。
+     *
+     * <p>该命令只接受我方内部业务对象ID和编号，订货宝原始字段留在 Raw/领域本地来源表；
+     * 业务主表不得反向保存第三方同步字段。</p>
+     */
+    public record ExternalObjectMappingCommand(
+            UUID connectorId,
+            String sourceSystem,
+            String sourceObjectType,
+            String sourceObjectId,
+            String sourceObjectNo,
+            String internalDomain,
+            String internalObjectType,
+            Long internalObjectId,
+            String internalObjectNo,
+            String mappingStatus,
+            UUID lastSeenRunId,
+            Instant lastSeenAt,
+            Instant sourceDeletedAt,
+            String payloadChecksum,
+            String conflictReason,
+            String remark) {
+    }
+
+    /** 批量登记外部对象映射；同一批次按租户边界原子处理。 */
+    public record ExternalObjectMappingBatchCommand(List<ExternalObjectMappingCommand> items) {
+        public ExternalObjectMappingBatchCommand {
+            items = items == null ? List.of() : List.copyOf(items);
+        }
+    }
+
+    /** 批量登记结果。 */
+    public record ExternalObjectMappingBatchResult(int requested, int accepted) {
+    }
+
     public record SyncTaskCommand(UUID connectorId, String code, String objectType,
                                   String status, Instant nextRunAt, long version) {
     }
@@ -50,9 +86,17 @@ public final class DhbApiModels {
                               String errorCode, String errorMessage) {
     }
 
-    public record OrderMirrorView(UUID id, UUID tenantId, String sourceOrderId, String orderNo,
+    public record OrderMirrorView(UUID id, UUID tenantId, UUID connectorId,
+                                  String sourceOrderId, String orderNo,
                                   String sourceStatus, BigDecimal amount, Instant orderTime,
                                   String mirrorStatus, long version) {
+        /** 兼容V11之前没有返回connectorId的内部调用方。 */
+        public OrderMirrorView(UUID id, UUID tenantId, String sourceOrderId, String orderNo,
+                               String sourceStatus, BigDecimal amount, Instant orderTime,
+                               String mirrorStatus, long version) {
+            this(id, tenantId, null, sourceOrderId, orderNo, sourceStatus,
+                    amount, orderTime, mirrorStatus, version);
+        }
     }
 
     public record SyncLogView(UUID id, UUID tenantId, UUID taskId, UUID runId, String level,

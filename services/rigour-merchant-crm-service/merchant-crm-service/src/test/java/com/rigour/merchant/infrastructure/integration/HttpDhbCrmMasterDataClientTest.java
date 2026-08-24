@@ -1,7 +1,6 @@
 package com.rigour.merchant.infrastructure.integration;
 
 import com.rigour.integration.api.v1.DhbCustomerApi;
-import com.rigour.integration.api.v1.DhbEmployeeApi;
 import com.rigour.merchant.domain.model.CrmMasterDataObjectType;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.context.ContextTrustProperties;
@@ -38,7 +37,7 @@ class HttpDhbCrmMasterDataClientTest {
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(header(RequestHeaders.PRINCIPAL_SCOPE, "SERVICE"))
                 .andExpect(jsonPath("$.begin").value(0))
-                .andExpect(jsonPath("$.step").value(500))
+                .andExpect(jsonPath("$.step").value(100))
                 .andExpect(jsonPath("$.status").value(3))
                 .andExpect(jsonPath("$.dataType").value(3))
                 .andRespond(withSuccess("""
@@ -82,45 +81,6 @@ class HttpDhbCrmMasterDataClientTest {
         assertThat(result.items()).singleElement().satisfies(item -> {
             assertThat(item.sourceId()).isEqualTo("AREA-2");
             assertThat(item.sourceFields()).containsEntry("parentID", "AREA-1");
-        });
-        server.verify();
-    }
-
-    @Test
-    void keepsStaffListIdStableWhenDetailUsesAccountId() {
-        RestClient.Builder builder = RestClient.builder();
-        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        String listUri = "https://integration.test" + DhbEmployeeApi.BASE_PATH + "/"
-                + CONNECTOR_ID + "/query";
-        server.expect(requestTo(listUri))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(jsonPath("$.begin").value(0))
-                .andExpect(jsonPath("$.step").value(500))
-                .andRespond(withSuccess("""
-                        {"total":1,"items":[{
-                          "sourceId":"STAFF-1","staffId":"STAFF-1","accountId":"ACCOUNT-1",
-                          "staffType":"salesman","accountName":"zhangsan","staffName":"张三",
-                          "sourceFields":{"staff_id":"STAFF-1","accounts_id":"ACCOUNT-1","fromList":true}
-                        }]}
-                        """, MediaType.APPLICATION_JSON));
-        String detailUri = "https://integration.test" + DhbEmployeeApi.BASE_PATH + "/"
-                + CONNECTOR_ID + "/ACCOUNT-1/query";
-        server.expect(requestTo(detailUri))
-                .andExpect(method(HttpMethod.POST))
-                .andRespond(withSuccess("""
-                        {"sourceId":"ACCOUNT-1","accountId":"ACCOUNT-1","accountName":"zhangsan",
-                         "staffName":"张三","sourceFields":{"accounts_id":"ACCOUNT-1","group_id_str":"GROUP-1"}}
-                        """, MediaType.APPLICATION_JSON));
-
-        var client = new HttpDhbCrmMasterDataClient(builder, signer(), "https://integration.test");
-        var result = client.collect(caller(), CONNECTOR_ID, CrmMasterDataObjectType.STAFF, 1);
-
-        assertThat(result.items()).singleElement().satisfies(item -> {
-            assertThat(item.sourceId()).isEqualTo("STAFF-1");
-            assertThat(item.sourceFields()).containsEntry("staff_id", "STAFF-1")
-                    .containsEntry("accounts_id", "ACCOUNT-1")
-                    .containsEntry("group_id_str", "GROUP-1")
-                    .containsKeys("_dhbStaffList", "_dhbStaffDetail");
         });
         server.verify();
     }

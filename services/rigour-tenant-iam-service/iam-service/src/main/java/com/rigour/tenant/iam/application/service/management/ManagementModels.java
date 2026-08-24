@@ -12,10 +12,14 @@ public final class ManagementModels {
 
     public record Actor(String scope, UUID principalId, UUID tenantId) {
         public Actor {
-            if (principalId == null || !("PLATFORM".equals(scope) || "TENANT".equals(scope))) {
+            if (principalId == null || !("PLATFORM".equals(scope)
+                    || "TENANT".equals(scope) || "SERVICE".equals(scope))) {
                 throw new IllegalArgumentException("Invalid management actor");
             }
-            if ((tenantId != null) != "TENANT".equals(scope)) {
+            if ("PLATFORM".equals(scope) && tenantId != null) {
+                throw new IllegalArgumentException("Invalid management tenant boundary");
+            }
+            if (("TENANT".equals(scope) || "SERVICE".equals(scope)) && tenantId == null) {
                 throw new IllegalArgumentException("Invalid management tenant boundary");
             }
         }

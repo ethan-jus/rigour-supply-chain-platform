@@ -3,7 +3,6 @@ package com.rigour.merchant.api.v1;
 import com.rigour.merchant.api.v1.model.CustomerDetailView;
 import com.rigour.merchant.api.v1.model.CustomerSummaryView;
 import com.rigour.merchant.api.v1.model.DictionaryView;
-import com.rigour.merchant.api.v1.model.ExternalStaffView;
 import com.rigour.merchant.api.v1.model.PageView;
 import com.rigour.merchant.api.v1.model.ShippingAddressSummaryView;
 import com.rigour.shared.core.api.ApiResponse;
@@ -42,11 +41,5 @@ public interface CrmCustomerApi {
     ApiResponse<PageView<DictionaryView>> customerAreas(
             @RequestParam(defaultValue = "0") int begin,
             @RequestParam(defaultValue = "100") int step,
-            @RequestParam(name = "q", required = false) String query);
-
-    @GetMapping(BASE_PATH + "/external-staff")
-    ApiResponse<PageView<ExternalStaffView>> externalStaff(
-            @RequestParam(defaultValue = "0") int begin,
-            @RequestParam(defaultValue = "20") int step,
             @RequestParam(name = "q", required = false) String query);
 }

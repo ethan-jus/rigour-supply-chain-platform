@@ -4,12 +4,12 @@ import com.rigour.erp.application.port.out.DhbProductMasterDataClient;
 import com.rigour.erp.application.port.out.DhbProductSyncTargetDiscoveryClient;
 import com.rigour.erp.application.port.out.DhbSupplyDataClient;
 import com.rigour.erp.application.port.out.DhbSupplySyncTargetDiscoveryClient;
-import com.rigour.erp.application.service.sync.ErpDataSyncScheduleProperties;
 import com.rigour.erp.infrastructure.integration.HttpDhbProductMasterDataClient;
 import com.rigour.erp.infrastructure.integration.HttpDhbProductSyncTargetDiscoveryClient;
 import com.rigour.erp.infrastructure.integration.HttpDhbSupplyDataClient;
 import com.rigour.erp.infrastructure.integration.HttpDhbSupplySyncTargetDiscoveryClient;
 import com.rigour.integration.client.ConnectorSyncLeaseClient;
+import com.rigour.integration.client.ExternalObjectMappingClient;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.settings.client.BusinessDictionaryBatchClient;
 import java.time.Clock;
@@ -26,7 +26,7 @@ import tools.jackson.databind.ObjectMapper;
 /** ERP 基础设施装配；订货宝客户端只在 Integration 中装配。 */
 @Configuration(proxyBeanMethods = false)
 @MapperScan("com.rigour.erp.infrastructure.persistence.mapper")
-@EnableConfigurationProperties({ProductMediaAccessProperties.class, ErpDataSyncScheduleProperties.class})
+@EnableConfigurationProperties(ProductMediaAccessProperties.class)
 public class ErpInfrastructureConfiguration {
 
     @Bean
@@ -70,6 +70,15 @@ public class ErpInfrastructureConfiguration {
             @Value("${rigour.integration.base-url:http://localhost:26882}") String baseUrl,
             SimpleClientHttpRequestFactory requestFactory) {
         return new ConnectorSyncLeaseClient(RestClient.builder().requestFactory(requestFactory), signer,
+                baseUrl, "rigour-erp-core-service");
+    }
+
+    @Bean
+    ExternalObjectMappingClient externalObjectMappingClient(
+            TrustedContextSigner signer,
+            @Value("${rigour.integration.base-url:http://localhost:26882}") String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory) {
+        return new ExternalObjectMappingClient(RestClient.builder().requestFactory(requestFactory), signer,
                 baseUrl, "rigour-erp-core-service");
     }
 

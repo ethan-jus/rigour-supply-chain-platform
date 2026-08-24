@@ -149,9 +149,10 @@ object key。每个实例默认4个图片消费者，失败最多重试3次；�
 `canceled`（已取消）和 `all`（全部）。订货宝收付款列表的部分历史数据可能不返回状态字段，
 Integration 会保留空值并完整返回 `sourceFields`，不自行推断状态。
 
-Order Center 默认以 `0 0/30 * * * ?` 每半小时调度；Portal 的“立即同步”也必须先进入 Order Center，
-不得直接调用 Integration 执行接口。首次任务不带更新时间窗口，后续按最近一次
-成功落库时间向前重叠5分钟增量查询。前端列表和详情只查询 Order Center 本地投影表，不实时访问订货宝。
+订货宝同步调度由 Integration 统一编排。Portal 的“统一同步”只调用订货宝同步中心，
+不得直接调用 ERP、CRM、Order 的模块级同步接口。首次任务、增量窗口、重叠区间、
+失败重试和对账证据均在 Integration 侧记录；前端业务列表只查询 ERP/CRM/Order
+各自的新业务表，不实时访问订货宝。
 
 `wait-ships` 对应订货宝 `getWaitShips`，请求参数只有 `orders_num`；返回 `shipped` 已出库/已发货记录和
 `wait_stock` 待出库明细。Integration 负责认证、调用和字段归一化，Order Center 只接收不含凭据的业务数据并幂等落库。
@@ -166,30 +167,25 @@ POST /api/v1/integration/dhb/orders/{connectorId}/{orderNumber}/wait-ships
 GET  /api/v1/integration/dhb/orders/mirrors
 ```
 
-Order Center 对 Portal 暴露的立即同步入口为：
+订货宝统一同步入口为：
 
 ```text
-POST /api/v1/orders/dhb/sync/{connectorId}
+POST /api/v1/integration/dhb/orchestration/sync
 ```
 
-Portal 只能调用该入口，不能调用 Integration 的同步执行入口。
+Portal 只能调用该统一入口；单对象修复入口保留为后端排障能力，不作为业务员默认操作。
 
-Order Center 面向 Portal 的本地只读查询接口如下：
+Order Center 面向 Portal 的本地业务查询接口如下：
 
 ```text
-GET /api/v1/orders/dhb/shipments
-GET /api/v1/orders/dhb/shipments/{shipmentNo}
-GET /api/v1/orders/dhb/shipment-logistics
-GET /api/v1/orders/dhb/shipment-logistics/{orderNo}
-GET /api/v1/orders/dhb/returns
-GET /api/v1/orders/dhb/returns/{returnNo}
-GET /api/v1/orders/dhb/receipts
-GET /api/v1/orders/dhb/payments
+GET /api/v1/orders/sales-orders
+GET /api/v1/orders/sales-orders/{id}
+POST /api/v1/orders/sales-orders
+POST /api/v1/orders/sales-orders/{id}/stock-out
 ```
 
-其中 `/shipments` 为出库/发货页面接口，查询`getShipsList/getShipsContent`落库的独立发货单表；
-`/shipment-logistics` 为出库/发货物流页面接口，查询按订单调用`getWaitShips`落库的物流快照表。
-两者均不实时访问订货宝。物流快照主键为租户、来源系统和订单号，明细区分`SHIPPED`与`WAIT_STOCK`。
+出库、物流、退货和收付款来源快照由 Integration 在 Raw 和对账记录中保存；业务页面按我方
+销售订单、ERP 出库单和收款业务模型展示，不再提供订货宝镜像列表。
 
 商品和订单列表查询只执行对应的订货宝读取接口；订单明细查询需要
 `integration:dhb:write` 权限，并显式传入 `autoMarkDownloaded`、`autoAudit`，因为官方文档说明

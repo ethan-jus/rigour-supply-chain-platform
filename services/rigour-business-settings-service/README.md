@@ -1,14 +1,14 @@
 # Business Settings Service
 
-公共业务设置服务，为 ERP、CRM、Order 等模块提供统一业务字典。服务独占 `rigour_settings` Schema；其他服务和 Portal 只能通过 Gateway/API 访问，禁止跨库读取。
+公共业务设置服务当前只承载自研业务字典。服务独占 `rigour_settings` Schema；ERP、CRM、Order 和 Portal 只能通过 Gateway/API 使用字典，禁止跨库读取。
 
 ## 字典模型
 
-- `biz_dict`：字典定义，保存编码、名称、模块、作用域、租户归属、治理状态、乐观锁版本和整本内容修订号 `revision`。
-- `biz_dict_item`：字典项，使用 `parent_id` 和 `level_no` 表示树形层级。
-- 作用域与层级是两个独立维度。`scope_type` 只表示字典归属，不能替代字典项父子关系。
-- 生效字典按整本选择，优先级为 `TENANT -> MODULE -> SYSTEM`，不在查询时逐项猜测或合并。
-- 租户基于系统级或模块级字典定制时，通过 `base_dict_id` 记录来源，并在创建时复制完整条目树。
+- `data_dictionary`：字典主表，按 `dictionary_code` 唯一定位一本字典。
+- `data_dictionary_item`：字典项，按 `dictionary_code + dictionary_item_code` 唯一定位一个选项。
+- 表名、字段名统一使用 `lower_snake_case`；字典编码和字典项编码统一使用 `UPPER_SNAKE_CASE`。
+- 业务表只保存字典项编码，例如 `PRODUCT_UNIT.BOX`、`PAYMENT_STATUS.PAID`；不保存订货宝状态值。
+- 旧的 `biz_dict`、`biz_dict_item` 不再作为主流程表；V10 通过向前迁移删除旧表。
 
 ## HTTP API
 
@@ -16,46 +16,31 @@
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| GET | `/` | `business-settings:dict:read` | 按模块、作用域、租户和状态查询当前身份可见字典 |
-| GET | `/{dictId}/items` | `business-settings:dict:read` | 查询一本字典的完整条目，管理查询包含禁用项 |
-| GET | `/effective?moduleCode={module}&code={code}` | `business-settings:dict:read` | 返回当前租户最终生效的整本字典，仅包含有效条目 |
-| GET | `/resolve?moduleCode={module}&code={code}` | `business-settings:dict:read` | 返回当前租户最终生效字典并包含停用项，用于历史业务数据显示 |
-| POST | `/` | `business-settings:dict:write` | 新增字典；租户身份只能新增本租户字典 |
-| PUT | `/{dictId}` | `business-settings:dict:write` | 修改可变属性，使用 `version` 做乐观锁校验 |
-| POST | `/{dictId}/items` | `business-settings:dict:write` | 新增字典项，层级由服务端计算 |
-| PUT | `/items/{itemId}` | `business-settings:dict:write` | 修改字典项，拒绝跨字典父节点和循环关系 |
+| GET | `/` | `business-settings:dict:read` | 按 `dictionaryType`、`dictionaryCode` 查询字典 |
+| GET | `/{dictionaryId}/items` | `business-settings:dict:read` | 查询一本字典的字典项 |
+| GET | `/effective?dictionaryCode={dictionaryCode}` | `business-settings:dict:read` | 查询业务当前可用字典 |
+| GET | `/resolve?dictionaryCode={dictionaryCode}` | `business-settings:dict:read` | 查询业务展示字典，兼容历史展示 |
+| POST | `/` | `business-settings:dict:write` | 新增字典 |
+| PUT | `/{dictionaryId}` | `business-settings:dict:write` | 修改字典，使用 `revision` 做乐观锁 |
+| POST | `/{dictionaryId}/items` | `business-settings:dict:write` | 新增字典项 |
+| PUT | `/items/{itemId}` | `business-settings:dict:write` | 修改字典项，使用 `revision` 做乐观锁 |
 
-内部服务接口：`POST /internal/v1/business-settings/dictionaries/items/sync`，权限为
-`business-settings:dict:sync`，只接受带租户的可信 `SERVICE` 身份。该接口按来源值大小写精确补齐
-当前租户最终生效字典；不创建字典定义、不猜测未知值含义、不重新启用停用项。仅当历史项的名称与
-原值完全相同时，才允许用订货宝明确名称或官方枚举名称修复占位名称。单次请求最多 500 个来源值，
-一个批次无论新增或修复多少项只递增一次 `revision`。
+内部接口：`POST /internal/v1/business-settings/dictionaries/items/sync`，仅供领域服务在外部数据导入阶段补齐明确观察到的来源值。它不创建字典定义，不让第三方字段进入业务表；后续订货宝字段映射应优先落在 Integration 映射表。
 
-请求和返回字段的逐字段语义位于 `business-settings-api` 的 record Javadoc；数据库迁移为每一列提供了中文 `COMMENT`。治理状态固定为 `ACTIVE/DISABLED`，作用域固定为 `SYSTEM/MODULE/TENANT`，它们属于字典基础设施协议，不再反向依赖业务字典。
+## 删除与审计约定
 
-## 身份与数据边界
+- 业务删除统一逻辑删：只更新 `deleted`、`updated_by`、`updated_time`，不物理删除。
+- 字典编码、字典项编码创建后不可修改，避免历史业务数据失去解释依据。
+- 新增、修改、同步补齐记录 `INFO` 日志，包含 `dictionaryCode`、`dictionaryItemCode`、`revision`、`actorId`、变更数量。
+- 列表和解析记录 `DEBUG` 日志，包含查询条件和返回数量。
+- 日志不输出数据库密码、信任密钥、请求头或大体量来源报文。
 
-- 平台身份可维护系统级、模块级和指定租户级字典。
-- 租户身份只能查询可见公共字典和本租户字典，只能修改本租户字典。
-- 服务身份可读取生效字典；带 `business-settings:dict:sync` 最小权限时还可调用内部批量补齐接口，
-  但不能进入管理列表或执行人工维护接口。
-- `scope_id` 由服务端计算：系统级为 `SYSTEM`，模块级为 `module_code`，租户级为 `tenant_id`；调用方不能传入或覆盖。
+## 数据边界
 
-## 日志约定
-
-- 新增、修改字典及字典项记录 `INFO`，包含操作类型、字典/字典项主键、编码、模块、作用域、租户、操作者和新版本。
-- 列表及生效字典解析记录 `DEBUG`，包含筛选范围、命中字典和结果数量。
-- 日志不记录字典项 `value`、`extra_json`、数据库密码、信任密钥或请求头，避免业务信息和凭据泄漏。
-- 数据库审计字段 `created_by`、`updated_by`、`created_at`、`updated_at` 与日志共同提供追踪依据。
-
-## 同步接入约定
-
-- ERP、CRM、Order 使用 `business-settings-client` 公共组件，不重复实现 HTTP、可信签名、去重、精确匹配和失败降级。
-- 每个领域服务只声明自己明确建模的字段白名单；公共组件不会遍历 `sourceFields`、`rawJson` 或其他任意扩展字段。
-- 来源返回“值+名称”时原样保存明确名称；只返回值时仅接受已登记的官方有限枚举。未知英文或数字原值
-  进入 `unmapped` 审计，不再创建“名称=原值”的伪映射；订货宝直接返回中文业务值时允许等值展示。
-- Settings 暂不可用或字典未定义时，公共组件返回 `unmapped` 和修订号 `-1`，领域数据仍继续落库并以 `SUCCEEDED_WITH_WARNINGS` 返回。
-- V4 迁移只预置现有 ERP、CRM、Order 白名单的模块级字典定义；具体条目由实际同步数据自动补齐。
+- Settings 管自研业务字典：单位、类型、状态、支付方式、标签等。
+- ERP、CRM、Order 直接传 `dictionaryCode` 使用字典，不再传旧模型中的 `moduleCode/scope/tenant`。
+- 订货宝等外部系统的数据只在 Integration 保留来源记录和映射关系；业务主表使用自研编码和状态流。
+- 外部系统删除或下架不会直接物理删除业务数据，只能形成映射状态、同步告警或业务状态变更建议。
 
 ## 本地运行
 
@@ -65,11 +50,23 @@
 export BUSINESS_SETTINGS_DB_APP_PASSWORD='<runtime-secret>'
 export BUSINESS_SETTINGS_DB_MIGRATOR_PASSWORD='<migration-secret>'
 export RIGOUR_CONTEXT_TRUST_KEY_V1='<base64-key>'
-./mvnw -pl services/rigour-business-settings-service/business-settings-service -am spring-boot:run \
+./mvnw -pl services/rigour-business-settings-service/business-settings-service spring-boot:run \
   -Dspring-boot.run.profiles=dev,local
 ```
 
-默认端口为 `26892`。Nacos 配置模板见 `docs/nacos/rigour-business-settings-service.example.yml`。模板和源码迁移存在不代表共享 DEV 已发布，发布状态必须通过 Nacos 配置与 `flyway_schema_history` 只读核验。
+默认端口为 `26892`。Nacos 配置模板见 `docs/nacos/rigour-business-settings-service.example.yml`。
+
+## Flyway 维护模式
+
+当共享 DEV 出现失败迁移记录时，不直接改 `flyway_schema_history`。先确认原因，再临时用维护模式执行 `repair + migrate`：
+
+```bash
+./mvnw -pl services/rigour-business-settings-service/business-settings-service spring-boot:run \
+  -Dspring-boot.run.profiles=dev,local \
+  -Dspring-boot.run.arguments='--rigour.settings.maintenance=flyway-repair'
+```
+
+该模式复用字典服务的环境变量，只读取 `BUSINESS_SETTINGS_DB_MIGRATOR_PASSWORD`，不输出密码；执行完成后进程会退出，不启动 Web 服务。
 
 ## 验证
 
@@ -77,5 +74,4 @@ export RIGOUR_CONTEXT_TRUST_KEY_V1='<base64-key>'
 ./mvnw -pl services/rigour-business-settings-service/business-settings-service -am test
 ```
 
-测试覆盖服务启动、作用域授权与生效优先级、租户隔离、字典树父级校验、批量补齐幂等、
-停用项保护、公共客户端失败降级和持久层基础行为。真实 MySQL 的建表约束仍需在目标环境执行 Flyway 后验证。
+测试覆盖字典创建、修改、字典项维护、父子层级、乐观锁、来源值补齐和客户端降级。

@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.rigour.tenant.iam.infrastructure.persistence.mapper.RolePermissionMapper">
+
+    <resultMap id="roleResourceGrantRowMap"
+               type="com.rigour.tenant.iam.infrastructure.persistence.projection.RoleResourceGrantRow">
+        <id property="roleId" column="role_id"
+            typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+        <result property="resourceId" column="resource_id"
+                typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+    </resultMap>
+
+    <resultMap id="grantableResourceRowMap"
+               type="com.rigour.tenant.iam.infrastructure.persistence.projection.GrantableResourceRow">
+        <id property="id" column="id"
+            typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+        <result property="applicationId" column="application_id"
+                typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+        <result property="parentId" column="parent_id"
+                typeHandler="com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler"/>
+    </resultMap>
+
+    <select id="countTenantPermission" resultType="int">
+        SELECT COUNT(DISTINCT resource_record.id)
+          FROM iam_user_role user_role
+          JOIN iam_role role_record
+            ON role_record.tenant_id = user_role.tenant_id
+           AND role_record.id = user_role.role_id
+          JOIN iam_role_resource role_resource
+            ON role_resource.tenant_id = user_role.tenant_id
+           AND role_resource.role_id = user_role.role_id
+          JOIN iam_resource resource_record
+            ON resource_record.id = role_resource.resource_id
+          JOIN iam_tenant_subscription subscription
+            ON subscription.tenant_id = user_role.tenant_id
+           AND subscription.status IN ('ACTIVE', 'SCHEDULED')
+           AND subscription.effective_from &lt;= UTC_TIMESTAMP(6)
+           AND subscription.effective_to &gt; UTC_TIMESTAMP(6)
+          JOIN iam_package_resource package_resource
+            ON package_resource.package_version_id = subscription.package_version_id
+           AND package_resource.resource_id = resource_record.id
+         WHERE user_role.tenant_id =
+               #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND user_role.user_id =
+               #{userId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND user_role.status = 'ACTIVE'
+           AND user_role.effective_from &lt;= UTC_TIMESTAMP(6)
+           AND (user_role.effective_to IS NULL OR user_role.effective_to &gt; UTC_TIMESTAMP(6))
+           AND role_record.status = 'ACTIVE'
+           AND role_record.deleted_at IS NULL
+           AND role_resource.status = 'ACTIVE'
+           AND resource_record.status = 'ACTIVE'
+           AND resource_record.deleted_at IS NULL
+           AND resource_record.permission_code = #{permission}
+    </select>
+
+    <select id="selectActiveRoleResources" resultMap="roleResourceGrantRowMap">
+        SELECT role_resource.role_id, role_resource.resource_id
+          FROM iam_role_resource role_resource
+          JOIN iam_role role_record
+            ON role_record.tenant_id = role_resource.tenant_id
+           AND role_record.id = role_resource.role_id
+         WHERE role_resource.tenant_id =
+               #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND role_resource.status = 'ACTIVE'
+           AND role_record.deleted_at IS NULL
+    </select>
+
+    <select id="selectEntitledResources" resultMap="grantableResourceRowMap">
+        SELECT DISTINCT
+               resource_record.id,
+               resource_record.application_id,
+               application_record.app_code AS application_code,
+               application_record.app_name AS application_name,
+               resource_record.parent_id,
+               resource_record.resource_code AS code,
+               resource_record.resource_type AS type,
+               resource_record.permission_code,
+               resource_record.display_name,
+               resource_record.sort_order,
+               resource_record.status,
+               resource_ui.route_key,
+               resource_ui.route_path,
+               resource_ui.icon_key,
+               CASE WHEN resource_record.resource_type IN ('MENU', 'PAGE')
+                    THEN COALESCE(resource_ui.visible, 0) * COALESCE(menu_config.visible, 0)
+                    ELSE 1 END AS visible,
+               COALESCE(resource_ui.keep_alive, 0) AS keep_alive
+          FROM iam_tenant_subscription subscription
+          JOIN iam_package_resource package_resource
+            ON package_resource.package_version_id = subscription.package_version_id
+          JOIN iam_resource resource_record
+            ON resource_record.id = package_resource.resource_id
+          JOIN iam_application application_record
+            ON application_record.id = resource_record.application_id
+          LEFT JOIN iam_resource_ui resource_ui
+            ON resource_ui.resource_id = resource_record.id
+          LEFT JOIN iam_tenant_menu_config menu_config
+            ON menu_config.tenant_id = subscription.tenant_id
+           AND menu_config.resource_id = resource_record.id
+         WHERE subscription.tenant_id =
+               #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND subscription.status IN ('ACTIVE', 'SCHEDULED')
+           AND subscription.effective_from &lt;= UTC_TIMESTAMP(6)
+           AND subscription.effective_to &gt; UTC_TIMESTAMP(6)
+           AND resource_record.status = 'ACTIVE'
+           AND resource_record.deleted_at IS NULL
+           AND application_record.status = 'ACTIVE'
+           AND application_record.deleted_at IS NULL
+         ORDER BY application_record.sort_order, resource_record.sort_order, resource_record.resource_code
+    </select>
+
+    <update id="inactivateRoleResources">
+        UPDATE iam_role_resource
+           SET status = 'INACTIVE',
+               updated_at = UTC_TIMESTAMP(6),
+               updated_by = #{actorId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+         WHERE tenant_id =
+               #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+           AND role_id =
+               #{roleId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+    </update>
+
+    <insert id="upsertRoleResource">
+        INSERT INTO iam_role_resource
+        (tenant_id, role_id, resource_id, status, created_at, created_by, updated_at, updated_by)
+        VALUES (
+            #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            #{roleId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            #{resourceId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            'ACTIVE',
+            UTC_TIMESTAMP(6),
+            #{actorId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            UTC_TIMESTAMP(6),
+            #{actorId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+        )
+        ON DUPLICATE KEY UPDATE
+            status = 'ACTIVE',
+            updated_at = UTC_TIMESTAMP(6),
+            updated_by = VALUES(updated_by)
+    </insert>
+
+    <update id="bumpTenantPolicy">
+        UPDATE iam_tenant
+           SET policy_version = policy_version + 1,
+               version = version + 1,
+               updated_at = UTC_TIMESTAMP(6)
+         WHERE id =
+               #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
+    </update>
+
+    <insert id="insertAudit">
+        INSERT INTO iam_audit_log
+        (id, tenant_id, actor_scope, actor_id, action, target_type, target_id,
+         request_id, event_seq, result, occurred_at)
+        VALUES (
+            #{id,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            #{actorScope},
+            #{actorId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            #{action},
+            #{targetType},
+            #{targetId,jdbcType=BINARY,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            #{requestId,jdbcType=BINARY,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler},
+            1,
+            'SUCCESS',
+            UTC_TIMESTAMP(6)
+        )
+    </insert>
+</mapper>

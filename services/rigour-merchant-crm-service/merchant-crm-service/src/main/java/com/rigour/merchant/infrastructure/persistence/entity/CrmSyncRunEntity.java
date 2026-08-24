@@ -13,6 +13,7 @@ public class CrmSyncRunEntity {
     public String sourceSystem;
     public String objectType;
     public String triggerType;
+    public byte[] sourceTaskId;
     public String syncMode;
     public String status;
     public Integer pageSize;

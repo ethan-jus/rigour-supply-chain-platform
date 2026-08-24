@@ -555,22 +555,21 @@ UNIQUE (tenant_id, source_system, target_type, target_id)
 | `SPECIFICATION` | `getMultiOptionsList` | 规格、规格值、来源绑定 | 最大每页 1000；商品 SKU 关系在来源规格值已绑定时建立 |
 | `TAG` | `getGoodsTag` | 标签 + 来源绑定 | 由项目需求指定；本地 V1.1 文档未给字段表，适配器保留容错别名和 Raw Landing |
 
-Portal 只调用一个 ERP 同步入口：
+Portal 不再调用 ERP 模块级同步入口。运维人员在订货宝同步中心触发统一同步，Integration 按依赖顺序调用 ERP 内部入口：
 
 ```text
-POST /api/v1/erp/sync
+POST /internal/v1/erp/dhb/sync
 body: { "objectType": "PRODUCT_SPU|CATEGORY|BRAND|SPECIFICATION|TAG", "maxPages": 100 }
 ```
 
-查询入口只读 ERP 本地表：
+查询入口只读 ERP 自研业务表，不再暴露旧商品来源投影接口：
 
 ```text
-GET /api/v1/erp/products
-GET /api/v1/erp/skus
-GET /api/v1/erp/categories
-GET /api/v1/erp/brands
-GET /api/v1/erp/specifications
-GET /api/v1/erp/tags
+GET /api/v1/erp/product-management/products
+GET /api/v1/erp/product-categories
+GET /api/v1/erp/product-brands
+GET /api/v1/erp/product-specifications
+GET /api/v1/erp/product-tags
 ```
 
 一期没有开放订货宝商品增量时间窗口，因为当前 V1.1 `getGoodsList` 参数表未列出

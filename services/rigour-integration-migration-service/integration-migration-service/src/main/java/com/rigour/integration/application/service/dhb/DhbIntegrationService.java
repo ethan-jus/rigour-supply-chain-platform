@@ -54,6 +54,8 @@ import com.rigour.integration.api.v1.model.StaffQueryCommand;
 import com.rigour.integration.api.v1.model.StaffView;
 import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingView;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingBatchCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingBatchResult;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderContentCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderContentView;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderMirrorView;
@@ -101,6 +103,12 @@ import com.rigour.integration.api.v1.model.DhbApiModels.WaitShipView;
 import com.rigour.integration.api.v1.model.DhbApiModels.WaitShipsView;
 import com.rigour.integration.api.v1.model.DhbApiModels.WaitStockView;
 import com.rigour.integration.api.v1.model.DhbConnectionTestResult;
+import com.rigour.integration.api.v1.model.DhbExternalObjectMappingPageView;
+import com.rigour.integration.api.v1.model.DhbSyncExceptionView;
+import com.rigour.integration.api.v1.model.DhbSyncFieldDescriptionView;
+import com.rigour.integration.api.v1.model.DhbSyncLogDetailView;
+import com.rigour.integration.api.v1.model.DhbSyncReconciliationCaseView;
+import com.rigour.integration.api.v1.model.DhbSyncRunAuditView;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
 import java.util.List;
@@ -110,6 +118,42 @@ import java.util.UUID;
 
 /** 订货宝数据同步用例；租户和权限只取Gateway签名上下文，不接受客户端传入。 */
 public final class DhbIntegrationService {
+    private static final List<DhbSyncFieldDescriptionView> SYNC_CENTER_FIELDS = List.of(
+            field("MAPPING", "sourceObjectType", "外部对象类型",
+                    "订货宝来源对象分类，用于区分商品、客户、销售订单、采购单和字典等同步对象。", "PRODUCT", false),
+            field("MAPPING", "sourceObjectId", "外部对象ID",
+                    "订货宝返回的稳定主键或可组合主键，是来源侧幂等判断依据。", "125801", false),
+            field("MAPPING", "sourceObjectNo", "外部对象编号",
+                    "订货宝业务编号，给开发和运维人工核对使用，不参与我方业务编号生成。", "JH.20260814.0010", false),
+            field("MAPPING", "internalDomain", "内部业务域",
+                    "映射后的我方业务归属域，只允许ERP、CRM、ORDER、DICTIONARY等内部域。", "ERP", false),
+            field("MAPPING", "internalObjectType", "内部对象类型",
+                    "映射后的我方业务对象类型，例如PRODUCT、CUSTOMER、SALES_ORDER。", "PRODUCT", false),
+            field("MAPPING", "internalObjectNo", "内部业务编号",
+                    "我方新业务表生成的业务编号，业务人员日常使用这个编号。", "SPU202608210001", false),
+            field("MAPPING", "payloadChecksum", "来源摘要",
+                    "最近一次完整来源业务数据摘要；订货宝订单详情未变化时据此跳过重复投影。", "sha256:...", false),
+            field("MAPPING", "lastSeenRunId", "最近同步批次",
+                    "最近观察到该来源对象的同步批次，用于把映射、日志、Raw和对账串起来。", "019fb7...", false),
+            field("MAPPING", "mappingStatus", "映射状态",
+                    "ACTIVE为正常映射；REMOVED表示来源不可见；CONFLICT表示需人工排查；IGNORED表示明确忽略。", "ACTIVE", false),
+            field("RUN", "fetchedCount", "拉取数量",
+                    "本次从订货宝接口读取到的记录数量，不等于最终业务表新增数量。", "100", false),
+            field("RUN", "acceptedCount", "接收数量",
+                    "本次通过基础校验并进入Raw或后续映射流程的数量。", "98", false),
+            field("RUN", "duplicateCount", "未变化跳过数量",
+                    "来源摘要未变化且业务投影完整时跳过的数量，用于判断同步是否幂等；不是重复写入数量。", "80", false),
+            field("RUN", "rejectedCount", "拒绝数量",
+                    "缺少必要字段、非法状态或无法归一化而拒绝处理的数量。", "2", false),
+            field("LOG", "message", "日志消息",
+                    "同步过程说明或错误摘要，禁止输出订货宝账号、密码、Token和Raw明文。", "商品图片COS已复用", true),
+            field("EXCEPTION", "lastErrorMessage", "错误消息",
+                    "最近一次异常描述，已过滤凭据和完整Raw Payload。", "来源商品缺少商品名称", true),
+            field("RECONCILIATION", "businessKey", "核对键",
+                    "对账时用于定位来源对象或内部对象的业务键。", "SALES_ORDER:SO202608210001", false),
+            field("RECONCILIATION", "checkType", "核对类型",
+                    "COUNT、DETAIL、HASH等核对方式，用于区分数量、明细和摘要差异。", "COUNT", false));
+
     private final DhbIntegrationStore store;
     private final DhbClient client;
     private final DhbOrderSyncService orderSyncService;
@@ -539,13 +583,20 @@ public final class DhbIntegrationService {
         return new ShipmentContentView(detail.shipmentNumber(), detail.attributes());
     }
 
-    /** 查询指定订货单的出库/发货物流；对应订货宝getWaitShips，只读且按订单号查询。 */
+    /**
+     * 查询指定订货单的出库/发货物流；对应订货宝getWaitShips。
+     *
+     * <p>返回业务视图前先将完整来源回执写入 Raw Landing；写入失败时不向
+     * Order Center 返回伪成功，从而保证后续核对账中“来源已拉取”与“Raw 已落地”不会分裂。</p>
+     */
     public WaitShipsView waitShips(UUID connectorId, String orderNumber) {
         CallerIdentity caller = requireReadCaller();
         if (orderNumber == null || orderNumber.isBlank()) {
             throw new IllegalArgumentException("orderNumber is required");
         }
         DhbClient.WaitShips result = client.getWaitShips(connector(caller, connectorId), orderNumber);
+        store.persistRawLanding(caller.tenantId(), connectorId, "WAIT_SHIPS",
+                firstNonBlank(result.orderNumber(), orderNumber), null, result.attributes());
         return new WaitShipsView(result.orderNumber(), result.shipped().stream()
                 .map(item -> new WaitShipView(item.sourceId(), item.shipmentNo(), item.status(),
                         item.logisticsName(), item.logisticsCode(), item.trackingNo(), item.shipmentAt(),
@@ -668,6 +719,22 @@ public final class DhbIntegrationService {
         return store.activeSyncTargets(objectType);
     }
 
+    /**
+     * 领域服务在同步完成后登记来源对象到新业务表对象的映射。
+     *
+     * <p>该入口允许租户级服务身份调用，但仍要求 {@code integration:dhb:write} 权限；
+     * 普通控制面写接口仍保留 userId 校验。</p>
+     */
+    public ExternalObjectMappingBatchResult upsertObjectMappings(
+            ExternalObjectMappingBatchCommand command) {
+        CallerIdentity caller = requireTenantWriteCaller();
+        List<com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand> items =
+                command == null ? List.of() : command.items();
+        UUID actorId = caller.userId() == null ? caller.principalId() : caller.userId();
+        int accepted = store.saveExternalObjectMappings(caller.tenantId(), actorId, items);
+        return new ExternalObjectMappingBatchResult(items.size(), accepted);
+    }
+
     public SyncTaskView createSyncTask(SyncTaskCommand command) {
         CallerIdentity caller = requireWriteCaller();
         return store.createSyncTask(caller.tenantId(), caller.userId(), command);
@@ -705,6 +772,39 @@ public final class DhbIntegrationService {
         return store.saveFieldMapping(caller.tenantId(), caller.userId(), id, command);
     }
 
+    public List<DhbSyncFieldDescriptionView> syncFieldDescriptions() {
+        requireReadCaller();
+        return SYNC_CENTER_FIELDS;
+    }
+
+    public DhbExternalObjectMappingPageView externalObjectMappings(
+            String sourceObjectType, String internalDomain, String mappingStatus, int limit, int offset) {
+        CallerIdentity caller = requireReadCaller();
+        return store.externalObjectMappings(caller.tenantId(), sourceObjectType, internalDomain,
+                mappingStatus, limit(limit, 200), Math.max(0, offset));
+    }
+
+    public List<DhbSyncRunAuditView> syncRuns(String objectType, String status, int limit) {
+        CallerIdentity caller = requireReadCaller();
+        return store.syncRuns(caller.tenantId(), objectType, status, limit(limit, 200));
+    }
+
+    public List<DhbSyncLogDetailView> syncLogDetails(UUID runId, String level, int limit) {
+        CallerIdentity caller = requireReadCaller();
+        return store.syncLogDetails(caller.tenantId(), runId, level, limit(limit, 500));
+    }
+
+    public List<DhbSyncExceptionView> syncExceptions(String status, int limit) {
+        CallerIdentity caller = requireReadCaller();
+        return store.syncExceptions(caller.tenantId(), status, limit(limit, 500));
+    }
+
+    public List<DhbSyncReconciliationCaseView> syncReconciliationCases(
+            String status, String severity, int limit) {
+        CallerIdentity caller = requireReadCaller();
+        return store.syncReconciliationCases(caller.tenantId(), status, severity, limit(limit, 500));
+    }
+
     private DhbClient.Connector connector(CallerIdentity caller, UUID connectorId) {
         ConnectorView connector = store.connector(caller.tenantId(), connectorId);
         return new DhbClient.Connector(caller.tenantId(), connector.id(), connector.baseUrl(),
@@ -713,6 +813,17 @@ public final class DhbIntegrationService {
 
     private static PageRequest page(Integer begin, Integer step) {
         return new PageRequest(begin == null ? 0 : begin, step == null ? 100 : step);
+    }
+
+    private static int limit(int requested, int maximum) {
+        return Math.max(1, Math.min(requested, maximum));
+    }
+
+    private static DhbSyncFieldDescriptionView field(
+            String groupCode, String fieldCode, String fieldName, String description,
+            String example, boolean sensitive) {
+        return new DhbSyncFieldDescriptionView(groupCode, fieldCode, fieldName,
+                description, example, sensitive);
     }
 
     private static TimeWindow window(String field, java.time.Instant from, java.time.Instant to) {
@@ -782,6 +893,13 @@ public final class DhbIntegrationService {
         if (caller.userId() == null) {
             throw new com.rigour.shared.context.AuthorizationDeniedException("user-caller");
         }
+        AuthorizationContext.requirePermission("integration:dhb:write");
+        return caller;
+    }
+
+    private static CallerIdentity requireTenantWriteCaller() {
+        CallerIdentity caller = AuthorizationContext.requireCurrent();
+        requireTenant(caller);
         AuthorizationContext.requirePermission("integration:dhb:write");
         return caller;
     }

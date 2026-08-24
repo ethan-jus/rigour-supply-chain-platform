@@ -25,11 +25,35 @@ spring:
     locations: classpath:db/migration
 
 rigour:
+  erp:
+    # Integration编排器只通过ERP内部HTTP同步契约调度，不访问ERP数据库。
+    base-url: ${RIGOUR_ERP_BASE_URL:http://rigour-erp-core-service:26884}
+  crm:
+    # Integration编排器只通过CRM内部HTTP同步契约调度，不访问CRM数据库。
+    base-url: ${RIGOUR_CRM_BASE_URL:http://rigour-merchant-crm-service:26883}
+  order:
+    # Integration投影订货宝订单到Order自研销售订单；只调用HTTP契约，不访问Order数据库。
+    base-url: ${RIGOUR_ORDER_BASE_URL:http://rigour-order-center-service:26885}
+  business-settings:
+    # Integration同步批次内只通过Settings内部HTTP契约补齐已确认的白名单业务字典项。
+    base-url: ${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://rigour-business-settings-service:26892}
   integration:
+    domain-http:
+      # 统一编排器调用ERP/CRM/Order时允许长批次完成；领域服务内部负责分页、幂等和对账。
+      connect-timeout: 5s
+      read-timeout: 15m
     connector-lease:
       # ERP、CRM、Order及各自多实例的一整轮同步共享同一租户连接器租约。
       ttl: 2m
     dhb:
+      orchestration:
+        # 订货宝同步统一由Integration编排器触发；领域服务定时入口默认关闭。
+        enabled: true
+        cron: 0 5/30 * * * ?
+        max-pages: 100
+      order:
+        # getOrderContent/getShipsContent 明细接口按单号调用；该值受订货宝限流和下方 client 限流共同约束。
+        detail-concurrency: 4
       client:
         # 订货宝 API base_url 仍由租户连接器保存；相对商品图片地址单独解析到图片源站。
         image-base-url: ${RIGOUR_INTEGRATION_DHB_IMAGE_BASE_URL:https://img.dhb168.com/}

@@ -1,8 +1,12 @@
 package com.rigour.integration.api.v1;
 
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingBatchCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingBatchResult;
 import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 
 /**
@@ -14,8 +18,13 @@ public interface DhbIntegrationInternalApi {
 
     String BASE_PATH = "/internal/v1/integration/dhb";
     String SYNC_TARGETS_PATH = BASE_PATH + "/sync-targets";
+    String OBJECT_MAPPINGS_PATH = BASE_PATH + "/object-mappings";
 
     @GetMapping(SYNC_TARGETS_PATH)
     List<SyncTargetView> syncTargets(
             @RequestParam(name = "objectType", defaultValue = "ORDER") String objectType);
+
+    @PostMapping(OBJECT_MAPPINGS_PATH)
+    ExternalObjectMappingBatchResult upsertObjectMappings(
+            @RequestBody ExternalObjectMappingBatchCommand command);
 }

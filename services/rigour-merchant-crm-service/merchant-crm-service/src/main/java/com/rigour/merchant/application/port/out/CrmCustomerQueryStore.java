@@ -3,7 +3,6 @@ package com.rigour.merchant.application.port.out;
 import com.rigour.merchant.api.v1.model.CustomerDetailView;
 import com.rigour.merchant.api.v1.model.CustomerSummaryView;
 import com.rigour.merchant.api.v1.model.DictionaryView;
-import com.rigour.merchant.api.v1.model.ExternalStaffView;
 import com.rigour.merchant.api.v1.model.PageView;
 import com.rigour.merchant.api.v1.model.ShippingAddressSummaryView;
 import java.util.UUID;
@@ -17,5 +16,4 @@ public interface CrmCustomerQueryStore {
             UUID tenantId, int begin, int step, String query);
     PageView<DictionaryView> customerTypes(UUID tenantId, int begin, int step, String query);
     PageView<DictionaryView> customerAreas(UUID tenantId, int begin, int step, String query);
-    PageView<ExternalStaffView> externalStaff(UUID tenantId, int begin, int step, String query);
 }

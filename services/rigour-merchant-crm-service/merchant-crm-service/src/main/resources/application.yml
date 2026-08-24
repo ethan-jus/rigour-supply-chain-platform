@@ -26,13 +26,11 @@ rigour:
     base-url: ${RIGOUR_INTEGRATION_BASE_URL:http://localhost:26882}
     http:
       connect-timeout: ${RIGOUR_INTEGRATION_CONNECT_TIMEOUT:3s}
-      read-timeout: ${RIGOUR_INTEGRATION_READ_TIMEOUT:30s}
+      read-timeout: ${RIGOUR_INTEGRATION_READ_TIMEOUT:120s}
   crm:
-    sync:
-      enabled: ${RIGOUR_CRM_SYNC_ENABLED:true}
-      # 默认在每小时10分、40分执行，与ERP和Order错峰。
-      cron: ${RIGOUR_CRM_SYNC_CRON:0 10/30 * * * ?}
-      max-pages: ${RIGOUR_CRM_SYNC_MAX_PAGES:100}
+    dhb:
+      # 客户数据单页过大会拖慢Integration和订货宝响应；默认小批量换稳定性，最大500。
+      page-size: ${RIGOUR_CRM_DHB_PAGE_SIZE:100}
   context:
     trust:
       active-key-id: v1

@@ -10,12 +10,15 @@ import com.rigour.erp.application.port.out.SupplyDataStore.RunStatistics;
 import com.rigour.erp.domain.model.supply.SupplyDataObjectType;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.client.ConnectorSyncLeaseClient;
+import com.rigour.integration.client.ConnectorSyncLeaseClient.LeaseGuard;
 import com.rigour.erp.application.service.sync.BusinessDictionaryCoverageService;
+import com.rigour.erp.application.service.sync.ErpScheduledSyncSkipException;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
+import com.rigour.shared.core.sync.SyncConflictClassifier;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -23,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +38,7 @@ public final class SupplyDataSyncService {
     private static final Logger log = LoggerFactory.getLogger(SupplyDataSyncService.class);
     private static final UUID SERVICE_ID = UUID.nameUUIDFromBytes(
             "service:rigour-erp-core-service".getBytes(StandardCharsets.UTF_8));
+    private static final int HEARTBEAT_INTERVAL_RECORDS = 50;
     private final DhbSupplyDataClient client;
     private final DhbSupplySyncTargetDiscoveryClient discovery;
     private final SupplyDataStore store;
@@ -75,54 +80,103 @@ public final class SupplyDataSyncService {
     private ErpDataSyncResult runWithCaller(CallerIdentity caller, UUID connectorId, UUID actorId,
                                              SupplyDataObjectType type, int maxPages,
                                              boolean scheduled) {
-        return connectorLease.execute(caller.tenantId(), connectorId,
-                () -> runUnderLease(caller, connectorId, actorId, type, maxPages, scheduled));
+        String tenantId = caller.tenantId().toString();
+        AtomicBoolean actionStarted = new AtomicBoolean(false);
+        SyncAttempt attempt = new SyncAttempt();
+        try {
+            return connectorLease.executeWithLeaseGuard(caller.tenantId(), connectorId, guard -> {
+                actionStarted.set(true);
+                return runUnderLease(caller, connectorId, actorId, type, maxPages,
+                        scheduled, attempt, guard);
+            });
+        } catch (RuntimeException error) {
+            if (scheduled && !actionStarted.get() && SyncConflictClassifier.isAlreadyRunning(error)) {
+                throw ErpScheduledSyncSkipException.connectorLeaseConflict(type.name());
+            }
+            if (attempt.runId != null) {
+                store.failRun(tenantId, attempt.runId, attempt.counts.statistics(), error);
+                log.error("ERP供应链数据同步批次失败 tenantId={} objectType={} connectorId={} runId={} errorType={} reason={}",
+                        tenantId, type, connectorId, attempt.runId,
+                        error.getClass().getSimpleName(), oneLine(error.getMessage()), error);
+            }
+            throw error;
+        }
     }
 
     private ErpDataSyncResult runUnderLease(CallerIdentity caller, UUID connectorId, UUID actorId,
                                              SupplyDataObjectType type, int maxPages,
-                                             boolean scheduled) {
+                                             boolean scheduled, SyncAttempt attempt, LeaseGuard guard) {
         String tenantId = caller.tenantId().toString();
-        UUID runId = scheduled
-                ? store.startScheduledRun(tenantId, connectorId, actorId, type, maxPages)
-                : store.startRun(tenantId, connectorId, actorId, type, maxPages);
-        log.info("ERP供应链数据同步批次已创建 tenantId={} userId={} objectType={} connectorId={} runId={} maxPages={}",
-                tenantId, actorId, type, connectorId, runId, maxPages);
-        Counts counts = new Counts();
         try {
-            List<String> codes = type == SupplyDataObjectType.INVENTORY
-                    ? store.sourceProductCodes(tenantId) : List.of();
-            DhbSupplyDataClient.Collected collected = client.collect(dataCaller(caller.tenantId()),
-                    connectorId, type, maxPages, codes);
-            counts.pages = collected.pages();
-            collected.suppliers().forEach(item -> counts.add(store.importSupplier(tenantId, runId, item)));
-            collected.purchaseOrders().forEach(item -> counts.add(store.importPurchaseOrder(tenantId, runId, item)));
-            collected.purchaseReturns().forEach(item -> counts.add(store.importPurchaseReturn(tenantId, runId, item)));
-            collected.warehousingReceipts().forEach(item -> counts.add(store.importWarehousingReceipt(tenantId, runId, item)));
-            collected.warehouses().forEach(item -> counts.add(store.importWarehouse(tenantId, runId, item)));
-            collected.inventoryBalances().forEach(item -> counts.add(store.importInventory(tenantId, runId, item)));
-            if (counts.rejected == 0) {
-                store.reconcileSourcePresence(tenantId, runId, seenSourceIds(type, collected));
-            }
-            counts.dictionaryAudit = dictionaryCoverage.inspect(caller.tenantId(), collected);
-            RunStatistics stats = counts.statistics();
-            store.completeRun(tenantId, runId, stats);
-            log.info("ERP供应链数据同步批次完成 tenantId={} objectType={} connectorId={} runId={} fetched={} created={} changed={} duplicates={} rejected={} pages={}",
-                    tenantId, type, connectorId, runId, stats.fetched(), stats.created(),
-                    stats.changed(), stats.duplicates(), stats.rejected(), stats.pages());
-            String status = stats.dictionaryAudit().unmapped() == 0
-                    ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
-            return new ErpDataSyncResult(runId, type.name(), status, connectorId,
-                    stats.fetched(), stats.created(), stats.changed(), stats.duplicates(),
-                    stats.rejected(), stats.dictionaryAudit().unmapped(),
-                    stats.dictionaryAudit().revisions(), stats.pages(), Instant.now());
+            attempt.runId = scheduled
+                    ? store.startScheduledRun(tenantId, connectorId, actorId, type, maxPages)
+                    : store.startRun(tenantId, connectorId, actorId, type, maxPages);
         } catch (RuntimeException error) {
-            store.failRun(tenantId, runId, counts.statistics(), error);
-            log.error("ERP供应链数据同步批次失败 tenantId={} objectType={} connectorId={} runId={} errorType={} reason={}",
-                    tenantId, type, connectorId, runId,
-                    error.getClass().getSimpleName(), oneLine(error.getMessage()), error);
+            if (scheduled && SyncConflictClassifier.isAlreadyRunning(error)) {
+                throw ErpScheduledSyncSkipException.objectSyncLockConflict(type.name());
+            }
             throw error;
         }
+        log.info("ERP供应链数据同步批次已创建 tenantId={} userId={} objectType={} connectorId={} runId={} maxPages={}",
+                tenantId, actorId, type, connectorId, attempt.runId, maxPages);
+        List<String> codes = type == SupplyDataObjectType.INVENTORY
+                ? store.sourceProductCodes(tenantId) : List.of();
+        DhbSupplyDataClient.Collected collected = client.collect(dataCaller(caller.tenantId()),
+                connectorId, type, maxPages, codes);
+        store.heartbeatRun(tenantId, attempt.runId);
+        attempt.counts.pages = collected.pages();
+        importCollected(tenantId, attempt.runId, collected, attempt.counts);
+        store.heartbeatRun(tenantId, attempt.runId);
+        attempt.counts.dictionaryAudit = dictionaryCoverage.inspect(caller.tenantId(), collected);
+        store.heartbeatRun(tenantId, attempt.runId);
+        RunStatistics stats = attempt.counts.statistics();
+        guard.ensureActive();
+        store.completeRunWithSourcePresence(tenantId, attempt.runId,
+                attempt.counts.rejected == 0 ? seenSourceIds(type, collected) : Map.of(), stats);
+        log.info("ERP供应链数据同步批次完成 tenantId={} objectType={} connectorId={} runId={} fetched={} created={} changed={} duplicates={} rejected={} pages={}",
+                tenantId, type, connectorId, attempt.runId, stats.fetched(), stats.created(),
+                stats.changed(), stats.duplicates(), stats.rejected(), stats.pages());
+        String status = stats.dictionaryAudit().unmapped() == 0
+                ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
+        return new ErpDataSyncResult(attempt.runId, type.name(), status, connectorId,
+                stats.fetched(), stats.created(), stats.changed(), stats.duplicates(),
+                stats.rejected(), stats.dictionaryAudit().unmapped(),
+                stats.dictionaryAudit().revisions(), stats.pages(), Instant.now());
+    }
+
+    private void importCollected(String tenantId, UUID runId, DhbSupplyDataClient.Collected collected,
+                                 Counts counts) {
+        int imported = 0;
+        for (var item : collected.suppliers()) {
+            counts.add(store.importSupplier(tenantId, runId, item));
+            imported = heartbeatEvery(tenantId, runId, imported);
+        }
+        for (var item : collected.purchaseOrders()) {
+            counts.add(store.importPurchaseOrder(tenantId, runId, item));
+            imported = heartbeatEvery(tenantId, runId, imported);
+        }
+        for (var item : collected.purchaseReturns()) {
+            counts.add(store.importPurchaseReturn(tenantId, runId, item));
+            imported = heartbeatEvery(tenantId, runId, imported);
+        }
+        for (var item : collected.warehousingReceipts()) {
+            counts.add(store.importWarehousingReceipt(tenantId, runId, item));
+            imported = heartbeatEvery(tenantId, runId, imported);
+        }
+        for (var item : collected.warehouses()) {
+            counts.add(store.importWarehouse(tenantId, runId, item));
+            imported = heartbeatEvery(tenantId, runId, imported);
+        }
+        for (var item : collected.inventoryBalances()) {
+            counts.add(store.importInventory(tenantId, runId, item));
+            imported = heartbeatEvery(tenantId, runId, imported);
+        }
+    }
+
+    private int heartbeatEvery(String tenantId, UUID runId, int imported) {
+        int next = imported + 1;
+        if (next % HEARTBEAT_INTERVAL_RECORDS == 0) store.heartbeatRun(tenantId, runId);
+        return next;
     }
 
     private SyncTargetView uniqueTarget(CallerIdentity caller) {
@@ -170,6 +224,11 @@ public final class SupplyDataSyncService {
             return new RunStatistics(fetched, created, changed, duplicates, rejected, pages,
                     dictionaryAudit);
         }
+    }
+
+    private static final class SyncAttempt {
+        private UUID runId;
+        private final Counts counts = new Counts();
     }
 
     private static Map<String, Set<String>> seenSourceIds(SupplyDataObjectType type,

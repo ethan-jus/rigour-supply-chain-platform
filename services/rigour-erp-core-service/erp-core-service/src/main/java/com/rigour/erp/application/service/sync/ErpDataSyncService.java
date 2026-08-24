@@ -2,6 +2,7 @@ package com.rigour.erp.application.service.sync;
 
 import com.rigour.erp.api.v1.model.ErpDataSyncCommand;
 import com.rigour.erp.api.v1.model.ErpDataSyncResult;
+import com.rigour.erp.application.port.out.ErpSyncRunAuditStore;
 import com.rigour.erp.application.service.product.ProductMasterDataSyncService;
 import com.rigour.erp.application.service.supply.SupplyDataSyncService;
 import com.rigour.erp.domain.model.product.MasterDataObjectType;
@@ -10,8 +11,10 @@ import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
+import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,11 +29,14 @@ public final class ErpDataSyncService {
 
     private final ProductMasterDataSyncService productSync;
     private final SupplyDataSyncService supplySync;
+    private final ErpSyncRunAuditStore syncRunAuditStore;
 
     public ErpDataSyncService(ProductMasterDataSyncService productSync,
-                              SupplyDataSyncService supplySync) {
+                              SupplyDataSyncService supplySync,
+                              ErpSyncRunAuditStore syncRunAuditStore) {
         this.productSync = productSync;
         this.supplySync = supplySync;
+        this.syncRunAuditStore = syncRunAuditStore;
     }
 
     public ErpDataSyncResult run(ErpDataSyncCommand command) {
@@ -54,16 +60,27 @@ public final class ErpDataSyncService {
     }
 
     /** 供 ERP 内部定时调度器调用；不依赖 HTTP 线程上下文，也不暴露为新的浏览器接口。 */
-    public ErpDataSyncResult runScheduled(CallerIdentity caller, UUID connectorId,
+    public ErpDataSyncResult runScheduled(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
                                           ErpDataSyncCommand command) {
         requireScheduledCaller(caller);
         if (connectorId == null) throw new IllegalArgumentException("connectorId不能为空");
+        if (sourceTaskId == null) throw new IllegalArgumentException("sourceTaskId不能为空");
         ParsedCommand parsed = parse(command);
         log.info("ERP统一定时数据同步开始 tenantId={} objectType={} connectorId={} maxPages={}",
                 caller.tenantId(), parsed.objectType(), connectorId, parsed.maxPages());
-        return parsed.productType() != null
-                ? productSync.runScheduled(caller, connectorId, parsed.productType(), parsed.maxPages())
-                : supplySync.runScheduled(caller, connectorId, parsed.supplyType(), parsed.maxPages());
+        try {
+            return parsed.productType() != null
+                    ? productSync.runScheduled(caller, connectorId, parsed.productType(), parsed.maxPages())
+                    : supplySync.runScheduled(caller, connectorId, parsed.supplyType(), parsed.maxPages());
+        } catch (ErpScheduledSyncSkipException skip) {
+            UUID runId = syncRunAuditStore.recordScheduledSkip(caller.tenantId(), connectorId, sourceTaskId,
+                    skip.blockedObjectType(), parsed.maxPages(), skip.reason());
+            log.info("ERP统一定时数据同步跳过 tenantId={} objectType={} connectorId={} sourceTaskId={} runId={} reason={}",
+                    caller.tenantId(), skip.blockedObjectType(), connectorId, sourceTaskId, runId,
+                    skip.reason().code());
+            return new ErpDataSyncResult(runId, skip.blockedObjectType(), "SKIPPED", connectorId,
+                    0, 0, 0, 0, 0, 0, Map.of(), 0, Instant.now());
+        }
     }
 
     private static ParsedCommand parse(ErpDataSyncCommand command) {

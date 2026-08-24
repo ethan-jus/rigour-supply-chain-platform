@@ -1,21 +1,8 @@
 package com.rigour.erp.infrastructure.persistence.repository;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import com.rigour.erp.api.v1.model.InventoryBalanceView;
-import com.rigour.erp.api.v1.model.PurchaseOrderDetailView;
-import com.rigour.erp.api.v1.model.PurchaseOrderLineView;
-import com.rigour.erp.api.v1.model.PurchaseOrderView;
-import com.rigour.erp.api.v1.model.PurchaseReturnDetailView;
-import com.rigour.erp.api.v1.model.PurchaseReturnLineView;
-import com.rigour.erp.api.v1.model.PurchaseReturnView;
-import com.rigour.erp.api.v1.model.PurchaseLinkView;
-import com.rigour.erp.api.v1.model.SupplierView;
-import com.rigour.erp.api.v1.model.SupplyDataPageView;
-import com.rigour.erp.api.v1.model.WarehouseView;
-import com.rigour.erp.api.v1.model.WarehousingLineView;
-import com.rigour.erp.api.v1.model.WarehousingReceiptDetailView;
-import com.rigour.erp.api.v1.model.WarehousingReceiptView;
 import com.rigour.erp.application.port.out.SupplyDataStore;
+import com.rigour.erp.domain.code.ErpBusinessCodeRules;
 import com.rigour.erp.domain.model.supply.InventoryBalance;
 import com.rigour.erp.domain.model.supply.PurchaseOrder;
 import com.rigour.erp.domain.model.supply.PurchaseReturn;
@@ -23,105 +10,121 @@ import com.rigour.erp.domain.model.supply.Supplier;
 import com.rigour.erp.domain.model.supply.SupplyDataObjectType;
 import com.rigour.erp.domain.model.supply.Warehouse;
 import com.rigour.erp.domain.model.supply.WarehousingReceipt;
-import com.rigour.erp.infrastructure.persistence.entity.InventoryBalanceEntity;
-import com.rigour.erp.infrastructure.persistence.entity.MasterDataSyncRunEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalInventoryWarehouseEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProcurementOrderEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProcurementOrderLineEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProductEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProductVariantEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalPurchaseReturnOrderEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalPurchaseReturnOrderLineEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalStockBalanceEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalStockInOrderEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalStockInOrderLineEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalSupplierProfileEntity;
 import com.rigour.erp.infrastructure.persistence.entity.MasterDataSyncLockEntity;
+import com.rigour.erp.infrastructure.persistence.entity.MasterDataSyncRunEntity;
 import com.rigour.erp.infrastructure.persistence.entity.MasterSourceBindingEntity;
-import com.rigour.erp.infrastructure.persistence.entity.PurchaseOrderEntity;
-import com.rigour.erp.infrastructure.persistence.entity.PurchaseOrderLineEntity;
-import com.rigour.erp.infrastructure.persistence.entity.PurchaseReturnEntity;
-import com.rigour.erp.infrastructure.persistence.entity.PurchaseReturnLineEntity;
-import com.rigour.erp.infrastructure.persistence.entity.SupplierEntity;
-import com.rigour.erp.infrastructure.persistence.entity.WarehouseEntity;
-import com.rigour.erp.infrastructure.persistence.entity.WarehousingPurchaseLinkEntity;
-import com.rigour.erp.infrastructure.persistence.entity.WarehousingReceiptEntity;
-import com.rigour.erp.infrastructure.persistence.entity.WarehousingReceiptLineEntity;
-import com.rigour.erp.infrastructure.persistence.mapper.InventoryBalanceMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.MasterDataSyncRunMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalInventoryWarehouseMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProcurementOrderLineMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProcurementOrderMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProductMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProductVariantMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalPurchaseReturnOrderLineMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalPurchaseReturnOrderMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalStockBalanceMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalStockInOrderLineMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalStockInOrderMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalSupplierProfileMapper;
 import com.rigour.erp.infrastructure.persistence.mapper.MasterDataSyncLockMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.MasterDataSyncRunMapper;
 import com.rigour.erp.infrastructure.persistence.mapper.MasterSourceBindingMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.PurchaseOrderLineMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.PurchaseOrderMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.PurchaseReturnLineMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.PurchaseReturnMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.SupplierMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.WarehouseMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.WarehousingPurchaseLinkMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.WarehousingReceiptLineMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.WarehousingReceiptMapper;
-import com.rigour.shared.core.api.ErrorCode;
-import com.rigour.shared.core.exception.BusinessException;
+import com.rigour.shared.core.code.BusinessCodeGenerator;
+import com.rigour.shared.core.code.BusinessCodeRule;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
 import java.util.HexFormat;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 import org.springframework.stereotype.Repository;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * ERP 供应链唯一 MyBatis-Plus 仓储实现。
+ * ERP 供应链订货宝同步仓储。
  *
- * <p>所有查写均绑定 tenantId；来源绑定负责根对象幂等，单据明细按来源行 ID 替换。</p>
+ * <p>订货宝只作为外部来源，数据落到 ERP 自研采购、仓库、库存、入出库业务表。</p>
  */
 @Repository
 public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
     private static final String SOURCE_SYSTEM = "DINGHUOBAO";
-    private static final String EXTERNAL_PRIMARY = "EXTERNAL_PRIMARY";
-    private static final ObjectMapper SOURCE_FIELDS_MAPPER = JsonMapper.builder()
+    private static final String SYNC_ACTOR = "DHB_SYNC";
+    private static final String TRIGGER_MANUAL = "MANUAL";
+    private static final String TRIGGER_SCHEDULED = "SCHEDULED";
+    private static final String PRESENT = "PRESENT";
+    private static final String SOURCE_ABSENT = "SOURCE_ABSENT";
+    private static final long RUN_LEASE_MINUTES = 30;
+    private static final BigDecimal ZERO = BigDecimal.ZERO;
+    private static final ObjectMapper JSON = JsonMapper.builder()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .build();
-    private final SupplierMapper supplierMapper;
-    private final WarehouseMapper warehouseMapper;
-    private final PurchaseOrderMapper purchaseOrderMapper;
-    private final PurchaseOrderLineMapper purchaseOrderLineMapper;
-    private final PurchaseReturnMapper purchaseReturnMapper;
-    private final PurchaseReturnLineMapper purchaseReturnLineMapper;
-    private final WarehousingReceiptMapper warehousingReceiptMapper;
-    private final WarehousingReceiptLineMapper warehousingReceiptLineMapper;
-    private final WarehousingPurchaseLinkMapper warehousingPurchaseLinkMapper;
-    private final InventoryBalanceMapper inventoryBalanceMapper;
+
+    private final InternalSupplierProfileMapper supplierMapper;
+    private final InternalInventoryWarehouseMapper warehouseMapper;
+    private final InternalProductMapper productMapper;
+    private final InternalProductVariantMapper variantMapper;
+    private final InternalProcurementOrderMapper procurementMapper;
+    private final InternalProcurementOrderLineMapper procurementLineMapper;
+    private final InternalPurchaseReturnOrderMapper purchaseReturnMapper;
+    private final InternalPurchaseReturnOrderLineMapper purchaseReturnLineMapper;
+    private final InternalStockInOrderMapper stockInMapper;
+    private final InternalStockInOrderLineMapper stockInLineMapper;
+    private final InternalStockBalanceMapper stockBalanceMapper;
     private final MasterSourceBindingMapper bindingMapper;
     private final MasterDataSyncRunMapper syncRunMapper;
     private final MasterDataSyncLockMapper syncLockMapper;
+    private final BusinessCodeGenerator codeGenerator = new BusinessCodeGenerator();
     private final Clock clock;
 
     public MybatisPlusSupplyDataRepository(
-            SupplierMapper supplierMapper, WarehouseMapper warehouseMapper,
-            PurchaseOrderMapper purchaseOrderMapper, PurchaseOrderLineMapper purchaseOrderLineMapper,
-            PurchaseReturnMapper purchaseReturnMapper, PurchaseReturnLineMapper purchaseReturnLineMapper,
-            WarehousingReceiptMapper warehousingReceiptMapper,
-            WarehousingReceiptLineMapper warehousingReceiptLineMapper,
-            WarehousingPurchaseLinkMapper warehousingPurchaseLinkMapper,
-            InventoryBalanceMapper inventoryBalanceMapper, MasterSourceBindingMapper bindingMapper,
-            MasterDataSyncRunMapper syncRunMapper, MasterDataSyncLockMapper syncLockMapper, Clock clock) {
+            InternalSupplierProfileMapper supplierMapper,
+            InternalInventoryWarehouseMapper warehouseMapper,
+            InternalProductMapper productMapper,
+            InternalProductVariantMapper variantMapper,
+            InternalProcurementOrderMapper procurementMapper,
+            InternalProcurementOrderLineMapper procurementLineMapper,
+            InternalPurchaseReturnOrderMapper purchaseReturnMapper,
+            InternalPurchaseReturnOrderLineMapper purchaseReturnLineMapper,
+            InternalStockInOrderMapper stockInMapper,
+            InternalStockInOrderLineMapper stockInLineMapper,
+            InternalStockBalanceMapper stockBalanceMapper,
+            MasterSourceBindingMapper bindingMapper,
+            MasterDataSyncRunMapper syncRunMapper,
+            MasterDataSyncLockMapper syncLockMapper,
+            Clock clock) {
         this.supplierMapper = supplierMapper;
         this.warehouseMapper = warehouseMapper;
-        this.purchaseOrderMapper = purchaseOrderMapper;
-        this.purchaseOrderLineMapper = purchaseOrderLineMapper;
+        this.productMapper = productMapper;
+        this.variantMapper = variantMapper;
+        this.procurementMapper = procurementMapper;
+        this.procurementLineMapper = procurementLineMapper;
         this.purchaseReturnMapper = purchaseReturnMapper;
         this.purchaseReturnLineMapper = purchaseReturnLineMapper;
-        this.warehousingReceiptMapper = warehousingReceiptMapper;
-        this.warehousingReceiptLineMapper = warehousingReceiptLineMapper;
-        this.warehousingPurchaseLinkMapper = warehousingPurchaseLinkMapper;
-        this.inventoryBalanceMapper = inventoryBalanceMapper;
+        this.stockInMapper = stockInMapper;
+        this.stockInLineMapper = stockInLineMapper;
+        this.stockBalanceMapper = stockBalanceMapper;
         this.bindingMapper = bindingMapper;
         this.syncRunMapper = syncRunMapper;
         this.syncLockMapper = syncLockMapper;
@@ -129,489 +132,267 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
     }
 
     @Override
-    public SupplyDataPageView<SupplierView> suppliers(String tenantId, int begin, int step,
-                                             String query, String status) {
-        var wrapper = Wrappers.<SupplierEntity>query().eq("tenant_id", tenantId);
-        applySearch(wrapper, query, "supplier_code", "name", "contact_name");
-        applyStatus(wrapper, status, "internal_status");
-        long total = supplierMapper.selectCount(wrapper);
-        List<SupplierEntity> page = supplierMapper.selectList(wrapper.orderByDesc("updated_at")
-                .orderByAsc("id").last(limitSql(begin, step)));
-        return new SupplyDataPageView<>(total, begin, step, page.stream().map(item ->
-                new SupplierView(item.id, item.sourceSupplierId, item.sourceSupplierGuid,
-                        item.supplierCode, item.name, item.areaName, item.address, item.contactName, item.mobile,
-                        item.phone, item.email, item.accountName, item.bankName, item.bankAccount, item.invoiceTitle,
-                        item.taxpayerNumber, item.remark, instant(item.sourceUpdatedAt),
-                        instant(item.sourceSyncedAt))).toList());
-    }
-
-    @Override
-    public SupplyDataPageView<WarehouseView> warehouses(String tenantId, int begin, int step,
-                                               String query, String status) {
-        var wrapper = Wrappers.<WarehouseEntity>query().eq("tenant_id", tenantId);
-        applySearch(wrapper, query, "warehouse_code", "name", "address");
-        applyStatus(wrapper, status, "internal_status");
-        long total = warehouseMapper.selectCount(wrapper);
-        List<WarehouseEntity> page = warehouseMapper.selectList(wrapper
-                .orderByAsc("CAST(warehouse_code AS UNSIGNED)")
-                .orderByAsc("warehouse_code").orderByAsc("id").last(limitSql(begin, step)));
-        return new SupplyDataPageView<>(total, begin, step, page.stream().map(item ->
-                new WarehouseView(item.id, item.sourceWarehouseId, item.sourceWarehouseGuid,
-                        item.warehouseCode, item.name, warehouseStatus(item.sourceStatus), item.sourceStatus,
-                        Boolean.TRUE.equals(item.sourceDefaultFlag), item.acreage, item.phone,
-                        item.address, item.collaboratorSourceId, item.remark, item.internalStatus,
-                        item.ownershipState, instant(item.sourceSyncedAt))).toList());
-    }
-
-    @Override
-    public SupplyDataPageView<PurchaseOrderView> purchaseOrders(String tenantId, int begin, int step,
-                                                       String query, String status) {
-        var wrapper = Wrappers.<PurchaseOrderEntity>query().eq("tenant_id", tenantId);
-        applySearch(wrapper, query, "purchase_order_no", "supplier_code_snapshot",
-                "supplier_name_snapshot", "warehouse_name_snapshot");
-        applyStatus(wrapper, status, "internal_status", "source_status");
-        long total = purchaseOrderMapper.selectCount(wrapper);
-        List<PurchaseOrderEntity> page = purchaseOrderMapper.selectList(wrapper.orderByDesc("updated_at")
-                .orderByAsc("id").last(limitSql(begin, step)));
-        Map<String, Integer> lineCounts = lineCounts(tenantId, ids(page, item -> item.id), "PURCHASE");
-        return new SupplyDataPageView<>(total, begin, step, page.stream()
-                .map(item -> purchaseOrderView(item, lineCounts.getOrDefault(item.id, 0))).toList());
-    }
-
-    @Override
-    public PurchaseOrderDetailView purchaseOrder(String tenantId, String id) {
-        PurchaseOrderEntity entity = purchaseOrderMapper.selectOne(Wrappers.<PurchaseOrderEntity>query()
-                .eq("tenant_id", tenantId).eq("id", id).last("LIMIT 1"));
-        if (entity == null) throw notFound("采购单不存在");
-        List<PurchaseOrderLineEntity> lines = purchaseOrderLineMapper.selectList(
-                Wrappers.<PurchaseOrderLineEntity>query().eq("tenant_id", tenantId)
-                        .eq("purchase_order_id", id).orderByAsc("created_at").orderByAsc("id"));
-        return new PurchaseOrderDetailView(entity.id, entity.sourcePurchaseId, entity.purchaseOrderNo,
-                prefer(entity.sourceSupplierId, sourceSupplierId(tenantId, entity.supplierId)),
-                entity.supplierCodeSnapshot, entity.supplierNameSnapshot,
-                prefer(entity.sourceWarehouseId, sourceWarehouseId(tenantId, entity.warehouseId)),
-                entity.warehouseCodeSnapshot, entity.warehouseNameSnapshot, entity.staffSourceId,
-                entity.staffName, entity.sourceStatus, entity.sourceStatusName,
-                entity.sourcePaymentStatus, entity.sourcePaymentName, instant(entity.deliveryAt),
-                instant(entity.sourceCreatedAt), instant(entity.sourceUpdatedAt), entity.totalAmount,
-                entity.paidAmount, entity.goodsCount, entity.sourceDownloaded, entity.remark,
-                entity.internalCommunication, parseSourceFields(entity.attributesJson),
-                lines.stream().map(MybatisPlusSupplyDataRepository::purchaseOrderLine).toList());
-    }
-
-    @Override
-    public SupplyDataPageView<PurchaseReturnView> purchaseReturns(String tenantId, int begin, int step,
-                                                         String query, String status) {
-        var wrapper = Wrappers.<PurchaseReturnEntity>query().eq("tenant_id", tenantId);
-        applySearch(wrapper, query, "purchase_return_no", "supplier_code_snapshot",
-                "supplier_name_snapshot", "return_reason");
-        applyStatus(wrapper, status, "internal_status", "source_status");
-        long total = purchaseReturnMapper.selectCount(wrapper);
-        List<PurchaseReturnEntity> page = purchaseReturnMapper.selectList(wrapper.orderByDesc("updated_at")
-                .orderByAsc("id").last(limitSql(begin, step)));
-        Map<String, Integer> lineCounts = lineCounts(tenantId, ids(page, item -> item.id), "RETURN");
-        return new SupplyDataPageView<>(total, begin, step, page.stream()
-                .map(item -> purchaseReturnView(item, lineCounts.getOrDefault(item.id, 0))).toList());
-    }
-
-    @Override
-    public PurchaseReturnDetailView purchaseReturn(String tenantId, String id) {
-        PurchaseReturnEntity entity = purchaseReturnMapper.selectOne(Wrappers.<PurchaseReturnEntity>query()
-                .eq("tenant_id", tenantId).eq("id", id).last("LIMIT 1"));
-        if (entity == null) throw notFound("采购退货单不存在");
-        List<PurchaseReturnLineEntity> lines = purchaseReturnLineMapper.selectList(
-                Wrappers.<PurchaseReturnLineEntity>query().eq("tenant_id", tenantId)
-                        .eq("purchase_return_id", id).orderByAsc("created_at").orderByAsc("id"));
-        return new PurchaseReturnDetailView(entity.id, entity.sourceReturnId, entity.purchaseReturnNo,
-                prefer(entity.sourceSupplierId, sourceSupplierId(tenantId, entity.supplierId)),
-                entity.supplierCodeSnapshot, entity.supplierNameSnapshot,
-                prefer(entity.sourceWarehouseId, sourceWarehouseId(tenantId, entity.warehouseId)),
-                entity.warehouseCodeSnapshot, entity.warehouseNameSnapshot, entity.staffSourceId,
-                entity.staffName, entity.sourceStatus, entity.sourceStatusName, entity.returnAmount,
-                entity.discountAmount, entity.returnReason, instant(entity.sourceCreatedAt),
-                instant(entity.returnSendAt), entity.internalCommunication, entity.remark,
-                entity.detailCount, entity.contactName, entity.contactPhone,
-                entity.contactAddress, parseJsonList(entity.cityIdsJson),
-                parseJsonList(entity.cityNamesJson), entity.sourceDevice, entity.parentReturnSourceId,
-                entity.parentCompanySourceId, entity.sourceDownloaded,
-                parseSourceFields(entity.attributesJson),
-                lines.stream().map(MybatisPlusSupplyDataRepository::purchaseReturnLine).toList());
-    }
-
-    @Override
-    public SupplyDataPageView<WarehousingReceiptView> warehousingReceipts(String tenantId, int begin, int step,
-                                                                 String query, String status) {
-        var wrapper = Wrappers.<WarehousingReceiptEntity>query().eq("tenant_id", tenantId);
-        applySearch(wrapper, query, "warehousing_no", "warehouse_name_snapshot",
-                "supplier_name_snapshot", "source_type_name");
-        applyStatus(wrapper, status, "internal_status", "source_status");
-        long total = warehousingReceiptMapper.selectCount(wrapper);
-        List<WarehousingReceiptEntity> page = warehousingReceiptMapper.selectList(wrapper.orderByDesc("updated_at")
-                .orderByAsc("id").last(limitSql(begin, step)));
-        Map<String, Integer> lineCounts = lineCounts(tenantId, ids(page, item -> item.id), "WAREHOUSING");
-        return new SupplyDataPageView<>(total, begin, step, page.stream().map(item ->
-                new WarehousingReceiptView(item.id, item.sourceWarehousingId, item.warehousingNo,
-                        item.sourceWarehouseId, item.warehouseNameSnapshot, item.sourceSupplierId,
-                        item.supplierNameSnapshot, item.sourceTypeId, item.sourceTypeName,
-                        item.sourceStatus, item.sourceStatusName, item.internalStatus, item.staffName,
-                        item.clientSourceId, item.accountSourceId, item.collaboratorSourceId,
-                        item.collaboratorName, item.logisticsSourceId, item.expressNumber,
-                        item.totalAmount, item.costAmount, item.freightAmount,
-                        instant(item.storageAt), instant(item.sourceCreatedAt), instant(item.sourceUpdatedAt),
-                        item.remark, item.sourceApiFlag, item.splitType,
-                        lineCounts.getOrDefault(item.id, 0), instant(item.sourceSyncedAt))).toList());
-    }
-
-    @Override
-    public WarehousingReceiptDetailView warehousingReceipt(String tenantId, String id) {
-        WarehousingReceiptEntity entity = warehousingReceiptMapper.selectOne(
-                Wrappers.<WarehousingReceiptEntity>query().eq("tenant_id", tenantId)
-                        .eq("id", id).last("LIMIT 1"));
-        if (entity == null) throw notFound("入库单不存在");
-        List<WarehousingReceiptLineEntity> lines = warehousingReceiptLineMapper.selectList(
-                Wrappers.<WarehousingReceiptLineEntity>query().eq("tenant_id", tenantId)
-                        .eq("warehousing_receipt_id", id).orderByAsc("created_at").orderByAsc("id"));
-        List<WarehousingPurchaseLinkEntity> links = warehousingPurchaseLinkMapper.selectList(
-                Wrappers.<WarehousingPurchaseLinkEntity>query().eq("tenant_id", tenantId)
-                        .eq("warehousing_receipt_id", id).orderByAsc("created_at").orderByAsc("id"));
-        return new WarehousingReceiptDetailView(entity.id, entity.sourceWarehousingId, entity.warehousingNo,
-                entity.sourceWarehouseId, entity.warehouseNameSnapshot, entity.sourceSupplierId,
-                entity.supplierNameSnapshot, entity.sourceTypeId, entity.sourceTypeName, entity.sourceStatus,
-                entity.sourceStatusName, entity.staffName, entity.clientSourceId, entity.accountSourceId,
-                entity.collaboratorSourceId, entity.collaboratorName, entity.logisticsSourceId,
-                entity.expressNumber, instant(entity.storageAt), instant(entity.sourceCreatedAt),
-                instant(entity.sourceUpdatedAt), entity.freightAmount, entity.totalAmount, entity.costAmount,
-                entity.sourceApiFlag, entity.splitType, entity.remark,
-                parseSourceFields(entity.attributesJson),
-                lines.stream().map(MybatisPlusSupplyDataRepository::warehousingLine).toList(),
-                links.stream().map(item -> new PurchaseLinkView(item.sourcePurchaseId, item.purchaseOrderNo)).toList());
-    }
-
-    @Override
-    public SupplyDataPageView<InventoryBalanceView> inventory(String tenantId, int begin, int step,
-                                                     String query, String warehouseCode, String status) {
-        var wrapper = Wrappers.<InventoryBalanceEntity>query().eq("tenant_id", tenantId);
-        applySearch(wrapper, query, "source_goods_code", "source_goods_name",
-                "first_option_name", "second_option_name");
-        List<String> warehouseCodes = splitValues(warehouseCode);
-        if (warehouseCodes.size() == 1) wrapper.eq("source_warehouse_code", warehouseCodes.getFirst());
-        else if (!warehouseCodes.isEmpty()) wrapper.in("source_warehouse_code", warehouseCodes);
-        applyInventoryStatus(wrapper, status);
-        long total = inventoryBalanceMapper.selectCount(wrapper);
-        List<InventoryBalanceEntity> page = inventoryBalanceMapper.selectList(wrapper
-                .orderByAsc("CAST(source_warehouse_code AS UNSIGNED)")
-                .orderByAsc("source_warehouse_code").orderByAsc("id").last(limitSql(begin, step)));
-        return new SupplyDataPageView<>(total, begin, step, page.stream().map(item ->
-                new InventoryBalanceView(item.id, item.sourceGoodsGuid, item.sourceWarehouseCode,
-                        item.sourceWarehouseName, item.sourceWarehouseGuid, item.sourceGoodsCode,
-                        item.sourceGoodsName, item.firstOptionGuid, item.firstOptionCode,
-                        item.firstOptionName, item.secondOptionGuid, item.secondOptionCode,
-                        item.secondOptionName, options(item), item.realQuantity, item.availableQuantity,
-                        item.reservedQuantity, item.inTransitQuantity, item.calculationOrigin,
-                        instant(item.sourceSyncedAt))).toList());
-    }
-
-    @Override
     public List<String> sourceProductCodes(String tenantId) {
         return bindingMapper.selectList(Wrappers.<MasterSourceBindingEntity>query()
-                .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
-                .eq("source_object_type", "PRODUCT_SPU").eq("source_presence", "PRESENT")
-                .isNotNull("source_code"))
-                .stream().map(item -> item.sourceCode).filter(value -> !missing(value)).distinct().toList();
+                        .eq("tenant_id", tenantId)
+                        .eq("source_system", SOURCE_SYSTEM)
+                        .eq("source_object_type", "PRODUCT_SPU")
+                        .eq("source_presence", PRESENT)
+                        .isNotNull("source_code"))
+                .stream().map(binding -> binding.sourceCode)
+                .filter(value -> !missing(value))
+                .map(String::strip)
+                .distinct()
+                .toList();
     }
 
     @Override
     @Transactional
     public UUID startRun(String tenantId, UUID connectorId, UUID actorId,
                          SupplyDataObjectType type, int maxPages) {
-        return startRun(tenantId, connectorId, actorId, type, maxPages, "MANUAL");
+        return startRun(tenantId, connectorId, actorId, type, maxPages, TRIGGER_MANUAL);
     }
 
     @Override
     @Transactional
     public UUID startScheduledRun(String tenantId, UUID connectorId, UUID actorId,
                                   SupplyDataObjectType type, int maxPages) {
-        return startRun(tenantId, connectorId, actorId, type, maxPages, "SCHEDULED");
+        return startRun(tenantId, connectorId, actorId, type, maxPages, TRIGGER_SCHEDULED);
     }
 
-    private UUID startRun(String tenantId, UUID connectorId, UUID actorId,
-                          SupplyDataObjectType type, int maxPages, String triggerType) {
-        UUID runId = UUID.randomUUID();
-        LocalDateTime now = now();
-        acquireRunLock(tenantId, type.name(), runId, now);
-        MasterDataSyncRunEntity entity = new MasterDataSyncRunEntity();
-        entity.id = runId.toString();
-        entity.tenantId = tenantId;
-        entity.connectorId = connectorId.toString();
-        entity.sourceSystem = SOURCE_SYSTEM;
-        entity.objectType = type.name();
-        entity.triggerType = triggerType;
-        entity.status = "RUNNING";
-        entity.maxPages = maxPages;
-        entity.pageSize = 200;
-        entity.startedAt = now;
-        entity.createdBy = actorId == null ? null : actorId.toString();
-        entity.createdAt = now;
-        entity.updatedAt = now;
-        syncRunMapper.insert(entity);
-        return runId;
-    }
-
-    @Transactional
     @Override
+    @Transactional
     public ImportResult importSupplier(String tenantId, UUID runId, Supplier item) {
         if (missing(item.sourceId()) || missing(item.name())) return ImportResult.oneRejected();
-        Binding binding = binding(tenantId, "SUPPLIER", item.sourceId(), "SUPPLIER", item.payloadHash());
-        SupplierEntity entity = binding.existing() ? supplierMapper.selectById(binding.targetId()) : null;
-        boolean created = entity == null;
-        if (entity == null) entity = new SupplierEntity();
-        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
-        boolean sourceFieldsNeedRepair = !created && !Objects.equals(entity.attributesJson, sourceFieldsJson);
-        LocalDateTime now = now();
-        if (created) initializeSupplier(entity, tenantId, binding.targetId(), item, now);
-        if (created || binding.changed() || sourceFieldsNeedRepair) {
-            entity.sourceSupplierGuid = item.sourceGuid();
-            entity.name = item.name();
-            entity.areaName = item.areaName();
-            entity.address = item.address();
-            entity.contactName = item.contactName();
-            entity.mobile = item.mobile();
-            entity.phone = item.phone();
-            entity.email = item.email();
-            entity.accountName = item.accountName();
-            entity.bankName = item.bankName();
-            entity.bankAccount = item.bankAccount();
-            entity.invoiceTitle = item.invoiceTitle();
-            entity.taxpayerNumber = item.taxpayerNumber();
-            entity.remark = item.remark();
-            entity.sourceUpdatedAt = local(item.sourceUpdatedAt());
-            entity.attributesJson = sourceFieldsJson;
-            entity.sourceSyncedAt = now;
-            entity.updatedAt = now;
-            if (!created && binding.changed()) entity.version = next(entity.version);
-            if (created) supplierMapper.insert(entity); else supplierMapper.updateById(entity);
-        }
-        saveBinding(tenantId, runId, "SUPPLIER", item.sourceId(), "SUPPLIER", entity.id,
-                item.code(), item.name(), null, item.sourceUpdatedAt(), item.payloadHash(), now, binding.entity());
-        return outcome(created, binding.changed() || sourceFieldsNeedRepair);
+        UpsertResult result = upsertSupplier(tenantId, runId, item.sourceId(), item.code(),
+                item.name(), item.contactName(), firstText(item.mobile(), item.phone()),
+                item.address(), item.bankName(), item.bankAccount(), item.remark(),
+                item.payloadHash(), "ACTIVE");
+        return result.result();
     }
 
-    @Transactional
     @Override
+    @Transactional
     public ImportResult importWarehouse(String tenantId, UUID runId, Warehouse item) {
         if (missing(item.sourceId()) || missing(item.name())) return ImportResult.oneRejected();
-        Binding binding = binding(tenantId, "WAREHOUSE", item.sourceId(), "WAREHOUSE", item.payloadHash());
-        WarehouseEntity entity = binding.existing() ? warehouseMapper.selectById(binding.targetId()) : null;
-        boolean created = entity == null;
-        if (entity == null) entity = new WarehouseEntity();
-        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
-        boolean sourceFieldsNeedRepair = !created && !Objects.equals(entity.attributesJson, sourceFieldsJson);
-        LocalDateTime now = now();
-        if (created) {
-            entity.id = binding.targetId(); entity.tenantId = tenantId;
-            entity.warehouseCode = uniqueWarehouseCode(tenantId, item.code(), item.sourceId());
-            entity.sourceWarehouseId = item.sourceId(); entity.internalStatus = "ACTIVE";
-            entity.ownershipState = EXTERNAL_PRIMARY; entity.recordOrigin = "IMPORTED";
-            entity.version = 0L; entity.createdAt = now;
-        }
-        if (created || binding.changed() || sourceFieldsNeedRepair) {
-            entity.name = item.name(); entity.sourceWarehouseGuid = item.sourceGuid();
-            entity.sourceStatus = item.sourceStatus(); entity.sourceDefaultFlag = item.defaultFlag();
-            entity.acreage = item.acreage(); entity.phone = item.phone();
-            entity.address = item.address(); entity.collaboratorSourceId = item.collaboratorSourceId();
-            entity.remark = item.remark(); entity.attributesJson = sourceFieldsJson;
-            entity.sourceSyncedAt = now; entity.updatedAt = now;
-            if (!created && binding.changed()) entity.version = next(entity.version);
-            if (created) warehouseMapper.insert(entity); else warehouseMapper.updateById(entity);
-        }
-        saveBinding(tenantId, runId, "WAREHOUSE", item.sourceId(), "WAREHOUSE", entity.id,
-                item.code(), item.name(), item.sourceStatus(), null, item.payloadHash(), now, binding.entity());
-        return outcome(created, binding.changed() || sourceFieldsNeedRepair);
+        UpsertResult result = upsertWarehouse(tenantId, runId, item.sourceId(), item.code(),
+                item.name(), item.defaultFlag(), item.address(), null, item.phone(),
+                item.remark(), item.payloadHash(), warehouseStatus(item.sourceStatus()));
+        return result.result();
     }
 
-    @Transactional
     @Override
+    @Transactional
     public ImportResult importPurchaseOrder(String tenantId, UUID runId, PurchaseOrder item) {
         if (missing(item.sourceId()) || missing(item.number())) return ImportResult.oneRejected();
-        Binding binding = binding(tenantId, "PURCHASE_ORDER", item.sourceId(), "PURCHASE_ORDER", item.payloadHash());
-        PurchaseOrderEntity entity = binding.existing() ? purchaseOrderMapper.selectById(binding.targetId()) : null;
-        boolean created = entity == null;
-        if (entity == null) entity = new PurchaseOrderEntity();
-        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
-        boolean sourceFieldsNeedRepair = !created && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         LocalDateTime now = now();
-        if (created) initializeDocument(entity, tenantId, binding.targetId(), item.number(), item.sourceId(), now);
-        if (created || binding.changed() || sourceFieldsNeedRepair) {
-            entity.sourceSupplierId = item.supplierSourceId();
-            entity.sourceWarehouseId = item.warehouseSourceId();
-            entity.supplierId = supplierId(tenantId, item.supplierSourceId(), item.supplierCode());
-            entity.warehouseId = warehouseId(tenantId, item.warehouseSourceId(), item.warehouseCode());
-            entity.supplierCodeSnapshot = item.supplierCode(); entity.supplierNameSnapshot = item.supplierName();
-            entity.warehouseCodeSnapshot = item.warehouseCode(); entity.warehouseNameSnapshot = item.warehouseName();
-            entity.staffSourceId = item.staffSourceId(); entity.staffName = item.staffName();
-            entity.sourceStatus = item.sourceStatus(); entity.sourceStatusName = item.sourceStatusName();
-            entity.sourcePaymentStatus = item.paymentStatus(); entity.sourcePaymentName = item.paymentStatusName();
-            entity.deliveryAt = local(item.deliveryAt()); entity.sourceCreatedAt = local(item.sourceCreatedAt());
-            entity.sourceUpdatedAt = local(item.sourceUpdatedAt()); entity.totalAmount = zero(item.totalAmount());
-            entity.paidAmount = zero(item.paidAmount()); entity.goodsCount = zero(item.goodsCount());
-            entity.sourceDownloaded = item.downloaded(); entity.remark = item.remark();
-            entity.internalCommunication = item.internalCommunication(); entity.attributesJson = sourceFieldsJson;
-            entity.sourceSyncedAt = now; entity.updatedAt = now;
-            if (!created && binding.changed()) entity.version = next(entity.version);
-            if (created) purchaseOrderMapper.insert(entity); else purchaseOrderMapper.updateById(entity);
-            if (created || binding.changed() || sourceFieldsNeedRepair) {
-                replacePurchaseLines(tenantId, entity.id, item.lines(), now);
-            }
+        UpsertResult supplier = ensureSupplier(tenantId, runId, item.supplierSourceId(),
+                item.supplierCode(), item.supplierName(), now);
+        UpsertResult warehouse = ensureWarehouse(tenantId, runId, item.warehouseSourceId(),
+                item.warehouseCode(), item.warehouseName(), now);
+        if (supplier.id() == null || warehouse.id() == null) return ImportResult.oneRejected();
+        MasterSourceBindingEntity binding = binding(tenantId, "PURCHASE_ORDER", item.sourceId());
+        boolean changed = changed(binding, item.payloadHash());
+        Long id = longTargetId(binding);
+        InternalProcurementOrderEntity entity = id == null ? null : procurementMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
+        if (created) {
+            entity = new InternalProcurementOrderEntity();
+            entity.setTenantId(tenantId);
+            entity.setProcurementNo(uniqueProcurementNo(tenantId));
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(sourceTime(item.sourceCreatedAt(), now));
+            entity.setDeleted(0);
+            entity.setRevision(1);
         }
-        saveBinding(tenantId, runId, "PURCHASE_ORDER", item.sourceId(), "PURCHASE_ORDER", entity.id,
-                item.number(), item.number(), item.sourceStatus(), item.sourceUpdatedAt(), item.payloadHash(), now,
-                binding.entity());
-        return outcome(created, binding.changed() || sourceFieldsNeedRepair);
+        if (created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || !Objects.equals(entity.getTotalAmount(), amount(item.totalAmount()))))) {
+            entity.setSupplierId(supplier.id());
+            entity.setTargetWarehouseId(warehouse.id());
+            entity.setStatusCode(procurementStatus(item.sourceStatus(), item.sourceStatusName()));
+            entity.setExpectedArrivalTime(sourceTime(item.deliveryAt(), null));
+            entity.setTotalQuantity(amount(item.goodsCount()));
+            entity.setTotalAmount(amount(item.totalAmount()));
+            entity.setRemark(firstText(item.remark(), item.internalCommunication()));
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) procurementMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                procurementMapper.updateById(entity);
+            }
+            replaceProcurementLines(tenantId, runId, entity.getId(), item, now);
+        }
+        upsertBinding(tenantId, runId, "PURCHASE_ORDER", item.sourceId(), "PROCUREMENT_ORDER",
+                entity.getId(), item.number(), item.supplierName(), item.sourceStatus(), null,
+                item.payloadHash(), now);
+        return importResult(binding, created, changed);
     }
 
-    @Transactional
     @Override
+    @Transactional
+    public ImportResult importWarehousingReceipt(String tenantId, UUID runId,
+                                                 WarehousingReceipt item) {
+        if (missing(item.sourceId()) || missing(item.number())) return ImportResult.oneRejected();
+        LocalDateTime now = now();
+        UpsertResult warehouse = ensureWarehouse(tenantId, runId, item.warehouseSourceId(),
+                null, item.warehouseName(), now);
+        UpsertResult supplier = ensureSupplier(tenantId, runId, item.supplierSourceId(),
+                null, item.supplierName(), now);
+        if (warehouse.id() == null) return ImportResult.oneRejected();
+        MasterSourceBindingEntity binding = binding(tenantId, "WAREHOUSING_RECEIPT", item.sourceId());
+        boolean changed = changed(binding, item.payloadHash());
+        Long id = longTargetId(binding);
+        InternalStockInOrderEntity entity = id == null ? null : stockInMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
+        if (created) {
+            entity = new InternalStockInOrderEntity();
+            entity.setTenantId(tenantId);
+            entity.setStockInNo(uniqueStockInNo(tenantId));
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(sourceTime(item.sourceCreatedAt(), now));
+            entity.setDeleted(0);
+            entity.setRevision(1);
+        }
+        if (created || (sourceWritable(entity.getUpdatedBy()) && changed)) {
+            entity.setStockInTypeCode("PURCHASE");
+            entity.setWarehouseId(warehouse.id());
+            entity.setSupplierId(supplier.id());
+            entity.setStatusCode(stockStatus(item.sourceStatus(), item.sourceStatusName()));
+            entity.setStockInTime(sourceTime(item.storageAt(), null));
+            entity.setRemark(item.remark());
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) stockInMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                stockInMapper.updateById(entity);
+            }
+            replaceStockInLines(tenantId, runId, entity.getId(), item, now);
+        }
+        upsertBinding(tenantId, runId, "WAREHOUSING_RECEIPT", item.sourceId(), "STOCK_IN_ORDER",
+                entity.getId(), item.number(), item.warehouseName(), item.sourceStatus(), null,
+                item.payloadHash(), now);
+        return importResult(binding, created, changed);
+    }
+
+    @Override
+    @Transactional
     public ImportResult importPurchaseReturn(String tenantId, UUID runId, PurchaseReturn item) {
         if (missing(item.sourceId()) || missing(item.number())) return ImportResult.oneRejected();
-        Binding binding = binding(tenantId, "PURCHASE_RETURN", item.sourceId(), "PURCHASE_RETURN", item.payloadHash());
-        PurchaseReturnEntity entity = binding.existing() ? purchaseReturnMapper.selectById(binding.targetId()) : null;
-        boolean created = entity == null;
-        if (entity == null) entity = new PurchaseReturnEntity();
-        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
-        boolean sourceFieldsNeedRepair = !created && !Objects.equals(entity.attributesJson, sourceFieldsJson);
         LocalDateTime now = now();
+        UpsertResult supplier = ensureSupplier(tenantId, runId, item.supplierSourceId(),
+                item.supplierCode(), item.supplierName(), now);
+        UpsertResult warehouse = ensureWarehouse(tenantId, runId, item.warehouseSourceId(),
+                item.warehouseCode(), item.warehouseName(), now);
+        if (supplier.id() == null || warehouse.id() == null) return ImportResult.oneRejected();
+        MasterSourceBindingEntity binding = binding(tenantId, "PURCHASE_RETURN", item.sourceId());
+        boolean changed = changed(binding, item.payloadHash());
+        Long id = longTargetId(binding);
+        InternalPurchaseReturnOrderEntity entity = id == null ? null : purchaseReturnMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
         if (created) {
-            entity.id = binding.targetId(); entity.tenantId = tenantId; entity.purchaseReturnNo = item.number();
-            entity.sourceReturnId = item.sourceId(); entity.internalStatus = "DRAFT";
-            entity.ownershipState = EXTERNAL_PRIMARY; entity.recordOrigin = "IMPORTED";
-            entity.version = 0L; entity.createdAt = now;
+            entity = new InternalPurchaseReturnOrderEntity();
+            entity.setTenantId(tenantId);
+            entity.setPurchaseReturnNo(uniquePurchaseReturnNo(tenantId));
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(sourceTime(item.sourceCreatedAt(), now));
+            entity.setDeleted(0);
+            entity.setRevision(1);
         }
-        if (created || binding.changed() || sourceFieldsNeedRepair) {
-            entity.sourceSupplierId = item.supplierSourceId();
-            entity.sourceWarehouseId = item.warehouseSourceId();
-            entity.supplierId = supplierId(tenantId, item.supplierSourceId(), item.supplierCode());
-            entity.warehouseId = warehouseId(tenantId, item.warehouseSourceId(), item.warehouseCode());
-            entity.supplierCodeSnapshot = item.supplierCode(); entity.supplierNameSnapshot = item.supplierName();
-            entity.warehouseCodeSnapshot = item.warehouseCode(); entity.warehouseNameSnapshot = item.warehouseName();
-            entity.staffSourceId = item.staffSourceId(); entity.staffName = item.staffName();
-            entity.sourceStatus = item.sourceStatus(); entity.sourceStatusName = item.sourceStatusName();
-            entity.returnAmount = zero(item.returnAmount()); entity.discountAmount = zero(item.discountAmount());
-            entity.returnReason = item.reason(); entity.sourceCreatedAt = local(item.sourceCreatedAt());
-            entity.returnSendAt = local(item.sendAt()); entity.internalCommunication = item.internalCommunication();
-            entity.remark = item.remark(); entity.detailCount = item.detailCount() == null ? item.lines().size() : item.detailCount();
-            entity.contactName = item.contactName(); entity.contactPhone = item.contactPhone();
-            entity.contactAddress = item.contactAddress(); entity.cityIdsJson = jsonList(item.cityIds());
-            entity.cityNamesJson = jsonList(item.cityNames()); entity.sourceDevice = item.sourceDevice();
-            entity.parentReturnSourceId = item.parentReturnSourceId();
-            entity.parentCompanySourceId = item.parentCompanySourceId(); entity.sourceDownloaded = item.downloaded();
-            entity.attributesJson = sourceFieldsJson; entity.sourceSyncedAt = now; entity.updatedAt = now;
-            if (!created && binding.changed()) entity.version = next(entity.version);
-            if (created) purchaseReturnMapper.insert(entity); else purchaseReturnMapper.updateById(entity);
-            if (created || binding.changed() || sourceFieldsNeedRepair) {
-                replaceReturnLines(tenantId, entity.id, item.lines(), now);
+        if (created || (sourceWritable(entity.getUpdatedBy()) && changed)) {
+            entity.setSupplierId(supplier.id());
+            entity.setWarehouseId(warehouse.id());
+            entity.setOperatorStaffCode(null);
+            entity.setOperatorStaffNameSnapshot(blank(item.staffName()));
+            entity.setStatusCode(purchaseReturnStatus(item.sourceStatus(), item.sourceStatusName()));
+            entity.setTotalQuantity(totalReturnQuantity(item));
+            entity.setTotalAmount(amount(item.returnAmount()));
+            entity.setDiscountAmount(amount(item.discountAmount()));
+            entity.setReturnTime(sourceTime(item.sendAt(), null));
+            entity.setContactName(blank(item.contactName()));
+            entity.setContactPhone(blank(item.contactPhone()));
+            entity.setContactAddress(blank(item.contactAddress()));
+            entity.setReason(blank(item.reason()));
+            entity.setRemark(returnRemark(item));
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) purchaseReturnMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                purchaseReturnMapper.updateById(entity);
             }
+            replacePurchaseReturnLines(tenantId, runId, entity.getId(), item, now);
         }
-        saveBinding(tenantId, runId, "PURCHASE_RETURN", item.sourceId(), "PURCHASE_RETURN", entity.id,
-                item.number(), item.number(), item.sourceStatus(), item.sourceCreatedAt(), item.payloadHash(), now,
-                binding.entity());
-        return outcome(created, binding.changed() || sourceFieldsNeedRepair);
+        upsertBinding(tenantId, runId, "PURCHASE_RETURN", item.sourceId(), "PURCHASE_RETURN_ORDER",
+                entity.getId(), item.number(), item.supplierName(), item.sourceStatus(), null,
+                item.payloadHash(), now);
+        return importResult(binding, created, changed);
     }
 
-    @Transactional
     @Override
-    public ImportResult importWarehousingReceipt(String tenantId, UUID runId, WarehousingReceipt item) {
-        if (missing(item.sourceId()) || missing(item.number())) return ImportResult.oneRejected();
-        Binding binding = binding(tenantId, "WAREHOUSING_RECEIPT", item.sourceId(),
-                "WAREHOUSING_RECEIPT", item.payloadHash());
-        WarehousingReceiptEntity entity = binding.existing() ? warehousingReceiptMapper.selectById(binding.targetId()) : null;
-        boolean created = entity == null;
-        if (entity == null) entity = new WarehousingReceiptEntity();
-        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
-        boolean sourceFieldsNeedRepair = !created && !Objects.equals(entity.attributesJson, sourceFieldsJson);
-        LocalDateTime now = now();
-        if (created) {
-            entity.id = binding.targetId(); entity.tenantId = tenantId; entity.warehousingNo = item.number();
-            entity.sourceWarehousingId = item.sourceId(); entity.internalStatus = "DRAFT";
-            entity.ownershipState = EXTERNAL_PRIMARY; entity.recordOrigin = "IMPORTED";
-            entity.version = 0L; entity.createdAt = now;
-        }
-        if (created || binding.changed() || sourceFieldsNeedRepair) {
-            entity.sourceWarehouseId = item.warehouseSourceId();
-            entity.sourceSupplierId = item.supplierSourceId();
-            entity.warehouseId = warehouseId(tenantId, item.warehouseSourceId(), null);
-            entity.supplierId = supplierId(tenantId, item.supplierSourceId(), null);
-            entity.warehouseNameSnapshot = item.warehouseName(); entity.supplierNameSnapshot = item.supplierName();
-            entity.sourceTypeId = item.typeId(); entity.sourceTypeName = item.typeName();
-            entity.sourceStatus = item.sourceStatus(); entity.sourceStatusName = item.sourceStatusName();
-            entity.staffName = item.staffName(); entity.clientSourceId = item.clientSourceId();
-            entity.accountSourceId = item.accountSourceId(); entity.collaboratorSourceId = item.collaboratorSourceId();
-            entity.collaboratorName = item.collaboratorName(); entity.logisticsSourceId = item.logisticsSourceId();
-            entity.expressNumber = item.expressNumber(); entity.storageAt = local(item.storageAt());
-            entity.sourceCreatedAt = local(item.sourceCreatedAt()); entity.sourceUpdatedAt = local(item.sourceUpdatedAt());
-            entity.freightAmount = zero(item.freightAmount()); entity.totalAmount = zero(item.totalAmount());
-            entity.costAmount = zero(item.costAmount()); entity.sourceApiFlag = item.apiFlag();
-            entity.splitType = item.splitType(); entity.remark = item.remark();
-            entity.attributesJson = sourceFieldsJson; entity.sourceSyncedAt = now; entity.updatedAt = now;
-            if (!created && binding.changed()) entity.version = next(entity.version);
-            if (created) warehousingReceiptMapper.insert(entity); else warehousingReceiptMapper.updateById(entity);
-            if (created || binding.changed() || sourceFieldsNeedRepair) {
-                replaceWarehousingLines(tenantId, entity.id, item.lines(), now);
-                replacePurchaseLinks(tenantId, entity.id, item.purchaseLinks(), now);
-            }
-        }
-        saveBinding(tenantId, runId, "WAREHOUSING_RECEIPT", item.sourceId(), "WAREHOUSING_RECEIPT",
-                entity.id, item.number(), item.number(), item.sourceStatus(), item.sourceUpdatedAt(),
-                item.payloadHash(), now, binding.entity());
-        return outcome(created, binding.changed() || sourceFieldsNeedRepair);
-    }
-
     @Transactional
-    @Override
     public ImportResult importInventory(String tenantId, UUID runId, InventoryBalance item) {
-        if (missing(item.goodsCode()) || missing(item.warehouseCode())) return ImportResult.oneRejected();
-        String warehouseKey = first(item.warehouseGuid(), item.warehouseCode());
-        String productKey = first(item.goodsGuid(), item.goodsCode());
-        String variantKey = variantKey(item);
-        InventoryBalanceEntity entity = inventoryBalanceMapper.selectOne(
-                Wrappers.<InventoryBalanceEntity>query().eq("tenant_id", tenantId)
-                        .eq("source_warehouse_key", warehouseKey).eq("source_product_key", productKey)
-                        .eq("source_variant_key", variantKey).last("LIMIT 1"));
-        boolean created = entity == null;
-        String sourceFieldsJson = sourceFieldsJson(item.sourceFields());
-        boolean changed = created || !Objects.equals(entity.attributesJson, sourceFieldsJson);
-        LocalDateTime now = now();
-        if (!created && !changed) return ImportResult.oneDuplicate();
-        if (entity == null) {
-            entity = new InventoryBalanceEntity(); entity.id = UUID.randomUUID().toString();
-            entity.tenantId = tenantId; entity.sourceWarehouseKey = warehouseKey;
-            entity.sourceProductKey = productKey; entity.sourceVariantKey = variantKey;
-            entity.reservedQuantity = BigDecimal.ZERO; entity.inTransitQuantity = BigDecimal.ZERO;
-            entity.calculationOrigin = "DHB_SNAPSHOT"; entity.version = 0L; entity.createdAt = now;
+        String sourceId = inventorySourceId(item);
+        if (missing(sourceId) || missing(item.goodsCode()) || missing(item.warehouseCode())) {
+            return ImportResult.oneRejected();
         }
-        entity.warehouseId = warehouseId(tenantId, null, item.warehouseCode());
-        entity.spuId = productTarget(tenantId, "PRODUCT_SPU", item.goodsCode());
-        entity.skuId = missing(item.firstOptionCode()) && missing(item.secondOptionCode()) ? null
-                : productTarget(tenantId, "PRODUCT_SKU", skuCode(item));
-        entity.sourceWarehouseGuid = item.warehouseGuid(); entity.sourceWarehouseCode = item.warehouseCode();
-        entity.sourceWarehouseName = item.warehouseName(); entity.sourceGoodsGuid = item.goodsGuid();
-        entity.sourceGoodsCode = item.goodsCode(); entity.sourceGoodsName = item.goodsName();
-        entity.firstOptionGuid = item.firstOptionGuid(); entity.firstOptionCode = item.firstOptionCode();
-        entity.firstOptionName = item.firstOptionName(); entity.secondOptionGuid = item.secondOptionGuid();
-        entity.secondOptionCode = item.secondOptionCode(); entity.secondOptionName = item.secondOptionName();
-        entity.realQuantity = zero(item.realQuantity()); entity.availableQuantity = zero(item.availableQuantity());
-        entity.attributesJson = sourceFieldsJson; entity.sourceSyncedAt = now; entity.updatedAt = now;
-        if (!created && changed) entity.version = next(entity.version);
-        if (created) inventoryBalanceMapper.insert(entity); else inventoryBalanceMapper.updateById(entity);
-        return outcome(created, changed);
+        LocalDateTime now = now();
+        UpsertResult product = ensureProduct(tenantId, runId, item.goodsGuid(), item.goodsCode(),
+                item.goodsName(), now);
+        UpsertResult variant = ensureVariant(tenantId, runId, product.id(), inventoryVariantSourceId(item),
+                item.goodsCode(), optionSnapshot(item), now);
+        UpsertResult warehouse = ensureWarehouse(tenantId, runId, item.warehouseGuid(), item.warehouseCode(),
+                item.warehouseName(), now);
+        if (product.id() == null || variant.id() == null || warehouse.id() == null) {
+            return ImportResult.oneRejected();
+        }
+        MasterSourceBindingEntity binding = binding(tenantId, "INVENTORY_BALANCE", sourceId);
+        boolean changed = changed(binding, item.payloadHash());
+        InternalStockBalanceEntity entity = stockBalanceMapper.selectOne(
+                Wrappers.<InternalStockBalanceEntity>lambdaQuery()
+                        .eq(InternalStockBalanceEntity::getTenantId, tenantId)
+                        .eq(InternalStockBalanceEntity::getWarehouseId, warehouse.id())
+                        .eq(InternalStockBalanceEntity::getProductId, product.id())
+                        .eq(InternalStockBalanceEntity::getProductVariantId, variant.id())
+                        .last("LIMIT 1"));
+        boolean created = entity == null;
+        if (created) {
+            entity = new InternalStockBalanceEntity();
+            entity.setTenantId(tenantId);
+            entity.setWarehouseId(warehouse.id());
+            entity.setProductId(product.id());
+            entity.setProductVariantId(variant.id());
+            entity.setRevision(1);
+            entity.setCreatedTime(now);
+        }
+        if (created || changed || !Objects.equals(entity.getAvailableQuantity(), amount(item.availableQuantity()))) {
+            entity.setAvailableQuantity(amount(item.availableQuantity()));
+            entity.setLockedQuantity(ZERO);
+            entity.setInTransitQuantity(ZERO);
+            entity.setUpdatedTime(now);
+            if (created) stockBalanceMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                stockBalanceMapper.updateById(entity);
+            }
+        }
+        upsertBinding(tenantId, runId, "INVENTORY_BALANCE", sourceId, "STOCK_BALANCE",
+                entity.getId(), item.goodsCode(), item.goodsName(), null, null,
+                item.payloadHash(), now);
+        return importResult(binding, created, changed);
     }
 
-    @Transactional
     @Override
+    @Transactional
     public void reconcileSourcePresence(String tenantId, UUID runId,
                                         Map<String, Set<String>> seenSourceIds) {
         LocalDateTime now = now();
-        seenSourceIds.forEach((sourceType, seenIds) -> {
-            Set<String> seen = seenIds == null ? Set.of() : seenIds;
+        seenSourceIds.forEach((sourceType, values) -> {
+            Set<String> seen = values == null ? Set.of() : values;
             List<MasterSourceBindingEntity> bindings = bindingMapper.selectList(
                     Wrappers.<MasterSourceBindingEntity>query()
                             .eq("tenant_id", tenantId)
@@ -619,509 +400,842 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                             .eq("source_object_type", sourceType));
             for (MasterSourceBindingEntity binding : bindings) {
                 boolean present = seen.contains(binding.sourceObjectId);
-                String desired = present ? "PRESENT" : "SOURCE_ABSENT";
-                if (Objects.equals(desired, binding.sourcePresence)) continue;
+                String desired = present ? PRESENT : SOURCE_ABSENT;
+                if (Objects.equals(binding.sourcePresence, desired)) continue;
                 binding.sourcePresence = desired;
                 binding.sourceAbsentAt = present ? null : now;
-                binding.lastSyncRunId = runId.toString();
-                binding.version = next(binding.version);
+                binding.lastSyncRunId = text(runId);
+                binding.version = nextVersion(binding.version);
                 binding.updatedAt = now;
                 bindingMapper.updateById(binding);
             }
         });
     }
 
+    @Override
     @Transactional
-    @Override public void completeRun(String tenantId, UUID runId, RunStatistics value) {
-        String status = value.dictionaryAudit().unmapped() == 0
-                ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
-        finishRun(tenantId, runId, status, value, null, null);
+    public void completeRunWithSourcePresence(String tenantId, UUID runId,
+                                              Map<String, Set<String>> seenSourceIds,
+                                              RunStatistics statistics) {
+        requireRunningRunForUpdate(tenantId, runId);
+        reconcileSourcePresence(tenantId, runId, seenSourceIds);
+        completeRun(tenantId, runId, statistics);
     }
 
+    @Override
     @Transactional
-    @Override public void failRun(String tenantId, UUID runId, RunStatistics value, RuntimeException error) {
+    public void completeRun(String tenantId, UUID runId, RunStatistics statistics) {
+        finishRun(tenantId, runId, statistics.dictionaryAudit().unmapped() == 0
+                ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS", statistics, null, null);
+    }
+
+    @Override
+    @Transactional
+    public void failRun(String tenantId, UUID runId, RunStatistics statistics, RuntimeException error) {
         String message = error.getMessage();
         if (message != null && message.length() > 2000) message = message.substring(0, 2000);
-        finishRun(tenantId, runId, "FAILED", value, error.getClass().getSimpleName(), message);
+        finishRun(tenantId, runId, "FAILED", statistics,
+                error.getClass().getSimpleName(), message);
     }
 
-    private void initializeSupplier(SupplierEntity entity, String tenantId, String id,
-                                    Supplier item, LocalDateTime now) {
-        entity.id = id; entity.tenantId = tenantId;
-        entity.supplierCode = uniqueSupplierCode(tenantId, item.code(), item.sourceId());
-        entity.sourceSupplierId = item.sourceId(); entity.internalStatus = "ACTIVE";
-        entity.ownershipState = EXTERNAL_PRIMARY; entity.recordOrigin = "IMPORTED";
-        entity.version = 0L; entity.createdAt = now;
-    }
-
-    private void initializeDocument(PurchaseOrderEntity entity, String tenantId, String id,
-                                    String number, String sourceId, LocalDateTime now) {
-        entity.id = id; entity.tenantId = tenantId; entity.purchaseOrderNo = number;
-        entity.sourcePurchaseId = sourceId; entity.internalStatus = "DRAFT";
-        entity.ownershipState = EXTERNAL_PRIMARY; entity.recordOrigin = "IMPORTED";
-        entity.version = 0L; entity.createdAt = now;
-    }
-
-    private void replacePurchaseLines(String tenantId, String orderId,
-                                      List<PurchaseOrder.Line> lines, LocalDateTime now) {
-        purchaseOrderLineMapper.delete(Wrappers.<PurchaseOrderLineEntity>query()
-                .eq("tenant_id", tenantId).eq("purchase_order_id", orderId));
-        for (PurchaseOrder.Line line : lines) {
-            if (missing(line.sourceLineId())) continue;
-            PurchaseOrderLineEntity entity = new PurchaseOrderLineEntity();
-            entity.id = UUID.randomUUID().toString(); entity.tenantId = tenantId; entity.purchaseOrderId = orderId;
-            entity.sourceLineId = line.sourceLineId(); entity.spuId = productTarget(tenantId, "PRODUCT_SPU", line.goodsCode());
-            entity.skuId = productTarget(tenantId, "PRODUCT_SKU", line.optionsGoodsCode());
-            entity.sourceGoodsId = line.sourceGoodsId(); entity.sourceGoodsGuid = line.sourceGoodsGuid();
-            entity.sourceGoodsCode = line.goodsCode(); entity.sourceGoodsName = line.goodsName();
-            entity.sourceOptionsId = line.optionsId(); entity.sourceOptionsGoodsCode = line.optionsGoodsCode();
-            entity.optionsSummary = line.optionsSummary(); entity.baseQuantity = zero(line.baseQuantity());
-            entity.unitPrice = zero(line.unitPrice()); entity.purchaseUnitCode = line.unitCode();
-            entity.purchaseUnitName = line.unitName(); entity.purchaseUnitQuantity = zero(line.unitQuantity());
-            entity.warehousedQuantity = zero(line.warehousedQuantity());
-            entity.returnedQuantity = zero(line.returnedQuantity()); entity.remark = line.remark();
-            entity.attributesJson = sourceFieldsJson(line.sourceFields()); entity.createdAt = now; entity.updatedAt = now;
-            purchaseOrderLineMapper.insert(entity);
-        }
-    }
-
-    private void replaceReturnLines(String tenantId, String returnId,
-                                    List<PurchaseReturn.Line> lines, LocalDateTime now) {
-        purchaseReturnLineMapper.delete(Wrappers.<PurchaseReturnLineEntity>query()
-                .eq("tenant_id", tenantId).eq("purchase_return_id", returnId));
-        for (PurchaseReturn.Line line : lines) {
-            if (missing(line.sourceLineId())) continue;
-            PurchaseReturnLineEntity entity = new PurchaseReturnLineEntity();
-            entity.id = UUID.randomUUID().toString(); entity.tenantId = tenantId;
-            entity.purchaseReturnId = returnId; entity.sourceLineId = line.sourceLineId();
-            entity.spuId = productTarget(tenantId, "PRODUCT_SPU", line.goodsCode());
-            entity.skuId = productTarget(tenantId, "PRODUCT_SKU", line.optionsGoodsCode());
-            entity.sourceGoodsId = line.sourceGoodsId(); entity.sourceGoodsCode = line.goodsCode();
-            entity.sourceGoodsName = line.goodsName(); entity.sourceOptionsId = line.optionsId();
-            entity.sourceOptionsGoodsCode = line.optionsGoodsCode(); entity.optionsSummary = line.optionsSummary();
-            entity.requestedQuantity = zero(line.requestedQuantity());
-            entity.confirmedQuantity = zero(line.confirmedQuantity()); entity.returnPrice = zero(line.returnPrice());
-            entity.confirmedPrice = zero(line.confirmedPrice()); entity.returnUnitCode = line.unitCode();
-            entity.returnUnitName = line.unitName(); entity.returnUnitQuantity = zero(line.unitQuantity());
-            entity.confirmedUnitQuantity = zero(line.confirmedUnitQuantity());
-            entity.conversionNumber = zero(line.conversionNumber()); entity.amount = zero(line.amount());
-            entity.costPrice = zero(line.costPrice()); entity.purchaseOrderNo = line.purchaseOrderNo();
-            entity.categoryNameSnapshot = line.categoryName(); entity.brandNameSnapshot = line.brandName();
-            entity.remark = line.remark(); entity.attributesJson = sourceFieldsJson(line.sourceFields());
-            entity.createdAt = now; entity.updatedAt = now; purchaseReturnLineMapper.insert(entity);
-        }
-    }
-
-    private void replaceWarehousingLines(String tenantId, String receiptId,
-                                         List<WarehousingReceipt.Line> lines, LocalDateTime now) {
-        warehousingReceiptLineMapper.delete(Wrappers.<WarehousingReceiptLineEntity>query()
-                .eq("tenant_id", tenantId).eq("warehousing_receipt_id", receiptId));
-        for (WarehousingReceipt.Line line : lines) {
-            if (missing(line.sourceLineId())) continue;
-            WarehousingReceiptLineEntity entity = new WarehousingReceiptLineEntity();
-            entity.id = UUID.randomUUID().toString(); entity.tenantId = tenantId;
-            entity.warehousingReceiptId = receiptId; entity.sourceLineId = line.sourceLineId();
-            entity.spuId = productTarget(tenantId, "PRODUCT_SPU", line.goodsCode());
-            entity.skuId = productTarget(tenantId, "PRODUCT_SKU", line.optionsGoodsCode());
-            entity.sourceGoodsId = line.sourceGoodsId(); entity.sourceGoodsCode = line.goodsCode();
-            entity.sourceGoodsName = line.goodsName(); entity.sourceOptionsId = line.optionsId();
-            entity.sourceOptionsGoodsCode = line.optionsGoodsCode(); entity.optionsSummary = line.optionsSummary();
-            entity.baseQuantity = zero(line.baseQuantity()); entity.unitQuantity = zero(line.unitQuantity());
-            entity.unitCode = line.unitCode(); entity.unitName = line.unitName();
-            entity.conversionNumber = zero(line.conversionNumber()); entity.costPrice = zero(line.costPrice());
-            entity.unitCostPrice = zero(line.unitCostPrice()); entity.purchasePrice = zero(line.purchasePrice());
-            entity.wholesalePrice = zero(line.wholesalePrice()); entity.allocation = line.allocation();
-            entity.barcode = line.barcode(); entity.goodsModel = line.goodsModel();
-            entity.sourceRealQuantity = line.sourceRealQuantity();
-            entity.sourceAvailableQuantity = line.sourceAvailableQuantity();
-            entity.collaboratorSourceId = line.collaboratorSourceId(); entity.collaboratorName = line.collaboratorName();
-            entity.remark = line.remark(); entity.attributesJson = sourceFieldsJson(line.sourceFields());
-            entity.createdAt = now; entity.updatedAt = now; warehousingReceiptLineMapper.insert(entity);
-        }
-    }
-
-    private void replacePurchaseLinks(String tenantId, String receiptId,
-                                      List<WarehousingReceipt.PurchaseLink> links, LocalDateTime now) {
-        warehousingPurchaseLinkMapper.delete(Wrappers.<WarehousingPurchaseLinkEntity>query()
-                .eq("tenant_id", tenantId).eq("warehousing_receipt_id", receiptId));
-        for (WarehousingReceipt.PurchaseLink link : links) {
-            if (missing(link.purchaseOrderNo())) continue;
-            PurchaseOrderEntity order = purchaseOrderMapper.selectOne(Wrappers.<PurchaseOrderEntity>query()
-                    .eq("tenant_id", tenantId).eq("purchase_order_no", link.purchaseOrderNo()).last("LIMIT 1"));
-            WarehousingPurchaseLinkEntity entity = new WarehousingPurchaseLinkEntity();
-            entity.id = UUID.randomUUID().toString(); entity.tenantId = tenantId;
-            entity.warehousingReceiptId = receiptId; entity.purchaseOrderId = order == null ? null : order.id;
-            entity.sourcePurchaseId = link.sourcePurchaseId(); entity.purchaseOrderNo = link.purchaseOrderNo();
-            entity.createdAt = now; entity.updatedAt = now; warehousingPurchaseLinkMapper.insert(entity);
-        }
-    }
-
-    private Binding binding(String tenantId, String sourceType, String sourceId,
-                            String targetType, String payloadHash) {
-        MasterSourceBindingEntity entity = bindingMapper.selectOne(Wrappers.<MasterSourceBindingEntity>query()
+    @Override
+    @Transactional
+    public void heartbeatRun(String tenantId, UUID runId) {
+        LocalDateTime now = now();
+        syncRunMapper.update(null, Wrappers.<MasterDataSyncRunEntity>update()
+                .eq("tenant_id", tenantId).eq("id", text(runId)).eq("status", "RUNNING")
+                .set("updated_at", now));
+        syncLockMapper.update(null, Wrappers.<MasterDataSyncLockEntity>update()
                 .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
-                .eq("source_object_type", sourceType).eq("source_object_id", sourceId).last("LIMIT 1"));
-        return new Binding(entity, entity == null ? UUID.randomUUID().toString() : entity.targetId,
-                entity == null || !Objects.equals(entity.sourcePayloadHash, requiredHash(payloadHash))
-                        || "SOURCE_ABSENT".equals(entity.sourcePresence),
-                entity != null);
+                .eq("run_id", text(runId))
+                .set("expires_at", now.plus(Duration.ofMinutes(RUN_LEASE_MINUTES))));
     }
 
-    private void saveBinding(String tenantId, UUID runId, String sourceType, String sourceId,
-                             String targetType, String targetId, String code, String name,
-                             String status, Instant sourceUpdatedAt, String payloadHash,
-                             LocalDateTime now, MasterSourceBindingEntity existing) {
-        String normalizedHash = requiredHash(payloadHash);
-        if (existing != null && Objects.equals(existing.sourcePayloadHash, normalizedHash)
-                && !"SOURCE_ABSENT".equals(existing.sourcePresence)) return;
-        MasterSourceBindingEntity entity = existing == null ? new MasterSourceBindingEntity() : existing;
-        if (existing == null) {
-            entity.id = UUID.randomUUID().toString(); entity.tenantId = tenantId;
-            entity.sourceSystem = SOURCE_SYSTEM; entity.sourceObjectType = sourceType;
-            entity.sourceObjectId = sourceId; entity.targetType = targetType; entity.targetId = targetId;
-            entity.version = 0L; entity.createdAt = now;
-        } else entity.version = next(entity.version);
-        entity.sourceCode = code; entity.sourceName = name; entity.sourceStatus = status;
-        entity.sourceUpdatedAt = local(sourceUpdatedAt); entity.sourcePayloadHash = normalizedHash;
-        entity.sourcePresence = "PRESENT"; entity.sourceAbsentAt = null;
-        entity.lastSyncRunId = runId.toString(); entity.syncedAt = now; entity.updatedAt = now;
-        if (existing == null) bindingMapper.insert(entity); else bindingMapper.updateById(entity);
+    private void replaceProcurementLines(String tenantId, UUID runId, Long orderId,
+                                         PurchaseOrder item, LocalDateTime now) {
+        procurementLineMapper.delete(Wrappers.<InternalProcurementOrderLineEntity>lambdaQuery()
+                .eq(InternalProcurementOrderLineEntity::getTenantId, tenantId)
+                .eq(InternalProcurementOrderLineEntity::getProcurementOrderId, orderId));
+        int lineNo = 1;
+        for (PurchaseOrder.Line line : item.lines()) {
+            UpsertResult product = ensureProduct(tenantId, runId, line.sourceGoodsGuid(),
+                    line.goodsCode(), line.goodsName(), now);
+            UpsertResult variant = ensureVariant(tenantId, runId, product.id(),
+                    firstText(line.optionsId(), line.optionsGoodsCode()), line.optionsGoodsCode(),
+                    line.optionsSummary(), now);
+            if (product.id() == null || variant.id() == null) continue;
+            InternalProductEntity productEntity = productMapper.selectById(product.id());
+            InternalProductVariantEntity variantEntity = variantMapper.selectById(variant.id());
+            InternalProcurementOrderLineEntity entity = new InternalProcurementOrderLineEntity();
+            entity.setTenantId(tenantId);
+            entity.setProcurementOrderId(orderId);
+            entity.setLineNo(lineNo++);
+            entity.setProductId(product.id());
+            entity.setProductVariantId(variant.id());
+            entity.setProductCodeSnapshot(productEntity == null ? null : productEntity.getProductCode());
+            entity.setVariantCodeSnapshot(variantEntity == null ? null : variantEntity.getVariantCode());
+            entity.setProductNameSnapshot(firstText(line.goodsName(), productEntity == null ? null
+                    : productEntity.getProductName()));
+            entity.setUnitCode(internalUnitCode(firstText(line.unitCode(), line.unitName())));
+            entity.setQuantity(amount(firstAmount(line.unitQuantity(), line.baseQuantity())));
+            entity.setUnitPrice(amount(line.unitPrice()));
+            entity.setLineAmount(amount(entity.getQuantity().multiply(entity.getUnitPrice())));
+            entity.setReceivedQuantity(amount(line.warehousedQuantity()));
+            entity.setRemark(line.remark());
+            entity.setCreatedTime(now);
+            entity.setUpdatedTime(now);
+            entity.setDeleted(0);
+            procurementLineMapper.insert(entity);
+        }
     }
 
-    private String supplierId(String tenantId, String sourceId, String code) {
-        SupplierEntity item = !missing(sourceId) ? supplierMapper.selectOne(Wrappers.<SupplierEntity>query()
-                .eq("tenant_id", tenantId).eq("source_supplier_id", sourceId).last("LIMIT 1")) : null;
-        if (item == null && !missing(code)) item = supplierMapper.selectOne(Wrappers.<SupplierEntity>query()
-                .eq("tenant_id", tenantId).eq("supplier_code", code).last("LIMIT 1"));
-        return item == null ? null : item.id;
+    private void replaceStockInLines(String tenantId, UUID runId, Long stockInId,
+                                     WarehousingReceipt item, LocalDateTime now) {
+        stockInLineMapper.delete(Wrappers.<InternalStockInOrderLineEntity>lambdaQuery()
+                .eq(InternalStockInOrderLineEntity::getTenantId, tenantId)
+                .eq(InternalStockInOrderLineEntity::getStockInOrderId, stockInId));
+        int lineNo = 1;
+        for (WarehousingReceipt.Line line : item.lines()) {
+            UpsertResult product = ensureProduct(tenantId, runId, line.sourceGoodsId(),
+                    line.goodsCode(), line.goodsName(), now);
+            UpsertResult variant = ensureVariant(tenantId, runId, product.id(),
+                    firstText(line.optionsId(), line.optionsGoodsCode()), line.optionsGoodsCode(),
+                    line.optionsSummary(), now);
+            if (product.id() == null || variant.id() == null) continue;
+            InternalProductEntity productEntity = productMapper.selectById(product.id());
+            InternalProductVariantEntity variantEntity = variantMapper.selectById(variant.id());
+            InternalStockInOrderLineEntity entity = new InternalStockInOrderLineEntity();
+            entity.setTenantId(tenantId);
+            entity.setStockInOrderId(stockInId);
+            entity.setLineNo(lineNo++);
+            entity.setProductId(product.id());
+            entity.setProductVariantId(variant.id());
+            entity.setProductCodeSnapshot(productEntity == null ? null : productEntity.getProductCode());
+            entity.setVariantCodeSnapshot(variantEntity == null ? null : variantEntity.getVariantCode());
+            entity.setProductNameSnapshot(firstText(line.goodsName(), productEntity == null ? null
+                    : productEntity.getProductName()));
+            entity.setUnitCode(internalUnitCode(firstText(line.unitCode(), line.unitName())));
+            entity.setQuantity(amount(firstAmount(line.unitQuantity(), line.baseQuantity())));
+            entity.setUnitPrice(amount(firstAmount(line.unitCostPrice(), line.costPrice())));
+            entity.setAmount(amount(entity.getQuantity().multiply(entity.getUnitPrice())));
+            entity.setRemark(line.remark());
+            entity.setCreatedTime(now);
+            entity.setUpdatedTime(now);
+            entity.setDeleted(0);
+            stockInLineMapper.insert(entity);
+        }
     }
 
-    private String warehouseId(String tenantId, String sourceId, String code) {
-        WarehouseEntity item = !missing(sourceId) ? warehouseMapper.selectOne(Wrappers.<WarehouseEntity>query()
-                .eq("tenant_id", tenantId).eq("source_warehouse_id", sourceId).last("LIMIT 1")) : null;
-        if (item == null && !missing(code)) item = warehouseMapper.selectOne(Wrappers.<WarehouseEntity>query()
-                .eq("tenant_id", tenantId).eq("warehouse_code", code).last("LIMIT 1"));
-        return item == null ? null : item.id;
+    private void replacePurchaseReturnLines(String tenantId, UUID runId, Long purchaseReturnId,
+                                            PurchaseReturn item, LocalDateTime now) {
+        purchaseReturnLineMapper.delete(Wrappers.<InternalPurchaseReturnOrderLineEntity>lambdaQuery()
+                .eq(InternalPurchaseReturnOrderLineEntity::getTenantId, tenantId)
+                .eq(InternalPurchaseReturnOrderLineEntity::getPurchaseReturnOrderId, purchaseReturnId));
+        int lineNo = 1;
+        for (PurchaseReturn.Line line : item.lines()) {
+            UpsertResult product = ensureProduct(tenantId, runId, line.sourceGoodsId(),
+                    line.goodsCode(), line.goodsName(), now);
+            UpsertResult variant = ensureVariant(tenantId, runId, product.id(),
+                    firstText(line.optionsId(), line.optionsGoodsCode()), line.optionsGoodsCode(),
+                    line.optionsSummary(), now);
+            if (product.id() == null || variant.id() == null) continue;
+            InternalProductEntity productEntity = productMapper.selectById(product.id());
+            InternalProductVariantEntity variantEntity = variantMapper.selectById(variant.id());
+            InternalPurchaseReturnOrderLineEntity entity = new InternalPurchaseReturnOrderLineEntity();
+            entity.setTenantId(tenantId);
+            entity.setPurchaseReturnOrderId(purchaseReturnId);
+            entity.setLineNo(lineNo++);
+            entity.setProcurementOrderId(procurementOrderId(tenantId, line.purchaseOrderNo()));
+            entity.setProcurementNoSnapshot(blank(line.purchaseOrderNo()));
+            entity.setProductId(product.id());
+            entity.setProductVariantId(variant.id());
+            entity.setProductCodeSnapshot(productEntity == null ? null : productEntity.getProductCode());
+            entity.setVariantCodeSnapshot(variantEntity == null ? null : variantEntity.getVariantCode());
+            entity.setProductNameSnapshot(firstText(line.goodsName(), productEntity == null ? null
+                    : productEntity.getProductName()));
+            entity.setUnitCode(internalUnitCode(firstText(line.unitCode(), line.unitName())));
+            entity.setRequestedQuantity(amount(line.requestedQuantity()));
+            entity.setReturnedQuantity(amount(firstAmount(line.confirmedQuantity(), line.requestedQuantity())));
+            entity.setUnitPrice(amount(line.returnPrice()));
+            entity.setConfirmedUnitPrice(amount(firstAmount(line.confirmedPrice(), line.returnPrice())));
+            entity.setLineAmount(lineAmount(line));
+            entity.setCostPrice(amount(line.costPrice()));
+            entity.setRemark(line.remark());
+            entity.setCreatedTime(now);
+            entity.setUpdatedTime(now);
+            entity.setDeleted(0);
+            purchaseReturnLineMapper.insert(entity);
+        }
     }
 
-    private String sourceSupplierId(String tenantId, String localId) {
-        if (missing(localId)) return null;
-        SupplierEntity item = supplierMapper.selectOne(Wrappers.<SupplierEntity>query()
-                .eq("tenant_id", tenantId).eq("id", localId).last("LIMIT 1"));
-        return item == null ? null : item.sourceSupplierId;
+    private Long procurementOrderId(String tenantId, String sourcePurchaseNo) {
+        if (missing(sourcePurchaseNo)) return null;
+        MasterSourceBindingEntity binding = bindingMapper.selectOne(Wrappers.<MasterSourceBindingEntity>query()
+                .eq("tenant_id", tenantId)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("source_object_type", "PURCHASE_ORDER")
+                .eq("source_code", sourcePurchaseNo.strip())
+                .last("LIMIT 1"));
+        Long id = longTargetId(binding);
+        InternalProcurementOrderEntity entity = id == null ? null : procurementMapper.selectById(id);
+        return valid(entity, tenantId) ? id : null;
     }
 
-    private String sourceWarehouseId(String tenantId, String localId) {
-        if (missing(localId)) return null;
-        WarehouseEntity item = warehouseMapper.selectOne(Wrappers.<WarehouseEntity>query()
-                .eq("tenant_id", tenantId).eq("id", localId).last("LIMIT 1"));
-        return item == null ? null : item.sourceWarehouseId;
+    private UpsertResult ensureSupplier(String tenantId, UUID runId, String sourceId,
+                                        String sourceCode, String sourceName, LocalDateTime now) {
+        if (missing(sourceId) && missing(sourceName)) return new UpsertResult(null, ImportResult.oneRejected());
+        String effectiveSourceId = !missing(sourceId) ? sourceId : "NAME:" + sourceName.strip();
+        return upsertSupplier(tenantId, runId, effectiveSourceId, sourceCode,
+                firstText(sourceName, "未知供应商"), null, null, null, null, null,
+                null, "PLACEHOLDER:" + effectiveSourceId, "ACTIVE");
     }
 
-    private String productTarget(String tenantId, String sourceType, String sourceCode) {
+    private UpsertResult upsertSupplier(String tenantId, UUID runId, String sourceId,
+                                        String sourceCode, String sourceName, String contactName,
+                                        String contactPhone, String address, String bankName,
+                                        String bankAccount, String remark, String payloadHash,
+                                        String statusCode) {
+        MasterSourceBindingEntity binding = binding(tenantId, "SUPPLIER", sourceId);
+        boolean changed = changed(binding, payloadHash);
+        Long id = longTargetId(binding);
+        InternalSupplierProfileEntity entity = id == null ? null : supplierMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
+        LocalDateTime now = now();
+        if (created) {
+            entity = new InternalSupplierProfileEntity();
+            entity.setTenantId(tenantId);
+            entity.setSupplierCode(uniqueSupplierCode(tenantId));
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(now);
+            entity.setDeleted(0);
+            entity.setRevision(1);
+        }
+        if (created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || !Objects.equals(entity.getSupplierName(), sourceName)))) {
+            entity.setSupplierName(sourceName);
+            entity.setContactName(contactName);
+            entity.setContactPhone(contactPhone);
+            entity.setAddress(address);
+            entity.setBankName(bankName);
+            entity.setBankAccountNo(bankAccount);
+            entity.setStatusCode(statusCode);
+            entity.setRemark(remark);
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) supplierMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                supplierMapper.updateById(entity);
+            }
+        }
+        upsertBinding(tenantId, runId, "SUPPLIER", sourceId, "SUPPLIER_PROFILE",
+                entity.getId(), sourceCode, sourceName, statusCode, null, payloadHash, now);
+        return new UpsertResult(entity.getId(), importResult(binding, created, changed));
+    }
+
+    private UpsertResult ensureWarehouse(String tenantId, UUID runId, String sourceId,
+                                         String sourceCode, String sourceName, LocalDateTime now) {
+        if (missing(sourceId) && missing(sourceName)) return new UpsertResult(null, ImportResult.oneRejected());
+        String effectiveSourceId = !missing(sourceId) ? sourceId : "NAME:" + sourceName.strip();
+        return upsertWarehouse(tenantId, runId, effectiveSourceId, sourceCode,
+                firstText(sourceName, "未知仓库"), false, null, null, null,
+                null, "PLACEHOLDER:" + effectiveSourceId, "ACTIVE");
+    }
+
+    private UpsertResult upsertWarehouse(String tenantId, UUID runId, String sourceId,
+                                         String sourceCode, String sourceName, Boolean defaultFlag,
+                                         String address, String contactName, String contactPhone,
+                                         String remark, String payloadHash, String statusCode) {
+        MasterSourceBindingEntity binding = binding(tenantId, "WAREHOUSE", sourceId);
+        boolean changed = changed(binding, payloadHash);
+        Long id = longTargetId(binding);
+        InternalInventoryWarehouseEntity entity = id == null ? null : warehouseMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
+        LocalDateTime now = now();
+        if (created) {
+            entity = new InternalInventoryWarehouseEntity();
+            entity.setTenantId(tenantId);
+            entity.setWarehouseCode(uniqueWarehouseCode(tenantId));
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(now);
+            entity.setDeleted(0);
+            entity.setRevision(1);
+        }
+        if (created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || !Objects.equals(entity.getWarehouseName(), sourceName)))) {
+            entity.setWarehouseName(sourceName);
+            entity.setRegionCode(null);
+            entity.setWarehouseTypeCode(defaultFlag != null && defaultFlag ? "DEFAULT" : "CITY");
+            entity.setDefaultFlag(defaultFlag != null && defaultFlag);
+            entity.setAddress(address);
+            entity.setContactName(contactName);
+            entity.setContactPhone(contactPhone);
+            entity.setStatusCode(statusCode);
+            entity.setRemark(remark);
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) warehouseMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                warehouseMapper.updateById(entity);
+            }
+        }
+        upsertBinding(tenantId, runId, "WAREHOUSE", sourceId, "INVENTORY_WAREHOUSE",
+                entity.getId(), sourceCode, sourceName, statusCode, null, payloadHash, now);
+        return new UpsertResult(entity.getId(), importResult(binding, created, changed));
+    }
+
+    private UpsertResult ensureProduct(String tenantId, UUID runId, String sourceId,
+                                       String sourceCode, String sourceName, LocalDateTime now) {
+        if (missing(sourceId) && missing(sourceCode) && missing(sourceName)) {
+            return new UpsertResult(null, ImportResult.oneRejected());
+        }
+        InternalProductEntity mappedByCode = productMappedBySourceCode(tenantId, sourceCode);
+        if (mappedByCode != null) {
+            return new UpsertResult(mappedByCode.getId(), ImportResult.oneDuplicate());
+        }
+        String effectiveSourceId = !missing(sourceId) ? sourceId
+                : !missing(sourceCode) ? "CODE:" + sourceCode.strip() : "NAME:" + sourceName.strip();
+        MasterSourceBindingEntity binding = binding(tenantId, "PRODUCT_SPU", effectiveSourceId);
+        Long id = longTargetId(binding);
+        InternalProductEntity entity = id == null ? null : productMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
+        if (created) {
+            entity = new InternalProductEntity();
+            entity.setTenantId(tenantId);
+            entity.setProductCode(uniqueProductCode(tenantId));
+            entity.setProductName(firstText(sourceName, firstText(sourceCode, "未知商品")));
+            entity.setUnitCode("PIECE");
+            entity.setOrderMultipleFlag(false);
+            entity.setSaleTypeCode("SPOT");
+            entity.setShelfStatusCode("OFF_SHELF");
+            entity.setTagCodesJson(json(List.of()));
+            entity.setImageKeysJson(json(List.of()));
+            entity.setRecommendProductIdsJson(json(List.of()));
+            entity.setSubmitStatusCode("DRAFT");
+            entity.setRevision(1);
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(now);
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            entity.setDeleted(0);
+            productMapper.insert(entity);
+        }
+        upsertBinding(tenantId, runId, "PRODUCT_SPU", effectiveSourceId, "PRODUCT",
+                entity.getId(), sourceCode, entity.getProductName(), null, null,
+                "PLACEHOLDER:" + effectiveSourceId, now);
+        return new UpsertResult(entity.getId(), created ? ImportResult.oneCreated() : ImportResult.oneDuplicate());
+    }
+
+    private UpsertResult ensureVariant(String tenantId, UUID runId, Long productId,
+                                       String sourceId, String sourceCode, String snapshot,
+                                       LocalDateTime now) {
+        if (productId == null) return new UpsertResult(null, ImportResult.oneRejected());
+        InternalProductVariantEntity mappedByProduct = variantMappedByProduct(tenantId, productId,
+                sourceCode, snapshot);
+        if (mappedByProduct != null) {
+            return new UpsertResult(mappedByProduct.getId(), ImportResult.oneDuplicate());
+        }
+        String effectiveSourceId = !missing(sourceId) ? sourceId : "PRODUCT:" + productId + ":DEFAULT";
+        MasterSourceBindingEntity binding = binding(tenantId, "PRODUCT_SKU", effectiveSourceId);
+        Long id = longTargetId(binding);
+        InternalProductVariantEntity entity = id == null ? null : variantMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
+        if (created) {
+            entity = new InternalProductVariantEntity();
+            entity.setTenantId(tenantId);
+            entity.setProductId(productId);
+            entity.setVariantCode(uniqueVariantCode(tenantId));
+            entity.setSpecificationSnapshot(snapshot);
+            entity.setUnitCode("PIECE");
+            entity.setSalePrice(ZERO);
+            entity.setMarketPrice(ZERO);
+            entity.setPurchasePrice(ZERO);
+            entity.setDefaultFlag(variantMapper.selectCount(Wrappers.<InternalProductVariantEntity>lambdaQuery()
+                    .eq(InternalProductVariantEntity::getTenantId, tenantId)
+                    .eq(InternalProductVariantEntity::getProductId, productId)
+                    .eq(InternalProductVariantEntity::getDeleted, 0)) == 0);
+            entity.setRevision(1);
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(now);
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            entity.setDeleted(0);
+            variantMapper.insert(entity);
+        }
+        upsertBinding(tenantId, runId, "PRODUCT_SKU", effectiveSourceId, "PRODUCT_VARIANT",
+                entity.getId(), sourceCode, snapshot, null, null,
+                "PLACEHOLDER:" + effectiveSourceId, now);
+        return new UpsertResult(entity.getId(), created ? ImportResult.oneCreated() : ImportResult.oneDuplicate());
+    }
+
+    private InternalProductEntity productMappedBySourceCode(String tenantId, String sourceCode) {
         if (missing(sourceCode)) return null;
-        MasterSourceBindingEntity item = bindingMapper.selectOne(Wrappers.<MasterSourceBindingEntity>query()
-                .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
-                .eq("source_object_type", sourceType).eq("source_code", sourceCode).last("LIMIT 1"));
-        return item == null ? null : item.targetId;
+        List<MasterSourceBindingEntity> values = bindingMapper.selectList(
+                Wrappers.<MasterSourceBindingEntity>query()
+                        .eq("tenant_id", tenantId)
+                        .eq("source_system", SOURCE_SYSTEM)
+                        .eq("source_object_type", "PRODUCT_SPU")
+                        .eq("source_code", sourceCode.strip())
+                        .eq("source_presence", PRESENT)
+                        .notLikeRight("source_object_id", "CODE:")
+                        .notLikeRight("source_object_id", "NAME:")
+                        .last("LIMIT 2"));
+        List<InternalProductEntity> products = values.stream()
+                .map(MybatisPlusSupplyDataRepository::longTargetId)
+                .filter(Objects::nonNull)
+                .map(productMapper::selectById)
+                .filter(item -> valid(item, tenantId))
+                .toList();
+        return products.size() == 1 ? products.getFirst() : null;
     }
 
-    private static PurchaseOrderView purchaseOrderView(PurchaseOrderEntity item, int lineCount) {
-        return new PurchaseOrderView(item.id, item.sourcePurchaseId, item.purchaseOrderNo,
-                item.sourceSupplierId, item.supplierCodeSnapshot, item.supplierNameSnapshot,
-                item.sourceWarehouseId, item.warehouseCodeSnapshot, item.warehouseNameSnapshot,
-                item.staffSourceId, item.staffName, item.sourceStatus, item.sourceStatusName,
-                item.sourcePaymentStatus, item.sourcePaymentName, item.internalStatus, item.totalAmount,
-                item.paidAmount, item.goodsCount, item.sourceDownloaded, item.remark,
-                item.internalCommunication, instant(item.deliveryAt), instant(item.sourceCreatedAt),
-                instant(item.sourceUpdatedAt), lineCount, instant(item.sourceSyncedAt));
+    private InternalProductVariantEntity variantMappedByProduct(String tenantId, Long productId,
+                                                               String sourceCode, String snapshot) {
+        InternalProductVariantEntity bySourceCode = variantMappedBySourceCode(tenantId, productId, sourceCode);
+        if (bySourceCode != null) return bySourceCode;
+        InternalProductVariantEntity bySnapshot = variantMappedBySnapshot(tenantId, productId, snapshot);
+        if (bySnapshot != null) return bySnapshot;
+        if (!missing(sourceCode)) {
+            List<InternalProductVariantEntity> variants = variantMapper.selectList(
+                    Wrappers.<InternalProductVariantEntity>lambdaQuery()
+                            .eq(InternalProductVariantEntity::getTenantId, tenantId)
+                            .eq(InternalProductVariantEntity::getProductId, productId)
+                            .eq(InternalProductVariantEntity::getDeleted, 0)
+                            .last("LIMIT 2"));
+            if (variants.size() == 1) return variants.getFirst();
+        }
+        return null;
     }
 
-    private static PurchaseOrderLineView purchaseOrderLine(PurchaseOrderLineEntity item) {
-        return new PurchaseOrderLineView(item.sourceLineId, item.sourceGoodsId, item.sourceGoodsGuid,
-                item.sourceGoodsCode, item.sourceGoodsName, item.sourceOptionsId,
-                item.sourceOptionsGoodsCode, item.optionsSummary, item.baseQuantity, item.unitPrice,
-                item.purchaseUnitCode, item.purchaseUnitName, item.purchaseUnitQuantity,
-                item.warehousedQuantity, item.returnedQuantity, item.remark,
-                parseSourceFields(item.attributesJson));
+    private InternalProductVariantEntity variantMappedBySourceCode(String tenantId, Long productId,
+                                                                  String sourceCode) {
+        if (missing(sourceCode)) return null;
+        List<MasterSourceBindingEntity> values = bindingMapper.selectList(
+                Wrappers.<MasterSourceBindingEntity>query()
+                        .eq("tenant_id", tenantId)
+                        .eq("source_system", SOURCE_SYSTEM)
+                        .eq("source_object_type", "PRODUCT_SKU")
+                        .eq("source_code", sourceCode.strip())
+                        .eq("source_presence", PRESENT)
+                        .notLikeRight("source_object_id", "PRODUCT:")
+                        .last("LIMIT 2"));
+        List<InternalProductVariantEntity> variants = values.stream()
+                .map(MybatisPlusSupplyDataRepository::longTargetId)
+                .filter(Objects::nonNull)
+                .map(variantMapper::selectById)
+                .filter(item -> valid(item, tenantId) && Objects.equals(item.getProductId(), productId))
+                .toList();
+        return variants.size() == 1 ? variants.getFirst() : null;
     }
 
-    private static PurchaseReturnView purchaseReturnView(PurchaseReturnEntity item, int lineCount) {
-        return new PurchaseReturnView(item.id, item.sourceReturnId, item.purchaseReturnNo,
-                item.sourceSupplierId, item.supplierCodeSnapshot, item.supplierNameSnapshot,
-                item.sourceWarehouseId, item.warehouseCodeSnapshot, item.warehouseNameSnapshot,
-                item.staffSourceId, item.staffName, item.sourceStatus, item.sourceStatusName,
-                item.internalStatus, item.returnAmount, item.discountAmount, item.returnReason,
-                instant(item.sourceCreatedAt), instant(item.returnSendAt), item.internalCommunication,
-                item.remark, item.detailCount, item.contactName, item.contactPhone,
-                item.contactAddress, parseJsonList(item.cityIdsJson), parseJsonList(item.cityNamesJson),
-                item.sourceDevice, item.parentReturnSourceId, item.parentCompanySourceId,
-                item.sourceDownloaded, lineCount, instant(item.sourceSyncedAt));
+    private InternalProductVariantEntity variantMappedBySnapshot(String tenantId, Long productId,
+                                                                String snapshot) {
+        if (missing(snapshot)) return null;
+        List<InternalProductVariantEntity> values = variantMapper.selectList(
+                Wrappers.<InternalProductVariantEntity>lambdaQuery()
+                        .eq(InternalProductVariantEntity::getTenantId, tenantId)
+                        .eq(InternalProductVariantEntity::getProductId, productId)
+                        .eq(InternalProductVariantEntity::getSpecificationSnapshot, snapshot.strip())
+                        .eq(InternalProductVariantEntity::getDeleted, 0)
+                        .last("LIMIT 2"));
+        return values.size() == 1 ? values.getFirst() : null;
     }
 
-    private static WarehousingLineView warehousingLine(WarehousingReceiptLineEntity item) {
-        return new WarehousingLineView(item.sourceLineId, item.sourceGoodsId, item.sourceGoodsCode,
-                item.sourceGoodsName, item.sourceOptionsId, item.sourceOptionsGoodsCode,
-                item.optionsSummary, item.baseQuantity, item.unitQuantity, item.unitCode, item.unitName,
-                item.conversionNumber, item.costPrice, item.unitCostPrice, item.purchasePrice,
-                item.wholesalePrice, item.allocation, item.barcode, item.goodsModel,
-                item.sourceRealQuantity, item.sourceAvailableQuantity, item.collaboratorSourceId,
-                item.collaboratorName, item.remark, parseSourceFields(item.attributesJson));
+    private UUID startRun(String tenantId, UUID connectorId, UUID actorId,
+                          SupplyDataObjectType type, int maxPages, String triggerType) {
+        LocalDateTime now = now();
+        UUID runId = UUID.randomUUID();
+        acquireLock(tenantId, type, runId, now);
+        MasterDataSyncRunEntity run = new MasterDataSyncRunEntity();
+        run.id = text(runId);
+        run.tenantId = tenantId;
+        run.connectorId = text(connectorId);
+        run.sourceSystem = SOURCE_SYSTEM;
+        run.objectType = type.name();
+        run.triggerType = triggerType;
+        run.status = "RUNNING";
+        run.maxPages = maxPages;
+        run.pageSize = 200;
+        run.createdBy = actorId == null ? SYNC_ACTOR : text(actorId);
+        run.startedAt = now;
+        run.createdAt = now;
+        run.updatedAt = now;
+        syncRunMapper.insert(run);
+        return runId;
     }
 
-    private static PurchaseReturnLineView purchaseReturnLine(PurchaseReturnLineEntity item) {
-        return new PurchaseReturnLineView(item.sourceLineId, item.sourceGoodsId, item.sourceGoodsCode,
-                item.sourceGoodsName, item.sourceOptionsId, item.sourceOptionsGoodsCode,
-                item.optionsSummary, item.requestedQuantity, item.confirmedQuantity, item.returnPrice,
-                item.confirmedPrice, item.returnUnitCode, item.returnUnitName, item.returnUnitQuantity,
-                item.confirmedUnitQuantity, item.conversionNumber, item.amount, item.costPrice,
-                item.purchaseOrderNo, item.categoryNameSnapshot, item.brandNameSnapshot, item.remark,
-                parseSourceFields(item.attributesJson));
+    private void acquireLock(String tenantId, SupplyDataObjectType type, UUID runId,
+                             LocalDateTime now) {
+        MasterDataSyncLockEntity lock = new MasterDataSyncLockEntity();
+        lock.id = stableLockId(tenantId, type.name());
+        lock.tenantId = tenantId;
+        lock.sourceSystem = SOURCE_SYSTEM;
+        lock.objectType = type.name();
+        lock.runId = text(runId);
+        lock.acquiredAt = now;
+        lock.expiresAt = now.plus(Duration.ofMinutes(RUN_LEASE_MINUTES));
+        int updated = syncLockMapper.update(null, Wrappers.<MasterDataSyncLockEntity>update()
+                .eq("tenant_id", tenantId)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("object_type", type.name())
+                .le("expires_at", now)
+                .set("run_id", text(runId))
+                .set("acquired_at", now)
+                .set("expires_at", lock.expiresAt));
+        if (updated == 0) {
+            try {
+                syncLockMapper.insert(lock);
+            } catch (RuntimeException error) {
+                throw new IllegalStateException("ERP供应链同步正在运行: objectType=" + type.name(), error);
+            }
+        }
     }
 
-    private static BusinessException notFound(String message) {
-        return new BusinessException(ErrorCode.NOT_FOUND, message, List.of());
+    private void requireRunningRunForUpdate(String tenantId, UUID runId) {
+        MasterDataSyncRunEntity run = syncRunMapper.selectOne(
+                Wrappers.<MasterDataSyncRunEntity>query()
+                        .eq("tenant_id", tenantId).eq("id", text(runId))
+                        .eq("status", "RUNNING").last("FOR UPDATE"));
+        if (run == null) throw new IllegalStateException("ERP同步run不存在或已终止");
     }
 
-    private Map<String, Integer> lineCounts(String tenantId, Set<String> parentIds, String type) {
-        if (parentIds.isEmpty()) return Map.of();
-        return switch (type) {
-            case "PURCHASE" -> purchaseOrderLineMapper.selectList(Wrappers.<PurchaseOrderLineEntity>query()
-                    .eq("tenant_id", tenantId).in("purchase_order_id", parentIds)).stream()
-                    .collect(Collectors.groupingBy(item -> item.purchaseOrderId,
-                            Collectors.collectingAndThen(Collectors.counting(), Long::intValue)));
-            case "RETURN" -> purchaseReturnLineMapper.selectList(Wrappers.<PurchaseReturnLineEntity>query()
-                    .eq("tenant_id", tenantId).in("purchase_return_id", parentIds)).stream()
-                    .collect(Collectors.groupingBy(item -> item.purchaseReturnId,
-                            Collectors.collectingAndThen(Collectors.counting(), Long::intValue)));
-            default -> warehousingReceiptLineMapper.selectList(Wrappers.<WarehousingReceiptLineEntity>query()
-                    .eq("tenant_id", tenantId).in("warehousing_receipt_id", parentIds)).stream()
-                    .collect(Collectors.groupingBy(item -> item.warehousingReceiptId,
-                            Collectors.collectingAndThen(Collectors.counting(), Long::intValue)));
+    private void finishRun(String tenantId, UUID runId, String status,
+                           RunStatistics statistics, String errorCode, String errorMessage) {
+        LocalDateTime now = now();
+        syncRunMapper.update(null, Wrappers.<MasterDataSyncRunEntity>update()
+                .eq("tenant_id", tenantId).eq("id", text(runId)).eq("status", "RUNNING")
+                .set("status", status)
+                .set("fetched_count", statistics.fetched())
+                .set("created_count", statistics.created())
+                .set("changed_count", statistics.changed())
+                .set("duplicate_count", statistics.duplicates())
+                .set("rejected_count", statistics.rejected())
+                .set("unmapped_count", statistics.dictionaryAudit().unmapped())
+                .set("dict_snapshot_json", json(statistics.dictionaryAudit().revisions()))
+                .set("mapping_issues_json", json(statistics.dictionaryAudit().issues()))
+                .set("error_code", errorCode)
+                .set("error_message", errorMessage)
+                .set("finished_at", now)
+                .set("updated_at", now));
+        syncLockMapper.delete(Wrappers.<MasterDataSyncLockEntity>query()
+                .eq("tenant_id", tenantId)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("run_id", text(runId)));
+    }
+
+    private MasterSourceBindingEntity binding(String tenantId, String sourceType, String sourceId) {
+        if (missing(sourceId)) return null;
+        return bindingMapper.selectOne(Wrappers.<MasterSourceBindingEntity>query()
+                .eq("tenant_id", tenantId)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("source_object_type", sourceType)
+                .eq("source_object_id", sourceId)
+                .last("LIMIT 1"));
+    }
+
+    private void upsertBinding(String tenantId, UUID runId, String sourceType, String sourceId,
+                               String targetType, Long targetId, String sourceCode,
+                               String sourceName, String sourceStatus, String sourcePutaway,
+                               String payloadHash, LocalDateTime now) {
+        MasterSourceBindingEntity entity = binding(tenantId, sourceType, sourceId);
+        boolean created = entity == null;
+        if (created) {
+            entity = new MasterSourceBindingEntity();
+            entity.id = UUID.randomUUID().toString();
+            entity.tenantId = tenantId;
+            entity.sourceSystem = SOURCE_SYSTEM;
+            entity.sourceObjectType = sourceType;
+            entity.sourceObjectId = sourceId;
+            entity.createdAt = now;
+            entity.version = 0L;
+        } else {
+            entity.version = nextVersion(entity.version);
+        }
+        entity.targetType = targetType;
+        entity.targetId = targetId == null ? null : targetId.toString();
+        entity.sourceCode = blank(sourceCode);
+        entity.sourceName = blank(sourceName);
+        entity.sourceStatus = blank(sourceStatus);
+        entity.sourcePutaway = blank(sourcePutaway);
+        entity.sourcePayloadHash = requiredHash(payloadHash);
+        entity.sourcePresence = PRESENT;
+        entity.sourceAbsentAt = null;
+        entity.lastSyncRunId = text(runId);
+        entity.syncedAt = now;
+        entity.updatedAt = now;
+        if (created) bindingMapper.insert(entity);
+        else bindingMapper.updateById(entity);
+    }
+
+    private LocalDateTime now() {
+        return LocalDateTime.ofInstant(Instant.now(clock), ZoneOffset.UTC);
+    }
+
+    private static boolean changed(MasterSourceBindingEntity binding, String payloadHash) {
+        return binding == null || !Objects.equals(binding.sourcePayloadHash, requiredHash(payloadHash))
+                || SOURCE_ABSENT.equals(binding.sourcePresence) || longTargetId(binding) == null;
+    }
+
+    private static ImportResult importResult(MasterSourceBindingEntity binding,
+                                             boolean created, boolean changed) {
+        if (created) return ImportResult.oneCreated();
+        return binding == null || changed ? ImportResult.oneChanged() : ImportResult.oneDuplicate();
+    }
+
+    private static boolean sourceWritable(String updatedBy) {
+        return missing(updatedBy) || SYNC_ACTOR.equals(updatedBy);
+    }
+
+    private static boolean valid(InternalSupplierProfileEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean valid(InternalInventoryWarehouseEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean valid(InternalProductEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean valid(InternalProductVariantEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean valid(InternalProcurementOrderEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean valid(InternalStockInOrderEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean valid(InternalPurchaseReturnOrderEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static Long longTargetId(MasterSourceBindingEntity binding) {
+        if (binding == null || missing(binding.targetId)) return null;
+        try {
+            return Long.valueOf(binding.targetId);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private String uniqueSupplierCode(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.SUPPLIER, code -> supplierMapper.selectCount(
+                Wrappers.<InternalSupplierProfileEntity>lambdaQuery()
+                        .eq(InternalSupplierProfileEntity::getTenantId, tenantId)
+                        .eq(InternalSupplierProfileEntity::getSupplierCode, code)));
+    }
+
+    private String uniqueWarehouseCode(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.WAREHOUSE, code -> warehouseMapper.selectCount(
+                Wrappers.<InternalInventoryWarehouseEntity>lambdaQuery()
+                        .eq(InternalInventoryWarehouseEntity::getTenantId, tenantId)
+                        .eq(InternalInventoryWarehouseEntity::getWarehouseCode, code)));
+    }
+
+    private String uniqueProductCode(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.PRODUCT, code -> productMapper.selectCount(
+                Wrappers.<InternalProductEntity>lambdaQuery()
+                        .eq(InternalProductEntity::getTenantId, tenantId)
+                        .eq(InternalProductEntity::getProductCode, code)));
+    }
+
+    private String uniqueVariantCode(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.SKU, code -> variantMapper.selectCount(
+                Wrappers.<InternalProductVariantEntity>lambdaQuery()
+                        .eq(InternalProductVariantEntity::getTenantId, tenantId)
+                        .eq(InternalProductVariantEntity::getVariantCode, code)));
+    }
+
+    private String uniqueProcurementNo(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.PURCHASE_ORDER, code -> procurementMapper.selectCount(
+                Wrappers.<InternalProcurementOrderEntity>lambdaQuery()
+                        .eq(InternalProcurementOrderEntity::getTenantId, tenantId)
+                        .eq(InternalProcurementOrderEntity::getProcurementNo, code)));
+    }
+
+    private String uniqueStockInNo(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.STOCK_IN_ORDER, code -> stockInMapper.selectCount(
+                Wrappers.<InternalStockInOrderEntity>lambdaQuery()
+                        .eq(InternalStockInOrderEntity::getTenantId, tenantId)
+                        .eq(InternalStockInOrderEntity::getStockInNo, code)));
+    }
+
+    private String uniquePurchaseReturnNo(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.PURCHASE_RETURN_ORDER, code -> purchaseReturnMapper.selectCount(
+                Wrappers.<InternalPurchaseReturnOrderEntity>lambdaQuery()
+                        .eq(InternalPurchaseReturnOrderEntity::getTenantId, tenantId)
+                        .eq(InternalPurchaseReturnOrderEntity::getPurchaseReturnNo, code)));
+    }
+
+    private String uniqueCode(BusinessCodeRule rule, Function<String, Long> count) {
+        return codeGenerator.generateUnique(rule, code -> count.apply(code) == 0);
+    }
+
+    private static BigDecimal amount(BigDecimal value) {
+        return value == null ? ZERO : value;
+    }
+
+    private static BigDecimal firstAmount(BigDecimal first, BigDecimal second) {
+        return first == null ? second : first;
+    }
+
+    private static BigDecimal totalReturnQuantity(PurchaseReturn item) {
+        BigDecimal total = ZERO;
+        for (PurchaseReturn.Line line : item.lines()) {
+            total = total.add(amount(firstAmount(line.confirmedQuantity(), line.requestedQuantity())));
+        }
+        return total;
+    }
+
+    private static BigDecimal lineAmount(PurchaseReturn.Line line) {
+        if (line.amount() != null) return line.amount();
+        BigDecimal quantity = amount(firstAmount(line.confirmedQuantity(), line.requestedQuantity()));
+        BigDecimal unitPrice = amount(firstAmount(line.confirmedPrice(), line.returnPrice()));
+        return quantity.multiply(unitPrice);
+    }
+
+    private static int value(Integer value, int fallback) {
+        return value == null ? fallback : value;
+    }
+
+    private static Long nextVersion(Long value) {
+        return value == null ? 1L : value + 1;
+    }
+
+    private static String text(UUID value) {
+        return value == null ? null : value.toString();
+    }
+
+    private static LocalDateTime sourceTime(Instant value, LocalDateTime fallback) {
+        return value == null ? fallback : LocalDateTime.ofInstant(value, ZoneOffset.UTC);
+    }
+
+    private static boolean missing(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private static String blank(String value) {
+        return missing(value) ? null : value.strip();
+    }
+
+    private static String firstText(String first, String second) {
+        return !missing(first) ? first.strip() : blank(second);
+    }
+
+    private static String procurementStatus(String sourceStatus, String sourceName) {
+        String value = (firstText(sourceStatus, sourceName) == null ? "" : firstText(sourceStatus, sourceName))
+                .toLowerCase(java.util.Locale.ROOT);
+        if (value.contains("cancel") || value.contains("取消")) return "CANCELLED";
+        if (value.contains("finish") || value.contains("complete") || value.contains("完成")) return "COMPLETED";
+        return "SUBMITTED";
+    }
+
+    private static String stockStatus(String sourceStatus, String sourceName) {
+        String value = (firstText(sourceStatus, sourceName) == null ? "" : firstText(sourceStatus, sourceName))
+                .toLowerCase(java.util.Locale.ROOT);
+        if (value.contains("cancel") || value.contains("取消")) return "CANCELLED";
+        if (value.contains("finish") || value.contains("complete") || value.contains("完成")
+                || value.contains("已入库") || value.contains("已出库")) return "CONFIRMED";
+        return "DRAFT";
+    }
+
+    private static String purchaseReturnStatus(String sourceStatus, String sourceName) {
+        String value = (firstText(sourceStatus, sourceName) == null ? "" : firstText(sourceStatus, sourceName))
+                .toLowerCase(java.util.Locale.ROOT);
+        if (value.contains("cancel") || value.contains("取消")) return "CANCELLED";
+        if (value.contains("refund") || value.contains("退款")) return "REFUND_PENDING";
+        if (value.contains("finish") || value.contains("complete") || value.contains("完成")) return "COMPLETED";
+        if (value.contains("stock") || value.contains("出库")) return "WAIT_STOCK_OUT";
+        return "DRAFT";
+    }
+
+    private static String warehouseStatus(String sourceStatus) {
+        return "F".equalsIgnoreCase(blank(sourceStatus)) ? "DISABLED" : "ACTIVE";
+    }
+
+    private static String internalUnitCode(String value) {
+        if (missing(value)) return "PIECE";
+        return switch (value.strip()) {
+            case "箱" -> "BOX";
+            case "桶" -> "BUCKET";
+            case "份" -> "PORTION";
+            case "套" -> "SET";
+            case "床" -> "BED";
+            default -> "PIECE";
         };
     }
 
-    private void finishRun(String tenantId, UUID runId, String status, RunStatistics value,
-                           String errorCode, String errorMessage) {
-        MasterDataSyncRunEntity entity = syncRunMapper.selectOne(Wrappers.<MasterDataSyncRunEntity>query()
-                .eq("tenant_id", tenantId).eq("id", runId.toString()).eq("status", "RUNNING")
-                .last("LIMIT 1"));
-        if (entity == null) return;
-        LocalDateTime now = now(); entity.status = status; entity.fetchedCount = value.fetched();
-        entity.createdCount = value.created(); entity.changedCount = value.changed();
-        entity.duplicateCount = value.duplicates(); entity.rejectedCount = value.rejected();
-        entity.unmappedCount = value.dictionaryAudit().unmapped();
-        entity.dictSnapshotJson = auditJson(value.dictionaryAudit().revisions());
-        entity.mappingIssuesJson = auditJson(value.dictionaryAudit().issues());
-        entity.errorCode = errorCode; entity.errorMessage = errorMessage; entity.finishedAt = now;
-        entity.updatedAt = now; syncRunMapper.updateById(entity);
-        syncLockMapper.delete(Wrappers.<MasterDataSyncLockEntity>query()
-                .eq("tenant_id", tenantId).eq("run_id", runId.toString()));
+    private static String returnRemark(PurchaseReturn item) {
+        String value = firstText(item.reason(), item.remark());
+        String supplier = blank(item.supplierName());
+        if (supplier == null) return value;
+        String prefix = blank(value);
+        return prefix == null ? "供应商:" + supplier : prefix + " 供应商:" + supplier;
     }
 
-    private static String auditJson(Object value) {
+    private static String optionSnapshot(InventoryBalance item) {
+        String first = firstText(item.firstOptionName(), item.firstOptionCode());
+        String second = firstText(item.secondOptionName(), item.secondOptionCode());
+        if (!missing(first) && !missing(second)) return first + "/" + second;
+        return firstText(first, second);
+    }
+
+    private static String inventoryVariantSourceId(InventoryBalance item) {
+        String source = firstText(item.firstOptionGuid(), item.firstOptionCode());
+        String second = firstText(item.secondOptionGuid(), item.secondOptionCode());
+        if (!missing(source) && !missing(second)) return source + "::" + second;
+        return source;
+    }
+
+    private static String inventorySourceId(InventoryBalance item) {
+        String goods = firstText(item.goodsGuid(), item.goodsCode());
+        String warehouse = firstText(item.warehouseGuid(), item.warehouseCode());
+        if (missing(goods) || missing(warehouse)) return null;
+        return goods + "|" + warehouse + "|" + firstText(inventoryVariantSourceId(item), "DEFAULT");
+    }
+
+    private static String requiredHash(String payloadHash) {
+        return missing(payloadHash) ? sha256Hex("EMPTY") : payloadHash.strip();
+    }
+
+    private static String stableLockId(String tenantId, String objectType) {
+        return UUID.nameUUIDFromBytes((tenantId + "|" + SOURCE_SYSTEM + "|" + objectType)
+                .getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    private static String sha256Hex(String value) {
         try {
-            return SOURCE_FIELDS_MAPPER.writeValueAsString(value);
-        } catch (RuntimeException exception) {
-            throw new IllegalStateException("ERP同步字典审计序列化失败", exception);
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException error) {
+            throw new IllegalStateException("当前JDK不支持SHA-256", error);
         }
     }
 
-    private void acquireRunLock(String tenantId, String objectType, UUID runId, LocalDateTime now) {
-        syncLockMapper.delete(Wrappers.<MasterDataSyncLockEntity>query()
-                .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
-                .eq("object_type", objectType).le("expires_at", now));
-        MasterDataSyncLockEntity lock = new MasterDataSyncLockEntity();
-        lock.id = UUID.randomUUID().toString(); lock.tenantId = tenantId;
-        lock.sourceSystem = SOURCE_SYSTEM; lock.objectType = objectType;
-        lock.runId = runId.toString(); lock.acquiredAt = now;
-        lock.expiresAt = now.plus(java.time.Duration.ofHours(6));
+    private static String json(Object value) {
         try {
-            syncLockMapper.insert(lock);
-        } catch (DuplicateKeyException exception) {
-            throw new com.rigour.shared.core.exception.BusinessException(
-                    com.rigour.shared.core.api.ErrorCode.SYNC_ALREADY_RUNNING,
-                    "当前租户该类 ERP 数据已有同步任务运行中", java.util.List.of());
+            return JSON.writeValueAsString(value == null ? List.of() : value);
+        } catch (Exception error) {
+            throw new IllegalStateException("ERP供应链同步JSON序列化失败", error);
         }
     }
 
-    private String uniqueSupplierCode(String tenantId, String preferred, String sourceId) {
-        String base = missing(preferred) ? "DHB-SUPPLIER-" + shortHash(sourceId) : preferred.strip();
-        for (int attempt = 0; attempt <= 100; attempt++) {
-            String candidate = codeCandidate(base, sourceId, attempt);
-            long count = supplierMapper.selectCount(Wrappers.<SupplierEntity>query()
-                    .eq("tenant_id", tenantId).eq("supplier_code", candidate));
-            if (count == 0) return candidate;
-        }
-        throw new IllegalStateException("ERP供应商编码生成失败，无法保证租户内唯一");
-    }
-    private String uniqueWarehouseCode(String tenantId, String preferred, String sourceId) {
-        String base = missing(preferred) ? "DHB-WAREHOUSE-" + shortHash(sourceId) : preferred.strip();
-        for (int attempt = 0; attempt <= 100; attempt++) {
-            String candidate = codeCandidate(base, sourceId, attempt);
-            long count = warehouseMapper.selectCount(Wrappers.<WarehouseEntity>query()
-                    .eq("tenant_id", tenantId).eq("warehouse_code", candidate));
-            if (count == 0) return candidate;
-        }
-        throw new IllegalStateException("ERP仓库编码生成失败，无法保证租户内唯一");
-    }
-
-    private static ImportResult outcome(boolean created, boolean changed) {
-        return created ? ImportResult.oneCreated() : changed ? ImportResult.oneChanged() : ImportResult.oneDuplicate();
-    }
-    private static <T> void applySearch(com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<T> wrapper,
-                                         String query, String... columns) {
-        if (missing(query)) return;
-        String value = query.strip();
-        wrapper.and(w -> {
-            w.like(columns[0], value);
-            for (int index = 1; index < columns.length; index++) w.or().like(columns[index], value);
-        });
-    }
-
-    private static List<String> splitValues(String value) {
-        if (missing(value)) return List.of();
-        return java.util.Arrays.stream(value.split(","))
-                .map(String::strip).filter(item -> !item.isBlank()).distinct().toList();
-    }
-
-    private static <T> void applyStatus(com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<T> wrapper,
-                                         String status, String... columns) {
-        if (missing(status)) return;
-        String value = status.strip();
-        wrapper.and(w -> {
-            w.eq(columns[0], value);
-            for (int index = 1; index < columns.length; index++) w.or().eq(columns[index], value);
-        });
-    }
-
-    private static void applyInventoryStatus(
-            com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<InventoryBalanceEntity> wrapper,
-            String status) {
-        if (missing(status)) return;
-        switch (status.strip().toUpperCase(java.util.Locale.ROOT)) {
-            case "AVAILABLE" -> wrapper.gt("available_quantity", BigDecimal.ZERO);
-            case "NO_AVAILABLE" -> wrapper.le("available_quantity", BigDecimal.ZERO);
-            default -> { }
-        }
-    }
-
-    private static <T> Set<String> ids(List<T> values, Function<T, String> key) {
-        return values.stream().map(key).filter(Objects::nonNull).collect(Collectors.toSet());
-    }
-
-    private static String limitSql(int begin, int step) {
-        return "LIMIT " + Math.max(0, begin) + "," + Math.max(1, step);
-    }
-    private static String options(InventoryBalanceEntity item) {
-        List<String> values = new ArrayList<>();
-        if (!missing(item.firstOptionName)) values.add(item.firstOptionName);
-        if (!missing(item.secondOptionName)) values.add(item.secondOptionName);
-        return values.isEmpty() ? "基础规格" : String.join(" / ", values);
-    }
-    private static String variantKey(InventoryBalance item) {
-        String first = first(item.firstOptionGuid(), item.firstOptionCode());
-        String second = first(item.secondOptionGuid(), item.secondOptionCode());
-        return "BASE".equals(first) && "BASE".equals(second) ? "BASE" : first + "|" + second;
-    }
-    private static String skuCode(InventoryBalance item) {
-        return !missing(item.secondOptionCode()) ? item.secondOptionCode() : item.firstOptionCode();
-    }
-    private static String first(String first, String second) {
-        return !missing(first) ? first.strip() : !missing(second) ? second.strip() : "BASE";
-    }
-    private static String prefer(String primary, String fallback) {
-        return missing(primary) ? fallback : primary;
-    }
-    private static BigDecimal zero(BigDecimal value) { return value == null ? BigDecimal.ZERO : value; }
-    private static Long next(Long value) { return value == null ? 1L : value + 1L; }
-    private LocalDateTime now() { return LocalDateTime.now(clock); }
-    private static LocalDateTime local(Instant value) {
-        return value == null ? null : LocalDateTime.ofInstant(value, ZoneOffset.UTC);
-    }
-    private static Instant instant(LocalDateTime value) {
-        return value == null ? null : value.toInstant(ZoneOffset.UTC);
-    }
-    private static boolean missing(String value) { return value == null || value.isBlank(); }
-    private static String warehouseStatus(String value) {
-        if ("T".equalsIgnoreCase(value)) return "正常";
-        if ("F".equalsIgnoreCase(value)) return "停用";
-        return value;
-    }
-    private static String requiredHash(String value) { return missing(value) ? shortHash("missing") : value; }
-    private static String sourceFieldsJson(Map<String, Object> sourceFields) {
-        try {
-            return SOURCE_FIELDS_MAPPER.writeValueAsString(sourceFields == null ? Map.of() : sourceFields);
-        } catch (RuntimeException exception) {
-            throw new IllegalStateException("订货宝供应链原始字段序列化失败", exception);
-        }
-    }
-    private static Map<String, Object> parseSourceFields(String json) {
-        if (missing(json)) return Map.of();
-        try {
-            Object decoded = SOURCE_FIELDS_MAPPER.readValue(json, Object.class);
-            if (!(decoded instanceof Map<?, ?> values)) return Map.of();
-            Map<String, Object> result = new LinkedHashMap<>();
-            values.forEach((key, value) -> result.put(String.valueOf(key), value));
-            return result;
-        } catch (RuntimeException exception) {
-            throw new IllegalStateException("订货宝供应链原始字段反序列化失败", exception);
-        }
-    }
-    private static String jsonList(List<String> values) {
-        if (values == null || values.isEmpty()) return "[]";
-        return "[\"" + String.join("\",\"", values.stream()
-                .map(value -> value.replace("\\", "\\\\").replace("\"", "\\\"")).toList()) + "\"]";
-    }
-    private static List<String> parseJsonList(String json) {
-        if (missing(json)) return List.of();
-        String value = json.strip();
-        if (value.length() < 2 || value.charAt(0) != '[' || value.charAt(value.length() - 1) != ']') {
-            return List.of();
-        }
-        List<String> values = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        boolean quoted = false;
-        boolean escaped = false;
-        for (int index = 1; index < value.length() - 1; index++) {
-            char character = value.charAt(index);
-            if (escaped) {
-                current.append(character);
-                escaped = false;
-            } else if (character == '\\') {
-                escaped = true;
-            } else if (character == '"') {
-                quoted = !quoted;
-            } else if (character == ',' && !quoted) {
-                addJsonListValue(values, current);
-            } else {
-                current.append(character);
-            }
-        }
-        if (escaped) current.append('\\');
-        addJsonListValue(values, current);
-        return List.copyOf(values);
-    }
-    private static void addJsonListValue(List<String> values, StringBuilder current) {
-        String value = current.toString().strip();
-        if (!value.isEmpty()) values.add(value);
-        current.setLength(0);
-    }
-    private static String clipped(String value, int length) {
-        return value.length() <= length ? value : value.substring(0, length);
-    }
-    private static String codeCandidate(String base, String sourceId, int attempt) {
-        if (attempt == 0 && base.length() <= 128) return base;
-        String suffix = shortHash(sourceId) + (attempt <= 1 ? "" : "-" + attempt);
-        return clipped(base, 128 - suffix.length() - 1) + "-" + suffix;
-    }
-    private static String shortHash(String value) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(String.valueOf(value).getBytes(StandardCharsets.UTF_8))).substring(0, 12);
-        } catch (NoSuchAlgorithmException error) { throw new IllegalStateException(error); }
-    }
-
-    private record Binding(MasterSourceBindingEntity entity, String targetId,
-                           boolean changed, boolean existing) { }
+    private record UpsertResult(Long id, ImportResult result) { }
 }

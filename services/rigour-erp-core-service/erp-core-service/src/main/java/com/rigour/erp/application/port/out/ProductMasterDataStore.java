@@ -1,12 +1,5 @@
 package com.rigour.erp.application.port.out;
 
-import com.rigour.erp.api.v1.model.BrandView;
-import com.rigour.erp.api.v1.model.CategoryView;
-import com.rigour.erp.api.v1.model.MasterDataPageView;
-import com.rigour.erp.api.v1.model.ProductPageView;
-import com.rigour.erp.api.v1.model.SkuPageView;
-import com.rigour.erp.api.v1.model.SpecificationView;
-import com.rigour.erp.api.v1.model.TagView;
 import com.rigour.erp.application.model.DictionaryMappingAudit;
 import com.rigour.erp.domain.model.product.Brand;
 import com.rigour.erp.domain.model.product.Category;
@@ -14,30 +7,14 @@ import com.rigour.erp.domain.model.product.MasterDataObjectType;
 import com.rigour.erp.domain.model.product.Product;
 import com.rigour.erp.domain.model.product.Specification;
 import com.rigour.erp.domain.model.product.Tag;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-/** ERP 商品主数据持久化端口；实现是 ERP Schema 的唯一写者。 */
+/** ERP 商品主数据同步持久化端口；订货宝来源只能映射到 ERP 自研业务表。 */
 public interface ProductMasterDataStore {
-
-    ProductPageView products(String tenantId, int begin, int step, String query,
-                             String internalStatus, String sourcePutaway);
-
-    SkuPageView skus(String tenantId, int begin, int step, String query,
-                     String internalStatus, String sourcePutaway);
-
-    MasterDataPageView<CategoryView> categories(String tenantId, int begin, int step,
-                                                String query, String status);
-
-    MasterDataPageView<BrandView> brands(String tenantId, int begin, int step,
-                                         String query, String status);
-
-    MasterDataPageView<SpecificationView> specifications(String tenantId, int begin, int step,
-                                                         String query, String status);
-
-    MasterDataPageView<TagView> tags(String tenantId, int begin, int step,
-                                     String query, String status);
 
     UUID startRun(String tenantId, UUID connectorId, UUID actorId,
                   MasterDataObjectType objectType, int maxPages);
@@ -61,9 +38,22 @@ public interface ProductMasterDataStore {
     /** 仅在完整且无拒绝记录的全量快照后标记来源存在/缺失，不删除业务记录。 */
     void reconcileSourcePresence(String tenantId, UUID runId, Map<String, Set<String>> seenSourceIds);
 
+    /** 在同一本地事务内完成来源存在性核对与成功 run 终态。 */
+    void completeRunWithSourcePresence(String tenantId, UUID runId,
+                                       Map<String, Set<String>> seenSourceIds,
+                                       RunStatistics statistics);
+
     void completeRun(String tenantId, UUID runId, RunStatistics statistics);
 
     void failRun(String tenantId, UUID runId, RunStatistics statistics, RuntimeException error);
+
+    /** 长批次导入过程中续租本地互斥锁，避免短锁误释放正在运行的同步。 */
+    default void heartbeatRun(String tenantId, UUID runId) { }
+
+    default List<ExternalObjectMappingCommand> externalObjectMappings(
+            String tenantId, UUID connectorId, UUID runId, MasterDataObjectType objectType) {
+        return List.of();
+    }
 
     /** 单次导入根对象及其子记录的幂等处理统计。 */
     record ImportResult(
@@ -94,7 +84,7 @@ public interface ProductMasterDataStore {
             long created,
             /** 来源摘要变化并更新的 ERP 主数据和子记录数量。 */
             long changed,
-            /** 按来源摘要判定为重复的 ERP 主数据和子记录数量。 */
+            /** 来源摘要未变化而跳过的 ERP 主数据和子记录数量。 */
             long duplicates,
             /** 因缺少必要字段而拒绝落库的来源记录数量。 */
             long rejected,

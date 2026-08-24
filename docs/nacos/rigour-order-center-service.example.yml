@@ -33,14 +33,19 @@ spring:
 rigour:
   business-settings:
     base-url: http://rigour-business-settings-service:26892
+  erp:
+    base-url: http://rigour-erp-core-service:26884
+  iam:
+    base-url: http://rigour-tenant-iam-service:26881
   integration:
     base-url: http://rigour-integration-migration-service:26882
   order:
     dhb:
+      http:
+        connect-timeout: 5s
+        read-timeout: 60s
+        # 同页最多100个详情请求，包含Integration限流/Raw Landing的总等待上限。
+        detail-batch-timeout: 180s
       sync:
-        # Order默认每小时20分、50分执行，与ERP和CRM错峰。
-        enabled: true
-        cron: 0 20/30 * * * ?
-        max-pages: 100
         overlap-minutes: 5
         full-reconcile-hours: 24

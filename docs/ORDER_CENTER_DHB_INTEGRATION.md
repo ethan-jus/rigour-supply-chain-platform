@@ -7,10 +7,11 @@
 | 类型 | 接口 | 作用 |
 |---|---|---|
 | Integration 官方适配器 | `getTokenValue`、`getOrderList`、`getOrderContent`、`getShipsList/getShipsContent`、`getWaitShips` | 认证并同步订货宝原始数据，凭据只从Secret引用读取 |
-| 订单中心平台接口 | `GET /api/v1/orders/dhb` | 查询订单中心本地订单投影 |
-| 订单中心平台接口 | `GET /api/v1/orders/dhb/{orderSn}` | 查询本地订单明细投影 |
+| 订单中心平台接口 | `GET /api/v1/orders/sales-orders` | 查询我方销售订单列表 |
+| 订单中心平台接口 | `GET /api/v1/orders/sales-orders/{id}` | 查询我方销售订单详情 |
+| 订单中心内部接口 | `POST /internal/v1/orders/dhb/sync` | 接收 Integration 已采集、已映射的订货宝销售订单批次 |
 
-Portal只调用订单中心的本地查询和立即同步接口。前端同步请求只进入 Order Center，Order Center 调 Integration 查询，完成业务转换和幂等落库后返回；定时同步也由 Order Center 编排，Portal 不直接调用 Integration 执行接口。
+Portal 只调用订单中心的销售订单业务接口。手动同步、定时同步和修复同步统一进入 Integration 订货宝同步中心；Order Center 不再编排订货宝同步，也不暴露浏览器可调用的模块级同步接口。
 
 ## 2. 分层职责
 
@@ -18,9 +19,9 @@ Portal只调用订单中心的本地查询和立即同步接口。前端同步�
 Integration
   -> DhbClientAdapter   订货宝HTTP协议、Token、超时、重试、限流和脱敏
   -> Raw Landing / 同步批次
-  -> 订单中心内部导入契约或事件
-       -> InternalOrderRepository  MyBatis-Plus事务落库
-       -> order_outbox_event        事务内记录内部领域事件
+  -> 订单中心内部导入契约
+       -> OrderSalesOrderService / MybatisPlusSalesOrderRepository
+       -> order_sales_order / order_sales_order_line / order_sales_order_payment
 
 Portal -> Gateway -> order-center-service -> 本地订单投影
 ```
@@ -29,36 +30,32 @@ Portal -> Gateway -> order-center-service -> 本地订单投影
 - 物流查询使用订货宝 `getWaitShips`，入参为订单号 `orders_num`；返回 `shipped` 已出库/已发货记录和
   `wait_stock` 待出库明细。该调用发生在 Integration，订单中心只接收已归一化的物流数据。
 - 订单中心只拥有内部订单模型和查询/导入持久化边界，不读取第三方凭据。
-- `Order` 是平台内部订单模型，内部流程只使用 `internalStatus`。
-- `sourceStatus` 保留订货宝原始状态，便于追溯和重新映射。
-- 订单中心是 `order_order` 的唯一写入服务；ERP、库存、客户和BI通过内部事件或服务接口消费。
+- `SalesOrder` 是平台内部销售订单模型，内部流程只使用我方订单状态、收款状态和出库状态。
+- 订货宝状态只在 Integration/内部同步中映射为我方状态，不作为业务页面字段展示。
+- 订单中心是 `order_sales_order`、`order_sales_order_line`、`order_sales_order_payment` 的唯一写入服务；ERP、库存、客户和 BI 通过服务接口消费业务数据。
 
 ## 3. 内部数据表
 
 | 表 | 说明 |
 |---|---|
-| `order_order` | 内部订单主表；保存内部状态、来源标识、金额、客户和收货快照 |
-| `order_order_line` | 内部订单明细；保存来源明细、SKU、商品和数量 |
-| `order_order_shipment` | 内部订单发货信息；一期只保存订货宝来源快照 |
-| `order_source_record` | 不可变的订货宝列表/明细原始JSON及SHA-256 |
-| `order_sync_run` | 历史同步批次表；新同步批次由Integration作为主记录 |
-| `order_outbox_event` | 与订单写入同事务的领域事件，供后续投递器使用 |
-| `order_dhb_shipment_logistics` | 按租户、来源系统和订单号幂等保存`getWaitShips`最新物流快照 |
-| `order_dhb_shipment_logistics_line` | 保存`SHIPPED`已出库/已发货和`WAIT_STOCK`待出库明细 |
+| `order_sales_order` | 我方销售订单主表；保存订单号、客户快照、归属销售人员编码、金额和状态 |
+| `order_sales_order_line` | 我方销售订单商品明细；保存商品编码、规格、数量和价格快照 |
+| `order_sales_order_payment` | 我方销售订单收款记录 |
+| Integration Raw / 外部映射 / 编排运行记录 | 保存订货宝来源报文、外部 ID 绑定、同步批次和对账证据 |
 
-内部订单幂等键为：
+销售订单业务幂等键为：
 
 ```text
-tenant_id + source_system + source_order_no
+tenant_id + order_no
 ```
 
 明细幂等键为：
 
 ```text
-order_id + source_line_id
+sales_order_id + line_no
 ```
 
-订货宝原始报文不再放在内部订单主表中，而是进入 `order_source_record`。V2迁移会把V1已有的 `dhb_*` 历史数据迁移到新模型，历史数据不会重复发布Outbox事件。
+订货宝原始报文不再放在 Order Center；来源报文、来源覆盖、外部 ID 绑定和同步对账证据由 Integration 统一保存。Order V17 会删除旧 Order 内部订货宝镜像、导入和审计表。
 
 ## 4. 内部订单状态
 
@@ -83,24 +80,19 @@ order_id + source_line_id
 | `cancelled` | `CANCELLED` |
 | 其他或空值 | `EXCEPTION` 或 `RECEIVED` |
 
-后续订货宝同步只更新 `source_*` 字段，不覆盖已经由自研订单流程维护的 `internal_status`。
+后续订货宝同步只通过映射规则更新我方允许来源接管的字段，不覆盖已经由自研订单流程维护的人工字段和状态机。
 
 ## 5. 领域事件
 
-当前定义事件：
-
-- `ORDER_IMPORTED`：外部订单首次转换为内部订单；
-- `ORDER_SOURCE_UPDATED`：外部订单来源事实发生变化。
-
-事件载荷只包含订单ID、订单号、来源系统、来源订单号和状态，不包含手机号、地址、Secret、Token或原始报文。ERP、库存、客户和BI收到事件后，应通过 `orderId` 获取允许使用的订单数据并建立自己的投影。
+当前订单到 ERP 的协作通过受控服务接口完成：销售订单确认出库时，Order 调用 ERP 销售出库能力生成 `erp_stock_out_order`。如后续需要领域事件，事件载荷只允许包含业务 ID、业务编码和状态，不包含手机号、地址、Secret、Token 或原始报文。
 
 ## 6. 后续扩展约束
 
-1. 新增自研下单流程时，直接创建 `order_order`，不伪造订货宝报文。
+1. 新增自研下单流程时，直接创建 `order_sales_order`，不伪造订货宝报文。
 2. 新增其他外部来源时，只新增对应的 Translator 和 Provider Adapter，不修改内部订单流程。
 3. 订货宝写操作暂不开放；新增、修改、审核、发货需要另行定义内部订单状态机和权限。
 4. 外部凭据只通过Secret注入，不能写入数据库、日志和API响应。
 
 ## 7. Integration与订单中心的后续契约
 
-Integration到订单中心的导入契约需要在服务间可信上下文和幂等策略确定后单独实现。命令只能携带租户、连接器、批次和分页/游标信息，绝不能携带订货宝账号、密码、API Key或Token；Secret Resolver只能存在于 Integration。该契约不应被Gateway作为浏览器菜单接口暴露。
+Integration 到订单中心的导入契约只允许服务间可信上下文调用。命令携带租户、连接器、来源任务和已映射业务数据，绝不能携带订货宝账号、密码、API Key 或 Token；Secret Resolver 只能存在于 Integration。该契约不得被 Gateway 作为浏览器菜单接口暴露。

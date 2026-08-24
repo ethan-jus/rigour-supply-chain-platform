@@ -14,13 +14,15 @@ public class MasterDataSyncRunEntity {
     public String tenantId;
     /** Integration 订货宝连接器 UUID。 */
     public String connectorId;
+    /** Integration 同步任务 UUID，用于追溯定时调度来源。 */
+    public String sourceTaskId;
     /** 来源系统编码，例如 DINGHUOBAO。 */
     public String sourceSystem;
     /** 同步对象类型。 */
     public String objectType;
     /** 触发方式：MANUAL、SCHEDULED 或 RETRY。 */
     public String triggerType;
-    /** 批次状态：RUNNING、SUCCEEDED、SUCCEEDED_WITH_WARNINGS 或 FAILED。 */
+    /** 批次状态：RUNNING、SUCCEEDED、SUCCEEDED_WITH_WARNINGS、FAILED 或 SKIPPED。 */
     public String status;
     /** 预留的来源增量窗口起点；一期手动全量同步为空。 */
     public LocalDateTime windowFrom;

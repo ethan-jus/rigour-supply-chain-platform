@@ -1,5 +1,6 @@
 package com.rigour.settings;
 
+import com.rigour.settings.maintenance.BusinessSettingsFlywayMaintenance;
 import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
@@ -7,6 +8,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class BusinessSettingsServiceApplication {
     public static void main(String[] args) {
+        if (BusinessSettingsFlywayMaintenance.runIfRequested(args)) {
+            return;
+        }
         ServiceApplicationLauncher.run(BusinessSettingsServiceApplication.class, "公共业务设置服务", args);
     }
 }

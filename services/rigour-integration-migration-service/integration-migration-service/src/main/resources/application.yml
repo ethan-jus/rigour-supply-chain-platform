@@ -21,7 +21,23 @@ logging:
     com.rigour.integration.infrastructure.dhb: INFO
 
 rigour:
+  erp:
+    # Integration编排器只通过ERP内部HTTP同步契约调度，不访问ERP数据库。
+    base-url: ${RIGOUR_ERP_BASE_URL:http://localhost:26884}
+  crm:
+    # Integration编排器只通过CRM内部HTTP同步契约调度，不访问CRM数据库。
+    base-url: ${RIGOUR_CRM_BASE_URL:http://localhost:26883}
+  order:
+    # 订货宝订单同步只投影到Order自研销售订单HTTP契约，不访问Order数据库。
+    base-url: ${RIGOUR_ORDER_BASE_URL:http://localhost:26885}
+  business-settings:
+    # 订货宝同步批次内只通过Settings内部HTTP契约幂等补齐白名单业务字典。
+    base-url: ${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://localhost:26892}
   integration:
+    domain-http:
+      # 统一编排器调用ERP/CRM/Order时允许长批次完成；单领域内部仍负责自己的分页和幂等。
+      connect-timeout: ${RIGOUR_INTEGRATION_DOMAIN_HTTP_CONNECT_TIMEOUT:5s}
+      read-timeout: ${RIGOUR_INTEGRATION_DOMAIN_HTTP_READ_TIMEOUT:15m}
     connector-lease:
       # ERP、CRM、Order及多实例对同一租户连接器共用此分布式租约。
       ttl: ${RIGOUR_INTEGRATION_CONNECTOR_LEASE_TTL:2m}
@@ -44,6 +60,14 @@ rigour:
         socket-timeout-ms: 60000
         server-side-encryption: true
     dhb:
+      orchestration:
+        # 订货宝同步统一由Integration编排器触发；领域服务定时入口默认关闭。
+        enabled: ${RIGOUR_DHB_SYNC_ORCHESTRATION_ENABLED:true}
+        cron: ${RIGOUR_DHB_SYNC_ORCHESTRATION_CRON:0 5/30 * * * ?}
+        max-pages: ${RIGOUR_DHB_SYNC_ORCHESTRATION_MAX_PAGES:100}
+      order:
+        # getOrderContent/getShipsContent 明细接口按单号调用；默认串行，确认订货宝限流后可调高到3-5。
+        detail-concurrency: ${RIGOUR_DHB_ORDER_DETAIL_CONCURRENCY:1}
       client:
         # 订货宝正式 API 基础 URL 必须配置在租户连接器的 base_url 中；商品图片相对地址使用独立源站。
         image-base-url: ${RIGOUR_INTEGRATION_DHB_IMAGE_BASE_URL:https://img.dhb168.com/}
@@ -66,7 +90,6 @@ rigour:
       connect-timeout: 3s
       read-timeout: 5s
       token-safety-window: 60s
-
   context:
     trust:
       active-key-id: v1

@@ -40,7 +40,7 @@ class BusinessDictionaryCoverageServiceTest {
 
         service.inspect(TENANT_ID, data);
 
-        assertThat(observed).extracting(Observation::dictCode, Observation::fieldCode,
+        assertThat(observed).extracting(Observation::dictionaryCode, Observation::fieldCode,
                         Observation::sourceValue)
                 .contains(tuple("DHB_PRODUCT_STATUS", "product.status", "T"),
                         tuple("DHB_PRODUCT_PUTAWAY", "product.putaway", "T"),
@@ -71,10 +71,10 @@ class BusinessDictionaryCoverageServiceTest {
 
         service.inspect(TENANT_ID, data);
 
-        assertThat(observed).extracting(Observation::dictCode, Observation::fieldCode,
+        assertThat(observed).extracting(Observation::dictionaryCode, Observation::fieldCode,
                         Observation::sourceValue)
                 .contains(tuple("DHB_WAREHOUSE_STATUS", "warehouse.sourceStatus", "T"));
-        assertThat(observed).extracting(Observation::dictCode)
+        assertThat(observed).extracting(Observation::dictionaryCode)
                 .doesNotContain("DHB_PURCHASE_RETURN_DEVICE", "DHB_WAREHOUSING_SPLIT_TYPE")
                 .noneMatch(code -> code.endsWith("_FLAG"));
     }
@@ -90,7 +90,7 @@ class BusinessDictionaryCoverageServiceTest {
                 MasterDataObjectType.PRODUCT_SPU, 1, 1, List.of(product),
                 List.of(), List.of(), List.of(), List.of()));
 
-        assertThat(observed).extracting(Observation::dictCode).doesNotContain("DHB_UNIT");
+        assertThat(observed).extracting(Observation::dictionaryCode).doesNotContain("DHB_UNIT");
     }
 
     private static BusinessDictionaryCoverageService service(List<Observation> observed) {

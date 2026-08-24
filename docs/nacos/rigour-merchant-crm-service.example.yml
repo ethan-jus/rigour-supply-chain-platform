@@ -33,11 +33,9 @@ rigour:
       connect-timeout: 3s
       read-timeout: 120s
   crm:
-    sync:
-      # CRM默认每小时10分、40分执行，与ERP和Order错峰。
-      enabled: true
-      cron: 0 10/30 * * * ?
-      max-pages: 100
+    dhb:
+      # 客户、地址、员工同步按小批量分页读取，避免单页过大拖慢Integration响应。
+      page-size: 100
   context:
     trust:
       active-key-id: v1

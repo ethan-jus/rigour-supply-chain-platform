@@ -13,6 +13,7 @@ import com.rigour.shared.context.RequestHeaders;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.Map;
 import java.util.UUID;
@@ -64,15 +65,69 @@ class ConnectorSyncLeaseClientTest {
         server.verify();
     }
 
+    @Test
+    void guardedExecutionSynchronouslyRenewsBeforeCommit() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        String basePath = BASE_URL + DhbConnectorLeaseApi.BASE_PATH + "/" + CONNECTOR_ID;
+        server.expect(requestTo(basePath)).andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess(futureLeaseResponse(), MediaType.APPLICATION_JSON));
+        server.expect(requestTo(basePath + "/" + TOKEN + "/renew"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess(futureLeaseResponse(), MediaType.APPLICATION_JSON));
+        server.expect(requestTo(basePath + "/" + TOKEN)).andExpect(method(HttpMethod.DELETE))
+                .andRespond(withSuccess());
+        try (ConnectorSyncLeaseClient client = new ConnectorSyncLeaseClient(
+                builder, signer(), BASE_URL, "test-service")) {
+            String value = client.executeWithLeaseGuard(TENANT_ID, CONNECTOR_ID, guard -> {
+                guard.ensureActive();
+                return "committed";
+            });
+            assertThat(value).isEqualTo("committed");
+        }
+        server.verify();
+    }
+
+    @Test
+    void guardedExecutionRejectsRenewalForAnotherLease() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        String basePath = BASE_URL + DhbConnectorLeaseApi.BASE_PATH + "/" + CONNECTOR_ID;
+        server.expect(requestTo(basePath)).andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess(futureLeaseResponse(), MediaType.APPLICATION_JSON));
+        server.expect(requestTo(basePath + "/" + TOKEN + "/renew"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess(futureLeaseResponse("another-lease-token"), MediaType.APPLICATION_JSON));
+        server.expect(requestTo(basePath + "/" + TOKEN)).andExpect(method(HttpMethod.DELETE))
+                .andRespond(withSuccess());
+        try (ConnectorSyncLeaseClient client = new ConnectorSyncLeaseClient(
+                builder, signer(), BASE_URL, "test-service")) {
+            assertThatThrownBy(() -> client.executeWithLeaseGuard(TENANT_ID, CONNECTOR_ID, guard -> {
+                guard.ensureActive();
+                return "must-not-commit";
+            })).isInstanceOfSatisfying(BusinessException.class, error ->
+                    assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SYNC_ALREADY_RUNNING));
+        }
+        server.verify();
+    }
+
     private static String leaseResponse() {
+        return futureLeaseResponse();
+    }
+
+    private static String futureLeaseResponse() {
+        return futureLeaseResponse(TOKEN);
+    }
+
+    private static String futureLeaseResponse(String token) {
         return """
                 {
-                  "connectorId":"019fb900-0000-7000-8000-000000000002",
-                  "token":"019fb900-0000-7000-8000-000000000003",
-                  "expiresAt":"2026-08-15T10:30:00Z",
+                  "connectorId":"%s",
+                  "token":"%s",
+                  "expiresAt":"%s",
                   "ttlSeconds":120
                 }
-                """;
+                """.formatted(CONNECTOR_ID, token, Instant.now().plusSeconds(120));
     }
 
     private static void assertTrustedServiceIdentityHeaders(org.springframework.http.HttpRequest request) {

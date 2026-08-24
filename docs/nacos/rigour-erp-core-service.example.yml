@@ -33,11 +33,6 @@ rigour:
       connect-timeout: 3s
       read-timeout: 120s
   erp:
-    sync:
-      # ERP默认每小时00分、30分执行；CRM和Order分别错开10、20分钟。
-      enabled: true
-      cron: 0 0/30 * * * ?
-      max-pages: 100
     product-media:
       # 图片必须写入 COS 私桶；ERP 查询商品时按 object key 重新生成短时 URL。
       url-ttl: 10m

@@ -34,8 +34,7 @@ class BusinessDictionaryBatchClientTest {
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(header(RequestHeaders.PRINCIPAL_SCOPE, "SERVICE"))
                 .andExpect(header(RequestHeaders.TENANT_ID, TENANT_ID.toString()))
-                .andExpect(jsonPath("$.moduleCode").value("COMMON"))
-                .andExpect(jsonPath("$.dictCode").value("DHB_UNIT"))
+                .andExpect(jsonPath("$.dictionaryCode").value("PRODUCT_UNIT"))
                 .andExpect(jsonPath("$.values.length()").value(1))
                 .andExpect(jsonPath("$.values[0].value").value("BOX"))
                 .andExpect(jsonPath("$.values[0].name").value("箱"))
@@ -45,12 +44,33 @@ class BusinessDictionaryBatchClientTest {
         var audit = client.sync(BusinessDictionaryBatchClient.serviceCaller(
                 "test-service", "TEST_DICTIONARY_SYNC", TENANT_ID), "PRODUCT", List.of(
                 new BusinessDictionaryBatchClient.Observation(
-                        "COMMON", "DHB_UNIT", "product.unit", "BOX", null),
+                        "PRODUCT_UNIT", "product.unit", "BOX", null),
                 new BusinessDictionaryBatchClient.Observation(
-                        "COMMON", "DHB_UNIT", "product.unit", "BOX", "箱")));
+                        "PRODUCT_UNIT", "product.unit", "BOX", "箱")));
 
         assertThat(audit.unmapped()).isZero();
-        assertThat(audit.revisions()).containsEntry("COMMON.DHB_UNIT", 6L);
+        assertThat(audit.revisions()).containsEntry("PRODUCT_UNIT", 6L);
+        server.verify();
+    }
+
+    @Test
+    void resolvesSourceValueUsingSettingsGeneratedItemCode() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo(BASE_URL + BusinessDictionaryInternalApi.BASE_PATH + "/items/sync"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$.dictionaryCode").value("DHB_STAFF_TYPE"))
+                .andExpect(jsonPath("$.values[0].value").value("salesman"))
+                .andRespond(withSuccess(staffTypeResponse(), MediaType.APPLICATION_JSON));
+        BusinessDictionaryBatchClient client = new BusinessDictionaryBatchClient(builder, signer(), BASE_URL);
+
+        var audit = client.sync(BusinessDictionaryBatchClient.serviceCaller(
+                "test-service", "TEST_DICTIONARY_SYNC", TENANT_ID), "STAFF", List.of(
+                new BusinessDictionaryBatchClient.Observation(
+                        "DHB_STAFF_TYPE", "staff.staffType", "salesman", null)));
+
+        assertThat(audit.unmapped()).isZero();
+        assertThat(audit.issues()).isEmpty();
         server.verify();
     }
 
@@ -65,10 +85,10 @@ class BusinessDictionaryBatchClientTest {
         var audit = client.sync(BusinessDictionaryBatchClient.serviceCaller(
                 "test-service", "TEST_DICTIONARY_SYNC", TENANT_ID), "ORDER", List.of(
                 new BusinessDictionaryBatchClient.Observation(
-                        "ORDER", "DHB_ORDER_STATUS", "order.status", "pending", null)));
+                        "ORDER_STATUS", "order.status", "pending", null)));
 
         assertThat(audit.unmapped()).isEqualTo(1);
-        assertThat(audit.revisions()).containsEntry("ORDER.DHB_ORDER_STATUS", -1L);
+        assertThat(audit.revisions()).containsEntry("ORDER_STATUS", -1L);
         assertThat(audit.issues()).singleElement().satisfies(issue ->
                 assertThat(issue.sourceValue()).isEqualTo("pending"));
         server.verify();
@@ -82,37 +102,64 @@ class BusinessDictionaryBatchClientTest {
                   "data":{
                     "effective":{
                       "dictionary":{
-                        "id":"10000000-0000-7000-8000-000000000001",
-                        "code":"DHB_UNIT",
-                        "name":"订货宝计量单位",
-                        "scopeType":"MODULE",
-                        "scopeId":"COMMON",
-                        "moduleCode":"COMMON",
-                        "tenantId":null,
-                        "baseDictId":null,
-                        "status":"ACTIVE",
-                        "sortNo":10,
+                        "id":1,
+                        "dictionaryCode":"PRODUCT_UNIT",
+                        "dictionaryName":"商品单位",
+                        "dictionaryType":"COMMON",
                         "remark":null,
-                        "version":0,
                         "revision":6
                       },
                       "items":[{
-                        "id":"10000000-0000-7000-8000-000000000101",
-                        "dictId":"10000000-0000-7000-8000-000000000001",
-                        "parentId":null,
-                        "levelNo":1,
-                        "code":"AUTO_BOX",
-                        "name":"箱",
-                        "value":"BOX",
-                        "sortNo":0,
-                        "status":"ACTIVE",
-                        "extraJson":null,
-                        "version":0
+                        "id":11,
+                        "dictionaryCode":"PRODUCT_UNIT",
+                        "dictionaryItemLevel":1,
+                        "parentDictionaryItemCode":null,
+                        "dictionaryItemCode":"BOX",
+                        "dictionaryItemName":"箱",
+                        "remark":null,
+                        "ordinal":0,
+                        "revision":1
                       }]
                     },
                     "observed":1,
                     "created":1,
                     "existing":0,
+                    "blocked":0
+                  }
+                }
+                """;
+    }
+
+    private static String staffTypeResponse() {
+        return """
+                {
+                  "code":"OK",
+                  "message":"success",
+                  "data":{
+                    "effective":{
+                      "dictionary":{
+                        "id":2,
+                        "dictionaryCode":"DHB_STAFF_TYPE",
+                        "dictionaryName":"订货宝员工类型",
+                        "dictionaryType":"CRM",
+                        "remark":null,
+                        "revision":2
+                      },
+                      "items":[{
+                        "id":21,
+                        "dictionaryCode":"DHB_STAFF_TYPE",
+                        "dictionaryItemLevel":1,
+                        "parentDictionaryItemCode":null,
+                        "dictionaryItemCode":"SALESMAN",
+                        "dictionaryItemName":"业务员",
+                        "remark":"外部来源值：salesman",
+                        "ordinal":10,
+                        "revision":1
+                      }]
+                    },
+                    "observed":1,
+                    "created":0,
+                    "existing":1,
                     "blocked":0
                   }
                 }

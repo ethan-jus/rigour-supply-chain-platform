@@ -135,6 +135,16 @@ public class IamAuthorizationServerSecurityConfiguration {
 
     @Bean
     @Order(2)
+    SecurityFilterChain internalApiSecurityFilterChain(HttpSecurity http) throws Exception {
+        http.securityMatcher("/internal/**")
+                .authorizeHttpRequests(authorize -> authorize.anyRequest().permitAll())
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .csrf(csrf -> csrf.disable());
+        return http.build();
+    }
+
+    @Bean
+    @Order(3)
     @ConditionalOnProperty(prefix = "rigour.iam.oidc.server", name = "enabled", havingValue = "true")
     SecurityFilterChain portalApiSecurityFilterChain(
             HttpSecurity http,
@@ -162,7 +172,7 @@ public class IamAuthorizationServerSecurityConfiguration {
     }
 
     @Bean
-    @Order(3)
+    @Order(4)
     @ConditionalOnProperty(prefix = "rigour.iam.oidc.server", name = "enabled", havingValue = "true")
     SecurityFilterChain browserSecurityFilterChain(
             HttpSecurity http,
@@ -199,7 +209,7 @@ public class IamAuthorizationServerSecurityConfiguration {
     }
 
     @Bean
-    @Order(4)
+    @Order(5)
     @ConditionalOnProperty(
             prefix = "rigour.iam.oidc.server",
             name = "enabled",

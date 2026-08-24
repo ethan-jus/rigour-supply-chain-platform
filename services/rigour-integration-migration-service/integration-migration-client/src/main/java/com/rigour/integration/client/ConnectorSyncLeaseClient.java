@@ -27,6 +27,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,14 +67,33 @@ public final class ConnectorSyncLeaseClient implements AutoCloseable {
 
     /** 在同一连接器任务租约内执行同步；业务异常原样抛出，释放失败只记录告警。 */
     public <T> T execute(UUID tenantId, UUID connectorId, Supplier<T> action) {
+        Objects.requireNonNull(action, "action不能为空");
+        return executeInternal(tenantId, connectorId, ignored -> action.get(), false);
+    }
+
+    /**
+     * 在连接器租约内执行需要提交成功状态或推进游标的同步。
+     *
+     * <p>调用方必须在每次不可逆的成功提交前调用 {@link LeaseGuard#ensureActive()}。
+     * 该检查会携带当前随机令牌同步续租，只有 Integration 仍确认当前调用方持有租约时才返回；
+     * 因此不能用后台心跳“最近看起来成功”替代提交前的所有权栅栏。</p>
+     */
+    public <T> T executeWithLeaseGuard(UUID tenantId, UUID connectorId,
+                                       Function<LeaseGuard, T> action) {
+        Objects.requireNonNull(action, "action不能为空");
+        return executeInternal(tenantId, connectorId, action, true);
+    }
+
+    private <T> T executeInternal(UUID tenantId, UUID connectorId,
+                                  Function<LeaseGuard, T> action,
+                                  boolean requireFence) {
         Objects.requireNonNull(tenantId, "tenantId不能为空");
         Objects.requireNonNull(connectorId, "connectorId不能为空");
         Objects.requireNonNull(action, "action不能为空");
         CallerIdentity caller = serviceCaller(tenantId);
         LeaseView lease;
         try {
-            lease = Objects.requireNonNull(acquire(caller, connectorId),
-                    "Integration连接器租约返回空响应");
+            lease = validLease(acquire(caller, connectorId), connectorId, null);
         } catch (RuntimeException error) {
             if (SyncConflictClassifier.isAlreadyRunning(error)) {
                 throw new BusinessException(ErrorCode.SYNC_ALREADY_RUNNING,
@@ -81,42 +101,77 @@ public final class ConnectorSyncLeaseClient implements AutoCloseable {
             }
             throw error;
         }
-        if (lease.token() == null || lease.token().isBlank() || lease.expiresAt() == null
-                || lease.ttlSeconds() < 1) {
-            throw new IllegalStateException("Integration连接器租约响应不完整");
-        }
         AtomicReference<Instant> expiresAt = new AtomicReference<>(lease.expiresAt());
         AtomicBoolean lost = new AtomicBoolean(false);
+        Object renewalMonitor = new Object();
+        LeaseGuard guard = () -> {
+            synchronized (renewalMonitor) {
+                if (lost.get()) throw leaseLost();
+                try {
+                    LeaseView renewed = validLease(
+                            renew(caller, connectorId, lease.token()), connectorId, lease.token());
+                    expiresAt.set(renewed.expiresAt());
+                } catch (RuntimeException error) {
+                    lost.set(true);
+                    log.warn("订货宝连接器提交前租约栅栏失败 tenantId={} connectorId={} service={} errorType={}",
+                            tenantId, connectorId, serviceName, error.getClass().getSimpleName());
+                    throw leaseLost();
+                }
+            }
+        };
         long heartbeatSeconds = Math.max(5L, lease.ttlSeconds() / 3L);
         ScheduledFuture<?> heartbeat = heartbeatExecutor.scheduleWithFixedDelay(() -> {
-            try {
-                LeaseView renewed = Objects.requireNonNull(renew(caller, connectorId, lease.token()),
-                        "Integration连接器续租返回空响应");
-                expiresAt.set(renewed.expiresAt());
-            } catch (RuntimeException error) {
-                if (!Instant.now().isBefore(expiresAt.get())) lost.set(true);
-                log.warn("订货宝连接器租约续租异常 tenantId={} connectorId={} service={} expired={} errorType={} reason={}",
-                        tenantId, connectorId, serviceName, lost.get(), error.getClass().getSimpleName(),
-                        oneLine(error.getMessage()));
+            synchronized (renewalMonitor) {
+                if (lost.get()) return;
+                try {
+                    LeaseView renewed = validLease(
+                            renew(caller, connectorId, lease.token()), connectorId, lease.token());
+                    expiresAt.set(renewed.expiresAt());
+                } catch (RuntimeException error) {
+                    if (!Instant.now().isBefore(expiresAt.get())) lost.set(true);
+                    log.warn("订货宝连接器租约续租异常 tenantId={} connectorId={} service={} expired={} errorType={}",
+                            tenantId, connectorId, serviceName, lost.get(),
+                            error.getClass().getSimpleName());
+                }
             }
         }, heartbeatSeconds, heartbeatSeconds, TimeUnit.SECONDS);
         try {
-            T result = action.get();
-            if (lost.get()) {
-                throw new BusinessException(ErrorCode.SYNC_ALREADY_RUNNING,
-                        "订货宝连接器同步租约已丢失，本轮结果不得作为成功批次", List.of());
-            }
+            T result = action.apply(guard);
+            if (!requireFence && lost.get()) throw leaseLost();
             return result;
         } finally {
             heartbeat.cancel(false);
             try {
                 release(caller, connectorId, lease.token());
             } catch (RuntimeException error) {
-                log.warn("订货宝连接器租约释放异常 tenantId={} connectorId={} service={} errorType={} reason={}",
-                        tenantId, connectorId, serviceName, error.getClass().getSimpleName(),
-                        oneLine(error.getMessage()));
+                log.warn("订货宝连接器租约释放异常 tenantId={} connectorId={} service={} errorType={}",
+                        tenantId, connectorId, serviceName, error.getClass().getSimpleName());
             }
         }
+    }
+
+    private static LeaseView validLease(LeaseView response, UUID expectedConnectorId,
+                                        String expectedToken) {
+        LeaseView value = Objects.requireNonNull(response, "Integration连接器租约返回空响应");
+        if (!expectedConnectorId.equals(value.connectorId())
+                || value.token() == null || value.token().isBlank()
+                || expectedToken != null && !expectedToken.equals(value.token())
+                || value.expiresAt() == null || !value.expiresAt().isAfter(Instant.now())
+                || value.ttlSeconds() < 1) {
+            throw new IllegalStateException("Integration连接器租约响应不完整或与请求不匹配");
+        }
+        return value;
+    }
+
+    private static BusinessException leaseLost() {
+        return new BusinessException(ErrorCode.SYNC_ALREADY_RUNNING,
+                "订货宝连接器同步租约已丢失，本轮结果不得作为成功批次", List.of());
+    }
+
+    /** 领域服务在成功终态或游标事务提交前执行的连接器租约所有权栅栏。 */
+    @FunctionalInterface
+    public interface LeaseGuard {
+        void ensureActive();
     }
 
     private LeaseView acquire(CallerIdentity caller, UUID connectorId) {
@@ -194,10 +249,6 @@ public final class ConnectorSyncLeaseClient implements AutoCloseable {
     private static String requestId() {
         String value = RequestContext.getRequestId();
         return value == null || value.isBlank() ? UUID.randomUUID().toString() : value;
-    }
-
-    private static String oneLine(String value) {
-        return value == null ? "-" : value.replace('\r', ' ').replace('\n', ' ');
     }
 
     @Override public void close() { heartbeatExecutor.shutdownNow(); }

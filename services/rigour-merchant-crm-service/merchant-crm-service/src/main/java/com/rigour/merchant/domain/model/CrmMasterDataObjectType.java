@@ -6,19 +6,22 @@ import java.util.List;
 public enum CrmMasterDataObjectType {
     CUSTOMER_TYPE,
     CUSTOMER_AREA,
-    STAFF,
     CUSTOMER,
     ADDRESS;
 
-    public static final List<CrmMasterDataObjectType> SYNC_ORDER = List.of(values());
+    public static final List<CrmMasterDataObjectType> SYNC_ORDER = List.of(
+            CUSTOMER_TYPE, CUSTOMER_AREA, CUSTOMER, ADDRESS);
 
     public static CrmMasterDataObjectType parse(String value) {
         if (value == null || value.isBlank() || "ALL".equalsIgnoreCase(value)) return null;
+        if ("STAFF".equalsIgnoreCase(value.strip())) {
+            throw new IllegalArgumentException("CRM不再同步员工主档，销售人员统一从IAM员工中心读取");
+        }
         try {
             return valueOf(value.strip().toUpperCase(java.util.Locale.ROOT));
         } catch (IllegalArgumentException exception) {
             throw new IllegalArgumentException(
-                    "objectType仅支持ALL、CUSTOMER_TYPE、CUSTOMER_AREA、STAFF、CUSTOMER、ADDRESS");
+                    "objectType仅支持ALL、CUSTOMER_TYPE、CUSTOMER_AREA、CUSTOMER、ADDRESS");
         }
     }
 }

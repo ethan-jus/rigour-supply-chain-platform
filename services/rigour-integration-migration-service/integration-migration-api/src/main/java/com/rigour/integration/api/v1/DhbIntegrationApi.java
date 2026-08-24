@@ -8,6 +8,12 @@ import com.rigour.integration.api.v1.model.DhbApiModels.SyncLogView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
 import com.rigour.integration.api.v1.model.DhbConnectionTestResult;
+import com.rigour.integration.api.v1.model.DhbExternalObjectMappingPageView;
+import com.rigour.integration.api.v1.model.DhbSyncExceptionView;
+import com.rigour.integration.api.v1.model.DhbSyncFieldDescriptionView;
+import com.rigour.integration.api.v1.model.DhbSyncLogDetailView;
+import com.rigour.integration.api.v1.model.DhbSyncReconciliationCaseView;
+import com.rigour.integration.api.v1.model.DhbSyncRunAuditView;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,6 +36,7 @@ public interface DhbIntegrationApi {
     String SYNC_TASKS_PATH = BASE_PATH + "/sync-tasks";
     String SYNC_LOGS_PATH = BASE_PATH + "/sync-logs";
     String FIELD_MAPPINGS_PATH = BASE_PATH + "/field-mappings";
+    String SYNC_CENTER_PATH = BASE_PATH + "/sync-center";
 
     @GetMapping(CONNECTORS_PATH)
     List<ConnectorView> connectors();
@@ -67,4 +74,38 @@ public interface DhbIntegrationApi {
     @PutMapping(FIELD_MAPPINGS_PATH + "/{id}")
     FieldMappingView updateFieldMapping(@PathVariable("id") UUID id,
                                         @RequestBody FieldMappingCommand command);
+
+    @GetMapping(SYNC_CENTER_PATH + "/field-descriptions")
+    List<DhbSyncFieldDescriptionView> syncFieldDescriptions();
+
+    @GetMapping(SYNC_CENTER_PATH + "/object-mappings")
+    DhbExternalObjectMappingPageView externalObjectMappings(
+            @RequestParam(name = "sourceObjectType", required = false) String sourceObjectType,
+            @RequestParam(name = "internalDomain", required = false) String internalDomain,
+            @RequestParam(name = "mappingStatus", required = false) String mappingStatus,
+            @RequestParam(name = "limit", defaultValue = "50") int limit,
+            @RequestParam(name = "offset", defaultValue = "0") int offset);
+
+    @GetMapping(SYNC_CENTER_PATH + "/runs")
+    List<DhbSyncRunAuditView> syncRuns(
+            @RequestParam(name = "objectType", required = false) String objectType,
+            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "limit", defaultValue = "50") int limit);
+
+    @GetMapping(SYNC_CENTER_PATH + "/logs")
+    List<DhbSyncLogDetailView> syncLogDetails(
+            @RequestParam(name = "runId", required = false) UUID runId,
+            @RequestParam(name = "level", required = false) String level,
+            @RequestParam(name = "limit", defaultValue = "100") int limit);
+
+    @GetMapping(SYNC_CENTER_PATH + "/exceptions")
+    List<DhbSyncExceptionView> syncExceptions(
+            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "limit", defaultValue = "100") int limit);
+
+    @GetMapping(SYNC_CENTER_PATH + "/reconciliation-cases")
+    List<DhbSyncReconciliationCaseView> syncReconciliationCases(
+            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "severity", required = false) String severity,
+            @RequestParam(name = "limit", defaultValue = "100") int limit);
 }

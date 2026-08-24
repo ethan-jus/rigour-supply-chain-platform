@@ -9,7 +9,6 @@ import com.rigour.settings.api.v1.model.EffectiveDictView;
 import com.rigour.settings.application.service.BusinessDictionaryService;
 import com.rigour.shared.core.api.ApiResponse;
 import java.util.List;
-import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -32,33 +31,27 @@ public class BusinessDictionaryController implements BusinessDictionaryApi {
     @Override
     @GetMapping
     public ApiResponse<List<DictView>> list(
-            @RequestParam(required = false) String moduleCode,
-            @RequestParam(required = false) String scopeType,
-            @RequestParam(required = false) String tenantId,
-            @RequestParam(required = false) String status) {
-        return ApiResponse.success(service.list(moduleCode, scopeType, tenantId, status));
+            @RequestParam(required = false) String dictionaryType,
+            @RequestParam(required = false) String dictionaryCode) {
+        return ApiResponse.success(service.list(dictionaryType, dictionaryCode));
     }
 
     @Override
-    @GetMapping("/{dictId}/items")
-    public ApiResponse<List<DictItemView>> items(@PathVariable("dictId") UUID dictId) {
-        return ApiResponse.success(service.items(dictId));
+    @GetMapping("/{dictionaryId}/items")
+    public ApiResponse<List<DictItemView>> items(@PathVariable("dictionaryId") Long dictionaryId) {
+        return ApiResponse.success(service.items(dictionaryId));
     }
 
     @Override
     @GetMapping("/effective")
-    public ApiResponse<EffectiveDictView> effective(
-            @RequestParam String moduleCode,
-            @RequestParam String code) {
-        return ApiResponse.success(service.effective(moduleCode, code));
+    public ApiResponse<EffectiveDictView> effective(@RequestParam String dictionaryCode) {
+        return ApiResponse.success(service.effective(dictionaryCode));
     }
 
     @Override
     @GetMapping("/resolve")
-    public ApiResponse<EffectiveDictView> resolve(
-            @RequestParam String moduleCode,
-            @RequestParam String code) {
-        return ApiResponse.success(service.resolve(moduleCode, code));
+    public ApiResponse<EffectiveDictView> resolve(@RequestParam String dictionaryCode) {
+        return ApiResponse.success(service.resolve(dictionaryCode));
     }
 
     @Override
@@ -68,25 +61,25 @@ public class BusinessDictionaryController implements BusinessDictionaryApi {
     }
 
     @Override
-    @PutMapping("/{dictId}")
+    @PutMapping("/{dictionaryId}")
     public ApiResponse<DictView> update(
-            @PathVariable("dictId") UUID dictId,
+            @PathVariable("dictionaryId") Long dictionaryId,
             @RequestBody DictCommand command) {
-        return ApiResponse.success(service.update(dictId, command));
+        return ApiResponse.success(service.update(dictionaryId, command));
     }
 
     @Override
-    @PostMapping("/{dictId}/items")
+    @PostMapping("/{dictionaryId}/items")
     public ApiResponse<DictItemView> createItem(
-            @PathVariable("dictId") UUID dictId,
+            @PathVariable("dictionaryId") Long dictionaryId,
             @RequestBody DictItemCommand command) {
-        return ApiResponse.success(service.createItem(dictId, command));
+        return ApiResponse.success(service.createItem(dictionaryId, command));
     }
 
     @Override
     @PutMapping("/items/{itemId}")
     public ApiResponse<DictItemView> updateItem(
-            @PathVariable("itemId") UUID itemId,
+            @PathVariable("itemId") Long itemId,
             @RequestBody DictItemCommand command) {
         return ApiResponse.success(service.updateItem(itemId, command));
     }

@@ -11,12 +11,16 @@ import com.rigour.erp.application.port.out.ProductMasterDataStore.RunStatistics;
 import com.rigour.erp.domain.model.product.MasterDataObjectType;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.client.ConnectorSyncLeaseClient;
+import com.rigour.integration.client.ConnectorSyncLeaseClient.LeaseGuard;
+import com.rigour.integration.client.ExternalObjectMappingClient;
 import com.rigour.erp.application.service.sync.BusinessDictionaryCoverageService;
+import com.rigour.erp.application.service.sync.ErpScheduledSyncSkipException;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
+import com.rigour.shared.core.sync.SyncConflictClassifier;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -24,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,23 +43,27 @@ public final class ProductMasterDataSyncService {
     private static final Set<String> DISCOVERY_PERMISSIONS =
             Set.of("integration:dhb:sync-discovery");
     private static final Set<String> DATA_PERMISSIONS = Set.of("integration:dhb:read");
+    private static final int HEARTBEAT_INTERVAL_RECORDS = 50;
 
     private final DhbProductMasterDataClient client;
     private final DhbProductSyncTargetDiscoveryClient discoveryClient;
     private final ProductMasterDataStore store;
     private final BusinessDictionaryCoverageService dictionaryCoverage;
     private final ConnectorSyncLeaseClient connectorLease;
+    private final ExternalObjectMappingClient mappingClient;
 
     public ProductMasterDataSyncService(DhbProductMasterDataClient client,
                                         DhbProductSyncTargetDiscoveryClient discoveryClient,
                                         ProductMasterDataStore store,
                                         BusinessDictionaryCoverageService dictionaryCoverage,
-                                        ConnectorSyncLeaseClient connectorLease) {
+                                        ConnectorSyncLeaseClient connectorLease,
+                                        ExternalObjectMappingClient mappingClient) {
         this.client = client;
         this.discoveryClient = discoveryClient;
         this.store = store;
         this.dictionaryCoverage = dictionaryCoverage;
         this.connectorLease = connectorLease;
+        this.mappingClient = mappingClient;
     }
 
     public ErpDataSyncResult run(MasterDataObjectType objectType, int maxPages) {
@@ -80,58 +89,109 @@ public final class ProductMasterDataSyncService {
     private ErpDataSyncResult runWithCaller(CallerIdentity caller, UUID connectorId, UUID actorId,
                                              MasterDataObjectType objectType, int maxPages,
                                              boolean scheduled) {
-        return connectorLease.execute(caller.tenantId(), connectorId,
-                () -> runUnderLease(caller, connectorId, actorId, objectType, maxPages, scheduled));
-    }
-
-    private ErpDataSyncResult runUnderLease(CallerIdentity caller, UUID connectorId, UUID actorId,
-                                             MasterDataObjectType objectType, int maxPages,
-                                             boolean scheduled) {
         String tenantId = caller.tenantId().toString();
-        UUID runId = scheduled
-                ? store.startScheduledRun(tenantId, connectorId, actorId, objectType, maxPages)
-                : store.startRun(tenantId, connectorId, actorId, objectType, maxPages);
-        log.info("ERP商品主数据同步批次已创建 tenantId={} userId={} objectType={} connectorId={} runId={} maxPages={}",
-                tenantId, actorId, objectType, connectorId, runId, maxPages);
-        Accumulator counts = new Accumulator();
+        AtomicBoolean actionStarted = new AtomicBoolean(false);
+        SyncAttempt attempt = new SyncAttempt();
         try {
-            Collected collected = client.collect(tenantServiceCaller(caller.tenantId()),
-                    connectorId, objectType, maxPages);
-            counts.pages = collected.pages();
-            importCollected(tenantId, runId, collected, counts);
-            if (counts.rejected == 0) {
-                store.reconcileSourcePresence(tenantId, runId, seenSourceIds(objectType, collected));
-            }
-            counts.dictionaryAudit = dictionaryCoverage.inspect(caller.tenantId(), collected);
-            RunStatistics statistics = counts.statistics();
-            store.completeRun(tenantId, runId, statistics);
-            log.info("ERP商品主数据同步批次完成 tenantId={} objectType={} connectorId={} runId={} fetched={} created={} changed={} duplicates={} rejected={} pages={}",
-                    tenantId, objectType, connectorId, runId, statistics.fetched(),
-                    statistics.created(), statistics.changed(), statistics.duplicates(),
-                    statistics.rejected(), statistics.pages());
-            String status = statistics.dictionaryAudit().unmapped() == 0
-                    ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
-            return new ErpDataSyncResult(runId, objectType.name(), status, connectorId,
-                    statistics.fetched(), statistics.created(), statistics.changed(),
-                    statistics.duplicates(), statistics.rejected(),
-                    statistics.dictionaryAudit().unmapped(), statistics.dictionaryAudit().revisions(),
-                    statistics.pages(), Instant.now());
+            return connectorLease.executeWithLeaseGuard(caller.tenantId(), connectorId, guard -> {
+                actionStarted.set(true);
+                return runUnderLease(caller, connectorId, actorId, objectType, maxPages,
+                        scheduled, attempt, guard);
+            });
         } catch (RuntimeException error) {
-            store.failRun(tenantId, runId, counts.statistics(), error);
-            log.error("ERP商品主数据同步批次失败 tenantId={} objectType={} connectorId={} runId={} errorType={} reason={}",
-                    tenantId, objectType, connectorId, runId,
-                    error.getClass().getSimpleName(), oneLine(error.getMessage()), error);
+            if (scheduled && !actionStarted.get() && SyncConflictClassifier.isAlreadyRunning(error)) {
+                throw ErpScheduledSyncSkipException.connectorLeaseConflict(objectType.name());
+            }
+            if (attempt.runId != null) {
+                store.failRun(tenantId, attempt.runId, attempt.counts.statistics(), error);
+                log.error("ERP商品主数据同步批次失败 tenantId={} objectType={} connectorId={} runId={} errorType={} reason={}",
+                        tenantId, objectType, connectorId, attempt.runId,
+                        error.getClass().getSimpleName(), oneLine(error.getMessage()), error);
+            }
             throw error;
         }
     }
 
+    private ErpDataSyncResult runUnderLease(CallerIdentity caller, UUID connectorId, UUID actorId,
+                                             MasterDataObjectType objectType, int maxPages,
+                                             boolean scheduled, SyncAttempt attempt, LeaseGuard guard) {
+        String tenantId = caller.tenantId().toString();
+        try {
+            attempt.runId = scheduled
+                    ? store.startScheduledRun(tenantId, connectorId, actorId, objectType, maxPages)
+                    : store.startRun(tenantId, connectorId, actorId, objectType, maxPages);
+        } catch (RuntimeException error) {
+            if (scheduled && SyncConflictClassifier.isAlreadyRunning(error)) {
+                throw ErpScheduledSyncSkipException.objectSyncLockConflict(objectType.name());
+            }
+            throw error;
+        }
+        log.info("ERP商品主数据同步批次已创建 tenantId={} userId={} objectType={} connectorId={} runId={} maxPages={}",
+                tenantId, actorId, objectType, connectorId, attempt.runId, maxPages);
+        Collected collected = client.collect(tenantServiceCaller(caller.tenantId()),
+                connectorId, objectType, maxPages);
+        store.heartbeatRun(tenantId, attempt.runId);
+        attempt.counts.pages = collected.pages();
+        importCollected(tenantId, attempt.runId, collected, attempt.counts);
+        store.heartbeatRun(tenantId, attempt.runId);
+        attempt.counts.dictionaryAudit = dictionaryCoverage.inspect(caller.tenantId(), collected);
+        store.heartbeatRun(tenantId, attempt.runId);
+        RunStatistics statistics = attempt.counts.statistics();
+        int mappingAccepted = registerExternalObjectMappings(
+                tenantId, connectorId, attempt.runId, objectType);
+        guard.ensureActive();
+        store.completeRunWithSourcePresence(tenantId, attempt.runId,
+                attempt.counts.rejected == 0 ? seenSourceIds(objectType, collected) : Map.of(),
+                statistics);
+        log.info("ERP商品主数据同步批次完成 tenantId={} objectType={} connectorId={} runId={} fetched={} created={} changed={} duplicates={} rejected={} pages={} mappingAccepted={}",
+                tenantId, objectType, connectorId, attempt.runId, statistics.fetched(),
+                statistics.created(), statistics.changed(), statistics.duplicates(),
+                statistics.rejected(), statistics.pages(), mappingAccepted);
+        String status = statistics.dictionaryAudit().unmapped() == 0
+                ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
+        return new ErpDataSyncResult(attempt.runId, objectType.name(), status, connectorId,
+                statistics.fetched(), statistics.created(), statistics.changed(),
+                statistics.duplicates(), statistics.rejected(),
+                statistics.dictionaryAudit().unmapped(), statistics.dictionaryAudit().revisions(),
+                statistics.pages(), Instant.now());
+    }
+
     private void importCollected(String tenantId, UUID runId, Collected collected, Accumulator counts) {
-        collected.categories().forEach(item -> counts.add(store.importCategory(tenantId, runId, item)));
-        collected.brands().forEach(item -> counts.add(store.importBrand(tenantId, runId, item)));
-        collected.specifications().forEach(item -> counts.add(
-                store.importSpecification(tenantId, runId, item)));
-        collected.tags().forEach(item -> counts.add(store.importTag(tenantId, runId, item)));
-        collected.products().forEach(item -> counts.add(store.importProduct(tenantId, runId, item)));
+        int imported = 0;
+        for (var item : collected.categories()) {
+            counts.add(store.importCategory(tenantId, runId, item));
+            imported = heartbeatEvery(tenantId, runId, imported);
+        }
+        for (var item : collected.brands()) {
+            counts.add(store.importBrand(tenantId, runId, item));
+            imported = heartbeatEvery(tenantId, runId, imported);
+        }
+        for (var item : collected.specifications()) {
+            counts.add(store.importSpecification(tenantId, runId, item));
+            imported = heartbeatEvery(tenantId, runId, imported);
+        }
+        for (var item : collected.tags()) {
+            counts.add(store.importTag(tenantId, runId, item));
+            imported = heartbeatEvery(tenantId, runId, imported);
+        }
+        for (var item : collected.products()) {
+            counts.add(store.importProduct(tenantId, runId, item));
+            imported = heartbeatEvery(tenantId, runId, imported);
+        }
+    }
+
+    private int heartbeatEvery(String tenantId, UUID runId, int imported) {
+        int next = imported + 1;
+        if (next % HEARTBEAT_INTERVAL_RECORDS == 0) store.heartbeatRun(tenantId, runId);
+        return next;
+    }
+
+    private int registerExternalObjectMappings(String tenantId, UUID connectorId, UUID runId,
+                                               MasterDataObjectType objectType) {
+        var mappings = store.externalObjectMappings(tenantId, connectorId, runId, objectType);
+        if (mappings == null || mappings.isEmpty()) return 0;
+        var result = mappingClient.upsert(UUID.fromString(tenantId), mappings);
+        return result == null ? 0 : result.accepted();
     }
 
     private SyncTargetView uniqueTarget(CallerIdentity caller) {
@@ -207,6 +267,11 @@ public final class ProductMasterDataSyncService {
         }
     }
 
+    private static final class SyncAttempt {
+        private UUID runId;
+        private final Accumulator counts = new Accumulator();
+    }
+
     private static Map<String, Set<String>> seenSourceIds(MasterDataObjectType objectType,
                                                            Collected collected) {
         Map<String, Set<String>> seen = new LinkedHashMap<>();
@@ -228,12 +293,8 @@ public final class ProductMasterDataSyncService {
                         .flatMap(item -> item.values().stream()).map(item -> item.sourceId())
                         .collect(Collectors.toSet()));
             }
-            case TAG -> {
-                seen.put("TAG", collected.tags().stream()
-                        .map(item -> item.sourceId()).collect(Collectors.toSet()));
-                seen.put("TAG_GROUP", collected.tags().stream().map(item -> item.groupSourceId())
-                        .filter(java.util.Objects::nonNull).collect(Collectors.toSet()));
-            }
+            case TAG -> seen.put("TAG", collected.tags().stream()
+                    .map(item -> item.sourceId()).collect(Collectors.toSet()));
         }
         return Map.copyOf(seen);
     }

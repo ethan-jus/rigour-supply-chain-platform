@@ -2,9 +2,10 @@ package com.rigour.merchant.infrastructure.config;
 
 import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient;
 import com.rigour.merchant.application.port.out.DhbCrmSyncTargetDiscoveryClient;
-import com.rigour.merchant.application.service.CrmSyncScheduleProperties;
+import com.rigour.merchant.application.port.out.IamStaffDirectoryClient;
 import com.rigour.merchant.infrastructure.integration.HttpDhbCrmMasterDataClient;
 import com.rigour.merchant.infrastructure.integration.HttpDhbCrmSyncTargetDiscoveryClient;
+import com.rigour.merchant.infrastructure.integration.HttpIamStaffDirectoryClient;
 import com.rigour.merchant.infrastructure.persistence.mapper.AddressMapper;
 import com.rigour.merchant.infrastructure.persistence.mapper.ContactMapper;
 import com.rigour.merchant.infrastructure.persistence.mapper.CrmQueryMapper;
@@ -15,7 +16,7 @@ import com.rigour.merchant.infrastructure.persistence.mapper.CustomerAreaMapper;
 import com.rigour.merchant.infrastructure.persistence.mapper.CustomerPolicyMapper;
 import com.rigour.merchant.infrastructure.persistence.mapper.CustomerProfileMapper;
 import com.rigour.merchant.infrastructure.persistence.mapper.CustomerTypeMapper;
-import com.rigour.merchant.infrastructure.persistence.mapper.ExternalStaffMapper;
+import com.rigour.merchant.infrastructure.persistence.mapper.InternalCustomerMapper;
 import com.rigour.merchant.infrastructure.persistence.mapper.PartyMapper;
 import com.rigour.merchant.infrastructure.persistence.mapper.PartyRoleMapper;
 import com.rigour.merchant.infrastructure.persistence.mapper.SalesAssignmentMapper;
@@ -23,25 +24,22 @@ import com.rigour.merchant.infrastructure.persistence.mapper.SourceBindingMapper
 import com.rigour.merchant.infrastructure.persistence.mapper.SourceIdentityAliasMapper;
 import com.rigour.merchant.infrastructure.persistence.repository.MybatisPlusCrmRepository;
 import com.rigour.integration.client.ConnectorSyncLeaseClient;
+import com.rigour.integration.client.ExternalObjectMappingClient;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.settings.client.BusinessDictionaryBatchClient;
 import java.time.Clock;
 import java.time.Duration;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.ObjectMapper;
 
 /** CRM 基础设施装配；只写 CRM Schema，订货宝客户端仍只存在于 Integration。 */
 @Configuration(proxyBeanMethods = false)
-@EnableScheduling
 @MapperScan("com.rigour.merchant.infrastructure.persistence.mapper")
-@EnableConfigurationProperties(CrmSyncScheduleProperties.class)
 public class CrmInfrastructureConfiguration {
 
     @Bean
@@ -65,9 +63,10 @@ public class CrmInfrastructureConfiguration {
     DhbCrmMasterDataClient dhbCrmMasterDataClient(
             TrustedContextSigner signer,
             @Value("${rigour.integration.base-url:http://localhost:26882}") String integrationBaseUrl,
+            @Value("${rigour.crm.dhb.page-size:100}") int pageSize,
             SimpleClientHttpRequestFactory requestFactory) {
         return new HttpDhbCrmMasterDataClient(
-                RestClient.builder().requestFactory(requestFactory), signer, integrationBaseUrl);
+                RestClient.builder().requestFactory(requestFactory), signer, integrationBaseUrl, pageSize);
     }
 
     @Bean
@@ -89,6 +88,15 @@ public class CrmInfrastructureConfiguration {
     }
 
     @Bean
+    ExternalObjectMappingClient externalObjectMappingClient(
+            TrustedContextSigner signer,
+            @Value("${rigour.integration.base-url:http://localhost:26882}") String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory) {
+        return new ExternalObjectMappingClient(RestClient.builder().requestFactory(requestFactory), signer,
+                baseUrl, "rigour-merchant-crm-service");
+    }
+
+    @Bean
     DhbCrmSyncTargetDiscoveryClient dhbCrmSyncTargetDiscoveryClient(
             TrustedContextSigner signer,
             @Value("${rigour.integration.base-url:http://localhost:26882}") String integrationBaseUrl,
@@ -98,19 +106,29 @@ public class CrmInfrastructureConfiguration {
     }
 
     @Bean
+    IamStaffDirectoryClient iamStaffDirectoryClient(
+            TrustedContextSigner signer,
+            @Value("${rigour.iam.base-url:http://localhost:26881}") String iamBaseUrl,
+            SimpleClientHttpRequestFactory requestFactory) {
+        return new HttpIamStaffDirectoryClient(
+                RestClient.builder().requestFactory(requestFactory), signer, iamBaseUrl);
+    }
+
+    @Bean
     MybatisPlusCrmRepository crmRepository(
             CustomerTypeMapper customerTypeMapper, CustomerAreaMapper customerAreaMapper,
             PartyMapper partyMapper, PartyRoleMapper partyRoleMapper,
             CustomerProfileMapper customerProfileMapper, CustomerPolicyMapper customerPolicyMapper,
             ContactMapper contactMapper, AddressMapper addressMapper,
-            ExternalStaffMapper externalStaffMapper, SalesAssignmentMapper assignmentMapper,
+            InternalCustomerMapper internalCustomerMapper,
+            SalesAssignmentMapper assignmentMapper,
             CrmSyncRunMapper syncRunMapper, CrmSyncCheckpointMapper checkpointMapper,
             CrmSyncLockMapper lockMapper, SourceBindingMapper bindingMapper,
             SourceIdentityAliasMapper aliasMapper, CrmQueryMapper queryMapper,
             ObjectMapper objectMapper, Clock crmClock) {
         return new MybatisPlusCrmRepository(customerTypeMapper, customerAreaMapper,
                 partyMapper, partyRoleMapper, customerProfileMapper, customerPolicyMapper,
-                contactMapper, addressMapper, externalStaffMapper, assignmentMapper,
+                contactMapper, addressMapper, internalCustomerMapper, assignmentMapper,
                 syncRunMapper, checkpointMapper, lockMapper, bindingMapper, aliasMapper,
                 queryMapper, objectMapper, crmClock);
     }

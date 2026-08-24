@@ -12,16 +12,21 @@ import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.shared.core.api.ApiResponse;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.ParameterizedTypeReference;
@@ -33,12 +38,14 @@ import org.springframework.web.util.UriComponentsBuilder;
 /**
  * 各领域服务复用的业务字典批处理客户端。
  *
- * <p>调用方只声明明确字段观察值；本类负责按“模块+字典”去重并批量补齐、按来源值精确解析、
- * 在 Settings 不可用时返回审计告警而不抛出异常中断主数据落库。它不会扫描任意来源字段。</p>
+ * <p>调用方只声明明确字段观察值；本类负责按 dictionaryCode 去重并批量补齐、按来源值精确解析、
+ * 在 Settings 不可用时返回审计告警而不抛出异常中断主数据落库。它不会扫描任意来源字段，
+ * 也不会把第三方字段定义成业务字典结构。</p>
  */
 public final class BusinessDictionaryBatchClient {
     private static final Logger log = LoggerFactory.getLogger(BusinessDictionaryBatchClient.class);
     private static final String SYNC_PERMISSION = "business-settings:dict:sync";
+    private static final Pattern CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,49}");
 
     private final RestClient restClient;
     private final TrustedContextSigner signer;
@@ -72,24 +79,24 @@ public final class BusinessDictionaryBatchClient {
             DictionaryKey key = entry.getKey();
             try {
                 DictSyncResult result = syncDictionary(caller, key, entry.getValue().keySet());
-                revisions.put(key.auditCode(), result.effective().dictionary().revision());
+                revisions.put(key.auditCode(), (long) result.effective().dictionary().revision());
                 Map<String, String> active = activeMappings(result);
                 entry.getValue().forEach((value, count) -> {
-                    if (!active.containsKey(value.value())) {
-                        issues.add(new MappingIssue(key.moduleCode(), key.dictCode(), value.fieldCode(),
+                    if (!active.containsKey(sourceItemCode(key.dictionaryCode(), value.value()))) {
+                        issues.add(new MappingIssue(key.dictionaryCode(), value.fieldCode(),
                                 value.value(), count));
                     }
                 });
             } catch (RuntimeException error) {
                 revisions.put(key.auditCode(), -1L);
                 entry.getValue().forEach((value, count) -> issues.add(new MappingIssue(
-                        key.moduleCode(), key.dictCode(), value.fieldCode(), value.value(), count)));
-                log.warn("业务字典批量补齐不可用 tenantId={} sourceType={} moduleCode={} dictCode={} errorType={} reason={}",
-                        caller.tenantId(), text(sourceType), key.moduleCode(), key.dictCode(),
+                        key.dictionaryCode(), value.fieldCode(), value.value(), count)));
+                log.warn("业务字典批量补齐不可用 tenantId={} sourceType={} dictionaryCode={} errorType={} reason={}",
+                        caller.tenantId(), text(sourceType), key.dictionaryCode(),
                         error.getClass().getSimpleName(), oneLine(error.getMessage()));
             }
         }
-        issues.sort(Comparator.comparing(MappingIssue::moduleCode).thenComparing(MappingIssue::dictCode)
+        issues.sort(Comparator.comparing(MappingIssue::dictionaryCode)
                 .thenComparing(MappingIssue::fieldCode).thenComparing(MappingIssue::sourceValue));
         long unmapped = issues.stream().mapToLong(MappingIssue::count).sum();
         log.info("业务字典批处理完成 tenantId={} sourceType={} dictionaryCount={} observedCount={} unmappedCount={}",
@@ -112,7 +119,7 @@ public final class BusinessDictionaryBatchClient {
                 .path(BusinessDictionaryInternalApi.BASE_PATH).path("/items/sync")
                 .build().encode().toUri();
         Map<String, String> context = signedHeaders("POST", uri, caller);
-        DictSyncCommand command = new DictSyncCommand(key.moduleCode(), key.dictCode(), values.stream()
+        DictSyncCommand command = new DictSyncCommand(key.dictionaryCode(), values.stream()
                 .map(value -> new DictSourceValue(value.value(), value.sourceName())).toList());
         ApiResponse<DictSyncResult> response = restClient.post().uri(uri)
                 .contentType(MediaType.APPLICATION_JSON).accept(MediaType.APPLICATION_JSON)
@@ -129,22 +136,35 @@ public final class BusinessDictionaryBatchClient {
     private Map<String, String> activeMappings(DictSyncResult result) {
         Map<String, String> mappings = new LinkedHashMap<>();
         for (DictItemView item : result.effective().items()) {
-            if (item.value() == null) continue;
-            String previous = mappings.putIfAbsent(item.value(), item.code());
-            if (previous != null && !previous.equals(item.code())) {
+            String previous = mappings.putIfAbsent(item.dictionaryItemCode(), item.dictionaryItemCode());
+            if (previous != null && !previous.equals(item.dictionaryItemCode())) {
                 throw new IllegalStateException("公共业务字典存在重复来源值: "
-                        + result.effective().dictionary().moduleCode() + "."
-                        + result.effective().dictionary().code());
+                        + result.effective().dictionary().dictionaryCode());
             }
         }
         return mappings;
     }
 
+    private static String sourceItemCode(String dictionaryCode, String sourceValue) {
+        String normalized = upper(sourceValue);
+        if (normalized != null && CODE.matcher(normalized).matches()) return normalized;
+        return autoCode(dictionaryCode, sourceValue);
+    }
+
+    private static String autoCode(String dictionaryCode, String sourceValue) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest((dictionaryCode + '\0' + sourceValue).getBytes(StandardCharsets.UTF_8));
+            return "AUTO_" + HexFormat.of().formatHex(digest).substring(0, 45).toUpperCase(Locale.ROOT);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("当前JDK不支持SHA-256", exception);
+        }
+    }
+
     private Map<DictionaryKey, Map<SourceKey, Long>> group(List<Observation> source) {
         Map<DictionaryKey, Map<String, SourceAccumulator>> grouped = new LinkedHashMap<>();
         for (Observation item : source) {
-            DictionaryKey key = new DictionaryKey(required(item.moduleCode(), "moduleCode"),
-                    required(item.dictCode(), "dictCode"));
+            DictionaryKey key = new DictionaryKey(required(item.dictionaryCode(), "dictionaryCode"));
             Map<String, SourceAccumulator> values = grouped.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
             values.compute(item.sourceValue(), (ignored, current) -> current == null
                     ? new SourceAccumulator(item.fieldCode(), item.sourceName(), 1)
@@ -217,19 +237,22 @@ public final class BusinessDictionaryBatchClient {
         return value == null || value.isBlank() ? "-" : value.strip();
     }
 
+    private static String upper(String value) {
+        String normalized = value == null ? null : value.trim();
+        return normalized == null || normalized.isEmpty() ? null : normalized.toUpperCase(Locale.ROOT);
+    }
+
     private static String oneLine(String value) {
         return value == null ? "-" : value.replace('\r', ' ').replace('\n', ' ');
     }
 
     /** 领域服务显式声明的单个白名单字段观察值。 */
-    public record Observation(String moduleCode, String dictCode, String fieldCode,
-                              String sourceValue, String sourceName) {
+    public record Observation(String dictionaryCode, String fieldCode, String sourceValue, String sourceName) {
         boolean hasValue() { return sourceValue != null && !sourceValue.isBlank(); }
     }
 
     /** 未能从补齐后的有效字典中精确解析的来源值。 */
-    public record MappingIssue(String moduleCode, String dictCode, String fieldCode,
-                               String sourceValue, long count) { }
+    public record MappingIssue(String dictionaryCode, String fieldCode, String sourceValue, long count) { }
 
     /** 单个同步批次的字典快照审计。 */
     public record Audit(long unmapped, Map<String, Long> revisions, List<MappingIssue> issues) {
@@ -241,8 +264,8 @@ public final class BusinessDictionaryBatchClient {
         public static Audit empty() { return new Audit(0, Map.of(), List.of()); }
     }
 
-    private record DictionaryKey(String moduleCode, String dictCode) {
-        String auditCode() { return moduleCode + "." + dictCode; }
+    private record DictionaryKey(String dictionaryCode) {
+        String auditCode() { return dictionaryCode; }
     }
 
     private record SourceKey(String fieldCode, String value, String sourceName) { }

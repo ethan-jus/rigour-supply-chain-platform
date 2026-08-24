@@ -29,10 +29,6 @@ public final class CrmDictionaryCoverageService {
                 add(values, "DHB_CUSTOMER_STATUS", "customer.sourceStatus", item.sourceStatus(), null);
                 add(values, "DHB_CUSTOMER_CLEARING_FORM", "customer.clearingForm",
                         exact(item.sourceFields(), "clientClearingForm"), null);
-            } else if (data.objectType() == CrmMasterDataObjectType.STAFF) {
-                add(values, "DHB_STAFF_STATUS", "staff.sourceStatus", item.sourceStatus(), null);
-                add(values, "DHB_STAFF_TYPE", "staff.staffType",
-                        exact(item.sourceFields(), "staff_type"), null);
             }
         }
         return client.sync(BusinessDictionaryBatchClient.serviceCaller(
@@ -43,7 +39,7 @@ public final class CrmDictionaryCoverageService {
     private static void add(List<Observation> target, String dictCode, String fieldCode,
                             String sourceValue, String sourceName) {
         if (sourceValue == null || sourceValue.isBlank()) return;
-        target.add(new Observation("CRM", dictCode, fieldCode, sourceValue.strip(), sourceName));
+        target.add(new Observation(dictCode, fieldCode, sourceValue.strip(), sourceName));
     }
 
     private static String exact(Map<String, Object> fields, String key) {

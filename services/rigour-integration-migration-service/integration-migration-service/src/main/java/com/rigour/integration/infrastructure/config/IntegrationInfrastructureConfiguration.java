@@ -1,40 +1,73 @@
 package com.rigour.integration.infrastructure.config;
 
+import com.rigour.integration.application.port.out.CrmDhbDomainSyncClient;
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
 import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbSyncStore;
+import com.rigour.integration.application.port.out.ErpDhbDomainSyncClient;
 import com.rigour.integration.application.port.out.FeishuJsapiClient;
+import com.rigour.integration.application.port.out.IamDhbStaffSyncClient;
+import com.rigour.integration.application.port.out.OrderSalesOrderProjectionClient;
+import com.rigour.integration.application.port.out.ProductMediaSyncStore;
 import com.rigour.integration.application.port.out.ProductMediaStorage;
 import com.rigour.integration.application.service.dhb.DhbIntegrationService;
 import com.rigour.integration.application.service.dhb.DhbOrderSyncService;
+import com.rigour.integration.application.service.dhb.DhbSyncOrchestrationProperties;
+import com.rigour.integration.application.service.dhb.DhbSyncOrchestrationScheduler;
+import com.rigour.integration.application.service.dhb.DhbSyncOrchestrationService;
 import com.rigour.integration.application.service.dhb.ProductImageObjectKeyFactory;
 import com.rigour.integration.application.service.feishu.FeishuJsapiSignService;
 import com.rigour.integration.infrastructure.dhb.DhbClientAdapter;
 import com.rigour.integration.infrastructure.dhb.DhbSecretResolver;
 import com.rigour.integration.infrastructure.dhb.EnvDhbSecretResolver;
+import com.rigour.integration.infrastructure.domain.HttpCrmDhbDomainSyncClient;
+import com.rigour.integration.infrastructure.domain.HttpErpDhbDomainSyncClient;
+import com.rigour.integration.infrastructure.domain.HttpIamDhbStaffSyncClient;
+import com.rigour.integration.infrastructure.domain.HttpOrderSalesOrderProjectionClient;
 import com.rigour.integration.infrastructure.feishu.FeishuJsapiClientAdapter;
-import com.rigour.integration.infrastructure.persistence.JdbcDhbIntegrationStore;
-import com.rigour.integration.infrastructure.persistence.JdbcDhbSyncStore;
-import com.rigour.integration.infrastructure.persistence.JdbcProductMediaSyncStore;
-import com.rigour.integration.application.port.out.ProductMediaSyncStore;
-import com.rigour.integration.infrastructure.media.ProductMediaSyncWorker;
 import com.rigour.integration.infrastructure.lease.DhbConnectorLeaseProperties;
+import com.rigour.integration.infrastructure.media.ProductMediaSyncWorker;
+import com.rigour.integration.infrastructure.persistence.mapper.DhbConnectorMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.ExternalObjectMappingMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationDeadLetterMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFieldMappingMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationOrderMirrorMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationOutboxEventMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationProductMediaItemMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationProductMediaJobMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationRawLandingMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationReconciliationCaseMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncCheckpointMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncLogMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncRunMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncTaskMapper;
+import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusDhbIntegrationStore;
+import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusDhbSyncStore;
+import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusProductMediaSyncStore;
+import com.rigour.shared.context.TrustedContextSigner;
+import com.rigour.settings.client.BusinessDictionaryBatchClient;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.EnableScheduling;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.web.client.RestClient;
 
 /** Integration服务基础设施装配；持久化只属于Integration自己的Schema。 */
 @Configuration(proxyBeanMethods = false)
 @EnableScheduling
+@MapperScan("com.rigour.integration.infrastructure.persistence.mapper")
 @EnableConfigurationProperties({DhbClientProperties.class, FeishuClientProperties.class,
-        ProductMediaProperties.class, DhbConnectorLeaseProperties.class})
+        ProductMediaProperties.class, DhbConnectorLeaseProperties.class,
+        DhbSyncOrchestrationProperties.class})
 public final class IntegrationInfrastructureConfiguration {
 
     @Bean
@@ -71,22 +104,53 @@ public final class IntegrationInfrastructureConfiguration {
 
     @Bean
     DhbIntegrationStore dhbIntegrationStore(
-            JdbcTemplate jdbcTemplate, PlatformTransactionManager transactionManager,
+            DhbConnectorMapper connectorMapper,
+            IntegrationSyncTaskMapper taskMapper,
+            IntegrationFieldMappingMapper fieldMappingMapper,
+            IntegrationOrderMirrorMapper orderMirrorMapper,
+            IntegrationSyncLogMapper syncLogMapper,
+            ExternalObjectMappingMapper externalObjectMappingMapper,
+            IntegrationSyncRunMapper syncRunMapper,
+            IntegrationDeadLetterMapper deadLetterMapper,
+            IntegrationReconciliationCaseMapper reconciliationCaseMapper,
+            IntegrationRawLandingMapper rawLandingMapper,
+            PlatformTransactionManager transactionManager,
             tools.jackson.databind.ObjectMapper objectMapper) {
-        return new JdbcDhbIntegrationStore(jdbcTemplate, transactionManager, objectMapper);
+        return new MybatisPlusDhbIntegrationStore(connectorMapper, taskMapper,
+                fieldMappingMapper, orderMirrorMapper, syncLogMapper,
+                externalObjectMappingMapper, syncRunMapper, deadLetterMapper,
+                reconciliationCaseMapper, rawLandingMapper, transactionManager, objectMapper);
     }
 
     @Bean
     DhbSyncStore dhbSyncStore(
-            JdbcTemplate jdbcTemplate, PlatformTransactionManager transactionManager,
+            DhbConnectorMapper connectorMapper,
+            IntegrationSyncTaskMapper taskMapper,
+            IntegrationSyncCheckpointMapper checkpointMapper,
+            IntegrationSyncRunMapper runMapper,
+            IntegrationRawLandingMapper rawLandingMapper,
+            IntegrationOrderMirrorMapper orderMirrorMapper,
+            IntegrationOutboxEventMapper outboxEventMapper,
+            ExternalObjectMappingMapper externalObjectMappingMapper,
+            IntegrationDeadLetterMapper deadLetterMapper,
+            IntegrationReconciliationCaseMapper reconciliationCaseMapper,
+            IntegrationSyncLogMapper syncLogMapper,
+            PlatformTransactionManager transactionManager,
             tools.jackson.databind.ObjectMapper objectMapper) {
-        return new JdbcDhbSyncStore(jdbcTemplate, transactionManager, objectMapper);
+        return new MybatisPlusDhbSyncStore(connectorMapper, taskMapper, checkpointMapper,
+                runMapper, rawLandingMapper, orderMirrorMapper, outboxEventMapper,
+                externalObjectMappingMapper, deadLetterMapper, reconciliationCaseMapper,
+                syncLogMapper, transactionManager, objectMapper);
     }
 
     @Bean
     ProductMediaSyncStore productMediaSyncStore(
-            JdbcTemplate jdbcTemplate, PlatformTransactionManager transactionManager) {
-        return new JdbcProductMediaSyncStore(jdbcTemplate, transactionManager);
+            IntegrationProductMediaJobMapper jobMapper,
+            IntegrationProductMediaItemMapper itemMapper,
+            DhbConnectorMapper connectorMapper,
+            PlatformTransactionManager transactionManager) {
+        return new MybatisPlusProductMediaSyncStore(jobMapper, itemMapper,
+                connectorMapper, transactionManager);
     }
 
     @Bean(destroyMethod = "shutdown")
@@ -101,8 +165,88 @@ public final class IntegrationInfrastructureConfiguration {
 
     @Bean
     DhbOrderSyncService dhbOrderSyncService(
-            DhbSyncStore syncStore, DhbClient client) {
-        return new DhbOrderSyncService(syncStore, client);
+            DhbSyncStore syncStore, DhbClient client,
+            OrderSalesOrderProjectionClient orderSalesOrderProjectionClient,
+            IamDhbStaffSyncClient iamDhbStaffSyncClient,
+            BusinessDictionaryBatchClient businessDictionaryBatchClient,
+            @Value("${rigour.integration.dhb.order.detail-concurrency:1}") int detailConcurrency) {
+        return new DhbOrderSyncService(syncStore, client, orderSalesOrderProjectionClient,
+                iamDhbStaffSyncClient, businessDictionaryBatchClient, detailConcurrency);
+    }
+
+    @Bean
+    OrderSalesOrderProjectionClient orderSalesOrderProjectionClient(
+            RestClient.Builder restClientBuilder, TrustedContextSigner signer,
+            @Value("${rigour.order.base-url:http://localhost:26885}") String orderBaseUrl) {
+        return new HttpOrderSalesOrderProjectionClient(restClientBuilder, signer, orderBaseUrl);
+    }
+
+    @Bean
+    BusinessDictionaryBatchClient businessDictionaryBatchClient(
+            SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
+            @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl) {
+        return new BusinessDictionaryBatchClient(
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, baseUrl);
+    }
+
+    @Bean
+    SimpleClientHttpRequestFactory domainSyncRequestFactory(
+            @Value("${rigour.integration.domain-http.connect-timeout:5s}") Duration connectTimeout,
+            @Value("${rigour.integration.domain-http.read-timeout:15m}") Duration readTimeout) {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(connectTimeout);
+        factory.setReadTimeout(readTimeout);
+        return factory;
+    }
+
+    @Bean
+    ErpDhbDomainSyncClient erpDhbDomainSyncClient(
+            SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
+            @Value("${rigour.erp.base-url:http://localhost:26884}") String erpBaseUrl) {
+        return new HttpErpDhbDomainSyncClient(
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, erpBaseUrl);
+    }
+
+    @Bean
+    CrmDhbDomainSyncClient crmDhbDomainSyncClient(
+            SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
+            @Value("${rigour.crm.base-url:http://localhost:26883}") String crmBaseUrl) {
+        return new HttpCrmDhbDomainSyncClient(
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, crmBaseUrl);
+    }
+
+    @Bean
+    IamDhbStaffSyncClient iamDhbStaffSyncClient(
+            SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
+            @Value("${rigour.iam.base-url:http://localhost:26881}") String iamBaseUrl) {
+        return new HttpIamDhbStaffSyncClient(
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, iamBaseUrl);
+    }
+
+    @Bean
+    Clock integrationClock() {
+        return Clock.systemUTC();
+    }
+
+    @Bean
+    DhbSyncOrchestrationService dhbSyncOrchestrationService(
+            DhbIntegrationStore store,
+            ErpDhbDomainSyncClient erpClient,
+            CrmDhbDomainSyncClient crmClient,
+            IamDhbStaffSyncClient iamClient,
+            DhbClient dhbClient,
+            DhbOrderSyncService orderSyncService,
+            DhbSyncOrchestrationProperties properties,
+            Clock clock,
+            tools.jackson.databind.ObjectMapper objectMapper) {
+        return new DhbSyncOrchestrationService(store, erpClient, crmClient, iamClient, dhbClient,
+                orderSyncService, properties, clock, objectMapper);
+    }
+
+    @Bean
+    DhbSyncOrchestrationScheduler dhbSyncOrchestrationScheduler(
+            DhbSyncOrchestrationService service, DhbSyncOrchestrationProperties properties) {
+        return new DhbSyncOrchestrationScheduler(service, properties);
     }
 
     @Bean

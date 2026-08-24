@@ -55,7 +55,7 @@ public final class BusinessDictionaryCoverageService {
                 "rigour-erp-core-service", "ERP_DICTIONARY_SYNC", tenantId), objectType, values);
         return new DictionaryMappingAudit(audit.unmapped(), audit.revisions(), audit.issues().stream()
                 .map(issue -> new DictionaryMappingAudit.MappingIssue(
-                        issue.moduleCode() + "." + issue.dictCode(), issue.fieldCode(),
+                        issue.dictionaryCode(), issue.fieldCode(),
                         issue.sourceValue(), issue.count()))
                 .toList());
     }
@@ -91,7 +91,7 @@ public final class BusinessDictionaryCoverageService {
                             String fieldCode, String sourceValue, String sourceName) {
         if (sourceValue == null || sourceValue.isBlank()) return;
         if ("DHB_UNIT".equals(dictCode) && isUnitLevel(sourceValue)) return;
-        target.add(new Observation(moduleCode, dictCode, fieldCode, sourceValue.strip(), sourceName));
+        target.add(new Observation(dictCode, fieldCode, sourceValue.strip(), sourceName));
     }
 
     private static boolean isUnitLevel(String value) {

@@ -1,5 +1,6 @@
 package com.rigour.merchant;
 
+import com.rigour.merchant.maintenance.CrmFlywayMaintenance;
 import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
@@ -10,6 +11,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class MerchantCrmServiceApplication {
     public static void main(String[] args) {
+        if (CrmFlywayMaintenance.runIfRequested(args)) {
+            return;
+        }
         ServiceApplicationLauncher.run(MerchantCrmServiceApplication.class, "商户CRM服务", args);
     }
 }

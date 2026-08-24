@@ -21,12 +21,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
-/** MyBatis-Plus 字典仓储；复制租户字典时在同一事务内复制完整树。 */
+/** MyBatis-Plus 字典仓储；新模型按 dictionaryCode 直接维护，不承载第三方来源字段。 */
 @Repository
 public class MybatisPlusBusinessDictionaryRepository implements BusinessDictionaryStore {
     private final DictMapper dictMapper;
@@ -40,104 +39,114 @@ public class MybatisPlusBusinessDictionaryRepository implements BusinessDictiona
     }
 
     @Override
-    public List<DictView> list(String principalScope, String currentTenantId, String moduleCode,
-                               String scopeType, String requestedTenantId, String status) {
-        var query = Wrappers.<DictEntity>query();
-        if (!"PLATFORM".equals(principalScope)) {
-            query.and(scope -> scope.in("scope_type", List.of("SYSTEM", "MODULE"))
-                    .or(tenant -> tenant.eq("scope_type", "TENANT")
-                            .eq("tenant_id", currentTenantId)));
-        } else if (requestedTenantId != null) {
-            query.eq("tenant_id", requestedTenantId);
-        }
-        if (moduleCode != null) query.eq("module_code", moduleCode);
-        if (scopeType != null) query.eq("scope_type", scopeType);
-        if (status != null) query.eq("status", status);
-        query.orderByAsc("module_code", "sort_no", "code");
-        return dictMapper.selectList(query).stream().map(MybatisPlusBusinessDictionaryRepository::view).toList();
+    public List<DictView> list(String dictionaryType, String dictionaryCode) {
+        var query = Wrappers.<DictEntity>query().eq("deleted", 0);
+        if (dictionaryType != null) query.eq("dictionary_type", dictionaryType);
+        if (dictionaryCode != null) query.eq("dictionary_code", dictionaryCode);
+        query.orderByAsc("dictionary_type", "dictionary_code");
+        return dictMapper.selectList(query).stream()
+                .map(MybatisPlusBusinessDictionaryRepository::view)
+                .toList();
     }
 
     @Override
-    public Optional<DictView> find(UUID dictId) {
-        return Optional.ofNullable(dictMapper.selectById(dictId.toString())).map(MybatisPlusBusinessDictionaryRepository::view);
+    public Optional<DictView> find(Long dictionaryId) {
+        DictEntity entity = dictionaryId == null ? null : dictMapper.selectById(dictionaryId);
+        if (entity == null || deleted(entity.deleted)) return Optional.empty();
+        return Optional.of(view(entity));
     }
 
     @Override
-    public Optional<DictView> findActive(String scopeType, String scopeId, String moduleCode, String code) {
+    public Optional<DictView> findByCode(String dictionaryCode) {
         return Optional.ofNullable(dictMapper.selectOne(Wrappers.<DictEntity>query()
-                        .eq("scope_type", scopeType)
-                        .eq("scope_id", scopeId)
-                        .eq("module_code", moduleCode)
-                        .eq("code", code)
-                        .eq("status", "ACTIVE")
+                        .eq("dictionary_code", dictionaryCode)
+                        .eq("deleted", 0)
                         .last("LIMIT 1")))
                 .map(MybatisPlusBusinessDictionaryRepository::view);
     }
 
     @Override
-    public List<DictItemView> items(UUID dictId) {
+    public List<DictItemView> items(String dictionaryCode) {
         return itemMapper.selectList(Wrappers.<DictItemEntity>query()
-                        .eq("dict_id", dictId.toString())
-                        .orderByAsc("level_no", "sort_no", "code"))
-                .stream().map(MybatisPlusBusinessDictionaryRepository::view).toList();
+                        .eq("dictionary_code", dictionaryCode)
+                        .eq("deleted", 0)
+                        .orderByAsc("dictionary_item_level", "ordinal", "dictionary_item_code"))
+                .stream()
+                .map(MybatisPlusBusinessDictionaryRepository::view)
+                .toList();
     }
 
     @Override
     @Transactional
-    public DictView create(DictCommand command, String scopeId, String tenantId, String actorId) {
+    public DictView create(DictCommand command, String actorId) {
         LocalDateTime now = now();
         DictEntity entity = new DictEntity();
-        entity.id = UUID.randomUUID().toString();
-        entity.code = command.code(); entity.name = command.name();
-        entity.scopeType = command.scopeType(); entity.scopeId = scopeId;
-        entity.moduleCode = command.moduleCode(); entity.tenantId = tenantId;
-        entity.baseDictId = id(command.baseDictId()); entity.status = command.status();
-        entity.sortNo = command.sortNo(); entity.remark = command.remark(); entity.version = 0L;
-        entity.revision = 0L;
-        entity.createdBy = actorId; entity.updatedBy = actorId;
-        entity.createdAt = now; entity.updatedAt = now;
+        entity.dictionaryCode = command.dictionaryCode();
+        entity.dictionaryName = command.dictionaryName();
+        entity.dictionaryType = command.dictionaryType();
+        entity.remark = command.remark();
+        entity.revision = 1;
+        entity.createdBy = actorId;
+        entity.updatedBy = actorId;
+        entity.createdTime = now;
+        entity.updatedTime = now;
+        entity.deleted = 0;
         try {
             dictMapper.insert(entity);
-            if (command.baseDictId() != null) {
-                cloneItems(command.baseDictId().toString(), entity.id, actorId, now);
-                touchDictionary(entity.id, actorId, now);
-            }
         } catch (DataIntegrityViolationException exception) {
-            throw conflict("相同作用域、模块和编码的字典已存在");
+            throw conflict("字典编码已存在");
         }
-        return find(UUID.fromString(entity.id)).orElseThrow(() -> notFound("字典不存在"));
+        return find(entity.id).orElseThrow(() -> notFound("字典不存在"));
     }
 
     @Override
     @Transactional
-    public DictView update(UUID dictId, DictCommand command, String actorId) {
+    public DictView update(Long dictionaryId, DictCommand command, String actorId) {
+        DictEntity existing = requireDictionaryEntity(dictionaryId);
+        if (!existing.dictionaryCode.equals(command.dictionaryCode())) {
+            throw conflict("字典编码创建后不可修改");
+        }
         DictEntity changes = new DictEntity();
-        changes.name = command.name(); changes.status = command.status();
-        changes.sortNo = command.sortNo(); changes.remark = command.remark();
-        changes.version = command.version() + 1; changes.updatedBy = actorId; changes.updatedAt = now();
+        changes.dictionaryName = command.dictionaryName();
+        changes.dictionaryType = command.dictionaryType();
+        changes.remark = command.remark();
+        changes.revision = command.revision() + 1;
+        changes.updatedBy = actorId;
+        changes.updatedTime = now();
         int updated = dictMapper.update(changes, Wrappers.<DictEntity>update()
-                .setSql("revision = revision + 1")
-                .eq("id", dictId.toString()).eq("version", command.version()));
+                .eq("id", dictionaryId)
+                .eq("revision", command.revision())
+                .eq("deleted", 0));
         if (updated != 1) throw conflict("字典已被其他人修改，请刷新后重试");
-        return find(dictId).orElseThrow(() -> notFound("字典不存在"));
+        return find(dictionaryId).orElseThrow(() -> notFound("字典不存在"));
     }
 
     @Override
     @Transactional
-    public DictItemView createItem(UUID dictId, DictItemCommand command, String actorId) {
-        DictItemEntity parent = parent(dictId, command.parentId(), null);
+    public DictItemView createItem(Long dictionaryId, DictItemCommand command, String actorId) {
+        DictEntity dictionary = requireDictionaryEntity(dictionaryId);
+        if (!dictionary.dictionaryCode.equals(command.dictionaryCode())) {
+            throw conflict("字典项必须属于请求路径中的字典");
+        }
+        DictItemEntity parent = parent(command.dictionaryCode(), command.parentDictionaryItemCode());
         LocalDateTime now = now();
         DictItemEntity entity = new DictItemEntity();
-        entity.id = UUID.randomUUID().toString(); entity.dictId = dictId.toString();
-        entity.parentId = parent == null ? null : parent.id;
-        entity.levelNo = parent == null ? 1 : parent.levelNo + 1;
-        entity.code = command.code(); entity.name = command.name(); entity.value = command.value();
-        entity.sortNo = command.sortNo(); entity.status = command.status(); entity.extraJson = command.extraJson();
-        entity.version = 0L; entity.createdBy = actorId; entity.updatedBy = actorId;
-        entity.createdAt = now; entity.updatedAt = now;
+        entity.dictionaryCode = command.dictionaryCode();
+        entity.parentDictionaryItemCode = parent == null ? null : parent.dictionaryItemCode;
+        entity.dictionaryItemLevel = parent == null ? 1 : parent.dictionaryItemLevel + 1;
+        entity.dictionaryItemCode = command.dictionaryItemCode();
+        entity.dictionaryItemName = command.dictionaryItemName();
+        entity.remark = command.remark();
+        entity.ordinal = command.ordinal();
+        entity.revision = 1;
+        entity.createdBy = actorId;
+        entity.updatedBy = actorId;
+        entity.createdTime = now;
+        entity.updatedTime = now;
+        entity.deleted = 0;
         try {
             itemMapper.insert(entity);
-            touchDictionary(dictId.toString(), actorId, now);
+            touchDictionary(entity.dictionaryCode, actorId, now);
         } catch (DataIntegrityViolationException exception) {
             throw conflict("当前字典中已存在相同编码的字典项");
         }
@@ -146,160 +155,192 @@ public class MybatisPlusBusinessDictionaryRepository implements BusinessDictiona
 
     @Override
     @Transactional
-    public DictItemView updateItem(UUID itemId, DictItemCommand command, String actorId) {
-        DictItemEntity existing = itemMapper.selectById(itemId.toString());
-        if (existing == null) throw notFound("字典项不存在");
-        if (!existing.dictId.equals(command.dictId().toString())) throw conflict("字典项不能移动到其他字典");
-        DictItemEntity parent = parent(command.dictId(), command.parentId(), itemId);
+    public DictItemView updateItem(Long itemId, DictItemCommand command, String actorId) {
+        DictItemEntity existing = requireItemEntity(itemId);
+        if (!existing.dictionaryCode.equals(command.dictionaryCode())) {
+            throw conflict("字典项不能移动到其他字典");
+        }
+        if (!existing.dictionaryItemCode.equals(command.dictionaryItemCode())) {
+            throw conflict("字典项编码创建后不可修改");
+        }
+        DictItemEntity parent = parent(command.dictionaryCode(), command.parentDictionaryItemCode());
         ensureNoCycle(existing, parent);
-        int newLevel = parent == null ? 1 : parent.levelNo + 1;
+        int newLevel = parent == null ? 1 : parent.dictionaryItemLevel + 1;
         DictItemEntity changes = new DictItemEntity();
-        changes.parentId = parent == null ? null : parent.id; changes.levelNo = newLevel;
-        changes.code = command.code(); changes.name = command.name(); changes.value = command.value();
-        changes.sortNo = command.sortNo(); changes.status = command.status(); changes.extraJson = command.extraJson();
-        changes.version = command.version() + 1; changes.updatedBy = actorId; changes.updatedAt = now();
+        changes.parentDictionaryItemCode = parent == null ? null : parent.dictionaryItemCode;
+        changes.dictionaryItemLevel = newLevel;
+        changes.dictionaryItemName = command.dictionaryItemName();
+        changes.remark = command.remark();
+        changes.ordinal = command.ordinal();
+        changes.revision = command.revision() + 1;
+        changes.updatedBy = actorId;
+        changes.updatedTime = now();
         try {
             int updated = itemMapper.update(changes, Wrappers.<DictItemEntity>update()
-                    .eq("id", itemId.toString()).eq("dict_id", command.dictId().toString())
-                    .eq("version", command.version()));
+                    .eq("id", itemId)
+                    .eq("dictionary_code", command.dictionaryCode())
+                    .eq("revision", command.revision())
+                    .eq("deleted", 0));
             if (updated != 1) throw conflict("字典项已被其他人修改，请刷新后重试");
-            if (newLevel != existing.levelNo) updateDescendantLevels(existing.dictId, existing.id, newLevel, actorId);
-            touchDictionary(existing.dictId, actorId, changes.updatedAt);
+            if (newLevel != existing.dictionaryItemLevel) {
+                updateDescendantLevels(existing.dictionaryCode, existing.dictionaryItemCode, newLevel, actorId);
+            }
+            touchDictionary(existing.dictionaryCode, actorId, changes.updatedTime);
         } catch (DataIntegrityViolationException exception) {
             throw conflict("当前字典中已存在相同编码的字典项");
         }
-        DictItemEntity saved = itemMapper.selectById(itemId.toString());
-        if (saved == null) throw notFound("字典项不存在");
+        DictItemEntity saved = itemMapper.selectById(itemId);
+        if (saved == null || deleted(saved.deleted)) throw notFound("字典项不存在");
         return view(saved);
     }
 
     @Override
     @Transactional
-    public SyncStats syncMissingItems(UUID dictId, List<SyncItem> items, String actorId) {
+    public SyncStats syncMissingItems(String dictionaryCode, List<SyncItem> items, String actorId) {
         if (items == null || items.isEmpty()) return new SyncStats(0, 0, 0, 0);
-        String dictionaryId = dictId.toString();
+        requireDictionaryCode(dictionaryCode);
         List<DictItemEntity> stored = itemMapper.selectList(Wrappers.<DictItemEntity>query()
-                .eq("dict_id", dictionaryId));
-        Map<String, DictItemEntity> byValue = new LinkedHashMap<>();
-        int nextSortNo = 0;
+                .eq("dictionary_code", dictionaryCode));
+        Map<String, DictItemEntity> byCode = new LinkedHashMap<>();
+        int nextOrdinal = 0;
         for (DictItemEntity item : stored) {
-            nextSortNo = Math.max(nextSortNo, item.sortNo == null ? 0 : item.sortNo + 1);
-            if (item.value == null) continue;
-            DictItemEntity duplicate = byValue.putIfAbsent(item.value, item);
-            if (duplicate != null) throw conflict("当前字典存在重复来源值，请先修复字典数据");
+            nextOrdinal = Math.max(nextOrdinal, item.ordinal == null ? 0 : item.ordinal + 1);
+            byCode.putIfAbsent(item.dictionaryItemCode, item);
         }
         LocalDateTime now = now();
         int created = 0;
         int existing = 0;
         int blocked = 0;
         int enriched = 0;
+        List<DictItemEntity> missingItems = new java.util.ArrayList<>();
         for (SyncItem item : items) {
-            DictItemEntity present = byValue.get(item.value());
+            DictItemEntity present = byCode.get(item.dictionaryItemCode());
             if (present != null) {
-                if ("ACTIVE".equals(present.status)) {
+                if (!deleted(present.deleted)) {
                     existing++;
-                    if (present.name != null && present.name.equals(present.value)
-                            && !item.name().equals(item.value())) {
+                    if (present.dictionaryItemName != null
+                            && present.dictionaryItemName.equals(present.dictionaryItemCode)
+                            && !item.dictionaryItemName().equals(item.dictionaryItemCode())) {
                         DictItemEntity changes = new DictItemEntity();
-                        changes.name = item.name(); changes.version = present.version + 1;
-                        changes.updatedBy = actorId; changes.updatedAt = now;
+                        changes.dictionaryItemName = item.dictionaryItemName();
+                        changes.revision = present.revision + 1;
+                        changes.updatedBy = actorId;
+                        changes.updatedTime = now;
                         int updated = itemMapper.update(changes, Wrappers.<DictItemEntity>update()
-                                .eq("id", present.id).eq("version", present.version));
+                                .eq("id", present.id)
+                                .eq("revision", present.revision));
                         if (updated != 1) throw conflict("字典项显示名称已被其他任务修改，请重试");
-                        present.name = item.name(); present.version = changes.version;
+                        present.dictionaryItemName = item.dictionaryItemName();
+                        present.revision = changes.revision;
                         enriched++;
                     }
+                } else {
+                    blocked++;
                 }
-                else blocked++;
                 continue;
             }
             DictItemEntity entity = new DictItemEntity();
-            entity.id = UUID.randomUUID().toString(); entity.dictId = dictionaryId;
-            entity.parentId = null; entity.levelNo = 1;
-            entity.code = item.code(); entity.name = item.name(); entity.value = item.value();
-            entity.sortNo = nextSortNo++; entity.status = "ACTIVE"; entity.extraJson = null;
-            entity.version = 0L; entity.createdBy = actorId; entity.updatedBy = actorId;
-            entity.createdAt = now; entity.updatedAt = now;
+            entity.dictionaryCode = dictionaryCode;
+            entity.parentDictionaryItemCode = null;
+            entity.dictionaryItemLevel = 1;
+            entity.dictionaryItemCode = item.dictionaryItemCode();
+            entity.dictionaryItemName = item.dictionaryItemName();
+            entity.remark = item.remark();
+            entity.ordinal = nextOrdinal++;
+            entity.revision = 1;
+            entity.createdBy = actorId;
+            entity.updatedBy = actorId;
+            entity.createdTime = now;
+            entity.updatedTime = now;
+            entity.deleted = 0;
+            byCode.put(entity.dictionaryItemCode, entity);
+            missingItems.add(entity);
+            created++;
+        }
+        if (!missingItems.isEmpty()) {
             try {
-                itemMapper.insert(entity);
-                byValue.put(entity.value, entity);
-                created++;
+                itemMapper.insertBatch(missingItems);
             } catch (DataIntegrityViolationException exception) {
-                DictItemEntity concurrent = findItemByExactValue(dictionaryId, item.value());
-                if (concurrent == null) throw conflict("自动生成的字典项编码发生冲突");
-                byValue.put(concurrent.value, concurrent);
-                if ("ACTIVE".equals(concurrent.status)) existing++;
-                else blocked++;
+                throw conflict("自动生成的字典项编码发生冲突");
             }
         }
-        if (created > 0 || enriched > 0) touchDictionary(dictionaryId, actorId, now);
+        if (created > 0 || enriched > 0) touchDictionary(dictionaryCode, actorId, now);
         return new SyncStats(created, existing, blocked, enriched);
     }
 
-    private void cloneItems(String sourceDictId, String targetDictId, String actorId, LocalDateTime now) {
-        List<DictItemEntity> source = itemMapper.selectList(Wrappers.<DictItemEntity>query()
-                .eq("dict_id", sourceDictId).orderByAsc("level_no", "sort_no", "code"));
-        Map<String, String> copiedIds = new LinkedHashMap<>();
-        for (DictItemEntity item : source) {
-            DictItemEntity copy = new DictItemEntity();
-            copy.id = UUID.randomUUID().toString(); copy.dictId = targetDictId;
-            copy.parentId = item.parentId == null ? null : copiedIds.get(item.parentId);
-            copy.levelNo = item.levelNo; copy.code = item.code; copy.name = item.name; copy.value = item.value;
-            copy.sortNo = item.sortNo; copy.status = item.status; copy.extraJson = item.extraJson;
-            copy.version = 0L; copy.createdBy = actorId; copy.updatedBy = actorId;
-            copy.createdAt = now; copy.updatedAt = now;
-            itemMapper.insert(copy);
-            copiedIds.put(item.id, copy.id);
-        }
+    private DictEntity requireDictionaryEntity(Long dictionaryId) {
+        DictEntity entity = dictionaryId == null ? null : dictMapper.selectById(dictionaryId);
+        if (entity == null || deleted(entity.deleted)) throw notFound("字典不存在");
+        return entity;
     }
 
-    private DictItemEntity findItemByExactValue(String dictId, String value) {
-        return itemMapper.selectList(Wrappers.<DictItemEntity>query()
-                        .eq("dict_id", dictId).eq("value", value))
-                .stream().filter(item -> value.equals(item.value)).findFirst().orElse(null);
+    private void requireDictionaryCode(String dictionaryCode) {
+        if (findByCode(dictionaryCode).isEmpty()) throw notFound("字典不存在");
     }
 
-    private DictItemEntity parent(UUID dictId, UUID parentId, UUID currentItemId) {
-        if (parentId == null) return null;
-        if (parentId.equals(currentItemId)) throw conflict("字典项不能将自己设为父级");
-        DictItemEntity parent = itemMapper.selectById(parentId.toString());
-        if (parent == null || !dictId.toString().equals(parent.dictId)) {
-            throw conflict("父级字典项必须属于同一本字典");
-        }
+    private DictItemEntity requireItemEntity(Long itemId) {
+        DictItemEntity entity = itemId == null ? null : itemMapper.selectById(itemId);
+        if (entity == null || deleted(entity.deleted)) throw notFound("字典项不存在");
+        return entity;
+    }
+
+    private DictItemEntity parent(String dictionaryCode, String parentDictionaryItemCode) {
+        if (parentDictionaryItemCode == null) return null;
+        DictItemEntity parent = itemMapper.selectOne(Wrappers.<DictItemEntity>query()
+                .eq("dictionary_code", dictionaryCode)
+                .eq("dictionary_item_code", parentDictionaryItemCode)
+                .eq("deleted", 0)
+                .last("LIMIT 1"));
+        if (parent == null) throw conflict("父级字典项必须属于同一本字典");
         return parent;
     }
 
     private void ensureNoCycle(DictItemEntity current, DictItemEntity parent) {
         DictItemEntity cursor = parent;
         while (cursor != null) {
-            if (current.id.equals(cursor.id)) throw conflict("字典项父子关系不能形成循环");
-            cursor = cursor.parentId == null ? null : itemMapper.selectById(cursor.parentId);
+            if (current.dictionaryItemCode.equals(cursor.dictionaryItemCode)) {
+                throw conflict("字典项父子关系不能形成循环");
+            }
+            cursor = parent(current.dictionaryCode, cursor.parentDictionaryItemCode);
         }
     }
 
-    private void updateDescendantLevels(String dictId, String parentId, int parentLevel, String actorId) {
+    private void updateDescendantLevels(String dictionaryCode, String parentItemCode,
+                                        int parentLevel, String actorId) {
         List<DictItemEntity> children = itemMapper.selectList(Wrappers.<DictItemEntity>query()
-                .eq("dict_id", dictId).eq("parent_id", parentId));
+                .eq("dictionary_code", dictionaryCode)
+                .eq("parent_dictionary_item_code", parentItemCode)
+                .eq("deleted", 0));
         for (DictItemEntity child : children) {
             int level = parentLevel + 1;
             DictItemEntity changes = new DictItemEntity();
-            changes.levelNo = level; changes.version = child.version + 1;
-            changes.updatedBy = actorId; changes.updatedAt = now();
+            changes.dictionaryItemLevel = level;
+            changes.revision = child.revision + 1;
+            changes.updatedBy = actorId;
+            changes.updatedTime = now();
             int changed = itemMapper.update(changes, Wrappers.<DictItemEntity>update()
-                    .eq("id", child.id).eq("version", child.version));
+                    .eq("id", child.id)
+                    .eq("revision", child.revision));
             if (changed != 1) throw conflict("字典项层级已被修改，请刷新后重试");
-            updateDescendantLevels(dictId, child.id, level, actorId);
+            updateDescendantLevels(dictionaryCode, child.dictionaryItemCode, level, actorId);
         }
     }
 
-    private void touchDictionary(String dictId, String actorId, LocalDateTime changedAt) {
+    private void touchDictionary(String dictionaryCode, String actorId, LocalDateTime changedAt) {
+        DictEntity dictionary = dictMapper.selectOne(Wrappers.<DictEntity>query()
+                .eq("dictionary_code", dictionaryCode)
+                .eq("deleted", 0)
+                .last("LIMIT 1"));
+        if (dictionary == null) throw notFound("字典不存在");
         DictEntity changes = new DictEntity();
+        changes.revision = dictionary.revision + 1;
         changes.updatedBy = actorId;
-        changes.updatedAt = changedAt;
+        changes.updatedTime = changedAt;
         int updated = dictMapper.update(changes, Wrappers.<DictEntity>update()
-                .setSql("revision = revision + 1")
-                .eq("id", dictId));
-        if (updated != 1) throw notFound("字典不存在");
+                .eq("id", dictionary.id)
+                .eq("revision", dictionary.revision)
+                .eq("deleted", 0));
+        if (updated != 1) throw conflict("字典已被其他人修改，请刷新后重试");
     }
 
     private LocalDateTime now() {
@@ -307,22 +348,24 @@ public class MybatisPlusBusinessDictionaryRepository implements BusinessDictiona
     }
 
     private static DictView view(DictEntity entity) {
-        return new DictView(UUID.fromString(entity.id), entity.code, entity.name, entity.scopeType,
-                entity.scopeId, entity.moduleCode, entity.tenantId, uuid(entity.baseDictId),
-                entity.status, entity.sortNo, entity.remark, entity.version, entity.revision);
+        return new DictView(entity.id, entity.dictionaryCode, entity.dictionaryName,
+                entity.dictionaryType, entity.remark, entity.revision);
     }
 
     private static DictItemView view(DictItemEntity entity) {
-        return new DictItemView(UUID.fromString(entity.id), UUID.fromString(entity.dictId),
-                uuid(entity.parentId), entity.levelNo, entity.code, entity.name, entity.value,
-                entity.sortNo, entity.status, entity.extraJson, entity.version);
+        return new DictItemView(entity.id, entity.dictionaryCode, entity.dictionaryItemLevel,
+                entity.parentDictionaryItemCode, entity.dictionaryItemCode, entity.dictionaryItemName,
+                entity.remark, entity.ordinal, entity.revision);
     }
 
-    private static UUID uuid(String value) { return value == null ? null : UUID.fromString(value); }
-    private static String id(UUID value) { return value == null ? null : value.toString(); }
+    private static boolean deleted(Integer deleted) {
+        return deleted != null && deleted != 0;
+    }
+
     private static BusinessException conflict(String message) {
         return new BusinessException(ErrorCode.CONFLICT, message, List.of());
     }
+
     private static BusinessException notFound(String message) {
         return new BusinessException(ErrorCode.NOT_FOUND, message, List.of());
     }

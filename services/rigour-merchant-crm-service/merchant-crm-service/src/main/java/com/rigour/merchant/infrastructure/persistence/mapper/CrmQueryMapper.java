@@ -29,9 +29,9 @@ public interface CrmQueryMapper {
             SELECT p.id,p.party_code,p.display_name,p.internal_status,cp.login_account,
                    COALESCE(ct.type_name,cp.customer_type_name_snapshot) AS type_name,
                    COALESCE(ca.area_name,cp.customer_area_name_snapshot) AS area_name,
-                   c.contact_name,c.phone,COALESCE(sa.source_name_snapshot,es.staff_name)
+                   c.contact_name,c.phone,COALESCE(sa.iam_staff_name_snapshot,sa.source_name_snapshot)
                        AS source_name_snapshot,b.source_updated_at,
-                   b.synced_at,b.source_presence,b.source_status
+                   b.synced_at,b.source_presence,b.source_status,b.source_absent_at
               FROM crm_party p
               JOIN crm_customer_profile cp ON cp.tenant_id=p.tenant_id AND cp.party_id=p.id
               LEFT JOIN crm_customer_type ct ON ct.tenant_id=cp.tenant_id AND ct.id=cp.customer_type_id
@@ -40,7 +40,6 @@ public interface CrmQueryMapper {
                    AND c.contact_type='PRIMARY' AND c.record_origin='IMPORTED'
               LEFT JOIN crm_sales_assignment sa ON sa.tenant_id=p.tenant_id AND sa.party_id=p.id
                    AND sa.assignment_type='PRIMARY' AND sa.status='ACTIVE'
-              LEFT JOIN crm_external_staff es ON es.tenant_id=sa.tenant_id AND es.id=sa.external_staff_id
               LEFT JOIN crm_source_binding b ON b.tenant_id=p.tenant_id AND b.target_id=p.id
                    AND b.target_type='PARTY' AND b.source_object_type='CUSTOMER'
              WHERE p.tenant_id=#{tenantId} AND p.deleted_at IS NULL
@@ -60,11 +59,9 @@ public interface CrmQueryMapper {
 
     @Select("""
             <script>
-            SELECT sa.party_id,sa.assignment_type,sa.source_staff_id,
-                   COALESCE(sa.source_name_snapshot,es.staff_name) AS staff_name
+            SELECT sa.party_id,sa.assignment_type,sa.source_staff_id,sa.iam_staff_code,
+                   COALESCE(sa.iam_staff_name_snapshot,sa.source_name_snapshot) AS staff_name
               FROM crm_sales_assignment sa
-              LEFT JOIN crm_external_staff es ON es.tenant_id=sa.tenant_id
-                   AND es.id=sa.external_staff_id
              WHERE sa.tenant_id=#{tenantId} AND sa.status='ACTIVE'
                AND sa.party_id IN
                <foreach collection="partyIds" item="partyId" open="(" separator="," close=")">
@@ -83,9 +80,9 @@ public interface CrmQueryMapper {
                    COALESCE(ca.area_name,cp.customer_area_name_snapshot) AS area_name,
                    cp.city_text,cp.inviter_name,cp.remark,c.contact_name,c.phone,c.email,
                    a.full_address,pol.settlement_mode,
-                   COALESCE(sa.source_name_snapshot,es.staff_name) AS source_name_snapshot,b.source_status,
-                   b.source_object_id,b.source_created_at,b.source_updated_at,b.synced_at,b.source_presence,
-                   b.source_fields_json
+                   COALESCE(sa.iam_staff_name_snapshot,sa.source_name_snapshot) AS source_name_snapshot,b.source_status,
+                   b.source_object_id,b.source_created_at,b.source_updated_at,b.synced_at,
+                   b.source_presence,b.source_absent_at,b.source_fields_json
               FROM crm_party p
               JOIN crm_customer_profile cp ON cp.tenant_id=p.tenant_id AND cp.party_id=p.id
               LEFT JOIN crm_customer_type ct ON ct.tenant_id=cp.tenant_id AND ct.id=cp.customer_type_id
@@ -97,7 +94,6 @@ public interface CrmQueryMapper {
               LEFT JOIN crm_customer_policy pol ON pol.tenant_id=p.tenant_id AND pol.party_id=p.id
               LEFT JOIN crm_sales_assignment sa ON sa.tenant_id=p.tenant_id AND sa.party_id=p.id
                    AND sa.assignment_type='PRIMARY' AND sa.status='ACTIVE'
-              LEFT JOIN crm_external_staff es ON es.tenant_id=sa.tenant_id AND es.id=sa.external_staff_id
               LEFT JOIN crm_source_binding b ON b.tenant_id=p.tenant_id AND b.target_id=p.id
                    AND b.target_type='PARTY' AND b.source_object_type='CUSTOMER'
              WHERE p.tenant_id=#{tenantId} AND p.id=#{id} AND p.deleted_at IS NULL
@@ -108,7 +104,7 @@ public interface CrmQueryMapper {
     @Select("""
             SELECT a.id,a.consignee,c.contact_name,c.phone,a.region_text,a.area_name,
                    a.address_detail,a.full_address,a.is_default,b.source_updated_at,
-                   b.source_fields_json
+                   b.source_fields_json,b.source_presence,b.source_absent_at
               FROM crm_address a
               LEFT JOIN crm_contact c ON c.tenant_id=a.tenant_id AND c.id=a.contact_id
               LEFT JOIN crm_source_binding b ON b.tenant_id=a.tenant_id AND b.target_id=a.id
@@ -145,7 +141,8 @@ public interface CrmQueryMapper {
             SELECT a.id,p.id AS customer_id,p.party_code,p.display_name,
                    b.source_object_id,a.consignee,c.contact_name,c.phone,
                    a.region_text,a.area_name,a.address_detail,a.full_address,
-                   a.is_default,a.status,b.source_updated_at,b.synced_at,b.source_presence
+                   a.is_default,a.status,b.source_updated_at,b.synced_at,b.source_presence,
+                   b.source_absent_at
               FROM crm_address a
               JOIN crm_party p ON p.tenant_id=a.tenant_id AND p.id=a.party_id
               LEFT JOIN crm_contact c ON c.tenant_id=a.tenant_id AND c.id=a.contact_id
@@ -182,7 +179,8 @@ public interface CrmQueryMapper {
 
     @Select("""
             <script>
-            SELECT d.id,d.type_code AS code,d.type_name AS name,d.status,b.synced_at
+            SELECT d.id,d.type_code AS code,d.type_name AS name,d.status,b.synced_at,
+                   b.source_presence,b.source_absent_at
               FROM crm_customer_type d
               LEFT JOIN crm_source_binding b ON b.tenant_id=d.tenant_id AND b.target_id=d.id
                    AND b.source_object_type='CUSTOMER_TYPE'
@@ -211,6 +209,7 @@ public interface CrmQueryMapper {
     @Select("""
             <script>
             SELECT d.id,d.area_code AS code,d.area_name AS name,d.status,b.synced_at,
+                   b.source_presence,b.source_absent_at,
                    d.parent_area_code AS parent_code,p.id AS parent_id
               FROM crm_customer_area d
               LEFT JOIN crm_customer_area p ON p.tenant_id=d.tenant_id
@@ -228,34 +227,4 @@ public interface CrmQueryMapper {
                                             @Param("begin") int begin, @Param("step") int step,
                                             @Param("query") String query);
 
-    @Select("""
-            <script>
-            SELECT COUNT(*) FROM crm_external_staff s WHERE s.tenant_id=#{tenantId}
-            <if test="query != null and query != ''">
-              AND (s.source_staff_id LIKE #{query} OR s.account_name LIKE #{query}
-                   OR s.staff_name LIKE #{query})
-            </if>
-            </script>
-            """)
-    long countExternalStaff(@Param("tenantId") byte[] tenantId, @Param("query") String query);
-
-    @Select("""
-            <script>
-            SELECT s.id,s.source_staff_id,s.source_account_id,s.account_name,s.staff_type,
-                   s.staff_name,s.title,s.branch_name,s.account_mobile,s.mobile,s.email,
-                   s.role_name,s.source_status,s.source_updated_at,b.synced_at
-              FROM crm_external_staff s
-              LEFT JOIN crm_source_binding b ON b.tenant_id=s.tenant_id AND b.target_id=s.id
-                   AND b.source_object_type='STAFF'
-             WHERE s.tenant_id=#{tenantId}
-            <if test="query != null and query != ''">
-              AND (s.source_staff_id LIKE #{query} OR s.account_name LIKE #{query}
-                   OR s.staff_name LIKE #{query})
-            </if>
-             ORDER BY s.staff_name,s.source_staff_id LIMIT #{step} OFFSET #{begin}
-            </script>
-            """)
-    List<Map<String, Object>> externalStaff(@Param("tenantId") byte[] tenantId,
-                                            @Param("begin") int begin, @Param("step") int step,
-                                            @Param("query") String query);
 }

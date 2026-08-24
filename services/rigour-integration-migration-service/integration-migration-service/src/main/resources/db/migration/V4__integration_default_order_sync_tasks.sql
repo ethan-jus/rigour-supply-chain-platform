@@ -1,5 +1,5 @@
 -- Integration Schema V4：为已有启用连接器补齐默认订单同步任务。
--- 新连接器由 JdbcDhbIntegrationStore 在同一事务内自动创建默认任务；本迁移只负责存量数据。
+-- 新连接器由 Integration 仓储在同一事务内自动创建默认任务；本迁移只负责存量数据。
 -- 已存在任意未删除 ORDER 任务的连接器不重复创建，保留原有暂停/自定义配置。
 
 INSERT INTO integration_sync_task

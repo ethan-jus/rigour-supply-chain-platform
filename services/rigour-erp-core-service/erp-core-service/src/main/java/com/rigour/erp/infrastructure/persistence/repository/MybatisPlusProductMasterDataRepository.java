@@ -1,22 +1,8 @@
 package com.rigour.erp.infrastructure.persistence.repository;
 
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import com.rigour.erp.api.v1.model.BrandView;
-import com.rigour.erp.api.v1.model.CategoryView;
-import com.rigour.erp.api.v1.model.MasterDataPageView;
-import com.rigour.erp.api.v1.model.ProductImageView;
-import com.rigour.erp.api.v1.model.ProductPageView;
-import com.rigour.erp.api.v1.model.ProductPriceView;
-import com.rigour.erp.api.v1.model.ProductQuantityView;
-import com.rigour.erp.api.v1.model.ProductView;
-import com.rigour.erp.api.v1.model.SkuPageView;
-import com.rigour.erp.api.v1.model.SkuView;
-import com.rigour.erp.api.v1.model.SpecificationView;
-import com.rigour.erp.api.v1.model.SpecificationValueView;
-import com.rigour.erp.api.v1.model.TagView;
 import com.rigour.erp.application.port.out.ProductMasterDataStore;
-import com.rigour.erp.application.port.out.ProductMediaUrlResolver;
+import com.rigour.erp.domain.code.ErpBusinessCodeRules;
 import com.rigour.erp.domain.model.product.Brand;
 import com.rigour.erp.domain.model.product.Category;
 import com.rigour.erp.domain.model.product.MasterDataObjectType;
@@ -26,528 +12,179 @@ import com.rigour.erp.domain.model.product.Sku;
 import com.rigour.erp.domain.model.product.Specification;
 import com.rigour.erp.domain.model.product.SpecificationValue;
 import com.rigour.erp.domain.model.product.Tag;
-import com.rigour.erp.infrastructure.persistence.entity.BrandEntity;
-import com.rigour.erp.infrastructure.persistence.entity.CategoryEntity;
-import com.rigour.erp.infrastructure.persistence.entity.MasterDataSyncRunEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProductBrandEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProductCategoryEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProductEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProductSpecificationEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProductSpecificationValueEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProductTagEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProductVariantEntity;
 import com.rigour.erp.infrastructure.persistence.entity.MasterDataSyncLockEntity;
+import com.rigour.erp.infrastructure.persistence.entity.MasterDataSyncRunEntity;
 import com.rigour.erp.infrastructure.persistence.entity.MasterSourceBindingEntity;
-import com.rigour.erp.infrastructure.persistence.entity.ProductCustomFieldEntity;
-import com.rigour.erp.infrastructure.persistence.entity.ProductImageEntity;
-import com.rigour.erp.infrastructure.persistence.entity.ProductInventoryPolicyEntity;
-import com.rigour.erp.infrastructure.persistence.entity.ProductPriceEntity;
-import com.rigour.erp.infrastructure.persistence.entity.ProductSkuEntity;
-import com.rigour.erp.infrastructure.persistence.entity.ProductSkuSpecificationValueEntity;
-import com.rigour.erp.infrastructure.persistence.entity.ProductSpuCategoryEntity;
-import com.rigour.erp.infrastructure.persistence.entity.ProductSpuEntity;
-import com.rigour.erp.infrastructure.persistence.entity.ProductSpuSpecificationEntity;
-import com.rigour.erp.infrastructure.persistence.entity.ProductTagEntity;
-import com.rigour.erp.infrastructure.persistence.entity.ProductUnitEntity;
-import com.rigour.erp.infrastructure.persistence.entity.SpecificationEntity;
-import com.rigour.erp.infrastructure.persistence.entity.SpecificationValueEntity;
-import com.rigour.erp.infrastructure.persistence.entity.TagGroupEntity;
-import com.rigour.erp.infrastructure.persistence.mapper.BrandMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.CategoryMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.MasterDataSyncRunMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProductBrandMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProductCategoryMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProductMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProductSpecificationMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProductSpecificationValueMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProductTagMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProductVariantMapper;
 import com.rigour.erp.infrastructure.persistence.mapper.MasterDataSyncLockMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.MasterDataSyncRunMapper;
 import com.rigour.erp.infrastructure.persistence.mapper.MasterSourceBindingMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.ProductCustomFieldMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.ProductImageMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.ProductInventoryPolicyMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.ProductPriceMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.ProductSkuMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.ProductSkuSpecificationValueMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.ProductSpuCategoryMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.ProductSpuMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.ProductSpuSpecificationMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.ProductTagMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.ProductUnitMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.SpecificationMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.SpecificationValueMapper;
-import com.rigour.erp.infrastructure.persistence.mapper.TagGroupMapper;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand;
+import com.rigour.shared.core.code.BusinessCodeGenerator;
+import com.rigour.shared.core.code.BusinessCodeRule;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.Duration;
 import java.time.ZoneOffset;
-import java.util.HexFormat;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
-import java.util.stream.Collectors;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * ERP 商品主数据 MyBatis-Plus Repository。
+ * ERP 商品订货宝同步仓储。
  *
- * <p>结构和 order-center 的 MybatisPlus*Repository 保持一致：Entity 只描述表，Mapper 只负责表操作，
- * 本类负责 ERP 聚合的查询组装、来源幂等绑定和事务边界。订货宝来源不会直接覆盖 ERP 内部状态。</p>
+ * <p>该仓储只写 ERP 自研业务表和来源绑定表；旧的订货宝投影表不再参与同步链路。</p>
  */
 @Repository
 public class MybatisPlusProductMasterDataRepository implements ProductMasterDataStore {
-    private static final Logger log = LoggerFactory.getLogger(MybatisPlusProductMasterDataRepository.class);
     private static final String SOURCE_SYSTEM = "DINGHUOBAO";
-    private static final String EXTERNAL_PRIMARY = "EXTERNAL_PRIMARY";
-    private static final ObjectMapper SOURCE_FIELDS_MAPPER = JsonMapper.builder()
+    private static final String INTEGRATION_SOURCE_SYSTEM = "DHB";
+    private static final String SYNC_ACTOR = "DHB_SYNC";
+    private static final String TRIGGER_MANUAL = "MANUAL";
+    private static final String TRIGGER_SCHEDULED = "SCHEDULED";
+    private static final String PRESENT = "PRESENT";
+    private static final String SOURCE_ABSENT = "SOURCE_ABSENT";
+    private static final long RUN_LEASE_MINUTES = 30;
+    private static final ObjectMapper JSON = JsonMapper.builder()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .build();
 
-    private final ProductSpuMapper productSpuMapper;
-    private final ProductSkuMapper productSkuMapper;
-    private final CategoryMapper categoryMapper;
-    private final BrandMapper brandMapper;
-    private final SpecificationMapper specificationMapper;
-    private final SpecificationValueMapper specificationValueMapper;
-    private final ProductTagMapper productTagMapper;
-    private final TagGroupMapper tagGroupMapper;
-    private final ProductImageMapper productImageMapper;
-    private final ProductPriceMapper productPriceMapper;
-    private final ProductUnitMapper productUnitMapper;
-    private final ProductInventoryPolicyMapper productInventoryPolicyMapper;
-    private final ProductCustomFieldMapper productCustomFieldMapper;
-    private final ProductSpuCategoryMapper productSpuCategoryMapper;
-    private final ProductSpuSpecificationMapper productSpuSpecificationMapper;
-    private final ProductSkuSpecificationValueMapper productSkuSpecificationValueMapper;
+    private final InternalProductCategoryMapper categoryMapper;
+    private final InternalProductBrandMapper brandMapper;
+    private final InternalProductSpecificationMapper specificationMapper;
+    private final InternalProductSpecificationValueMapper specificationValueMapper;
+    private final InternalProductTagMapper tagMapper;
+    private final InternalProductMapper productMapper;
+    private final InternalProductVariantMapper variantMapper;
     private final MasterSourceBindingMapper bindingMapper;
     private final MasterDataSyncRunMapper syncRunMapper;
     private final MasterDataSyncLockMapper syncLockMapper;
-    private final ProductMediaUrlResolver productMediaUrlResolver;
+    private final BusinessCodeGenerator codeGenerator = new BusinessCodeGenerator();
     private final Clock clock;
 
     public MybatisPlusProductMasterDataRepository(
-            ProductSpuMapper productSpuMapper,
-            ProductSkuMapper productSkuMapper,
-            CategoryMapper categoryMapper,
-            BrandMapper brandMapper,
-            SpecificationMapper specificationMapper,
-            SpecificationValueMapper specificationValueMapper,
-            ProductTagMapper productTagMapper,
-            TagGroupMapper tagGroupMapper,
-            ProductImageMapper productImageMapper,
-            ProductPriceMapper productPriceMapper,
-            ProductUnitMapper productUnitMapper,
-            ProductInventoryPolicyMapper productInventoryPolicyMapper,
-            ProductCustomFieldMapper productCustomFieldMapper,
-            ProductSpuCategoryMapper productSpuCategoryMapper,
-            ProductSpuSpecificationMapper productSpuSpecificationMapper,
-            ProductSkuSpecificationValueMapper productSkuSpecificationValueMapper,
+            InternalProductCategoryMapper categoryMapper,
+            InternalProductBrandMapper brandMapper,
+            InternalProductSpecificationMapper specificationMapper,
+            InternalProductSpecificationValueMapper specificationValueMapper,
+            InternalProductTagMapper tagMapper,
+            InternalProductMapper productMapper,
+            InternalProductVariantMapper variantMapper,
             MasterSourceBindingMapper bindingMapper,
             MasterDataSyncRunMapper syncRunMapper,
             MasterDataSyncLockMapper syncLockMapper,
-            ProductMediaUrlResolver productMediaUrlResolver,
             Clock clock) {
-        this.productSpuMapper = productSpuMapper;
-        this.productSkuMapper = productSkuMapper;
         this.categoryMapper = categoryMapper;
         this.brandMapper = brandMapper;
         this.specificationMapper = specificationMapper;
         this.specificationValueMapper = specificationValueMapper;
-        this.productTagMapper = productTagMapper;
-        this.tagGroupMapper = tagGroupMapper;
-        this.productImageMapper = productImageMapper;
-        this.productPriceMapper = productPriceMapper;
-        this.productUnitMapper = productUnitMapper;
-        this.productInventoryPolicyMapper = productInventoryPolicyMapper;
-        this.productCustomFieldMapper = productCustomFieldMapper;
-        this.productSpuCategoryMapper = productSpuCategoryMapper;
-        this.productSpuSpecificationMapper = productSpuSpecificationMapper;
-        this.productSkuSpecificationValueMapper = productSkuSpecificationValueMapper;
+        this.tagMapper = tagMapper;
+        this.productMapper = productMapper;
+        this.variantMapper = variantMapper;
         this.bindingMapper = bindingMapper;
         this.syncRunMapper = syncRunMapper;
         this.syncLockMapper = syncLockMapper;
-        this.productMediaUrlResolver = productMediaUrlResolver;
         this.clock = clock;
-    }
-
-    @Override
-    public ProductPageView products(String tenantId, int begin, int step, String query,
-                                   String internalStatus, String sourcePutaway) {
-        QueryWrapper<ProductSpuEntity> wrapper = Wrappers.<ProductSpuEntity>query()
-                .eq("tenant_id", tenantId);
-        if (!missing(query)) {
-            String like = "%" + query.strip() + "%";
-            wrapper.and(w -> w.like("spu_code", like).or().like("name", like)
-                    .or().like("default_barcode", like));
-        }
-        if (!missing(internalStatus)) wrapper.eq("internal_status", internalStatus.strip());
-        applySourcePutaway(wrapper, tenantId, "PRODUCT_SPU", sourcePutaway, "id");
-        long total = productSpuMapper.selectCount(wrapper);
-        List<ProductSpuEntity> page = productSpuMapper.selectList(wrapper
-                .orderByDesc("updated_at").orderByAsc("id").last(limitSql(begin, step)));
-        Map<String, MasterSourceBindingEntity> bindings = bindingMap(tenantId, "PRODUCT_SPU",
-                ids(page, item -> item.id));
-        Set<String> brandIds = ids(page, item -> item.brandId);
-        Map<String, BrandEntity> brands = brandIds.isEmpty() ? Map.of() : byId(
-                brandMapper.selectList(Wrappers.<BrandEntity>query()
-                        .eq("tenant_id", tenantId).in("id", brandIds)), item -> item.id);
-        Map<String, CategoryEntity> categories = primaryCategories(tenantId, page);
-        ProductViewDetails details = productViewDetails(tenantId, ids(page, item -> item.id));
-        List<ProductView> views = page.stream().map(item -> toProductView(item,
-                sourceBinding(bindings, item.id), brands, categories, details)).toList();
-        return new ProductPageView(total, begin, step, views);
-    }
-
-    @Override
-    public SkuPageView skus(String tenantId, int begin, int step, String query,
-                            String internalStatus, String sourcePutaway) {
-        QueryWrapper<ProductSkuEntity> wrapper = Wrappers.<ProductSkuEntity>query()
-                .eq("tenant_id", tenantId);
-        if (!missing(internalStatus)) wrapper.eq("internal_status", internalStatus.strip());
-        if (!missing(query)) {
-            String like = "%" + query.strip() + "%";
-            wrapper.and(w -> w.like("sku_code", query.strip()).or().like("barcode", query.strip())
-                    .or().apply("EXISTS (SELECT 1 FROM erp_product_spu p "
-                            + "WHERE p.tenant_id = {0} AND p.id = spu_id "
-                            + "AND (p.spu_code LIKE {1} OR p.name LIKE {1}))", tenantId, like));
-        }
-        if (!missing(sourcePutaway)) {
-            String putaway = sourcePutaway.strip();
-            wrapper.and(w -> w.apply("EXISTS (SELECT 1 FROM erp_master_source_binding b "
-                            + "WHERE b.tenant_id = {0} AND b.source_system = 'DINGHUOBAO' "
-                            + "AND b.source_object_type = 'PRODUCT_SKU' AND b.target_id = id "
-                            + "AND b.source_putaway = {1})", tenantId, putaway)
-                    .or().apply("EXISTS (SELECT 1 FROM erp_master_source_binding b "
-                            + "WHERE b.tenant_id = {0} AND b.source_system = 'DINGHUOBAO' "
-                            + "AND b.source_object_type = 'PRODUCT_SPU' AND b.target_id = spu_id "
-                            + "AND b.source_putaway = {1})", tenantId, putaway));
-        }
-        long total = productSkuMapper.selectCount(wrapper);
-        List<ProductSkuEntity> page = productSkuMapper.selectList(wrapper
-                .orderByDesc("updated_at").orderByAsc("id").last(limitSql(begin, step)));
-        Set<String> spuIds = ids(page, item -> item.spuId);
-        Map<String, ProductSpuEntity> products = spuIds.isEmpty() ? Map.of() : byId(productSpuMapper.selectList(
-                Wrappers.<ProductSpuEntity>query().eq("tenant_id", tenantId).in("id", spuIds)), item -> item.id);
-        Map<String, MasterSourceBindingEntity> skuBindings = bindingMap(tenantId, "PRODUCT_SKU",
-                ids(page, item -> item.id));
-        Map<String, MasterSourceBindingEntity> productBindings = bindingMap(tenantId, "PRODUCT_SPU", spuIds);
-        Map<String, PriceValues> skuPrices = pricesByTarget(tenantId, "SKU", ids(page, item -> item.id));
-        Map<String, Map<String, ProductUnitEntity>> productUnits = unitsByTarget(tenantId, "SPU", spuIds);
-        List<SkuView> views = page.stream().map(item -> {
-            ProductSpuEntity product = products.get(item.spuId);
-            if (product == null) return null;
-            MasterSourceBindingEntity binding = sourceBinding(skuBindings, item.id);
-            if (binding == null) binding = sourceBinding(productBindings, item.spuId);
-            PriceValues prices = skuPrices.getOrDefault(item.id, PriceValues.empty());
-            return skuView(item, product, binding, prices,
-                    productUnits.getOrDefault(product.id, Map.of()));
-        }).filter(Objects::nonNull).toList();
-        return new SkuPageView(total, begin, step, views);
-    }
-
-    @Override
-    public MasterDataPageView<CategoryView> categories(String tenantId, int begin, int step,
-                                                       String query, String status) {
-        QueryWrapper<CategoryEntity> wrapper = simpleWrapper(tenantId, query, status,
-                "category_code", "name");
-        long total = categoryMapper.selectCount(wrapper);
-        List<CategoryEntity> page = categoryMapper.selectList(wrapper.orderByAsc("sort_order")
-                .orderByAsc("name").orderByAsc("id").last(limitSql(begin, step)));
-        Map<String, MasterSourceBindingEntity> bindings = bindingMap(tenantId, "CATEGORY",
-                ids(page, item -> item.id));
-        List<CategoryView> views = page.stream().map(item -> {
-            MasterSourceBindingEntity binding = sourceBinding(bindings, item.id);
-            return new CategoryView(item.id, binding == null ? null : binding.sourceObjectId,
-                    binding == null ? null : binding.sourceCode, item.categoryCode, item.name,
-                    item.parentId, value(item.categoryLevel, 1),
-                    item.sourceParentId, item.sourceCategoryNumber, item.sourceDefaultFlag,
-                    item.status, item.ownershipState, instant(binding == null ? null : binding.syncedAt));
-        }).toList();
-        return new MasterDataPageView<>(total, begin, step, views);
-    }
-
-    @Override
-    public MasterDataPageView<BrandView> brands(String tenantId, int begin, int step,
-                                                String query, String status) {
-        QueryWrapper<BrandEntity> wrapper = simpleWrapper(tenantId, query, status,
-                "brand_code", "name");
-        long total = brandMapper.selectCount(wrapper);
-        List<BrandEntity> page = brandMapper.selectList(wrapper.orderByAsc("name")
-                .orderByAsc("id").last(limitSql(begin, step)));
-        Map<String, MasterSourceBindingEntity> bindings = bindingMap(tenantId, "BRAND",
-                ids(page, item -> item.id));
-        List<BrandView> views = page.stream().map(item -> {
-            MasterSourceBindingEntity binding = sourceBinding(bindings, item.id);
-            return new BrandView(item.id, binding == null ? null : binding.sourceObjectId,
-                    binding == null ? null : binding.sourceCode, item.brandCode, item.name,
-                    item.sourceBrandNumber, item.sourceSortOrder,
-                    item.sourceDescription, item.status, item.ownershipState,
-                    instant(binding == null ? null : binding.syncedAt));
-        }).toList();
-        return new MasterDataPageView<>(total, begin, step, views);
-    }
-
-    @Override
-    public MasterDataPageView<SpecificationView> specifications(String tenantId, int begin, int step,
-                                                                String query, String status) {
-        QueryWrapper<SpecificationEntity> wrapper = simpleWrapper(tenantId, query, status,
-                "specification_code", "name");
-        long total = specificationMapper.selectCount(wrapper);
-        List<SpecificationEntity> page = specificationMapper.selectList(wrapper.orderByAsc("name")
-                .orderByAsc("id").last(limitSql(begin, step)));
-        Map<String, MasterSourceBindingEntity> bindings = bindingMap(tenantId, "SPECIFICATION",
-                ids(page, item -> item.id));
-        Set<String> specificationIds = ids(page, item -> item.id);
-        Map<String, List<SpecificationValueView>> values = specificationValues(tenantId, specificationIds);
-        List<SpecificationView> views = page.stream().map(item -> {
-            MasterSourceBindingEntity binding = sourceBinding(bindings, item.id);
-            List<SpecificationValueView> specificationValues = values.getOrDefault(item.id, List.of());
-            int count = specificationValues.size();
-            return new SpecificationView(item.id, binding == null ? null : binding.sourceObjectId,
-                    item.specificationCode, item.name, item.sourceParentId, count, specificationValues,
-                    item.status,
-                    item.ownershipState, instant(binding == null ? null : binding.syncedAt));
-        }).toList();
-        return new MasterDataPageView<>(total, begin, step, views);
-    }
-
-    @Override
-    public MasterDataPageView<TagView> tags(String tenantId, int begin, int step,
-                                           String query, String status) {
-        QueryWrapper<ProductTagEntity> wrapper = simpleWrapper(tenantId, query, status,
-                "tag_code", "name");
-        long total = productTagMapper.selectCount(wrapper);
-        List<ProductTagEntity> page = productTagMapper.selectList(wrapper.orderByAsc("name")
-                .orderByAsc("id").last(limitSql(begin, step)));
-        Map<String, MasterSourceBindingEntity> bindings = bindingMap(tenantId, "TAG",
-                ids(page, item -> item.id));
-        List<TagView> views = page.stream().map(item -> {
-            MasterSourceBindingEntity binding = sourceBinding(bindings, item.id);
-            return new TagView(item.id, binding == null ? null : binding.sourceObjectId,
-                    item.tagCode, item.name, item.sourceGroupId, item.sourceGroupName,
-                    item.sourceSortOrder, item.sourceRelationCount, instant(item.sourceCreatedAt),
-                    instant(item.sourceUpdatedAt), item.color, item.status, item.ownershipState,
-                    instant(binding == null ? null : binding.syncedAt));
-        }).toList();
-        return new MasterDataPageView<>(total, begin, step, views);
     }
 
     @Override
     @Transactional
     public UUID startRun(String tenantId, UUID connectorId, UUID actorId,
                          MasterDataObjectType objectType, int maxPages) {
-        return startRun(tenantId, connectorId, actorId, objectType, maxPages, "MANUAL");
+        return startRun(tenantId, connectorId, actorId, objectType, maxPages, TRIGGER_MANUAL);
     }
 
     @Override
     @Transactional
     public UUID startScheduledRun(String tenantId, UUID connectorId, UUID actorId,
                                   MasterDataObjectType objectType, int maxPages) {
-        return startRun(tenantId, connectorId, actorId, objectType, maxPages, "SCHEDULED");
+        return startRun(tenantId, connectorId, actorId, objectType, maxPages, TRIGGER_SCHEDULED);
     }
 
-    private UUID startRun(String tenantId, UUID connectorId, UUID actorId,
-                          MasterDataObjectType objectType, int maxPages, String triggerType) {
-        UUID id = UUID.randomUUID();
-        LocalDateTime now = now();
-        acquireRunLock(tenantId, objectType.name(), id, now);
-        MasterDataSyncRunEntity entity = new MasterDataSyncRunEntity();
-        entity.id = id.toString();
-        entity.tenantId = tenantId;
-        entity.connectorId = connectorId == null ? null : connectorId.toString();
-        entity.sourceSystem = SOURCE_SYSTEM;
-        entity.objectType = objectType.name();
-        entity.triggerType = triggerType;
-        entity.status = "RUNNING";
-        entity.maxPages = maxPages;
-        entity.pageSize = 1000;
-        entity.startedAt = now;
-        entity.createdBy = text(actorId);
-        entity.createdAt = now;
-        entity.updatedAt = now;
-        syncRunMapper.insert(entity);
-        return id;
-    }
-
-    @Transactional
     @Override
+    @Transactional
     public ImportResult importCategory(String tenantId, UUID runId, Category category) {
         if (missing(category.sourceId()) || missing(category.name())) return ImportResult.rejected(1);
-        BindingResult result = upsertCategory(tenantId, runId, category);
-        CategoryEntity entity = categoryMapper.selectById(result.targetId());
-        if (entity != null && !Objects.equals(tenantId, entity.tenantId)) entity = null;
-        if (entity != null && externalPrimary(entity.ownershipState)
-                && (result.importResult().created() > 0 || result.importResult().changed() > 0)) {
-            entity.sourceParentId = category.parentSourceId();
-            entity.parentId = resolveTarget(tenantId, "CATEGORY", category.parentSourceId());
-            entity.sourceCategoryNumber = category.categoryNumber();
-            entity.sourceDefaultFlag = category.defaultCategory();
-            entity.updatedAt = now();
-            categoryMapper.updateById(entity);
-        }
-        return result.importResult();
+        return upsertCategory(tenantId, runId, category).result();
     }
 
-    @Transactional
     @Override
+    @Transactional
     public ImportResult importBrand(String tenantId, UUID runId, Brand brand) {
         if (missing(brand.sourceId()) || missing(brand.name())) return ImportResult.rejected(1);
-        BindingResult result = upsertBrand(tenantId, runId, brand);
-        BrandEntity entity = brandMapper.selectById(result.targetId());
-        if (entity != null && !Objects.equals(tenantId, entity.tenantId)) entity = null;
-        if (entity != null && externalPrimary(entity.ownershipState)
-                && (result.importResult().created() > 0 || result.importResult().changed() > 0)) {
-            entity.sourceBrandNumber = brand.brandNumber();
-            entity.sourceSortOrder = brand.sortOrder();
-            entity.sourceDescription = brand.description();
-            entity.updatedAt = now();
-            brandMapper.updateById(entity);
-        }
-        return result.importResult();
+        return upsertBrand(tenantId, runId, brand).result();
     }
 
-    @Transactional
     @Override
+    @Transactional
     public ImportResult importTag(String tenantId, UUID runId, Tag tag) {
         if (missing(tag.sourceId()) || missing(tag.name())) return ImportResult.rejected(1);
-        upsertTagGroup(tenantId, runId, tag);
-        BindingResult result = upsertTag(tenantId, runId, tag);
-        ProductTagEntity entity = productTagMapper.selectById(result.targetId());
-        if (entity != null && !Objects.equals(tenantId, entity.tenantId)) entity = null;
-        if (entity != null && externalPrimary(entity.ownershipState)
-                && (result.importResult().created() > 0 || result.importResult().changed() > 0)) {
-            entity.tagGroupId = resolveTarget(tenantId, "TAG_GROUP", tag.groupSourceId());
-            entity.sourceGroupId = tag.groupSourceId();
-            entity.sourceGroupName = tag.groupName();
-            entity.sourceSortOrder = tag.sortOrder();
-            entity.sourceRelationCount = tag.relationCount();
-            entity.sourceCreatedAt = local(tag.createdAt());
-            entity.sourceUpdatedAt = local(tag.updatedAt());
-            entity.updatedAt = now();
-            productTagMapper.updateById(entity);
-        }
-        return result.importResult();
+        return upsertTag(tenantId, runId, tag).result();
     }
 
-    @Transactional
     @Override
-    public ImportResult importSpecification(String tenantId, UUID runId,
-                                            Specification specification) {
+    @Transactional
+    public ImportResult importSpecification(String tenantId, UUID runId, Specification specification) {
         if (missing(specification.sourceId()) || missing(specification.name())) {
             return ImportResult.rejected(1);
         }
-        BindingResult result = upsertSpecification(tenantId, runId, specification);
-        SpecificationEntity entity = specificationMapper.selectById(result.targetId());
-        if (entity != null && !Objects.equals(tenantId, entity.tenantId)) entity = null;
-        if (entity == null) return result.importResult().plus(
-                ImportResult.rejected(specification.values().size()));
-        if (externalPrimary(entity.ownershipState)
-                && (result.importResult().created() > 0 || result.importResult().changed() > 0)) {
-            entity.sourceParentId = specification.parentSourceId();
-            entity.updatedAt = now();
-            specificationMapper.updateById(entity);
-        }
-        ImportResult total = result.importResult();
+        UpsertResult spec = upsertSpecification(tenantId, runId, specification);
+        ImportResult result = spec.result();
         for (SpecificationValue value : specification.values()) {
-            total = total.plus(importSpecificationValue(tenantId, runId, entity.id, value));
+            if (missing(value.sourceId()) || missing(value.name())) {
+                result = result.plus(ImportResult.rejected(1));
+            } else {
+                result = result.plus(upsertSpecificationValue(tenantId, runId, spec.id(), value).result());
+            }
         }
-        return total;
+        return result;
     }
 
-    @Transactional
     @Override
+    @Transactional
     public ImportResult importProduct(String tenantId, UUID runId, Product product) {
         if (missing(product.sourceId()) || missing(product.name())) return ImportResult.rejected(1);
-        MasterSourceBindingEntity existingBinding = binding(tenantId, "PRODUCT_SPU", product.sourceId());
-        boolean payloadChanged = existingBinding == null
-                || !Objects.equals(existingBinding.sourcePayloadHash, requiredHash(product.payloadHash()))
-                || "SOURCE_ABSENT".equals(existingBinding.sourcePresence);
-        String spuId = existingBinding == null ? UUID.randomUUID().toString() : existingBinding.targetId;
-        ProductSpuEntity existing = existingBinding == null ? null : productSpuMapper.selectById(spuId);
-        if (existing != null && !Objects.equals(tenantId, existing.tenantId)) existing = null;
-        String productSourceFieldsJson = sourceFieldsJson(product.sourceFields());
-        boolean sourcePayloadNeedsRepair = existing != null && !payloadChanged
-                && !Objects.equals(existing.attributesJson, productSourceFieldsJson);
-        boolean productNeedsRepair = existing != null && !payloadChanged
-                && externalPrimary(existing.ownershipState)
-                && !productAuxiliaryComplete(tenantId, spuId, product);
-        if (existing != null && !payloadChanged && !productNeedsRepair && !sourcePayloadNeedsRepair) {
-            // 商品摘要未变化且本地商品辅助数据完整时，不写商品；仍继续检查 SKU，避免漏修复 SKU 辅助数据。
-            ImportResult result = ImportResult.duplicate(1);
-            for (Sku sku : product.skus()) result = result.plus(importSku(tenantId, runId, spuId, product, sku));
+        UpsertResult upserted = upsertProduct(tenantId, runId, product);
+        ImportResult result = upserted.result();
+        if (product.skus().isEmpty()) {
             return result;
         }
-        LocalDateTime now = now();
-        String brandId = resolveTarget(tenantId, "BRAND", product.brandSourceId());
-        String categoryId = resolveTarget(tenantId, "CATEGORY", product.categorySourceId());
-        boolean external = existing == null || externalPrimary(existing.ownershipState);
-        ProductSpuEntity entity = existing == null ? new ProductSpuEntity() : existing;
-        if (existing == null) {
-            entity.id = spuId;
-            entity.tenantId = tenantId;
-            entity.spuCode = uniqueSpuCode(tenantId, product.code(), product.sourceId());
-            entity.ownershipState = EXTERNAL_PRIMARY;
-            entity.internalStatus = putawayStatus(product.putaway());
-            entity.recordOrigin = "IMPORTED";
-            entity.version = 0L;
-            entity.createdAt = now;
-            entity.createdBy = null;
+        for (Sku sku : product.skus()) {
+            if (missing(sku.sourceId()) || (missing(sku.code()) && missing(sku.barcode()))) {
+                result = result.plus(ImportResult.rejected(1));
+            } else {
+                result = result.plus(upsertVariant(tenantId, runId, upserted.id(), product, sku).result());
+            }
         }
-        if (external && (existing == null || payloadChanged)) {
-            entity.name = product.name();
-            entity.model = product.model();
-            entity.subtitle = product.subtitle();
-            entity.keywords = product.keywords();
-            entity.goodsAllocation = product.allocation();
-            entity.mainImageKey = product.mainImageKey();
-            entity.sourceMultiId = product.multiId();
-            entity.sourceCategoryId = product.categorySourceId();
-            entity.sourceBrandId = product.brandSourceId();
-            entity.conversionBarcode = product.conversionBarcode();
-            entity.brandId = brandId;
-            entity.baseUnit = product.unit();
-            entity.defaultBarcode = product.barcode();
-            entity.minimumOrder = product.minimumOrder();
-            entity.minimumOrderUnit = product.minimumOrderUnit();
-            entity.attributesJson = productSourceFieldsJson;
-            entity.internalStatus = putawayStatus(product.putaway());
-            if (existing != null) entity.version = nextVersion(entity.version);
-            entity.updatedAt = now;
-        } else if (existing != null && (payloadChanged || sourcePayloadNeedsRepair)) {
-            entity.attributesJson = productSourceFieldsJson;
-            entity.updatedAt = now;
-        } else if (existing != null) {
-            entity.updatedAt = now;
-        }
-        if (existing == null) productSpuMapper.insert(entity);
-        else if (payloadChanged || sourcePayloadNeedsRepair) productSpuMapper.updateById(entity);
-        upsertBinding(tenantId, runId, "PRODUCT_SPU", product.sourceId(), "SPU", spuId,
-                product.code(), product.name(), null, product.putaway(), product.payloadHash(), now);
-        if (external && categoryId != null) assignPrimaryCategory(tenantId, spuId, categoryId, now);
-        if (external && (existing == null || payloadChanged || productNeedsRepair)) {
-            upsertProductAuxiliary(tenantId, spuId, product, now);
-        }
-
-        ImportResult result = existing == null ? ImportResult.created(1)
-                : payloadChanged || productNeedsRepair ? ImportResult.changed(1) : ImportResult.duplicate(1);
-        if (existing != null && payloadChanged) {
-            log.info("ERP商品来源字段发生变化 tenantId={} runId={} sourceId={} targetId={} version={}",
-                    tenantId, runId, product.sourceId(), spuId, entity.version);
-        }
-        if (productNeedsRepair) {
-            log.info("ERP商品本地辅助数据不完整，执行同步修复 tenantId={} runId={} sourceId={} targetId={}",
-                    tenantId, runId, product.sourceId(), spuId);
-        }
-        log.debug("ERP商品主数据幂等落库 tenantId={} runId={} sourceId={} targetId={} result={}",
-                tenantId, runId, product.sourceId(), spuId,
-                productNeedsRepair ? "REPAIRED" : importAction(existing, payloadChanged));
-        for (Sku sku : product.skus()) result = result.plus(importSku(tenantId, runId, spuId, product, sku));
         return result;
     }
 
@@ -556,8 +193,8 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     public void reconcileSourcePresence(String tenantId, UUID runId,
                                         Map<String, Set<String>> seenSourceIds) {
         LocalDateTime now = now();
-        seenSourceIds.forEach((sourceType, seenIds) -> {
-            Set<String> seen = seenIds == null ? Set.of() : seenIds;
+        seenSourceIds.forEach((sourceType, values) -> {
+            Set<String> seen = values == null ? Set.of() : values;
             List<MasterSourceBindingEntity> bindings = bindingMapper.selectList(
                     Wrappers.<MasterSourceBindingEntity>query()
                             .eq("tenant_id", tenantId)
@@ -565,8 +202,11 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                             .eq("source_object_type", sourceType));
             for (MasterSourceBindingEntity binding : bindings) {
                 boolean present = seen.contains(binding.sourceObjectId);
-                String desired = present ? "PRESENT" : "SOURCE_ABSENT";
-                if (Objects.equals(desired, binding.sourcePresence)) continue;
+                if (!present) {
+                    softDeleteAbsentTarget(tenantId, binding, now);
+                }
+                String desired = present ? PRESENT : SOURCE_ABSENT;
+                if (Objects.equals(binding.sourcePresence, desired)) continue;
                 binding.sourcePresence = desired;
                 binding.sourceAbsentAt = present ? null : now;
                 binding.lastSyncRunId = text(runId);
@@ -577,12 +217,59 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         });
     }
 
+    private void softDeleteAbsentTarget(String tenantId, MasterSourceBindingEntity binding,
+                                        LocalDateTime now) {
+        Long id = longTargetId(binding);
+        if (id == null) return;
+        if ("PRODUCT_SKU".equals(binding.sourceObjectType)) {
+            InternalProductVariantEntity variant = variantMapper.selectById(id);
+            if (valid(variant, tenantId) && sourceWritable(variant.getUpdatedBy())) {
+                softDeleteVariant(variant, now);
+            }
+            return;
+        }
+        if (!"PRODUCT_SPU".equals(binding.sourceObjectType)) return;
+        InternalProductEntity product = productMapper.selectById(id);
+        if (!valid(product, tenantId) || !sourceWritable(product.getUpdatedBy())) return;
+        for (InternalProductVariantEntity variant : variantMapper.selectList(
+                Wrappers.<InternalProductVariantEntity>lambdaQuery()
+                        .eq(InternalProductVariantEntity::getTenantId, tenantId)
+                        .eq(InternalProductVariantEntity::getProductId, product.getId())
+                        .eq(InternalProductVariantEntity::getDeleted, 0))) {
+            if (sourceWritable(variant.getUpdatedBy())) {
+                softDeleteVariant(variant, now);
+            }
+        }
+        product.setDeleted(1);
+        product.setUpdatedBy(SYNC_ACTOR);
+        product.setUpdatedTime(now);
+        product.setRevision(value(product.getRevision(), 1) + 1);
+        productMapper.updateById(product);
+    }
+
+    private void softDeleteVariant(InternalProductVariantEntity variant, LocalDateTime now) {
+        variant.setDeleted(1);
+        variant.setUpdatedBy(SYNC_ACTOR);
+        variant.setUpdatedTime(now);
+        variant.setRevision(value(variant.getRevision(), 1) + 1);
+        variantMapper.updateById(variant);
+    }
+
+    @Override
+    @Transactional
+    public void completeRunWithSourcePresence(String tenantId, UUID runId,
+                                              Map<String, Set<String>> seenSourceIds,
+                                              RunStatistics statistics) {
+        requireRunningRunForUpdate(tenantId, runId);
+        reconcileSourcePresence(tenantId, runId, seenSourceIds);
+        completeRun(tenantId, runId, statistics);
+    }
+
     @Override
     @Transactional
     public void completeRun(String tenantId, UUID runId, RunStatistics statistics) {
-        String status = statistics.dictionaryAudit().unmapped() == 0
-                ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
-        finishRun(tenantId, runId, status, statistics, null, null);
+        finishRun(tenantId, runId, statistics.dictionaryAudit().unmapped() == 0
+                ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS", statistics, null, null);
     }
 
     @Override
@@ -594,1290 +281,842 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 error.getClass().getSimpleName(), message);
     }
 
-    private BindingResult upsertCategory(String tenantId, UUID runId, Category value) {
-        MasterSourceBindingEntity existing = binding(tenantId, "CATEGORY", value.sourceId());
-        boolean changed = changed(existing, value.payloadHash());
-        String id = targetId(existing);
+    @Override
+    @Transactional
+    public void heartbeatRun(String tenantId, UUID runId) {
         LocalDateTime now = now();
-        CategoryEntity entity = existing == null ? new CategoryEntity() : categoryMapper.selectById(id);
-        if (entity != null && !Objects.equals(tenantId, entity.tenantId)) entity = null;
-        if (entity == null) {
-            entity = new CategoryEntity();
-            existing = null;
-        }
-        String sourceFieldsJson = sourceFieldsJson(value.sourceFields());
-        boolean sourceFieldsNeedRepair = existing != null
-                && !Objects.equals(entity.attributesJson, sourceFieldsJson);
-        if (existing == null) {
-            entity.id = id;
-            entity.tenantId = tenantId;
-            entity.categoryCode = uniqueCategoryCode(tenantId, value.externalReferenceId(), value.sourceId());
-            entity.categoryLevel = 1;
-            entity.sortOrder = 0;
-            entity.status = "ACTIVE";
-            entity.ownershipState = EXTERNAL_PRIMARY;
-            entity.recordOrigin = "IMPORTED";
-            entity.version = 0L;
-            entity.createdAt = now;
-            entity.updatedAt = now;
-            entity.createdBy = null;
-            entity.name = value.name();
-            entity.attributesJson = sourceFieldsJson;
-            categoryMapper.insert(entity);
-        } else if (changed && externalPrimary(entity.ownershipState)) {
-            entity.name = value.name();
-            entity.attributesJson = sourceFieldsJson;
-            entity.version = nextVersion(entity.version);
-            entity.updatedAt = now;
-            categoryMapper.updateById(entity);
-        } else if (changed || sourceFieldsNeedRepair) {
-            entity.attributesJson = sourceFieldsJson;
-            entity.updatedAt = now;
-            categoryMapper.updateById(entity);
-        }
-        upsertBinding(tenantId, runId, "CATEGORY", value.sourceId(), "CATEGORY", id,
-                value.externalReferenceId(), value.name(), null, null, value.payloadHash(), now);
-        return new BindingResult(id, result(existing, changed || sourceFieldsNeedRepair));
+        syncRunMapper.update(null, Wrappers.<MasterDataSyncRunEntity>update()
+                .eq("tenant_id", tenantId).eq("id", text(runId)).eq("status", "RUNNING")
+                .set("updated_at", now));
+        syncLockMapper.update(null, Wrappers.<MasterDataSyncLockEntity>update()
+                .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
+                .eq("run_id", text(runId))
+                .set("expires_at", now.plus(Duration.ofMinutes(RUN_LEASE_MINUTES))));
     }
 
-    private BindingResult upsertBrand(String tenantId, UUID runId, Brand value) {
-        MasterSourceBindingEntity existing = binding(tenantId, "BRAND", value.sourceId());
-        boolean changed = changed(existing, value.payloadHash());
-        String id = targetId(existing);
-        LocalDateTime now = now();
-        BrandEntity entity = existing == null ? new BrandEntity() : brandMapper.selectById(id);
-        if (entity != null && !Objects.equals(tenantId, entity.tenantId)) entity = null;
-        if (entity == null) {
-            entity = new BrandEntity();
-            existing = null;
+    @Override
+    public List<ExternalObjectMappingCommand> externalObjectMappings(
+            String tenantId, UUID connectorId, UUID runId, MasterDataObjectType objectType) {
+        if (objectType != MasterDataObjectType.PRODUCT_SPU) return List.of();
+        List<ExternalObjectMappingCommand> commands = new ArrayList<>();
+        for (MasterSourceBindingEntity binding : bindings(tenantId, "PRODUCT_SPU")) {
+            Long id = longTargetId(binding);
+            InternalProductEntity product = id == null ? null : productMapper.selectById(id);
+            if (product == null || !Objects.equals(tenantId, product.getTenantId())
+                    || value(product.getDeleted(), 0) != 0) continue;
+            commands.add(new ExternalObjectMappingCommand(connectorId, INTEGRATION_SOURCE_SYSTEM,
+                    "PRODUCT_SPU", binding.sourceObjectId, binding.sourceCode,
+                    "ERP", "PRODUCT", product.getId(), product.getProductCode(),
+                    "ACTIVE", runId, instant(binding.syncedAt), null,
+                    binding.sourcePayloadHash, null, "ERP商品同步映射"));
         }
-        String sourceFieldsJson = sourceFieldsJson(value.sourceFields());
-        boolean sourceFieldsNeedRepair = existing != null
-                && !Objects.equals(entity.attributesJson, sourceFieldsJson);
-        if (existing == null) {
-            entity.id = id;
-            entity.tenantId = tenantId;
-            entity.brandCode = uniqueBrandCode(tenantId, value.externalReferenceId(), value.sourceId());
-            entity.name = value.name();
-            entity.status = "ACTIVE";
-            entity.ownershipState = EXTERNAL_PRIMARY;
-            entity.recordOrigin = "IMPORTED";
-            entity.version = 0L;
-            entity.createdAt = now;
-            entity.updatedAt = now;
-            entity.attributesJson = sourceFieldsJson;
-            brandMapper.insert(entity);
-        } else if (changed && externalPrimary(entity.ownershipState)) {
-            entity.name = value.name();
-            entity.attributesJson = sourceFieldsJson;
-            entity.version = nextVersion(entity.version);
-            entity.updatedAt = now;
-            brandMapper.updateById(entity);
-        } else if (changed || sourceFieldsNeedRepair) {
-            entity.attributesJson = sourceFieldsJson;
-            entity.updatedAt = now;
-            brandMapper.updateById(entity);
+        for (MasterSourceBindingEntity binding : bindings(tenantId, "PRODUCT_SKU")) {
+            Long id = longTargetId(binding);
+            InternalProductVariantEntity variant = id == null ? null : variantMapper.selectById(id);
+            if (variant == null || !Objects.equals(tenantId, variant.getTenantId())
+                    || value(variant.getDeleted(), 0) != 0) continue;
+            commands.add(new ExternalObjectMappingCommand(connectorId, INTEGRATION_SOURCE_SYSTEM,
+                    "PRODUCT_SKU", binding.sourceObjectId, binding.sourceCode,
+                    "ERP", "PRODUCT_VARIANT", variant.getId(), variant.getVariantCode(),
+                    "ACTIVE", runId, instant(binding.syncedAt), null,
+                    binding.sourcePayloadHash, null, "ERP商品规格同步映射"));
         }
-        upsertBinding(tenantId, runId, "BRAND", value.sourceId(), "BRAND", id,
-                value.externalReferenceId(), value.name(), null, null, value.payloadHash(), now);
-        return new BindingResult(id, result(existing, changed || sourceFieldsNeedRepair));
+        return List.copyOf(commands);
     }
 
-    private BindingResult upsertTag(String tenantId, UUID runId, Tag value) {
-        MasterSourceBindingEntity existing = binding(tenantId, "TAG", value.sourceId());
-        boolean changed = changed(existing, value.payloadHash());
-        String id = targetId(existing);
+    private UpsertResult upsertCategory(String tenantId, UUID runId, Category value) {
+        MasterSourceBindingEntity binding = binding(tenantId, "CATEGORY", value.sourceId());
+        boolean changed = changed(binding, value.payloadHash());
+        Long id = longTargetId(binding);
+        InternalProductCategoryEntity entity = id == null ? null : categoryMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
         LocalDateTime now = now();
-        ProductTagEntity entity = existing == null ? new ProductTagEntity() : productTagMapper.selectById(id);
-        if (entity != null && !Objects.equals(tenantId, entity.tenantId)) entity = null;
-        if (entity == null) {
-            entity = new ProductTagEntity();
-            existing = null;
+        Long parentId = internalTargetId(tenantId, "CATEGORY", value.parentSourceId());
+        if (created) {
+            entity = new InternalProductCategoryEntity();
+            entity.setTenantId(tenantId);
+            entity.setCategoryCode(uniqueCategoryCode(tenantId));
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(now);
+            entity.setDeleted(0);
+            entity.setRevision(1);
         }
-        String sourceFieldsJson = sourceFieldsJson(value.sourceFields());
-        boolean sourceFieldsNeedRepair = existing != null
-                && !Objects.equals(entity.attributesJson, sourceFieldsJson);
-        if (existing == null) {
-            entity.id = id;
-            entity.tenantId = tenantId;
-            entity.tagCode = missing(value.code()) ? uniqueTagCode(tenantId, value.sourceId()) : value.code();
-            entity.name = value.name();
-            entity.status = "ACTIVE";
-            entity.ownershipState = EXTERNAL_PRIMARY;
-            entity.recordOrigin = "IMPORTED";
-            entity.version = 0L;
-            entity.createdAt = now;
-            entity.updatedAt = now;
-            entity.attributesJson = sourceFieldsJson;
-            productTagMapper.insert(entity);
-        } else if (changed && externalPrimary(entity.ownershipState)) {
-            entity.name = value.name();
-            entity.attributesJson = sourceFieldsJson;
-            entity.version = nextVersion(entity.version);
-            entity.updatedAt = now;
-            productTagMapper.updateById(entity);
-        } else if (changed || sourceFieldsNeedRepair) {
-            entity.attributesJson = sourceFieldsJson;
-            entity.updatedAt = now;
-            productTagMapper.updateById(entity);
+        if (created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || categoryNeedsRepair(entity, value, parentId)))) {
+            entity.setParentId(parentId);
+            entity.setCategoryName(value.name());
+            entity.setCategoryLevel(parentLevel(tenantId, parentId));
+            entity.setOrdinal(value.defaultCategory() != null && value.defaultCategory() ? -1 : 0);
+            entity.setRemark(sourceRemark(value.sourceFields()));
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) categoryMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                categoryMapper.updateById(entity);
+            }
         }
-        upsertBinding(tenantId, runId, "TAG", value.sourceId(), "TAG", id,
-                value.code(), value.name(), null, null, value.payloadHash(), now);
-        return new BindingResult(id, result(existing, changed || sourceFieldsNeedRepair));
+        upsertBinding(tenantId, runId, "CATEGORY", value.sourceId(), "PRODUCT_CATEGORY",
+                entity.getId(), value.externalReferenceId(), value.name(), null, null,
+                value.payloadHash(), now);
+        return new UpsertResult(entity.getId(), importResult(binding, created, changed));
     }
 
-    private BindingResult upsertSpecification(String tenantId, UUID runId, Specification value) {
-        MasterSourceBindingEntity existing = binding(tenantId, "SPECIFICATION", value.sourceId());
-        boolean changed = changed(existing, value.payloadHash());
-        String id = targetId(existing);
+    private UpsertResult upsertBrand(String tenantId, UUID runId, Brand value) {
+        MasterSourceBindingEntity binding = binding(tenantId, "BRAND", value.sourceId());
+        boolean changed = changed(binding, value.payloadHash());
+        Long id = longTargetId(binding);
+        InternalProductBrandEntity entity = id == null ? null : brandMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
         LocalDateTime now = now();
-        SpecificationEntity entity = existing == null ? new SpecificationEntity()
-                : specificationMapper.selectById(id);
-        if (entity != null && !Objects.equals(tenantId, entity.tenantId)) entity = null;
-        if (entity == null) {
-            entity = new SpecificationEntity();
-            existing = null;
+        if (created) {
+            entity = new InternalProductBrandEntity();
+            entity.setTenantId(tenantId);
+            entity.setBrandCode(uniqueBrandCode(tenantId));
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(now);
+            entity.setDeleted(0);
+            entity.setRevision(1);
         }
-        String sourceFieldsJson = sourceFieldsJson(value.sourceFields());
-        boolean sourceFieldsNeedRepair = existing != null
-                && !Objects.equals(entity.attributesJson, sourceFieldsJson);
-        if (existing == null) {
-            entity.id = id;
-            entity.tenantId = tenantId;
-            entity.specificationCode = missing(value.code())
-                    ? "DHB-SPEC-" + shortHash(value.sourceId()) : value.code();
-            entity.name = value.name();
-            entity.status = "ACTIVE";
-            entity.ownershipState = EXTERNAL_PRIMARY;
-            entity.recordOrigin = "IMPORTED";
-            entity.version = 0L;
-            entity.createdAt = now;
-            entity.updatedAt = now;
-            entity.attributesJson = sourceFieldsJson;
-            specificationMapper.insert(entity);
-        } else if (changed && externalPrimary(entity.ownershipState)) {
-            entity.name = value.name();
-            entity.attributesJson = sourceFieldsJson;
-            entity.version = nextVersion(entity.version);
-            entity.updatedAt = now;
-            specificationMapper.updateById(entity);
-        } else if (changed || sourceFieldsNeedRepair) {
-            entity.attributesJson = sourceFieldsJson;
-            entity.updatedAt = now;
-            specificationMapper.updateById(entity);
+        if (created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || !Objects.equals(entity.getBrandName(), value.name())))) {
+            entity.setBrandName(value.name());
+            entity.setRemark(firstText(value.description(), sourceRemark(value.sourceFields())));
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) brandMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                brandMapper.updateById(entity);
+            }
         }
-        upsertBinding(tenantId, runId, "SPECIFICATION", value.sourceId(), "SPECIFICATION", id,
-                value.code(), value.name(), null, null, value.payloadHash(), now);
-        return new BindingResult(id, result(existing, changed || sourceFieldsNeedRepair));
+        upsertBinding(tenantId, runId, "BRAND", value.sourceId(), "PRODUCT_BRAND",
+                entity.getId(), value.externalReferenceId(), value.name(), null, null,
+                value.payloadHash(), now);
+        return new UpsertResult(entity.getId(), importResult(binding, created, changed));
     }
 
-    private ImportResult importSpecificationValue(String tenantId, UUID runId,
-                                                  String specificationId, SpecificationValue value) {
-        if (missing(value.sourceId()) || missing(value.name())) return ImportResult.rejected(1);
-        MasterSourceBindingEntity existing = binding(tenantId, "SPECIFICATION_VALUE", value.sourceId());
-        boolean changed = changed(existing, value.payloadHash());
-        String id = targetId(existing);
+    private UpsertResult upsertTag(String tenantId, UUID runId, Tag value) {
+        MasterSourceBindingEntity binding = binding(tenantId, "TAG", value.sourceId());
+        boolean changed = changed(binding, value.payloadHash());
+        Long id = longTargetId(binding);
+        InternalProductTagEntity entity = id == null ? null : tagMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
         LocalDateTime now = now();
-        SpecificationValueEntity entity = existing == null ? new SpecificationValueEntity()
+        if (created) {
+            entity = new InternalProductTagEntity();
+            entity.setTenantId(tenantId);
+            entity.setTagCode(uniqueTagCode(tenantId));
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(now);
+            entity.setDeleted(0);
+            entity.setRevision(1);
+        }
+        if (created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || !Objects.equals(entity.getTagName(), value.name())))) {
+            entity.setTagName(value.name());
+            entity.setTagTypeCode("RECOMMENDED");
+            entity.setRemark(firstText(value.groupName(), sourceRemark(value.sourceFields())));
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) tagMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                tagMapper.updateById(entity);
+            }
+        }
+        upsertBinding(tenantId, runId, "TAG", value.sourceId(), "PRODUCT_TAG",
+                entity.getId(), value.code(), value.name(), null, null, value.payloadHash(), now);
+        return new UpsertResult(entity.getId(), importResult(binding, created, changed));
+    }
+
+    private UpsertResult upsertSpecification(String tenantId, UUID runId, Specification value) {
+        MasterSourceBindingEntity binding = binding(tenantId, "SPECIFICATION", value.sourceId());
+        boolean changed = changed(binding, value.payloadHash());
+        Long id = longTargetId(binding);
+        InternalProductSpecificationEntity entity = id == null ? null : specificationMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
+        LocalDateTime now = now();
+        if (created) {
+            entity = new InternalProductSpecificationEntity();
+            entity.setTenantId(tenantId);
+            entity.setSpecificationCode(uniqueSpecificationCode(tenantId));
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(now);
+            entity.setDeleted(0);
+            entity.setRevision(1);
+        }
+        if (created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || !Objects.equals(entity.getSpecificationName(), value.name())))) {
+            entity.setSpecificationName(value.name());
+            entity.setStatusCode("ACTIVE");
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) specificationMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                specificationMapper.updateById(entity);
+            }
+        }
+        upsertBinding(tenantId, runId, "SPECIFICATION", value.sourceId(), "PRODUCT_SPECIFICATION",
+                entity.getId(), value.code(), value.name(), null, null, value.payloadHash(), now);
+        return new UpsertResult(entity.getId(), importResult(binding, created, changed));
+    }
+
+    private UpsertResult upsertSpecificationValue(String tenantId, UUID runId, Long specificationId,
+                                                  SpecificationValue value) {
+        MasterSourceBindingEntity binding = binding(tenantId, "SPECIFICATION_VALUE", value.sourceId());
+        boolean changed = changed(binding, value.payloadHash());
+        Long id = longTargetId(binding);
+        InternalProductSpecificationValueEntity entity = id == null ? null
                 : specificationValueMapper.selectById(id);
-        if (entity != null && !Objects.equals(tenantId, entity.tenantId)) entity = null;
-        if (entity == null) {
-            entity = new SpecificationValueEntity();
-            existing = null;
+        if (!valid(entity, tenantId)) entity = null;
+        boolean created = entity == null;
+        LocalDateTime now = now();
+        if (created) {
+            entity = new InternalProductSpecificationValueEntity();
+            entity.setTenantId(tenantId);
+            entity.setSpecificationId(specificationId);
+            entity.setValueCode(uniqueSpecificationValueCode(tenantId, specificationId));
+            entity.setOrdinal(0);
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(now);
+            entity.setDeleted(0);
+            entity.setRevision(1);
         }
-        String sourceFieldsJson = sourceFieldsJson(value.sourceFields());
-        boolean sourceFieldsNeedRepair = existing != null
-                && !Objects.equals(entity.attributesJson, sourceFieldsJson);
-        if (existing == null) {
-            entity.id = id;
-            entity.tenantId = tenantId;
-            entity.specificationId = specificationId;
-            entity.sourceParentId = value.parentSourceId();
-            entity.valueCode = uniqueValueCode(tenantId, specificationId, value.code(), value.sourceId());
-            entity.valueName = value.name();
-            entity.sortOrder = 0;
-            entity.status = "ACTIVE";
-            entity.ownershipState = EXTERNAL_PRIMARY;
-            entity.recordOrigin = "IMPORTED";
-            entity.version = 0L;
-            entity.createdAt = now;
-            entity.updatedAt = now;
-            entity.attributesJson = sourceFieldsJson;
-            specificationValueMapper.insert(entity);
-        } else if (changed && externalPrimary(entity.ownershipState)) {
-            entity.sourceParentId = value.parentSourceId();
-            entity.valueName = value.name();
-            entity.attributesJson = sourceFieldsJson;
-            entity.version = nextVersion(entity.version);
-            entity.updatedAt = now;
-            specificationValueMapper.updateById(entity);
-        } else if (changed || sourceFieldsNeedRepair) {
-            entity.attributesJson = sourceFieldsJson;
-            entity.updatedAt = now;
-            specificationValueMapper.updateById(entity);
+        if (created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || !Objects.equals(entity.getValueName(), value.name())
+                || !Objects.equals(entity.getSpecificationId(), specificationId)))) {
+            entity.setSpecificationId(specificationId);
+            entity.setValueName(value.name());
+            entity.setStatusCode("ACTIVE");
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) specificationValueMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                specificationValueMapper.updateById(entity);
+            }
         }
         upsertBinding(tenantId, runId, "SPECIFICATION_VALUE", value.sourceId(),
-                "SPECIFICATION_VALUE", id, value.code(), value.name(), null, null,
+                "PRODUCT_SPECIFICATION_VALUE", entity.getId(), value.code(), value.name(),
+                null, null, value.payloadHash(), now);
+        return new UpsertResult(entity.getId(), importResult(binding, created, changed));
+    }
+
+    private UpsertResult upsertProduct(String tenantId, UUID runId, Product value) {
+        MasterSourceBindingEntity binding = binding(tenantId, "PRODUCT_SPU", value.sourceId());
+        Long id = longTargetId(binding);
+        InternalProductEntity entity = id == null ? null : productMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        if (entity == null) {
+            entity = productCandidate(tenantId, value);
+        }
+        boolean created = entity == null;
+        boolean changed = changed(binding, value.payloadHash())
+                || (binding != null && entity != null && !Objects.equals(id, entity.getId()));
+        LocalDateTime now = now();
+        Long categoryId = internalTargetId(tenantId, "CATEGORY", value.categorySourceId());
+        Long brandId = internalTargetId(tenantId, "BRAND", value.brandSourceId());
+        String imagesJson = imageKeysJson(value);
+        if (created) {
+            entity = new InternalProductEntity();
+            entity.setTenantId(tenantId);
+            entity.setProductCode(uniqueProductCode(tenantId));
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(now);
+            entity.setDeleted(0);
+            entity.setRevision(1);
+        }
+        if (created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || productNeedsRepair(entity, value, categoryId, brandId, imagesJson)))) {
+            entity.setProductName(value.name());
+            entity.setCategoryId(categoryId);
+            entity.setBrandId(brandId);
+            entity.setProductSpecification(value.model());
+            entity.setUnitCode(internalUnitCode(value.unit()));
+            entity.setMinOrderQuantity(value.minimumOrder());
+            entity.setOrderMultipleFlag(false);
+            entity.setOrderMultipleQuantity(null);
+            entity.setSaleTypeCode("SPOT");
+            entity.setShelfStatusCode(internalShelfStatus(value.putaway()));
+            entity.setTagCodesJson(json(List.of()));
+            entity.setLimitQuantity(null);
+            entity.setImageKeysJson(imagesJson);
+            entity.setRecommendProductIdsJson(json(List.of()));
+            entity.setSubmitStatusCode("SUBMITTED");
+            entity.setRemark(firstText(value.subtitle(), sourceRemark(value.sourceFields())));
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) productMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                productMapper.updateById(entity);
+            }
+        }
+        upsertBinding(tenantId, runId, "PRODUCT_SPU", value.sourceId(), "PRODUCT",
+                entity.getId(), value.code(), value.name(), null, value.putaway(),
                 value.payloadHash(), now);
-        return result(existing, changed || sourceFieldsNeedRepair);
+        return new UpsertResult(entity.getId(), importResult(binding, created, changed));
     }
 
-    private ImportResult importSku(String tenantId, UUID runId, String spuId,
-                                   Product product, Sku value) {
-        if (missing(value.sourceId()) || (missing(value.code()) && missing(value.barcode()))) {
-            return ImportResult.rejected(1);
+    private UpsertResult upsertVariant(String tenantId, UUID runId, Long productId,
+                                       Product product, Sku value) {
+        MasterSourceBindingEntity binding = binding(tenantId, "PRODUCT_SKU", value.sourceId());
+        Long id = longTargetId(binding);
+        InternalProductVariantEntity entity = id == null ? null : variantMapper.selectById(id);
+        if (!valid(entity, tenantId)) entity = null;
+        if (entity == null) {
+            entity = variantCandidate(tenantId, productId, value);
         }
-        MasterSourceBindingEntity existingBinding = binding(tenantId, "PRODUCT_SKU", value.sourceId());
+        boolean created = entity == null;
+        boolean changed = changed(binding, value.payloadHash())
+                || (binding != null && entity != null && !Objects.equals(id, entity.getId()));
         LocalDateTime now = now();
-        if (existingBinding == null) {
-            String legacySourceId = legacySkuSourceId(product.sourceId(), value.sourceId());
-            MasterSourceBindingEntity legacyBinding = legacySourceId == null
-                    ? null : binding(tenantId, "PRODUCT_SKU", legacySourceId);
-            ProductSkuEntity legacySku = legacyBinding == null
-                    ? null : productSkuMapper.selectById(legacyBinding.targetId);
-            if (legacySku != null && Objects.equals(tenantId, legacySku.tenantId)
-                    && Objects.equals(spuId, legacySku.spuId)) {
-                legacyBinding.sourceObjectId = value.sourceId();
-                legacyBinding.updatedAt = now;
-                bindingMapper.updateById(legacyBinding);
-                existingBinding = legacyBinding;
-                log.info("ERP SKU来源绑定升级 tenantId={} runId={} legacySourceId={} sourceId={} targetId={}",
-                        tenantId, runId, legacySourceId, value.sourceId(), legacySku.id);
+        if (created) {
+            entity = new InternalProductVariantEntity();
+            entity.setTenantId(tenantId);
+            entity.setVariantCode(uniqueVariantCode(tenantId));
+            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedTime(now);
+            entity.setDeleted(0);
+            entity.setRevision(1);
+            entity.setDefaultFlag(variantMapper.selectCount(Wrappers.<InternalProductVariantEntity>lambdaQuery()
+                    .eq(InternalProductVariantEntity::getTenantId, tenantId)
+                    .eq(InternalProductVariantEntity::getProductId, productId)
+                    .eq(InternalProductVariantEntity::getDeleted, 0)) == 0);
+        }
+        if (created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || variantNeedsRepair(entity, productId, product, value)))) {
+            entity.setProductId(productId);
+            entity.setSpecificationSnapshot(value.specificationName());
+            entity.setUnitCode(internalUnitCode(product.unit()));
+            entity.setSalePrice(firstAmount(value.orderPrice(), product.orderPrice()));
+            entity.setMarketPrice(firstAmount(value.marketPrice(), product.marketPrice()));
+            entity.setPurchasePrice(firstAmount(value.purchasePrice(), product.purchasePrice()));
+            entity.setMinOrderQuantity(product.minimumOrder());
+            entity.setOrderMultipleQuantity(null);
+            entity.setLimitQuantity(null);
+            entity.setRemark(null);
+            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedTime(now);
+            if (created) variantMapper.insert(entity);
+            else {
+                entity.setRevision(value(entity.getRevision(), 1) + 1);
+                variantMapper.updateById(entity);
             }
         }
-        boolean payloadChanged = existingBinding == null
-                || !Objects.equals(existingBinding.sourcePayloadHash, requiredHash(value.payloadHash()))
-                || "SOURCE_ABSENT".equals(existingBinding.sourcePresence);
-        String id = targetId(existingBinding);
-        ProductSkuEntity existing = existingBinding == null ? null : productSkuMapper.selectById(id);
-        if (existing != null && !Objects.equals(tenantId, existing.tenantId)) existing = null;
-        String skuSourceFieldsJson = sourceFieldsJson(value.sourceFields());
-        boolean sourcePayloadNeedsRepair = existing != null && !payloadChanged
-                && !Objects.equals(existing.attributesJson, skuSourceFieldsJson);
-        boolean skuNeedsRepair = existing != null && !payloadChanged
-                && externalPrimary(existing.ownershipState)
-                && (!skuCoreComplete(existing, spuId, product, value)
-                || !skuAuxiliaryComplete(tenantId, spuId, id, product, value)
-                || !skuSpecificationRelationsComplete(tenantId, id, value));
-        if (existing != null && !payloadChanged && !skuNeedsRepair && !sourcePayloadNeedsRepair) {
-            // 来源摘要未变化且本地 SKU 及其辅助数据完整时不触碰数据库。
-            return ImportResult.duplicate(1);
-        }
-        ProductSkuEntity entity = existing == null ? new ProductSkuEntity() : existing;
-        if (existing == null) {
-            entity.id = id;
-            entity.tenantId = tenantId;
-            entity.spuId = spuId;
-            entity.skuCode = uniqueSkuCode(tenantId, value.code(), value.sourceId());
-            entity.ownershipState = EXTERNAL_PRIMARY;
-            entity.internalStatus = putawayStatus(product.putaway());
-            entity.recordOrigin = "IMPORTED";
-            entity.version = 0L;
-            entity.createdAt = now;
-        }
-        boolean writeSku = existing == null || payloadChanged || skuNeedsRepair || sourcePayloadNeedsRepair;
-        if (externalPrimary(entity.ownershipState) && writeSku) {
-            entity.sourceOptionsId = value.optionsId();
-            entity.firstSpecificationValueSourceId = value.firstSpecificationValueSourceId();
-            entity.secondSpecificationValueSourceId = value.secondSpecificationValueSourceId();
-            entity.barcode = value.barcode();
-            entity.middleBarcode = value.middleBarcode();
-            entity.bigBarcode = value.bigBarcode();
-            entity.unit = product.unit();
-            entity.specificationSummary = value.specificationName();
-            entity.attributesJson = skuSourceFieldsJson;
-            entity.internalStatus = putawayStatus(product.putaway());
-            if (existing != null) entity.version = nextVersion(entity.version);
-            entity.updatedAt = now;
-        } else if (existing != null && (payloadChanged || sourcePayloadNeedsRepair)) {
-            entity.attributesJson = skuSourceFieldsJson;
-            entity.updatedAt = now;
-        }
-        if (existing == null) productSkuMapper.insert(entity);
-        else if (writeSku && externalPrimary(entity.ownershipState)) {
-            productSkuMapper.updateById(entity);
-        } else if (!externalPrimary(entity.ownershipState) && (payloadChanged || sourcePayloadNeedsRepair)) {
-            productSkuMapper.updateById(entity);
-        }
-        upsertBinding(tenantId, runId, "PRODUCT_SKU", value.sourceId(), "SKU", id,
-                value.code(), value.specificationName(), null, product.putaway(), value.payloadHash(), now);
-        if (externalPrimary(entity.ownershipState)) {
-            linkSkuSpecificationValue(tenantId, spuId, id,
-                    value.firstSpecificationValueSourceId(), 0, now);
-            linkSkuSpecificationValue(tenantId, spuId, id,
-                    value.secondSpecificationValueSourceId(), 1, now);
-        }
-        if (externalPrimary(entity.ownershipState) && writeSku) {
-            upsertSkuAuxiliary(tenantId, spuId, id, value, product, now);
-        }
-        if (existing != null && payloadChanged) {
-            log.info("ERP SKU来源字段发生变化 tenantId={} runId={} sourceId={} targetId={} spuId={} version={}",
-                    tenantId, runId, value.sourceId(), id, spuId, entity.version);
-        }
-        log.debug("ERP SKU幂等落库 tenantId={} runId={} sourceId={} targetId={} result={}",
-                tenantId, runId, value.sourceId(), id,
-                skuNeedsRepair ? "REPAIRED" : importAction(existing, payloadChanged));
-        return existing == null ? ImportResult.created(1)
-                : payloadChanged || skuNeedsRepair ? ImportResult.changed(1) : ImportResult.duplicate(1);
+        upsertBinding(tenantId, runId, "PRODUCT_SKU", value.sourceId(), "PRODUCT_VARIANT",
+                entity.getId(), value.code(), value.specificationName(), null, product.putaway(),
+                value.payloadHash(), now);
+        return new UpsertResult(entity.getId(), importResult(binding, created, changed));
     }
 
-    private void upsertTagGroup(String tenantId, UUID runId, Tag value) {
-        if (missing(value.groupSourceId()) || missing(value.groupName())) return;
-        MasterSourceBindingEntity existing = binding(tenantId, "TAG_GROUP", value.groupSourceId());
-        String id = targetId(existing);
+    private UUID startRun(String tenantId, UUID connectorId, UUID actorId,
+                          MasterDataObjectType objectType, int maxPages, String triggerType) {
         LocalDateTime now = now();
-        TagGroupEntity entity = existing == null ? new TagGroupEntity() : tagGroupMapper.selectById(id);
-        if (entity != null && !Objects.equals(tenantId, entity.tenantId)) entity = null;
-        if (entity == null) {
-            entity = new TagGroupEntity();
-            existing = null;
-        }
-        if (existing == null) {
-            entity.id = id;
-            entity.tenantId = tenantId;
-            entity.groupCode = value.groupSourceId();
-            entity.name = value.groupName();
-            entity.status = "ACTIVE";
-            entity.ownershipState = EXTERNAL_PRIMARY;
-            entity.recordOrigin = "IMPORTED";
-            entity.version = 0L;
-            entity.createdAt = now;
-            entity.updatedAt = now;
-            tagGroupMapper.insert(entity);
-        } else if (externalPrimary(entity.ownershipState)
-                && !Objects.equals(entity.name, value.groupName())) {
-            entity.name = value.groupName();
-            entity.version = nextVersion(entity.version);
-            entity.updatedAt = now;
-            tagGroupMapper.updateById(entity);
-        }
-        upsertBinding(tenantId, runId, "TAG_GROUP", value.groupSourceId(), "TAG_GROUP", id,
-                value.groupSourceId(), value.groupName(), null, null,
-                shortHash(value.groupSourceId() + ":" + value.groupName()), now);
+        UUID runId = UUID.randomUUID();
+        acquireLock(tenantId, objectType, runId, now);
+        MasterDataSyncRunEntity run = new MasterDataSyncRunEntity();
+        run.id = text(runId);
+        run.tenantId = tenantId;
+        run.connectorId = text(connectorId);
+        run.sourceSystem = SOURCE_SYSTEM;
+        run.objectType = objectType.name();
+        run.triggerType = triggerType;
+        run.status = "RUNNING";
+        run.maxPages = maxPages;
+        run.pageSize = 200;
+        run.createdBy = actorId == null ? SYNC_ACTOR : text(actorId);
+        run.startedAt = now;
+        run.createdAt = now;
+        run.updatedAt = now;
+        syncRunMapper.insert(run);
+        return runId;
     }
 
-    /**
-     * 仅在来源摘要未变化的同步重放中校验外部主权辅助数据。
-     *
-     * <p>摘要负责判断来源内容是否变化，数量校验负责发现本地行被误删、漏写或多写；发现异常后复用同一套
-     * 全量替换逻辑，避免只补一部分而留下脏数据。内部主权数据不参与此修复。</p>
-     */
-    private boolean productAuxiliaryComplete(String tenantId, String spuId, Product product) {
-        long expectedImages = product.images().stream()
-                .filter(image -> !missing(image.objectKey())).count();
-        long expectedPrices = nonNullCount(product.orderPrice(), product.marketPrice(), product.purchasePrice(),
-                product.price4(), product.middleOrderPrice(), product.bigOrderPrice());
-        long expectedUnits = 1L
-                + present(product.middleUnit(), product.middleBarcode(), product.baseToMiddleRate())
-                + present(product.bigUnit(), product.bigBarcode(), product.baseToBigRate());
-        long expectedPolicies = product.inventoryLower() != null || product.inventoryUpper() != null
-                || product.safetyInventory() != null ? 1L : 0L;
-        long expectedCustomFields = product.customFields().values().stream()
-                .filter(value -> !missing(value)).count();
-
-        return count(productImageMapper.selectCount(Wrappers.<ProductImageEntity>query()
-                        .eq("tenant_id", tenantId).eq("spu_id", spuId)
-                        .eq("ownership_state", EXTERNAL_PRIMARY))) == expectedImages
-                && count(productPriceMapper.selectCount(Wrappers.<ProductPriceEntity>query()
-                        .eq("tenant_id", tenantId).eq("target_type", "SPU").eq("target_id", spuId)
-                        .eq("ownership_state", EXTERNAL_PRIMARY))) == expectedPrices
-                && count(productUnitMapper.selectCount(Wrappers.<ProductUnitEntity>query()
-                        .eq("tenant_id", tenantId).eq("target_type", "SPU").eq("target_id", spuId)
-                        .eq("ownership_state", EXTERNAL_PRIMARY))) == expectedUnits
-                && count(productInventoryPolicyMapper.selectCount(Wrappers.<ProductInventoryPolicyEntity>query()
-                        .eq("tenant_id", tenantId).eq("spu_id", spuId)
-                        .eq("ownership_state", EXTERNAL_PRIMARY))) == expectedPolicies
-                && count(productCustomFieldMapper.selectCount(Wrappers.<ProductCustomFieldEntity>query()
-                        .eq("tenant_id", tenantId).eq("target_type", "SPU").eq("target_id", spuId)
-                        .eq("ownership_state", EXTERNAL_PRIMARY))) == expectedCustomFields;
-    }
-
-    private boolean skuCoreComplete(ProductSkuEntity existing, String spuId, Product product, Sku sku) {
-        return Objects.equals(existing.spuId, spuId)
-                && Objects.equals(existing.sourceOptionsId, sku.optionsId())
-                && Objects.equals(existing.firstSpecificationValueSourceId,
-                        sku.firstSpecificationValueSourceId())
-                && Objects.equals(existing.secondSpecificationValueSourceId,
-                        sku.secondSpecificationValueSourceId())
-                && Objects.equals(existing.barcode, sku.barcode())
-                && Objects.equals(existing.middleBarcode, sku.middleBarcode())
-                && Objects.equals(existing.bigBarcode, sku.bigBarcode())
-                && Objects.equals(existing.unit, product.unit())
-                && Objects.equals(existing.specificationSummary, sku.specificationName())
-                && !missing(existing.attributesJson)
-                && Objects.equals(existing.internalStatus, putawayStatus(product.putaway()));
-    }
-
-    private boolean skuAuxiliaryComplete(String tenantId, String spuId, String skuId,
-                                         Product product, Sku sku) {
-        long expectedPrices = nonNullCount(sku.orderPrice(), sku.marketPrice(), sku.purchasePrice(),
-                sku.middleOrderPrice(), sku.bigOrderPrice());
-        long expectedUnits = 1L
-                + present(product.middleUnit(), sku.middleBarcode(), product.baseToMiddleRate())
-                + present(product.bigUnit(), sku.bigBarcode(), product.baseToBigRate());
-        return count(productPriceMapper.selectCount(Wrappers.<ProductPriceEntity>query()
-                        .eq("tenant_id", tenantId).eq("target_type", "SKU").eq("target_id", skuId)
-                        .eq("ownership_state", EXTERNAL_PRIMARY))) == expectedPrices
-                && count(productUnitMapper.selectCount(Wrappers.<ProductUnitEntity>query()
-                        .eq("tenant_id", tenantId).eq("target_type", "SKU").eq("target_id", skuId)
-                        .eq("ownership_state", EXTERNAL_PRIMARY))) == expectedUnits;
-    }
-
-    /** 只要求来源规格值已在本地建立的关系存在；来源规格尚未同步时不把它误判为 SKU 缺失。 */
-    private boolean skuSpecificationRelationsComplete(String tenantId, String skuId, Sku sku) {
-        Set<String> expectedValueIds = new java.util.HashSet<>();
-        String[] sourceValueIds = {sku.firstSpecificationValueSourceId(), sku.secondSpecificationValueSourceId()};
-        for (String sourceValueId : sourceValueIds) {
-            String valueId = resolveTarget(tenantId, "SPECIFICATION_VALUE", sourceValueId);
-            if (valueId == null) continue;
-            SpecificationValueEntity value = specificationValueMapper.selectById(valueId);
-            if (value != null && Objects.equals(value.tenantId, tenantId)) expectedValueIds.add(valueId);
-        }
-        if (expectedValueIds.isEmpty()) return true;
-        Set<String> actualValueIds = productSkuSpecificationValueMapper.selectList(
-                        Wrappers.<ProductSkuSpecificationValueEntity>query()
-                                .eq("tenant_id", tenantId).eq("sku_id", skuId)
-                                .in("value_id", expectedValueIds))
-                .stream().map(item -> item.valueId).collect(Collectors.toSet());
-        return actualValueIds.containsAll(expectedValueIds);
-    }
-
-    private static long nonNullCount(Object... values) {
-        long count = 0;
-        for (Object value : values) if (value != null) count++;
-        return count;
-    }
-
-    private static long present(String unit, String barcode, BigDecimal conversion) {
-        return missing(unit) && missing(barcode) && conversion == null ? 0L : 1L;
-    }
-
-    private static long count(Long value) {
-        return value == null ? 0L : value;
-    }
-
-    private void upsertProductAuxiliary(String tenantId, String spuId, Product product,
-                                        LocalDateTime now) {
-        productImageMapper.delete(Wrappers.<ProductImageEntity>query().eq("tenant_id", tenantId)
-                .eq("spu_id", spuId).eq("ownership_state", EXTERNAL_PRIMARY));
-        int imageIndex = 0;
-        for (ProductImage image : product.images()) {
-            if (missing(image.objectKey())) continue;
-            ProductImageEntity entity = new ProductImageEntity();
-            entity.id = UUID.randomUUID().toString();
-            entity.tenantId = tenantId;
-            entity.spuId = spuId;
-            entity.sourceResourceId = image.sourceResourceId();
-            entity.sourceGoodsId = image.sourceGoodsId();
-            entity.originalName = image.originalName();
-            entity.sourceFileName = image.fileName();
-            entity.objectKey = image.objectKey();
-            entity.sortOrder = image.sortOrder() == null ? imageIndex : image.sortOrder();
-            entity.isPrimary = imageIndex == 0;
-            entity.ownershipState = EXTERNAL_PRIMARY;
-            entity.recordOrigin = "IMPORTED";
-            entity.version = 0L;
-            entity.createdAt = now;
-            entity.updatedAt = now;
-            productImageMapper.insert(entity);
-            imageIndex++;
-        }
-
-        productPriceMapper.delete(Wrappers.<ProductPriceEntity>query().eq("tenant_id", tenantId)
-                .eq("target_type", "SPU").eq("target_id", spuId)
-                .eq("ownership_state", EXTERNAL_PRIMARY));
-        insertPrice(tenantId, "SPU", spuId, spuId, null, "ORDER", "BASE", product.orderPrice(), "price1", now);
-        insertPrice(tenantId, "SPU", spuId, spuId, null, "MARKET", "BASE", product.marketPrice(), "price2", now);
-        insertPrice(tenantId, "SPU", spuId, spuId, null, "PURCHASE", "BASE", product.purchasePrice(), "price3", now);
-        insertPrice(tenantId, "SPU", spuId, spuId, null, "OTHER", "BASE", product.price4(), "price4", now);
-        insertPrice(tenantId, "SPU", spuId, spuId, null, "ORDER", "MIDDLE", product.middleOrderPrice(),
-                "middle_unit_whole_price", now);
-        insertPrice(tenantId, "SPU", spuId, spuId, null, "ORDER", "BIG", product.bigOrderPrice(),
-                "big_unit_whole_price", now);
-
-        productUnitMapper.delete(Wrappers.<ProductUnitEntity>query().eq("tenant_id", tenantId)
-                .eq("target_type", "SPU").eq("target_id", spuId)
-                .eq("ownership_state", EXTERNAL_PRIMARY));
-        insertUnit(tenantId, "SPU", spuId, spuId, null, "BASE", product.unit(), product.barcode(),
-                BigDecimal.ONE, "units", now);
-        insertUnit(tenantId, "SPU", spuId, spuId, null, "MIDDLE", product.middleUnit(),
-                product.middleBarcode(), product.baseToMiddleRate(), "middle_units", now);
-        insertUnit(tenantId, "SPU", spuId, spuId, null, "BIG", product.bigUnit(), product.bigBarcode(),
-                product.baseToBigRate(), "bigunits", now);
-
-        productInventoryPolicyMapper.delete(Wrappers.<ProductInventoryPolicyEntity>query()
-                .eq("tenant_id", tenantId).eq("spu_id", spuId)
-                .eq("ownership_state", EXTERNAL_PRIMARY));
-        if (product.inventoryLower() != null || product.inventoryUpper() != null
-                || product.safetyInventory() != null) {
-            ProductInventoryPolicyEntity entity = new ProductInventoryPolicyEntity();
-            entity.id = UUID.randomUUID().toString();
-            entity.tenantId = tenantId;
-            entity.spuId = spuId;
-            entity.lowerBound = product.inventoryLower();
-            entity.upperBound = product.inventoryUpper();
-            entity.safetyStock = product.safetyInventory();
-            entity.sourceLowerField = "librarydown";
-            entity.sourceUpperField = "libraryup";
-            entity.sourceSafeField = "librarysafe";
-            entity.ownershipState = EXTERNAL_PRIMARY;
-            entity.recordOrigin = "IMPORTED";
-            entity.version = 0L;
-            entity.createdAt = now;
-            entity.updatedAt = now;
-            productInventoryPolicyMapper.insert(entity);
-        }
-
-        productCustomFieldMapper.delete(Wrappers.<ProductCustomFieldEntity>query().eq("tenant_id", tenantId)
-                .eq("target_type", "SPU").eq("target_id", spuId)
-                .eq("ownership_state", EXTERNAL_PRIMARY));
-        for (Map.Entry<String, String> field : product.customFields().entrySet()) {
-            if (missing(field.getValue())) continue;
-            ProductCustomFieldEntity entity = new ProductCustomFieldEntity();
-            entity.id = UUID.randomUUID().toString();
-            entity.tenantId = tenantId;
-            entity.targetType = "SPU";
-            entity.targetId = spuId;
-            entity.spuId = spuId;
-            entity.fieldKey = field.getKey();
-            entity.fieldValue = field.getValue();
-            entity.sourceField = field.getKey();
-            entity.ownershipState = EXTERNAL_PRIMARY;
-            entity.recordOrigin = "IMPORTED";
-            entity.version = 0L;
-            entity.createdAt = now;
-            entity.updatedAt = now;
-            productCustomFieldMapper.insert(entity);
-        }
-    }
-
-    private void upsertSkuAuxiliary(String tenantId, String spuId, String skuId, Sku sku,
-                                    Product product, LocalDateTime now) {
-        productPriceMapper.delete(Wrappers.<ProductPriceEntity>query().eq("tenant_id", tenantId)
-                .eq("target_type", "SKU").eq("target_id", skuId)
-                .eq("ownership_state", EXTERNAL_PRIMARY));
-        insertPrice(tenantId, "SKU", skuId, spuId, skuId, "ORDER", "BASE", sku.orderPrice(), "whole", now);
-        insertPrice(tenantId, "SKU", skuId, spuId, skuId, "MARKET", "BASE", sku.marketPrice(), "selling", now);
-        insertPrice(tenantId, "SKU", skuId, spuId, skuId, "PURCHASE", "BASE", sku.purchasePrice(), "purchase", now);
-        insertPrice(tenantId, "SKU", skuId, spuId, skuId, "ORDER", "MIDDLE", sku.middleOrderPrice(),
-                "middle_unit_whole_price", now);
-        insertPrice(tenantId, "SKU", skuId, spuId, skuId, "ORDER", "BIG", sku.bigOrderPrice(),
-                "big_unit_whole_price", now);
-        productUnitMapper.delete(Wrappers.<ProductUnitEntity>query().eq("tenant_id", tenantId)
-                .eq("target_type", "SKU").eq("target_id", skuId)
-                .eq("ownership_state", EXTERNAL_PRIMARY));
-        insertUnit(tenantId, "SKU", skuId, spuId, skuId, "BASE", product.unit(), sku.barcode(),
-                BigDecimal.ONE, "units", now);
-        insertUnit(tenantId, "SKU", skuId, spuId, skuId, "MIDDLE", product.middleUnit(), sku.middleBarcode(),
-                product.baseToMiddleRate(), "middle_units", now);
-        insertUnit(tenantId, "SKU", skuId, spuId, skuId, "BIG", product.bigUnit(), sku.bigBarcode(),
-                product.baseToBigRate(), "bigunits", now);
-    }
-
-    private void insertPrice(String tenantId, String targetType, String targetId, String spuId,
-                             String skuId, String priceType, String unitLevel, BigDecimal amount,
-                             String sourceField, LocalDateTime now) {
-        if (amount == null) return;
-        ProductPriceEntity entity = new ProductPriceEntity();
-        entity.id = UUID.randomUUID().toString();
-        entity.tenantId = tenantId;
-        entity.targetType = targetType;
-        entity.targetId = targetId;
-        entity.spuId = spuId;
-        entity.skuId = skuId;
-        entity.priceType = priceType;
-        entity.unitLevel = unitLevel;
-        entity.amount = amount;
-        entity.sourceField = sourceField;
-        entity.ownershipState = EXTERNAL_PRIMARY;
-        entity.recordOrigin = "IMPORTED";
-        entity.version = 0L;
-        entity.createdAt = now;
-        entity.updatedAt = now;
-        productPriceMapper.insert(entity);
-    }
-
-    private void insertUnit(String tenantId, String targetType, String targetId, String spuId,
-                            String skuId, String unitLevel, String unitName, String barcode,
-                            BigDecimal conversion, String sourceField, LocalDateTime now) {
-        if (missing(unitName) && missing(barcode) && conversion == null) return;
-        ProductUnitEntity entity = new ProductUnitEntity();
-        entity.id = UUID.randomUUID().toString();
-        entity.tenantId = tenantId;
-        entity.targetType = targetType;
-        entity.targetId = targetId;
-        entity.spuId = spuId;
-        entity.skuId = skuId;
-        entity.unitLevel = unitLevel;
-        entity.unitName = unitName;
-        entity.barcode = barcode;
-        entity.conversionToBase = conversion;
-        entity.sourceField = sourceField;
-        entity.sortOrder = switch (unitLevel) { case "BASE" -> 0; case "MIDDLE" -> 1; default -> 2; };
-        entity.ownershipState = EXTERNAL_PRIMARY;
-        entity.recordOrigin = "IMPORTED";
-        entity.version = 0L;
-        entity.createdAt = now;
-        entity.updatedAt = now;
-        productUnitMapper.insert(entity);
-    }
-
-    private void linkSkuSpecificationValue(String tenantId, String spuId, String skuId,
-                                           String sourceValueId, int sortOrder, LocalDateTime now) {
-        String valueId = resolveTarget(tenantId, "SPECIFICATION_VALUE", sourceValueId);
-        if (valueId == null) return;
-        SpecificationValueEntity value = specificationValueMapper.selectById(valueId);
-        if (value == null || !Objects.equals(value.tenantId, tenantId)) return;
-        ProductSpuSpecificationEntity spuRelation = productSpuSpecificationMapper.selectOne(
-                Wrappers.<ProductSpuSpecificationEntity>query().eq("tenant_id", tenantId)
-                        .eq("spu_id", spuId).eq("specification_id", value.specificationId)
-                        .last("LIMIT 1"));
-        boolean newSpuRelation = spuRelation == null;
-        if (spuRelation == null) {
-            spuRelation = new ProductSpuSpecificationEntity();
-            spuRelation.id = UUID.randomUUID().toString();
-            spuRelation.tenantId = tenantId;
-            spuRelation.spuId = spuId;
-            spuRelation.specificationId = value.specificationId;
-            spuRelation.createdAt = now;
-        }
-        if (newSpuRelation) {
-            spuRelation.sortOrder = sortOrder;
-            spuRelation.updatedAt = now;
-            productSpuSpecificationMapper.insert(spuRelation);
-        } else if (!Objects.equals(spuRelation.sortOrder, sortOrder)) {
-            spuRelation.sortOrder = sortOrder;
-            spuRelation.updatedAt = now;
-            productSpuSpecificationMapper.updateById(spuRelation);
-        }
-
-        ProductSkuSpecificationValueEntity skuRelation = productSkuSpecificationValueMapper.selectOne(
-                Wrappers.<ProductSkuSpecificationValueEntity>query().eq("tenant_id", tenantId)
-                        .eq("sku_id", skuId).eq("specification_id", value.specificationId)
-                        .last("LIMIT 1"));
-        boolean newSkuRelation = skuRelation == null;
-        if (skuRelation == null) {
-            skuRelation = new ProductSkuSpecificationValueEntity();
-            skuRelation.id = UUID.randomUUID().toString();
-            skuRelation.tenantId = tenantId;
-            skuRelation.skuId = skuId;
-            skuRelation.specificationId = value.specificationId;
-            skuRelation.createdAt = now;
-        }
-        if (newSkuRelation) {
-            skuRelation.valueId = valueId;
-            skuRelation.sortOrder = sortOrder;
-            skuRelation.updatedAt = now;
-            productSkuSpecificationValueMapper.insert(skuRelation);
-        } else if (!Objects.equals(skuRelation.valueId, valueId)
-                || !Objects.equals(skuRelation.sortOrder, sortOrder)) {
-            skuRelation.valueId = valueId;
-            skuRelation.sortOrder = sortOrder;
-            skuRelation.updatedAt = now;
-            productSkuSpecificationValueMapper.updateById(skuRelation);
-        }
-    }
-
-    private void assignPrimaryCategory(String tenantId, String spuId, String categoryId,
-                                       LocalDateTime now) {
-        List<ProductSpuCategoryEntity> relations = productSpuCategoryMapper.selectList(
-                Wrappers.<ProductSpuCategoryEntity>query().eq("tenant_id", tenantId)
-                        .eq("spu_id", spuId));
-        boolean alreadyPrimary = relations.stream().anyMatch(relation ->
-                Boolean.TRUE.equals(relation.primaryFlag)
-                        && Objects.equals(relation.categoryId, categoryId));
-        if (alreadyPrimary) return;
-        for (ProductSpuCategoryEntity relation : relations) {
-            if (Boolean.TRUE.equals(relation.primaryFlag)) {
-                relation.primaryFlag = false;
-                relation.updatedAt = now;
-                productSpuCategoryMapper.updateById(relation);
-            }
-        }
-        ProductSpuCategoryEntity relation = relations.stream()
-                .filter(item -> Objects.equals(item.categoryId, categoryId)).findFirst().orElse(null);
-        boolean newRelation = relation == null;
-        if (relation == null) {
-            relation = new ProductSpuCategoryEntity();
-            relation.id = UUID.randomUUID().toString();
-            relation.tenantId = tenantId;
-            relation.spuId = spuId;
-            relation.categoryId = categoryId;
-            relation.sortOrder = 0;
-            relation.createdAt = now;
-        }
-        relation.primaryFlag = true;
-        relation.updatedAt = now;
-        if (newRelation) productSpuCategoryMapper.insert(relation);
-        else productSpuCategoryMapper.updateById(relation);
-    }
-
-    private void upsertBinding(String tenantId, UUID runId, String sourceType, String sourceId,
-                               String targetType, String targetId, String sourceCode, String sourceName,
-                               String sourceStatus, String sourcePutaway, String payloadHash,
-                               LocalDateTime now) {
-        MasterSourceBindingEntity entity = binding(tenantId, sourceType, sourceId);
-        String normalizedHash = requiredHash(payloadHash);
-        if (entity != null && Objects.equals(entity.sourcePayloadHash, normalizedHash)
-                && !"SOURCE_ABSENT".equals(entity.sourcePresence)) {
-            // 来源快照未变化时不刷新版本、同步时间或最后同步批次，保持同步真正幂等。
-            return;
-        }
-        if (entity == null) {
-            entity = new MasterSourceBindingEntity();
-            entity.id = UUID.randomUUID().toString();
-            entity.tenantId = tenantId;
-            entity.sourceSystem = SOURCE_SYSTEM;
-            entity.sourceObjectType = sourceType;
-            entity.sourceObjectId = sourceId;
-            entity.targetType = targetType;
-            entity.targetId = targetId;
-            entity.version = 0L;
-            entity.createdAt = now;
-        } else {
-            entity.version = nextVersion(entity.version);
-        }
-        entity.sourceCode = blank(sourceCode);
-        entity.sourceName = blank(sourceName);
-        entity.sourceStatus = blank(sourceStatus);
-        entity.sourcePutaway = blank(sourcePutaway);
-        entity.sourcePayloadHash = normalizedHash;
-        entity.sourcePresence = "PRESENT";
-        entity.sourceAbsentAt = null;
-        entity.lastSyncRunId = text(runId);
-        entity.syncedAt = now;
-        entity.updatedAt = now;
-        if (entity.createdAt == null) entity.createdAt = now;
-        if (entity.id == null) bindingMapper.insert(entity);
-        else if (bindingMapper.selectById(entity.id) == null) bindingMapper.insert(entity);
-        else bindingMapper.updateById(entity);
-    }
-
-    private void finishRun(String tenantId, UUID runId, String status, RunStatistics value,
-                           String errorCode, String errorMessage) {
-        MasterDataSyncRunEntity entity = syncRunMapper.selectOne(Wrappers.<MasterDataSyncRunEntity>query()
-                .eq("tenant_id", tenantId).eq("id", runId.toString()).eq("status", "RUNNING")
-                .last("LIMIT 1"));
-        if (entity == null) return;
-        LocalDateTime now = now();
-        entity.status = status;
-        entity.fetchedCount = value.fetched();
-        entity.createdCount = value.created();
-        entity.changedCount = value.changed();
-        entity.duplicateCount = value.duplicates();
-        entity.rejectedCount = value.rejected();
-        entity.unmappedCount = value.dictionaryAudit().unmapped();
-        entity.dictSnapshotJson = auditJson(value.dictionaryAudit().revisions());
-        entity.mappingIssuesJson = auditJson(value.dictionaryAudit().issues());
-        entity.errorCode = errorCode;
-        entity.errorMessage = errorMessage;
-        entity.finishedAt = now;
-        entity.updatedAt = now;
-        syncRunMapper.updateById(entity);
-        syncLockMapper.delete(Wrappers.<MasterDataSyncLockEntity>query()
-                .eq("tenant_id", tenantId).eq("run_id", runId.toString()));
-    }
-
-    private static String auditJson(Object value) {
-        try {
-            return SOURCE_FIELDS_MAPPER.writeValueAsString(value);
-        } catch (RuntimeException exception) {
-            throw new IllegalStateException("ERP同步字典审计序列化失败", exception);
-        }
-    }
-
-    private void acquireRunLock(String tenantId, String objectType, UUID runId, LocalDateTime now) {
-        syncLockMapper.delete(Wrappers.<com.rigour.erp.infrastructure.persistence.entity.MasterDataSyncLockEntity>query()
-                .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
-                .eq("object_type", objectType).le("expires_at", now));
+    private void acquireLock(String tenantId, MasterDataObjectType objectType, UUID runId,
+                             LocalDateTime now) {
         MasterDataSyncLockEntity lock = new MasterDataSyncLockEntity();
-        lock.id = UUID.randomUUID().toString();
+        lock.id = stableLockId(tenantId, objectType.name());
         lock.tenantId = tenantId;
         lock.sourceSystem = SOURCE_SYSTEM;
-        lock.objectType = objectType;
-        lock.runId = runId.toString();
+        lock.objectType = objectType.name();
+        lock.runId = text(runId);
         lock.acquiredAt = now;
-        lock.expiresAt = now.plus(Duration.ofHours(6));
-        try {
-            syncLockMapper.insert(lock);
-        } catch (DuplicateKeyException exception) {
-            throw new com.rigour.shared.core.exception.BusinessException(
-                    com.rigour.shared.core.api.ErrorCode.SYNC_ALREADY_RUNNING,
-                    "当前租户该类 ERP 数据已有同步任务运行中", java.util.List.of());
+        lock.expiresAt = now.plus(Duration.ofMinutes(RUN_LEASE_MINUTES));
+        int updated = syncLockMapper.update(null, Wrappers.<MasterDataSyncLockEntity>update()
+                .eq("tenant_id", tenantId)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("object_type", objectType.name())
+                .le("expires_at", now)
+                .set("run_id", text(runId))
+                .set("acquired_at", now)
+                .set("expires_at", lock.expiresAt));
+        if (updated == 0) {
+            try {
+                syncLockMapper.insert(lock);
+            } catch (RuntimeException error) {
+                throw new IllegalStateException("ERP商品同步正在运行: objectType=" + objectType.name(), error);
+            }
         }
     }
 
-    private ProductView toProductView(ProductSpuEntity item,
-                                      MasterSourceBindingEntity binding,
-                                      Map<String, BrandEntity> brands,
-                                      Map<String, CategoryEntity> categories,
-                                      ProductViewDetails details) {
-        PriceValues prices = details.prices().getOrDefault(item.id, PriceValues.empty());
-        Map<String, ProductUnitEntity> units = details.units().getOrDefault(item.id, Map.of());
-        ProductUnitEntity middle = units.get("MIDDLE");
-        ProductUnitEntity big = units.get("BIG");
-        ProductInventoryPolicyEntity policy = details.policies().get(item.id);
-        int skuCount = details.skuCounts().getOrDefault(item.id, 0);
-        return new ProductView(item.id, binding == null ? null : binding.sourceObjectId,
-                item.sourceCategoryId, item.sourceBrandId, item.spuCode,
-                item.name, item.brandId == null || brands.get(item.brandId) == null
-                        ? null : brands.get(item.brandId).name,
-                categories.get(item.id) == null ? null : categories.get(item.id).name,
-                item.defaultBarcode, item.baseUnit, binding == null ? null : binding.sourcePutaway,
-                item.internalStatus, item.ownershipState, skuCount,
-                instant(binding == null ? null : binding.syncedAt), item.model, item.subtitle,
-                item.keywords, item.goodsAllocation, item.sourceMultiId,
-                prices.order, prices.market, prices.purchase,
-                prices.other, middle == null ? null : middle.unitName, big == null ? null : big.unitName,
-                middle == null ? null : middle.barcode, big == null ? null : big.barcode,
-                item.conversionBarcode,
-                middle == null ? null : middle.conversionToBase,
-                big == null ? null : big.conversionToBase,
-                item.minimumOrder, item.minimumOrderUnit,
-                policy == null ? null : policy.lowerBound, policy == null ? null : policy.upperBound,
-                policy == null ? null : policy.safetyStock, prices.middleOrder, prices.bigOrder,
-                details.images().getOrDefault(item.id, List.of()),
-                details.skuViews().getOrDefault(item.id, List.of()),
-                details.customFields().getOrDefault(item.id, Map.of()),
-                priceViews(prices, units),
-                quantityViews(item, policy, units));
+    private void requireRunningRunForUpdate(String tenantId, UUID runId) {
+        MasterDataSyncRunEntity run = syncRunMapper.selectOne(
+                Wrappers.<MasterDataSyncRunEntity>query()
+                        .eq("tenant_id", tenantId).eq("id", text(runId))
+                        .eq("status", "RUNNING").last("FOR UPDATE"));
+        if (run == null) throw new IllegalStateException("ERP同步run不存在或已终止");
     }
 
-    private ProductViewDetails productViewDetails(String tenantId, Set<String> spuIds) {
-        if (spuIds.isEmpty()) return ProductViewDetails.empty();
-        Map<String, PriceValues> prices = pricesByTarget(tenantId, "SPU", spuIds);
-        Map<String, Map<String, ProductUnitEntity>> units = unitsByTarget(tenantId, "SPU", spuIds);
-        Map<String, ProductInventoryPolicyEntity> policies = productInventoryPolicyMapper.selectList(
-                        Wrappers.<ProductInventoryPolicyEntity>query().eq("tenant_id", tenantId)
-                                .in("spu_id", spuIds))
-                .stream().collect(Collectors.toMap(item -> item.spuId, Function.identity(), (a, b) -> a));
-        QueryWrapper<ProductSkuEntity> skuQuery = Wrappers.<ProductSkuEntity>query()
-                .eq("tenant_id", tenantId).in("spu_id", spuIds);
-        skuQuery.select("id", "spu_id");
-        Map<String, Integer> skuCounts = productSkuMapper.selectList(skuQuery).stream()
-                .collect(Collectors.groupingBy(item -> item.spuId,
-                        Collectors.collectingAndThen(Collectors.counting(), Long::intValue)));
-        List<ProductSkuEntity> skuRows = productSkuMapper.selectList(Wrappers.<ProductSkuEntity>query()
-                .eq("tenant_id", tenantId).in("spu_id", spuIds).orderByAsc("spu_id").orderByAsc("id"));
-        Map<String, ProductSpuEntity> skuProducts = byId(productSpuMapper.selectList(
-                Wrappers.<ProductSpuEntity>query().eq("tenant_id", tenantId).in("id", spuIds)),
-                item -> item.id);
-        Map<String, MasterSourceBindingEntity> nestedSkuBindings = bindingMap(tenantId, "PRODUCT_SKU",
-                ids(skuRows, item -> item.id));
-        Map<String, PriceValues> nestedSkuPrices = pricesByTarget(tenantId, "SKU", ids(skuRows, item -> item.id));
-        Map<String, List<SkuView>> skuViews = new LinkedHashMap<>();
-        for (ProductSkuEntity item : skuRows) {
-            ProductSpuEntity product = skuProducts.get(item.spuId);
-            if (product == null) continue;
-            skuViews.computeIfAbsent(item.spuId, ignored -> new java.util.ArrayList<>())
-                    .add(skuView(item, product, sourceBinding(nestedSkuBindings, item.id),
-                            nestedSkuPrices.getOrDefault(item.id, PriceValues.empty()),
-                            units.getOrDefault(product.id, Map.of())));
-        }
-        Map<String, List<ProductImageView>> images = productImageMapper.selectList(
-                        Wrappers.<ProductImageEntity>query().eq("tenant_id", tenantId)
-                                .in("spu_id", spuIds).orderByAsc("sort_order").orderByAsc("id"))
-                .stream().collect(Collectors.groupingBy(item -> item.spuId, LinkedHashMap::new,
-                        Collectors.mapping(item -> new ProductImageView(item.id, item.sourceResourceId,
-                                item.sourceGoodsId, item.originalName, item.sourceFileName,
-                                productMediaUrlResolver.temporaryUrl(tenantId, item.objectKey),
-                                value(item.sortOrder, 0), Boolean.TRUE.equals(item.isPrimary)),
-                                Collectors.toList())));
-        Map<String, Map<String, String>> customFields = productCustomFieldMapper.selectList(
-                        Wrappers.<ProductCustomFieldEntity>query().eq("tenant_id", tenantId)
-                                .eq("target_type", "SPU").in("target_id", spuIds)
-                                .orderByAsc("field_key"))
-                .stream().collect(Collectors.groupingBy(item -> item.targetId, LinkedHashMap::new,
-                        Collectors.toMap(item -> item.fieldKey, item -> item.fieldValue,
-                                (first, ignored) -> first, LinkedHashMap::new)));
-        return new ProductViewDetails(prices, units, policies, skuCounts, images, skuViews, customFields);
-    }
-
-    private static SkuView skuView(ProductSkuEntity item, ProductSpuEntity product,
-                                   MasterSourceBindingEntity binding, PriceValues prices,
-                                   Map<String, ProductUnitEntity> units) {
-        return new SkuView(item.id, binding == null ? null : binding.sourceObjectId, item.skuCode,
-                product.spuCode, product.name, item.barcode, item.unit, item.specificationSummary,
-                binding == null ? null : binding.sourcePutaway, item.internalStatus,
-                item.ownershipState, instant(binding == null ? null : binding.syncedAt),
-                item.sourceOptionsId, item.firstSpecificationValueSourceId,
-                item.secondSpecificationValueSourceId, item.middleBarcode, item.bigBarcode,
-                prices.order, prices.market, prices.purchase, prices.middleOrder, prices.bigOrder,
-                priceViews(prices, units));
-    }
-
-    private Map<String, List<SpecificationValueView>> specificationValues(String tenantId,
-                                                                            Set<String> specificationIds) {
-        if (specificationIds.isEmpty()) return Map.of();
-        List<SpecificationValueEntity> rows = specificationValueMapper.selectList(
-                Wrappers.<SpecificationValueEntity>query().eq("tenant_id", tenantId)
-                        .in("specification_id", specificationIds).orderByAsc("sort_order").orderByAsc("id"));
-        Set<String> valueIds = ids(rows, item -> item.id);
-        Map<String, MasterSourceBindingEntity> bindings = valueIds.isEmpty() ? Map.of() : bindingMapper.selectList(
-                Wrappers.<MasterSourceBindingEntity>query().eq("tenant_id", tenantId)
-                        .eq("source_system", SOURCE_SYSTEM).eq("source_object_type", "SPECIFICATION_VALUE")
-                        .in("target_id", valueIds)).stream().collect(Collectors.toMap(item -> item.targetId,
-                        Function.identity(), (first, ignored) -> first));
-        return rows.stream().map(item -> new SpecificationValueView(item.id,
-                        bindings.get(item.id) == null ? null : bindings.get(item.id).sourceObjectId,
-                        item.sourceParentId, item.valueCode, item.valueName, item.sortOrder,
-                        item.status, item.ownershipState))
-                .collect(Collectors.groupingBy(item -> rows.stream()
-                        .filter(row -> Objects.equals(row.id, item.id())).findFirst().orElseThrow().specificationId,
-                        LinkedHashMap::new, Collectors.toList()));
-    }
-
-    private Map<String, PriceValues> pricesByTarget(String tenantId, String targetType,
-                                                     Set<String> targetIds) {
-        if (targetIds.isEmpty()) return Map.of();
-        return productPriceMapper.selectList(Wrappers.<ProductPriceEntity>query()
-                        .eq("tenant_id", tenantId).eq("target_type", targetType).in("target_id", targetIds))
-                .stream().collect(Collectors.groupingBy(item -> item.targetId,
-                        Collectors.collectingAndThen(Collectors.toList(), this::priceValues)));
-    }
-
-    private Map<String, Map<String, ProductUnitEntity>> unitsByTarget(String tenantId,
-                                                                       String targetType,
-                                                                       Set<String> targetIds) {
-        if (targetIds.isEmpty()) return Map.of();
-        return productUnitMapper.selectList(Wrappers.<ProductUnitEntity>query()
-                        .eq("tenant_id", tenantId).eq("target_type", targetType)
-                        .in("target_id", targetIds))
-                .stream().collect(Collectors.groupingBy(item -> item.targetId,
-                        Collectors.toMap(item -> item.unitLevel, Function.identity(), (a, b) -> a)));
-    }
-
-    private static List<ProductPriceView> priceViews(PriceValues prices,
-                                                     Map<String, ProductUnitEntity> units) {
-        List<ProductPriceView> values = new ArrayList<>();
-        addPrice(values, "ORDER", "BASE", prices.order, unitName(units, "BASE"), "订货价");
-        addPrice(values, "MARKET", "BASE", prices.market, unitName(units, "BASE"), "市场价");
-        addPrice(values, "PURCHASE", "BASE", prices.purchase, unitName(units, "BASE"), "采购价");
-        addPrice(values, "OTHER", "BASE", prices.other, unitName(units, "BASE"), "其他价");
-        addPrice(values, "ORDER", "MIDDLE", prices.middleOrder, unitName(units, "MIDDLE"),
-                "中包装订货价");
-        addPrice(values, "ORDER", "BIG", prices.bigOrder, unitName(units, "BIG"),
-                "大包装订货价");
-        return List.copyOf(values);
-    }
-
-    private static void addPrice(List<ProductPriceView> values, String priceType, String unitLevel,
-                                 BigDecimal amount, String unitName, String label) {
-        if (amount == null) return;
-        values.add(new ProductPriceView(priceType, unitLevel, amount, unitName, label,
-                displayPrice(amount, unitName)));
-    }
-
-    private static List<ProductQuantityView> quantityViews(ProductSpuEntity product,
-                                                           ProductInventoryPolicyEntity policy,
-                                                           Map<String, ProductUnitEntity> units) {
-        List<ProductQuantityView> values = new ArrayList<>();
-        addQuantity(values, "MIN_ORDER", product.minimumOrder,
-                minimumOrderUnitName(product.minimumOrderUnit, units), "起订量");
-        addQuantity(values, "INVENTORY_LOWER", policy == null ? null : policy.lowerBound,
-                unitName(units, "BASE"), "库存下限");
-        addQuantity(values, "INVENTORY_SAFETY", policy == null ? null : policy.safetyStock,
-                unitName(units, "BASE"), "安全库存");
-        addQuantity(values, "INVENTORY_UPPER", policy == null ? null : policy.upperBound,
-                unitName(units, "BASE"), "库存上限");
-        return List.copyOf(values);
-    }
-
-    private static void addQuantity(List<ProductQuantityView> values, String quantityType,
-                                    BigDecimal amount, String unitName, String label) {
-        if (amount == null) return;
-        values.add(new ProductQuantityView(quantityType, amount, unitName, label,
-                displayQuantity(amount, unitName)));
-    }
-
-    private static String minimumOrderUnitName(String minimumOrderUnit,
-                                               Map<String, ProductUnitEntity> units) {
-        if ("middle_units".equals(minimumOrderUnit)) return unitName(units, "MIDDLE");
-        if ("container_units".equals(minimumOrderUnit)) return unitName(units, "BIG");
-        return unitName(units, "BASE");
-    }
-
-    private static String unitName(Map<String, ProductUnitEntity> units, String level) {
-        ProductUnitEntity unit = units.get(level);
-        return unit == null || missing(unit.unitName) ? null : unit.unitName;
-    }
-
-    private static String displayPrice(BigDecimal amount, String unitName) {
-        String value = "¥" + amount.setScale(2, RoundingMode.HALF_UP).toPlainString();
-        return unitName == null ? value + "（计量单位未配置）" : value + "/" + unitName;
-    }
-
-    private static String displayQuantity(BigDecimal amount, String unitName) {
-        String value = amount.stripTrailingZeros().toPlainString();
-        return unitName == null ? value + "（计量单位未配置）" : value + unitName;
-    }
-
-    private PriceValues priceValues(List<ProductPriceEntity> rows) {
-        Map<String, BigDecimal> values = rows.stream().collect(Collectors.toMap(
-                item -> item.priceType + ":" + item.unitLevel, item -> item.amount,
-                (first, ignored) -> first));
-        return new PriceValues(values.get("ORDER:BASE"), values.get("MARKET:BASE"),
-                values.get("PURCHASE:BASE"), values.get("OTHER:BASE"),
-                values.get("ORDER:MIDDLE"), values.get("ORDER:BIG"));
-    }
-
-    private Map<String, CategoryEntity> primaryCategories(String tenantId, List<ProductSpuEntity> products) {
-        Set<String> spuIds = products.stream().map(item -> item.id).collect(Collectors.toSet());
-        if (spuIds.isEmpty()) return Map.of();
-        List<ProductSpuCategoryEntity> relations = productSpuCategoryMapper.selectList(
-                Wrappers.<ProductSpuCategoryEntity>query().eq("tenant_id", tenantId)
-                        .eq("is_primary", true).in("spu_id", spuIds));
-        Map<String, String> categoryIds = relations.stream()
-                .filter(item -> !missing(item.spuId) && !missing(item.categoryId))
-                .collect(Collectors.toMap(item -> item.spuId,
-                        item -> item.categoryId, (first, ignored) -> first));
-        if (categoryIds.isEmpty()) return Map.of();
-        Set<String> ids = Set.copyOf(categoryIds.values());
-        Map<String, CategoryEntity> categories = byId(categoryMapper.selectList(Wrappers.<CategoryEntity>query()
-                .eq("tenant_id", tenantId).in("id", ids)), item -> item.id);
-        return categoryIds.entrySet().stream().filter(item -> categories.containsKey(item.getValue()))
-                .collect(Collectors.toMap(Map.Entry::getKey, item -> categories.get(item.getValue())));
+    private void finishRun(String tenantId, UUID runId, String status,
+                           RunStatistics statistics, String errorCode, String errorMessage) {
+        LocalDateTime now = now();
+        syncRunMapper.update(null, Wrappers.<MasterDataSyncRunEntity>update()
+                .eq("tenant_id", tenantId).eq("id", text(runId)).eq("status", "RUNNING")
+                .set("status", status)
+                .set("fetched_count", statistics.fetched())
+                .set("created_count", statistics.created())
+                .set("changed_count", statistics.changed())
+                .set("duplicate_count", statistics.duplicates())
+                .set("rejected_count", statistics.rejected())
+                .set("unmapped_count", statistics.dictionaryAudit().unmapped())
+                .set("dict_snapshot_json", json(statistics.dictionaryAudit().revisions()))
+                .set("mapping_issues_json", json(statistics.dictionaryAudit().issues()))
+                .set("error_code", errorCode)
+                .set("error_message", errorMessage)
+                .set("finished_at", now)
+                .set("updated_at", now));
+        syncLockMapper.delete(Wrappers.<MasterDataSyncLockEntity>query()
+                .eq("tenant_id", tenantId)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("run_id", text(runId)));
     }
 
     private MasterSourceBindingEntity binding(String tenantId, String sourceType, String sourceId) {
         if (missing(sourceId)) return null;
         return bindingMapper.selectOne(Wrappers.<MasterSourceBindingEntity>query()
-                .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
-                .eq("source_object_type", sourceType).eq("source_object_id", sourceId)
+                .eq("tenant_id", tenantId)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("source_object_type", sourceType)
+                .eq("source_object_id", sourceId)
                 .last("LIMIT 1"));
     }
 
-    private Map<String, MasterSourceBindingEntity> bindingMap(String tenantId, String sourceType,
-                                                              Set<String> targetIds) {
-        if (targetIds.isEmpty()) return Map.of();
+    private List<MasterSourceBindingEntity> bindings(String tenantId, String sourceType) {
         return bindingMapper.selectList(Wrappers.<MasterSourceBindingEntity>query()
-                        .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
-                        .eq("source_object_type", sourceType).in("target_id", targetIds))
-                .stream().collect(Collectors.toMap(item -> item.targetId, Function.identity(), (a, b) -> a));
+                .eq("tenant_id", tenantId)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("source_object_type", sourceType)
+                .eq("source_presence", PRESENT));
     }
 
-    private static <T> void applySourcePutaway(QueryWrapper<T> wrapper, String tenantId,
-                                               String sourceType, String sourcePutaway,
-                                               String targetColumn) {
-        if (missing(sourcePutaway)) return;
-        wrapper.apply("EXISTS (SELECT 1 FROM erp_master_source_binding b "
-                        + "WHERE b.tenant_id = {0} AND b.source_system = 'DINGHUOBAO' "
-                        + "AND b.source_object_type = {1} AND b.target_id = " + targetColumn
-                        + " AND b.source_putaway = {2})",
-                tenantId, sourceType, sourcePutaway.strip());
-    }
-
-    private static String limitSql(int begin, int step) {
-        return "LIMIT " + Math.max(0, begin) + "," + Math.max(1, step);
-    }
-
-    private String resolveTarget(String tenantId, String sourceType, String sourceIdOrCode) {
-        if (missing(sourceIdOrCode)) return null;
-        MasterSourceBindingEntity exact = binding(tenantId, sourceType, sourceIdOrCode);
-        if (exact != null) return exact.targetId;
-        MasterSourceBindingEntity byCode = bindingMapper.selectOne(Wrappers.<MasterSourceBindingEntity>query()
-                .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
-                .eq("source_object_type", sourceType).eq("source_code", sourceIdOrCode)
-                .last("LIMIT 1"));
-        return byCode == null ? null : byCode.targetId;
-    }
-
-    private <T> QueryWrapper<T> simpleWrapper(String tenantId, String query, String status,
-                                              String codeColumn, String nameColumn) {
-        QueryWrapper<T> wrapper = Wrappers.query();
-        wrapper.eq("tenant_id", tenantId);
-        if (!missing(query)) {
-            String like = "%" + query.strip() + "%";
-            wrapper.and(w -> w.like(codeColumn, like).or().like(nameColumn, like));
+    private void upsertBinding(String tenantId, UUID runId, String sourceType, String sourceId,
+                               String targetType, Long targetId, String sourceCode,
+                               String sourceName, String sourceStatus, String sourcePutaway,
+                               String payloadHash, LocalDateTime now) {
+        MasterSourceBindingEntity binding = binding(tenantId, sourceType, sourceId);
+        if (binding == null) {
+            binding = new MasterSourceBindingEntity();
+            binding.id = UUID.randomUUID().toString();
+            binding.tenantId = tenantId;
+            binding.sourceSystem = SOURCE_SYSTEM;
+            binding.sourceObjectType = sourceType;
+            binding.sourceObjectId = sourceId;
+            binding.createdAt = now;
+            binding.version = 0L;
+        } else {
+            binding.version = nextVersion(binding.version);
         }
-        if (!missing(status)) wrapper.eq("status", status.strip());
-        return wrapper;
+        binding.targetType = targetType;
+        binding.targetId = targetId == null ? null : targetId.toString();
+        binding.sourceCode = blank(sourceCode);
+        binding.sourceName = blank(sourceName);
+        binding.sourceStatus = blank(sourceStatus);
+        binding.sourcePutaway = blank(sourcePutaway);
+        binding.sourcePayloadHash = requiredHash(payloadHash);
+        binding.sourcePresence = PRESENT;
+        binding.sourceAbsentAt = null;
+        binding.lastSyncRunId = text(runId);
+        binding.syncedAt = now;
+        binding.updatedAt = now;
+        if (binding.createdAt == now) bindingMapper.insert(binding);
+        else bindingMapper.updateById(binding);
     }
 
-    private static boolean externalPrimary(String ownershipState) {
-        return Objects.equals(EXTERNAL_PRIMARY, ownershipState);
+    private Long internalTargetId(String tenantId, String sourceType, String sourceId) {
+        MasterSourceBindingEntity binding = binding(tenantId, sourceType, sourceId);
+        return longTargetId(binding);
     }
 
-    private long entityCount(String tableType, String tenantId, String codeColumn, String code) {
-        return switch (tableType) {
-            case "SPU" -> productSpuMapper.selectCount(Wrappers.<ProductSpuEntity>query()
-                    .eq("tenant_id", tenantId).eq(codeColumn, code));
-            case "SKU" -> productSkuMapper.selectCount(Wrappers.<ProductSkuEntity>query()
-                    .eq("tenant_id", tenantId).eq(codeColumn, code));
-            case "CATEGORY" -> categoryMapper.selectCount(Wrappers.<CategoryEntity>query()
-                    .eq("tenant_id", tenantId).eq(codeColumn, code));
-            case "BRAND" -> brandMapper.selectCount(Wrappers.<BrandEntity>query()
-                    .eq("tenant_id", tenantId).eq(codeColumn, code));
-            case "TAG" -> productTagMapper.selectCount(Wrappers.<ProductTagEntity>query()
-                    .eq("tenant_id", tenantId).eq(codeColumn, code));
-            case "SPECIFICATION" -> specificationMapper.selectCount(Wrappers.<SpecificationEntity>query()
-                    .eq("tenant_id", tenantId).eq(codeColumn, code));
-            default -> throw new IllegalArgumentException("不支持的商品编码表类型: " + tableType);
-        };
-    }
-
-    private long valueCodeCount(String tenantId, String specificationId, String code) {
-        return specificationValueMapper.selectCount(Wrappers.<SpecificationValueEntity>query()
-                .eq("tenant_id", tenantId).eq("specification_id", specificationId)
-                .eq("value_code", code));
-    }
-
-    private String uniqueSpuCode(String tenantId, String preferred, String sourceId) {
-        return uniqueCode(tenantId, preferred, "DHB-SPU", sourceId, code -> entityCount("SPU", tenantId, "spu_code", code));
-    }
-
-    private String uniqueSkuCode(String tenantId, String preferred, String sourceId) {
-        return uniqueCode(tenantId, preferred, "DHB-SKU", sourceId, code -> entityCount("SKU", tenantId, "sku_code", code));
-    }
-
-    private String uniqueCategoryCode(String tenantId, String preferred, String sourceId) {
-        return uniqueCode(tenantId, preferred, "DHB-CATEGORY", sourceId,
-                code -> entityCount("CATEGORY", tenantId, "category_code", code));
-    }
-
-    private String uniqueBrandCode(String tenantId, String preferred, String sourceId) {
-        return uniqueCode(tenantId, preferred, "DHB-BRAND", sourceId,
-                code -> entityCount("BRAND", tenantId, "brand_code", code));
-    }
-
-    private String uniqueTagCode(String tenantId, String sourceId) {
-        return uniqueCode(tenantId, null, "DHB-TAG", sourceId,
-                code -> entityCount("TAG", tenantId, "tag_code", code));
-    }
-
-    private String uniqueCode(String tenantId, String preferred, String prefix, String sourceId,
-                              Function<String, Long> count) {
-        String base = missing(preferred) ? prefix + "-" + shortHash(sourceId) : preferred.strip();
-        if (base.length() <= 128 && count.apply(base) == 0) return base;
-        for (int attempt = 1; attempt <= 100; attempt++) {
-            String suffix = shortHash(sourceId) + (attempt == 1 ? "" : "-" + attempt);
-            String candidate = clipped(base, 128 - suffix.length() - 1) + "-" + suffix;
-            if (count.apply(candidate) == 0) return candidate;
+    private InternalProductEntity productCandidate(String tenantId, Product value) {
+        InternalProductEntity bySourceCode = productFromBindingSourceCode(tenantId, value.code());
+        if (bySourceCode != null) return bySourceCode;
+        if (!missing(value.code())) {
+            InternalProductEntity byLegacyCode = uniqueProduct(tenantId,
+                    Wrappers.<InternalProductEntity>lambdaQuery()
+                            .eq(InternalProductEntity::getTenantId, tenantId)
+                            .eq(InternalProductEntity::getProductCode, value.code().strip())
+                            .eq(InternalProductEntity::getDeleted, 0));
+            if (byLegacyCode != null && sourceWritable(byLegacyCode.getUpdatedBy())) {
+                return byLegacyCode;
+            }
         }
-        throw new IllegalStateException("ERP商品编码生成失败，无法保证租户内唯一");
-    }
-
-    private String uniqueValueCode(String tenantId, String specificationId, String preferred,
-                                   String sourceId) {
-        String base = missing(preferred) ? "DHB-SPEC-VALUE-" + shortHash(sourceId) : preferred.strip();
-        if (base.length() <= 128 && valueCodeCount(tenantId, specificationId, base) == 0) return base;
-        for (int attempt = 1; attempt <= 100; attempt++) {
-            String suffix = shortHash(sourceId) + (attempt == 1 ? "" : "-" + attempt);
-            String candidate = clipped(base, 128 - suffix.length() - 1) + "-" + suffix;
-            if (valueCodeCount(tenantId, specificationId, candidate) == 0) return candidate;
+        if (missing(value.code()) && !missing(value.name())) {
+            InternalProductEntity byName = uniqueProduct(tenantId,
+                    Wrappers.<InternalProductEntity>lambdaQuery()
+                            .eq(InternalProductEntity::getTenantId, tenantId)
+                            .eq(InternalProductEntity::getProductName, value.name().strip())
+                            .eq(InternalProductEntity::getDeleted, 0));
+            if (byName != null && sourceWritable(byName.getUpdatedBy())) {
+                return byName;
+            }
         }
-        throw new IllegalStateException("ERP规格值编码生成失败，无法保证租户内唯一");
+        return null;
     }
 
-    private static <T> Map<String, T> byId(List<T> values, Function<T, String> key) {
-        return values.stream().collect(Collectors.toMap(key, Function.identity(), (a, b) -> a));
+    private InternalProductVariantEntity variantCandidate(String tenantId, Long productId, Sku value) {
+        if (productId == null) return null;
+        InternalProductVariantEntity bySourceCode = variantFromBindingSourceCode(tenantId, productId, value.code());
+        if (bySourceCode != null) return bySourceCode;
+        if (!missing(value.code())) {
+            InternalProductVariantEntity byLegacyCode = uniqueVariant(tenantId,
+                    Wrappers.<InternalProductVariantEntity>lambdaQuery()
+                            .eq(InternalProductVariantEntity::getTenantId, tenantId)
+                            .eq(InternalProductVariantEntity::getProductId, productId)
+                            .eq(InternalProductVariantEntity::getVariantCode, value.code().strip())
+                            .eq(InternalProductVariantEntity::getDeleted, 0));
+            if (byLegacyCode != null && sourceWritable(byLegacyCode.getUpdatedBy())) {
+                return byLegacyCode;
+            }
+        }
+        if (!missing(value.specificationName())) {
+            InternalProductVariantEntity bySpecification = uniqueVariant(tenantId,
+                    Wrappers.<InternalProductVariantEntity>lambdaQuery()
+                            .eq(InternalProductVariantEntity::getTenantId, tenantId)
+                            .eq(InternalProductVariantEntity::getProductId, productId)
+                            .eq(InternalProductVariantEntity::getSpecificationSnapshot,
+                                    value.specificationName().strip())
+                            .eq(InternalProductVariantEntity::getDeleted, 0));
+            if (bySpecification != null && sourceWritable(bySpecification.getUpdatedBy())) {
+                return bySpecification;
+            }
+        }
+        return null;
     }
 
-    private static <T> Set<String> ids(List<T> values, Function<T, String> key) {
-        return values.stream().map(key).filter(Objects::nonNull).collect(Collectors.toSet());
+    private InternalProductEntity productFromBindingSourceCode(String tenantId, String sourceCode) {
+        if (missing(sourceCode)) return null;
+        java.util.LinkedHashSet<Long> targetIds = new java.util.LinkedHashSet<>();
+        for (MasterSourceBindingEntity item : bindingsBySourceCode(tenantId, "PRODUCT_SPU", sourceCode)) {
+            Long targetId = longTargetId(item);
+            if (targetId == null) continue;
+            InternalProductEntity entity = productMapper.selectById(targetId);
+            if (valid(entity, tenantId)) targetIds.add(targetId);
+        }
+        return targetIds.size() == 1 ? productMapper.selectById(targetIds.iterator().next()) : null;
     }
 
-    private static MasterSourceBindingEntity sourceBinding(Map<String, MasterSourceBindingEntity> values,
-                                                            String targetId) {
-        return targetId == null ? null : values.get(targetId);
+    private InternalProductVariantEntity variantFromBindingSourceCode(String tenantId, Long productId,
+                                                                     String sourceCode) {
+        if (missing(sourceCode)) return null;
+        java.util.LinkedHashSet<Long> targetIds = new java.util.LinkedHashSet<>();
+        for (MasterSourceBindingEntity item : bindingsBySourceCode(tenantId, "PRODUCT_SKU", sourceCode)) {
+            Long targetId = longTargetId(item);
+            if (targetId == null) continue;
+            InternalProductVariantEntity entity = variantMapper.selectById(targetId);
+            if (valid(entity, tenantId) && Objects.equals(entity.getProductId(), productId)) {
+                targetIds.add(targetId);
+            }
+        }
+        return targetIds.size() == 1 ? variantMapper.selectById(targetIds.iterator().next()) : null;
     }
 
-    private static String targetId(MasterSourceBindingEntity binding) {
-        return binding == null ? UUID.randomUUID().toString() : binding.targetId;
+    private List<MasterSourceBindingEntity> bindingsBySourceCode(String tenantId, String sourceType,
+                                                                 String sourceCode) {
+        if (missing(sourceCode)) return List.of();
+        return bindingMapper.selectList(Wrappers.<MasterSourceBindingEntity>query()
+                .eq("tenant_id", tenantId)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("source_object_type", sourceType)
+                .eq("source_code", sourceCode.strip())
+                .eq("source_presence", PRESENT)
+                .last("LIMIT 2"));
+    }
+
+    private InternalProductEntity uniqueProduct(String tenantId,
+                                                com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<
+                                                        InternalProductEntity> query) {
+        List<InternalProductEntity> values = productMapper.selectList(query.last("LIMIT 2"));
+        values = values.stream().filter(item -> valid(item, tenantId)).toList();
+        return values.size() == 1 ? values.getFirst() : null;
+    }
+
+    private InternalProductVariantEntity uniqueVariant(String tenantId,
+                                                       com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<
+                                                               InternalProductVariantEntity> query) {
+        List<InternalProductVariantEntity> values = variantMapper.selectList(query.last("LIMIT 2"));
+        values = values.stream().filter(item -> valid(item, tenantId)).toList();
+        return values.size() == 1 ? values.getFirst() : null;
+    }
+
+    private int parentLevel(String tenantId, Long parentId) {
+        if (parentId == null) return 1;
+        InternalProductCategoryEntity parent = categoryMapper.selectById(parentId);
+        if (parent == null || !Objects.equals(parent.getTenantId(), tenantId)) return 1;
+        return value(parent.getCategoryLevel(), 1) + 1;
+    }
+
+    private String uniqueProductCode(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.PRODUCT, code -> productMapper.selectCount(
+                Wrappers.<InternalProductEntity>lambdaQuery()
+                        .eq(InternalProductEntity::getTenantId, tenantId)
+                        .eq(InternalProductEntity::getProductCode, code)));
+    }
+
+    private String uniqueVariantCode(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.SKU, code -> variantMapper.selectCount(
+                Wrappers.<InternalProductVariantEntity>lambdaQuery()
+                        .eq(InternalProductVariantEntity::getTenantId, tenantId)
+                        .eq(InternalProductVariantEntity::getVariantCode, code)));
+    }
+
+    private String uniqueCategoryCode(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.CATEGORY, code -> categoryMapper.selectCount(
+                Wrappers.<InternalProductCategoryEntity>lambdaQuery()
+                        .eq(InternalProductCategoryEntity::getTenantId, tenantId)
+                        .eq(InternalProductCategoryEntity::getCategoryCode, code)));
+    }
+
+    private String uniqueBrandCode(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.BRAND, code -> brandMapper.selectCount(
+                Wrappers.<InternalProductBrandEntity>lambdaQuery()
+                        .eq(InternalProductBrandEntity::getTenantId, tenantId)
+                        .eq(InternalProductBrandEntity::getBrandCode, code)));
+    }
+
+    private String uniqueTagCode(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.TAG, code -> tagMapper.selectCount(
+                Wrappers.<InternalProductTagEntity>lambdaQuery()
+                        .eq(InternalProductTagEntity::getTenantId, tenantId)
+                        .eq(InternalProductTagEntity::getTagCode, code)));
+    }
+
+    private String uniqueSpecificationCode(String tenantId) {
+        return uniqueCode(ErpBusinessCodeRules.SPECIFICATION, code -> specificationMapper.selectCount(
+                Wrappers.<InternalProductSpecificationEntity>lambdaQuery()
+                        .eq(InternalProductSpecificationEntity::getTenantId, tenantId)
+                        .eq(InternalProductSpecificationEntity::getSpecificationCode, code)));
+    }
+
+    private String uniqueSpecificationValueCode(String tenantId, Long specificationId) {
+        return uniqueCode(ErpBusinessCodeRules.SPECIFICATION_VALUE, code ->
+                specificationValueMapper.selectCount(Wrappers.<InternalProductSpecificationValueEntity>lambdaQuery()
+                        .eq(InternalProductSpecificationValueEntity::getTenantId, tenantId)
+                        .eq(InternalProductSpecificationValueEntity::getSpecificationId, specificationId)
+                        .eq(InternalProductSpecificationValueEntity::getValueCode, code)));
+    }
+
+    private String uniqueCode(BusinessCodeRule rule, Function<String, Long> count) {
+        return codeGenerator.generateUnique(rule, code -> count.apply(code) == 0);
+    }
+
+    private LocalDateTime now() {
+        return LocalDateTime.ofInstant(Instant.now(clock), ZoneOffset.UTC);
     }
 
     private static boolean changed(MasterSourceBindingEntity binding, String payloadHash) {
         return binding == null || !Objects.equals(binding.sourcePayloadHash, requiredHash(payloadHash))
-                || "SOURCE_ABSENT".equals(binding.sourcePresence);
+                || SOURCE_ABSENT.equals(binding.sourcePresence) || longTargetId(binding) == null;
     }
 
-    private static String legacySkuSourceId(String productSourceId, String sourceId) {
-        if (missing(productSourceId) || missing(sourceId)) return null;
-        String prefix = productSourceId.strip() + "::";
-        return sourceId.startsWith(prefix) && sourceId.length() > prefix.length()
-                ? sourceId.substring(prefix.length()) : null;
+    private static ImportResult importResult(MasterSourceBindingEntity binding,
+                                             boolean created, boolean changed) {
+        if (created) return ImportResult.created(1);
+        return binding == null || changed ? ImportResult.changed(1) : ImportResult.duplicate(1);
     }
 
-    private static ImportResult result(MasterSourceBindingEntity existing, boolean changed) {
-        return existing == null ? ImportResult.created(1)
-                : changed ? ImportResult.changed(1) : ImportResult.duplicate(1);
+    private static boolean productNeedsRepair(InternalProductEntity entity, Product value,
+                                              Long categoryId, Long brandId, String imagesJson) {
+        return !Objects.equals(entity.getProductName(), value.name())
+                || !Objects.equals(entity.getCategoryId(), categoryId)
+                || !Objects.equals(entity.getBrandId(), brandId)
+                || !Objects.equals(entity.getShelfStatusCode(), internalShelfStatus(value.putaway()))
+                || !Objects.equals(entity.getImageKeysJson(), imagesJson);
     }
 
-    private static String importAction(Object existing, boolean changed) {
-        return existing == null ? "CREATED" : changed ? "UPDATED" : "UNCHANGED";
+    private static boolean variantNeedsRepair(InternalProductVariantEntity entity, Long productId,
+                                              Product product, Sku value) {
+        return !Objects.equals(entity.getProductId(), productId)
+                || !Objects.equals(entity.getSpecificationSnapshot(), value.specificationName())
+                || !Objects.equals(entity.getUnitCode(), internalUnitCode(product.unit()))
+                || !Objects.equals(entity.getSalePrice(), firstAmount(value.orderPrice(), product.orderPrice()));
     }
 
-    private static boolean contains(String value, String text) {
-        return value != null && value.toLowerCase(Locale.ROOT).contains(text);
+    private static boolean categoryNeedsRepair(InternalProductCategoryEntity entity, Category value,
+                                               Long parentId) {
+        return !Objects.equals(entity.getCategoryName(), value.name())
+                || !Objects.equals(entity.getParentId(), parentId);
     }
 
-    private static String putawayStatus(String value) {
-        return "T".equalsIgnoreCase(value) ? "ACTIVE" : "INACTIVE";
+    private static boolean sourceWritable(String updatedBy) {
+        return missing(updatedBy) || SYNC_ACTOR.equals(updatedBy);
     }
 
-    private LocalDateTime now() { return LocalDateTime.now(clock); }
+    private static boolean valid(InternalProductCategoryEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
 
-    private static LocalDateTime local(Instant value) {
-        return value == null ? null : LocalDateTime.ofInstant(value, ZoneOffset.UTC);
+    private static boolean valid(InternalProductBrandEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean valid(InternalProductSpecificationEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean valid(InternalProductSpecificationValueEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean valid(InternalProductTagEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean valid(InternalProductEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean valid(InternalProductVariantEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static Long longTargetId(MasterSourceBindingEntity binding) {
+        if (binding == null || missing(binding.targetId)) return null;
+        try {
+            return Long.valueOf(binding.targetId);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static Long nextVersion(Long value) {
+        return value == null ? 1L : value + 1;
+    }
+
+    private static int value(Integer value, int fallback) {
+        return value == null ? fallback : value;
+    }
+
+    private static String text(UUID value) {
+        return value == null ? null : value.toString();
     }
 
     private static Instant instant(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC);
     }
 
-    private static String text(UUID value) { return value == null ? null : value.toString(); }
-
-    private static boolean missing(String value) { return value == null || value.isBlank(); }
-
-    private static String blank(String value) { return missing(value) ? null : value.strip(); }
-
-    private static long nextVersion(Long value) { return value == null ? 1 : value + 1; }
-
-    private static int value(Integer value, int fallback) { return value == null ? fallback : value; }
-
-    private static String clipped(String value, int size) { return value.length() <= size ? value : value.substring(0, size); }
-
-    private static String requiredHash(String value) {
-        return missing(value) ? shortHash("missing") + "0".repeat(48) : value;
+    private static boolean missing(String value) {
+        return value == null || value.isBlank();
     }
 
-    private static String sourceFieldsJson(Map<String, Object> sourceFields) {
+    private static String blank(String value) {
+        return missing(value) ? null : value.strip();
+    }
+
+    private static String firstText(String first, String second) {
+        return !missing(first) ? first.strip() : blank(second);
+    }
+
+    private static java.math.BigDecimal firstAmount(java.math.BigDecimal first, java.math.BigDecimal second) {
+        return first == null ? second : first;
+    }
+
+    private static String sourceRemark(Map<String, Object> fields) {
+        if (fields == null || fields.isEmpty()) return null;
+        Object remark = fields.get("remark");
+        return remark == null ? null : blank(String.valueOf(remark));
+    }
+
+    private static String internalShelfStatus(String value) {
+        return "T".equalsIgnoreCase(blank(value)) ? "ON_SHELF" : "OFF_SHELF";
+    }
+
+    private static String internalUnitCode(String value) {
+        if (missing(value)) return "PIECE";
+        return switch (value.strip()) {
+            case "箱" -> "BOX";
+            case "桶" -> "BUCKET";
+            case "份" -> "PORTION";
+            case "套" -> "SET";
+            case "床" -> "BED";
+            default -> "PIECE";
+        };
+    }
+
+    private static String imageKeysJson(Product product) {
+        List<ProductImageJson> images = new ArrayList<>();
+        String mainImageKey = missing(product.mainImageKey()) ? null : product.mainImageKey().strip();
+        if (mainImageKey != null) {
+            images.add(new ProductImageJson(mainImageKey, "MAIN", 0));
+        }
+        List<ProductImage> sourceImages = product.images().stream()
+                .filter(image -> image != null && !missing(image.objectKey()))
+                .sorted(Comparator.comparing(ProductImage::sortOrder, Comparator.nullsLast(Integer::compareTo)))
+                .toList();
+        for (ProductImage image : sourceImages) {
+            String key = image.objectKey().strip();
+            if (containsImageKey(images, key)) continue;
+            boolean main = mainImageKey == null && images.isEmpty();
+            images.add(new ProductImageJson(key, main ? "MAIN" : "DETAIL", images.size()));
+        }
+        return json(images);
+    }
+
+    private static boolean containsImageKey(List<ProductImageJson> images, String imageKey) {
+        return images.stream().anyMatch(image -> Objects.equals(image.imageKey(), imageKey));
+    }
+
+    private static String requiredHash(String payloadHash) {
+        return missing(payloadHash) ? sha256Hex("EMPTY") : payloadHash.strip();
+    }
+
+    private static String stableLockId(String tenantId, String objectType) {
+        return UUID.nameUUIDFromBytes((tenantId + "|" + SOURCE_SYSTEM + "|" + objectType)
+                .getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    private static String sha256Hex(String value) {
         try {
-            return SOURCE_FIELDS_MAPPER.writeValueAsString(sourceFields == null ? Map.of() : sourceFields);
-        } catch (RuntimeException exception) {
-            throw new IllegalStateException("订货宝商品原始字段序列化失败", exception);
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException error) {
+            throw new IllegalStateException("当前JDK不支持SHA-256", error);
         }
     }
 
-    private static String shortHash(String value) {
+    private static String json(Object value) {
         try {
-            byte[] bytes = MessageDigest.getInstance("SHA-256")
-                    .digest(String.valueOf(value).getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(bytes).substring(0, 16).toUpperCase(Locale.ROOT);
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256不可用", exception);
+            return JSON.writeValueAsString(value == null ? List.of() : value);
+        } catch (Exception error) {
+            throw new IllegalStateException("ERP商品同步JSON序列化失败", error);
         }
     }
 
-    private record BindingResult(String targetId, ImportResult importResult) {
+    private record ProductImageJson(String imageKey, String imageTypeCode, Integer ordinal) {
     }
 
-    private record PriceValues(BigDecimal order, BigDecimal market, BigDecimal purchase,
-                               BigDecimal other, BigDecimal middleOrder, BigDecimal bigOrder) {
-        private static PriceValues empty() {
-            return new PriceValues(null, null, null, null, null, null);
-        }
-    }
-
-    private record ProductViewDetails(Map<String, PriceValues> prices,
-                                      Map<String, Map<String, ProductUnitEntity>> units,
-                                      Map<String, ProductInventoryPolicyEntity> policies,
-                                      Map<String, Integer> skuCounts,
-                                      Map<String, List<ProductImageView>> images,
-                                      Map<String, List<SkuView>> skuViews,
-                                      Map<String, Map<String, String>> customFields) {
-        private static ProductViewDetails empty() {
-            return new ProductViewDetails(Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
-        }
-    }
+    private record UpsertResult(Long id, ImportResult result) { }
 }

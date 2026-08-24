@@ -16,8 +16,8 @@
 
 - 内部订单、订单明细、发货、售后、应收和回款核销的业务主权。
 - 内部订单状态机、订单幂等、事务落库和订单领域事件。
-- 对 Portal 和其他领域服务提供版本化的本地订单查询/导入契约。
-- 由 Order Center 内部定时任务编排 Integration 查询，并在本地业务表中完成幂等落库。
+- 对 Portal 和其他领域服务提供版本化的本地销售订单查询/导入契约。
+- 接受 Integration 统一订货宝编排器的内部调用，并在本地业务表中完成幂等落库。
 - 保存导入后的来源标识和必要来源快照，但不负责获取外部报文。
 
 ## 不负责什么
@@ -25,71 +25,65 @@
 - 不调用订货宝、飞书或其他第三方 API。
 - 不保存第三方账号、密码、API Key、Token，也不实现第三方重试、限流和分页。
 - 不直接读取 `rigour_integration` 或其他 Schema。
-- 不让 Portal 直接调用 Integration 执行接口；Portal 的立即同步按钮只能调用 Order Center，
-  另有 Order Center 内部定时任务作为自动同步入口。
+- 不让 Portal 直接调用 Order Center 的订货宝内部同步接口；手动同步统一进入 Integration 的订货宝同步中心。
+- 不保留模块内部定时入口；定时、手动、修复均由 Integration 统一编排。
 
 ## 订货宝边界
 
 ```text
-Portal 查询/立即同步 -> Gateway -> Order Center -> 本地查询表/业务落库 -> Portal
-Order Center 定时任务 -> Integration内部目标发现
-                  -> Integration查询/转换/Raw Landing -> Order Center业务幂等落库
-                                                                  -> order_order等前端查询表
+Portal 查询 -> Gateway -> Order Center销售订单API -> 我方销售订单业务表 -> Portal
+Portal 手动同步/系统定时 -> Gateway/Integration订货宝同步中心
+                         -> Integration目标发现/Raw Landing/映射
+                         -> Order Center内部同步接口
+                         -> 我方销售订单业务表和同步审计
 ```
 
-当前订货宝接口：
+当前对外接口：
 
-- `GET /api/v1/orders/dhb`：查询订单中心本地投影；
-- `GET /api/v1/orders/dhb/shipments`：查询本地出库/发货投影；支持status、typeId、orderNo和时间筛选；
-- `GET /api/v1/orders/dhb/shipment-logistics`：查询`getWaitShips`按订单落库的出库/发货物流快照；
-- `GET /api/v1/orders/dhb/shipment-logistics/{orderNo}`：按订货宝订单号查询出库/发货物流详情；
-- `GET /api/v1/orders/dhb/{orderSn}`：查询本地订单明细。
-- `GET /api/v1/orders/dhb/shipments/{shipmentNo}`：查询本地出库/发货单及明细；
-- `GET /api/v1/orders/dhb/returns`、`GET /api/v1/orders/dhb/returns/{returnNo}`：查询本地退货单及明细；
-- `GET /api/v1/orders/dhb/receipts`、`GET /api/v1/orders/dhb/payments`：查询本地收款单、付款单。
-- `POST /api/v1/orders/dhb/sync`：Portal无需传connectorId，Order Center按当前登录租户从Integration sync-targets自动解析唯一启用连接器，再调Integration后落本地库；请求体的`scope=ORDER`只拉订货单列表和详情，`scope=RETURN`只拉退货单列表和详情，`scope=SHIPMENT`只拉出库/发货单及详情，`scope=SHIPMENT_LOGISTICS`只落库物流快照，`scope=RECEIPT`只拉收款单，`scope=PAYMENT`只拉付款单，省略或`ALL`保持历史聚合同步行为；若当前租户没有或有多个启用连接器，则拒绝执行，避免误同步。
-- `POST /api/v1/orders/dhb/sync/{connectorId}`：兼容旧调用方；Order Center仍会校验connectorId属于当前租户的启用任务，再调Integration后落本地库。
+- `GET /api/v1/orders/sales-orders`：查询我方销售订单列表；
+- `GET /api/v1/orders/sales-orders/{id}`：查询我方销售订单详情；
+- `POST /api/v1/orders/sales-orders`：创建或更新我方销售订单；
+- `POST /api/v1/orders/sales-orders/{id}/stock-out`：发起销售出库。
+
+当前内部同步接口：
+
+- `POST /internal/v1/orders/dhb/sync`：仅供 Integration 订货宝同步编排器调用；请求必须携带可信上下文、`connectorId` 和 `sourceTaskId`。Order Center 只负责把 Integration 已采集并映射后的来源批次幂等写入我方订单业务表和同步审计。
+
+`mode=REPAIR`按`scope`执行无时间窗的完整来源重放并强制补拉详情；本地强制重建
+来源管理的主表字段与子表，因此可修复“行数相同但字段被错改”；重建对象记入`changed`
+（即repaired），且REPAIR永不推进增量checkpoint。
+订货宝列表没有删除墓碑，本地不物理删除未重现的聚合。只有FULL/REPAIR完成整轮拉取、Raw Landing、
+详情和本地持久化核对后，才将本轮未见单据标记为`SOURCE_ABSENT`；INCREMENTAL、失败页或核对失败均不得标记缺失。
+后续同步再次见到该单据时恢复为`PRESENT`，所有状态变化与本轮成功核对账同事务提交。
 
 Order Center 不实现订货宝 `f/v` 协议，不保存外部 Secret/Token；通过 `integration-migration-api` 的版本化查询契约调用 Integration。当前工作区已确认可调用订单列表和订单详情；同步结果使用 `tenantId + sourceSystem + sourceOrderNo` 做幂等。
 
-## 定时同步配置
+## 同步窗口配置
 
-默认关闭定时任务。由 DEV/Nacos 或进程配置注入全局策略；调度服务使用进程内稳定身份，租户、连接器和任务清单由 Integration 每次调度动态发现，不能填写订货宝账号密码：
+Order Center 不再持有定时配置、订货宝游标或订货宝镜像表。定时频率、手动触发、修复触发、最大页数、Raw Landing、来源覆盖和对账证据统一由 Integration 订货宝同步编排器控制。Order Center 只接收 Integration 已映射好的销售订单业务批次。
 
 ```yaml
 rigour:
-  order:
+  integration:
     dhb:
-      sync:
+      orchestration:
         enabled: true
-        # ERP 00/30、CRM 10/40、Order 20/50，降低同一连接器的计划任务碰撞。
-        cron: "0 20/30 * * * ?"
-        max-pages: 100
-        overlap-minutes: 5
 ```
 
-Order Center 通过未配置到 Gateway 的 `/internal/v1/integration/dhb/sync-targets` 发现
-`enabled=1`、`object_type=ORDER` 且连接器为 `ACTIVE` 的目标。发现请求使用可信 `SERVICE`
-身份；实际订单查询继续携带 Integration 返回的 `tenantId`，不模拟租户操作人，也不从 Nacos
-维护租户 UUID 清单。
+首次同步、增量窗口、重叠区间、FULL 对账和失败重试都在 Integration 侧记录和推进；Order Center 不再维护本地订货宝游标。
 
-首次同步不带更新时间窗口；后续以 `order_dhb_sync_checkpoint.last_success_at - overlap-minutes`
-作为起点，只有 Integration 查询成功且本地业务表全部落库成功后才推进游标。失败时保留上一次成功游标，下一次会重新读取重叠区间。
-
-订单同步通过 Integration 调用订货宝 `getShipsList` 分页读取独立出库/发货单，并按 `includeDetails` 调用 `getShipsContent(ships_num)` 补齐主单和商品明细，交回 Order Center 后由本地幂等导入写入 `order_dhb_shipment` 及明细表；同时按订单调用 `getWaitShips(orders_num)`，将`shipped`和`wait_stock`按订单域批次交回并写入`order_dhb_shipment_logistics`及明细表。由于订货宝没有独立物流列表接口，物流页同步会先读取订单号作为索引，再逐单调用`getWaitShips`，但本批次只导入物流快照，不重复导入订单。Portal 的出库/发货、物流和订单结算页面只查询本地接口，手动同步分别使用专用范围；拉取成功后在同一轮导入事务中幂等落库。
+订单同步通过 Integration 读取订货宝订单、发货、退货、收付款和物流快照；每个请求经由 Integration 限流、重试并完成 Raw Landing。Order Center 收到领域批次后只做本地事务性幂等落库、销售订单状态映射和销售出库联动，Portal 不再展示订货宝镜像列表。
 
 Order Center 的接口访问日志记录方法、路径、查询参数、JSON请求体、租户、requestId、响应状态和耗时；token、sKey、签名、密码等敏感值统一脱敏，便于按 requestId 定位问题而不把凭据写入日志。
 
-本地开发可通过 `V8__dhb_document_demo_data.sql` 查看出库单、发货单、退货单、收款单和付款单页面；演示数据使用固定开发租户，不写出站事件。
+历史演示迁移只作为既有 Flyway 历史保留；新的业务验收以我方销售订单页面和订货宝同步中心核对账为准。
 
 ## 数据与代码位置
 
-- Schema：`rigour_order`；订单中心是 `order_order`、`order_order_line`、`order_order_shipment` 的唯一写者。
-- 增量游标：`order_dhb_sync_checkpoint`，状态为 `IDLE`、`SUCCEEDED` 或 `FAILED`，仅成功业务落库后推进。
-- 出库/发货物流：`order_dhb_shipment_logistics`、`order_dhb_shipment_logistics_line`，按`tenant_id + source_system + order_no`幂等保存`getWaitShips`快照；明细类型为`SHIPPED`或`WAIT_STOCK`。
-- 主要设施：`DhbOrderService` 只查询本地投影；`MybatisPlusOrderRepository` 负责本服务持久化。
-- `order_source_record` 只保留导入后的来源快照，不替代 Integration 的 Raw Landing。
-- `order_outbox_event` 与订单写入使用同一服务、同一数据库和同一本地事务。
+- Schema：`rigour_order`；订单中心是 `order_sales_order`、`order_sales_order_line`、`order_sales_order_payment` 的唯一写者。
+- 来源映射和同步对账：由 Integration 的 Raw、外部对象映射和编排运行记录保存，Order Center 不再维护旧订货宝 checkpoint/run/reconciliation 表。
+- 出库联动：Order 通过 `OrderSalesOrderService` 调用 ERP 销售出库接口，ERP 在 `erp_stock_out_order` 和 `erp_stock_out_order_line` 保存我方出库单。
+- 主要设施：订货宝同步由 Integration 编排器拉取、Raw 落库和映射，Order 仅通过 `OrderSalesOrderService` / `MybatisPlusSalesOrderRepository` 维护我方销售订单业务表。
 
 ## 依赖与调用方向
 

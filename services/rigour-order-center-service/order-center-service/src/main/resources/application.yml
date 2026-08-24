@@ -33,25 +33,17 @@ mybatis-plus:
     banner: false
 
 rigour:
-  business-settings:
-    # Order通过公共客户端批量补齐明确白名单字典；不读取rawJson猜测字段。
-    base-url: ${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://localhost:26892}
+  erp:
+    # Order一键销售出库只调用ERP版本化HTTP契约，不访问ERP数据库。
+    base-url: ${RIGOUR_ERP_BASE_URL:http://localhost:26884}
+  iam:
+    # Order列表按员工编码批量查询IAM人员中心展示名；业务表仍只以owner_staff_code关联。
+    base-url: ${RIGOUR_IAM_BASE_URL:http://localhost:26881}
   order:
-    dhb:
-      sync:
-        # Order Center内部定时同步开关；启用后从Integration动态发现租户目标。
-        enabled: ${RIGOUR_ORDER_DHB_SYNC_ENABLED:true}
-        # Spring六字段cron：默认每小时20分和50分执行，与ERP、CRM错峰。
-        cron: ${RIGOUR_ORDER_DHB_SYNC_CRON:0 20/30 * * * ?}
-        # 单次同步最大页数，范围1..100；供应商数据过大时分批运行。
-        max-pages: ${RIGOUR_ORDER_DHB_SYNC_MAX_PAGES:100}
-        # 增量窗口向前重叠分钟数，默认5分钟；依靠业务键和payloadHash幂等。
-        overlap-minutes: ${RIGOUR_ORDER_DHB_SYNC_OVERLAP_MINUTES:5}
-        # 付款单没有可靠更新时间条件，默认每天做一次完整对账。
-        full-reconcile-hours: ${RIGOUR_ORDER_DHB_SYNC_FULL_RECONCILE_HOURS:24}
-  integration:
-    # Order Center只调用Integration版本化HTTP契约，不直接访问订货宝或Integration数据库。
-    base-url: ${RIGOUR_INTEGRATION_BASE_URL:http://localhost:26882}
+    http:
+      # Order对下游ERP的连接和读取超时；订货宝同步统一收口到Integration编排器。
+      connect-timeout: ${RIGOUR_ORDER_HTTP_CONNECT_TIMEOUT:3s}
+      read-timeout: ${RIGOUR_ORDER_HTTP_READ_TIMEOUT:30s}
   context:
     trust:
       # 当前主动签名/验签密钥版本；轮换密钥时按v1、v2递增。

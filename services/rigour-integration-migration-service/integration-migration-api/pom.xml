@@ -17,5 +17,9 @@
             <groupId>org.springframework</groupId>
             <artifactId>spring-web</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.rigour</groupId>
+            <artifactId>rigour-shared-core</artifactId>
+        </dependency>
     </dependencies>
 </project>

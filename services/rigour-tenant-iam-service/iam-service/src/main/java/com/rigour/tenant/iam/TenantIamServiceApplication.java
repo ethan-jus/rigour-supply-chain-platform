@@ -1,6 +1,7 @@
 package com.rigour.tenant.iam;
 
 import com.rigour.platform.startup.ServiceApplicationLauncher;
+import com.rigour.tenant.iam.maintenance.IamFlywayMaintenance;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
@@ -10,6 +11,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class TenantIamServiceApplication {
     public static void main(String[] args) {
+        if (IamFlywayMaintenance.runIfRequested(args)) {
+            return;
+        }
         ServiceApplicationLauncher.run(TenantIamServiceApplication.class, "租户IAM服务", args);
     }
 }
