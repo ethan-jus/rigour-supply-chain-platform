@@ -15,6 +15,9 @@ public interface ErpTransferOrderStore {
 
     Optional<InternalTransferOrderDetailView> transferOrder(String tenantId, Long id);
 
+    Optional<InternalTransferOrderDetailView> transferOrderBySource(
+            String tenantId, String sourceSystemCode, String sourceDocumentNo);
+
     boolean existsByTransferNo(String tenantId, String transferNo);
 
     boolean existsByStockOutNo(String tenantId, String stockOutNo);
@@ -42,6 +45,10 @@ public interface ErpTransferOrderStore {
     InternalTransferOrderDetailView confirmStockOut(
             String tenantId, String stockOutNo, TransferStockOutWrite command, String actorId);
 
+    InternalTransferOrderDetailView confirmExternalStockOut(
+            String tenantId, String transferNo, String stockOutNo,
+            ExternalTransferStockOutWrite command, String actorId);
+
     InternalTransferOrderDetailView confirmStockIn(
             String tenantId, String stockInNo, TransferStockInWrite command, String actorId);
 
@@ -67,6 +74,8 @@ public interface ErpTransferOrderStore {
 
     /** 调拨单聚合写入模型。 */
     record TransferOrderWrite(
+            String sourceSystemCode,
+            String sourceDocumentNo,
             Long sourceWarehouseId,
             Long targetWarehouseId,
             String statusCode,
@@ -124,6 +133,8 @@ public interface ErpTransferOrderStore {
             Long transferOrderId,
             Integer transferRevision,
             String transferNo,
+            String sourceSystemCode,
+            String sourceDocumentNo,
             String stockOutTypeCode,
             String stockOutStatusCode,
             String nextTransferStatusCode,
@@ -140,6 +151,34 @@ public interface ErpTransferOrderStore {
     record TransferStockOutLineWrite(
             Integer lineNo,
             Long transferOrderLineId,
+            Long productId,
+            Long productVariantId,
+            String productCode,
+            String variantCode,
+            String productName,
+            String unitCode,
+            BigDecimal quantity,
+            String flowNo,
+            String remark) {
+    }
+
+    /** 外部来源调拨出库写入模型；先创建调拨单，再生成调拨出库单。 */
+    record ExternalTransferStockOutWrite(
+            String sourceSystemCode,
+            String sourceDocumentNo,
+            Long sourceWarehouseId,
+            Long targetWarehouseId,
+            Instant stockOutTime,
+            List<ExternalTransferStockOutLineWrite> lines,
+            String remark) {
+        public ExternalTransferStockOutWrite {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+        }
+    }
+
+    /** 外部来源调拨出库明细写入模型，同时携带本次库存流水号。 */
+    record ExternalTransferStockOutLineWrite(
+            Integer lineNo,
             Long productId,
             Long productVariantId,
             String productCode,

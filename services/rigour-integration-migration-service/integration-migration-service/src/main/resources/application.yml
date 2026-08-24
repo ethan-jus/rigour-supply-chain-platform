@@ -66,8 +66,8 @@ rigour:
         cron: ${RIGOUR_DHB_SYNC_ORCHESTRATION_CRON:0 5/30 * * * ?}
         max-pages: ${RIGOUR_DHB_SYNC_ORCHESTRATION_MAX_PAGES:100}
       order:
-        # getOrderContent/getShipsContent 明细接口按单号调用；默认串行，确认订货宝限流后可调高到3-5。
-        detail-concurrency: ${RIGOUR_DHB_ORDER_DETAIL_CONCURRENCY:1}
+        # getOrderContent/getShipsContent 明细接口按单号调用；默认3路受限并发，正式上线前以订货宝确认的限流阈值覆盖。
+        detail-concurrency: ${RIGOUR_DHB_ORDER_DETAIL_CONCURRENCY:3}
       client:
         # 订货宝正式 API 基础 URL 必须配置在租户连接器的 base_url 中；商品图片相对地址使用独立源站。
         image-base-url: ${RIGOUR_INTEGRATION_DHB_IMAGE_BASE_URL:https://img.dhb168.com/}

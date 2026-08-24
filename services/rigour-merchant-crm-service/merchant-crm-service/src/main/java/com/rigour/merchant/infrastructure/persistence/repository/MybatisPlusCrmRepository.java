@@ -236,13 +236,13 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         CustomerProjectionBatch customerProjectionBatch = type == CrmMasterDataObjectType.CUSTOMER
                 ? customerProjectionBatch(tenantId, connectorId, existingBindings, records)
                 : null;
-        AddressCustomerTargetBatch addressCustomerTargetBatch = type == CrmMasterDataObjectType.ADDRESS
-                ? addressCustomerTargetBatch(tenantId, connectorId, existingBindings, records)
+        AddressProjectionBatch addressProjectionBatch = type == CrmMasterDataObjectType.ADDRESS
+                ? addressProjectionBatch(tenantId, connectorId, existingBindings, records)
                 : null;
         List<ImportResult> results = records.stream()
                 .map(record -> importRecordInternal(tenantId, connectorId, runId, type,
                         record, existingBindings.get(record.sourceId()),
-                        customerProjectionBatch, addressCustomerTargetBatch))
+                        customerProjectionBatch, addressProjectionBatch))
                 .toList();
         heartbeatRun(tenantId, connectorId, runId, type);
         return results;
@@ -312,7 +312,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                                               CrmMasterDataObjectType type, SourceRecord record,
                                               SourceBindingEntity existingBinding,
                                               CustomerProjectionBatch customerProjectionBatch,
-                                              AddressCustomerTargetBatch addressCustomerTargetBatch) {
+                                              AddressProjectionBatch addressProjectionBatch) {
         if (record == null || record.sourceId() == null || record.sourceId().isBlank()) {
             return ImportResult.rejectedOne();
         }
@@ -327,7 +327,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         if (binding != null && hash.equals(binding.sourcePayloadHash)
                 && "RESOLVED".equals(binding.bindingStatus) && binding.targetId != null
                 && projectionComplete(tenantId, connectorId, type,
-                uuid(binding.targetId), snapshot, customerProjectionBatch, addressCustomerTargetBatch)) {
+                uuid(binding.targetId), snapshot, customerProjectionBatch, addressProjectionBatch)) {
             markSeen(binding, runId, snapshot, now);
             return ImportResult.duplicateOne();
         }
@@ -337,7 +337,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             case CUSTOMER_AREA -> customerArea(tenantId, connectorId, binding, snapshot, now);
             case CUSTOMER -> customer(tenantId, connectorId, binding, snapshot, now, sourceChanged);
             case ADDRESS -> address(tenantId, connectorId, binding, snapshot, now,
-                    sourceChanged, addressCustomerTargetBatch);
+                    sourceChanged, addressProjectionBatch);
         };
         boolean created = binding == null;
         if (binding == null) {
@@ -656,13 +656,13 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
 
     private Target address(UUID tenantId, UUID connectorId, SourceBindingEntity binding,
                            SourceRecord record, LocalDateTime now, boolean sourceChanged,
-                           AddressCustomerTargetBatch customerTargetBatch) {
+                           AddressProjectionBatch addressProjectionBatch) {
         Map<String, Object> f = record.sourceFields();
         UUID addressId = targetId(binding);
         AddressEntity address = addressMapper.selectOne(Wrappers.<AddressEntity>query()
                 .eq("tenant_id", bytes(tenantId)).eq("id", bytes(addressId)));
-        UUID partyId = customerTargetBatch != null
-                ? customerTargetBatch.target(f)
+        UUID partyId = addressProjectionBatch != null
+                ? addressProjectionBatch.target(f)
                 : customerTarget(tenantId, connectorId,
                 value(f, "clientGuid"), value(f, "clientNum"), value(f, "clientId"));
         if (partyId == null && address != null && address.partyId != null) {
@@ -1599,16 +1599,21 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         return null;
     }
 
-    private AddressCustomerTargetBatch addressCustomerTargetBatch(UUID tenantId, UUID connectorId,
-                                                                  Map<String, SourceBindingEntity> existingBindings,
-                                                                  List<SourceRecord> records) {
+    private AddressProjectionBatch addressProjectionBatch(UUID tenantId, UUID connectorId,
+                                                          Map<String, SourceBindingEntity> existingBindings,
+                                                          List<SourceRecord> records) {
         if (records == null || records.isEmpty()) return null;
         Map<String, Set<String>> values = new LinkedHashMap<>();
         values.put("GUID", new LinkedHashSet<>());
         values.put("NUM", new LinkedHashSet<>());
         values.put("ID", new LinkedHashSet<>());
+        Set<UUID> addressIds = new LinkedHashSet<>();
         for (SourceRecord record : records) {
             SourceBindingEntity binding = existingBindings == null ? null : existingBindings.get(record.sourceId());
+            if (binding != null && binding.targetId != null
+                    && "RESOLVED".equals(binding.bindingStatus)) {
+                addressIds.add(uuid(binding.targetId));
+            }
             SourceRecord snapshot = snapshot(binding, record);
             Map<String, Object> fields = snapshot.sourceFields();
             addAliasCandidate(values.get("GUID"), value(fields, "clientGuid"));
@@ -1617,47 +1622,73 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         }
         Set<String> allValues = new LinkedHashSet<>();
         values.values().forEach(allValues::addAll);
-        if (allValues.isEmpty()) return null;
+        if (allValues.isEmpty() && addressIds.isEmpty()) return null;
 
         byte[] tenant = bytes(tenantId);
         byte[] connector = bytes(connectorId);
         Map<String, UUID> bindingByAlias = new LinkedHashMap<>();
         Set<UUID> bindingIds = new LinkedHashSet<>();
-        aliasMapper.selectList(Wrappers.<SourceIdentityAliasEntity>query()
-                        .eq("tenant_id", tenant)
-                        .eq("connector_id", connector)
-                        .eq("source_system", SOURCE_SYSTEM)
-                        .eq("source_object_type", CrmMasterDataObjectType.CUSTOMER.name())
-                        .in("alias_value", allValues))
-                .forEach(alias -> {
-                    if (alias.aliasType == null || alias.aliasValue == null) return;
-                    Set<String> allowed = values.get(alias.aliasType);
-                    if (allowed == null || !allowed.contains(alias.aliasValue) || alias.bindingId == null) return;
-                    UUID bindingId = uuid(alias.bindingId);
-                    bindingByAlias.putIfAbsent(aliasKey(alias.aliasType, alias.aliasValue), bindingId);
-                    bindingIds.add(bindingId);
-                });
-        if (bindingIds.isEmpty()) return new AddressCustomerTargetBatch(Map.of());
+        if (!allValues.isEmpty()) {
+            aliasMapper.selectList(Wrappers.<SourceIdentityAliasEntity>query()
+                            .eq("tenant_id", tenant)
+                            .eq("connector_id", connector)
+                            .eq("source_system", SOURCE_SYSTEM)
+                            .eq("source_object_type", CrmMasterDataObjectType.CUSTOMER.name())
+                            .in("alias_value", allValues))
+                    .forEach(alias -> {
+                        if (alias.aliasType == null || alias.aliasValue == null) return;
+                        Set<String> allowed = values.get(alias.aliasType);
+                        if (allowed == null || !allowed.contains(alias.aliasValue) || alias.bindingId == null) return;
+                        UUID bindingId = uuid(alias.bindingId);
+                        bindingByAlias.putIfAbsent(aliasKey(alias.aliasType, alias.aliasValue), bindingId);
+                        bindingIds.add(bindingId);
+                    });
+        }
 
         Map<UUID, UUID> targetByBinding = new LinkedHashMap<>();
-        bindingMapper.selectList(Wrappers.<SourceBindingEntity>query()
-                        .eq("tenant_id", tenant)
-                        .eq("connector_id", connector)
-                        .eq("source_system", SOURCE_SYSTEM)
-                        .eq("source_object_type", CrmMasterDataObjectType.CUSTOMER.name())
-                        .in("id", bindingIds.stream().map(MybatisPlusCrmRepository::bytes).toList()))
-                .forEach(binding -> {
-                    if (binding.id != null && binding.targetId != null
-                            && "RESOLVED".equals(binding.bindingStatus)) {
-                        targetByBinding.put(uuid(binding.id), uuid(binding.targetId));
-                    }
-                });
+        if (!bindingIds.isEmpty()) {
+            bindingMapper.selectList(Wrappers.<SourceBindingEntity>query()
+                            .eq("tenant_id", tenant)
+                            .eq("connector_id", connector)
+                            .eq("source_system", SOURCE_SYSTEM)
+                            .eq("source_object_type", CrmMasterDataObjectType.CUSTOMER.name())
+                            .in("id", bindingIds.stream().map(MybatisPlusCrmRepository::bytes).toList()))
+                    .forEach(binding -> {
+                        if (binding.id != null && binding.targetId != null
+                                && "RESOLVED".equals(binding.bindingStatus)) {
+                            targetByBinding.put(uuid(binding.id), uuid(binding.targetId));
+                        }
+                    });
+        }
         Map<String, UUID> targetByAlias = new LinkedHashMap<>();
         bindingByAlias.forEach((key, bindingId) -> {
             UUID target = targetByBinding.get(bindingId);
             if (target != null) targetByAlias.put(key, target);
         });
-        return new AddressCustomerTargetBatch(targetByAlias);
+        Map<UUID, AddressProjection> addressById = new LinkedHashMap<>();
+        Set<UUID> contactIds = new LinkedHashSet<>();
+        if (!addressIds.isEmpty()) {
+            addressMapper.selectList(Wrappers.<AddressEntity>query()
+                            .eq("tenant_id", tenant)
+                            .in("id", addressIds.stream().map(MybatisPlusCrmRepository::bytes).toList()))
+                    .forEach(address -> {
+                        if (address.id == null) return;
+                        UUID contactId = uuid(address.contactId);
+                        addressById.put(uuid(address.id), new AddressProjection(
+                                uuid(address.partyId), contactId));
+                        if (contactId != null) contactIds.add(contactId);
+                    });
+        }
+        Set<UUID> existingContacts = new LinkedHashSet<>();
+        if (!contactIds.isEmpty()) {
+            contactMapper.selectList(Wrappers.<ContactEntity>query()
+                            .eq("tenant_id", tenant)
+                            .in("id", contactIds.stream().map(MybatisPlusCrmRepository::bytes).toList()))
+                    .forEach(contact -> {
+                        if (contact.id != null) existingContacts.add(uuid(contact.id));
+                    });
+        }
+        return new AddressProjectionBatch(targetByAlias, addressById, existingContacts);
     }
 
     private static void addAliasCandidate(Set<String> values, String value) {
@@ -1757,7 +1788,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                                        CrmMasterDataObjectType type, UUID targetId,
                                        SourceRecord record,
                                        CustomerProjectionBatch customerProjectionBatch,
-                                       AddressCustomerTargetBatch addressCustomerTargetBatch) {
+                                       AddressProjectionBatch addressProjectionBatch) {
         if (type == CrmMasterDataObjectType.CUSTOMER && customerProjectionBatch != null) {
             Boolean complete = customerProjectionBatch.complete(targetId, record);
             if (complete != null) return complete;
@@ -1777,19 +1808,21 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                         && (!parentFieldPresent || Objects.equals(area.parentAreaCode, expectedParent));
             }
             case ADDRESS -> {
-                AddressEntity address = addressMapper.selectOne(Wrappers.<AddressEntity>query()
-                        .eq("tenant_id", tenant).eq("id", id));
-                UUID expectedParty = addressCustomerTargetBatch != null
-                        ? addressCustomerTargetBatch.target(record.sourceFields())
-                        : customerTarget(tenantId, connectorId,
-                        value(record.sourceFields(), "clientGuid"),
-                        value(record.sourceFields(), "clientNum"),
-                        value(record.sourceFields(), "clientId"));
-                yield address != null
-                        && (expectedParty == null || Arrays.equals(address.partyId, bytes(expectedParty)))
-                        && address.contactId != null
-                        && contactMapper.selectCount(Wrappers.<ContactEntity>query()
-                        .eq("tenant_id", tenant).eq("id", address.contactId)) > 0;
+                if (addressProjectionBatch != null) {
+                    yield addressProjectionBatch.complete(targetId, record.sourceFields());
+                } else {
+                    AddressEntity address = addressMapper.selectOne(Wrappers.<AddressEntity>query()
+                            .eq("tenant_id", tenant).eq("id", id));
+                    UUID expectedParty = customerTarget(tenantId, connectorId,
+                            value(record.sourceFields(), "clientGuid"),
+                            value(record.sourceFields(), "clientNum"),
+                            value(record.sourceFields(), "clientId"));
+                    yield address != null
+                            && (expectedParty == null || Arrays.equals(address.partyId, bytes(expectedParty)))
+                            && address.contactId != null
+                            && contactMapper.selectCount(Wrappers.<ContactEntity>query()
+                            .eq("tenant_id", tenant).eq("id", address.contactId)) > 0;
+                }
             }
             case CUSTOMER -> customerProjectionComplete(tenantId, connectorId, id, record);
         };
@@ -1865,9 +1898,16 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         return assignmentMapper.selectCount(query) > 0;
     }
 
-    private record AddressCustomerTargetBatch(Map<String, UUID> targetByAlias) {
-        private AddressCustomerTargetBatch {
+    private record AddressProjection(UUID partyId, UUID contactId) {
+    }
+
+    private record AddressProjectionBatch(Map<String, UUID> targetByAlias,
+                                          Map<UUID, AddressProjection> addressById,
+                                          Set<UUID> contactIds) {
+        private AddressProjectionBatch {
             targetByAlias = targetByAlias == null ? Map.of() : Map.copyOf(targetByAlias);
+            addressById = addressById == null ? Map.of() : Map.copyOf(addressById);
+            contactIds = contactIds == null ? Set.of() : Set.copyOf(contactIds);
         }
 
         private UUID target(Map<String, Object> fields) {
@@ -1880,6 +1920,15 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         private UUID target(String type, String value) {
             if (value == null || value.isBlank() || targetByAlias.isEmpty()) return null;
             return targetByAlias.get(aliasKey(type, value.strip()));
+        }
+
+        private boolean complete(UUID addressId, Map<String, Object> fields) {
+            AddressProjection projection = addressById.get(addressId);
+            if (projection == null) return false;
+            UUID expectedParty = target(fields);
+            return (expectedParty == null || Objects.equals(projection.partyId(), expectedParty))
+                    && projection.contactId() != null
+                    && contactIds.contains(projection.contactId());
         }
     }
 

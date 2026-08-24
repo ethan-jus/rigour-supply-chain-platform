@@ -1,5 +1,7 @@
 package com.rigour.erp.api.v1;
 
+import com.rigour.erp.api.v1.model.ExternalGenericStockOutProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalStockOutProjectionCommand;
 import com.rigour.erp.api.v1.model.InternalSalesStockOutCommand;
 import com.rigour.erp.api.v1.model.InternalStockOutOrderDetailView;
 import com.rigour.erp.api.v1.model.InternalStockOutOrderSummaryView;
@@ -41,4 +43,12 @@ public interface ErpStockOutOrderApi {
     @PostMapping(BASE_PATH + "/sales-confirmations")
     ApiResponse<InternalStockOutOrderDetailView> confirmSalesStockOut(
             @RequestBody InternalSalesStockOutCommand command);
+
+    @PostMapping(BASE_PATH + "/external-confirmations")
+    ApiResponse<InternalStockOutOrderDetailView> confirmExternalStockOut(
+            @RequestBody ExternalStockOutProjectionCommand command);
+
+    @PostMapping(BASE_PATH + "/external-generic-confirmations")
+    ApiResponse<InternalStockOutOrderDetailView> confirmExternalGenericStockOut(
+            @RequestBody ExternalGenericStockOutProjectionCommand command);
 }

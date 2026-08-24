@@ -1,6 +1,8 @@
 package com.rigour.erp.api;
 
 import com.rigour.erp.api.v1.ErpStockOutOrderApi;
+import com.rigour.erp.api.v1.model.ExternalGenericStockOutProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalStockOutProjectionCommand;
 import com.rigour.erp.api.v1.model.InternalSalesStockOutCommand;
 import com.rigour.erp.api.v1.model.InternalStockOutOrderDetailView;
 import com.rigour.erp.api.v1.model.InternalStockOutOrderSummaryView;
@@ -10,7 +12,7 @@ import com.rigour.shared.core.api.ApiResponse;
 import java.time.Instant;
 import org.springframework.web.bind.annotation.RestController;
 
-/** ERP 出库单 HTTP 边界；只承载出库列表、详情和销售出库确认。 */
+/** ERP 出库单 HTTP 边界；承载出库列表、详情、手工销售出库和外部来源出库确认。 */
 @RestController
 public final class ErpStockOutOrderController implements ErpStockOutOrderApi {
     private final ErpStockOutOrderService stockOutOrderService;
@@ -38,5 +40,17 @@ public final class ErpStockOutOrderController implements ErpStockOutOrderApi {
     public ApiResponse<InternalStockOutOrderDetailView> confirmSalesStockOut(
             InternalSalesStockOutCommand command) {
         return ApiResponse.success(stockOutOrderService.confirmSalesStockOut(command));
+    }
+
+    @Override
+    public ApiResponse<InternalStockOutOrderDetailView> confirmExternalStockOut(
+            ExternalStockOutProjectionCommand command) {
+        return ApiResponse.success(stockOutOrderService.confirmExternalStockOut(command));
+    }
+
+    @Override
+    public ApiResponse<InternalStockOutOrderDetailView> confirmExternalGenericStockOut(
+            ExternalGenericStockOutProjectionCommand command) {
+        return ApiResponse.success(stockOutOrderService.confirmExternalGenericStockOut(command));
     }
 }

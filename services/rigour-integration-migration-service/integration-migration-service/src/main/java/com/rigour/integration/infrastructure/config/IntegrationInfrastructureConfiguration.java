@@ -5,6 +5,7 @@ import com.rigour.integration.application.port.out.DhbIntegrationStore;
 import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbSyncStore;
 import com.rigour.integration.application.port.out.ErpDhbDomainSyncClient;
+import com.rigour.integration.application.port.out.ErpStockOutProjectionClient;
 import com.rigour.integration.application.port.out.FeishuJsapiClient;
 import com.rigour.integration.application.port.out.IamDhbStaffSyncClient;
 import com.rigour.integration.application.port.out.OrderSalesOrderProjectionClient;
@@ -22,6 +23,7 @@ import com.rigour.integration.infrastructure.dhb.DhbSecretResolver;
 import com.rigour.integration.infrastructure.dhb.EnvDhbSecretResolver;
 import com.rigour.integration.infrastructure.domain.HttpCrmDhbDomainSyncClient;
 import com.rigour.integration.infrastructure.domain.HttpErpDhbDomainSyncClient;
+import com.rigour.integration.infrastructure.domain.HttpErpStockOutProjectionClient;
 import com.rigour.integration.infrastructure.domain.HttpIamDhbStaffSyncClient;
 import com.rigour.integration.infrastructure.domain.HttpOrderSalesOrderProjectionClient;
 import com.rigour.integration.infrastructure.feishu.FeishuJsapiClientAdapter;
@@ -167,11 +169,13 @@ public final class IntegrationInfrastructureConfiguration {
     DhbOrderSyncService dhbOrderSyncService(
             DhbSyncStore syncStore, DhbClient client,
             OrderSalesOrderProjectionClient orderSalesOrderProjectionClient,
+            ErpStockOutProjectionClient erpStockOutProjectionClient,
             IamDhbStaffSyncClient iamDhbStaffSyncClient,
             BusinessDictionaryBatchClient businessDictionaryBatchClient,
-            @Value("${rigour.integration.dhb.order.detail-concurrency:1}") int detailConcurrency) {
+            @Value("${rigour.integration.dhb.order.detail-concurrency:3}") int detailConcurrency) {
         return new DhbOrderSyncService(syncStore, client, orderSalesOrderProjectionClient,
-                iamDhbStaffSyncClient, businessDictionaryBatchClient, detailConcurrency);
+                erpStockOutProjectionClient, iamDhbStaffSyncClient,
+                businessDictionaryBatchClient, detailConcurrency);
     }
 
     @Bean
@@ -187,6 +191,14 @@ public final class IntegrationInfrastructureConfiguration {
             @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl) {
         return new BusinessDictionaryBatchClient(
                 RestClient.builder().requestFactory(domainSyncRequestFactory), signer, baseUrl);
+    }
+
+    @Bean
+    ErpStockOutProjectionClient erpStockOutProjectionClient(
+            SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
+            @Value("${rigour.erp.base-url:http://localhost:26884}") String erpBaseUrl) {
+        return new HttpErpStockOutProjectionClient(
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, erpBaseUrl);
     }
 
     @Bean

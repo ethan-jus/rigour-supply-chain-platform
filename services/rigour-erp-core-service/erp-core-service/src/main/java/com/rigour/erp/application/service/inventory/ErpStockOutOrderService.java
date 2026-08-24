@@ -1,11 +1,20 @@
 package com.rigour.erp.application.service.inventory;
 
+import com.rigour.erp.api.v1.model.ExternalGenericStockOutProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalGenericStockOutProjectionLineCommand;
+import com.rigour.erp.api.v1.model.ExternalStockOutProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalStockOutProjectionLineCommand;
 import com.rigour.erp.api.v1.model.InternalSalesStockOutCommand;
 import com.rigour.erp.api.v1.model.InternalSalesStockOutLineCommand;
 import com.rigour.erp.api.v1.model.InternalStockOutOrderDetailView;
 import com.rigour.erp.api.v1.model.InternalStockOutOrderSummaryView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.application.port.out.ErpStockOutOrderStore;
+import com.rigour.erp.application.port.out.ErpStockOutOrderStore.ExternalGenericStockOutLineWrite;
+import com.rigour.erp.application.port.out.ErpStockOutOrderStore.ExternalGenericStockOutWrite;
+import com.rigour.erp.application.port.out.ErpStockOutOrderStore.ExternalStockOutLineWrite;
+import com.rigour.erp.application.port.out.ErpStockOutOrderStore.ExternalStockOutWrite;
+import com.rigour.erp.application.port.out.ErpStockOutOrderStore.ProductVariantSnapshot;
 import com.rigour.erp.application.port.out.ErpStockOutOrderStore.SalesStockOutLineWrite;
 import com.rigour.erp.application.port.out.ErpStockOutOrderStore.SalesStockOutWrite;
 import com.rigour.erp.application.port.out.ErpStockOutOrderStore.StockOutOrderSearchCriteria;
@@ -105,6 +114,67 @@ public final class ErpStockOutOrderService {
         return created;
     }
 
+    public InternalStockOutOrderDetailView confirmExternalStockOut(ExternalStockOutProjectionCommand command) {
+        CallerIdentity actor = actor(WRITE_PERMISSION);
+        String tenantId = actor.tenantId().toString();
+        if (command == null) throw badRequest("外部出库参数不能为空");
+        String sourceSystemCode = ErpServiceValidation.code(command.sourceSystemCode(), "sourceSystemCode", true);
+        String sourceDocumentNo = ErpServiceValidation.required(
+                command.sourceDocumentNo(), "sourceDocumentNo不能为空", 128);
+        InternalStockOutOrderDetailView existing = store.stockOutOrderBySource(
+                tenantId, sourceSystemCode, sourceDocumentNo).orElse(null);
+        if (existing != null) {
+            log.debug("ERP外部出库已存在，跳过重复确认 tenantId={} sourceSystem={} sourceDocumentNo={} "
+                            + "stockOutOrderId={} stockOutNo={}",
+                    tenantId, sourceSystemCode, sourceDocumentNo,
+                    existing.id(), existing.stockOutNo());
+            return existing;
+        }
+        ExternalStockOutWrite normalized = normalizeExternal(tenantId, command, sourceSystemCode, sourceDocumentNo);
+        String stockOutNo = codeGenerator.generateUnique(ErpBusinessCodeRules.STOCK_OUT_ORDER,
+                normalized.stockOutTime(), candidate -> !store.existsByStockOutNo(tenantId, candidate));
+        InternalStockOutOrderDetailView created = store.confirmExternalStockOut(
+                tenantId, stockOutNo, normalized, actor.principalId().toString());
+        log.info("ERP外部出库确认完成 tenantId={} sourceSystem={} sourceDocumentNo={} stockOutTypeCode={} "
+                        + "stockOutOrderId={} stockOutNo={} warehouseId={} totalQuantity={} actorId={}",
+                tenantId, normalized.sourceSystemCode(), normalized.sourceDocumentNo(),
+                created.stockOutTypeCode(), created.id(), created.stockOutNo(), created.warehouseId(),
+                created.totalQuantity(), actor.principalId());
+        return created;
+    }
+
+    public InternalStockOutOrderDetailView confirmExternalGenericStockOut(
+            ExternalGenericStockOutProjectionCommand command) {
+        CallerIdentity actor = actor(WRITE_PERMISSION);
+        String tenantId = actor.tenantId().toString();
+        if (command == null) throw badRequest("外部通用出库参数不能为空");
+        String sourceSystemCode = ErpServiceValidation.code(command.sourceSystemCode(), "sourceSystemCode", true);
+        String sourceDocumentNo = ErpServiceValidation.required(
+                command.sourceDocumentNo(), "sourceDocumentNo不能为空", 128);
+        InternalStockOutOrderDetailView existing = store.stockOutOrderBySource(
+                tenantId, sourceSystemCode, sourceDocumentNo).orElse(null);
+        if (existing != null) {
+            log.debug("ERP外部通用出库已存在，跳过重复确认 tenantId={} sourceSystem={} sourceDocumentNo={} "
+                            + "stockOutOrderId={} stockOutNo={}",
+                    tenantId, sourceSystemCode, sourceDocumentNo,
+                    existing.id(), existing.stockOutNo());
+            return existing;
+        }
+        ExternalGenericStockOutWrite normalized = normalizeExternalGeneric(
+                tenantId, command, sourceSystemCode, sourceDocumentNo);
+        String stockOutNo = codeGenerator.generateUnique(ErpBusinessCodeRules.STOCK_OUT_ORDER,
+                normalized.stockOutTime(), candidate -> !store.existsByStockOutNo(tenantId, candidate));
+        InternalStockOutOrderDetailView created = store.confirmExternalGenericStockOut(
+                tenantId, stockOutNo, normalized, actor.principalId().toString());
+        log.info("ERP外部通用出库确认完成 tenantId={} sourceSystem={} sourceDocumentNo={} "
+                        + "stockOutTypeCode={} stockOutOrderId={} stockOutNo={} warehouseId={} "
+                        + "totalQuantity={} actorId={}",
+                tenantId, normalized.sourceSystemCode(), normalized.sourceDocumentNo(),
+                created.stockOutTypeCode(), created.id(), created.stockOutNo(), created.warehouseId(),
+                created.totalQuantity(), actor.principalId());
+        return created;
+    }
+
     private SalesStockOutWrite normalize(String tenantId, InternalSalesStockOutCommand command) {
         if (command == null) throw badRequest("销售出库参数不能为空");
         Long salesOrderId = ErpServiceValidation.requireId(command.salesOrderId(), "salesOrderId无效");
@@ -121,6 +191,63 @@ public final class ErpStockOutOrderService {
                 ErpStockDocumentStatus.CONFIRMED.code(),
                 command.stockOutTime() == null ? Instant.now() : command.stockOutTime(),
                 lines,
+                ErpServiceValidation.text(command.remark(), 1000, "remark"));
+    }
+
+    private ExternalStockOutWrite normalizeExternal(
+            String tenantId, ExternalStockOutProjectionCommand command,
+            String sourceSystemCode, String sourceDocumentNo) {
+        String stockOutTypeCode = ErpServiceValidation.code(command.stockOutTypeCode(), "stockOutTypeCode", true);
+        if (!ErpStockOutType.SALES.code().equals(stockOutTypeCode)) {
+            throw badRequest("外部出库确认接口仅支持销售出库；调拨出库必须由调拨单确认出库生成");
+        }
+        Long warehouseId = ErpServiceValidation.requireId(command.warehouseId(), "warehouseId无效");
+        if (!store.warehouseActive(tenantId, warehouseId)) throw notFound("出库仓库不存在、已删除或已停用");
+        Long salesOrderId = ErpServiceValidation.optionalId(command.salesOrderId(), "salesOrderId");
+        String salesOrderNo = ErpServiceValidation.text(command.salesOrderNo(), 50, "salesOrderNo");
+        if (ErpStockOutType.SALES.code().equals(stockOutTypeCode)) {
+            if (salesOrderId == null || salesOrderNo == null) {
+                throw badRequest("销售出库必须携带salesOrderId和salesOrderNo");
+            }
+        }
+        List<ExternalStockOutLineWrite> lines = externalLines(tenantId, stockOutTypeCode, command.lines());
+        return new ExternalStockOutWrite(
+                sourceSystemCode,
+                sourceDocumentNo,
+                salesOrderId,
+                salesOrderNo,
+                null,
+                null,
+                warehouseId,
+                ErpServiceValidation.optionalId(command.customerId(), "customerId"),
+                ErpServiceValidation.text(command.customerNameSnapshot(), 200, "customerNameSnapshot"),
+                stockOutTypeCode,
+                ErpStockDocumentStatus.CONFIRMED.code(),
+                command.stockOutTime() == null ? Instant.now() : command.stockOutTime(),
+                lines,
+                ErpServiceValidation.text(command.remark(), 1000, "remark"));
+    }
+
+    private ExternalGenericStockOutWrite normalizeExternalGeneric(
+            String tenantId, ExternalGenericStockOutProjectionCommand command,
+            String sourceSystemCode, String sourceDocumentNo) {
+        String stockOutTypeCode = ErpServiceValidation.code(command.stockOutTypeCode(), "stockOutTypeCode", true);
+        if (ErpStockOutType.SALES.code().equals(stockOutTypeCode)
+                || ErpStockOutType.TRANSFER.code().equals(stockOutTypeCode)) {
+            throw badRequest("外部通用出库不能处理SALES或TRANSFER");
+        }
+        if (!ErpStockOutType.PURCHASE_RETURN.code().equals(stockOutTypeCode)
+                && !ErpStockOutType.INVENTORY_LOSS.code().equals(stockOutTypeCode)
+                && !ErpStockOutType.OTHER.code().equals(stockOutTypeCode)
+                && !ErpStockOutType.JOINT_OPERATION.code().equals(stockOutTypeCode)) {
+            throw badRequest("外部通用出库类型不支持");
+        }
+        Long warehouseId = ErpServiceValidation.requireId(command.warehouseId(), "warehouseId无效");
+        if (!store.warehouseActive(tenantId, warehouseId)) throw notFound("出库仓库不存在、已删除或已停用");
+        return new ExternalGenericStockOutWrite(sourceSystemCode, sourceDocumentNo, warehouseId,
+                stockOutTypeCode, ErpStockDocumentStatus.CONFIRMED.code(),
+                command.stockOutTime() == null ? Instant.now() : command.stockOutTime(),
+                externalGenericLines(tenantId, command.lines()),
                 ErpServiceValidation.text(command.remark(), 1000, "remark"));
     }
 
@@ -152,6 +279,77 @@ public final class ErpStockOutOrderService {
                     ErpServiceValidation.text(item.remark(), 1000, "lineRemark")));
         }
         if (result.isEmpty()) throw badRequest("销售出库至少需要一条有效商品明细");
+        return List.copyOf(result);
+    }
+
+    private List<ExternalStockOutLineWrite> externalLines(
+            String tenantId, String stockOutTypeCode, List<ExternalStockOutProjectionLineCommand> source) {
+        if (source == null || source.isEmpty()) throw badRequest("外部出库至少需要一条商品明细");
+        if (source.size() > 200) throw badRequest("外部出库明细不能超过200条");
+        Set<String> duplicateGuard = new LinkedHashSet<>();
+        Set<String> flowNoGuard = new LinkedHashSet<>();
+        java.util.ArrayList<ExternalStockOutLineWrite> result = new java.util.ArrayList<>();
+        for (ExternalStockOutProjectionLineCommand item : source) {
+            if (item == null) continue;
+            Long productId = ErpServiceValidation.requireId(item.productId(), "productId无效");
+            Long variantId = ErpServiceValidation.requireId(item.productVariantId(), "productVariantId无效");
+            String duplicateKey = productId + "::" + variantId;
+            if (!duplicateGuard.add(duplicateKey)) throw badRequest("外部出库明细商品规格不能重复");
+            Long salesOrderLineId = ErpServiceValidation.optionalId(item.salesOrderLineId(), "salesOrderLineId");
+            Long transferOrderLineId = ErpServiceValidation.optionalId(item.transferOrderLineId(), "transferOrderLineId");
+            if (ErpStockOutType.SALES.code().equals(stockOutTypeCode)) {
+                transferOrderLineId = null;
+            } else {
+                salesOrderLineId = null;
+            }
+            String flowNo = codeGenerator.generateUnique(ErpBusinessCodeRules.STOCK_FLOW,
+                    candidate -> flowNoGuard.add(candidate) && !store.existsByFlowNo(tenantId, candidate));
+            result.add(new ExternalStockOutLineWrite(result.size() + 1,
+                    salesOrderLineId,
+                    transferOrderLineId,
+                    productId,
+                    variantId,
+                    ErpServiceValidation.text(item.productCodeSnapshot(), 50, "productCodeSnapshot"),
+                    ErpServiceValidation.text(item.variantCodeSnapshot(), 50, "variantCodeSnapshot"),
+                    ErpServiceValidation.required(item.productNameSnapshot(), "productNameSnapshot不能为空", 200),
+                    ErpServiceValidation.code(item.unitCode(), "unitCode", true),
+                    quantity(item.quantity(), "quantity"),
+                    flowNo,
+                    ErpServiceValidation.text(item.remark(), 1000, "lineRemark")));
+        }
+        if (result.isEmpty()) throw badRequest("外部出库至少需要一条有效商品明细");
+        return List.copyOf(result);
+    }
+
+    private List<ExternalGenericStockOutLineWrite> externalGenericLines(
+            String tenantId, List<ExternalGenericStockOutProjectionLineCommand> source) {
+        if (source == null || source.isEmpty()) throw badRequest("外部通用出库至少需要一条商品明细");
+        if (source.size() > 200) throw badRequest("外部通用出库明细不能超过200条");
+        Set<String> duplicateGuard = new LinkedHashSet<>();
+        Set<String> flowNoGuard = new LinkedHashSet<>();
+        java.util.ArrayList<ExternalGenericStockOutLineWrite> result = new java.util.ArrayList<>();
+        for (ExternalGenericStockOutProjectionLineCommand item : source) {
+            if (item == null) continue;
+            Long productId = ErpServiceValidation.requireId(item.productId(), "productId无效");
+            Long variantId = ErpServiceValidation.requireId(item.productVariantId(), "productVariantId无效");
+            String duplicateKey = productId + "::" + variantId;
+            if (!duplicateGuard.add(duplicateKey)) throw badRequest("外部通用出库明细商品规格不能重复");
+            ProductVariantSnapshot snapshot = store.productVariant(tenantId, productId, variantId)
+                    .orElseThrow(() -> notFound("外部通用出库商品不存在、未提交或规格已删除"));
+            String flowNo = codeGenerator.generateUnique(ErpBusinessCodeRules.STOCK_FLOW,
+                    candidate -> flowNoGuard.add(candidate) && !store.existsByFlowNo(tenantId, candidate));
+            result.add(new ExternalGenericStockOutLineWrite(result.size() + 1,
+                    productId,
+                    variantId,
+                    snapshot.productCode(),
+                    snapshot.variantCode(),
+                    snapshot.productName(),
+                    snapshot.unitCode(),
+                    quantity(item.quantity(), "quantity"),
+                    flowNo,
+                    ErpServiceValidation.text(item.remark(), 1000, "lineRemark")));
+        }
+        if (result.isEmpty()) throw badRequest("外部通用出库至少需要一条有效商品明细");
         return List.copyOf(result);
     }
 

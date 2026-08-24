@@ -15,6 +15,10 @@ public class InternalTransferOrderEntity {
     private String tenantId;
     /** 调拨单号，由 ERP 编码规则生成。 */
     private String transferNo;
+    /** 来源系统编码。 */
+    private String sourceSystemCode;
+    /** 来源单据号。 */
+    private String sourceDocumentNo;
     /** 来源仓库ID。 */
     private Long sourceWarehouseId;
     /** 目标仓库ID。 */
@@ -46,6 +50,10 @@ public class InternalTransferOrderEntity {
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getTransferNo() { return transferNo; }
     public void setTransferNo(String transferNo) { this.transferNo = transferNo; }
+    public String getSourceSystemCode() { return sourceSystemCode; }
+    public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
+    public String getSourceDocumentNo() { return sourceDocumentNo; }
+    public void setSourceDocumentNo(String sourceDocumentNo) { this.sourceDocumentNo = sourceDocumentNo; }
     public Long getSourceWarehouseId() { return sourceWarehouseId; }
     public void setSourceWarehouseId(Long sourceWarehouseId) { this.sourceWarehouseId = sourceWarehouseId; }
     public Long getTargetWarehouseId() { return targetWarehouseId; }

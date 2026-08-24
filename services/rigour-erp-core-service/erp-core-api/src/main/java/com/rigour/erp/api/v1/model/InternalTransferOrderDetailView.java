@@ -8,6 +8,8 @@ import java.util.List;
 public record InternalTransferOrderDetailView(
         Long id,
         String transferNo,
+        String sourceSystemCode,
+        String sourceDocumentNo,
         Long sourceWarehouseId,
         String sourceWarehouseName,
         Long targetWarehouseId,

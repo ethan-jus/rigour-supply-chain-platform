@@ -350,6 +350,45 @@ class MerchantCrmServiceApplicationTests {
         assertThat(sourcePresence(tenantId, connectorId)).isEqualTo("ABSENT");
     }
 
+    @Test
+    void batchImportsDuplicateAddressWithPrefetchedProjectionSnapshot() {
+        UUID tenantId = UUID.randomUUID();
+        UUID connectorId = UUID.randomUUID();
+        UUID actorId = UUID.randomUUID();
+
+        UUID customerRun = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.CUSTOMER);
+        ImportResult customer = store.importRecord(tenantId, connectorId, customerRun,
+                CrmMasterDataObjectType.CUSTOMER, customerRecord("地址所属客户"));
+        finish(tenantId, connectorId, customerRun, CrmMasterDataObjectType.CUSTOMER, customer);
+
+        SourceRecord address = addressRecord("ADDR-GUID-2", "ADDR-2");
+        UUID firstRun = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.ADDRESS);
+        ImportResult created = store.importRecords(tenantId, connectorId, firstRun,
+                CrmMasterDataObjectType.ADDRESS, List.of(address)).get(0);
+        finish(tenantId, connectorId, firstRun, CrmMasterDataObjectType.ADDRESS, created);
+        byte[] addressId = jdbcTemplate.queryForObject("""
+                SELECT target_id FROM crm_source_binding
+                 WHERE tenant_id=? AND connector_id=? AND source_object_type='ADDRESS'
+                   AND source_object_id='ADDR-GUID-2'
+                """, byte[].class, CrmUuidCodec.encode(tenantId), CrmUuidCodec.encode(connectorId));
+
+        UUID duplicateRun = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.ADDRESS);
+        ImportResult duplicate = store.importRecords(tenantId, connectorId, duplicateRun,
+                CrmMasterDataObjectType.ADDRESS, List.of(address)).get(0);
+        finish(tenantId, connectorId, duplicateRun, CrmMasterDataObjectType.ADDRESS, duplicate);
+
+        assertThat(created.created()).isEqualTo(1);
+        assertThat(duplicate.duplicates()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT version FROM crm_address WHERE tenant_id=? AND id=?
+                """, Long.class, CrmUuidCodec.encode(tenantId), addressId)).isZero();
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM crm_contact c
+                  JOIN crm_address a ON a.tenant_id=c.tenant_id AND a.contact_id=c.id
+                 WHERE a.tenant_id=? AND a.id=?
+                """, Integer.class, CrmUuidCodec.encode(tenantId), addressId)).isEqualTo(1);
+    }
+
     private UUID start(UUID tenantId, UUID connectorId, UUID actorId,
                        CrmMasterDataObjectType type) {
         return store.startRun(tenantId, connectorId, actorId, type, 100, "TEST");
@@ -424,6 +463,16 @@ class MerchantCrmServiceApplicationTests {
                 "STAFF-SECONDARY", Map.of("staffCode", "RY202608220002", "staffName", "李四")));
         return new SourceRecord(base.sourceId(), base.sourceCode(), base.sourceName(), base.sourceStatus(),
                 base.sourceCreatedAt(), base.sourceUpdatedAt(), fields);
+    }
+
+    private static SourceRecord addressRecord(String sourceId, String addressId) {
+        return new SourceRecord(sourceId, addressId, "上海仓", "T", null,
+                Instant.parse("2026-08-01T00:30:00Z"), mapOf(
+                "addressId", addressId, "addressGuid", sourceId,
+                "clientGuid", "CLIENT-GUID-1", "clientNum", "C-001",
+                "consignee", "上海仓", "contact", "张三", "phone", "13800000000",
+                "address", "上海市浦东新区", "addressDetail", "世纪大道1号",
+                "isDefault", "T"));
     }
 
     private static Map<String, Object> mapOf(Object... values) {

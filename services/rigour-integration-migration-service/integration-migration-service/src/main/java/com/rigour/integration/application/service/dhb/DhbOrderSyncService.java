@@ -20,6 +20,7 @@ import com.rigour.integration.application.port.out.DhbSyncStore.ExternalObjectMa
 import com.rigour.integration.application.port.out.DhbSyncStore.ExternalObjectMappingWrite;
 import com.rigour.integration.application.port.out.DhbSyncStore.RawObjectPersistResult;
 import com.rigour.integration.application.port.out.DhbSyncStore.ReconciliationCaseWrite;
+import com.rigour.integration.application.port.out.ErpStockOutProjectionClient;
 import com.rigour.integration.application.port.out.DhbSyncStore.SyncRunStarted;
 import com.rigour.integration.application.port.out.DhbSyncStore.SyncTaskContext;
 import com.rigour.integration.application.port.out.IamDhbStaffSyncClient;
@@ -27,6 +28,14 @@ import com.rigour.integration.application.port.out.IamDhbStaffSyncClient.Resolve
 import com.rigour.integration.application.port.out.OrderSalesOrderProjectionClient;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunView;
+import com.rigour.erp.api.v1.model.ExternalGenericStockOutProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalGenericStockOutProjectionLineCommand;
+import com.rigour.erp.api.v1.model.ExternalStockOutProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalStockOutProjectionLineCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferStockOutProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferStockOutProjectionLineCommand;
+import com.rigour.erp.api.v1.model.InternalStockOutOrderDetailView;
+import com.rigour.erp.api.v1.model.InternalTransferOrderDetailView;
 import com.rigour.order.api.v1.model.FundDocumentCommand;
 import com.rigour.order.api.v1.model.FundDocumentDetailView;
 import com.rigour.order.api.v1.model.SalesOrderCommand;
@@ -56,9 +65,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -78,12 +89,15 @@ import org.slf4j.LoggerFactory;
 public final class DhbOrderSyncService {
 
     private static final Logger log = LoggerFactory.getLogger(DhbOrderSyncService.class);
+    private static final InheritableThreadLocal<ConcurrentMap<MappingLookupKey, Optional<ExternalObjectMapping>>>
+            MAPPING_LOOKUP_CACHE = new InheritableThreadLocal<>();
     private static final UUID SERVICE_PRINCIPAL_ID =
             UUID.fromString("019fb700-0000-7000-8000-00000000d0b0");
-    private static final Set<String> ORDER_PERMISSIONS = Set.of("order:read", "order:write", "iam:staff:read");
+    private static final Set<String> DOMAIN_PERMISSIONS = Set.of(
+            "order:read", "order:write", "iam:staff:read", "erp:supply:read", "erp:supply:write");
     private static final int DEFAULT_PAGE_SIZE = 100;
     private static final int DEFAULT_MAX_PAGES = 100;
-    private static final int DEFAULT_DETAIL_CONCURRENCY = 1;
+    private static final int DEFAULT_DETAIL_CONCURRENCY = 3;
     private static final int MAX_DETAIL_CONCURRENCY = 16;
     private static final String SOURCE_SYSTEM_DINGHUOBAO = "DINGHUOBAO";
     private static final String SOURCE_OBJECT_SALES_ORDER = "SALES_ORDER";
@@ -91,6 +105,8 @@ public final class DhbOrderSyncService {
     private static final String SOURCE_OBJECT_FUND_RECEIPT = "FUND_RECEIPT";
     private static final String SOURCE_OBJECT_FUND_PAYMENT = "FUND_PAYMENT";
     private static final String SOURCE_OBJECT_SALES_SHIPMENT = "SALES_SHIPMENT";
+    private static final String SOURCE_OBJECT_ERP_STOCK_OUT = "ERP_STOCK_OUT";
+    private static final String SOURCE_OBJECT_ERP_TRANSFER_ORDER = "ERP_TRANSFER_ORDER";
     private static final String RAW_OBJECT_ORDER_DETAIL = "ORDER_DETAIL";
     private static final String RAW_OBJECT_RECEIPT = "RECEIPT";
     private static final String RAW_OBJECT_PAYMENT = "PAYMENT";
@@ -108,34 +124,17 @@ public final class DhbOrderSyncService {
             new Observation("PRODUCT_UNIT", "orderLine.unitCode", "PIECE", "件"));
     private static final Map<String, String> UNIT_ALIASES = Map.ofEntries(
             Map.entry("箱", "BOX"),
-            Map.entry("盒", "BOX"),
             Map.entry("桶", "BUCKET"),
             Map.entry("份", "PORTION"),
             Map.entry("套", "SET"),
             Map.entry("床", "BED"),
             Map.entry("副", "PAIR"),
-            Map.entry("件", "PIECE"),
-            Map.entry("个", "PIECE"),
-            Map.entry("BOX", "BOX"),
-            Map.entry("BUCKET", "BUCKET"),
-            Map.entry("PORTION", "PORTION"),
-            Map.entry("SET", "SET"),
-            Map.entry("BED", "BED"),
-            Map.entry("PAIR", "PAIR"),
-            Map.entry("PIECE", "PIECE"),
-            Map.entry("包", "PIECE"),
-            Map.entry("袋", "PIECE"),
-            Map.entry("瓶", "PIECE"),
-            Map.entry("罐", "PIECE"),
-            Map.entry("支", "PIECE"),
-            Map.entry("条", "PIECE"),
-            Map.entry("只", "PIECE"),
-            Map.entry("张", "PIECE"),
-            Map.entry("杯", "PIECE"));
+            Map.entry("件", "PIECE"));
 
     private final DhbSyncStore store;
     private final DhbClient client;
     private final OrderSalesOrderProjectionClient orderProjectionClient;
+    private final ErpStockOutProjectionClient erpStockOutProjectionClient;
     private final IamDhbStaffSyncClient iamStaffClient;
     private final BusinessDictionaryBatchClient dictionaryClient;
     private final int detailConcurrency;
@@ -143,18 +142,28 @@ public final class DhbOrderSyncService {
     public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
                                OrderSalesOrderProjectionClient orderProjectionClient,
                                IamDhbStaffSyncClient iamStaffClient) {
-        this(store, client, orderProjectionClient, iamStaffClient, DEFAULT_DETAIL_CONCURRENCY);
+        this(store, client, orderProjectionClient, null, iamStaffClient, DEFAULT_DETAIL_CONCURRENCY);
     }
 
     public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
                                OrderSalesOrderProjectionClient orderProjectionClient,
                                IamDhbStaffSyncClient iamStaffClient,
                                int detailConcurrency) {
-        this(store, client, orderProjectionClient, iamStaffClient, null, detailConcurrency);
+        this(store, client, orderProjectionClient, null, iamStaffClient, null, detailConcurrency);
     }
 
     public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
                                OrderSalesOrderProjectionClient orderProjectionClient,
+                               ErpStockOutProjectionClient erpStockOutProjectionClient,
+                               IamDhbStaffSyncClient iamStaffClient,
+                               int detailConcurrency) {
+        this(store, client, orderProjectionClient, erpStockOutProjectionClient,
+                iamStaffClient, null, detailConcurrency);
+    }
+
+    public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
+                               OrderSalesOrderProjectionClient orderProjectionClient,
+                               ErpStockOutProjectionClient erpStockOutProjectionClient,
                                IamDhbStaffSyncClient iamStaffClient,
                                BusinessDictionaryBatchClient dictionaryClient,
                                int detailConcurrency) {
@@ -162,6 +171,7 @@ public final class DhbOrderSyncService {
         this.client = Objects.requireNonNull(client, "client cannot be null");
         this.orderProjectionClient = Objects.requireNonNull(orderProjectionClient,
                 "orderProjectionClient cannot be null");
+        this.erpStockOutProjectionClient = erpStockOutProjectionClient;
         this.iamStaffClient = Objects.requireNonNull(iamStaffClient, "iamStaffClient cannot be null");
         this.dictionaryClient = dictionaryClient;
         this.detailConcurrency = normalizeDetailConcurrency(detailConcurrency);
@@ -186,12 +196,14 @@ public final class DhbOrderSyncService {
         SyncRunStarted started = store.beginRun(caller.tenantId(), caller.userId(), taskId,
                 windowFrom, windowTo);
         store.recordSyncLog(caller.tenantId(), taskId, started.runId(), "INFO",
-                "订货宝订单同步开始：Raw落库、映射校验、投影到Order销售订单", null);
+                "订货宝订单同步开始：Raw落库、映射校验、投影到Order销售订单 detailConcurrency="
+                        + detailConcurrency, null);
         ensureProductUnitDictionary(caller.tenantId(), taskId, started.runId());
 
         Counts counts = new Counts();
         Map<String, StaffProjection> staffCache = new ConcurrentHashMap<>();
         Map<String, Object> sourceOrderLocks = new ConcurrentHashMap<>();
+        MAPPING_LOOKUP_CACHE.set(new ConcurrentHashMap<>());
         try {
             PageRequest pageRequest = PageRequest.first(pageSize);
             int pages = 0;
@@ -246,6 +258,8 @@ public final class DhbOrderSyncService {
                         caller.tenantId(), taskId, started.runId(), persistError);
             }
             throw error;
+        } finally {
+            MAPPING_LOOKUP_CACHE.remove();
         }
     }
 
@@ -408,6 +422,7 @@ public final class DhbOrderSyncService {
         }
 
         RawObjectPersistResult raw = null;
+        String rejectedSourceObjectType = SOURCE_OBJECT_SALES_SHIPMENT;
         try {
             ShipmentDetail detail = client.getShipmentContent(task.connector(), sourceShipmentNo);
             Map<String, Object> payload = combinedShipmentPayload(summary, detail);
@@ -415,6 +430,36 @@ public final class DhbOrderSyncService {
                     RAW_OBJECT_SHIPMENT_DETAIL, sourceShipmentNo,
                     summary == null || summary.updatedAt() == null ? null : summary.updatedAt().toString(),
                     summary == null ? null : summary.updatedAt(), payload, Instant.now());
+            String stockOutTypeCode = stockOutTypeCode(summary, payload);
+            ExternalObjectMapping existingStockOut = store.findActiveMapping(caller.tenantId(), task.connectorId(),
+                    SOURCE_OBJECT_ERP_STOCK_OUT, sourceShipmentNo);
+            if ("TRANSFER".equals(stockOutTypeCode)) {
+                rejectedSourceObjectType = SOURCE_OBJECT_ERP_STOCK_OUT;
+                ProjectedTransferStockOut projected = projectExternalTransferStockOut(caller, task, runId, raw,
+                        existingStockOut, prepareTransferStockOut(caller.tenantId(), task.connectorId(),
+                                sourceShipmentNo, summary, detail, payload));
+                store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
+                        "订货宝调拨出库已投影到ERP调拨单和出库单 shipmentNo=" + sourceShipmentNo
+                                + " transferNo=" + projected.transferNo()
+                                + " stockOutNo=" + projected.stockOutNo(),
+                        null);
+                return projected.duplicate() ? ProjectionOutcome.DUPLICATE : ProjectionOutcome.ACCEPTED;
+            }
+            if (!"SALES".equals(stockOutTypeCode)) {
+                rejectedSourceObjectType = SOURCE_OBJECT_ERP_STOCK_OUT;
+                ProjectedStockOut projected = projectExternalGenericStockOut(caller, task, runId, raw,
+                        existingStockOut, prepareGenericStockOut(caller.tenantId(), task.connectorId(),
+                                sourceShipmentNo, stockOutTypeCode, summary, detail, payload));
+                store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
+                        "订货宝非销售出库已投影到ERP统一出库单 shipmentNo=" + sourceShipmentNo
+                                + " stockOutTypeCode=" + stockOutTypeCode
+                                + " stockOutNo=" + projected.stockOutNo(),
+                        null);
+                return projected.duplicate() ? ProjectionOutcome.DUPLICATE : ProjectionOutcome.ACCEPTED;
+            }
+
             ExternalObjectMapping existing = store.findActiveMapping(caller.tenantId(), task.connectorId(),
                     SOURCE_OBJECT_SALES_SHIPMENT, sourceShipmentNo);
             SalesShipmentDetailView current = existing == null || existing.internalObjectId() == null
@@ -422,6 +467,7 @@ public final class DhbOrderSyncService {
                     : orderProjectionClient.salesShipment(orderServiceCaller(caller.tenantId()),
                     existing.internalObjectId());
             if (existing != null && existing.internalObjectId() != null
+                    && existingStockOut != null && existingStockOut.internalObjectId() != null
                     && Objects.equals(existing.payloadChecksum(), raw.payloadChecksum())
                     && shipmentProjectionComplete(current)) {
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
@@ -434,6 +480,9 @@ public final class DhbOrderSyncService {
             ensureSalesOrderMapping(caller, task, runId, sourceOrderNo, staffCache, sourceOrderLocks);
             PreparedSalesShipment prepared = prepareSalesShipment(caller.tenantId(), task.connectorId(),
                     sourceShipmentNo, summary, detail, payload);
+            ProjectedStockOut projectedStockOut = projectExternalStockOut(caller, task, runId, raw,
+                    existingStockOut, prepareSalesStockOut(sourceShipmentNo, prepared));
+            prepared = prepared.withStockOut(projectedStockOut);
             SalesShipmentDetailView projected =
                     upsertSalesShipment(caller.tenantId(), existing, current, prepared);
             store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
@@ -444,15 +493,17 @@ public final class DhbOrderSyncService {
             store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
             store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
                     "订货宝发货单已投影到Order销售发货 shipmentNo=" + sourceShipmentNo
-                            + " salesShipmentNo=" + projected.shipmentNo(),
+                            + " salesShipmentNo=" + projected.shipmentNo()
+                            + " stockOutNo=" + projectedStockOut.stockOutNo(),
                     null);
             return ProjectionOutcome.ACCEPTED;
         } catch (ProjectionRejected rejected) {
-            recordShipmentRejected(caller, task, runId, raw, sourceShipmentNo, rejected.code(),
+            recordRejected(caller, task, runId, raw, rejectedSourceObjectType, sourceShipmentNo, rejected.code(),
                     rejected.getMessage(), rejected.checkType(), rejected.expected(), rejected.actual());
             return ProjectionOutcome.REJECTED;
         } catch (RuntimeException error) {
-            recordShipmentRejected(caller, task, runId, raw, sourceShipmentNo, "DHB_SHIPMENT_PROJECTION_FAILED",
+            recordRejected(caller, task, runId, raw, rejectedSourceObjectType, sourceShipmentNo,
+                    "DHB_SHIPMENT_PROJECTION_FAILED",
                     safeMessage(error), "PROJECTION", Map.of("sourceShipmentNo", sourceShipmentNo),
                     Map.of("error", safeMessage(error)));
             return ProjectionOutcome.REJECTED;
@@ -1104,7 +1155,187 @@ public final class DhbOrderSyncService {
                 firstNonBlank(summary == null ? null : summary.remark(),
                         first(content, list, "Remark", "remark")),
                 null);
-        return new PreparedSalesShipment(sourceShipmentNo, sourceOrderNo, command);
+        return new PreparedSalesShipment(sourceShipmentNo, sourceOrderNo, salesOrder, command);
+    }
+
+    private PreparedStockOut prepareSalesStockOut(String sourceShipmentNo, PreparedSalesShipment prepared) {
+        SalesOrderDetailView salesOrder = prepared.salesOrder();
+        SalesShipmentCommand shipment = prepared.command();
+        List<ExternalStockOutProjectionLineCommand> lines = shipment.lines().stream()
+                .map(line -> new ExternalStockOutProjectionLineCommand(
+                        line.salesOrderLineId(),
+                        null,
+                        line.productId(),
+                        line.productVariantId(),
+                        line.productCodeSnapshot(),
+                        line.skuCodeSnapshot(),
+                        line.productNameSnapshot(),
+                        line.unitCode(),
+                        line.shippedQuantity(),
+                        line.remark()))
+                .toList();
+        ExternalStockOutProjectionCommand command = new ExternalStockOutProjectionCommand(
+                SOURCE_SYSTEM_DINGHUOBAO,
+                sourceShipmentNo,
+                "SALES",
+                shipment.warehouseId(),
+                salesOrder.id(),
+                salesOrder.orderNo(),
+                null,
+                null,
+                salesOrder.customerId(),
+                salesOrder.customerNameSnapshot(),
+                shipment.shipTime(),
+                lines,
+                firstNonBlank(shipment.remark(), "订货宝销售出库 " + sourceShipmentNo));
+        return new PreparedStockOut(sourceShipmentNo, "SALES", command);
+    }
+
+    private PreparedTransferStockOut prepareTransferStockOut(
+            UUID tenantId, UUID connectorId, String sourceShipmentNo, Shipment summary,
+            ShipmentDetail detail, Map<String, Object> payload) {
+        Map<String, Object> list = map(payload == null ? null : mapObject(payload.get("list")));
+        Map<String, Object> content = map(payload == null ? null : mapObject(payload.get("detail")));
+        Long sourceWarehouseId = warehouseId(tenantId, connectorId, sourceShipmentNo, summary, content, list);
+        if (sourceWarehouseId == null) {
+            throw new ProjectionRejected("DHB_TRANSFER_SOURCE_WAREHOUSE_MAPPING_MISSING",
+                    "订货宝调拨出库缺少来源仓库映射，不能反推我方调拨单",
+                    "MAPPING", Map.of("required", "source warehouse mapping"),
+                    Map.of("sourceShipmentNo", sourceShipmentNo));
+        }
+        Long targetWarehouseId = targetWarehouseId(tenantId, connectorId, sourceShipmentNo, content, list);
+        if (targetWarehouseId == null) {
+            throw new ProjectionRejected("DHB_TRANSFER_TARGET_WAREHOUSE_MAPPING_MISSING",
+                    "订货宝调拨出库缺少目标仓库映射，不能反推我方调拨单",
+                    "MAPPING", Map.of("required", "target warehouse mapping"),
+                    Map.of("sourceShipmentNo", sourceShipmentNo));
+        }
+        List<ExternalTransferStockOutProjectionLineCommand> lines =
+                inventoryStockOutLines(tenantId, connectorId, sourceShipmentNo, content).stream()
+                        .map(line -> new ExternalTransferStockOutProjectionLineCommand(
+                                line.productId(), line.productVariantId(), line.productCodeSnapshot(),
+                                line.skuCodeSnapshot(), line.productNameSnapshot(), line.unitCode(),
+                                line.quantity(), line.remark()))
+                        .toList();
+        ExternalTransferStockOutProjectionCommand command = new ExternalTransferStockOutProjectionCommand(
+                SOURCE_SYSTEM_DINGHUOBAO, sourceShipmentNo, sourceWarehouseId, targetWarehouseId,
+                shipmentStockOutTime(summary, detail, content, list), lines,
+                firstNonBlank(first(content, list, "Remark", "remark"),
+                        "订货宝调拨出库 " + sourceShipmentNo));
+        return new PreparedTransferStockOut(sourceShipmentNo, command);
+    }
+
+    private PreparedGenericStockOut prepareGenericStockOut(
+            UUID tenantId, UUID connectorId, String sourceShipmentNo, String stockOutTypeCode,
+            Shipment summary, ShipmentDetail detail, Map<String, Object> payload) {
+        Map<String, Object> list = map(payload == null ? null : mapObject(payload.get("list")));
+        Map<String, Object> content = map(payload == null ? null : mapObject(payload.get("detail")));
+        Long warehouseId = warehouseId(tenantId, connectorId, sourceShipmentNo, summary, content, list);
+        if (warehouseId == null) {
+            throw new ProjectionRejected("DHB_STOCK_OUT_WAREHOUSE_MAPPING_MISSING",
+                    "订货宝出库单缺少仓库映射，不能生成ERP出库单",
+                    "MAPPING", Map.of("required", "warehouse mapping"),
+                    Map.of("sourceShipmentNo", sourceShipmentNo, "stockOutTypeCode", stockOutTypeCode));
+        }
+        List<ExternalGenericStockOutProjectionLineCommand> lines =
+                inventoryStockOutLines(tenantId, connectorId, sourceShipmentNo, content).stream()
+                        .map(line -> new ExternalGenericStockOutProjectionLineCommand(
+                                line.productId(), line.productVariantId(), line.productCodeSnapshot(),
+                                line.skuCodeSnapshot(), line.productNameSnapshot(), line.unitCode(),
+                                line.quantity(), line.remark()))
+                        .toList();
+        ExternalGenericStockOutProjectionCommand command = new ExternalGenericStockOutProjectionCommand(
+                SOURCE_SYSTEM_DINGHUOBAO, sourceShipmentNo, stockOutTypeCode, warehouseId,
+                shipmentStockOutTime(summary, detail, content, list), lines,
+                firstNonBlank(first(content, list, "Remark", "remark"),
+                        "订货宝出库 " + sourceShipmentNo));
+        return new PreparedGenericStockOut(sourceShipmentNo, stockOutTypeCode, command);
+    }
+
+    private ProjectedStockOut projectExternalStockOut(
+            CallerIdentity caller, SyncTaskContext task, UUID runId, RawObjectPersistResult raw,
+            ExternalObjectMapping existing, PreparedStockOut prepared) {
+        if (existing != null && existing.internalObjectId() != null && existing.internalObjectNo() != null) {
+            return new ProjectedStockOut(existing.internalObjectId(), existing.internalObjectNo(),
+                    prepared.stockOutTypeCode(), true);
+        }
+        if (erpStockOutProjectionClient == null) {
+            throw new ProjectionRejected("DHB_STOCK_OUT_ERP_CLIENT_MISSING",
+                    "订货宝出库单需要投影到ERP出库单，但Integration未配置ERP出库客户端",
+                    "CONFIG", Map.of("required", "ErpStockOutProjectionClient"),
+                    Map.of("sourceShipmentNo", prepared.sourceShipmentNo()));
+        }
+        InternalStockOutOrderDetailView projected = erpStockOutProjectionClient.confirmExternalStockOut(
+                orderServiceCaller(caller.tenantId()), prepared.command());
+        store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
+                new ExternalObjectMappingWrite(task.connectorId(), SOURCE_OBJECT_ERP_STOCK_OUT,
+                        prepared.sourceShipmentNo(), prepared.sourceShipmentNo(), "ERP", "STOCK_OUT_ORDER",
+                        projected.id(), projected.stockOutNo(), "ACTIVE", runId, Instant.now(),
+                        raw.payloadChecksum(), null, "订货宝出库单已投影到ERP统一出库单"));
+        return new ProjectedStockOut(projected.id(), projected.stockOutNo(), projected.stockOutTypeCode(), false);
+    }
+
+    private ProjectedTransferStockOut projectExternalTransferStockOut(
+            CallerIdentity caller, SyncTaskContext task, UUID runId, RawObjectPersistResult raw,
+            ExternalObjectMapping existingStockOut, PreparedTransferStockOut prepared) {
+        if (existingStockOut != null
+                && existingStockOut.internalObjectId() != null
+                && existingStockOut.internalObjectNo() != null) {
+            ExternalObjectMapping existingTransfer = store.findActiveMapping(
+                    caller.tenantId(), task.connectorId(), SOURCE_OBJECT_ERP_TRANSFER_ORDER,
+                    prepared.sourceShipmentNo());
+            return new ProjectedTransferStockOut(
+                    existingTransfer == null ? null : existingTransfer.internalObjectId(),
+                    existingTransfer == null ? null : existingTransfer.internalObjectNo(),
+                    existingStockOut.internalObjectId(),
+                    existingStockOut.internalObjectNo(),
+                    true);
+        }
+        if (erpStockOutProjectionClient == null) {
+            throw new ProjectionRejected("DHB_STOCK_OUT_ERP_CLIENT_MISSING",
+                    "订货宝调拨出库需要投影到ERP，但Integration未配置ERP出库客户端",
+                    "CONFIG", Map.of("required", "ErpStockOutProjectionClient"),
+                    Map.of("sourceShipmentNo", prepared.sourceShipmentNo()));
+        }
+        InternalTransferOrderDetailView projected =
+                erpStockOutProjectionClient.confirmExternalTransferStockOut(
+                        orderServiceCaller(caller.tenantId()), prepared.command());
+        store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
+                new ExternalObjectMappingWrite(task.connectorId(), SOURCE_OBJECT_ERP_TRANSFER_ORDER,
+                        prepared.sourceShipmentNo(), prepared.sourceShipmentNo(), "ERP", "TRANSFER_ORDER",
+                        projected.id(), projected.transferNo(), "ACTIVE", runId, Instant.now(),
+                        raw.payloadChecksum(), null, "订货宝调拨出库已反推ERP调拨单"));
+        store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
+                new ExternalObjectMappingWrite(task.connectorId(), SOURCE_OBJECT_ERP_STOCK_OUT,
+                        prepared.sourceShipmentNo(), prepared.sourceShipmentNo(), "ERP", "STOCK_OUT_ORDER",
+                        projected.stockOutOrderId(), projected.stockOutNo(), "ACTIVE", runId, Instant.now(),
+                        raw.payloadChecksum(), null, "订货宝调拨出库已投影到ERP统一出库单"));
+        return new ProjectedTransferStockOut(projected.id(), projected.transferNo(),
+                projected.stockOutOrderId(), projected.stockOutNo(), false);
+    }
+
+    private ProjectedStockOut projectExternalGenericStockOut(
+            CallerIdentity caller, SyncTaskContext task, UUID runId, RawObjectPersistResult raw,
+            ExternalObjectMapping existing, PreparedGenericStockOut prepared) {
+        if (existing != null && existing.internalObjectId() != null && existing.internalObjectNo() != null) {
+            return new ProjectedStockOut(existing.internalObjectId(), existing.internalObjectNo(),
+                    prepared.stockOutTypeCode(), true);
+        }
+        if (erpStockOutProjectionClient == null) {
+            throw new ProjectionRejected("DHB_STOCK_OUT_ERP_CLIENT_MISSING",
+                    "订货宝出库单需要投影到ERP出库单，但Integration未配置ERP出库客户端",
+                    "CONFIG", Map.of("required", "ErpStockOutProjectionClient"),
+                    Map.of("sourceShipmentNo", prepared.sourceShipmentNo()));
+        }
+        InternalStockOutOrderDetailView projected =
+                erpStockOutProjectionClient.confirmExternalGenericStockOut(
+                        orderServiceCaller(caller.tenantId()), prepared.command());
+        store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
+                new ExternalObjectMappingWrite(task.connectorId(), SOURCE_OBJECT_ERP_STOCK_OUT,
+                        prepared.sourceShipmentNo(), prepared.sourceShipmentNo(), "ERP", "STOCK_OUT_ORDER",
+                        projected.id(), projected.stockOutNo(), "ACTIVE", runId, Instant.now(),
+                        raw.payloadChecksum(), null, "订货宝出库单已投影到ERP统一出库单"));
+        return new ProjectedStockOut(projected.id(), projected.stockOutNo(), projected.stockOutTypeCode(), false);
     }
 
     private Long warehouseId(UUID tenantId, UUID connectorId, String sourceShipmentNo,
@@ -1122,6 +1353,114 @@ public final class DhbOrderSyncService {
         } catch (ProjectionRejected ignored) {
             return null;
         }
+    }
+
+    private Long targetWarehouseId(UUID tenantId, UUID connectorId, String sourceShipmentNo,
+                                   Map<String, Object> content, Map<String, Object> list) {
+        List<String> candidates = candidates(content, list,
+                "TargetStockID", "TargetStockId", "targetStockID", "targetStockId", "target_stock_id",
+                "TargetStockGuid", "TargetStockGUID", "targetStockGuid", "target_stock_guid",
+                "TargetStockNum", "targetStockNum", "target_stock_num",
+                "ToStockID", "ToStockId", "toStockID", "toStockId", "to_stock_id",
+                "ToStockGuid", "ToStockGUID", "toStockGuid", "to_stock_guid",
+                "ToStockNum", "toStockNum", "to_stock_num",
+                "InStockID", "InStockId", "inStockID", "inStockId", "in_stock_id",
+                "InStockGuid", "InStockGUID", "inStockGuid", "in_stock_guid",
+                "InStockNum", "inStockNum", "in_stock_num",
+                "ReceiveStockID", "ReceiveStockId", "receiveStockID", "receiveStockId",
+                "ReceiveStockGuid", "ReceiveStockGUID", "receiveStockGuid",
+                "ReceiveStockNum", "receiveStockNum");
+        if (candidates.isEmpty()) return null;
+        try {
+            return mappingAny(tenantId, connectorId, List.of("WAREHOUSE"), candidates,
+                    sourceShipmentNo, "目标仓库").internalObjectId();
+        } catch (ProjectionRejected ignored) {
+            return null;
+        }
+    }
+
+    private List<InventoryStockOutLine> inventoryStockOutLines(
+            UUID tenantId, UUID connectorId, String sourceShipmentNo, Map<String, Object> content) {
+        List<Map<String, Object>> rows = rows(content, "body", "Body", "Products",
+                "OrderProduct", "OrderProducts", "Goods", "list", "details");
+        if (rows.isEmpty()) {
+            throw new ProjectionRejected("DHB_STOCK_OUT_LINE_MISSING",
+                    "订货宝出库单详情缺少商品明细，不能生成ERP出库单",
+                    "DETAIL", Map.of("required", "stock out lines"),
+                    Map.of("sourceShipmentNo", sourceShipmentNo));
+        }
+        Map<String, InventoryStockOutLineAccumulator> merged = new LinkedHashMap<>();
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            Map<String, Object> row = rows.get(rowIndex);
+            List<String> productSourceIds = candidates(row,
+                    "Guid", "TrueGuid", "GoodsGuid", "GoodsGUID", "goods_guid",
+                    "goods_id", "GoodsId", "GoodsID", "goodsId",
+                    "ProductGuid", "ProductGUID", "productGuid",
+                    "ProductID", "ProductId", "productId", "product_id");
+            List<String> productCodes = candidates(row,
+                    "Coding", "GoodsCoding", "ProductCode", "productCode",
+                    "goods_num", "GoodsNo", "GoodsNO", "goodsNo", "goods_no",
+                    "ProductNo", "productNo", "product_no", "barcode", "BarCode");
+            String productSourceId = productSourceIds.isEmpty() ? null : productSourceIds.getFirst();
+            String productCode = productCodes.isEmpty() ? null : productCodes.getFirst();
+            List<String> productCandidates = new ArrayList<>();
+            productCandidates.addAll(productSourceIds);
+            productCandidates.addAll(productCodes);
+            ExternalObjectMapping product = mappingAny(tenantId, connectorId,
+                    List.of("PRODUCT_SPU", "PRODUCT"), productCandidates,
+                    sourceShipmentNo, "商品");
+            List<String> skuSources = candidates(row,
+                    "OptionsGoodsNo", "options_goods_no", "OptionsGoodsNum", "options_goods_num",
+                    "OptionsId", "OptionsID", "optionsId", "optionsID", "options_id",
+                    "OptionsGuid", "OptionsGUID", "optionsGuid", "options_guid",
+                    "GoodsOptionsId", "GoodsOptionsID", "goodsOptionsId",
+                    "SkuId", "SkuID", "skuId", "sku_id", "skuNo", "SkuNo", "sku_no",
+                    "SkuCode", "skuCode", "BarCode", "barcode");
+            if (skuSources.isEmpty() && (!productSourceIds.isEmpty() || !blank(product.sourceObjectId()))) {
+                skuSources = List.of("0");
+            }
+            List<String> skuCandidates = new ArrayList<>();
+            for (String skuSource : skuSources) {
+                addNormalizedSkuCandidate(skuCandidates, productSourceId, skuSource);
+                addNormalizedSkuCandidate(skuCandidates, product.sourceObjectId(), skuSource);
+                addNormalizedSkuCandidate(skuCandidates, product.sourceObjectNo(), skuSource);
+                addNormalizedSkuCandidate(skuCandidates, productCode, skuSource);
+                addCandidate(skuCandidates, skuSource);
+            }
+            skuCandidates.addAll(productCodes);
+            ExternalObjectMapping sku = mappingAny(tenantId, connectorId,
+                    List.of("PRODUCT_SKU", "PRODUCT_VARIANT", "SKU"), skuCandidates,
+                    sourceShipmentNo, "商品规格");
+            BigDecimal quantity = decimal(firstObject(row, "ShipsNumber", "ships_number",
+                    "OutNumber", "outNumber", "ContentNumber", "Number", "Quantity",
+                    "quantity", "GoodsNumber"));
+            if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new ProjectionRejected("DHB_STOCK_OUT_LINE_QUANTITY_INVALID",
+                        "订货宝出库单明细数量为空或小于等于0",
+                        "DETAIL", Map.of("required", "quantity > 0"),
+                        Map.of("sourceShipmentNo", sourceShipmentNo, "product", productSourceId));
+            }
+            Long productId = requiredInternalId(product, sourceShipmentNo, "商品");
+            Long variantId = requiredInternalId(sku, sourceShipmentNo, "商品规格");
+            String sourceUnit = first(row, "order_units_name", "base_units_name", "Units",
+                    "UnitsName", "Unit", "unit_name", "UnitName", "unitName");
+            InventoryStockOutLine line = new InventoryStockOutLine(
+                    productId,
+                    variantId,
+                    firstNonBlank(product.internalObjectNo(), productCode),
+                    firstNonBlank(sku.internalObjectNo(), skuSources.isEmpty() ? null : skuSources.getFirst()),
+                    firstNonBlank(first(row, "Name", "GoodsName", "goodsName", "goods_name",
+                                    "ProductName", "productName", "product_name"),
+                            product.sourceObjectNo(), product.internalObjectNo(), "订货宝商品"),
+                    optionalUnitCode(sourceUnit),
+                    quantity,
+                    first(row, "remark", "Remark"));
+            merged.compute(productId + "::" + variantId, (ignored, current) ->
+                    current == null ? InventoryStockOutLineAccumulator.from(line) : current.merge(line));
+        }
+        return merged.values().stream()
+                .map(InventoryStockOutLineAccumulator::toLine)
+                .toList();
     }
 
     private List<SalesShipmentLineCommand> shipmentLines(UUID tenantId, UUID connectorId,
@@ -1488,12 +1827,23 @@ public final class DhbOrderSyncService {
         for (String sourceId : sourceIds == null ? List.<String>of() : sourceIds) {
             if (blank(sourceId)) continue;
             for (String objectType : objectTypes) {
-                ExternalObjectMapping mapping = store.findActiveMapping(
+                ExternalObjectMapping mapping = cachedActiveMapping(
                         tenantId, connectorId, objectType, sourceId);
                 if (mapping != null) return mapping;
             }
         }
         return null;
+    }
+
+    private ExternalObjectMapping cachedActiveMapping(UUID tenantId, UUID connectorId,
+                                                      String objectType, String sourceId) {
+        ConcurrentMap<MappingLookupKey, Optional<ExternalObjectMapping>> cache = MAPPING_LOOKUP_CACHE.get();
+        if (cache == null) {
+            return store.findActiveMapping(tenantId, connectorId, objectType, sourceId);
+        }
+        MappingLookupKey key = new MappingLookupKey(tenantId, connectorId, objectType, sourceId);
+        return cache.computeIfAbsent(key, ignored -> Optional.ofNullable(
+                store.findActiveMapping(tenantId, connectorId, objectType, sourceId))).orElse(null);
     }
 
     private void recordRejected(CallerIdentity caller, SyncTaskContext task, UUID runId,
@@ -1572,6 +1922,50 @@ public final class DhbOrderSyncService {
                 first(content, list, "OrdersNum", "orders_num", "OrderSN", "orderSn", "order_no"));
     }
 
+    private static Instant shipmentStockOutTime(Shipment summary, ShipmentDetail detail,
+                                                Map<String, Object> content, Map<String, Object> list) {
+        return firstNonNull(
+                summary == null ? null : summary.shipmentAt(),
+                instant(firstObject(content, "ShipsDate", "shipsDate", "ships_date")),
+                instant(firstObject(list, "ShipsDate", "shipsDate", "ships_date")),
+                summary == null ? null : summary.createdAt(),
+                instant(firstObject(content, "CreateDate", "createDate", "create_date")),
+                instant(firstObject(list, "CreateDate", "createDate", "create_date")),
+                summary == null ? null : summary.updatedAt(),
+                detail == null ? null : instant(firstObject(detail.attributes(), "CreateDate")),
+                Instant.now());
+    }
+
+    private static String stockOutTypeCode(Shipment summary, Map<String, Object> payload) {
+        Map<String, Object> list = map(payload == null ? null : mapObject(payload.get("list")));
+        Map<String, Object> content = map(payload == null ? null : mapObject(payload.get("detail")));
+        String sourceTypeId = firstNonBlank(
+                summary == null ? null : summary.typeId(),
+                first(content, list, "TypeID", "TypeId", "typeID", "typeId", "type_id"));
+        String sourceTypeName = firstNonBlank(
+                summary == null ? null : summary.typeName(),
+                first(content, list, "TypeName", "typeName", "type_name", "ShipsTypeName"));
+        String normalizedTypeId = sourceTypeId == null ? "" : sourceTypeId.strip();
+        if ("-2".equals(normalizedTypeId)) return "PURCHASE_RETURN";
+        if ("10".equals(normalizedTypeId)) return "SALES";
+        if ("11".equals(normalizedTypeId)) return "INVENTORY_LOSS";
+        if ("17".equals(normalizedTypeId)) return "OTHER";
+        if ("18".equals(normalizedTypeId)) return "TRANSFER";
+        if ("19".equals(normalizedTypeId)) return "JOINT_OPERATION";
+        String normalizedTypeName = sourceTypeName == null ? "" : sourceTypeName.strip();
+        if (normalizedTypeName.contains("采购退货")) return "PURCHASE_RETURN";
+        if (normalizedTypeName.contains("销售")) return "SALES";
+        if (normalizedTypeName.contains("盘亏")) return "INVENTORY_LOSS";
+        if (normalizedTypeName.contains("其他")) return "OTHER";
+        if (normalizedTypeName.contains("调拨")) return "TRANSFER";
+        if (normalizedTypeName.contains("联营")) return "JOINT_OPERATION";
+        throw new ProjectionRejected("DHB_STOCK_OUT_TYPE_UNSUPPORTED",
+                "订货宝出库类型暂不支持，不能投影到ERP出库单",
+                "DETAIL", Map.of("supported", "type_id=-2采购退货,10销售出库,11盘亏,17其他,18调拨出库,19联营"),
+                Map.of("sourceTypeId", safeValue(sourceTypeId),
+                        "sourceTypeName", safeValue(sourceTypeName)));
+    }
+
     private static SalesOrderCommand withRevision(SalesOrderCommand source, Integer revision) {
         return new SalesOrderCommand(source.customerId(), source.sourceSystemCode(), source.sourceOrderNo(),
                 source.customerCodeSnapshot(),
@@ -1606,9 +2000,17 @@ public final class DhbOrderSyncService {
                 source.lines(), source.remark(), revision);
     }
 
+    private static SalesShipmentCommand withStockOut(
+            SalesShipmentCommand source, ProjectedStockOut stockOut) {
+        return new SalesShipmentCommand(source.salesOrderId(), source.warehouseId(),
+                stockOut.stockOutOrderId(), stockOut.stockOutNo(), source.shipmentStatusCode(),
+                source.logisticsCompany(), source.trackingNo(), source.shipTime(),
+                source.lines(), source.remark(), source.revision());
+    }
+
     private static CallerIdentity orderServiceCaller(UUID tenantId) {
         return new CallerIdentity("SERVICE", SERVICE_PRINCIPAL_ID, tenantId, null, null,
-                UUID.randomUUID(), 0, 0, 0, Set.of("DHB_ORDER_SYNC_SERVICE"), ORDER_PERMISSIONS);
+                UUID.randomUUID(), 0, 0, 0, Set.of("DHB_ORDER_SYNC_SERVICE"), DOMAIN_PERMISSIONS);
     }
 
     private static Long requiredInternalId(ExternalObjectMapping mapping,
@@ -1812,6 +2214,15 @@ public final class DhbOrderSyncService {
         throw new ProjectionRejected("DHB_ORDER_LINE_UNIT_UNMAPPED",
                 "订货宝订单明细单位未映射到我方PRODUCT_UNIT编码",
                 "MAPPING", Map.of("required", "PRODUCT_UNIT"), Map.of("sourceUnit", value));
+    }
+
+    private static String optionalUnitCode(String sourceUnit) {
+        if (blank(sourceUnit)) return null;
+        try {
+            return unitCode(sourceUnit);
+        } catch (ProjectionRejected ignored) {
+            return null;
+        }
     }
 
     private static void validateTask(SyncTaskContext task) {
@@ -2102,6 +2513,10 @@ public final class DhbOrderSyncService {
         return value == null || value.isBlank();
     }
 
+    private static String safeValue(String value) {
+        return value == null ? "" : value;
+    }
+
     private static String safeMessage(Throwable error) {
         String message = error.getMessage();
         if (message == null || message.isBlank()) {
@@ -2129,10 +2544,91 @@ public final class DhbOrderSyncService {
     }
 
     private record PreparedSalesShipment(String sourceShipmentNo, String sourceOrderNo,
+                                         SalesOrderDetailView salesOrder,
                                          SalesShipmentCommand command) {
+        PreparedSalesShipment withStockOut(ProjectedStockOut stockOut) {
+            return new PreparedSalesShipment(sourceShipmentNo, sourceOrderNo, salesOrder,
+                    DhbOrderSyncService.withStockOut(command, stockOut));
+        }
+    }
+
+    private record PreparedStockOut(String sourceShipmentNo, String stockOutTypeCode,
+                                    ExternalStockOutProjectionCommand command) {
+    }
+
+    private record PreparedTransferStockOut(
+            String sourceShipmentNo, ExternalTransferStockOutProjectionCommand command) {
+    }
+
+    private record PreparedGenericStockOut(
+            String sourceShipmentNo, String stockOutTypeCode,
+            ExternalGenericStockOutProjectionCommand command) {
+    }
+
+    private record ProjectedStockOut(Long stockOutOrderId, String stockOutNo,
+                                     String stockOutTypeCode, boolean duplicate) {
+    }
+
+    private record ProjectedTransferStockOut(Long transferOrderId, String transferNo,
+                                             Long stockOutOrderId, String stockOutNo,
+                                             boolean duplicate) {
+    }
+
+    private record InventoryStockOutLine(
+            Long productId,
+            Long productVariantId,
+            String productCodeSnapshot,
+            String skuCodeSnapshot,
+            String productNameSnapshot,
+            String unitCode,
+            BigDecimal quantity,
+            String remark) {
     }
 
     private record StaffProjection(String staffCode, String staffName) {
+    }
+
+    private static final class InventoryStockOutLineAccumulator {
+        private final Long productId;
+        private final Long productVariantId;
+        private final String productCodeSnapshot;
+        private final String skuCodeSnapshot;
+        private final String productNameSnapshot;
+        private final String unitCode;
+        private BigDecimal quantity;
+        private String remark;
+
+        private InventoryStockOutLineAccumulator(InventoryStockOutLine line) {
+            this.productId = line.productId();
+            this.productVariantId = line.productVariantId();
+            this.productCodeSnapshot = line.productCodeSnapshot();
+            this.skuCodeSnapshot = line.skuCodeSnapshot();
+            this.productNameSnapshot = line.productNameSnapshot();
+            this.unitCode = line.unitCode();
+            this.quantity = line.quantity();
+            this.remark = line.remark();
+        }
+
+        static InventoryStockOutLineAccumulator from(InventoryStockOutLine line) {
+            return new InventoryStockOutLineAccumulator(line);
+        }
+
+        InventoryStockOutLineAccumulator merge(InventoryStockOutLine line) {
+            quantity = quantity.add(line.quantity());
+            remark = mergedRemark(remark, line.remark());
+            return this;
+        }
+
+        InventoryStockOutLine toLine() {
+            return new InventoryStockOutLine(productId, productVariantId, productCodeSnapshot,
+                    skuCodeSnapshot, productNameSnapshot, unitCode, quantity, remark);
+        }
+
+        private static String mergedRemark(String left, String right) {
+            if (blank(left)) return right;
+            if (blank(right) || left.contains(right.strip())) return left;
+            return left + "；" + right.strip();
+        }
     }
 
     private static final class SalesOrderLineAccumulator {
@@ -2240,6 +2736,10 @@ public final class DhbOrderSyncService {
 
     private enum ProjectionOutcome {
         ACCEPTED, DUPLICATE, REJECTED
+    }
+
+    private record MappingLookupKey(UUID tenantId, UUID connectorId,
+                                    String sourceObjectType, String sourceObjectId) {
     }
 
     private static final class Counts {

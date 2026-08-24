@@ -1,5 +1,7 @@
 package com.rigour.erp.application.service.inventory;
 
+import com.rigour.erp.api.v1.model.ExternalTransferStockOutProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferStockOutProjectionLineCommand;
 import com.rigour.erp.api.v1.model.InternalTransferOrderCommand;
 import com.rigour.erp.api.v1.model.InternalTransferOrderDetailView;
 import com.rigour.erp.api.v1.model.InternalTransferOrderLineCommand;
@@ -9,6 +11,7 @@ import com.rigour.erp.api.v1.model.InternalTransferStockInCommand;
 import com.rigour.erp.api.v1.model.InternalTransferStockOutCommand;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.application.port.out.ErpTransferOrderStore;
+import com.rigour.erp.application.port.out.ErpTransferOrderStore.ExternalTransferStockOutWrite;
 import com.rigour.erp.application.port.out.ErpTransferOrderStore.ProductVariantSnapshot;
 import com.rigour.erp.application.port.out.ErpTransferOrderStore.TransferOrderLineSnapshot;
 import com.rigour.erp.application.port.out.ErpTransferOrderStore.TransferOrderSearchCriteria;
@@ -217,6 +220,47 @@ class ErpTransferOrderServiceTest {
         verify(store, never()).confirmStockIn(eq(TENANT), any(), any(), eq(ACTOR));
     }
 
+    @Test
+    void confirmExternalStockOutCreatesTransferOrderAndStockOutBySourceDocument() {
+        ErpTransferOrderStore store = mock(ErpTransferOrderStore.class);
+        ErpTransferOrderService service = new ErpTransferOrderService(store, fixedGenerator());
+        TestAuthorizationContext.set(caller("erp:supply:write"));
+        when(store.transferOrderBySource(TENANT, "DINGHUOBAO", "FH.20260829.0018"))
+                .thenReturn(Optional.empty());
+        when(store.warehouseActive(TENANT, 1L)).thenReturn(true);
+        when(store.warehouseActive(TENANT, 2L)).thenReturn(true);
+        when(store.productVariant(TENANT, 10L, 11L)).thenReturn(Optional.of(
+                snapshot(10L, 11L, "PRD-ERP", "SKU-ERP", "ERP调拨商品", "BOX")));
+        when(store.existsByTransferNo(TENANT, "TR202608291234")).thenReturn(false);
+        when(store.existsByStockOutNo(TENANT, "SO202608291234")).thenReturn(false);
+        when(store.existsByFlowNo(eq(TENANT), any())).thenReturn(false);
+        when(store.confirmExternalStockOut(eq(TENANT), eq("TR202608291234"),
+                eq("SO202608291234"), any(), eq(ACTOR)))
+                .thenReturn(detail(1L, "TR202608291234", "OUT_CONFIRMED", "SO202608291234", 1));
+
+        service.confirmExternalStockOut(new ExternalTransferStockOutProjectionCommand(
+                "DINGHUOBAO", "FH.20260829.0018", 1L, 2L, STOCK_OUT_TIME,
+                List.of(new ExternalTransferStockOutProjectionLineCommand(
+                        10L, 11L, "SOURCE-PRD", "SOURCE-SKU", "订货宝调拨商品",
+                        null, new BigDecimal("3"), "订货宝调拨出库")),
+                "订货宝调拨出库"));
+
+        ArgumentCaptor<ExternalTransferStockOutWrite> write =
+                ArgumentCaptor.forClass(ExternalTransferStockOutWrite.class);
+        verify(store).confirmExternalStockOut(eq(TENANT), eq("TR202608291234"),
+                eq("SO202608291234"), write.capture(), eq(ACTOR));
+        assertThat(write.getValue().sourceSystemCode()).isEqualTo("DINGHUOBAO");
+        assertThat(write.getValue().sourceDocumentNo()).isEqualTo("FH.20260829.0018");
+        assertThat(write.getValue().sourceWarehouseId()).isEqualTo(1L);
+        assertThat(write.getValue().targetWarehouseId()).isEqualTo(2L);
+        assertThat(write.getValue().stockOutTime()).isEqualTo(STOCK_OUT_TIME);
+        assertThat(write.getValue().lines()).hasSize(1);
+        assertThat(write.getValue().lines().getFirst().productCode()).isEqualTo("PRD-ERP");
+        assertThat(write.getValue().lines().getFirst().variantCode()).isEqualTo("SKU-ERP");
+        assertThat(write.getValue().lines().getFirst().productName()).isEqualTo("ERP调拨商品");
+        assertThat(write.getValue().lines().getFirst().unitCode()).isEqualTo("BOX");
+    }
+
     private static ProductVariantSnapshot snapshot(
             Long productId, Long variantId, String productCode, String variantCode, String productName, String unitCode) {
         return new ProductVariantSnapshot(productId, variantId, productCode, variantCode, productName, unitCode);
@@ -235,7 +279,7 @@ class ErpTransferOrderServiceTest {
 
     private static InternalTransferOrderDetailView detail(
             Long id, String transferNo, String statusCode, String stockOutNo, String stockInNo, int revision) {
-        return new InternalTransferOrderDetailView(id, transferNo, 1L, "默认仓", 2L, "城市仓",
+        return new InternalTransferOrderDetailView(id, transferNo, null, null, 1L, "默认仓", 2L, "城市仓",
                 statusCode, stockOutNo == null ? null : STOCK_OUT_TIME, stockInNo == null ? null : STOCK_IN_TIME,
                 stockOutNo == null ? null : 9L, stockOutNo, stockInNo == null ? null : 10L, stockInNo,
                 new BigDecimal("3"),

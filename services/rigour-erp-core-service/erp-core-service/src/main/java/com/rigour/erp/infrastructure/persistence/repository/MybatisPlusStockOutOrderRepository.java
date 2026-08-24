@@ -8,17 +8,26 @@ import com.rigour.erp.api.v1.model.InternalStockOutOrderLineView;
 import com.rigour.erp.api.v1.model.InternalStockOutOrderSummaryView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.application.port.out.ErpStockOutOrderStore;
+import com.rigour.erp.application.port.out.ErpStockOutOrderStore.ExternalGenericStockOutLineWrite;
+import com.rigour.erp.application.port.out.ErpStockOutOrderStore.ExternalGenericStockOutWrite;
+import com.rigour.erp.application.port.out.ErpStockOutOrderStore.ExternalStockOutLineWrite;
+import com.rigour.erp.application.port.out.ErpStockOutOrderStore.ExternalStockOutWrite;
+import com.rigour.erp.application.port.out.ErpStockOutOrderStore.ProductVariantSnapshot;
 import com.rigour.erp.application.port.out.ErpStockOutOrderStore.SalesStockOutLineWrite;
 import com.rigour.erp.application.port.out.ErpStockOutOrderStore.SalesStockOutWrite;
 import com.rigour.erp.application.port.out.ErpStockOutOrderStore.StockOutOrderSearchCriteria;
 import com.rigour.erp.domain.enums.ErpStockFlowType;
 import com.rigour.erp.domain.enums.ErpStockOutType;
 import com.rigour.erp.infrastructure.persistence.entity.InternalInventoryWarehouseEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProductEntity;
+import com.rigour.erp.infrastructure.persistence.entity.InternalProductVariantEntity;
 import com.rigour.erp.infrastructure.persistence.entity.InternalStockBalanceEntity;
 import com.rigour.erp.infrastructure.persistence.entity.InternalStockFlowEntity;
 import com.rigour.erp.infrastructure.persistence.entity.InternalStockOutOrderEntity;
 import com.rigour.erp.infrastructure.persistence.entity.InternalStockOutOrderLineEntity;
 import com.rigour.erp.infrastructure.persistence.mapper.InternalInventoryWarehouseMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProductMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.InternalProductVariantMapper;
 import com.rigour.erp.infrastructure.persistence.mapper.InternalStockBalanceMapper;
 import com.rigour.erp.infrastructure.persistence.mapper.InternalStockFlowMapper;
 import com.rigour.erp.infrastructure.persistence.mapper.InternalStockOutOrderLineMapper;
@@ -46,12 +55,15 @@ public class MybatisPlusStockOutOrderRepository
         extends ServiceImpl<InternalStockOutOrderMapper, InternalStockOutOrderEntity>
         implements ErpStockOutOrderStore {
     private static final String ACTIVE = "ACTIVE";
+    private static final String SUBMITTED = "SUBMITTED";
     private static final BigDecimal ZERO = BigDecimal.ZERO;
 
     private final InternalStockOutOrderLineMapper lineMapper;
     private final InternalStockBalanceMapper stockBalanceMapper;
     private final InternalStockFlowMapper stockFlowMapper;
     private final InternalInventoryWarehouseMapper warehouseMapper;
+    private final InternalProductMapper productMapper;
+    private final InternalProductVariantMapper variantMapper;
     private final Clock clock;
 
     public MybatisPlusStockOutOrderRepository(
@@ -60,12 +72,16 @@ public class MybatisPlusStockOutOrderRepository
             InternalStockBalanceMapper stockBalanceMapper,
             InternalStockFlowMapper stockFlowMapper,
             InternalInventoryWarehouseMapper warehouseMapper,
+            InternalProductMapper productMapper,
+            InternalProductVariantMapper variantMapper,
             Clock erpClock) {
         this.baseMapper = mapper;
         this.lineMapper = lineMapper;
         this.stockBalanceMapper = stockBalanceMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.warehouseMapper = warehouseMapper;
+        this.productMapper = productMapper;
+        this.variantMapper = variantMapper;
         this.clock = erpClock;
     }
 
@@ -91,6 +107,20 @@ public class MybatisPlusStockOutOrderRepository
     @Override
     public Optional<InternalStockOutOrderDetailView> stockOutOrder(String tenantId, Long id) {
         return selectActive(tenantId, id).map(order -> detail(tenantId, order, lines(tenantId, id)));
+    }
+
+    @Override
+    public Optional<InternalStockOutOrderDetailView> stockOutOrderBySource(
+            String tenantId, String sourceSystemCode, String sourceDocumentNo) {
+        if (sourceSystemCode == null || sourceDocumentNo == null) return Optional.empty();
+        InternalStockOutOrderEntity row = getBaseMapper().selectOne(
+                Wrappers.<InternalStockOutOrderEntity>lambdaQuery()
+                        .eq(InternalStockOutOrderEntity::getTenantId, tenantId)
+                        .eq(InternalStockOutOrderEntity::getSourceSystemCode, sourceSystemCode)
+                        .eq(InternalStockOutOrderEntity::getSourceDocumentNo, sourceDocumentNo)
+                        .eq(InternalStockOutOrderEntity::getDeleted, 0)
+                        .last("LIMIT 1"));
+        return Optional.ofNullable(row).map(order -> detail(tenantId, order, lines(tenantId, order.getId())));
     }
 
     @Override
@@ -126,6 +156,30 @@ public class MybatisPlusStockOutOrderRepository
     }
 
     @Override
+    public Optional<ProductVariantSnapshot> productVariant(
+            String tenantId, Long productId, Long productVariantId) {
+        InternalProductEntity product = productMapper.selectOne(Wrappers.<InternalProductEntity>lambdaQuery()
+                .eq(InternalProductEntity::getTenantId, tenantId)
+                .eq(InternalProductEntity::getId, productId)
+                .eq(InternalProductEntity::getSubmitStatusCode, SUBMITTED)
+                .eq(InternalProductEntity::getDeleted, 0)
+                .last("LIMIT 1"));
+        if (product == null) return Optional.empty();
+        InternalProductVariantEntity variant = variantMapper.selectOne(
+                Wrappers.<InternalProductVariantEntity>lambdaQuery()
+                        .eq(InternalProductVariantEntity::getTenantId, tenantId)
+                        .eq(InternalProductVariantEntity::getProductId, productId)
+                        .eq(InternalProductVariantEntity::getId, productVariantId)
+                        .eq(InternalProductVariantEntity::getDeleted, 0)
+                        .last("LIMIT 1"));
+        if (variant == null) return Optional.empty();
+        String unitCode = variant.getUnitCode() == null ? product.getUnitCode() : variant.getUnitCode();
+        if (unitCode == null || product.getProductName() == null) return Optional.empty();
+        return Optional.of(new ProductVariantSnapshot(product.getId(), variant.getId(),
+                product.getProductCode(), variant.getVariantCode(), product.getProductName(), unitCode));
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public InternalStockOutOrderDetailView confirmSalesStockOut(
             String tenantId, String stockOutNo, SalesStockOutWrite command, String actorId) {
@@ -147,6 +201,58 @@ public class MybatisPlusStockOutOrderRepository
         return stockOutOrder(tenantId, order.getId()).orElseThrow(() -> notFound("出库单不存在"));
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public InternalStockOutOrderDetailView confirmExternalStockOut(
+            String tenantId, String stockOutNo, ExternalStockOutWrite command, String actorId) {
+        Optional<InternalStockOutOrderDetailView> existing = stockOutOrderBySource(
+                tenantId, command.sourceSystemCode(), command.sourceDocumentNo());
+        if (existing.isPresent()) return existing.get();
+        LocalDateTime now = now();
+        InternalStockOutOrderEntity order = stockOutOrderEntity(tenantId, stockOutNo, command, actorId, now);
+        try {
+            getBaseMapper().insert(order);
+            for (ExternalStockOutLineWrite line : command.lines()) {
+                insertStockOutLine(tenantId, order.getId(), line, now);
+                StockQuantityChange quantityChange = decreaseStockBalance(
+                        tenantId, command.warehouseId(), line.productId(), line.productVariantId(),
+                        line.quantity(), now);
+                insertStockFlow(tenantId, order.getId(), stockOutNo, command.warehouseId(), command.stockOutTypeCode(),
+                        line, quantityChange, actorId, now);
+            }
+        } catch (DataIntegrityViolationException exception) {
+            return stockOutOrderBySource(tenantId, command.sourceSystemCode(), command.sourceDocumentNo())
+                    .orElseThrow(() -> conflict("出库单号或来源出库单号已存在，或出库引用数据无效"));
+        }
+        return stockOutOrder(tenantId, order.getId()).orElseThrow(() -> notFound("出库单不存在"));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public InternalStockOutOrderDetailView confirmExternalGenericStockOut(
+            String tenantId, String stockOutNo, ExternalGenericStockOutWrite command, String actorId) {
+        Optional<InternalStockOutOrderDetailView> existing = stockOutOrderBySource(
+                tenantId, command.sourceSystemCode(), command.sourceDocumentNo());
+        if (existing.isPresent()) return existing.get();
+        LocalDateTime now = now();
+        InternalStockOutOrderEntity order = stockOutOrderEntity(tenantId, stockOutNo, command, actorId, now);
+        try {
+            getBaseMapper().insert(order);
+            for (ExternalGenericStockOutLineWrite line : command.lines()) {
+                insertStockOutLine(tenantId, order.getId(), line, now);
+                StockQuantityChange quantityChange = decreaseStockBalance(
+                        tenantId, command.warehouseId(), line.productId(), line.productVariantId(),
+                        line.quantity(), now);
+                insertStockFlow(tenantId, order.getId(), stockOutNo, command.warehouseId(),
+                        command.stockOutTypeCode(), line, quantityChange, actorId, now);
+            }
+        } catch (DataIntegrityViolationException exception) {
+            return stockOutOrderBySource(tenantId, command.sourceSystemCode(), command.sourceDocumentNo())
+                    .orElseThrow(() -> conflict("出库单号或来源出库单号已存在，或出库引用数据无效"));
+        }
+        return stockOutOrder(tenantId, order.getId()).orElseThrow(() -> notFound("出库单不存在"));
+    }
+
     private StockQuantityChange decreaseStockBalance(
             String tenantId, Long warehouseId, Long productId, Long productVariantId, BigDecimal quantity,
             LocalDateTime now) {
@@ -157,9 +263,9 @@ public class MybatisPlusStockOutOrderRepository
                         .eq(InternalStockBalanceEntity::getProductId, productId)
                         .eq(InternalStockBalanceEntity::getProductVariantId, productVariantId)
                         .last("LIMIT 1"));
-        if (existing == null) throw conflict("出库仓库存不足，不能确认销售出库");
+        if (existing == null) throw conflict("出库仓库存不足，不能确认出库");
         BigDecimal before = zeroIfNull(existing.getAvailableQuantity());
-        if (before.compareTo(quantity) < 0) throw conflict("出库仓库存不足，不能确认销售出库");
+        if (before.compareTo(quantity) < 0) throw conflict("出库仓库存不足，不能确认出库");
         BigDecimal after = before.subtract(quantity);
         int updated = stockBalanceMapper.update(null, Wrappers.<InternalStockBalanceEntity>lambdaUpdate()
                 .set(InternalStockBalanceEntity::getAvailableQuantity, after)
@@ -179,6 +285,48 @@ public class MybatisPlusStockOutOrderRepository
         entity.setStockOutOrderId(stockOutOrderId);
         entity.setLineNo(line.lineNo());
         entity.setSalesOrderLineId(line.salesOrderLineId());
+        entity.setProductId(line.productId());
+        entity.setProductVariantId(line.productVariantId());
+        entity.setProductCodeSnapshot(line.productCode());
+        entity.setVariantCodeSnapshot(line.variantCode());
+        entity.setProductNameSnapshot(line.productName());
+        entity.setUnitCode(line.unitCode());
+        entity.setQuantity(line.quantity());
+        entity.setRemark(line.remark());
+        entity.setCreatedTime(now);
+        entity.setUpdatedTime(now);
+        entity.setDeleted(0);
+        lineMapper.insert(entity);
+    }
+
+    private void insertStockOutLine(
+            String tenantId, Long stockOutOrderId, ExternalStockOutLineWrite line, LocalDateTime now) {
+        InternalStockOutOrderLineEntity entity = new InternalStockOutOrderLineEntity();
+        entity.setTenantId(tenantId);
+        entity.setStockOutOrderId(stockOutOrderId);
+        entity.setLineNo(line.lineNo());
+        entity.setSalesOrderLineId(line.salesOrderLineId());
+        entity.setTransferOrderLineId(line.transferOrderLineId());
+        entity.setProductId(line.productId());
+        entity.setProductVariantId(line.productVariantId());
+        entity.setProductCodeSnapshot(line.productCode());
+        entity.setVariantCodeSnapshot(line.variantCode());
+        entity.setProductNameSnapshot(line.productName());
+        entity.setUnitCode(line.unitCode());
+        entity.setQuantity(line.quantity());
+        entity.setRemark(line.remark());
+        entity.setCreatedTime(now);
+        entity.setUpdatedTime(now);
+        entity.setDeleted(0);
+        lineMapper.insert(entity);
+    }
+
+    private void insertStockOutLine(
+            String tenantId, Long stockOutOrderId, ExternalGenericStockOutLineWrite line, LocalDateTime now) {
+        InternalStockOutOrderLineEntity entity = new InternalStockOutOrderLineEntity();
+        entity.setTenantId(tenantId);
+        entity.setStockOutOrderId(stockOutOrderId);
+        entity.setLineNo(line.lineNo());
         entity.setProductId(line.productId());
         entity.setProductVariantId(line.productVariantId());
         entity.setProductCodeSnapshot(line.productCode());
@@ -214,6 +362,52 @@ public class MybatisPlusStockOutOrderRepository
         stockFlowMapper.insert(entity);
     }
 
+    private void insertStockFlow(
+            String tenantId, Long stockOutOrderId, String stockOutNo, Long warehouseId,
+            String stockOutTypeCode, ExternalStockOutLineWrite line,
+            StockQuantityChange quantityChange, String actorId, LocalDateTime now) {
+        InternalStockFlowEntity entity = new InternalStockFlowEntity();
+        entity.setTenantId(tenantId);
+        entity.setFlowNo(line.flowNo());
+        entity.setWarehouseId(warehouseId);
+        entity.setProductId(line.productId());
+        entity.setProductVariantId(line.productVariantId());
+        entity.setBusinessTypeCode(ErpStockOutType.TRANSFER.code().equals(stockOutTypeCode)
+                ? ErpStockFlowType.TRANSFER_OUT.code()
+                : ErpStockFlowType.SALES_OUT.code());
+        entity.setBusinessOrderId(stockOutOrderId);
+        entity.setBusinessOrderNo(stockOutNo);
+        entity.setQuantityDelta(line.quantity().negate());
+        entity.setBeforeQuantity(quantityChange.beforeQuantity());
+        entity.setAfterQuantity(quantityChange.afterQuantity());
+        entity.setRemark(line.remark());
+        entity.setCreatedBy(actorId);
+        entity.setCreatedTime(now);
+        stockFlowMapper.insert(entity);
+    }
+
+    private void insertStockFlow(
+            String tenantId, Long stockOutOrderId, String stockOutNo, Long warehouseId,
+            String stockOutTypeCode, ExternalGenericStockOutLineWrite line,
+            StockQuantityChange quantityChange, String actorId, LocalDateTime now) {
+        InternalStockFlowEntity entity = new InternalStockFlowEntity();
+        entity.setTenantId(tenantId);
+        entity.setFlowNo(line.flowNo());
+        entity.setWarehouseId(warehouseId);
+        entity.setProductId(line.productId());
+        entity.setProductVariantId(line.productVariantId());
+        entity.setBusinessTypeCode(stockFlowType(stockOutTypeCode));
+        entity.setBusinessOrderId(stockOutOrderId);
+        entity.setBusinessOrderNo(stockOutNo);
+        entity.setQuantityDelta(line.quantity().negate());
+        entity.setBeforeQuantity(quantityChange.beforeQuantity());
+        entity.setAfterQuantity(quantityChange.afterQuantity());
+        entity.setRemark(line.remark());
+        entity.setCreatedBy(actorId);
+        entity.setCreatedTime(now);
+        stockFlowMapper.insert(entity);
+    }
+
     private InternalStockOutOrderEntity stockOutOrderEntity(
             String tenantId, String stockOutNo, SalesStockOutWrite command, String actorId, LocalDateTime now) {
         InternalStockOutOrderEntity entity = new InternalStockOutOrderEntity();
@@ -237,10 +431,60 @@ public class MybatisPlusStockOutOrderRepository
         return entity;
     }
 
+    private InternalStockOutOrderEntity stockOutOrderEntity(
+            String tenantId, String stockOutNo, ExternalStockOutWrite command, String actorId, LocalDateTime now) {
+        InternalStockOutOrderEntity entity = new InternalStockOutOrderEntity();
+        entity.setTenantId(tenantId);
+        entity.setStockOutNo(stockOutNo);
+        entity.setSourceSystemCode(command.sourceSystemCode());
+        entity.setSourceDocumentNo(command.sourceDocumentNo());
+        entity.setStockOutTypeCode(command.stockOutTypeCode());
+        entity.setWarehouseId(command.warehouseId());
+        entity.setSalesOrderId(command.salesOrderId());
+        entity.setSalesOrderNo(command.salesOrderNo());
+        entity.setTransferOrderId(command.transferOrderId());
+        entity.setTransferOrderNo(command.transferOrderNo());
+        entity.setCustomerId(command.customerId());
+        entity.setCustomerNameSnapshot(command.customerNameSnapshot());
+        entity.setStatusCode(command.statusCode());
+        entity.setStockOutTime(local(command.stockOutTime()));
+        entity.setRemark(command.remark());
+        entity.setRevision(1);
+        entity.setCreatedBy(actorId);
+        entity.setCreatedTime(now);
+        entity.setUpdatedBy(actorId);
+        entity.setUpdatedTime(now);
+        entity.setDeleted(0);
+        return entity;
+    }
+
+    private InternalStockOutOrderEntity stockOutOrderEntity(
+            String tenantId, String stockOutNo, ExternalGenericStockOutWrite command,
+            String actorId, LocalDateTime now) {
+        InternalStockOutOrderEntity entity = new InternalStockOutOrderEntity();
+        entity.setTenantId(tenantId);
+        entity.setStockOutNo(stockOutNo);
+        entity.setSourceSystemCode(command.sourceSystemCode());
+        entity.setSourceDocumentNo(command.sourceDocumentNo());
+        entity.setStockOutTypeCode(command.stockOutTypeCode());
+        entity.setWarehouseId(command.warehouseId());
+        entity.setStatusCode(command.statusCode());
+        entity.setStockOutTime(local(command.stockOutTime()));
+        entity.setRemark(command.remark());
+        entity.setRevision(1);
+        entity.setCreatedBy(actorId);
+        entity.setCreatedTime(now);
+        entity.setUpdatedBy(actorId);
+        entity.setUpdatedTime(now);
+        entity.setDeleted(0);
+        return entity;
+    }
+
     private InternalStockOutOrderDetailView detail(
             String tenantId, InternalStockOutOrderEntity order, List<InternalStockOutOrderLineEntity> lines) {
         LineMetrics metrics = metrics(lines);
-        return new InternalStockOutOrderDetailView(order.getId(), order.getStockOutNo(), order.getStockOutTypeCode(),
+        return new InternalStockOutOrderDetailView(order.getId(), order.getStockOutNo(),
+                order.getSourceSystemCode(), order.getSourceDocumentNo(), order.getStockOutTypeCode(),
                 order.getWarehouseId(), warehouseNames(tenantId, Set.of(order.getWarehouseId())).get(order.getWarehouseId()),
                 order.getSalesOrderId(), order.getSalesOrderNo(), order.getTransferOrderId(), order.getTransferOrderNo(),
                 order.getCustomerId(), order.getCustomerNameSnapshot(), order.getStatusCode(),
@@ -253,7 +497,8 @@ public class MybatisPlusStockOutOrderRepository
     private InternalStockOutOrderSummaryView summary(
             InternalStockOutOrderEntity order, Map<Long, String> warehouses, Map<Long, LineMetrics> metricsByOrder) {
         LineMetrics metrics = metricsByOrder.getOrDefault(order.getId(), LineMetrics.ZERO);
-        return new InternalStockOutOrderSummaryView(order.getId(), order.getStockOutNo(), order.getStockOutTypeCode(),
+        return new InternalStockOutOrderSummaryView(order.getId(), order.getStockOutNo(),
+                order.getSourceSystemCode(), order.getSourceDocumentNo(), order.getStockOutTypeCode(),
                 order.getWarehouseId(), warehouses.get(order.getWarehouseId()), order.getSalesOrderId(),
                 order.getSalesOrderNo(), order.getTransferOrderId(), order.getTransferOrderNo(),
                 order.getCustomerId(), order.getCustomerNameSnapshot(), order.getStatusCode(),
@@ -377,6 +622,25 @@ public class MybatisPlusStockOutOrderRepository
 
     private static BusinessException notFound(String message) {
         return new BusinessException(ErrorCode.NOT_FOUND, message, List.of());
+    }
+
+    private static String stockFlowType(String stockOutTypeCode) {
+        if (ErpStockOutType.TRANSFER.code().equals(stockOutTypeCode)) {
+            return ErpStockFlowType.TRANSFER_OUT.code();
+        }
+        if (ErpStockOutType.PURCHASE_RETURN.code().equals(stockOutTypeCode)) {
+            return ErpStockFlowType.PURCHASE_RETURN_OUT.code();
+        }
+        if (ErpStockOutType.INVENTORY_LOSS.code().equals(stockOutTypeCode)) {
+            return ErpStockFlowType.INVENTORY_LOSS_OUT.code();
+        }
+        if (ErpStockOutType.JOINT_OPERATION.code().equals(stockOutTypeCode)) {
+            return ErpStockFlowType.JOINT_OPERATION_OUT.code();
+        }
+        if (ErpStockOutType.OTHER.code().equals(stockOutTypeCode)) {
+            return ErpStockFlowType.OTHER_OUT.code();
+        }
+        return ErpStockFlowType.SALES_OUT.code();
     }
 
     private record LineMetrics(BigDecimal totalQuantity, Integer lineCount) {

@@ -7,6 +7,8 @@ import java.time.Instant;
 public record InternalTransferOrderSummaryView(
         Long id,
         String transferNo,
+        String sourceSystemCode,
+        String sourceDocumentNo,
         Long sourceWarehouseId,
         String sourceWarehouseName,
         Long targetWarehouseId,

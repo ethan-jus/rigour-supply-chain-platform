@@ -15,6 +15,10 @@ public class InternalStockOutOrderEntity {
     private String tenantId;
     /** 出库单号，由 ERP 编码规则生成。 */
     private String stockOutNo;
+    /** 来源系统编码；订货宝同步时为 DINGHUOBAO。 */
+    private String sourceSystemCode;
+    /** 来源出库/发货单号；订货宝为 ships_num。 */
+    private String sourceDocumentNo;
     /** 出库类型，关联 STOCK_OUT_TYPE 字典项。 */
     private String stockOutTypeCode;
     /** 出库仓库ID。 */
@@ -56,6 +60,10 @@ public class InternalStockOutOrderEntity {
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getStockOutNo() { return stockOutNo; }
     public void setStockOutNo(String stockOutNo) { this.stockOutNo = stockOutNo; }
+    public String getSourceSystemCode() { return sourceSystemCode; }
+    public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
+    public String getSourceDocumentNo() { return sourceDocumentNo; }
+    public void setSourceDocumentNo(String sourceDocumentNo) { this.sourceDocumentNo = sourceDocumentNo; }
     public String getStockOutTypeCode() { return stockOutTypeCode; }
     public void setStockOutTypeCode(String stockOutTypeCode) { this.stockOutTypeCode = stockOutTypeCode; }
     public Long getWarehouseId() { return warehouseId; }

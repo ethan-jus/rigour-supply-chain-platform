@@ -42,7 +42,10 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
@@ -74,6 +77,8 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     private static final String PRESENT = "PRESENT";
     private static final String SOURCE_ABSENT = "SOURCE_ABSENT";
     private static final long RUN_LEASE_MINUTES = 30;
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final DateTimeFormatter SOURCE_DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final ObjectMapper JSON = JsonMapper.builder()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .build();
@@ -523,17 +528,19 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         Long categoryId = internalTargetId(tenantId, "CATEGORY", value.categorySourceId());
         Long brandId = internalTargetId(tenantId, "BRAND", value.brandSourceId());
         String imagesJson = imageKeysJson(value);
+        String productCode = synchronizedProductCode(tenantId, value, entity);
         if (created) {
             entity = new InternalProductEntity();
             entity.setTenantId(tenantId);
-            entity.setProductCode(uniqueProductCode(tenantId));
+            entity.setProductCode(productCode);
             entity.setCreatedBy(SYNC_ACTOR);
             entity.setCreatedTime(now);
             entity.setDeleted(0);
             entity.setRevision(1);
         }
         if (created || (sourceWritable(entity.getUpdatedBy())
-                && (changed || productNeedsRepair(entity, value, categoryId, brandId, imagesJson)))) {
+                && (changed || productNeedsRepair(entity, value, categoryId, brandId, imagesJson, productCode)))) {
+            entity.setProductCode(productCode);
             entity.setProductName(value.name());
             entity.setCategoryId(categoryId);
             entity.setBrandId(brandId);
@@ -577,10 +584,11 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         boolean changed = changed(binding, value.payloadHash())
                 || (binding != null && entity != null && !Objects.equals(id, entity.getId()));
         LocalDateTime now = now();
+        String variantCode = synchronizedVariantCode(tenantId, product, value, entity);
         if (created) {
             entity = new InternalProductVariantEntity();
             entity.setTenantId(tenantId);
-            entity.setVariantCode(uniqueVariantCode(tenantId));
+            entity.setVariantCode(variantCode);
             entity.setCreatedBy(SYNC_ACTOR);
             entity.setCreatedTime(now);
             entity.setDeleted(0);
@@ -591,8 +599,9 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                     .eq(InternalProductVariantEntity::getDeleted, 0)) == 0);
         }
         if (created || (sourceWritable(entity.getUpdatedBy())
-                && (changed || variantNeedsRepair(entity, productId, product, value)))) {
+                && (changed || variantNeedsRepair(entity, productId, product, value, variantCode)))) {
             entity.setProductId(productId);
+            entity.setVariantCode(variantCode);
             entity.setSpecificationSnapshot(value.specificationName());
             entity.setUnitCode(internalUnitCode(product.unit()));
             entity.setSalePrice(firstAmount(value.orderPrice(), product.orderPrice()));
@@ -873,17 +882,44 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private String uniqueProductCode(String tenantId) {
+        return uniqueProductCode(tenantId, null);
+    }
+
+    private String uniqueProductCode(String tenantId, Instant businessTime) {
         return uniqueCode(ErpBusinessCodeRules.PRODUCT, code -> productMapper.selectCount(
                 Wrappers.<InternalProductEntity>lambdaQuery()
                         .eq(InternalProductEntity::getTenantId, tenantId)
-                        .eq(InternalProductEntity::getProductCode, code)));
+                        .eq(InternalProductEntity::getProductCode, code)), businessTime);
     }
 
     private String uniqueVariantCode(String tenantId) {
+        return uniqueVariantCode(tenantId, null);
+    }
+
+    private String uniqueVariantCode(String tenantId, Instant businessTime) {
         return uniqueCode(ErpBusinessCodeRules.SKU, code -> variantMapper.selectCount(
                 Wrappers.<InternalProductVariantEntity>lambdaQuery()
                         .eq(InternalProductVariantEntity::getTenantId, tenantId)
-                        .eq(InternalProductVariantEntity::getVariantCode, code)));
+                        .eq(InternalProductVariantEntity::getVariantCode, code)), businessTime);
+    }
+
+    private String synchronizedProductCode(String tenantId, Product value, InternalProductEntity entity) {
+        if (entity == null || sourceCodeEquals(entity.getProductCode(), value.code())) {
+            return uniqueProductCode(tenantId, sourceCreatedAt(value.sourceFields()));
+        }
+        return entity.getProductCode();
+    }
+
+    private String synchronizedVariantCode(String tenantId, Product product, Sku value,
+                                           InternalProductVariantEntity entity) {
+        if (entity == null || sourceCodeEquals(entity.getVariantCode(), value.code())) {
+            Instant businessTime = sourceCreatedAt(value.sourceFields());
+            if (businessTime == null) {
+                businessTime = sourceCreatedAt(product.sourceFields());
+            }
+            return uniqueVariantCode(tenantId, businessTime);
+        }
+        return entity.getVariantCode();
     }
 
     private String uniqueCategoryCode(String tenantId) {
@@ -926,6 +962,10 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         return codeGenerator.generateUnique(rule, code -> count.apply(code) == 0);
     }
 
+    private String uniqueCode(BusinessCodeRule rule, Function<String, Long> count, Instant businessTime) {
+        return codeGenerator.generateUnique(rule, businessTime, code -> count.apply(code) == 0);
+    }
+
     private LocalDateTime now() {
         return LocalDateTime.ofInstant(Instant.now(clock), ZoneOffset.UTC);
     }
@@ -942,8 +982,10 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private static boolean productNeedsRepair(InternalProductEntity entity, Product value,
-                                              Long categoryId, Long brandId, String imagesJson) {
-        return !Objects.equals(entity.getProductName(), value.name())
+                                              Long categoryId, Long brandId, String imagesJson,
+                                              String productCode) {
+        return !Objects.equals(entity.getProductCode(), productCode)
+                || !Objects.equals(entity.getProductName(), value.name())
                 || !Objects.equals(entity.getCategoryId(), categoryId)
                 || !Objects.equals(entity.getBrandId(), brandId)
                 || !Objects.equals(entity.getShelfStatusCode(), internalShelfStatus(value.putaway()))
@@ -951,8 +993,9 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private static boolean variantNeedsRepair(InternalProductVariantEntity entity, Long productId,
-                                              Product product, Sku value) {
-        return !Objects.equals(entity.getProductId(), productId)
+                                              Product product, Sku value, String variantCode) {
+        return !Objects.equals(entity.getVariantCode(), variantCode)
+                || !Objects.equals(entity.getProductId(), productId)
                 || !Objects.equals(entity.getSpecificationSnapshot(), value.specificationName())
                 || !Objects.equals(entity.getUnitCode(), internalUnitCode(product.unit()))
                 || !Objects.equals(entity.getSalePrice(), firstAmount(value.orderPrice(), product.orderPrice()));
@@ -1030,6 +1073,42 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
 
     private static boolean missing(String value) {
         return value == null || value.isBlank();
+    }
+
+    private static boolean sourceCodeEquals(String internalCode, String sourceCode) {
+        return !missing(internalCode) && !missing(sourceCode)
+                && Objects.equals(internalCode.strip(), sourceCode.strip());
+    }
+
+    private static Instant sourceCreatedAt(Map<String, Object> fields) {
+        if (fields == null || fields.isEmpty()) return null;
+        return firstInstant(fields, "create_date", "created_at", "createdAt", "created_time");
+    }
+
+    private static Instant firstInstant(Map<String, Object> fields, String... keys) {
+        for (String key : keys) {
+            Instant value = instant(fields.get(key));
+            if (value != null) return value;
+        }
+        return null;
+    }
+
+    private static Instant instant(Object value) {
+        if (value == null) return null;
+        if (value instanceof Instant instant) return instant;
+        String text = String.valueOf(value);
+        if (missing(text)) return null;
+        text = text.strip();
+        try {
+            return Instant.parse(text);
+        } catch (DateTimeParseException ignored) {
+            // 订货宝商品接口常见格式为 yyyy-MM-dd HH:mm:ss，按业务时区解释。
+        }
+        try {
+            return LocalDateTime.parse(text, SOURCE_DATE_TIME).atZone(BUSINESS_ZONE).toInstant();
+        } catch (DateTimeParseException ignored) {
+            return null;
+        }
     }
 
     private static String blank(String value) {
