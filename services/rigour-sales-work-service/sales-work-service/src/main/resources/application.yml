@@ -41,6 +41,14 @@ rigour:
     read-timeout: 5s
     nearby-cache-ttl: 60s
     nearby-cache-max-entries: 500
+  sales:
+    temporary-checkin:
+      # 临时表单默认关闭；上线时由 Nacos/Secret 注入固定租户，不接受请求覆盖。
+      enabled: ${RIGOUR_SALES_TEMPORARY_CHECKIN_ENABLED:false}
+      tenant-id: ${RIGOUR_SALES_TEMPORARY_CHECKIN_TENANT_ID:}
+      max-storefront-photo-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_STOREFRONT_PHOTO_BYTES:10485760}
+      max-wechat-screenshot-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_WECHAT_SCREENSHOT_BYTES:10485760}
+      max-audio-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_BYTES:26214400}
 
 sales:
   evidence:
