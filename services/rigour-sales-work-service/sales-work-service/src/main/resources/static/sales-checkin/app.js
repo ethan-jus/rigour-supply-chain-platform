@@ -4,10 +4,12 @@
     const API_BASE = "/sales-checkin/api/v1";
     const STORAGE_KEY = "rigour.sales-checkin.draft.v1";
     const STORAGE_VERSION = 1;
+    const DRAFT_TTL_MS = 8 * 60 * 60 * 1000;
     const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
     const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
     const MAX_RECORDING_MS = 20 * 60 * 1000;
     const SEARCH_DELAY_MS = 350;
+    const PRIVACY_NOTICE_VERSION = "2026-08-25-ai-v1";
 
     const MEDIA = Object.freeze({
         photo: "storefront-photo",
@@ -24,6 +26,8 @@
         customerPhone: "",
         visitResult: "",
         location: emptyLocation(),
+        locationContext: null,
+        nearbyStores: [],
         privacyAccepted: false
     });
     const freshStore = () => ({
@@ -42,7 +46,13 @@
         cooperationIntent: "",
         storeGrade: "",
         tags: [],
-        location: emptyLocation()
+        location: emptyLocation(),
+        locationContext: null,
+        sourcePoiId: "",
+        sourcePoiName: "",
+        sourcePoiAddress: "",
+        sourcePoiLongitude: null,
+        sourcePoiLatitude: null
     });
     const freshSubmission = () => ({
         clientSubmissionId: secureUuid(),
@@ -92,6 +102,10 @@
         },
         searchTimer: null,
         searchController: null,
+        locationControllers: {
+            visit: null,
+            store: null
+        },
         submitting: false,
         completed: false,
         storageUnavailableShown: false
@@ -116,6 +130,8 @@
         renderSelectedStore();
         renderLocation("visit");
         renderLocation("store");
+        renderNearbyStores();
+        renderStorePrefillMessage();
         renderUploadedBadges();
         updateVisitResultCount();
         checkRecorderSupport();
@@ -127,6 +143,13 @@
             await restoreDependentOptions();
             renderDictionaryControls();
             renderRestoredValues();
+            ["visit", "store"].forEach((scope) => {
+                const context = state[scope].locationContext;
+                if (state[scope].city && state[scope].location
+                    && (!context || context.geocodeStatus === "RESOLVING")) {
+                    resolveLocationContext(scope);
+                }
+            });
         } catch (error) {
             showError(errorMessage(error, "加载城市和下拉选项失败，请检查网络后刷新页面。"));
         }
@@ -154,7 +177,7 @@
         $("#store-search").addEventListener("input", scheduleStoreSearch);
         $("#store-search").addEventListener("keydown", handleStoreSearchKeydown);
         $("#clear-store-button").addEventListener("click", clearSelectedStore);
-        $("#create-store-link").addEventListener("click", prepareNewStore);
+        $("#create-store-link").addEventListener("click", () => prepareNewStore());
         $("#cancel-store-button").addEventListener("click", () => switchTab("visit"));
 
         $("#visit-location-button").addEventListener("click", () => captureLocation("visit"));
@@ -288,12 +311,21 @@
         const city = $(`#${scope}-city`).value;
         state[scope].city = city;
         state[scope].salespersonId = "";
+        state.locationControllers[scope]?.abort();
+        state.locationControllers[scope] = null;
+        state[scope].locationContext = null;
         if (scope === "visit") {
             abortStoreSearch();
             hideStoreResults();
             clearSelectedStore(false);
+            state.visit.nearbyStores = [];
             $("#store-search").value = "";
+            renderNearbyStores();
+        } else if (state.store.sourcePoiId) {
+            clearSourcePoi();
+            renderStorePrefillMessage();
         }
+        renderLocation(scope);
         renderSalespersonSelect(scope);
         persistDraft();
         if (!city) return;
@@ -304,6 +336,7 @@
         } catch (error) {
             showError(errorMessage(error, "加载该城市的销售列表失败，请稍后重试。"));
         }
+        if (state[scope].location) await resolveLocationContext(scope);
     }
 
     function renderDictionaryControls() {
@@ -453,7 +486,7 @@
                 const name = document.createElement("strong");
                 name.textContent = store.name || "未命名门店";
                 const location = document.createElement("span");
-                location.textContent = store.locationSummary || "暂无位置摘要";
+                location.textContent = store.locationSummary || store.address || "暂无位置摘要";
                 detail.append(name, location);
 
                 const city = document.createElement("span");
@@ -478,11 +511,13 @@
     }
 
     function selectStore(store) {
+        const storeId = store.id || store.storeId;
+        if (!storeId) return;
         state.visit.selectedStore = {
-            id: store.id,
+            id: storeId,
             name: store.name || "未命名门店",
             city: store.city || state.visit.city,
-            locationSummary: store.locationSummary || ""
+            locationSummary: store.locationSummary || store.address || ""
         };
         $("#store-search").value = state.visit.selectedStore.name;
         hideStoreResults();
@@ -507,13 +542,103 @@
         $("#store-search").value = selected.name || "";
     }
 
-    async function prepareNewStore() {
+    function renderNearbyStores() {
+        const panel = $("#nearby-stores-panel");
+        const root = $("#nearby-store-results");
+        const context = state.visit.locationContext;
+        const stores = Array.isArray(state.visit.nearbyStores) ? state.visit.nearbyStores : [];
+        panel.hidden = !state.visit.location;
+        root.replaceChildren();
+        if (!state.visit.location) return;
+
+        if (context?.geocodeStatus === "RESOLVING") {
+            $("#nearby-stores-summary").textContent = "正在解析地址并查找…";
+            return;
+        }
+        if (context && context.geocodeStatus !== "RESOLVED" && context.geocodeStatus !== "RESOLVING"
+            && !stores.length) {
+            $("#nearby-stores-summary").textContent = "附近门店暂不可用，可直接搜索";
+            return;
+        }
+        if (!stores.length) {
+            $("#nearby-stores-summary").textContent = context
+                ? "附近未找到门店，可搜索或新增"
+                : "正在查找…";
+            return;
+        }
+
+        const visibleStores = stores.slice(0, 6);
+        $("#nearby-stores-summary").textContent = stores.length > visibleStores.length
+            ? `显示最近 ${visibleStores.length} 个地点`
+            : `找到 ${stores.length} 个附近地点`;
+        visibleStores.forEach((store) => {
+            const registered = store.source === "REGISTERED" && store.storeId;
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "nearby-store";
+
+            const content = document.createElement("span");
+            content.className = "nearby-store__content";
+            const name = document.createElement("strong");
+            name.textContent = store.name || "未命名门店";
+            const address = document.createElement("span");
+            address.textContent = store.address || "暂无详细地址";
+            content.append(name, address);
+
+            const meta = document.createElement("span");
+            meta.className = "nearby-store__meta";
+            const distance = formatDistance(store.distanceMeters);
+            meta.textContent = registered
+                ? ["已收录", distance].filter(Boolean).join(" · ")
+                : ["附近地点，选择后补录", distance].filter(Boolean).join(" · ");
+            button.append(content, meta);
+            button.addEventListener("click", () => {
+                if (registered) {
+                    selectStore(store);
+                    $("#selected-store-card").scrollIntoView({ behavior: "smooth", block: "center" });
+                } else if (store.source === "AMAP_POI" && store.poiId) {
+                    prepareNewStore(store);
+                }
+            });
+            root.appendChild(button);
+        });
+    }
+
+    function formatDistance(value) {
+        const meters = Number(value);
+        if (!Number.isFinite(meters) || meters < 0) return "";
+        if (meters < 1000) return `${Math.max(1, Math.round(meters))} 米`;
+        return `${(meters / 1000).toFixed(meters < 10000 ? 1 : 0)} 公里`;
+    }
+
+    async function prepareNewStore(sourcePoi = null) {
         syncStateFromForm();
+        if (sourcePoi?.poiId && state.store.sourcePoiId !== sourcePoi.poiId) {
+            state.store = freshStore();
+        }
         state.store.city = state.visit.city || state.store.city;
         state.store.salespersonId = state.visit.salespersonId || state.store.salespersonId;
-        state.store.name = $("#store-search").value.trim() || state.store.name;
-        if (!state.store.location && state.visit.location) {
+        if (sourcePoi) {
+            state.store.name = sourcePoi.name || state.store.name;
+            state.store.sourcePoiId = sourcePoi.poiId || "";
+            state.store.sourcePoiName = sourcePoi.name || "";
+            state.store.sourcePoiAddress = sourcePoi.address || "";
+            state.store.sourcePoiLongitude = finiteNumberOrNull(sourcePoi.longitude);
+            state.store.sourcePoiLatitude = finiteNumberOrNull(sourcePoi.latitude);
+        } else {
+            state.store.name = $("#store-search").value.trim() || state.store.name;
+            clearSourcePoi();
+        }
+        if (sourcePoi && state.visit.location) {
             state.store.location = { ...state.visit.location };
+            state.store.locationContext = state.visit.locationContext
+                ? { ...state.visit.locationContext }
+                : null;
+        } else if (!state.store.location && state.visit.location) {
+            state.store.location = { ...state.visit.location };
+            state.store.locationContext = state.visit.locationContext
+                ? { ...state.visit.locationContext }
+                : null;
         }
         persistDraft();
         try {
@@ -524,13 +649,40 @@
         renderDictionaryControls();
         renderRestoredValues();
         renderLocation("store");
+        renderStorePrefillMessage();
         switchTab("store");
         window.setTimeout(() => $("#store-name").focus(), 250);
+    }
+
+    function clearSourcePoi() {
+        state.store.sourcePoiId = "";
+        state.store.sourcePoiName = "";
+        state.store.sourcePoiAddress = "";
+        state.store.sourcePoiLongitude = null;
+        state.store.sourcePoiLatitude = null;
+    }
+
+    function renderStorePrefillMessage() {
+        const message = $("#store-prefill-message");
+        if (!state.store.sourcePoiId) {
+            message.textContent = "保存后会自动返回打卡并选中这家门店。";
+            return;
+        }
+        const name = state.store.sourcePoiName || state.store.name || "附近地点";
+        const address = state.store.sourcePoiAddress ? `（${state.store.sourcePoiAddress}）` : "";
+        message.textContent = `已预填“${name}”${address}，定位使用当前 GPS，请核对并补齐必填资料。`;
     }
 
     async function captureLocation(scope) {
         hideError();
         clearFieldError(`${scope}-location`);
+        const city = $(`#${scope}-city`).value;
+        if (!city) {
+            setFieldError(`${scope}-city`, "请先选择城市，再获取定位。");
+            $(`#${scope}-city`).focus();
+            return;
+        }
+        state[scope].city = city;
         if (!window.isSecureContext) {
             setFieldError(`${scope}-location`, "浏览器要求通过 HTTPS 才能获取定位，请使用正式网页地址打开。" );
             return;
@@ -555,9 +707,13 @@
                     capturedAt: new Date(position.timestamp || Date.now()).toISOString(),
                     ...(note ? { note } : {})
                 };
+                state[scope].locationContext = { geocodeStatus: "RESOLVING" };
+                if (scope === "visit") state.visit.nearbyStores = [];
                 button.disabled = false;
                 renderLocation(scope);
+                if (scope === "visit") renderNearbyStores();
                 persistDraft();
+                resolveLocationContext(scope);
             },
             (error) => {
                 button.disabled = false;
@@ -569,23 +725,96 @@
         );
     }
 
+    async function resolveLocationContext(scope) {
+        const city = state[scope].city;
+        const location = state[scope].location;
+        if (!city || !location) return;
+
+        state.locationControllers[scope]?.abort();
+        const controller = new AbortController();
+        state.locationControllers[scope] = controller;
+        state[scope].locationContext = { geocodeStatus: "RESOLVING" };
+        if (scope === "visit") state.visit.nearbyStores = [];
+        renderLocation(scope);
+        if (scope === "visit") renderNearbyStores();
+
+        try {
+            const payload = normalizeResponse(await requestJson("/locations/resolve", {
+                method: "POST",
+                body: { city, location: locationRequestValue(scope) },
+                signal: controller.signal,
+                timeout: 20000
+            })) || {};
+            if (state.locationControllers[scope] !== controller) return;
+            const address = cleanText(payload.address);
+            const formattedAddress = cleanText(payload.formattedAddress);
+            state[scope].locationContext = {
+                geocodeStatus: cleanText(payload.geocodeStatus) || (address || formattedAddress ? "RESOLVED" : "FAILED"),
+                address,
+                formattedAddress,
+                adcode: cleanText(payload.adcode)
+            };
+            if (scope === "visit") {
+                state.visit.nearbyStores = Array.isArray(payload.nearbyStores)
+                    ? payload.nearbyStores.filter(isUsableNearbyStore)
+                    : [];
+            }
+        } catch (error) {
+            if (error.name === "AbortError") return;
+            state[scope].locationContext = { geocodeStatus: "FAILED" };
+            if (scope === "visit") state.visit.nearbyStores = [];
+        } finally {
+            if (state.locationControllers[scope] === controller) {
+                state.locationControllers[scope] = null;
+                renderLocation(scope);
+                if (scope === "visit") renderNearbyStores();
+                persistDraft();
+            }
+        }
+    }
+
+    function locationRequestValue(scope) {
+        const location = state[scope].location;
+        const note = $(`#${scope}-location-note`).value.trim();
+        return compactObject({
+            longitude: location.longitude,
+            latitude: location.latitude,
+            accuracyMeters: location.accuracyMeters,
+            capturedAt: location.capturedAt,
+            note: note || undefined
+        });
+    }
+
+    function isUsableNearbyStore(store) {
+        if (!store || typeof store !== "object") return false;
+        if (store.source === "REGISTERED") return Boolean(store.storeId && store.name);
+        return store.source === "AMAP_POI" && Boolean(store.poiId && store.name);
+    }
+
     function renderLocation(scope) {
         const location = state[scope].location;
+        const context = state[scope].locationContext;
         const status = $(`#${scope}-location-status`);
         const detail = $(`#${scope}-location-detail`);
         if (!location) {
             status.textContent = "未定位";
             status.className = "status-pill";
             detail.hidden = true;
+            $(`#${scope}-location-button-label`).textContent = "获取当前位置";
             return;
         }
-        status.textContent = "已定位";
-        status.className = "status-pill is-ready";
+        const resolving = context?.geocodeStatus === "RESOLVING";
+        status.textContent = resolving ? "解析地址中" : "已定位";
+        status.className = resolving ? "status-pill is-loading" : "status-pill is-ready";
         detail.hidden = false;
-        $(`#${scope}-location-coordinates`).textContent = `${location.longitude}, ${location.latitude}`;
+        const address = cleanText(context?.address || context?.formattedAddress);
+        const addressElement = $(`#${scope}-location-address`);
+        addressElement.textContent = address || (resolving ? "正在解析实际地址…" : "地址暂未解析，定位已记录");
+        addressElement.classList.toggle("is-missing", !address && !resolving);
         $(`#${scope}-location-accuracy`).textContent = `约 ${location.accuracyMeters} 米`;
         $(`#${scope}-location-time`).textContent = formatDateTime(location.capturedAt);
         $(`#${scope}-location-note`).value = location.note || "";
+        $(`#${scope}-location-button-label`).textContent = "重新定位";
     }
 
     function geolocationErrorMessage(error) {
@@ -674,7 +903,15 @@
             $("#recorder-help").textContent = window.isSecureContext
                 ? "当前浏览器不支持网页录音，请使用下方文件选择上传音频。"
                 : "网页录音需要 HTTPS，请使用正式地址打开，或选择已有音频文件。";
+        } else {
+            updateRecorderHelp(preferredRecorderOptions()?.mimeType);
         }
+    }
+
+    function updateRecorderHelp(mimeType) {
+        $("#recorder-help").textContent = (mimeType || "").toLowerCase().includes("webm")
+            ? "本机将录制 WebM：原音会正常保存和播放，但暂不自动转写；如需转写，请上传 M4A、MP3、WAV、AAC、AMR 或 OGG。"
+            : "录音时请保持页面在前台；提交后录音会异步转写并生成 AI 摘要。";
     }
 
     async function toggleRecording() {
@@ -688,6 +925,7 @@
             setFieldError("audio-file", "当前环境无法录音，请通过 HTTPS 打开或选择已有音频文件。" );
             return;
         }
+        $("#audio-preview").pause();
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
@@ -746,6 +984,7 @@
         const mimeType = recorder?.mimeType || state.recorder.chunks[0]?.type || "audio/webm";
         const blob = new Blob(state.recorder.chunks, { type: mimeType });
         cleanupRecorder();
+        updateRecorderHelp(mimeType);
         if (!blob.size) {
             setFieldError("audio-file", "没有录到有效音频，请重新录制。" );
             return;
@@ -759,6 +998,7 @@
             type: mimeType,
             lastModified: Date.now()
         });
+        $("#audio-file").value = "";
         state.files.audio = file;
         renderAudioPreview(file, duration);
     }
@@ -796,7 +1036,7 @@
     }
 
     function renderAudioPreview(file, duration) {
-        revokeObjectUrl("audio");
+        releaseAudioPreview();
         const url = URL.createObjectURL(file);
         state.objectUrls.audio = url;
         $("#audio-preview").src = url;
@@ -809,18 +1049,27 @@
 
     function clearFile(kind) {
         state.files[kind] = null;
-        revokeObjectUrl(kind);
         if (kind === "photo") {
+            revokeObjectUrl(kind);
             $("#storefront-photo").value = "";
             $("#photo-preview-card").hidden = true;
         } else if (kind === "wechat") {
+            revokeObjectUrl(kind);
             $("#wechat-screenshot").value = "";
             $("#wechat-preview-card").hidden = true;
         } else {
             $("#audio-file").value = "";
-            $("#audio-preview").removeAttribute("src");
+            releaseAudioPreview();
             $("#audio-preview-card").hidden = true;
         }
+    }
+
+    function releaseAudioPreview() {
+        const audio = $("#audio-preview");
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+        revokeObjectUrl("audio");
     }
 
     function revokeObjectUrl(kind) {
@@ -853,7 +1102,8 @@
                 id: response.id,
                 name: response.name || payload.name,
                 city: response.city || payload.city,
-                locationSummary: response.locationSummary || locationSummary(payload.location)
+                locationSummary: response.locationSummary || payload.sourcePoiAddress
+                    || payload.location.note || "位置已采集"
             };
             if (!state.visit.customerName) state.visit.customerName = payload.contactName;
             if (!state.visit.customerPhone && payload.contactPhone) state.visit.customerPhone = payload.contactPhone;
@@ -989,6 +1239,11 @@
             cooperationIntent: state.store.cooperationIntent,
             storeGrade: optionalText(state.store.storeGrade),
             tags: [...state.store.tags],
+            sourcePoiId: optionalText(state.store.sourcePoiId),
+            sourcePoiName: optionalText(state.store.sourcePoiName),
+            sourcePoiAddress: optionalText(state.store.sourcePoiAddress),
+            sourcePoiLongitude: finiteNumberOrNull(state.store.sourcePoiLongitude),
+            sourcePoiLatitude: finiteNumberOrNull(state.store.sourcePoiLatitude),
             location
         });
     }
@@ -1004,7 +1259,8 @@
             customerPhone: optionalText(state.visit.customerPhone),
             visitResult: state.visit.visitResult.trim(),
             location: withCurrentLocationNote("visit"),
-            privacyAccepted: state.visit.privacyAccepted === true
+            privacyAccepted: state.visit.privacyAccepted === true,
+            privacyNoticeVersion: PRIVACY_NOTICE_VERSION
         });
     }
 
@@ -1166,6 +1422,9 @@
     function startNewSubmission() {
         cleanupRecorder();
         Object.keys(state.files).forEach(clearFile);
+        Object.values(state.locationControllers).forEach((controller) => controller?.abort());
+        state.locationControllers.visit = null;
+        state.locationControllers.store = null;
         state.activeTab = "visit";
         state.visit = freshVisit();
         state.store = freshStore();
@@ -1185,6 +1444,8 @@
         renderSelectedStore();
         renderLocation("visit");
         renderLocation("store");
+        renderNearbyStores();
+        renderStorePrefillMessage();
         renderUploadedBadges();
         renderTab("visit");
         clearAllErrors();
@@ -1263,6 +1524,7 @@
         setValue("#facility-count", state.store.facilityCount);
         setValue("#cooperation-intent", state.store.cooperationIntent);
         setValue("#store-grade", state.store.storeGrade);
+        renderStorePrefillMessage();
         updateVisitResultCount();
     }
 
@@ -1285,11 +1547,11 @@
                 store: state.store,
                 submission: state.submission
             };
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+            sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
         } catch (error) {
             if (!state.storageUnavailableShown) {
                 state.storageUnavailableShown = true;
-                showError("浏览器未允许本地保存，刷新后可能无法恢复草稿。请勿在提交完成前关闭页面。" );
+                showError("浏览器未允许当前标签页临时保存，刷新后可能无法恢复草稿。请勿在提交完成前关闭页面。" );
             }
         }
     }
@@ -1297,7 +1559,9 @@
     function restoreDraft() {
         let raw;
         try {
-            raw = localStorage.getItem(STORAGE_KEY);
+            // 清理旧版本曾写入的长期敏感草稿；新版本只在当前标签页保存并设置有效期。
+            localStorage.removeItem(STORAGE_KEY);
+            raw = sessionStorage.getItem(STORAGE_KEY);
         } catch (_) {
             return;
         }
@@ -1309,11 +1573,28 @@
             removeStoredDraft();
             return;
         }
-        if (!saved || saved.version !== STORAGE_VERSION) return;
+        const savedAt = Date.parse(saved?.savedAt || "");
+        const age = Date.now() - savedAt;
+        if (!saved || saved.version !== STORAGE_VERSION || !Number.isFinite(savedAt)
+            || age < -5 * 60 * 1000 || age > DRAFT_TTL_MS) {
+            removeStoredDraft();
+            return;
+        }
         state.activeTab = saved.activeTab === "store" ? "store" : "visit";
         state.visit = { ...freshVisit(), ...(saved.visit || {}) };
         state.store = { ...freshStore(), ...(saved.store || {}) };
         state.submission = { ...freshSubmission(), ...(saved.submission || {}) };
+        state.visit.nearbyStores = Array.isArray(state.visit.nearbyStores)
+            ? state.visit.nearbyStores.filter(isUsableNearbyStore)
+            : [];
+        if (!state.visit.locationContext || typeof state.visit.locationContext !== "object") {
+            state.visit.locationContext = null;
+        }
+        if (!state.store.locationContext || typeof state.store.locationContext !== "object") {
+            state.store.locationContext = null;
+        }
+        state.store.sourcePoiLongitude = finiteNumberOrNull(state.store.sourcePoiLongitude);
+        state.store.sourcePoiLatitude = finiteNumberOrNull(state.store.sourcePoiLatitude);
         state.submission.uploadedMedia = Array.isArray(state.submission.uploadedMedia)
             ? [...new Set(state.submission.uploadedMedia)]
             : [];
@@ -1349,6 +1630,7 @@
 
     function removeStoredDraft() {
         try {
+            sessionStorage.removeItem(STORAGE_KEY);
             localStorage.removeItem(STORAGE_KEY);
         } catch (_) {
             // 页面仍可继续使用；存储不可用已在保存阶段提示。
@@ -1471,6 +1753,16 @@
         return normalized ? normalized : undefined;
     }
 
+    function cleanText(value) {
+        return value == null ? "" : String(value).trim();
+    }
+
+    function finiteNumberOrNull(value) {
+        if (value === null || value === undefined || value === "") return null;
+        const number = Number(value);
+        return Number.isFinite(number) ? number : null;
+    }
+
     function roundCoordinate(value) {
         return Number(Number(value).toFixed(7));
     }
@@ -1522,10 +1814,6 @@
         }
         if (error?.name === "NotFoundError") return "未检测到可用麦克风，请选择已有音频文件。";
         return "无法开始录音，请检查麦克风权限或选择已有音频文件。";
-    }
-
-    function locationSummary(location) {
-        return `${location.longitude}, ${location.latitude}（精度约 ${location.accuracyMeters} 米）`;
     }
 
     function updateVisitResultCount() {

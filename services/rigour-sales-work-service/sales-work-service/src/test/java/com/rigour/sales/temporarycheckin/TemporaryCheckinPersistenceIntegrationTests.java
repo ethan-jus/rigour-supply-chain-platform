@@ -179,7 +179,7 @@ class TemporaryCheckinPersistenceIntegrationTests {
                         "北京市东城区夕照寺街16号；东城区龙潭路与夕照寺街交叉口东南60米",
                         "北京市东城区夕照寺街16号", "110101", "北京市", null, "东城区",
                         "龙潭街道", new BigDecimal("116.431200"), new BigDecimal("39.888300"),
-                        null, NOW), NOW);
+                        null, NOW), TemporaryCheckinService.PRIVACY_NOTICE_VERSION, NOW);
 
         repository.insertSubmission(write);
 
@@ -245,7 +245,9 @@ class TemporaryCheckinPersistenceIntegrationTests {
                 "营业中", "张店长", "13800000000", "100-300平米", "8张球桌",
                 "[\"竞技赛事\"]", "[\"高德业务\"]", "高意向", "A类", "[\"连锁\"]",
                 new BigDecimal("116.3971280"), new BigDecimal("39.9165270"), new BigDecimal("12.50"),
-                NOW.minusSeconds(30), "店门口", NOW);
+                NOW.minusSeconds(30), "店门口", null, null, null, null, null,
+                new GeocodeWrite("KEY_MISSING", null, null, null, null, null, null, null,
+                        null, null, "AMAP_WEB_KEY_MISSING", NOW), NOW);
     }
 
     private static SubmissionWrite submission(
@@ -255,7 +257,8 @@ class TemporaryCheckinPersistenceIntegrationTests {
                 new BigDecimal("116.3971280"), new BigDecimal("39.9165270"), new BigDecimal("9.80"),
                 NOW.minusSeconds(10), "门店内",
                 new GeocodeWrite("KEY_MISSING", null, null, null, null, null, null, null,
-                        null, null, "AMAP_WEB_KEY_MISSING", NOW), NOW);
+                        null, null, "AMAP_WEB_KEY_MISSING", NOW),
+                TemporaryCheckinService.PRIVACY_NOTICE_VERSION, NOW);
     }
 
     private static MediaWrite media(String filename, String contentType, String hash) {

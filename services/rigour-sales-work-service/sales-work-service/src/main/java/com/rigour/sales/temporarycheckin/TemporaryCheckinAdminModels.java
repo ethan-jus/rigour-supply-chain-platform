@@ -16,7 +16,15 @@ public final class TemporaryCheckinAdminModels {
     public record AdminOptionsResponse(
             AdminScopeView scope,
             List<String> cities,
-            List<SalespersonOption> salespersons) { }
+            List<SalespersonOption> salespersons,
+            AdminMediaStorageStats mediaStats) { }
+
+    public record AdminMediaStorageStats(
+            long activeFiles,
+            long totalBytes,
+            long imageBytes,
+            long audioBytes,
+            Instant oldestCreatedAt) { }
 
     public record AdminSubmissionView(
             UUID id,
@@ -39,6 +47,15 @@ public final class TemporaryCheckinAdminModels {
             boolean storefrontPhotoAvailable,
             boolean wechatScreenshotAvailable,
             boolean audioAvailable,
+            Instant storefrontPhotoDeletedAt,
+            Instant wechatScreenshotDeletedAt,
+            Instant audioDeletedAt,
+            String transcriptionStatus,
+            String transcript,
+            String transcriptionErrorCode,
+            String summaryStatus,
+            String summary,
+            String summaryErrorCode,
             Instant createdAt,
             Instant submittedAt) { }
 
@@ -50,4 +67,10 @@ public final class TemporaryCheckinAdminModels {
             int page,
             int size,
             int totalPages) { }
+
+    public record DeleteMediaRequest(String reason) { }
+
+    public record DeleteMediaView(UUID id, String kind, String status, Instant deletedAt) { }
+
+    public record TranscriptionView(UUID id, String transcriptionStatus, String summaryStatus) { }
 }

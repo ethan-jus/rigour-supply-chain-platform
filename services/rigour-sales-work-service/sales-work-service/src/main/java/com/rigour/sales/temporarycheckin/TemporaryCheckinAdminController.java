@@ -3,6 +3,9 @@ package com.rigour.sales.temporarycheckin;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminAccessPolicy.AdminScope;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.AdminOptionsResponse;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.AdminSubmissionPage;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.DeleteMediaRequest;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.DeleteMediaView;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.TranscriptionView;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -19,11 +22,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestBody;
 
 /**
  * 临时打卡后台列表、导出与媒体读取接口。生产只允许由回环监听后的 Nginx Basic Auth 入口访问，
@@ -114,6 +120,24 @@ public class TemporaryCheckinAdminController {
         }
         if (content.sizeBytes() > 0) response.contentLength(content.sizeBytes());
         return response.body(new InputStreamResource(content.open()));
+    }
+
+    @DeleteMapping("/api/v1/submissions/{id}/media/{kind}")
+    public DeleteMediaView deleteMedia(
+            @RequestHeader(name = TemporaryCheckinAdminAccessPolicy.HEADER, required = false) String username,
+            @PathVariable("id") UUID submissionId,
+            @PathVariable("kind") String kind,
+            @RequestBody(required = false) DeleteMediaRequest request) {
+        AdminScope scope = accessPolicy.requireScope(username);
+        return service.deleteAdminMedia(scope, submissionId, kind, request == null ? null : request.reason());
+    }
+
+    @PostMapping("/api/v1/submissions/{id}/transcription")
+    public TranscriptionView retryTranscription(
+            @RequestHeader(name = TemporaryCheckinAdminAccessPolicy.HEADER, required = false) String username,
+            @PathVariable("id") UUID submissionId) {
+        AdminScope scope = accessPolicy.requireScope(username);
+        return service.requestAdminTranscription(scope, submissionId);
     }
 
     @GetMapping("/submissions/{id}/media/{kind}/thumbnail")

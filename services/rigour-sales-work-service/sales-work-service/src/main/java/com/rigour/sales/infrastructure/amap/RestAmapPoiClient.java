@@ -26,7 +26,8 @@ import tools.jackson.databind.ObjectMapper;
 public class RestAmapPoiClient implements AmapPoiClient {
 
     private static final Logger log = LoggerFactory.getLogger(RestAmapPoiClient.class);
-    private static final String DEFAULT_TYPES = "060000|050000|040000|020000";
+    // 现场拜访以球馆、运动场馆等体育休闲场所为主，同时保留餐饮、生活与住宿类门店。
+    private static final String DEFAULT_TYPES = "080000|060000|070000|050000";
 
     private final RestClient restClient;
     private final AmapProperties properties;

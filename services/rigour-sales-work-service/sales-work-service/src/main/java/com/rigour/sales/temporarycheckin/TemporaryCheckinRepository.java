@@ -53,6 +53,10 @@ public class TemporaryCheckinRepository {
                        contact_name, contact_phone, area_range, facility_count, business_types_json,
                        intended_businesses_json, cooperation_intent, store_grade, tags_json,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       source_poi_id, source_poi_name, source_poi_address,
+                       source_poi_longitude, source_poi_latitude,
+                       location_address, location_formatted_address, location_adcode,
+                       amap_longitude, amap_latitude, geocode_status, geocode_error_code, geocoded_at,
                        status, created_at, updated_at
                   FROM temp_sales_checkin_store
                  WHERE tenant_id=? AND city=? AND status='ACTIVE'
@@ -61,6 +65,13 @@ public class TemporaryCheckinRepository {
                  LIMIT ?
                 """, (rs, row) -> store(rs), bin(tenantId), city,
                 "%" + escapedQuery + "%", "%" + escapedQuery + "%", limit);
+    }
+
+    public List<StoreRow> findLocatedStores(UUID tenantId, String city) {
+        return jdbc.query(storeSelect() + """
+                 WHERE tenant_id=? AND city=? AND status='ACTIVE'
+                   AND longitude IS NOT NULL AND latitude IS NOT NULL
+                """, (rs, row) -> store(rs), bin(tenantId), city);
     }
 
     public Optional<StoreRow> findStore(UUID tenantId, UUID id) {
@@ -76,19 +87,26 @@ public class TemporaryCheckinRepository {
     public void insertStore(StoreWrite row) {
         jdbc.update("""
                 INSERT INTO temp_sales_checkin_store
-                    (id, tenant_id, client_store_id, city, creator_salesperson_id, attribute, name,
+                    (id, tenant_id, client_store_id, source_poi_id, source_poi_name, source_poi_address,
+                     source_poi_longitude, source_poi_latitude, city, creator_salesperson_id, attribute, name,
                      operating_status, contact_name, contact_phone, area_range, facility_count,
                      business_types_json, intended_businesses_json, cooperation_intent, store_grade,
                      tags_json, longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                     location_address, location_formatted_address, location_adcode,
+                     amap_longitude, amap_latitude, geocode_status, geocode_error_code, geocoded_at,
                      status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), ?, ?,
-                        CAST(? AS JSON), ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
-                """, bin(row.id()), bin(row.tenantId()), bin(row.clientStoreId()), row.city(),
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), ?, ?,
+                        CAST(? AS JSON), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+                """, bin(row.id()), bin(row.tenantId()), bin(row.clientStoreId()), row.sourcePoiId(),
+                row.sourcePoiName(), row.sourcePoiAddress(), row.sourcePoiLongitude(), row.sourcePoiLatitude(), row.city(),
                 bin(row.creatorSalespersonId()), row.attribute(), row.name(), row.operatingStatus(),
                 row.contactName(), row.contactPhone(), row.areaRange(), row.facilityCount(),
                 row.businessTypesJson(), row.intendedBusinessesJson(), row.cooperationIntent(),
                 row.storeGrade(), row.tagsJson(), row.longitude(), row.latitude(), row.accuracyMeters(),
-                timestamp(row.locationCapturedAt()), row.locationNote(), timestamp(row.now()), timestamp(row.now()));
+                timestamp(row.locationCapturedAt()), row.locationNote(), row.geocode().address(),
+                row.geocode().formattedAddress(), row.geocode().adcode(), row.geocode().amapLongitude(),
+                row.geocode().amapLatitude(), row.geocode().status(), row.geocode().errorCode(),
+                timestamp(row.geocode().geocodedAt()), timestamp(row.now()), timestamp(row.now()));
     }
 
     public Optional<SubmissionRow> findSubmissionByClientId(UUID tenantId, UUID clientSubmissionId) {
@@ -112,9 +130,9 @@ public class TemporaryCheckinRepository {
                      location_address, location_formatted_address, location_adcode, location_province,
                      location_city, location_district, location_township, amap_longitude, amap_latitude,
                      geocode_status, geocode_error_code, geocoded_at,
-                     privacy_accepted, created_at, updated_at)
+                     privacy_accepted, privacy_notice_version, created_at, updated_at)
                 VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                 """, bin(row.id()), bin(row.tenantId()), bin(row.clientSubmissionId()), row.keyHash(), row.city(),
                 bin(row.salespersonId()), row.salespersonName(), bin(row.storeId()), row.storeName(),
                 row.customerName(), row.customerPhone(), row.visitResult(), row.longitude(), row.latitude(),
@@ -122,6 +140,7 @@ public class TemporaryCheckinRepository {
                 geocode.address(), geocode.formattedAddress(), geocode.adcode(), geocode.province(),
                 geocode.city(), geocode.district(), geocode.township(), geocode.amapLongitude(),
                 geocode.amapLatitude(), geocode.status(), geocode.errorCode(), timestamp(geocode.geocodedAt()),
+                row.privacyNoticeVersion(),
                 timestamp(row.now()), timestamp(row.now()));
     }
 
@@ -151,8 +170,11 @@ public class TemporaryCheckinRepository {
                        customer_name, customer_phone, visit_result,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
                        location_address, location_adcode,
-                       storefront_photo_original_filename, wechat_screenshot_original_filename,
-                       audio_original_filename, created_at, submitted_at
+                       storefront_photo_original_filename, storefront_photo_deleted_at,
+                       wechat_screenshot_original_filename, wechat_screenshot_deleted_at,
+                       audio_original_filename, audio_deleted_at,
+                       transcription_status, transcript, summary_status, summary_text,
+                       created_at, submitted_at
                   FROM temp_sales_checkin_submission
                  WHERE tenant_id=?
                 """);
@@ -188,7 +210,11 @@ public class TemporaryCheckinRepository {
                        store_id, store_name_snapshot, customer_name, customer_phone, visit_result,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
                        location_address, location_adcode,
-                       storefront_photo_object_key, wechat_screenshot_object_key, audio_object_key,
+                       storefront_photo_object_key, storefront_photo_deleted_at,
+                       wechat_screenshot_object_key, wechat_screenshot_deleted_at,
+                       audio_object_key, audio_deleted_at,
+                       transcription_status, transcript, transcription_error_code,
+                       summary_status, summary_text, summary_error_code,
                        created_at, submitted_at
                   FROM temp_sales_checkin_submission
                  WHERE tenant_id=?
@@ -206,16 +232,244 @@ public class TemporaryCheckinRepository {
         String sql = "SELECT " + prefix + "object_key AS object_key, "
                 + prefix + "content_type AS content_type, " + prefix + "size_bytes AS size_bytes, "
                 + prefix + "sha256 AS sha256, "
-                + prefix + "original_filename AS original_filename "
+                + prefix + "original_filename AS original_filename, "
+                + prefix + "deleted_at AS deleted_at, " + prefix + "deleted_by AS deleted_by, "
+                + prefix + "deletion_reason AS deletion_reason "
                 + "FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=?"
+                + " AND " + prefix + "deleted_at IS NULL"
                 + (city == null ? "" : " AND city=?") + " LIMIT 1";
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(submissionId)));
         if (city != null) arguments.add(city);
         return jdbc.query(sql, (rs, row) -> new MediaReference(rs.getString("object_key"),
                 rs.getString("content_type"), nullableLong(rs, "size_bytes"),
-                rs.getString("sha256"), rs.getString("original_filename")), arguments.toArray()).stream()
+                rs.getString("sha256"), rs.getString("original_filename"), instant(rs, "deleted_at"),
+                rs.getString("deleted_by"), rs.getString("deletion_reason")), arguments.toArray()).stream()
                 .filter(row -> row.objectKey() != null)
                 .findFirst();
+    }
+
+    public MediaStorageStatsRow mediaStorageStats(UUID tenantId, String city) {
+        String cityClause = city == null ? "" : " AND city=?";
+        List<Object> arguments = new ArrayList<>(List.of(bin(tenantId)));
+        if (city != null) arguments.add(city);
+        return jdbc.query("""
+                SELECT
+                  COALESCE(SUM(
+                    (storefront_photo_object_key IS NOT NULL AND storefront_photo_deleted_at IS NULL)
+                    + (wechat_screenshot_object_key IS NOT NULL AND wechat_screenshot_deleted_at IS NULL)
+                    + (audio_object_key IS NOT NULL AND audio_deleted_at IS NULL)
+                  ), 0) AS active_files,
+                  COALESCE(SUM(
+                    IF(storefront_photo_object_key IS NOT NULL AND storefront_photo_deleted_at IS NULL,
+                       storefront_photo_size_bytes, 0)
+                    + IF(wechat_screenshot_object_key IS NOT NULL AND wechat_screenshot_deleted_at IS NULL,
+                         wechat_screenshot_size_bytes, 0)
+                    + IF(audio_object_key IS NOT NULL AND audio_deleted_at IS NULL, audio_size_bytes, 0)
+                  ), 0) AS total_bytes,
+                  COALESCE(SUM(
+                    IF(storefront_photo_object_key IS NOT NULL AND storefront_photo_deleted_at IS NULL,
+                       storefront_photo_size_bytes, 0)
+                    + IF(wechat_screenshot_object_key IS NOT NULL AND wechat_screenshot_deleted_at IS NULL,
+                         wechat_screenshot_size_bytes, 0)
+                  ), 0) AS image_bytes,
+                  COALESCE(SUM(IF(audio_object_key IS NOT NULL AND audio_deleted_at IS NULL,
+                                  audio_size_bytes, 0)), 0) AS audio_bytes,
+                  MIN(IF(
+                    (storefront_photo_object_key IS NOT NULL AND storefront_photo_deleted_at IS NULL)
+                    OR (wechat_screenshot_object_key IS NOT NULL AND wechat_screenshot_deleted_at IS NULL)
+                    OR (audio_object_key IS NOT NULL AND audio_deleted_at IS NULL),
+                    created_at, NULL
+                  )) AS oldest_created_at
+                FROM temp_sales_checkin_submission
+                WHERE tenant_id=?
+                """ + cityClause, (rs, row) -> new MediaStorageStatsRow(
+                        rs.getLong("active_files"), rs.getLong("total_bytes"), rs.getLong("image_bytes"),
+                        rs.getLong("audio_bytes"), instant(rs, "oldest_created_at")), arguments.toArray())
+                .stream().findFirst().orElse(new MediaStorageStatsRow(0, 0, 0, 0, null));
+    }
+
+    public int markMediaDeleted(
+            UUID tenantId, UUID submissionId, String prefix, String expectedObjectKey,
+            String deletedBy, String reason, Instant deletedAt) {
+        String extra = "audio_".equals(prefix)
+                ? ", transcription_status='DELETED', transcript=NULL, transcription_error_code=NULL, "
+                + "transcription_updated_at=?, summary_status='DELETED', summary_text=NULL, "
+                + "summary_error_code=NULL, summary_updated_at=?"
+                : "";
+        String sql = "UPDATE temp_sales_checkin_submission SET " + prefix + "deleted_at=?, "
+                + prefix + "deleted_by=?, " + prefix + "deletion_reason=?, updated_at=?" + extra
+                + " WHERE tenant_id=? AND id=? AND " + prefix + "object_key=? AND "
+                + prefix + "deleted_at IS NULL";
+        if ("audio_".equals(prefix)) {
+            return jdbc.update(sql, timestamp(deletedAt), deletedBy, reason, timestamp(deletedAt),
+                    timestamp(deletedAt), timestamp(deletedAt), bin(tenantId), bin(submissionId), expectedObjectKey);
+        }
+        return jdbc.update(sql, timestamp(deletedAt), deletedBy, reason, timestamp(deletedAt),
+                bin(tenantId), bin(submissionId), expectedObjectKey);
+    }
+
+    public int requestTranscription(
+            UUID tenantId, UUID submissionId, String requiredPrivacyVersion, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET transcription_status='PENDING', transcription_error_code=NULL,
+                       transcription_updated_at=?, summary_status='NOT_REQUESTED',
+                       summary_text=NULL, summary_error_code=NULL, summary_model=NULL,
+                       summary_updated_at=NULL, updated_at=?
+                 WHERE tenant_id=? AND id=? AND status='SUBMITTED'
+                   AND audio_object_key IS NOT NULL AND audio_deleted_at IS NULL
+                   AND privacy_notice_version=?
+                   AND transcription_status IN ('NOT_REQUESTED','FAILED','UNSUPPORTED')
+                """, timestamp(now), timestamp(now), bin(tenantId), bin(submissionId), requiredPrivacyVersion);
+    }
+
+    public int requestSummary(UUID tenantId, UUID submissionId, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET summary_status='PENDING', summary_error_code=NULL,
+                       summary_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND status='SUBMITTED'
+                   AND audio_object_key IS NOT NULL AND audio_deleted_at IS NULL
+                   AND transcription_status='SUCCEEDED' AND transcript IS NOT NULL
+                   AND summary_status='FAILED'
+                """, timestamp(now), timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public Optional<TranscriptionJob> findPendingTranscription(UUID tenantId) {
+        return jdbc.query(transcriptionJobSelect() + """
+                 WHERE tenant_id=? AND status='SUBMITTED'
+                   AND audio_object_key IS NOT NULL AND audio_deleted_at IS NULL
+                   AND transcription_status='PENDING'
+                 ORDER BY transcription_updated_at, created_at, id
+                 LIMIT 1
+                """, (rs, row) -> transcriptionJob(rs), bin(tenantId)).stream().findFirst();
+    }
+
+    public int claimPendingTranscription(UUID tenantId, UUID submissionId, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET transcription_status='SUBMITTING', transcription_attempts=transcription_attempts+1,
+                       transcription_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND transcription_status='PENDING'
+                   AND audio_deleted_at IS NULL
+                """, timestamp(now), timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public int markTranscriptionProcessing(
+            UUID tenantId, UUID submissionId, String taskId, String requestId, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET transcription_status='PROCESSING', asr_task_id=?, asr_request_id=?,
+                       transcription_error_code=NULL, transcription_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND transcription_status='SUBMITTING'
+                   AND audio_deleted_at IS NULL
+                """, taskId, requestId, timestamp(now), timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public List<TranscriptionJob> findProcessingTranscriptions(UUID tenantId, Instant checkedBefore, int limit) {
+        return jdbc.query(transcriptionJobSelect() + """
+                 WHERE tenant_id=? AND status='SUBMITTED'
+                   AND audio_deleted_at IS NULL AND transcription_status='PROCESSING'
+                   AND (transcription_updated_at IS NULL OR transcription_updated_at<=?)
+                 ORDER BY transcription_updated_at, created_at, id
+                 LIMIT ?
+                """, (rs, row) -> transcriptionJob(rs), bin(tenantId), timestamp(checkedBefore), limit);
+    }
+
+    public int touchTranscription(UUID tenantId, UUID submissionId, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET transcription_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND transcription_status='PROCESSING'
+                """, timestamp(now), timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public int markTranscriptionSucceeded(
+            UUID tenantId, UUID submissionId, String transcript, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET transcription_status='SUCCEEDED', transcript=?, transcription_error_code=NULL,
+                       transcription_updated_at=?, summary_status='PENDING', summary_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND transcription_status='PROCESSING'
+                   AND audio_deleted_at IS NULL
+                """, transcript, timestamp(now), timestamp(now), timestamp(now),
+                bin(tenantId), bin(submissionId));
+    }
+
+    public int markTranscriptionFailed(
+            UUID tenantId, UUID submissionId, String expectedStatus, String errorCode, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET transcription_status='FAILED', transcription_error_code=?,
+                       transcription_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND transcription_status=?
+                """, errorCode, timestamp(now), timestamp(now), bin(tenantId), bin(submissionId), expectedStatus);
+    }
+
+    public int markTranscriptionUnsupported(
+            UUID tenantId, UUID submissionId, String expectedStatus, String errorCode, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET transcription_status='UNSUPPORTED', transcription_error_code=?,
+                       transcription_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND transcription_status=?
+                """, errorCode, timestamp(now), timestamp(now), bin(tenantId), bin(submissionId), expectedStatus);
+    }
+
+    public Optional<TranscriptionJob> findPendingSummary(UUID tenantId) {
+        return jdbc.query(transcriptionJobSelect() + """
+                 WHERE tenant_id=? AND status='SUBMITTED' AND audio_deleted_at IS NULL
+                   AND transcription_status='SUCCEEDED' AND summary_status='PENDING'
+                 ORDER BY summary_updated_at, created_at, id
+                 LIMIT 1
+                """, (rs, row) -> transcriptionJob(rs), bin(tenantId)).stream().findFirst();
+    }
+
+    public int claimPendingSummary(UUID tenantId, UUID submissionId, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET summary_status='PROCESSING', summary_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND summary_status='PENDING'
+                   AND transcription_status='SUCCEEDED' AND audio_deleted_at IS NULL
+                """, timestamp(now), timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public int markSummarySucceeded(
+            UUID tenantId, UUID submissionId, String summary, String model, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET summary_status='SUCCEEDED', summary_text=?, summary_model=?,
+                       summary_error_code=NULL, summary_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND summary_status='PROCESSING'
+                   AND audio_deleted_at IS NULL
+                """, summary, model, timestamp(now), timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public int markSummaryFailed(
+            UUID tenantId, UUID submissionId, String errorCode, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET summary_status='FAILED', summary_error_code=?, summary_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND summary_status='PROCESSING'
+                """, errorCode, timestamp(now), timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public int recoverStuckAnalysis(UUID tenantId, Instant before, Instant now) {
+        int transcription = jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET transcription_status='PENDING', transcription_error_code='RECOVERED_AFTER_RESTART',
+                       transcription_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND transcription_status='SUBMITTING'
+                   AND transcription_updated_at<? AND audio_deleted_at IS NULL
+                """, timestamp(now), timestamp(now), bin(tenantId), timestamp(before));
+        int summary = jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET summary_status='PENDING', summary_error_code='RECOVERED_AFTER_RESTART',
+                       summary_updated_at=?, updated_at=?
+                 WHERE tenant_id=? AND summary_status='PROCESSING'
+                   AND summary_updated_at<? AND audio_deleted_at IS NULL
+                """, timestamp(now), timestamp(now), bin(tenantId), timestamp(before));
+        return transcription + summary;
     }
 
     private static void appendAdminFilters(
@@ -244,12 +498,41 @@ public class TemporaryCheckinRepository {
         }
     }
 
+    private static String transcriptionJobSelect() {
+        return """
+                SELECT id, audio_object_key, audio_content_type, audio_size_bytes, audio_sha256,
+                       audio_original_filename, audio_deleted_at, audio_deleted_by, audio_deletion_reason,
+                       transcription_status, asr_task_id, asr_request_id, transcript,
+                       transcription_error_code, transcription_attempts, transcription_updated_at,
+                       summary_status, summary_text, summary_error_code, summary_model, summary_updated_at
+                  FROM temp_sales_checkin_submission
+                """;
+    }
+
+    private static TranscriptionJob transcriptionJob(ResultSet rs) throws SQLException {
+        return new TranscriptionJob(uuid(rs, "id"),
+                new MediaReference(rs.getString("audio_object_key"), rs.getString("audio_content_type"),
+                        nullableLong(rs, "audio_size_bytes"), rs.getString("audio_sha256"),
+                        rs.getString("audio_original_filename"), instant(rs, "audio_deleted_at"),
+                        rs.getString("audio_deleted_by"), rs.getString("audio_deletion_reason")),
+                rs.getString("transcription_status"), rs.getString("asr_task_id"),
+                rs.getString("asr_request_id"), rs.getString("transcript"),
+                rs.getString("transcription_error_code"), rs.getInt("transcription_attempts"),
+                instant(rs, "transcription_updated_at"), rs.getString("summary_status"),
+                rs.getString("summary_text"), rs.getString("summary_error_code"),
+                rs.getString("summary_model"), instant(rs, "summary_updated_at"));
+    }
+
     private static String storeSelect() {
         return """
                 SELECT id, client_store_id, city, creator_salesperson_id, attribute, name, operating_status,
                        contact_name, contact_phone, area_range, facility_count, business_types_json,
                        intended_businesses_json, cooperation_intent, store_grade, tags_json,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       source_poi_id, source_poi_name, source_poi_address,
+                       source_poi_longitude, source_poi_latitude,
+                       location_address, location_formatted_address, location_adcode,
+                       amap_longitude, amap_latitude, geocode_status, geocode_error_code, geocoded_at,
                        status, created_at, updated_at
                   FROM temp_sales_checkin_store
                 """;
@@ -260,15 +543,21 @@ public class TemporaryCheckinRepository {
                 SELECT id, client_submission_id, submission_key_hash, status, city, salesperson_id,
                        salesperson_name_snapshot, store_id, store_name_snapshot, customer_name,
                        customer_phone, visit_result, longitude, latitude, accuracy_meters,
-                       location_captured_at, location_note, privacy_accepted,
+                       location_captured_at, location_note, privacy_accepted, privacy_notice_version,
                        storefront_photo_object_key, storefront_photo_content_type,
                        storefront_photo_size_bytes, storefront_photo_sha256,
-                       storefront_photo_original_filename,
+                       storefront_photo_original_filename, storefront_photo_deleted_at,
+                       storefront_photo_deleted_by, storefront_photo_deletion_reason,
                        wechat_screenshot_object_key, wechat_screenshot_content_type,
                        wechat_screenshot_size_bytes, wechat_screenshot_sha256,
-                       wechat_screenshot_original_filename,
+                       wechat_screenshot_original_filename, wechat_screenshot_deleted_at,
+                       wechat_screenshot_deleted_by, wechat_screenshot_deletion_reason,
                        audio_object_key, audio_content_type, audio_size_bytes, audio_sha256,
-                       audio_original_filename, created_at, submitted_at, updated_at
+                       audio_original_filename, audio_deleted_at, audio_deleted_by, audio_deletion_reason,
+                       transcription_status, asr_task_id, asr_request_id, transcript,
+                       transcription_error_code, transcription_attempts, transcription_updated_at,
+                       summary_status, summary_text, summary_error_code, summary_model, summary_updated_at,
+                       created_at, submitted_at, updated_at
                   FROM temp_sales_checkin_submission
                 """;
     }
@@ -288,7 +577,13 @@ public class TemporaryCheckinRepository {
                 rs.getString("cooperation_intent"), rs.getString("store_grade"), rs.getString("tags_json"),
                 rs.getBigDecimal("longitude"), rs.getBigDecimal("latitude"),
                 rs.getBigDecimal("accuracy_meters"), instant(rs, "location_captured_at"),
-                rs.getString("location_note"), rs.getString("status"), instant(rs, "created_at"),
+                rs.getString("location_note"), rs.getString("source_poi_id"), rs.getString("source_poi_name"),
+                rs.getString("source_poi_address"), rs.getBigDecimal("source_poi_longitude"),
+                rs.getBigDecimal("source_poi_latitude"), rs.getString("location_address"),
+                rs.getString("location_formatted_address"), rs.getString("location_adcode"),
+                rs.getBigDecimal("amap_longitude"), rs.getBigDecimal("amap_latitude"),
+                rs.getString("geocode_status"), rs.getString("geocode_error_code"), instant(rs, "geocoded_at"),
+                rs.getString("status"), instant(rs, "created_at"),
                 instant(rs, "updated_at"));
     }
 
@@ -300,15 +595,22 @@ public class TemporaryCheckinRepository {
                 rs.getString("customer_phone"), rs.getString("visit_result"), rs.getBigDecimal("longitude"),
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
-                rs.getBoolean("privacy_accepted"),
+                rs.getBoolean("privacy_accepted"), rs.getString("privacy_notice_version"),
                 media(rs, "storefront_photo_"), media(rs, "wechat_screenshot_"), media(rs, "audio_"),
+                rs.getString("transcription_status"), rs.getString("asr_task_id"),
+                rs.getString("asr_request_id"), rs.getString("transcript"),
+                rs.getString("transcription_error_code"), rs.getInt("transcription_attempts"),
+                instant(rs, "transcription_updated_at"), rs.getString("summary_status"),
+                rs.getString("summary_text"), rs.getString("summary_error_code"), rs.getString("summary_model"),
+                instant(rs, "summary_updated_at"),
                 instant(rs, "created_at"), instant(rs, "submitted_at"), instant(rs, "updated_at"));
     }
 
     private static MediaReference media(ResultSet rs, String prefix) throws SQLException {
         return new MediaReference(rs.getString(prefix + "object_key"), rs.getString(prefix + "content_type"),
                 nullableLong(rs, prefix + "size_bytes"), rs.getString(prefix + "sha256"),
-                rs.getString(prefix + "original_filename"));
+                rs.getString(prefix + "original_filename"), instant(rs, prefix + "deleted_at"),
+                rs.getString(prefix + "deleted_by"), rs.getString(prefix + "deletion_reason"));
     }
 
     private static ExportRow exportRow(ResultSet rs) throws SQLException {
@@ -319,8 +621,13 @@ public class TemporaryCheckinRepository {
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
                 rs.getString("location_address"), rs.getString("location_adcode"),
-                rs.getString("storefront_photo_original_filename"),
-                rs.getString("wechat_screenshot_original_filename"), rs.getString("audio_original_filename"),
+                rs.getString("storefront_photo_deleted_at") == null
+                        ? rs.getString("storefront_photo_original_filename") : null,
+                rs.getString("wechat_screenshot_deleted_at") == null
+                        ? rs.getString("wechat_screenshot_original_filename") : null,
+                rs.getString("audio_deleted_at") == null ? rs.getString("audio_original_filename") : null,
+                rs.getString("transcription_status"), rs.getString("transcript"),
+                rs.getString("summary_status"), rs.getString("summary_text"),
                 instant(rs, "created_at"), instant(rs, "submitted_at"));
     }
 
@@ -332,9 +639,15 @@ public class TemporaryCheckinRepository {
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
                 rs.getString("location_address"), rs.getString("location_adcode"),
-                rs.getString("storefront_photo_object_key") != null,
-                rs.getString("wechat_screenshot_object_key") != null,
-                rs.getString("audio_object_key") != null,
+                rs.getString("storefront_photo_object_key") != null
+                        && instant(rs, "storefront_photo_deleted_at") == null,
+                rs.getString("wechat_screenshot_object_key") != null
+                        && instant(rs, "wechat_screenshot_deleted_at") == null,
+                rs.getString("audio_object_key") != null && instant(rs, "audio_deleted_at") == null,
+                instant(rs, "storefront_photo_deleted_at"), instant(rs, "wechat_screenshot_deleted_at"),
+                instant(rs, "audio_deleted_at"), rs.getString("transcription_status"), rs.getString("transcript"),
+                rs.getString("transcription_error_code"), rs.getString("summary_status"),
+                rs.getString("summary_text"), rs.getString("summary_error_code"),
                 instant(rs, "created_at"), instant(rs, "submitted_at"));
     }
 
@@ -363,25 +676,36 @@ public class TemporaryCheckinRepository {
             String operatingStatus, String contactName, String contactPhone, String areaRange, String facilityCount,
             String businessTypesJson, String intendedBusinessesJson, String cooperationIntent, String storeGrade,
             String tagsJson, BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, String status, Instant createdAt, Instant updatedAt) { }
+            Instant locationCapturedAt, String locationNote, String sourcePoiId, String sourcePoiName,
+            String sourcePoiAddress, BigDecimal sourcePoiLongitude, BigDecimal sourcePoiLatitude,
+            String locationAddress, String locationFormattedAddress, String locationAdcode,
+            BigDecimal amapLongitude, BigDecimal amapLatitude, String geocodeStatus, String geocodeErrorCode,
+            Instant geocodedAt, String status, Instant createdAt, Instant updatedAt) { }
 
     public record StoreWrite(
             UUID id, UUID tenantId, UUID clientStoreId, String city, UUID creatorSalespersonId, String attribute,
             String name, String operatingStatus, String contactName, String contactPhone, String areaRange,
             String facilityCount, String businessTypesJson, String intendedBusinessesJson, String cooperationIntent,
             String storeGrade, String tagsJson, BigDecimal longitude, BigDecimal latitude,
-            BigDecimal accuracyMeters, Instant locationCapturedAt, String locationNote, Instant now) { }
+            BigDecimal accuracyMeters, Instant locationCapturedAt, String locationNote,
+            String sourcePoiId, String sourcePoiName, String sourcePoiAddress,
+            BigDecimal sourcePoiLongitude, BigDecimal sourcePoiLatitude, GeocodeWrite geocode, Instant now) { }
 
     public record MediaReference(
-            String objectKey, String contentType, Long sizeBytes, String sha256, String originalFilename) { }
+            String objectKey, String contentType, Long sizeBytes, String sha256, String originalFilename,
+            Instant deletedAt, String deletedBy, String deletionReason) { }
 
     public record SubmissionRow(
             UUID id, UUID clientSubmissionId, String keyHash, String status, String city,
             UUID salespersonId, String salespersonName, UUID storeId, String storeName,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, boolean privacyAccepted,
+            Instant locationCapturedAt, String locationNote, boolean privacyAccepted, String privacyNoticeVersion,
             MediaReference storefrontPhoto, MediaReference wechatScreenshot, MediaReference audio,
+            String transcriptionStatus, String asrTaskId, String asrRequestId, String transcript,
+            String transcriptionErrorCode, int transcriptionAttempts, Instant transcriptionUpdatedAt,
+            String summaryStatus, String summaryText, String summaryErrorCode, String summaryModel,
+            Instant summaryUpdatedAt,
             Instant createdAt, Instant submittedAt, Instant updatedAt) { }
 
     public record SubmissionWrite(
@@ -389,7 +713,8 @@ public class TemporaryCheckinRepository {
             UUID salespersonId, String salespersonName, UUID storeId, String storeName,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, GeocodeWrite geocode, Instant now) { }
+            Instant locationCapturedAt, String locationNote, GeocodeWrite geocode,
+            String privacyNoticeVersion, Instant now) { }
 
     public record GeocodeWrite(
             String status, String address, String formattedAddress, String adcode,
@@ -406,7 +731,9 @@ public class TemporaryCheckinRepository {
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
             Instant locationCapturedAt, String locationNote, String locationAddress, String locationAdcode,
             String storefrontPhotoFilename,
-            String wechatScreenshotFilename, String audioFilename, Instant createdAt, Instant submittedAt) { }
+            String wechatScreenshotFilename, String audioFilename,
+            String transcriptionStatus, String transcript, String summaryStatus, String summaryText,
+            Instant createdAt, Instant submittedAt) { }
 
     public record AdminSubmissionRow(
             UUID id, String status, String city, UUID salespersonId, String salespersonName,
@@ -414,5 +741,17 @@ public class TemporaryCheckinRepository {
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
             Instant locationCapturedAt, String locationNote, String locationAddress, String locationAdcode,
             boolean storefrontPhotoAvailable, boolean wechatScreenshotAvailable, boolean audioAvailable,
+            Instant storefrontPhotoDeletedAt, Instant wechatScreenshotDeletedAt, Instant audioDeletedAt,
+            String transcriptionStatus, String transcript, String transcriptionErrorCode,
+            String summaryStatus, String summaryText, String summaryErrorCode,
             Instant createdAt, Instant submittedAt) { }
+
+    public record MediaStorageStatsRow(
+            long activeFiles, long totalBytes, long imageBytes, long audioBytes, Instant oldestCreatedAt) { }
+
+    public record TranscriptionJob(
+            UUID submissionId, MediaReference audio, String transcriptionStatus, String asrTaskId,
+            String asrRequestId, String transcript, String transcriptionErrorCode, int transcriptionAttempts,
+            Instant transcriptionUpdatedAt, String summaryStatus, String summaryText, String summaryErrorCode,
+            String summaryModel, Instant summaryUpdatedAt) { }
 }

@@ -49,6 +49,25 @@ rigour:
       max-storefront-photo-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_STOREFRONT_PHOTO_BYTES:10485760}
       max-wechat-screenshot-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_WECHAT_SCREENSHOT_BYTES:10485760}
       max-audio-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_BYTES:26214400}
+      ai:
+        # 转写凭据独立显式注入；即使实际使用同一 CAM 子用户，也不从 COS 配置隐式继承。
+        enabled: ${RIGOUR_SALES_TEMPORARY_CHECKIN_AI_ENABLED:false}
+        secret-id: ${RIGOUR_SALES_TEMPORARY_CHECKIN_AI_SECRET_ID:}
+        secret-key: ${RIGOUR_SALES_TEMPORARY_CHECKIN_AI_SECRET_KEY:}
+        session-token: ${RIGOUR_SALES_TEMPORARY_CHECKIN_AI_SESSION_TOKEN:}
+        region: ${RIGOUR_SALES_TEMPORARY_CHECKIN_AI_REGION:ap-shanghai}
+        asr-endpoint: ${RIGOUR_SALES_TEMPORARY_CHECKIN_ASR_ENDPOINT:https://asr.tencentcloudapi.com}
+        asr-engine-model-type: ${RIGOUR_SALES_TEMPORARY_CHECKIN_ASR_ENGINE_MODEL_TYPE:16k_zh_en}
+        asr-channel-num: 1
+        asr-res-text-format: 0
+        hunyuan-endpoint: ${RIGOUR_SALES_TEMPORARY_CHECKIN_HUNYUAN_ENDPOINT:https://hunyuan.ai.tencentcloudapi.com}
+        hunyuan-model: ${RIGOUR_SALES_TEMPORARY_CHECKIN_HUNYUAN_MODEL:hunyuan-turbos-latest}
+        connect-timeout: 3s
+        read-timeout: 60s
+        max-summary-input-characters: 20000
+        max-summary-output-characters: 2000
+        initial-delay: 10s
+        poll-interval: 15s
 
 sales:
   evidence:

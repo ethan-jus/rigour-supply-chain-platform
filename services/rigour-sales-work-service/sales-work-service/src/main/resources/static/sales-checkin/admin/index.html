@@ -50,6 +50,46 @@
         <button id="retry-button" type="button">重试</button>
     </div>
 
+    <div id="page-success" class="notice notice--success" role="status" hidden>
+        <div>
+            <strong>操作成功</strong>
+            <p id="page-success-message"></p>
+        </div>
+        <button id="success-close-button" type="button" aria-label="关闭成功提示">关闭</button>
+    </div>
+
+    <section id="media-storage-card" class="storage-card" aria-labelledby="storage-heading" hidden>
+        <div class="storage-card__heading">
+            <div>
+                <p class="eyebrow">私有 COS 存储</p>
+                <h2 id="storage-heading">媒体存储概览</h2>
+            </div>
+            <p id="storage-scope-note">仅统计当前账号可见范围，不执行自动清理。</p>
+        </div>
+        <dl class="storage-metrics">
+            <div>
+                <dt>有效文件</dt>
+                <dd id="storage-active-files">--</dd>
+            </div>
+            <div>
+                <dt>总容量</dt>
+                <dd id="storage-total-bytes">--</dd>
+            </div>
+            <div>
+                <dt>图片</dt>
+                <dd id="storage-image-bytes">--</dd>
+            </div>
+            <div>
+                <dt>录音</dt>
+                <dd id="storage-audio-bytes">--</dd>
+            </div>
+            <div>
+                <dt>最早文件</dt>
+                <dd id="storage-oldest-created-at">--</dd>
+            </div>
+        </dl>
+    </section>
+
     <section class="filter-card" aria-labelledby="filter-heading">
         <div class="section-heading">
             <div>
@@ -165,6 +205,40 @@
             <a id="image-preview-download" class="media-download" href="#">下载原图</a>
         </footer>
     </section>
+</dialog>
+
+<dialog id="delete-media-dialog" class="delete-media-dialog" aria-labelledby="delete-media-title">
+    <form id="delete-media-form" class="delete-media-panel">
+        <header class="delete-media-header">
+            <div>
+                <p class="eyebrow">高风险操作</p>
+                <h2 id="delete-media-title">永久删除媒体</h2>
+            </div>
+            <button id="delete-media-close" class="image-preview-close" type="button" aria-label="关闭删除确认">&times;</button>
+        </header>
+        <div class="delete-media-body">
+            <p id="delete-media-description" class="delete-media-description"></p>
+            <div class="delete-media-warning" role="alert">
+                <strong>删除后无法恢复</strong>
+                <p>文件将从私有 COS 中永久删除，页面预览、播放和下载会立即失效，系统无法撤销此操作。</p>
+            </div>
+            <label class="delete-media-field" for="delete-media-reason">
+                <span>删除原因</span>
+                <textarea id="delete-media-reason" maxlength="512" rows="3" required
+                          placeholder="请输入删除原因，便于留存管理记录"></textarea>
+                <small>必填，最多 512 字。</small>
+            </label>
+            <label class="delete-media-acknowledgement">
+                <input id="delete-media-acknowledge" type="checkbox">
+                <span>我已核对对象，并确认删除后无法恢复。</span>
+            </label>
+            <p id="delete-media-error" class="delete-media-error" role="alert" hidden></p>
+        </div>
+        <footer class="delete-media-actions">
+            <button id="delete-media-cancel" class="secondary-button" type="button">取消</button>
+            <button id="delete-media-confirm" class="danger-button" type="submit" disabled>确认永久删除</button>
+        </footer>
+    </form>
 </dialog>
 
 <template id="submission-row-template">

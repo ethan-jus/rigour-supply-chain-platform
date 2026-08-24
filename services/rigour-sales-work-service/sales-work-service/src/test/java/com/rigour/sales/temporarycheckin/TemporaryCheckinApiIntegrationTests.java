@@ -5,31 +5,36 @@ import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.startsWith;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.forwardedUrl;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.rigour.sales.application.port.out.AmapPoiClient;
 import com.rigour.sales.infrastructure.persistence.SalesUuidCodec;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateStoreRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateSubmissionRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.LocationCommand;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.ResolveLocationRequest;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinReverseGeocoder.GeocodeResult;
 import com.rigour.shared.file.FileMetadata;
 import com.rigour.shared.file.FileStorage;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -112,6 +117,15 @@ class TemporaryCheckinApiIntegrationTests {
     @MockitoBean
     private FileStorage fileStorage;
 
+    @MockitoBean
+    private TemporaryCheckinReverseGeocoder reverseGeocoder;
+
+    @MockitoBean
+    private AmapPoiClient amapPoiClient;
+
+    @MockitoBean
+    private TemporaryCheckinAiClient aiClient;
+
     @BeforeEach
     void seedConfiguredAndForeignTenants() {
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build();
@@ -124,9 +138,58 @@ class TemporaryCheckinApiIntegrationTests {
         insertSalesperson(OTHER_TENANT_ID, OTHER_TENANT_SALESPERSON_ID, "外部租户销售", "北京");
         insertStore();
         insertShenzhenStore();
-        reset(fileStorage);
+        reset(fileStorage, reverseGeocoder, amapPoiClient, aiClient);
         when(fileStorage.put(any(FileMetadata.class), any(InputStream.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
+        when(reverseGeocoder.resolve(any(BigDecimal.class), any(BigDecimal.class)))
+                .thenReturn(new GeocodeResult(
+                        "RESOLVED", "东城区龙潭路与夕照寺街交叉口东南60米",
+                        "北京市东城区龙潭路与夕照寺街交叉口东南60米", "110101", "北京市", "北京市",
+                        "东城区", "龙潭街道", new BigDecimal("116.403000"),
+                        new BigDecimal("39.912000"), null));
+        when(amapPoiClient.searchAround(any(String.class), any(BigDecimal.class), any(BigDecimal.class),
+                anyInt(), anyInt(), anyInt()))
+                .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(), 1, 10, 0));
+    }
+
+    @Test
+    void resolvesReadableLocationAndReturnsNearbyRegisteredStoresWithoutCallingRealAmap() throws Exception {
+        ResolveLocationRequest request = new ResolveLocationRequest("北京", location());
+
+        mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.geocodeStatus").value("RESOLVED"))
+                .andExpect(jsonPath("$.address").value("东城区龙潭路与夕照寺街交叉口东南60米"))
+                .andExpect(jsonPath("$.formattedAddress")
+                        .value("北京市东城区龙潭路与夕照寺街交叉口东南60米"))
+                .andExpect(jsonPath("$.adcode").value("110101"))
+                .andExpect(jsonPath("$.nearbyStores[0].source").value("REGISTERED"))
+                .andExpect(jsonPath("$.nearbyStores[0].storeId").value(STORE_ID.toString()))
+                .andExpect(jsonPath("$.nearbyStores[0].name").value("已导入门店"))
+                .andExpect(jsonPath("$.nearbyStores[0].distanceMeters").value(0));
+
+        verify(reverseGeocoder).resolve(new BigDecimal("116.3971280"), new BigDecimal("39.9165270"));
+        verify(amapPoiClient).searchAround("", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 2000, 1, 10);
+    }
+
+    @Test
+    void rejectsLocationResolvedToAnotherConfiguredCity() throws Exception {
+        when(reverseGeocoder.resolve(any(BigDecimal.class), any(BigDecimal.class)))
+                .thenReturn(new GeocodeResult(
+                        "RESOLVED", "深圳市南山区测试路1号", "深圳市南山区测试路1号",
+                        "440305", "广东省", "深圳市", "南山区", "粤海街道",
+                        new BigDecimal("113.930000"), new BigDecimal("22.530000"), null));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(
+                                new ResolveLocationRequest("北京", location()))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message")
+                        .value("当前定位不在所选城市，请重新选择城市并定位"));
     }
 
     @Test
@@ -204,7 +267,8 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(jsonPath("$.message").value("定位经纬度、精度和采集时间不能为空"));
 
         CreateStoreRequest invalidHistoricalTag = new CreateStoreRequest(
-                UUID.randomUUID(), "北京", VISITOR_ID, "台球", "新建门店", "营业中",
+                UUID.randomUUID(), "北京", VISITOR_ID, null, null, null, null, null,
+                "台球", "新建门店", "营业中",
                 "张店长", "13800000000", "100-300平米", "10张球桌",
                 List.of("竞技赛事"), List.of("高德业务"), "高意向", "A类",
                 List.of("飞书旧标签"), location());
@@ -215,7 +279,8 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_BAD_REQUEST"));
 
         CreateStoreRequest missingLocation = new CreateStoreRequest(
-                UUID.randomUUID(), "北京", VISITOR_ID, "台球", "无定位新门店", "营业中",
+                UUID.randomUUID(), "北京", VISITOR_ID, null, null, null, null, null,
+                "台球", "无定位新门店", "营业中",
                 "张店长", null, "100-300平米", "8张球桌", List.of("竞技赛事"),
                 List.of("高德业务"), "中意向", null, List.of("单店"), null);
         mockMvc.perform(post("/sales-checkin/api/v1/stores")
@@ -340,6 +405,15 @@ class TemporaryCheckinApiIntegrationTests {
         assertThat(storedMedia.get(2).objectKey())
                 .matches(objectPrefix + "recordings/visit/[0-9a-f]{64}\\.wav");
         verify(fileStorage, never()).delete(any(String.class), any(String.class));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete", submissionId)
+                        .header("X-Submission-Key", SUBMISSION_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUBMITTED"));
+        assertThat(jdbc.queryForObject("""
+                SELECT transcription_status FROM temp_sales_checkin_submission
+                 WHERE tenant_id=? AND id=?
+                """, String.class, bin(TENANT_ID), bin(submissionId))).isEqualTo("PENDING");
     }
 
     @Test
@@ -436,6 +510,77 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
+    void letsOnlyGlobalAdminPhysicallyDeleteMediaIdempotentlyAndUpdatesStorageStats() throws Exception {
+        UUID submissionId = insertAdminSubmission(
+                "北京", VISITOR_ID, STORE_ID, "北京门店", "媒体清理客户", "物理删除验收");
+
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/options")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
+                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mediaStats.activeFiles").value(1))
+                .andExpect(jsonPath("$.mediaStats.totalBytes").value(4))
+                .andExpect(jsonPath("$.mediaStats.imageBytes").value(4))
+                .andExpect(jsonPath("$.mediaStats.audioBytes").value(0));
+
+        mockMvc.perform(delete("/sales-checkin/admin/api/v1/submissions/{id}/media/storefront-photo",
+                        submissionId)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"超过临时保留期\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_ADMIN_FORBIDDEN"));
+        verify(fileStorage, never()).delete(any(String.class), any(String.class));
+
+        mockMvc.perform(delete("/sales-checkin/admin/api/v1/submissions/{id}/media/storefront-photo",
+                        submissionId)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
+                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"超过临时保留期\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(submissionId.toString()))
+                .andExpect(jsonPath("$.kind").value("storefront-photo"))
+                .andExpect(jsonPath("$.status").value("DELETED"))
+                .andExpect(jsonPath("$.deletedAt").isNotEmpty());
+        verify(fileStorage, times(1)).delete(TENANT_ID.toString(), "tenant/beijing.jpg");
+
+        mockMvc.perform(delete("/sales-checkin/admin/api/v1/submissions/{id}/media/storefront-photo",
+                        submissionId)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
+                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"重复请求应幂等\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DELETED"));
+        verify(fileStorage, times(1)).delete(TENANT_ID.toString(), "tenant/beijing.jpg");
+
+        mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/storefront-photo", submissionId)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
+                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_NOT_FOUND"));
+        verify(fileStorage, never()).open(any(String.class), any(String.class));
+
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/options")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
+                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mediaStats.activeFiles").value(0))
+                .andExpect(jsonPath("$.mediaStats.totalBytes").value(0))
+                .andExpect(jsonPath("$.mediaStats.imageBytes").value(0));
+
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_submission
+                 WHERE tenant_id=? AND id=?
+                   AND storefront_photo_deleted_at IS NOT NULL
+                   AND storefront_photo_deleted_by=?
+                   AND storefront_photo_deletion_reason=?
+                """, Integer.class, bin(TENANT_ID), bin(submissionId),
+                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN, "超过临时保留期")).isEqualTo(1);
+    }
+
+    @Test
     void previewsImagesAndAudioInlineWithExplicitDownloadsThumbnailsAndRanges() throws Exception {
         UUID submissionId = insertAdminSubmission(
                 "北京", VISITOR_ID, STORE_ID, "北京门店", "媒体预览客户", "媒体预览验收");
@@ -525,7 +670,8 @@ class TemporaryCheckinApiIntegrationTests {
     private CreateSubmissionRequest submission(
             UUID clientSubmissionId, String key, String result, boolean privacyAccepted, LocationCommand location) {
         return new CreateSubmissionRequest(clientSubmissionId, key, "北京", VISITOR_ID, STORE_ID,
-                "李经理", "13900000000", result, location, privacyAccepted);
+                "李经理", "13900000000", result, location, privacyAccepted,
+                TemporaryCheckinService.PRIVACY_NOTICE_VERSION);
     }
 
     private static LocationCommand location() {

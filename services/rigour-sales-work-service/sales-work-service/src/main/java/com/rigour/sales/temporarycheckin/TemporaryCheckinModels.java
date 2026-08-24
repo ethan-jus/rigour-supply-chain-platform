@@ -35,6 +35,11 @@ public final class TemporaryCheckinModels {
             UUID clientStoreId,
             String city,
             UUID salespersonId,
+            String sourcePoiId,
+            String sourcePoiName,
+            String sourcePoiAddress,
+            BigDecimal sourcePoiLongitude,
+            BigDecimal sourcePoiLatitude,
             String attribute,
             String name,
             String operatingStatus,
@@ -51,6 +56,26 @@ public final class TemporaryCheckinModels {
 
     public record StoreView(UUID id, String name, String city, String locationSummary) { }
 
+    public record ResolveLocationRequest(String city, LocationCommand location) { }
+
+    public record NearbyStoreView(
+            String source,
+            UUID storeId,
+            String poiId,
+            String name,
+            String city,
+            String address,
+            BigDecimal distanceMeters,
+            BigDecimal longitude,
+            BigDecimal latitude) { }
+
+    public record LocationContextView(
+            String geocodeStatus,
+            String address,
+            String formattedAddress,
+            String adcode,
+            List<NearbyStoreView> nearbyStores) { }
+
     public record CreateSubmissionRequest(
             UUID clientSubmissionId,
             String submissionKey,
@@ -61,7 +86,8 @@ public final class TemporaryCheckinModels {
             String customerPhone,
             String visitResult,
             LocationCommand location,
-            Boolean privacyAccepted) { }
+            Boolean privacyAccepted,
+            String privacyNoticeVersion) { }
 
     public record DraftSubmissionView(UUID id, String status, Instant createdAt) { }
 

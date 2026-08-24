@@ -5,7 +5,9 @@ import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateStoreReque
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateSubmissionRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.DraftSubmissionView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.MediaUploadView;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.LocationContextView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.OptionsResponse;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.ResolveLocationRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.StoreView;
 import java.util.List;
 import java.util.UUID;
@@ -54,6 +56,11 @@ public class TemporaryCheckinController {
     @PostMapping("/stores")
     public StoreView createStore(@RequestBody CreateStoreRequest request) {
         return service.createStore(request);
+    }
+
+    @PostMapping("/locations/resolve")
+    public LocationContextView resolveLocation(@RequestBody ResolveLocationRequest request) {
+        return service.resolveLocation(request);
     }
 
     @PostMapping("/submissions")

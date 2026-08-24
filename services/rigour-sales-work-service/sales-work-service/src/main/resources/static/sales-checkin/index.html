@@ -16,7 +16,7 @@
         <div>
             <p class="eyebrow">RIGOUR · 临时采集</p>
             <h1>销售拜访采集</h1>
-            <p class="hero__description">无需登录。请在拜访现场完成定位、拍照和信息提交。</p>
+            <p class="hero__description">无需登录。选择城市和销售后，定位即可查找附近门店。</p>
         </div>
     </div>
 </header>
@@ -57,7 +57,7 @@
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">拜访对象</p>
-                        <h2>选择销售与门店</h2>
+                        <h2>选择销售、定位和门店</h2>
                     </div>
                     <span class="required-hint"><span aria-hidden="true">*</span> 必填</span>
                 </div>
@@ -80,6 +80,41 @@
                     </label>
                 </div>
 
+                <div class="location-card quick-location">
+                    <div class="section-heading section-heading--inline">
+                        <div>
+                            <p class="section-kicker">当前位置</p>
+                            <h3>定位并查找附近门店 <span class="required-mark">*</span></h3>
+                        </div>
+                        <span id="visit-location-status" class="status-pill">未定位</span>
+                    </div>
+                    <button id="visit-location-button" class="secondary-button location-button" type="button">
+                        <span class="location-dot" aria-hidden="true"></span>
+                        <span id="visit-location-button-label">获取当前位置</span>
+                    </button>
+                    <div id="visit-location-detail" class="location-detail" hidden>
+                        <div class="location-address-row">
+                            <span>实际地址</span>
+                            <strong id="visit-location-address">正在解析地址…</strong>
+                        </div>
+                        <div><span>定位精度</span><strong id="visit-location-accuracy"></strong></div>
+                        <div><span>采集时间</span><strong id="visit-location-time"></strong></div>
+                    </div>
+                    <label class="field field--compact">
+                        <span class="field__label">位置备注</span>
+                        <input id="visit-location-note" type="text" maxlength="300" placeholder="如：商场二层、临街入口（选填）">
+                    </label>
+                    <span class="field__error" data-error-for="visit-location"></span>
+                </div>
+
+                <section id="nearby-stores-panel" class="nearby-panel" aria-labelledby="nearby-stores-title" hidden>
+                    <div class="nearby-panel__heading">
+                        <strong id="nearby-stores-title">附近门店</strong>
+                        <span id="nearby-stores-summary">正在查找…</span>
+                    </div>
+                    <div id="nearby-store-results" class="nearby-list"></div>
+                </section>
+
                 <div class="field store-search-field">
                     <label for="store-search" class="field__label">拜访门店 <span class="required-mark">*</span></label>
                     <div class="search-input-wrap">
@@ -89,7 +124,7 @@
                                aria-controls="store-search-results" aria-expanded="false">
                         <span id="store-search-spinner" class="spinner" aria-label="正在搜索" hidden></span>
                     </div>
-                    <p id="store-search-help" class="field__help">选择城市后，可按门店名称搜索。</p>
+                    <p id="store-search-help" class="field__help">也可输入至少 2 个字搜索其他门店。</p>
                     <div id="store-search-results" class="search-results" role="listbox" hidden></div>
                     <span class="field__error" data-error-for="selected-store"></span>
                 </div>
@@ -105,7 +140,7 @@
 
                 <button id="create-store-link" class="inline-action" type="button">
                     <span aria-hidden="true">＋</span>
-                    找不到门店？立即新增，完成后自动回填
+                    附近没有？手动新增门店
                 </button>
             </section>
 
@@ -140,31 +175,6 @@
                     <span class="character-count"><span id="visit-result-count">0</span>/2000</span>
                     <span class="field__error" data-error-for="visit-result"></span>
                 </label>
-            </section>
-
-            <section class="form-card location-card">
-                <div class="section-heading section-heading--inline">
-                    <div>
-                        <p class="section-kicker">现场位置</p>
-                        <h2>获取拜访定位 <span class="required-mark">*</span></h2>
-                    </div>
-                    <span id="visit-location-status" class="status-pill">未定位</span>
-                </div>
-                <p class="section-description">定位仅在点击按钮后获取一次。请允许浏览器访问当前位置，并在门店现场操作。</p>
-                <button id="visit-location-button" class="secondary-button location-button" type="button">
-                    <span class="location-dot" aria-hidden="true"></span>
-                    获取当前位置
-                </button>
-                <div id="visit-location-detail" class="location-detail" hidden>
-                    <div><span>经纬度</span><strong id="visit-location-coordinates"></strong></div>
-                    <div><span>定位精度</span><strong id="visit-location-accuracy"></strong></div>
-                    <div><span>采集时间</span><strong id="visit-location-time"></strong></div>
-                </div>
-                <label class="field field--compact">
-                    <span class="field__label">定位备注</span>
-                    <input id="visit-location-note" type="text" maxlength="300" placeholder="如：商场二层、定位略有偏移（选填）">
-                </label>
-                <span class="field__error" data-error-for="visit-location"></span>
             </section>
 
             <section class="form-card">
@@ -236,7 +246,7 @@
                     <div class="upload-item__heading">
                         <div>
                             <strong>现场录音</strong>
-                            <span>选填，最长 20 分钟；请先征得在场人员同意</span>
+                            <span>选填，最长 20 分钟；录音前请征得在场人员同意</span>
                         </div>
                         <span id="audio-uploaded-badge" class="mini-badge" hidden>草稿已上传</span>
                     </div>
@@ -263,7 +273,7 @@
                         <label for="audio-file">选择已有音频文件</label>
                         <input id="audio-file" type="file" accept="audio/*">
                     </div>
-                    <p id="recorder-help" class="field__help">录音期间请保持页面在前台，切换应用可能导致录音中断。</p>
+                    <p id="recorder-help" class="field__help">录音时请保持页面在前台；提交后录音可能用于转写和 AI 摘要。</p>
                     <span class="field__error" data-error-for="audio-file"></span>
                 </div>
             </section>
@@ -274,7 +284,7 @@
                     <span class="custom-checkbox" aria-hidden="true"></span>
                     <span>
                         <strong>我已确认并同意提交 <span class="required-mark">*</span></strong>
-                        <small>我已告知相关人员本次会采集定位、照片及可能的录音，并确认信息真实。匿名选择销售、浏览器定位、照片和录音均可能被冒用或伪造，记录仅作为临时匿名自报采集数据，不得作为可信考勤、KPI、奖惩或纪律证据。</small>
+                        <small>我已告知相关人员本次会采集定位、照片及可能的录音；如提交录音，录音可能用于后续转写和 AI 摘要。匿名选择销售、浏览器定位、照片和录音均可能被冒用或伪造，记录仅作为临时匿名自报采集数据，不得作为可信考勤、KPI、奖惩或纪律证据。</small>
                     </span>
                 </label>
                 <span class="field__error" data-error-for="privacy-accepted"></span>
@@ -293,7 +303,7 @@
             <div class="notice notice--plain">
                 <div>
                     <strong>新增门店资料</strong>
-                    <p>录入成功后会自动返回拜访打卡，并选中这家门店。</p>
+                    <p id="store-prefill-message">保存后会自动返回打卡并选中这家门店。</p>
                 </div>
             </div>
 
@@ -407,10 +417,13 @@
                 <p class="section-description">请在门店现场获取位置，定位会随门店信息一起保存。</p>
                 <button id="store-location-button" class="secondary-button location-button" type="button">
                     <span class="location-dot" aria-hidden="true"></span>
-                    获取当前位置
+                    <span id="store-location-button-label">获取当前位置</span>
                 </button>
                 <div id="store-location-detail" class="location-detail" hidden>
-                    <div><span>经纬度</span><strong id="store-location-coordinates"></strong></div>
+                    <div class="location-address-row">
+                        <span>实际地址</span>
+                        <strong id="store-location-address">正在解析地址…</strong>
+                    </div>
                     <div><span>定位精度</span><strong id="store-location-accuracy"></strong></div>
                     <div><span>采集时间</span><strong id="store-location-time"></strong></div>
                 </div>

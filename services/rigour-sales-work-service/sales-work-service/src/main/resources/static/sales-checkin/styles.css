@@ -603,6 +603,28 @@ button:focus-visible,
     width: 100%;
 }
 
+.quick-location {
+    margin: 2px 0 14px;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface-soft);
+}
+
+.quick-location .section-heading {
+    margin-bottom: 12px;
+}
+
+.quick-location h3 {
+    margin: 0;
+    font-size: 16px;
+    line-height: 1.35;
+}
+
+.quick-location .field--compact {
+    margin-top: 12px;
+}
+
 .location-dot {
     position: relative;
     width: 16px;
@@ -647,6 +669,110 @@ button:focus-visible,
 .location-detail strong {
     font-size: 12px;
     text-align: right;
+}
+
+.location-detail .location-address-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.location-address-row strong {
+    width: 100%;
+    color: #183f43;
+    font-size: 14px;
+    line-height: 1.55;
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+
+.location-address-row strong.is-missing {
+    color: var(--ink-soft);
+    font-weight: 600;
+}
+
+.nearby-panel {
+    margin: 0 0 15px;
+    padding: 13px;
+    border: 1px solid #cfe0dd;
+    border-radius: 12px;
+    background: #f8fbfa;
+}
+
+.nearby-panel__heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 9px;
+    gap: 10px;
+}
+
+.nearby-panel__heading strong {
+    font-size: 13px;
+}
+
+.nearby-panel__heading span {
+    color: var(--ink-soft);
+    font-size: 10px;
+    text-align: right;
+}
+
+.nearby-list {
+    display: grid;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fff;
+}
+
+.nearby-list:empty {
+    display: none;
+}
+
+.nearby-store {
+    display: grid;
+    width: 100%;
+    min-height: 58px;
+    padding: 11px 12px;
+    border: 0;
+    border-bottom: 1px solid #edf2f1;
+    text-align: left;
+    background: #fff;
+    cursor: pointer;
+    gap: 5px;
+}
+
+.nearby-store:last-child {
+    border-bottom: 0;
+}
+
+.nearby-store:hover,
+.nearby-store:focus-visible {
+    background: #eff8f5;
+}
+
+.nearby-store__content strong,
+.nearby-store__content span,
+.nearby-store__meta {
+    display: block;
+}
+
+.nearby-store__content strong {
+    margin-bottom: 2px;
+    color: #234549;
+    font-size: 13px;
+}
+
+.nearby-store__content span {
+    color: var(--ink-soft);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.nearby-store__meta {
+    color: var(--brand);
+    font-size: 10px;
+    font-weight: 700;
 }
 
 .upload-grid {

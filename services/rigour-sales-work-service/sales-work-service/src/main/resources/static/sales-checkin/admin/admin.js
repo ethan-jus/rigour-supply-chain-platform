@@ -10,13 +10,18 @@
         scope: { username: "", allCities: false, city: "" },
         cities: [],
         salespersons: [],
+        mediaStats: null,
         filters: { from: "", to: "", city: "", salespersonId: "", status: "" },
         page: 0,
         total: 0,
         totalPages: 1,
         loading: false,
         controller: null,
-        previewTrigger: null
+        previewTrigger: null,
+        previewIdentity: null,
+        pendingDelete: null,
+        actionBusy: false,
+        successTimer: null
     };
 
     const $ = (selector, root = document) => root.querySelector(selector);
@@ -52,6 +57,7 @@
         });
         $("#reset-button").addEventListener("click", resetFilters);
         $("#retry-button").addEventListener("click", loadSubmissions);
+        $("#success-close-button").addEventListener("click", hideSuccess);
         $("#previous-page").addEventListener("click", () => changePage(state.page - 1));
         $("#next-page").addEventListener("click", () => changePage(state.page + 1));
         $("#image-preview-close").addEventListener("click", closeImagePreview);
@@ -67,6 +73,18 @@
             $("#image-preview-content").hidden = true;
             $("#image-preview-error").hidden = false;
         });
+        $("#delete-media-form").addEventListener("submit", deletePendingMedia);
+        $("#delete-media-close").addEventListener("click", closeDeleteDialog);
+        $("#delete-media-cancel").addEventListener("click", closeDeleteDialog);
+        $("#delete-media-dialog").addEventListener("click", (event) => {
+            if (event.target === event.currentTarget && !state.actionBusy) closeDeleteDialog();
+        });
+        $("#delete-media-dialog").addEventListener("close", cleanupDeleteDialog);
+        $("#delete-media-dialog").addEventListener("cancel", (event) => {
+            if (state.actionBusy) event.preventDefault();
+        });
+        $("#delete-media-reason").addEventListener("input", updateDeleteConfirmation);
+        $("#delete-media-acknowledge").addEventListener("change", updateDeleteConfirmation);
         document.addEventListener("keydown", (event) => {
             if (event.key === "Escape" && $("#image-preview-dialog").hasAttribute("open")) {
                 closeImagePreview();
@@ -83,11 +101,14 @@
         };
         state.cities = uniqueStrings(Array.isArray(payload.cities) ? payload.cities : []);
         state.salespersons = Array.isArray(payload.salespersons) ? payload.salespersons : [];
+        state.mediaStats = payload.mediaStats && typeof payload.mediaStats === "object"
+            ? payload.mediaStats : null;
 
         if (!state.scope.allCities && state.scope.city) {
             state.filters.city = state.scope.city;
         }
         renderScope();
+        renderMediaStats();
         renderCityOptions();
         renderSalespersonOptions(state.filters.city, state.filters.salespersonId);
         writeFiltersToForm();
@@ -99,6 +120,24 @@
         $("#scope-range").textContent = state.scope.allCities
             ? "全部城市"
             : (state.scope.city ? `${state.scope.city}（仅本城市）` : "未配置城市范围");
+    }
+
+    function renderMediaStats() {
+        const card = $("#media-storage-card");
+        if (!state.mediaStats) {
+            card.hidden = true;
+            return;
+        }
+        card.hidden = false;
+        $("#storage-active-files").textContent = formatCount(numberValue(state.mediaStats.activeFiles));
+        $("#storage-total-bytes").textContent = formatBytes(state.mediaStats.totalBytes);
+        $("#storage-image-bytes").textContent = formatBytes(state.mediaStats.imageBytes);
+        $("#storage-audio-bytes").textContent = formatBytes(state.mediaStats.audioBytes);
+        $("#storage-oldest-created-at").textContent = state.mediaStats.oldestCreatedAt
+            ? formatFullDateTime(state.mediaStats.oldestCreatedAt) : "暂无文件";
+        $("#storage-scope-note").textContent = state.scope.allCities
+            ? "统计全部城市的有效媒体，不执行自动清理。"
+            : `仅统计${state.scope.city || "当前范围"}可见媒体，不执行自动清理。`;
     }
 
     function renderCityOptions() {
@@ -173,6 +212,7 @@
             city: cleanText(scope.city || state.scope.city)
         };
         renderScope();
+        renderMediaStats();
     }
 
     function renderRows(items) {
@@ -245,12 +285,16 @@
         if (!isUuid(id)) return renderEmptyMedia(root);
         if (item.storefrontPhotoAvailable === true) {
             root.appendChild(createImageMedia(id, "storefront-photo", "门店打卡照"));
+        } else if (item.storefrontPhotoDeletedAt) {
+            root.appendChild(createDeletedMediaCard("storefront-photo", "门店打卡照", item.storefrontPhotoDeletedAt));
         }
         if (item.wechatScreenshotAvailable === true) {
             root.appendChild(createImageMedia(id, "wechat-screenshot", "企微截图"));
+        } else if (item.wechatScreenshotDeletedAt) {
+            root.appendChild(createDeletedMediaCard("wechat-screenshot", "企微截图", item.wechatScreenshotDeletedAt));
         }
-        if (item.audioAvailable === true) {
-            root.appendChild(createAudioMedia(id));
+        if (item.audioAvailable === true || item.audioDeletedAt || hasAudioIntelligence(item)) {
+            root.appendChild(createAudioMedia(id, item));
         }
         if (!root.hasChildNodes()) {
             renderEmptyMedia(root);
@@ -260,6 +304,8 @@
     function createImageMedia(id, kind, label) {
         const card = document.createElement("section");
         card.className = "media-card media-card--image";
+        card.dataset.mediaId = id;
+        card.dataset.mediaKind = kind;
         const title = document.createElement("strong");
         title.className = "media-title";
         title.textContent = label;
@@ -290,43 +336,222 @@
             fallback.textContent = "点击查看原图";
             button.appendChild(fallback);
         });
-        button.addEventListener("click", () => openImagePreview(previewUrl, downloadUrl, label, button));
+        button.addEventListener("click", () => openImagePreview(
+            previewUrl, downloadUrl, label, button, { id, kind }));
         button.appendChild(image);
 
         const hint = document.createElement("span");
         hint.className = "media-preview-hint";
         hint.textContent = "点击放大";
         button.appendChild(hint);
-        card.append(title, button, createDownloadLink(downloadUrl, `下载${label}`));
+        const actions = createMediaActions(id, kind, label, downloadUrl);
+        card.append(title, button, actions);
         return card;
     }
 
-    function createAudioMedia(id) {
+    function createAudioMedia(id, item) {
         const card = document.createElement("section");
         card.className = "media-card media-card--audio";
+        card.dataset.mediaId = id;
+        card.dataset.mediaKind = "audio";
         const title = document.createElement("strong");
         title.className = "media-title";
         title.textContent = "拜访录音";
 
-        const audio = document.createElement("audio");
-        audio.className = "media-audio";
-        audio.controls = true;
-        audio.preload = "none";
-        audio.src = mediaUrl(id, "audio");
-        audio.setAttribute("controlslist", "nodownload");
-        audio.setAttribute("aria-label", "播放拜访录音");
-        audio.addEventListener("play", () => {
-            document.querySelectorAll("audio.media-audio").forEach((other) => {
-                if (other !== audio) other.pause();
+        card.appendChild(title);
+        if (item.audioAvailable === true) {
+            const audio = document.createElement("audio");
+            audio.className = "media-audio";
+            audio.controls = true;
+            audio.preload = "none";
+            audio.src = mediaUrl(id, "audio");
+            audio.setAttribute("controlslist", "nodownload");
+            audio.setAttribute("aria-label", "播放拜访录音");
+            audio.addEventListener("play", () => {
+                document.querySelectorAll("audio.media-audio").forEach((other) => {
+                    if (other !== audio) other.pause();
+                });
             });
-        });
 
-        const hint = document.createElement("span");
-        hint.className = "media-audio-hint";
-        hint.textContent = "点击播放，可拖动进度";
-        card.append(title, audio, hint,
-            createDownloadLink(mediaUrl(id, "audio", { download: true }), "下载录音"));
+            const hint = document.createElement("span");
+            hint.className = "media-audio-hint";
+            hint.textContent = "点击播放，可拖动进度";
+            card.append(audio, hint, createMediaActions(
+                id, "audio", "拜访录音", mediaUrl(id, "audio", { download: true })));
+        } else if (item.audioDeletedAt) {
+            card.appendChild(createDeletedMediaNotice("拜访录音", item.audioDeletedAt));
+        }
+
+        card.appendChild(createAudioIntelligence(id, item));
         return card;
+    }
+
+    function createDeletedMediaCard(kind, label, deletedAt) {
+        const card = document.createElement("section");
+        card.className = "media-card media-card--image is-deleted";
+        card.dataset.mediaKind = kind;
+        const title = document.createElement("strong");
+        title.className = "media-title";
+        title.textContent = label;
+        card.append(title, createDeletedMediaNotice(label, deletedAt));
+        return card;
+    }
+
+    function createDeletedMediaNotice(label, deletedAt) {
+        const notice = document.createElement("div");
+        notice.className = "media-deleted";
+        const status = document.createElement("strong");
+        status.textContent = "已删除";
+        const detail = document.createElement("span");
+        detail.textContent = `${label}已于 ${formatFullDateTime(deletedAt)} 永久删除`;
+        notice.append(status, detail);
+        return notice;
+    }
+
+    function createMediaActions(id, kind, label, downloadUrl) {
+        const actions = document.createElement("div");
+        actions.className = "media-actions";
+        actions.appendChild(createDownloadLink(downloadUrl, `下载${label}`));
+        if (state.scope.allCities) {
+            const remove = document.createElement("button");
+            remove.className = "media-delete";
+            remove.type = "button";
+            remove.textContent = "删除";
+            remove.addEventListener("click", () => openDeleteDialog(id, kind, label, remove));
+            actions.appendChild(remove);
+        }
+        return actions;
+    }
+
+    function createAudioIntelligence(id, item) {
+        const panel = document.createElement("section");
+        panel.className = "audio-intelligence";
+
+        const heading = document.createElement("div");
+        heading.className = "audio-intelligence__heading";
+        const title = document.createElement("strong");
+        title.textContent = "录音转写与摘要";
+        const transcription = statusBadge("transcription", item.transcriptionStatus);
+        heading.append(title, transcription);
+        panel.appendChild(heading);
+
+        const transcript = cleanText(item.transcript);
+        if (transcript) {
+            panel.appendChild(createAiTextBlock("转写全文", transcript, "transcript"));
+        } else {
+            panel.appendChild(createAiEmptyText(transcriptionStatusText(item.transcriptionStatus)));
+        }
+
+        const summaryHeader = document.createElement("div");
+        summaryHeader.className = "audio-intelligence__subheading";
+        const summaryTitle = document.createElement("strong");
+        summaryTitle.textContent = "AI 摘要";
+        summaryHeader.append(summaryTitle, statusBadge("summary", item.summaryStatus));
+        panel.appendChild(summaryHeader);
+
+        const summary = cleanText(item.summary);
+        panel.appendChild(summary
+            ? createAiTextBlock("", summary, "summary")
+            : createAiEmptyText(summaryStatusText(item.summaryStatus)));
+
+        const transcriptionFailed = isFailedTranscription(item.transcriptionStatus);
+        const summaryFailed = isFailedSummary(item.summaryStatus);
+        if ((transcriptionFailed || summaryFailed) && state.scope.allCities) {
+            const failure = document.createElement("div");
+            failure.className = "transcription-failure";
+            const code = cleanText(transcriptionFailed
+                ? item.transcriptionErrorCode
+                : item.summaryErrorCode);
+            if (code) {
+                const codeText = document.createElement("code");
+                codeText.textContent = `失败代码：${code}`;
+                failure.appendChild(codeText);
+            }
+            if (item.audioAvailable === true) {
+                const retry = document.createElement("button");
+                retry.className = "retry-transcription";
+                retry.type = "button";
+                retry.textContent = transcriptionFailed ? "重新转写" : "重新生成摘要";
+                retry.addEventListener("click", () => retryTranscription(id, retry));
+                failure.appendChild(retry);
+            }
+            panel.appendChild(failure);
+        }
+        return panel;
+    }
+
+    function createAiTextBlock(label, value, kind) {
+        const block = document.createElement("div");
+        block.className = `ai-text ai-text--${kind}`;
+        if (label) {
+            const title = document.createElement("strong");
+            title.textContent = label;
+            block.appendChild(title);
+        }
+        const copy = document.createElement("p");
+        copy.textContent = value;
+        block.appendChild(copy);
+        return block;
+    }
+
+    function createAiEmptyText(message) {
+        const empty = document.createElement("p");
+        empty.className = "ai-empty";
+        empty.textContent = message;
+        return empty;
+    }
+
+    function statusBadge(kind, rawStatus) {
+        const status = cleanText(rawStatus).toUpperCase();
+        const badge = document.createElement("span");
+        badge.className = `ai-status ${statusClass(status)}`;
+        badge.textContent = kind === "summary" ? summaryStatusText(status) : transcriptionStatusText(status);
+        return badge;
+    }
+
+    function statusClass(status) {
+        if (["COMPLETED", "SUCCEEDED", "READY"].includes(status)) return "is-complete";
+        if (["FAILED", "ERROR", "UNSUPPORTED"].includes(status)) return "is-failed";
+        if (["PENDING", "QUEUED", "SUBMITTING", "PROCESSING", "SUBMITTED", "RUNNING"].includes(status)) return "is-processing";
+        return "is-idle";
+    }
+
+    function transcriptionStatusText(rawStatus) {
+        const status = cleanText(rawStatus).toUpperCase();
+        const labels = {
+            COMPLETED: "转写完成", SUCCEEDED: "转写完成", READY: "转写完成",
+            PENDING: "等待转写", QUEUED: "已排队", SUBMITTING: "正在提交", SUBMITTED: "已提交",
+            PROCESSING: "转写中", RUNNING: "转写中", FAILED: "转写失败",
+            ERROR: "转写失败", NOT_REQUESTED: "未转写", NONE: "未转写",
+            UNSUPPORTED: "格式暂不支持",
+            DELETED: "已随录音删除"
+        };
+        return labels[status] || (status ? status : "未转写");
+    }
+
+    function summaryStatusText(rawStatus) {
+        const status = cleanText(rawStatus).toUpperCase();
+        const labels = {
+            COMPLETED: "摘要完成", SUCCEEDED: "摘要完成", READY: "摘要完成",
+            PENDING: "等待摘要", QUEUED: "已排队", SUBMITTED: "已提交",
+            PROCESSING: "生成中", RUNNING: "生成中", FAILED: "摘要失败",
+            ERROR: "摘要失败", NOT_REQUESTED: "暂无摘要", NONE: "暂无摘要",
+            DELETED: "已随录音删除"
+        };
+        return labels[status] || (status ? status : "暂无摘要");
+    }
+
+    function isFailedTranscription(status) {
+        return ["FAILED", "ERROR", "UNSUPPORTED"].includes(cleanText(status).toUpperCase());
+    }
+
+    function isFailedSummary(status) {
+        return ["FAILED", "ERROR"].includes(cleanText(status).toUpperCase());
+    }
+
+    function hasAudioIntelligence(item) {
+        return Boolean(cleanText(item.transcriptionStatus) || cleanText(item.transcript)
+            || cleanText(item.summaryStatus) || cleanText(item.summary) || cleanText(item.transcriptionErrorCode));
     }
 
     function createDownloadLink(url, label) {
@@ -351,10 +576,11 @@
         return options.download ? `${base}?download=true` : base;
     }
 
-    function openImagePreview(previewUrl, downloadUrl, label, trigger) {
+    function openImagePreview(previewUrl, downloadUrl, label, trigger, identity) {
         const dialog = $("#image-preview-dialog");
         const image = $("#image-preview-content");
         state.previewTrigger = trigger;
+        state.previewIdentity = identity || null;
         $("#image-preview-title").textContent = label;
         $("#image-preview-download").href = downloadUrl;
         $("#image-preview-error").hidden = true;
@@ -387,6 +613,137 @@
         document.body.classList.remove("preview-open");
         if (state.previewTrigger && document.contains(state.previewTrigger)) state.previewTrigger.focus();
         state.previewTrigger = null;
+        state.previewIdentity = null;
+    }
+
+    function openDeleteDialog(id, kind, label, trigger) {
+        if (!state.scope.allCities || state.actionBusy || !isUuid(id)) return;
+        state.pendingDelete = { id, kind, label, trigger };
+        $("#delete-media-description").textContent = `即将删除“${label}”。请再次核对当前拜访记录。`;
+        $("#delete-media-reason").value = "";
+        $("#delete-media-acknowledge").checked = false;
+        $("#delete-media-error").hidden = true;
+        $("#delete-media-error").textContent = "";
+        updateDeleteConfirmation();
+        const dialog = $("#delete-media-dialog");
+        if (typeof dialog.showModal === "function") dialog.showModal();
+        else dialog.setAttribute("open", "");
+        document.body.classList.add("preview-open");
+        $("#delete-media-reason").focus();
+    }
+
+    function closeDeleteDialog() {
+        if (state.actionBusy) return;
+        const dialog = $("#delete-media-dialog");
+        if (!dialog.hasAttribute("open")) return;
+        if (typeof dialog.close === "function") dialog.close();
+        else {
+            dialog.removeAttribute("open");
+            cleanupDeleteDialog();
+        }
+    }
+
+    function cleanupDeleteDialog() {
+        const trigger = state.pendingDelete && state.pendingDelete.trigger;
+        state.pendingDelete = null;
+        state.actionBusy = false;
+        $("#delete-media-form").reset();
+        $("#delete-media-error").hidden = true;
+        $("#delete-media-error").textContent = "";
+        $("#delete-media-confirm").disabled = true;
+        $("#delete-media-confirm").textContent = "确认永久删除";
+        document.body.classList.remove("preview-open");
+        if (trigger && document.contains(trigger)) trigger.focus();
+    }
+
+    function updateDeleteConfirmation() {
+        const reason = cleanText($("#delete-media-reason").value);
+        const acknowledged = $("#delete-media-acknowledge").checked;
+        $("#delete-media-confirm").disabled = state.actionBusy || !reason || !acknowledged;
+    }
+
+    async function deletePendingMedia(event) {
+        event.preventDefault();
+        const pending = state.pendingDelete;
+        const reason = cleanText($("#delete-media-reason").value);
+        if (!pending || !state.scope.allCities || state.actionBusy || !reason
+                || !$("#delete-media-acknowledge").checked) {
+            updateDeleteConfirmation();
+            return;
+        }
+        state.actionBusy = true;
+        const confirm = $("#delete-media-confirm");
+        confirm.disabled = true;
+        confirm.textContent = "正在删除…";
+        $("#delete-media-error").hidden = true;
+        let deleted = false;
+        try {
+            await requestAction(
+                `${API_BASE}/submissions/${encodeURIComponent(pending.id)}/media/${pending.kind}`,
+                { method: "DELETE", body: { reason } });
+            deleted = true;
+            stopDeletedMedia(pending.id, pending.kind);
+            if (state.previewIdentity && state.previewIdentity.id === pending.id
+                    && state.previewIdentity.kind === pending.kind) {
+                closeImagePreview();
+            }
+            const dialog = $("#delete-media-dialog");
+            state.actionBusy = false;
+            if (typeof dialog.close === "function") dialog.close();
+            else {
+                dialog.removeAttribute("open");
+                cleanupDeleteDialog();
+            }
+            showSuccess(`${pending.label}已永久删除。`);
+            try {
+                await refreshAdminData();
+            } catch (refreshError) {
+                showError("媒体已删除，但列表刷新失败，请点击重试刷新页面。");
+            }
+        } catch (error) {
+            if (deleted) return;
+            state.actionBusy = false;
+            confirm.textContent = "确认永久删除";
+            updateDeleteConfirmation();
+            $("#delete-media-error").textContent = errorMessage(error, "删除失败，请稍后重试。");
+            $("#delete-media-error").hidden = false;
+        }
+    }
+
+    function stopDeletedMedia(id, kind) {
+        document.querySelectorAll(`[data-media-id="${id}"][data-media-kind="${kind}"] audio`).forEach((audio) => {
+            audio.pause();
+            audio.removeAttribute("src");
+            audio.load();
+        });
+    }
+
+    async function retryTranscription(id, button) {
+        if (!state.scope.allCities || state.actionBusy || !isUuid(id)) return;
+        state.actionBusy = true;
+        button.disabled = true;
+        const original = button.textContent;
+        button.textContent = "正在提交…";
+        hideError();
+        try {
+            await requestAction(`${API_BASE}/submissions/${encodeURIComponent(id)}/transcription`, {
+                method: "POST"
+            });
+            showSuccess("已重新提交处理，结果将在列表中更新。");
+            await loadSubmissions();
+        } catch (error) {
+            button.disabled = false;
+            button.textContent = original;
+            showError(errorMessage(error, "重新转写提交失败，请稍后重试。"));
+        } finally {
+            state.actionBusy = false;
+        }
+    }
+
+    async function refreshAdminData() {
+        const options = unwrap(await requestJson(`${API_BASE}/options`));
+        applyOptions(options);
+        await loadSubmissions();
     }
 
     function isUuid(value) {
@@ -527,6 +884,33 @@
         return payload || {};
     }
 
+    async function requestAction(url, options = {}) {
+        const headers = { Accept: "application/json" };
+        const request = {
+            method: options.method || "POST",
+            credentials: "same-origin",
+            cache: "no-store",
+            headers
+        };
+        if (options.body !== undefined) {
+            headers["Content-Type"] = "application/json";
+            request.body = JSON.stringify(options.body);
+        }
+        const response = await fetch(url, request);
+        const contentType = response.headers.get("content-type") || "";
+        let payload = null;
+        if (contentType.includes("application/json")) payload = await response.json();
+        if (!response.ok) {
+            if (response.status === 401) throw new Error("管理账号未授权或凭据已失效，请重新打开管理页登录。");
+            if (response.status === 403) throw new Error("仅总管理员可执行此操作。");
+            if (response.status === 404) throw new Error("记录或媒体不存在，可能已被处理。");
+            if (response.status === 409) throw new Error(cleanText(payload && payload.message)
+                || "当前状态不允许此操作，请刷新后重试。");
+            throw new Error(cleanText(payload && payload.message) || `请求失败（HTTP ${response.status}）`);
+        }
+        return unwrap(payload || {});
+    }
+
     function unwrap(payload) {
         return payload && typeof payload.data === "object" ? payload.data : (payload || {});
     }
@@ -534,6 +918,20 @@
     function showError(message) {
         $("#page-error-message").textContent = message;
         $("#page-error").hidden = false;
+    }
+
+    function showSuccess(message) {
+        if (state.successTimer) window.clearTimeout(state.successTimer);
+        $("#page-success-message").textContent = message;
+        $("#page-success").hidden = false;
+        state.successTimer = window.setTimeout(hideSuccess, 8000);
+    }
+
+    function hideSuccess() {
+        if (state.successTimer) window.clearTimeout(state.successTimer);
+        state.successTimer = null;
+        $("#page-success").hidden = true;
+        $("#page-success-message").textContent = "";
     }
 
     function hideError() {
@@ -583,6 +981,21 @@
         return new Intl.NumberFormat("zh-CN").format(value || 0);
     }
 
+    function formatBytes(value) {
+        const bytes = Number(value);
+        if (!Number.isFinite(bytes) || bytes < 0) return "--";
+        if (bytes < 1024) return `${Math.trunc(bytes)} B`;
+        const units = ["KB", "MB", "GB", "TB"];
+        let amount = bytes / 1024;
+        let index = 0;
+        while (amount >= 1024 && index < units.length - 1) {
+            amount /= 1024;
+            index += 1;
+        }
+        return `${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: amount >= 100 ? 0 : 1 })
+            .format(amount)} ${units[index]}`;
+    }
+
     function formatDateTime(value) {
         if (!value) return "时间未记录";
         const date = new Date(value);
@@ -595,5 +1008,20 @@
             minute: "2-digit",
             hour12: false
         }).format(date).replace("/", "-");
+    }
+
+    function formatFullDateTime(value) {
+        if (!value) return "时间未记录";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return cleanText(value);
+        return new Intl.DateTimeFormat("zh-CN", {
+            timeZone: "Asia/Shanghai",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false
+        }).format(date).replaceAll("/", "-");
     }
 }());
