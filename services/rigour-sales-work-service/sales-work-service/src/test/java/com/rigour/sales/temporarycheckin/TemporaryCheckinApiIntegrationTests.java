@@ -42,6 +42,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -1295,14 +1296,6 @@ class TemporaryCheckinApiIntegrationTests {
 
         byte[] jpeg = new byte[] {(byte) 0xff, (byte) 0xd8, (byte) 0xff, 0x00};
         upload(submissionId, "storefront-photo",
-                new MockMultipartFile("file", "door.png", "image/jpeg", jpeg))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("文件扩展名与实际内容不一致"));
-        upload(submissionId, "storefront-photo",
-                new MockMultipartFile("file", "door.jpg", "image/png", jpeg))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("文件声明类型与实际内容不一致"));
-        upload(submissionId, "storefront-photo",
                 new MockMultipartFile("file", "door.jpg", "image/jpeg", new byte[] {1, 2, 3, 4}))
                 .andExpect(status().isBadRequest());
 
@@ -1321,7 +1314,7 @@ class TemporaryCheckinApiIntegrationTests {
         verify(fileStorage, times(1)).put(metadata.capture(), any(InputStream.class));
         String objectPrefix = TENANT_ID + "/temporary-sales-checkin/" + submissionId + "/";
         assertThat(metadata.getValue().tenantId()).isEqualTo(TENANT_ID.toString());
-        assertThat(metadata.getValue().originalName()).isEqualTo("blob");
+        assertThat(metadata.getValue().originalName()).isEqualTo("blob.jpg");
         assertThat(metadata.getValue().objectKey())
                 .matches(objectPrefix + "photos/storefront/[0-9a-f]{64}\\.jpg");
 
@@ -1355,14 +1348,24 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void acceptsSafeAudioMimeAliasesUsedByMobileFilePickers() throws Exception {
+    void acceptsValidAudioWhenMobilePickerMetadataIsMissingOrUnreliable() throws Exception {
         List<MockMultipartFile> files = List.of(
                 new MockMultipartFile("file", "voice.aac", "audio/aacp",
                         new byte[] {(byte) 0xff, (byte) 0xf1, 0, 0, 0, 0, 0}),
                 new MockMultipartFile("file", "voice.mp3", "audio/mp3",
-                        new byte[] {'I', 'D', '3'}),
+                        new byte[] {'I', 'D', '3', 0, 0, 0, 0, 0, 0, 0}),
                 new MockMultipartFile("file", "voice.ogg", "application/ogg",
-                        new byte[] {'O', 'g', 'g', 'S'}));
+                        new byte[] {'O', 'g', 'g', 'S', 'O', 'p', 'u', 's', 'H', 'e', 'a', 'd'}),
+                new MockMultipartFile("file", "content", "application/x-qq-file",
+                        realM4a()),
+                new MockMultipartFile("file", "voice.tmp", "video/mp4",
+                        realM4a()),
+                new MockMultipartFile("file", "voice", null, realM4a()),
+                new MockMultipartFile("file", "voice.bin", "application/octet-stream",
+                        new byte[] {0x1a, 0x45, (byte) 0xdf, (byte) 0xa3,
+                                'A', '_', 'O', 'P', 'U', 'S'}),
+                new MockMultipartFile("file", "voice.bin", "application/octet-stream",
+                        new byte[] {'#', '!', 'A', 'M', 'R', '-', 'W', 'B', '\n'}));
 
         for (MockMultipartFile file : files) {
             MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
@@ -1378,6 +1381,66 @@ class TemporaryCheckinApiIntegrationTests {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.kind").value("audio"));
         }
+
+        ArgumentCaptor<FileMetadata> metadata = ArgumentCaptor.forClass(FileMetadata.class);
+        verify(fileStorage, times(files.size())).put(metadata.capture(), any(InputStream.class));
+        assertThat(metadata.getAllValues().get(3).contentType()).isEqualTo("audio/mp4");
+        assertThat(metadata.getAllValues().get(3).originalName()).isEqualTo("content.m4a");
+        assertThat(metadata.getAllValues().get(4).originalName()).isEqualTo("voice.m4a");
+        assertThat(metadata.getAllValues().get(5).originalName()).isEqualTo("voice.m4a");
+        assertThat(metadata.getAllValues().get(3).objectKey()).endsWith(".m4a");
+    }
+
+    @Test
+    void acceptsAudioAboveTheFormerTwentyFiveMegabyteCeiling() throws Exception {
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submission(
+                                UUID.randomUUID(), SUBMISSION_KEY, "大文件录音", true, location()))))
+                .andExpect(status().isOk())
+                .andReturn();
+        UUID submissionId = UUID.fromString(objectMapper.readTree(
+                created.getResponse().getContentAsByteArray()).path("id").asText());
+
+        byte[] audio = new byte[26 * 1024 * 1024];
+        byte[] header = new byte[] {
+                0, 0, 0, 12, 'f', 't', 'y', 'p', 'M', '4', 'A', ' ',
+                0, 0, 0, 20, 'h', 'd', 'l', 'r',
+                0, 0, 0, 0, 0, 0, 0, 0, 's', 'o', 'u', 'n'
+        };
+        System.arraycopy(header, 0, audio, 0, header.length);
+
+        upload(submissionId, "audio", new MockMultipartFile(
+                "file", "long-recording.m4a", "application/x-qq-file", audio))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sizeBytes").value(audio.length));
+    }
+
+    @Test
+    void rejectsNonAudioAndRealVideoContentEvenWhenMetadataClaimsAudio() throws Exception {
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submission(
+                                UUID.randomUUID(), SUBMISSION_KEY, "错误音频内容", true, location()))))
+                .andExpect(status().isOk())
+                .andReturn();
+        UUID submissionId = UUID.fromString(objectMapper.readTree(
+                created.getResponse().getContentAsByteArray()).path("id").asText());
+
+        upload(submissionId, "audio", new MockMultipartFile(
+                "file", "voice.m4a", "audio/mp4",
+                new byte[] {(byte) 0xff, (byte) 0xd8, (byte) 0xff, 0x00}))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("录音格式不支持或文件内容损坏"));
+
+        upload(submissionId, "audio", new MockMultipartFile(
+                "file", "voice.m4a", "audio/mp4", realVideoMp4()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("录音格式不支持或文件内容损坏"));
+
+        upload(submissionId, "audio", new MockMultipartFile(
+                "file", "voice.m4a", "audio/mp4", new byte[0]))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -1395,7 +1458,7 @@ class TemporaryCheckinApiIntegrationTests {
         byte[] png = new byte[] {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
         byte[] wav = new byte[] {'R', 'I', 'F', 'F', 4, 0, 0, 0, 'W', 'A', 'V', 'E'};
         upload(submissionId, "storefront-photo",
-                new MockMultipartFile("file", "../../store.jpg", "image/jpeg", jpeg))
+                new MockMultipartFile("file", "../../store.html", "text/html", jpeg))
                 .andExpect(status().isOk());
         upload(submissionId, "wechat-screenshot",
                 new MockMultipartFile("file", "../../customer.png", "image/png", png))
@@ -1591,7 +1654,7 @@ class TemporaryCheckinApiIntegrationTests {
                 "北京", VISITOR_ID, STORE_ID, "北京门店", "媒体清理客户", "物理删除验收");
 
         mockMvc.perform(get("/sales-checkin/admin/api/v1/options")
-                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)))
+                .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.mediaStats.activeFiles").value(1))
                 .andExpect(jsonPath("$.mediaStats.totalBytes").value(4))
@@ -1936,6 +1999,48 @@ class TemporaryCheckinApiIntegrationTests {
                 : UUID.nameUUIDFromBytes(("test-city:" + city).getBytes(StandardCharsets.UTF_8));
         return new TemporaryCheckinAdminPrincipal(accountId, sessionId, username, username,
                 global ? "GLOBAL_ADMIN" : "CITY_ADMIN", cityId, city, false, "test-csrf-token");
+    }
+
+    /** 由 ffmpeg 生成的 50ms AAC/M4A 静音样本，用于验证真实容器中的 soun handler。 */
+    private static byte[] realM4a() {
+        return Base64.getDecoder().decode(
+                "AAAAHGZ0eXBNNEEgAAACAE00QSBpc29taXNvMgAAAAhmcmVlAAAAH21kYXTcAExhdmM2My4xLjEwMQACMEAOARggBwAAAwJtb292"
+                + "AAAAbG12aGQAAAAAAAAAAAAAAAAAAB9AAAABkAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAA"
+                + "AEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACLXRyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAABkAAA"
+                + "AAAAAAAAAAAAAQEAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAACRlZHRzAAAAHGVsc3QA"
+                + "AAAAAAAAAQAAAZAAAAQAAAEAAAAAAaVtZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAAB9AAAAFkFXEAAAAAAAtaGRscgAAAAAAAAAA"
+                + "c291bgAAAAAAAAAAAAAAAFNvdW5kSGFuZGxlcgAAAAFQbWluZgAAABBzbWhkAAAAAAAAAAAAAAAkZGluZgAAABxkcmVmAAAAAAAA"
+                + "AAEAAAAMdXJsIAAAAAEAAAEUc3RibAAAAGpzdHNkAAAAAAAAAAEAAABabXA0YQAAAAAAAAABAAAAAAAAAAAAAQAQAAAAAB9AAAAA"
+                + "AAA2ZXNkcwAAAAADgICAJQABAASAgIAXQBUAAAAAAD6AAAAECQWAgIAFFYhW5QAGgICAAQIAAAAgc3R0cwAAAAAAAAACAAAAAQAA"
+                + "BAAAAAABAAABkAAAABxzdHNjAAAAAAAAAAEAAAABAAAAAgAAAAEAAAAcc3RzegAAAAAAAAAAAAAAAgAAABMAAAAEAAAAFHN0Y28A"
+                + "AAAAAAAAAQAAACwAAAAac2dwZAEAAAByb2xsAAAAAgAAAAH//wAAABxzYmdwAAAAAHJvbGwAAAABAAAAAgAAAAEAAABhdWR0YQAA"
+                + "AFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAA"
+                + "TGF2ZjYzLjEuMTAx");
+    }
+
+    /** 由 ffmpeg 生成的纯 H.264 MP4，用于防止把真实视频误收为录音。 */
+    private static byte[] realVideoMp4() {
+        return Base64.getDecoder().decode(
+                "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAm1tZGF0AAACUwYF//9P3EXpvebZSLeWLNgg2SPu73gy"
+                + "NjQgLSBjb3JlIDE2NSByMzIyMiBiMzU2MDVhIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyNSAt"
+                + "IGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTAgcmVmPTEgZGVibG9jaz0wOjA6MCBh"
+                + "bmFseXNlPTA6MCBtZT1kaWEgc3VibWU9MCBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0wIG1lX3JhbmdlPTE2IGNo"
+                + "cm9tYV9tZT0xIHRyZWxsaXM9MCA4eDhkY3Q9MCBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29m"
+                + "ZnNldD0wIHRocmVhZHM9MSBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVy"
+                + "bGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAg"
+                + "a2V5aW50X21pbj0xIHNjZW5lY3V0PTAgaW50cmFfcmVmcmVzaD0wIHJjPWNyZiBtYnRyZWU9MCBjcmY9MjMuMCBxY29tcD0wLjYw"
+                + "IHFwbWluPTAgcXBtYXg9NjkgcXBzdGVwPTQgaXBfcmF0aW89MS40MCBhcT0wAIAAAAAKZYiEOiYoAAkC4AAAAwxtb292AAAAbG12"
+                + "aGQAAAAAAAAAAAAAAAAAAAPoAAAD6AABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAA"
+                + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACN3RyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAD6AAAAAAAAAAA"
+                + "AAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAEAAAABAAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAA"
+                + "AQAAA+gAAAAAAAEAAAAAAa9tZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAAEAAAABAAFXEAAAAAAAtaGRscgAAAAAAAAAAdmlkZQAA"
+                + "AAAAAAAAAAAAAFZpZGVvSGFuZGxlcgAAAAFabWluZgAAABR2bWhkAAAAAQAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAAB"
+                + "AAAADHVybCAAAAABAAABGnN0YmwAAAC2c3RzZAAAAAAAAAABAAAApmF2YzEAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAEAAQAEgA"
+                + "AABIAAAAAAAAAAEUTGF2YzYzLjEuMTAxIGxpYngyNjQAAAAAAAAAAAAAAAAY//8AAAAsYXZjQwFCwAr/4QAVZ0LACtp7ARAAAAMA"
+                + "EAAAAwAg8SJqAQAEaM4PyAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAABMoAAAAAAAAABhzdHRzAAAAAAAAAAEAAAABAABA"
+                + "AAAAABxzdHNjAAAAAAAAAAEAAAABAAAAAQAAAAEAAAAUc3RzegAAAAAAAAJlAAAAAQAAABRzdGNvAAAAAAAAAAEAAAAwAAAAYXVk"
+                + "dGEAAABZbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAsaWxzdAAAACSpdG9vAAAAHGRhdGEAAAAB"
+                + "AAAAAExhdmY2My4xLjEwMQ==");
     }
 
     private static byte[] bin(UUID value) {

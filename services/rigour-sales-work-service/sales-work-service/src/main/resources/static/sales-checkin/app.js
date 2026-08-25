@@ -6,12 +6,12 @@
     const STORAGE_VERSION = 1;
     const DRAFT_TTL_MS = 8 * 60 * 60 * 1000;
     const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-    const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
-    const MAX_RECORDING_MS = 20 * 60 * 1000;
     const SEARCH_DELAY_MS = 350;
     const APPLE_REFERENCE_EPOCH_OFFSET_MS = 978307200000;
     const LOCATION_CAPTURE_PAST_WINDOW_MS = 60 * 60 * 1000;
     const LOCATION_CAPTURE_FUTURE_SKEW_MS = 2 * 60 * 1000;
+    const GEOLOCATION_TIMEOUT_MS = 30000;
+    const GEOLOCATION_FALLBACK_MAX_AGE_MS = 5 * 60 * 1000;
     const PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
 
     const MEDIA = Object.freeze({
@@ -111,7 +111,6 @@
             startedAt: 0,
             elapsedMs: 0,
             timer: null,
-            limitTimer: null,
             stopping: false
         },
         objectUrls: {
@@ -126,6 +125,10 @@
         locationControllers: {
             visit: null,
             store: null
+        },
+        locationCaptureSequence: {
+            visit: 0,
+            store: 0
         },
         submitting: false,
         completed: false,
@@ -293,14 +296,13 @@
                 && state.store.salespersonId !== String(identity.salespersonId))
             || (state.store.city && state.store.city !== identity.city);
         if (restoredMismatch) {
-            removeStoredDraft();
-            state.activeTab = "visit";
-            state.visit = freshVisit();
-            state.store = freshStore();
-            state.submission = freshSubmission();
-            state.restoredAt = null;
-            $("#restore-notice").hidden = true;
-            showError("本机恢复的草稿属于另一销售，已清除本机草稿，服务端已上传内容未被删除。");
+            const hadServerDraft = Boolean(state.submission.serverId
+                || state.submission.attemptedPayload
+                || state.submission.uploadedMedia.length
+                || state.submission.mediaUploadAttempts.length);
+            state.identity = identity;
+            startNewSubmission();
+            showIdentityDraftResetNotice(hadServerDraft);
         }
         state.identity = identity;
         state.visit.city = identity.city;
@@ -314,6 +316,15 @@
         renderRestoredValues();
         renderStoreOwnerSummary();
         lockIdentitySelectors();
+    }
+
+    function showIdentityDraftResetNotice(hadServerDraft) {
+        $("#restore-notice strong").textContent = "已为当前销售打开新表单";
+        $("#restore-message").textContent = hadServerDraft
+            ? "本机曾保存其他销售的未完成表单，未带入当前账号；原服务端草稿未做任何修改。"
+            : "本机曾保存其他销售的表单内容，已安全清除，不影响当前打卡。";
+        $("#discard-draft-button").hidden = true;
+        $("#restore-notice").hidden = false;
     }
 
     function renderIdentityState() {
@@ -541,6 +552,7 @@
         const city = $(`#${scope}-city`).value;
         state[scope].city = city;
         state[scope].salespersonId = "";
+        cancelLocationCapture(scope);
         state.locationControllers[scope]?.abort();
         state.locationControllers[scope] = null;
         state[scope].locationContext = null;
@@ -677,7 +689,7 @@
         const controllerKey = isVisit ? "searchController" : "poiSearchController";
         const spinner = isVisit ? $("#store-search-spinner") : $("#poi-search-spinner");
         state[controllerKey]?.abort();
-        const controller = new AbortController();
+        const controller = createRequestController();
         state[controllerKey] = controller;
         spinner.hidden = false;
         try {
@@ -713,6 +725,7 @@
                 }
             }
         } catch (error) {
+            if (state[controllerKey] !== controller) return;
             if (error.name === "AbortError") return;
             if (isVisit) {
                 $("#store-search-help").textContent = errorMessage(error, "附近门店搜索失败，请稍后重试。");
@@ -1286,45 +1299,89 @@
 
         const button = $(`#${scope}-location-button`);
         const status = $(`#${scope}-location-status`);
+        const captureSequence = ++state.locationCaptureSequence[scope];
+        const captureIsActive = () => state.locationCaptureSequence[scope] === captureSequence;
+        state.locationControllers[scope]?.abort();
+        state.locationControllers[scope] = null;
+        state[scope].locationContext = {
+            geocodeStatus: "CAPTURING",
+            errorMessage: "正在重新获取当前位置，请稍候。"
+        };
+        if (scope === "visit") {
+            abortStoreSearch();
+            clearSelectedStore(false, false);
+            state.visit.nearbyStores = [];
+            state.visit.nearbySearchResults = null;
+            renderNearbyStores();
+        }
         button.disabled = true;
-        status.textContent = "定位中";
-        status.className = "status-pill is-loading";
-        navigator.geolocation.getCurrentPosition(
-            (position) => {
-                const note = $(`#${scope}-location-note`).value.trim();
-                state[scope].location = {
-                    longitude: roundCoordinate(position.coords.longitude),
-                    latitude: roundCoordinate(position.coords.latitude),
-                    accuracyMeters: roundAccuracy(position.coords.accuracy),
-                    capturedAt: normalizeGeolocationCapturedAt(position.timestamp),
-                    ...(note ? { note } : {})
-                };
-                state[scope].locationContext = { geocodeStatus: "RESOLVING" };
-                if (scope === "visit") {
-                    state.visit.nearbyStores = [];
-                    state.visit.nearbySearchResults = null;
-                    clearSelectedStore(false, false);
-                } else {
-                    state.store.nearbyPois = [];
-                    state.store.poiSearchResults = null;
-                    state.store.manualEntryAllowed = false;
-                    clearSourcePoi(true, true);
+        renderLocation(scope);
+        persistDraft();
+
+        const acceptPosition = (position) => {
+            if (!captureIsActive() || state.submitting || (scope === "visit" && isBusinessLocked())) return;
+            const note = $(`#${scope}-location-note`).value.trim();
+            state[scope].location = {
+                longitude: roundCoordinate(position.coords.longitude),
+                latitude: roundCoordinate(position.coords.latitude),
+                accuracyMeters: roundAccuracy(position.coords.accuracy),
+                capturedAt: normalizeGeolocationCapturedAt(position.timestamp),
+                ...(note ? { note } : {})
+            };
+            state[scope].locationContext = { geocodeStatus: "RESOLVING" };
+            if (scope === "visit") {
+                state.visit.nearbyStores = [];
+                state.visit.nearbySearchResults = null;
+                clearSelectedStore(false, false);
+            } else {
+                state.store.nearbyPois = [];
+                state.store.poiSearchResults = null;
+                state.store.manualEntryAllowed = false;
+                clearSourcePoi(true, true);
+            }
+            button.disabled = false;
+            renderLocation(scope);
+            if (scope === "visit") renderNearbyStores();
+            else renderStoreSource();
+            renderBusinessLock();
+            persistDraft();
+            resolveLocationContext(scope);
+        };
+        const failLocation = (error) => {
+            if (!captureIsActive()) return;
+            const message = geolocationErrorMessage(error, true);
+            state[scope].locationContext = {
+                geocodeStatus: "FAILED",
+                errorMessage: message
+            };
+            button.disabled = false;
+            renderLocation(scope);
+            setFieldError(`${scope}-location`, message);
+            persistDraft();
+        };
+        const retryCompatibleLocation = (error) => {
+            if (!captureIsActive()) return;
+            if (error?.code === 1) {
+                failLocation(error);
+                return;
+            }
+            status.textContent = "兼容定位中";
+            status.className = "status-pill is-loading";
+            clearFieldError(`${scope}-location`);
+            navigator.geolocation.getCurrentPosition(
+                acceptPosition,
+                failLocation,
+                {
+                    enableHighAccuracy: false,
+                    timeout: GEOLOCATION_TIMEOUT_MS,
+                    maximumAge: GEOLOCATION_FALLBACK_MAX_AGE_MS
                 }
-                button.disabled = false;
-                renderLocation(scope);
-                if (scope === "visit") renderNearbyStores();
-                else renderStoreSource();
-                renderBusinessLock();
-                persistDraft();
-                resolveLocationContext(scope);
-            },
-            (error) => {
-                button.disabled = false;
-                status.textContent = "定位失败";
-                status.className = "status-pill";
-                setFieldError(`${scope}-location`, geolocationErrorMessage(error));
-            },
-            { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+            );
+        };
+        navigator.geolocation.getCurrentPosition(
+            acceptPosition,
+            retryCompatibleLocation,
+            { enableHighAccuracy: true, timeout: GEOLOCATION_TIMEOUT_MS, maximumAge: 0 }
         );
     }
 
@@ -1334,7 +1391,7 @@
         if (!city || !location) return;
 
         state.locationControllers[scope]?.abort();
-        const controller = new AbortController();
+        const controller = createRequestController();
         state.locationControllers[scope] = controller;
         state[scope].locationContext = { geocodeStatus: "RESOLVING" };
         if (scope === "visit") {
@@ -1402,6 +1459,7 @@
                     : [];
             }
         } catch (error) {
+            if (state.locationControllers[scope] !== controller) return;
             if (error.name === "AbortError") return;
             const message = errorMessage(error, "地址与附近门店解析失败，请重试。");
             state[scope].locationContext = { geocodeStatus: "FAILED", errorMessage: message };
@@ -1451,16 +1509,18 @@
         const detail = $(`#${scope}-location-detail`);
         const button = $(`#${scope}-location-button`);
         const retry = $(`#${scope}-location-retry`);
+        const capturing = context?.geocodeStatus === "CAPTURING";
+        const failed = context?.geocodeStatus === "FAILED";
         button.closest(".location-card")?.classList.toggle("is-located", Boolean(location));
         if (scope === "store") {
             button.closest(".location-card")?.classList.toggle("has-inherited-location", Boolean(location));
         }
         if (!location) {
-            status.textContent = "未定位";
-            status.className = "status-pill";
+            status.textContent = capturing ? "定位中" : failed ? "定位失败" : "未定位";
+            status.className = capturing ? "status-pill is-loading" : failed ? "status-pill is-warning" : "status-pill";
             detail.hidden = true;
             retry.hidden = true;
-            $(`#${scope}-location-button-label`).textContent = "获取当前位置";
+            $(`#${scope}-location-button-label`).textContent = capturing ? "正在获取当前位置…" : "获取当前位置";
             return;
         }
         const resolving = context?.geocodeStatus === "RESOLVING";
@@ -1468,7 +1528,9 @@
         const cityMismatch = context?.cityMatched === false;
         const inaccurate = context?.accuracyAccepted === false;
         const expired = context?.freshnessAccepted === false;
-        status.textContent = resolving
+        status.textContent = capturing
+            ? "定位中"
+            : resolving
             ? "解析地址中"
             : cityMismatch
                 ? "城市不一致"
@@ -1477,17 +1539,18 @@
                     : expired
                         ? "定位已过期"
                         : ready ? "已定位" : "需重试";
-        status.className = resolving
+        status.className = capturing || resolving
             ? "status-pill is-loading"
             : ready ? "status-pill is-ready" : "status-pill is-warning";
         detail.hidden = false;
         const address = cleanText(context?.address || context?.formattedAddress);
         const addressElement = $(`#${scope}-location-address`);
         addressElement.textContent = address
-            || (resolving ? "正在解析实际地址…"
+            || (capturing ? "正在重新获取当前位置…"
+                : resolving ? "正在解析实际地址…"
                 : context?.errorMessage || "地址解析失败，请重试");
-        addressElement.classList.toggle("is-missing", !address && !resolving);
-        retry.hidden = resolving || ready;
+        addressElement.classList.toggle("is-missing", !address && !capturing && !resolving);
+        retry.hidden = capturing || resolving || ready;
         $(`#${scope}-location-accuracy`).textContent = `约 ${location.accuracyMeters} 米`;
         $(`#${scope}-location-time`).textContent = formatDateTime(location.capturedAt);
         $(`#${scope}-location-note`).value = location.note || "";
@@ -1496,10 +1559,14 @@
             : "重新定位";
     }
 
-    function geolocationErrorMessage(error) {
+    function geolocationErrorMessage(error, fallbackAttempted = false) {
         if (error && error.code === 1) return "定位权限被拒绝。请在浏览器设置中允许位置访问后重试。";
-        if (error && error.code === 2) return "暂时无法获取当前位置，请移动到信号较好的位置后重试。";
-        if (error && error.code === 3) return "定位超时，请重试并保持页面在前台。";
+        if (error && error.code === 2) return fallbackAttempted
+            ? "已自动尝试两种定位方式，仍无法获取位置。请打开系统定位后重试。"
+            : "暂时无法获取当前位置，请移动到信号较好的位置后重试。";
+        if (error && error.code === 3) return fallbackAttempted
+            ? "两种定位方式均未返回结果，请保持页面在前台并重新获取。"
+            : "定位超时，请重试并保持页面在前台。";
         return "获取定位失败，请检查系统定位服务后重试。";
     }
 
@@ -1525,6 +1592,7 @@
         }
         state.files[kind] = file;
         renderImagePreview(kind, file);
+        persistDraft();
     }
 
     function renderImagePreview(kind, file) {
@@ -1552,18 +1620,14 @@
             event.target.value = "";
             return;
         }
-        if (!isSupportedAudioFile(file)) {
-            setFieldError("audio-file", "仅支持 AAC、M4A/MP4、WAV、AMR、WebM、MP3 或 OGG 音频。" );
-            event.target.value = "";
-            return;
-        }
-        if (file.size > MAX_AUDIO_BYTES) {
-            setFieldError("audio-file", "音频超过 25MB，请选择较短或压缩后的文件。" );
+        if (!Number.isFinite(file.size) || file.size <= 0) {
+            setFieldError("audio-file", "没有读取到有效文件，请重新选择。" );
             event.target.value = "";
             return;
         }
         state.files.audio = file;
         renderAudioPreview(file);
+        persistDraft();
     }
 
     function isSupportedImageFile(file) {
@@ -1575,17 +1639,6 @@
         return supportedMimeTypes.has(mimeType) || /\.(avif|heic|heif|jpe?g|png|webp)$/i.test(file.name || "");
     }
 
-    function isSupportedAudioFile(file) {
-        const mimeType = (file.type || "").toLowerCase().split(";", 1)[0];
-        const supportedMimeTypes = new Set([
-            "audio/aac", "audio/aacp", "audio/amr", "audio/mp4", "audio/m4a", "audio/x-m4a",
-            "audio/mpeg", "audio/mp3", "audio/ogg", "application/ogg", "audio/wav", "audio/x-wav",
-            "audio/webm"
-        ]);
-        return supportedMimeTypes.has(mimeType)
-            || /\.(aac|amr|m4a|m4b|mp3|mp4|oga|ogg|opus|wav|wave|webm)$/i.test(file.name || "");
-    }
-
     function checkRecorderSupport() {
         const supported = Boolean(window.isSecureContext && navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
         const uploaded = hasRemoteMediaState(MEDIA.audio);
@@ -1594,17 +1647,16 @@
             $("#recorder-help").textContent = "草稿中的录音需先删除，才能重新录制或选择替换文件。";
         } else if (!supported) {
             $("#recorder-help").textContent = window.isSecureContext
-                ? "当前浏览器不支持网页录音，请使用下方文件选择上传音频。"
-                : "网页录音需要 HTTPS，请使用正式地址打开，或选择已有音频文件。";
+                ? "当前浏览器不支持网页录音，可直接从手机文件中选择录音上传。"
+                : "网页录音需要 HTTPS，可直接从手机文件中选择录音上传。";
         } else {
             updateRecorderHelp(preferredRecorderOptions()?.mimeType);
         }
     }
 
     function updateRecorderHelp(mimeType) {
-        $("#recorder-help").textContent = (mimeType || "").toLowerCase().includes("webm")
-            ? "本机将录制 WebM：原音会正常保存和播放，但暂不自动转写；如需转写，请上传 M4A、MP3、WAV、AAC、AMR 或 OGG。"
-            : "录音时请保持页面在前台；提交后录音会异步转写并生成 AI 摘要。";
+        const format = (mimeType || "").toLowerCase().includes("webm") ? "WebM" : "音频";
+        $("#recorder-help").textContent = `本机将录制 ${format}；请保持页面在前台。录音会保存，自动转文字与摘要当前已暂停。`;
     }
 
     async function toggleRecording() {
@@ -1615,7 +1667,7 @@
         hideError();
         clearFieldError("audio-file");
         if (hasRemoteMediaState(MEDIA.audio)) {
-            setFieldError("audio-file", "请先删除草稿中已上传或待确认的录音，再重新录制。" );
+            setFieldError("audio-file", "请先删除草稿中已确认上传的录音，再重新录制。" );
             return;
         }
         if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
@@ -1653,7 +1705,6 @@
             setRecordingUi(true);
             updateRecordingClock();
             state.recorder.timer = window.setInterval(updateRecordingClock, 500);
-            state.recorder.limitTimer = window.setTimeout(stopRecording, MAX_RECORDING_MS);
         } catch (error) {
             cleanupRecorder();
             setFieldError("audio-file", microphoneErrorMessage(error));
@@ -1670,14 +1721,14 @@
         const recorder = state.recorder.instance;
         if (!recorder || recorder.state === "inactive" || state.recorder.stopping) return;
         state.recorder.stopping = true;
-        state.recorder.elapsedMs = Math.min(Date.now() - state.recorder.startedAt, MAX_RECORDING_MS);
+        state.recorder.elapsedMs = Date.now() - state.recorder.startedAt;
         recorder.stop();
         setRecordingUi(false, true);
     }
 
     function finishRecording() {
         const recorder = state.recorder.instance;
-        const duration = state.recorder.elapsedMs || Math.min(Date.now() - state.recorder.startedAt, MAX_RECORDING_MS);
+        const duration = state.recorder.elapsedMs || Date.now() - state.recorder.startedAt;
         const mimeType = recorder?.mimeType || state.recorder.chunks[0]?.type || "audio/webm";
         const blob = new Blob(state.recorder.chunks, { type: mimeType });
         cleanupRecorder();
@@ -1690,30 +1741,25 @@
             setFieldError("audio-file", "没有录到有效音频，请重新录制。" );
             return;
         }
-        if (blob.size > MAX_AUDIO_BYTES) {
-            setFieldError("audio-file", "录音超过 25MB，请缩短录音后重试。" );
-            return;
-        }
         const extension = audioExtension(mimeType);
-        const file = new File([blob], `现场录音-${formatFilenameTime(new Date())}.${extension}`, {
-            type: mimeType,
-            lastModified: Date.now()
-        });
+        const filename = `现场录音-${formatFilenameTime(new Date())}.${extension}`;
+        const file = typeof window.File === "function"
+            ? new File([blob], filename, { type: mimeType, lastModified: Date.now() })
+            : Object.assign(blob, { name: filename, lastModified: Date.now() });
         $("#audio-file").value = "";
         state.files.audio = file;
         renderAudioPreview(file, duration);
+        persistDraft();
     }
 
     function cleanupRecorder() {
         clearInterval(state.recorder.timer);
-        clearTimeout(state.recorder.limitTimer);
         state.recorder.stream?.getTracks().forEach((track) => track.stop());
         state.recorder.instance = null;
         state.recorder.stream = null;
         state.recorder.chunks = [];
         state.recorder.startedAt = 0;
         state.recorder.timer = null;
-        state.recorder.limitTimer = null;
         state.recorder.stopping = false;
         setRecordingUi(false);
     }
@@ -1728,8 +1774,8 @@
     }
 
     function updateRecordingClock() {
-        if (isRecording()) state.recorder.elapsedMs = Math.min(Date.now() - state.recorder.startedAt, MAX_RECORDING_MS);
-        $("#recording-clock").textContent = `${formatDuration(state.recorder.elapsedMs)} / 20:00`;
+        if (isRecording()) state.recorder.elapsedMs = Date.now() - state.recorder.startedAt;
+        $("#recording-clock").textContent = formatDuration(state.recorder.elapsedMs);
     }
 
     function isRecording() {
@@ -1750,14 +1796,14 @@
 
     async function clearFile(kind) {
         const mediaKind = MEDIA[kind];
-        const uploaded = hasRemoteMediaState(mediaKind);
+        const mayExistRemotely = mayHaveRemoteMediaState(mediaKind);
         const errorKey = mediaErrorKey(kind);
         const button = mediaRemoveButton(kind);
         const originalLabel = button.textContent;
         clearFieldError(errorKey);
         if (kind === "audio") pauseAudioPreview();
 
-        if (uploaded) {
+        if (mayExistRemotely) {
             if (!state.submission.serverId) {
                 const message = "已上传文件缺少服务端草稿编号，无法安全删除；请刷新页面后重试。";
                 setFieldError(errorKey, message);
@@ -1780,6 +1826,10 @@
         }
 
         resetLocalFile(kind);
+        state.submission.mediaUploadAttempts = state.submission.mediaUploadAttempts
+            .filter((item) => item !== mediaKind);
+        renderUploadedBadges();
+        persistDraft();
         clearFieldError(errorKey);
         return true;
     }
@@ -1988,6 +2038,12 @@
                     continue;
                 }
                 if (!upload.file) {
+                    if (state.submission.mediaUploadAttempts.includes(upload.step)) {
+                        const label = upload.step === MEDIA.photo ? "现场照片"
+                            : upload.step === MEDIA.wechat ? "企微截图" : "拜访录音";
+                        setProgressStep(upload.step, "error", `${label}上传结果待确认`);
+                        throw new Error(`${label}上次上传结果未确认。请重新选择原文件继续重试，或点击删除明确放弃。`);
+                    }
                     setProgressStep(upload.step, upload.required ? "error" : "skipped");
                     if (upload.required) throw new Error("刷新后需要重新选择现场照片，再继续提交。" );
                     continue;
@@ -1998,7 +2054,11 @@
                     persistDraft();
                 }
                 await uploadMedia(upload.step, upload.file);
-                state.submission.uploadedMedia.push(upload.step);
+                state.submission.mediaUploadAttempts = state.submission.mediaUploadAttempts
+                    .filter((item) => item !== upload.step);
+                if (!state.submission.uploadedMedia.includes(upload.step)) {
+                    state.submission.uploadedMedia.push(upload.step);
+                }
                 persistDraft();
                 renderUploadedBadges();
                 setProgressStep(upload.step, "done");
@@ -2026,15 +2086,52 @@
         }
     }
 
-    async function uploadMedia(kind, file) {
-        const formData = new FormData();
-        formData.append("file", file, file.name || kind);
-        await requestJson(`/submissions/${encodeURIComponent(state.submission.serverId)}/media/${kind}`, {
-            method: "PUT",
-            headers: { "X-Submission-Key": state.submission.submissionKey },
-            body: formData,
-            timeout: 180000
+    function uploadMedia(kind, file) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            const formData = new FormData();
+            formData.append("file", file, file.name || kind);
+            xhr.open("PUT",
+                `${API_BASE}/submissions/${encodeURIComponent(state.submission.serverId)}/media/${kind}`,
+                true);
+            xhr.withCredentials = true;
+            // 不设置总时长截止，避免 QQ/X5 在慢网大文件上传时被前端计时器主动中断。
+            // 连接失活仍由 Nginx/服务端超时和浏览器网络错误处理。
+            xhr.timeout = 0;
+            xhr.setRequestHeader("Accept", "application/json");
+            xhr.setRequestHeader("X-Submission-Key", state.submission.submissionKey);
+            if (xhr.upload) {
+                xhr.upload.addEventListener("progress", (event) => {
+                    if (!event.lengthComputable || event.total <= 0) return;
+                    const percent = Math.min(99, Math.round((event.loaded / event.total) * 100));
+                    $("#progress-title").textContent = `${progressTitleForMedia(kind)} ${percent}%`;
+                });
+            }
+            xhr.addEventListener("load", () => {
+                const payload = parseResponsePayload(xhr.responseText);
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resolve(payload);
+                    return;
+                }
+                const error = new Error(extractApiMessage(payload) || `上传失败（HTTP ${xhr.status}）`);
+                error.status = xhr.status;
+                error.payload = payload;
+                reject(error);
+            });
+            xhr.addEventListener("timeout", () => reject(new Error("上传连接超时，文件仍保留在本页，可直接重试。")));
+            xhr.addEventListener("error", () => reject(new Error("上传网络中断，文件仍保留在本页，可直接重新提交。")));
+            xhr.addEventListener("abort", () => reject(new Error("上传已中断，文件仍保留在本页，可直接重新提交。")));
+            xhr.send(formData);
         });
+    }
+
+    function parseResponsePayload(text) {
+        if (!text) return null;
+        try {
+            return JSON.parse(text);
+        } catch (_) {
+            return { message: String(text).slice(0, 300) };
+        }
     }
 
     function buildStorePayload() {
@@ -2116,7 +2213,6 @@
         }
         if (state.files.photo && state.files.photo.size > MAX_IMAGE_BYTES) valid = false;
         if (state.files.wechat && state.files.wechat.size > MAX_IMAGE_BYTES) valid = false;
-        if (state.files.audio && state.files.audio.size > MAX_AUDIO_BYTES) valid = false;
         return valid;
     }
 
@@ -2272,6 +2368,10 @@
     }
 
     function setFormsDisabled(disabled) {
+        if (disabled) {
+            cancelLocationCapture("visit");
+            cancelLocationCapture("store");
+        }
         $("#submit-visit-button").disabled = disabled;
         $("#submit-store-button").disabled = disabled;
         [$("#visit-form"), $("#store-form")].forEach((form) => {
@@ -2292,6 +2392,8 @@
         Object.values(state.locationControllers).forEach((controller) => controller?.abort());
         state.locationControllers.visit = null;
         state.locationControllers.store = null;
+        cancelLocationCapture("visit");
+        cancelLocationCapture("store");
         state.activeTab = "visit";
         state.visit = freshVisit();
         state.store = freshStore();
@@ -2304,11 +2406,13 @@
         state.submission = freshSubmission();
         state.submitting = false;
         state.completed = false;
+        state.restoredAt = null;
         removeStoredDraft();
         setFormsDisabled(false);
         $("#visit-form").reset();
         $("#store-form").reset();
         $("#success-panel").hidden = true;
+        $("#restore-notice").hidden = true;
         $(".tabs").hidden = false;
         populateCitySelects();
         renderSalespersonSelect("visit");
@@ -2533,10 +2637,10 @@
             ? state.store.nearbyPois.filter(isUsableNearbyStore)
             : [];
         state.store.poiSearchResults = null;
-        if (!state.visit.locationContext || typeof state.visit.locationContext !== "object") {
+        if (!state.visit.location || !state.visit.locationContext || typeof state.visit.locationContext !== "object") {
             state.visit.locationContext = null;
         }
-        if (!state.store.locationContext || typeof state.store.locationContext !== "object") {
+        if (!state.store.location || !state.store.locationContext || typeof state.store.locationContext !== "object") {
             state.store.locationContext = null;
         }
         if (!isBusinessLocked()) {
@@ -2567,10 +2671,9 @@
     }
 
     function showRestoreNotice() {
-        const uploaded = new Set([
-            ...state.submission.uploadedMedia,
-            ...state.submission.mediaUploadAttempts
-        ]).size;
+        const uploaded = new Set(state.submission.uploadedMedia).size;
+        const pending = state.submission.mediaUploadAttempts
+            .filter((item) => !state.submission.uploadedMedia.includes(item)).length;
         let message = `已恢复 ${formatDateTime(state.restoredAt)} 保存的表单。`;
         if (isBusinessLocked()) {
             message += uploaded
@@ -2578,8 +2681,11 @@
                 : state.submission.serverId
                     ? " 业务信息已锁定，服务端草稿会继续复用；照片、截图和录音需重新选择后上传。"
                     : " 首次草稿响应未确认，业务信息已锁定；重试会使用完全相同的内容恢复服务端草稿。";
+            if (pending) message += ` ${pending} 个文件的上次上传结果未确认，可重新选择后重试。`;
         }
+        $("#restore-notice strong").textContent = "已恢复未完成草稿";
         $("#restore-message").textContent = message;
+        $("#discard-draft-button").hidden = false;
         $("#restore-notice").hidden = false;
     }
 
@@ -2587,24 +2693,37 @@
         const uploadedPhoto = hasRemoteMediaState(MEDIA.photo);
         const uploadedWechat = hasRemoteMediaState(MEDIA.wechat);
         const uploadedAudio = hasRemoteMediaState(MEDIA.audio);
-        $("#photo-uploaded-badge").textContent = state.submission.uploadedMedia.includes(MEDIA.photo)
-            ? "草稿已上传" : "上传状态待确认";
-        $("#wechat-uploaded-badge").textContent = state.submission.uploadedMedia.includes(MEDIA.wechat)
-            ? "草稿已上传" : "上传状态待确认";
-        $("#audio-uploaded-badge").textContent = state.submission.uploadedMedia.includes(MEDIA.audio)
-            ? "草稿已上传" : "上传状态待确认";
-        $("#photo-uploaded-badge").hidden = !uploadedPhoto;
-        $("#wechat-uploaded-badge").hidden = !uploadedWechat;
-        $("#audio-uploaded-badge").hidden = !uploadedAudio;
-        $("#delete-uploaded-photo-button").hidden = !uploadedPhoto || Boolean(state.files.photo);
-        $("#delete-uploaded-wechat-button").hidden = !uploadedWechat || Boolean(state.files.wechat);
-        $("#delete-uploaded-audio-button").hidden = !uploadedAudio || Boolean(state.files.audio);
+        const pendingPhoto = state.submission.mediaUploadAttempts.includes(MEDIA.photo) && !uploadedPhoto;
+        const pendingWechat = state.submission.mediaUploadAttempts.includes(MEDIA.wechat) && !uploadedWechat;
+        const pendingAudio = state.submission.mediaUploadAttempts.includes(MEDIA.audio) && !uploadedAudio;
+        $("#photo-uploaded-badge").textContent = uploadedPhoto ? "草稿已上传" : "可重新选择并重试";
+        $("#wechat-uploaded-badge").textContent = uploadedWechat ? "草稿已上传" : "可重新选择并重试";
+        $("#audio-uploaded-badge").textContent = uploadedAudio ? "草稿已上传" : "可重新选择并重试";
+        $("#photo-uploaded-badge").hidden = !uploadedPhoto && !pendingPhoto;
+        $("#wechat-uploaded-badge").hidden = !uploadedWechat && !pendingWechat;
+        $("#audio-uploaded-badge").hidden = !uploadedAudio && !pendingAudio;
+        $("#delete-uploaded-photo-button").hidden = !mayHaveRemoteMediaState(MEDIA.photo)
+            || Boolean(state.files.photo);
+        $("#delete-uploaded-wechat-button").hidden = !mayHaveRemoteMediaState(MEDIA.wechat)
+            || Boolean(state.files.wechat);
+        $("#delete-uploaded-audio-button").hidden = !mayHaveRemoteMediaState(MEDIA.audio)
+            || Boolean(state.files.audio);
         checkRecorderSupport();
     }
 
     function hasRemoteMediaState(mediaKind) {
-        return state.submission.uploadedMedia.includes(mediaKind)
+        return state.submission.uploadedMedia.includes(mediaKind);
+    }
+
+    function mayHaveRemoteMediaState(mediaKind) {
+        return hasRemoteMediaState(mediaKind)
             || state.submission.mediaUploadAttempts.includes(mediaKind);
+    }
+
+    function createRequestController() {
+        if (typeof window.AbortController === "function") return new window.AbortController();
+        // 旧版 QQ/X5 可能有 fetch 却没有 AbortController；占位对象仍可用于丢弃过期响应。
+        return { signal: undefined, abort() {} };
     }
 
     function invalidateExpiredRestoredLocation(scope) {
@@ -2633,16 +2752,28 @@
     }
 
     async function requestJson(path, options = {}) {
-        const controller = new AbortController();
+        if (typeof window.fetch !== "function" || typeof window.Headers !== "function") {
+            return requestJsonWithXhr(path, options);
+        }
+        const controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
         const externalSignal = options.signal;
         const timeout = options.timeout || 30000;
         let timedOut = false;
+        let rejectTimeout;
+        const timeoutPromise = new Promise((_, reject) => {
+            rejectTimeout = reject;
+        });
         const timeoutId = window.setTimeout(() => {
             timedOut = true;
-            controller.abort();
+            if (controller) controller.abort();
+            else rejectTimeout(new Error("请求超时，请检查网络后重试。"));
         }, timeout);
-        const abortFromExternal = () => controller.abort();
-        externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+        const abortFromExternal = () => {
+            if (controller) controller.abort();
+        };
+        if (controller && externalSignal) {
+            externalSignal.addEventListener("abort", abortFromExternal, { once: true });
+        }
 
         const headers = new Headers(options.headers || {});
         let body = options.body;
@@ -2653,14 +2784,15 @@
         headers.set("Accept", "application/json");
 
         try {
-            const response = await fetch(`${API_BASE}${path}`, {
+            const request = fetch(`${API_BASE}${path}`, {
                 method: options.method || "GET",
                 headers,
                 body,
                 credentials: "same-origin",
                 cache: "no-store",
-                signal: controller.signal
+                signal: controller ? controller.signal : undefined
             });
+            const response = await Promise.race([request, timeoutPromise]);
             const text = await response.text();
             let payload = null;
             if (text) {
@@ -2684,8 +2816,47 @@
             throw error;
         } finally {
             window.clearTimeout(timeoutId);
-            externalSignal?.removeEventListener("abort", abortFromExternal);
+            if (controller && externalSignal) {
+                externalSignal.removeEventListener("abort", abortFromExternal);
+            }
         }
+    }
+
+    function requestJsonWithXhr(path, options) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            const method = options.method || "GET";
+            let body = options.body;
+            xhr.open(method, `${API_BASE}${path}`, true);
+            xhr.withCredentials = true;
+            xhr.timeout = options.timeout || 30000;
+            xhr.setRequestHeader("Accept", "application/json");
+            Object.entries(options.headers || {}).forEach(([name, value]) => {
+                xhr.setRequestHeader(name, value);
+            });
+            if (body && !(body instanceof FormData) && typeof body !== "string") {
+                xhr.setRequestHeader("Content-Type", "application/json");
+                body = JSON.stringify(body);
+            }
+            xhr.addEventListener("load", () => {
+                const payload = parseResponsePayload(xhr.responseText);
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resolve(payload);
+                    return;
+                }
+                const error = new Error(extractApiMessage(payload) || `请求失败（HTTP ${xhr.status}）`);
+                error.status = xhr.status;
+                error.payload = payload;
+                reject(error);
+            });
+            xhr.addEventListener("timeout", () => reject(new Error("请求超时，请检查网络后重试。")));
+            xhr.addEventListener("error", () => reject(new Error("网络连接失败，请检查网络后重试。")));
+            xhr.addEventListener("abort", () => reject(new Error("请求已中断，请重试。")));
+            if (options.signal) {
+                options.signal.addEventListener("abort", () => xhr.abort(), { once: true });
+            }
+            xhr.send(body || null);
+        });
     }
 
     function normalizeResponse(payload) {
@@ -2785,18 +2956,38 @@
 
     function repairRestoredGeolocationTimestamp(scope, savedAtMs) {
         const location = state[scope].location;
-        if (!location?.capturedAt) return;
-        const raw = Date.parse(location.capturedAt);
-        const repaired = resolveGeolocationCapturedAtMs(location.capturedAt, savedAtMs, DRAFT_TTL_MS);
-        if (!Number.isFinite(raw) || repaired === null || repaired === raw) return;
-        location.capturedAt = new Date(repaired).toISOString();
-        state[scope].locationContext = null;
+        if (!location) return;
+        const raw = Date.parse(location.capturedAt || "");
+        const repaired = location.capturedAt
+            ? resolveGeolocationCapturedAtMs(location.capturedAt, savedAtMs, DRAFT_TTL_MS)
+            : null;
+        if (repaired === null) {
+            state[scope].location = null;
+            state[scope].locationContext = null;
+        } else if (!Number.isFinite(raw) || repaired !== raw) {
+            location.capturedAt = new Date(repaired).toISOString();
+            state[scope].locationContext = null;
+        } else {
+            return;
+        }
         if (scope === "visit") {
             state.visit.nearbyStores = [];
             state.visit.nearbySearchResults = null;
         } else {
             state.store.nearbyPois = [];
             state.store.poiSearchResults = null;
+        }
+    }
+
+    function cancelLocationCapture(scope) {
+        state.locationCaptureSequence[scope] += 1;
+        if (state[scope].locationContext?.geocodeStatus === "CAPTURING") {
+            state[scope].locationContext = null;
+        }
+        const button = $(`#${scope}-location-button`);
+        if (button) {
+            button.disabled = false;
+            renderLocation(scope);
         }
     }
 

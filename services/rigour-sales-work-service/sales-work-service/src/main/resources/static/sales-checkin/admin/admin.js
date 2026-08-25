@@ -19,6 +19,7 @@
         cities: [],
         salespersons: [],
         mediaStats: null,
+        audioIntelligenceEnabled: false,
         filters: { q: "", from: "", to: "", city: "", salespersonId: "", status: "" },
         page: 0,
         total: 0,
@@ -353,6 +354,7 @@
         state.salespersons = Array.isArray(payload.salespersons) ? payload.salespersons : [];
         state.mediaStats = payload.mediaStats && typeof payload.mediaStats === "object"
             ? payload.mediaStats : null;
+        state.audioIntelligenceEnabled = payload.audioIntelligenceEnabled === true;
 
         if (!state.scope.allCities && state.scope.city) {
             state.filters.city = state.scope.city;
@@ -1054,12 +1056,23 @@
         const heading = document.createElement("div");
         heading.className = "audio-intelligence__heading";
         const title = document.createElement("strong");
-        title.textContent = "录音转写与摘要";
-        const transcription = statusBadge("transcription", item.transcriptionStatus);
-        heading.append(title, transcription);
+        title.textContent = state.audioIntelligenceEnabled ? "录音转写与摘要" : "录音转写与摘要（已暂停）";
+        heading.appendChild(title);
+        if (state.audioIntelligenceEnabled) {
+            heading.appendChild(statusBadge("transcription", item.transcriptionStatus));
+        }
         panel.appendChild(heading);
 
         const transcript = cleanText(item.transcript);
+        const summary = cleanText(item.summary);
+        if (!state.audioIntelligenceEnabled) {
+            if (transcript) panel.appendChild(createAiTextBlock("已有转写全文", transcript, "transcript"));
+            if (summary) panel.appendChild(createAiTextBlock("已有摘要", summary, "summary"));
+            if (!transcript && !summary) {
+                panel.appendChild(createAiEmptyText("当前未开通腾讯语音识别权限，自动转文字与摘要已暂停；录音仍可正常播放和下载。"));
+            }
+            return panel;
+        }
         if (transcript) {
             panel.appendChild(createAiTextBlock("转写全文", transcript, "transcript"));
         } else {
@@ -1073,7 +1086,6 @@
         summaryHeader.append(summaryTitle, statusBadge("summary", item.summaryStatus));
         panel.appendChild(summaryHeader);
 
-        const summary = cleanText(item.summary);
         panel.appendChild(summary
             ? createAiTextBlock("", summary, "summary")
             : createAiEmptyText(summaryStatusText(item.summaryStatus)));

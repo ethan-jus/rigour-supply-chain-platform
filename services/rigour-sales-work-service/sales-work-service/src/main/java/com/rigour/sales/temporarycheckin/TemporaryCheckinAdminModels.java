@@ -17,7 +17,8 @@ public final class TemporaryCheckinAdminModels {
             AdminScopeView scope,
             List<String> cities,
             List<SalespersonOption> salespersons,
-            AdminMediaStorageStats mediaStats) { }
+            AdminMediaStorageStats mediaStats,
+            boolean audioIntelligenceEnabled) { }
 
     public record AdminMediaStorageStats(
             long activeFiles,

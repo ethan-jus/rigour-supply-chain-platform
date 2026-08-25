@@ -17,7 +17,8 @@ public class TemporaryCheckinProperties {
     private String tenantId;
     private long maxStorefrontPhotoBytes = 10L * 1024 * 1024;
     private long maxWechatScreenshotBytes = 10L * 1024 * 1024;
-    private long maxAudioBytes = 25L * 1024 * 1024;
+    // 匿名公网入口仍需保留可配置的基础设施安全上限，页面端不再设置业务大小门槛。
+    private long maxAudioBytes = 100L * 1024 * 1024;
     private int maxCheckinDistanceMeters = 300;
     private int maxCheckinAccuracyMeters = 200;
     private int maxLocationAgeMinutes = 60;

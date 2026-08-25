@@ -332,7 +332,7 @@
                         <span class="media-step__index" aria-hidden="true">3</span>
                         <div class="media-step__copy">
                             <strong>现场录音</strong>
-                            <span>选填，最长 20 分钟；录音前请征得在场人员同意</span>
+                            <span>选填；录音前请征得在场人员同意，超长录音建议使用系统录音后上传</span>
                         </div>
                         <span id="audio-uploaded-badge" class="mini-badge" hidden>草稿已上传</span>
                         <button id="delete-uploaded-audio-button" class="text-button uploaded-media-delete" type="button" hidden>
@@ -344,7 +344,7 @@
                             <span class="record-button__dot" aria-hidden="true"></span>
                             <span id="record-button-label">开始录音</span>
                         </button>
-                        <div id="recording-clock" class="recording-clock" aria-live="polite">00:00 / 20:00</div>
+                        <div id="recording-clock" class="recording-clock" aria-live="polite">00:00</div>
                     </div>
                     <div id="recording-meter" class="recording-meter" hidden>
                         <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
@@ -360,10 +360,9 @@
                     <div class="fallback-picker">
                         <span>无法录音？</span>
                         <label for="audio-file">选择已有音频文件</label>
-                        <input id="audio-file" type="file"
-                               accept=".aac,.amr,.m4a,.m4b,.mp3,.mp4,.oga,.ogg,.opus,.wav,.wave,.webm,audio/aac,audio/aacp,audio/amr,audio/m4a,audio/mp3,audio/mp4,audio/mpeg,audio/ogg,audio/wav,audio/webm,audio/x-m4a,audio/x-wav,application/ogg">
+                        <input id="audio-file" type="file">
                     </div>
-                    <p id="recorder-help" class="field__help">录音时请保持页面在前台；提交后录音可能用于转写和 AI 摘要。</p>
+                    <p id="recorder-help" class="field__help">可选择 M4A、MP3、WAV、AAC、AMR、OGG 或 WebM；服务端会核验常见文件特征。</p>
                     <span class="field__error" data-error-for="audio-file"></span>
                 </div>
             </section>

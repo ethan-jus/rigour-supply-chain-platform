@@ -41,7 +41,6 @@ import com.rigour.sales.application.port.out.AmapPoiClient;
 import com.rigour.sales.application.port.out.AmapPoiException;
 import com.rigour.shared.file.FileMetadata;
 import com.rigour.shared.file.FileStorage;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
@@ -55,6 +54,7 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -448,24 +448,26 @@ public class TemporaryCheckinService {
         if (previous.objectKey() != null && previous.deletedAt() == null
                 && validated.sha256().equals(previous.sha256())) {
             return new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
-                    validated.bytes().length);
+                    validated.sizeBytes());
         }
 
         String objectKey = tenantId + "/temporary-sales-checkin/" + submissionId + "/"
                 + kind.objectDirectory + "/" + validated.sha256() + validated.extension();
         Instant now = clock.instant();
-        try {
+        try (InputStream content = validated.file().getInputStream()) {
             fileStorage.put(new FileMetadata(tenantId.toString(), objectKey, validated.originalFilename(),
-                    validated.contentType(), validated.bytes().length, validated.sha256(),
+                    validated.contentType(), validated.sizeBytes(), validated.sha256(),
                     OffsetDateTime.ofInstant(now, java.time.ZoneOffset.UTC)),
-                    new ByteArrayInputStream(validated.bytes()));
+                    content);
+        } catch (IOException exception) {
+            throw TemporaryCheckinException.storage("媒体文件读取失败，请重新选择后上传");
         } catch (RuntimeException exception) {
             throw TemporaryCheckinException.storage("媒体文件存储失败，请稍后重试");
         }
         int updated;
         try {
             updated = repository.updateMedia(tenantId, submissionId, kind.columnPrefix,
-                    new MediaWrite(objectKey, validated.contentType(), validated.bytes().length,
+                    new MediaWrite(objectKey, validated.contentType(), validated.sizeBytes(),
                             validated.sha256(), validated.originalFilename()), now);
         } catch (RuntimeException exception) {
             cleanupUnreferencedObject(objectKey, submissionId, kind, "数据库更新异常");
@@ -477,7 +479,7 @@ public class TemporaryCheckinService {
         }
         registerMediaObjectLifecycle(submissionId, kind, objectKey, previous.objectKey());
         return new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
-                validated.bytes().length);
+                validated.sizeBytes());
     }
 
     private void registerMediaObjectLifecycle(
@@ -620,7 +622,7 @@ public class TemporaryCheckinService {
         var stats = repository.mediaStorageStats(tenantId, scopedCity);
         return new AdminOptionsResponse(scopeView(scope), cities, salespersons,
                 new AdminMediaStorageStats(stats.activeFiles(), stats.totalBytes(), stats.imageBytes(),
-                        stats.audioBytes(), stats.oldestCreatedAt()));
+                        stats.audioBytes(), stats.oldestCreatedAt()), aiEnabled);
     }
 
     public AdminSubmissionPage findAdminSubmissions(
@@ -1288,24 +1290,35 @@ public class TemporaryCheckinService {
         if (limit <= 0 || file.getSize() <= 0 || file.getSize() > limit) {
             throw TemporaryCheckinException.badRequest("媒体文件超过大小限制");
         }
-        byte[] bytes;
-        try {
-            bytes = file.getBytes();
+        MessageDigest digest = sha256Digest();
+        MediaSignatureProbe probe = new MediaSignatureProbe(!kind.image);
+        long observedSize = 0;
+        try (InputStream input = file.getInputStream()) {
+            byte[] buffer = new byte[16 * 1024];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read == 0) continue;
+                observedSize += read;
+                if (observedSize > limit) {
+                    throw TemporaryCheckinException.badRequest("媒体文件超过大小限制");
+                }
+                digest.update(buffer, 0, read);
+                probe.accept(buffer, read);
+            }
         } catch (IOException exception) {
             throw TemporaryCheckinException.badRequest("媒体文件读取失败");
         }
-        if (bytes.length == 0 || bytes.length > limit) {
+        if (observedSize == 0) {
             throw TemporaryCheckinException.badRequest("媒体文件超过大小限制");
         }
-        DetectedMedia detected = kind.image ? detectImage(bytes) : detectAudio(bytes);
-        String declared = normalizeContentType(file.getContentType());
-        if (!declared.isEmpty() && !"application/octet-stream".equals(declared)
-                && !declaredMatches(declared, detected.contentType())) {
-            throw TemporaryCheckinException.badRequest("文件声明类型与实际内容不一致");
-        }
-        String original = safeFilename(file.getOriginalFilename(), kind.pathValue + detected.extension());
-        validateFilenameExtension(original, detected);
-        return new ValidatedMedia(bytes, detected.contentType(), detected.extension(), sha256Hex(bytes), original);
+        // 手机文件选择器经常返回空、vendor、自相矛盾的 MIME 和临时文件名；这些值可由客户端伪造，
+        // 不能作为安全边界。按接口种类检查实际文件特征，并始终使用探测出的规范 MIME/扩展名存储。
+        DetectedMedia detected = kind.image ? detectImage(probe.prefix()) : detectAudio(probe);
+        String original = canonicalMediaFilename(
+                safeFilename(file.getOriginalFilename(), kind.pathValue + detected.extension()),
+                detected.extension());
+        return new ValidatedMedia(file, observedSize, detected.contentType(), detected.extension(),
+                HexFormat.of().formatHex(digest.digest()), original);
     }
 
     private NormalizedLocation normalizeLocation(LocationCommand location) {
@@ -1355,50 +1368,36 @@ public class TemporaryCheckinService {
         throw TemporaryCheckinException.badRequest("照片格式不支持或文件内容损坏");
     }
 
-    private static DetectedMedia detectAudio(byte[] bytes) {
-        if (bytes.length >= 4 && ascii(bytes, 0, "OggS")) {
+    private static DetectedMedia detectAudio(MediaSignatureProbe probe) {
+        byte[] bytes = probe.prefix();
+        if (bytes.length >= 4 && ascii(bytes, 0, "OggS")
+                && probe.oggAudio && !probe.oggVideo) {
             return new DetectedMedia("audio/ogg", ".ogg");
         }
         if (bytes.length >= 7 && unsigned(bytes[0]) == 0xff && (unsigned(bytes[1]) & 0xf6) == 0xf0) {
             return new DetectedMedia("audio/aac", ".aac");
         }
-        if (bytes.length >= 12 && ascii(bytes, 4, "ftyp")) {
+        if (bytes.length >= 12 && ascii(bytes, 4, "ftyp")
+                && probe.mp4Audio && !probe.mp4Video) {
             return new DetectedMedia("audio/mp4", ".m4a");
         }
         if (bytes.length >= 12 && ascii(bytes, 0, "RIFF") && ascii(bytes, 8, "WAVE")) {
             return new DetectedMedia("audio/wav", ".wav");
         }
-        if (bytes.length >= 6 && ascii(bytes, 0, "#!AMR\n")) {
+        if ((bytes.length >= 6 && ascii(bytes, 0, "#!AMR\n"))
+                || (bytes.length >= 9 && ascii(bytes, 0, "#!AMR-WB\n"))) {
             return new DetectedMedia("audio/amr", ".amr");
         }
         if (bytes.length >= 4 && unsigned(bytes[0]) == 0x1a && unsigned(bytes[1]) == 0x45
-                && unsigned(bytes[2]) == 0xdf && unsigned(bytes[3]) == 0xa3) {
+                && unsigned(bytes[2]) == 0xdf && unsigned(bytes[3]) == 0xa3
+                && probe.webmAudio && !probe.webmVideo) {
             return new DetectedMedia("audio/webm", ".webm");
         }
-        if ((bytes.length >= 3 && ascii(bytes, 0, "ID3"))
+        if ((bytes.length >= 10 && ascii(bytes, 0, "ID3"))
                 || (bytes.length >= 2 && unsigned(bytes[0]) == 0xff && (unsigned(bytes[1]) & 0xe0) == 0xe0)) {
             return new DetectedMedia("audio/mpeg", ".mp3");
         }
         throw TemporaryCheckinException.badRequest("录音格式不支持或文件内容损坏");
-    }
-
-    private static boolean declaredMatches(String declared, String detected) {
-        if (declared.equals(detected)) return true;
-        return ("image/jpg".equals(declared) && "image/jpeg".equals(detected))
-                || (("audio/m4a".equals(declared) || "audio/x-m4a".equals(declared))
-                && "audio/mp4".equals(detected))
-                || ("audio/aacp".equals(declared) && "audio/aac".equals(detected))
-                || ("audio/mp3".equals(declared) && "audio/mpeg".equals(detected))
-                || ("application/ogg".equals(declared) && "audio/ogg".equals(detected))
-                || ("audio/x-wav".equals(declared) && "audio/wav".equals(detected))
-                || (("image/heif".equals(declared) || "image/heic-sequence".equals(declared)
-                || "image/heif-sequence".equals(declared))
-                && "image/heic".equals(detected));
-    }
-
-    private static String normalizeContentType(String value) {
-        if (value == null) return "";
-        return value.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
     }
 
     private static String safeFilename(String value, String fallback) {
@@ -1416,31 +1415,36 @@ public class TemporaryCheckinService {
         return normalized.substring(0, 200);
     }
 
-    private static void validateFilenameExtension(String filename, DetectedMedia detected) {
+    private static String canonicalMediaFilename(String filename, String extension) {
         int dot = filename.lastIndexOf('.');
-        if (dot < 0) return; // MediaRecorder Blob 在部分浏览器中只提供无扩展名的文件名。
-        if (dot == filename.length() - 1) {
-            throw TemporaryCheckinException.badRequest("文件扩展名与实际内容不一致");
+        String base = dot > 0 ? filename.substring(0, dot) : filename;
+        if (dot == 0 || base.isBlank()) base = "media";
+        base = base.replaceAll("[. ]+$", "").trim();
+        if (base.isBlank()) base = "media";
+        int maxBaseLength = Math.max(1, 200 - extension.length());
+        if (base.length() > maxBaseLength) base = base.substring(0, maxBaseLength);
+        return base + extension;
+    }
+
+    private static boolean containsMp4Handler(byte[] bytes, String handler) {
+        for (int offset = 0; offset + 16 <= bytes.length; offset++) {
+            if (ascii(bytes, offset, "hdlr") && ascii(bytes, offset + 12, handler)) return true;
         }
-        String extension = filename.substring(dot + 1).toLowerCase(Locale.ROOT);
-        Set<String> allowed = switch (detected.contentType()) {
-            case "image/jpeg" -> Set.of("jpg", "jpeg", "jfif");
-            case "image/png" -> Set.of("png");
-            case "image/webp" -> Set.of("webp");
-            case "image/heic" -> Set.of("heic", "heif");
-            case "image/avif" -> Set.of("avif");
-            case "audio/aac" -> Set.of("aac");
-            case "audio/mp4" -> Set.of("m4a", "mp4", "m4b");
-            case "audio/wav" -> Set.of("wav", "wave");
-            case "audio/amr" -> Set.of("amr");
-            case "audio/webm" -> Set.of("webm");
-            case "audio/mpeg" -> Set.of("mp3");
-            case "audio/ogg" -> Set.of("ogg", "oga", "opus");
-            default -> Set.of();
-        };
-        if (!allowed.contains(extension)) {
-            throw TemporaryCheckinException.badRequest("文件扩展名与实际内容不一致");
+        return false;
+    }
+
+    private static boolean containsAnyAscii(byte[] bytes, String... values) {
+        for (String value : values) {
+            if (containsAscii(bytes, value)) return true;
         }
+        return false;
+    }
+
+    private static boolean containsAscii(byte[] bytes, String value) {
+        for (int offset = 0; offset + value.length() <= bytes.length; offset++) {
+            if (ascii(bytes, offset, value)) return true;
+        }
+        return false;
     }
 
     private String writeJson(List<String> values) {
@@ -1548,8 +1552,12 @@ public class TemporaryCheckinService {
     }
 
     private static String sha256Hex(byte[] bytes) {
+        return HexFormat.of().formatHex(sha256Digest().digest(bytes));
+    }
+
+    private static MessageDigest sha256Digest() {
         try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+            return MessageDigest.getInstance("SHA-256");
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256不可用", exception);
         }
@@ -1722,8 +1730,66 @@ public class TemporaryCheckinService {
     private enum CoordinateSystem { WGS84, GCJ02 }
 
     private record DetectedMedia(String contentType, String extension) { }
+
+    /**
+     * 以固定小窗口扫描常见媒体特征，避免把最大100MB的录音整体放入JVM堆。
+     * 该探测用于兼容手机选择器元数据，不替代完整编解码校验。
+     */
+    private static final class MediaSignatureProbe {
+        private static final int PREFIX_BYTES = 32;
+        private static final int OVERLAP_BYTES = 15;
+
+        private final byte[] prefix = new byte[PREFIX_BYTES];
+        private final byte[] tail = new byte[OVERLAP_BYTES];
+        private final boolean scanAudioContainer;
+        private int prefixLength;
+        private int tailLength;
+        private boolean oggAudio;
+        private boolean oggVideo;
+        private boolean mp4Audio;
+        private boolean mp4Video;
+        private boolean webmAudio;
+        private boolean webmVideo;
+
+        private MediaSignatureProbe(boolean scanAudioContainer) {
+            this.scanAudioContainer = scanAudioContainer;
+        }
+
+        void accept(byte[] bytes, int length) {
+            int prefixCopy = Math.min(length, PREFIX_BYTES - prefixLength);
+            if (prefixCopy > 0) {
+                System.arraycopy(bytes, 0, prefix, prefixLength, prefixCopy);
+                prefixLength += prefixCopy;
+            }
+            if (!scanAudioContainer) return;
+
+            byte[] scan = new byte[tailLength + length];
+            System.arraycopy(tail, 0, scan, 0, tailLength);
+            System.arraycopy(bytes, 0, scan, tailLength, length);
+            if (prefixLength >= 4 && ascii(prefix, 0, "OggS")) {
+                oggAudio |= containsAnyAscii(scan, "OpusHead", "vorbis", "Speex", "fLaC");
+                oggVideo |= containsAscii(scan, "theora");
+            } else if (prefixLength >= 12 && ascii(prefix, 4, "ftyp")) {
+                mp4Audio |= containsMp4Handler(scan, "soun");
+                mp4Video |= containsMp4Handler(scan, "vide");
+            } else if (prefixLength >= 4 && unsigned(prefix[0]) == 0x1a && unsigned(prefix[1]) == 0x45
+                    && unsigned(prefix[2]) == 0xdf && unsigned(prefix[3]) == 0xa3) {
+                webmAudio |= containsAnyAscii(scan, "A_OPUS", "A_VORBIS", "A_AAC", "A_FLAC", "A_MPEG/L3");
+                webmVideo |= containsAnyAscii(scan, "V_VP8", "V_VP9", "V_AV1");
+            }
+
+            tailLength = Math.min(OVERLAP_BYTES, scan.length);
+            System.arraycopy(scan, scan.length - tailLength, tail, 0, tailLength);
+        }
+
+        byte[] prefix() {
+            return Arrays.copyOf(prefix, prefixLength);
+        }
+    }
+
     private record ValidatedMedia(
-            byte[] bytes, String contentType, String extension, String sha256, String originalFilename) { }
+            MultipartFile file, long sizeBytes, String contentType, String extension,
+            String sha256, String originalFilename) { }
 
     private enum MediaKind {
         STOREFRONT_PHOTO("storefront-photo", "storefront_photo_", "photos/storefront", true),

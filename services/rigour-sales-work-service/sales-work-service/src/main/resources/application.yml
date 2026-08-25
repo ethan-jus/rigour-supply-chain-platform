@@ -6,8 +6,8 @@ spring:
     name: rigour-sales-work-service
   servlet:
     multipart:
-      max-file-size: 25MB
-      max-request-size: 30MB
+      max-file-size: 100MB
+      max-request-size: 105MB
 
 management:
   endpoints:
@@ -48,11 +48,11 @@ rigour:
       tenant-id: ${RIGOUR_SALES_TEMPORARY_CHECKIN_TENANT_ID:}
       max-storefront-photo-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_STOREFRONT_PHOTO_BYTES:10485760}
       max-wechat-screenshot-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_WECHAT_SCREENSHOT_BYTES:10485760}
-      max-audio-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_BYTES:26214400}
+      max-audio-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_BYTES:104857600}
       # 公开页面不是身份认证；距离门禁仅降低远程误打卡风险。
       max-checkin-distance-meters: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_DISTANCE_METERS:300}
       max-checkin-accuracy-meters: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_ACCURACY_METERS:200}
-      # 覆盖最长20分钟录音流程，同时防止重用长时间前的定位。
+      # 定位新鲜度窗口；超过窗口时要求重新定位，避免复用长时间前的位置。
       max-location-age-minutes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_LOCATION_AGE_MINUTES:60}
       # 姓名下拉不是身份；默认强制销售用个人码首次绑定当前浏览器。
       identity-enforcement-enabled: ${RIGOUR_SALES_TEMPORARY_CHECKIN_IDENTITY_ENFORCEMENT_ENABLED:true}
