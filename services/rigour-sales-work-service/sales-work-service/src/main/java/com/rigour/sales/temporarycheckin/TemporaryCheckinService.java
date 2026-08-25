@@ -242,6 +242,7 @@ public class TemporaryCheckinService {
         if (hasValidCoordinates(geocode.amapLongitude(), geocode.amapLatitude())) {
             try {
                 Set<String> registeredPoiIds = registeredStores.stream()
+                        .filter(store -> hasCompleteStoreProfile(store, configuredCities))
                         .map(StoreRow::sourcePoiId)
                         .filter(Objects::nonNull)
                         .map(String::trim)
@@ -301,7 +302,7 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.badRequest("销售与选择城市不一致");
         }
         OptionalStore existing = existingStore(request.clientStoreId(), normalized);
-        if (existing.present()) return storeView(existing.row());
+        if (existing.present()) return eligibleStoreView(existing.row());
         requireAcceptableCurrentLocation(normalized.location());
 
         Instant now = clock.instant();
@@ -309,26 +310,28 @@ public class TemporaryCheckinService {
                 normalized.location().longitude(), normalized.location().latitude());
         validateResolvedCity(normalized.city(), geocode);
         normalized = verifyNearbyPoi(normalized, geocode);
-        OptionalStore existingPoi = existingPoiStore(normalized);
-        if (existingPoi.present()) return storeView(existingPoi.row());
         GeocodeWrite geocodeWrite = new GeocodeWrite(geocode.status(), geocode.address(),
                 geocode.formattedAddress(), geocode.adcode(), geocode.province(), geocode.city(),
                 geocode.district(), geocode.township(), geocode.amapLongitude(), geocode.amapLatitude(),
                 geocode.errorCode(), now);
+        OptionalStore existingPoi = existingPoiStore(normalized);
+        if (existingPoi.present()) {
+            StoreRow current = existingPoi.row();
+            if (!hasCompleteStoreProfile(current, activeCities())) {
+                current = existingPoiStoreForUpdate(normalized).row();
+                current = completeStoreProfileIfRequired(current, normalized, geocodeWrite, now);
+            }
+            return eligibleStoreView(current);
+        }
         StoreRow boundImportedStore = bindUniqueImportedStore(normalized, geocodeWrite, now);
-        if (boundImportedStore != null) return storeView(boundImportedStore);
+        if (boundImportedStore != null) {
+            return eligibleStoreView(completeStoreProfileIfRequired(
+                    boundImportedStore, normalized, geocodeWrite, now));
+        }
 
         UUID id = UUID.randomUUID();
-        StoreWrite write = new StoreWrite(id, tenantId, request.clientStoreId(), normalized.city(),
-                salesperson.id(), normalized.attribute(), normalized.name(), normalized.operatingStatus(),
-                normalized.contactName(), normalized.contactPhone(), normalized.areaRange(),
-                normalized.facilityCount(), writeJson(normalized.businessTypes()),
-                writeJson(normalized.intendedBusinesses()), normalized.cooperationIntent(),
-                normalized.storeGrade(), writeJson(normalized.tags()), normalized.location().longitude(),
-                normalized.location().latitude(), normalized.location().accuracyMeters(),
-                normalized.location().capturedAt(), normalized.location().note(), normalized.sourcePoiId(),
-                normalized.sourcePoiName(), normalized.sourcePoiAddress(), normalized.sourcePoiLongitude(),
-                normalized.sourcePoiLatitude(), geocodeWrite, now);
+        StoreWrite write = storeWrite(id, request.clientStoreId(), salesperson.id(),
+                normalized, geocodeWrite, now);
         try {
             repository.insertStore(write);
         } catch (DataIntegrityViolationException duplicate) {
@@ -337,14 +340,18 @@ public class TemporaryCheckinService {
                     .orElse(null);
             if (concurrentByClient != null) {
                 assertSameStore(concurrentByClient, normalized);
-                return storeView(concurrentByClient);
+                return eligibleStoreView(concurrentByClient);
             }
             OptionalStore concurrentByPoi = existingPoiStoreForUpdate(normalized);
-            if (concurrentByPoi.present()) return storeView(concurrentByPoi.row());
+            if (concurrentByPoi.present()) {
+                return eligibleStoreView(completeStoreProfileIfRequired(
+                        concurrentByPoi.row(), normalized, geocodeWrite, now));
+            }
             throw TemporaryCheckinException.conflict("门店创建冲突，请刷新后重试");
         }
-        return repository.findStore(tenantId, id).map(TemporaryCheckinService::storeView)
+        StoreRow created = repository.findStore(tenantId, id)
                 .orElseThrow(() -> new IllegalStateException("门店写入后不可见"));
+        return eligibleStoreView(created);
     }
 
     @Transactional
@@ -1176,6 +1183,34 @@ public class TemporaryCheckinService {
         return reusablePoiStore(row, normalized);
     }
 
+    private StoreRow completeStoreProfileIfRequired(
+            StoreRow existing, NormalizedStore normalized, GeocodeWrite geocode, Instant now) {
+        if (hasCompleteStoreProfile(existing, activeCities())) return existing;
+        StoreWrite completion = storeWrite(existing.id(), existing.clientStoreId(),
+                existing.creatorSalespersonId(), normalized, geocode, now);
+        int updated = repository.completeStoreProfile(completion);
+        if (updated != 1) {
+            throw TemporaryCheckinException.conflict("门店资料补全冲突，请重新定位后再试");
+        }
+        return repository.findStore(tenantId, existing.id())
+                .orElseThrow(() -> new IllegalStateException("门店资料补全后不可见"));
+    }
+
+    private StoreWrite storeWrite(
+            UUID id, UUID clientStoreId, UUID creatorSalespersonId, NormalizedStore normalized,
+            GeocodeWrite geocode, Instant now) {
+        return new StoreWrite(id, tenantId, clientStoreId, normalized.city(), creatorSalespersonId,
+                normalized.attribute(), normalized.name(), normalized.operatingStatus(),
+                normalized.contactName(), normalized.contactPhone(), normalized.areaRange(),
+                normalized.facilityCount(), writeJson(normalized.businessTypes()),
+                writeJson(normalized.intendedBusinesses()), normalized.cooperationIntent(),
+                normalized.storeGrade(), writeJson(normalized.tags()), normalized.location().longitude(),
+                normalized.location().latitude(), normalized.location().accuracyMeters(),
+                normalized.location().capturedAt(), normalized.location().note(), normalized.sourcePoiId(),
+                normalized.sourcePoiName(), normalized.sourcePoiAddress(), normalized.sourcePoiLongitude(),
+                normalized.sourcePoiLatitude(), geocode, now);
+    }
+
     private void assertSameStore(StoreRow row, NormalizedStore normalized) {
         boolean verifiedPoiRequest = normalized.sourcePoiId() != null;
         if (!Objects.equals(row.city(), normalized.city())
@@ -1574,6 +1609,13 @@ public class TemporaryCheckinService {
     private static boolean hasMedia(MediaReference value) {
         return value != null && value.objectKey() != null && value.sha256() != null
                 && value.sizeBytes() != null && value.deletedAt() == null;
+    }
+
+    private StoreView eligibleStoreView(StoreRow row) {
+        if (!hasCompleteStoreProfile(row, activeCities())) {
+            throw TemporaryCheckinException.badRequest("门店资料尚未补全，请核对必填项后重新保存");
+        }
+        return storeView(row);
     }
 
     private static StoreView storeView(StoreRow row) {

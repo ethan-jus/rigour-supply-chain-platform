@@ -662,7 +662,10 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.salespersons", hasSize(2)))
                 .andExpect(jsonPath("$.salespersons[*].id", containsInAnyOrder(
-                        CREATOR_ID.toString(), VISITOR_ID.toString())));
+                        CREATOR_ID.toString(), VISITOR_ID.toString())))
+                .andExpect(jsonPath("$.storeTags", containsInAnyOrder(
+                        "追分", "连锁", "单店", "好沟通", "品牌店", "可动销",
+                        "已加微信", "老板不在", "已合作", "商场店", "已有竞品合作")));
 
         UUID clientSubmissionId = UUID.randomUUID();
         CreateSubmissionRequest request = submission(clientSubmissionId, SUBMISSION_KEY, "完成首次沟通", true,
@@ -722,6 +725,87 @@ class TemporaryCheckinApiIntegrationTests {
                 SELECT COUNT(*) FROM temp_sales_checkin_store
                  WHERE tenant_id=? AND source_poi_id='B0FFTESTPOI'
                 """, Integer.class, bin(TENANT_ID))).isEqualTo(1);
+    }
+
+    @Test
+    void acceptsExistingFeishuStoreTagsWithoutMisclassifyingTheStoreAsIncomplete() throws Exception {
+        jdbc.update("""
+                UPDATE temp_sales_checkin_store SET tags_json=JSON_ARRAY('已合作')
+                 WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(STORE_ID));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(
+                                new ResolveLocationRequest("北京", location()))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nearbyStores[0].source").value("REGISTERED"))
+                .andExpect(jsonPath("$.nearbyStores[0].storeId").value(STORE_ID.toString()))
+                .andExpect(jsonPath("$.nearbyStores[0].checkinEligible").value(true));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submission(
+                                UUID.randomUUID(), SUBMISSION_KEY, "历史标签门店拜访", true, location()))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DRAFT"));
+    }
+
+    @Test
+    void keepsIncompleteBoundPoiVisibleAndCompletesItsProfileBeforeCheckin() throws Exception {
+        MvcResult first = mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(
+                                poiStore(UUID.randomUUID(), "高德候选门店", "旧联系人"))))
+                .andExpect(status().isOk())
+                .andReturn();
+        UUID existingId = UUID.fromString(objectMapper.readTree(
+                first.getResponse().getContentAsByteArray()).path("id").asText());
+        jdbc.update("""
+                UPDATE temp_sales_checkin_store SET tags_json=JSON_ARRAY('待补全旧标签')
+                 WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(existingId));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(new ResolveLocationRequest(
+                                "北京", location(), "高德候选门店"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nearbyStores", hasSize(1)))
+                .andExpect(jsonPath("$.nearbyStores[0].source").value("AMAP_POI"))
+                .andExpect(jsonPath("$.nearbyStores[0].poiId").value("B0FFTESTPOI"))
+                .andExpect(jsonPath("$.nearbyStores[0].nextAction").value("COMPLETE_STORE_PROFILE"));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(
+                                poiStore(UUID.randomUUID(), "客户端名称", "补全联系人"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(existingId.toString()))
+                .andExpect(jsonPath("$.name").value("高德候选门店"));
+
+        var completed = jdbc.queryForMap("""
+                SELECT contact_name, tags_json FROM temp_sales_checkin_store
+                 WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(existingId));
+        assertThat(completed.get("contact_name")).isEqualTo("补全联系人");
+        assertThat(completed.get("tags_json").toString()).contains("单店");
+
+        mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(new ResolveLocationRequest(
+                                "北京", location(), "高德候选门店"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nearbyStores[0].source").value("REGISTERED"))
+                .andExpect(jsonPath("$.nearbyStores[0].storeId").value(existingId.toString()))
+                .andExpect(jsonPath("$.nearbyStores[0].nextAction").value("CHECK_IN"));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submissionForStore(
+                                UUID.randomUUID(), existingId, "补全后成功拜访", location()))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DRAFT"));
     }
 
     @Test

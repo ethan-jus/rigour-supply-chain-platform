@@ -43,7 +43,9 @@ public class TemporaryCheckinProperties {
     private List<String> intendedBusinesses = new ArrayList<>(List.of("高德业务", "零售业务", "台球周边", "鹰眼业务"));
     private List<String> cooperationIntents = new ArrayList<>(List.of("高意向", "中意向", "低意向", "无意向"));
     private List<String> storeGrades = new ArrayList<>(List.of("A类", "B类", "C类"));
-    private List<String> storeTags = new ArrayList<>(List.of("追分", "连锁", "单店", "好沟通", "品牌店", "可动销"));
+    private List<String> storeTags = new ArrayList<>(List.of(
+            "追分", "连锁", "单店", "好沟通", "品牌店", "可动销",
+            "已加微信", "老板不在", "已合作", "商场店", "已有竞品合作"));
 
     public UUID requireTenantId() {
         if (tenantId == null || tenantId.isBlank()) {

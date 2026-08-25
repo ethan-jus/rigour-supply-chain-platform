@@ -233,6 +233,31 @@ public class TemporaryCheckinRepository {
                 bin(tenantId), bin(storeId));
     }
 
+    public int completeStoreProfile(StoreWrite row) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_store
+                   SET source_poi_name=?, source_poi_address=?,
+                       source_poi_longitude=?, source_poi_latitude=?,
+                       attribute=?, name=?, operating_status=?, contact_name=?, contact_phone=?,
+                       area_range=?, facility_count=?, business_types_json=CAST(? AS JSON),
+                       intended_businesses_json=CAST(? AS JSON), cooperation_intent=?, store_grade=?,
+                       tags_json=CAST(? AS JSON), longitude=?, latitude=?, accuracy_meters=?,
+                       location_captured_at=?, location_note=?, location_address=?,
+                       location_formatted_address=?, location_adcode=?, amap_longitude=?, amap_latitude=?,
+                       geocode_status=?, geocode_error_code=?, geocoded_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND status='ACTIVE' AND source_poi_id=?
+                """, row.sourcePoiName(), row.sourcePoiAddress(), row.sourcePoiLongitude(),
+                row.sourcePoiLatitude(), row.attribute(), row.name(), row.operatingStatus(),
+                row.contactName(), row.contactPhone(), row.areaRange(), row.facilityCount(),
+                row.businessTypesJson(), row.intendedBusinessesJson(), row.cooperationIntent(),
+                row.storeGrade(), row.tagsJson(), row.longitude(), row.latitude(), row.accuracyMeters(),
+                timestamp(row.locationCapturedAt()), row.locationNote(), row.geocode().address(),
+                row.geocode().formattedAddress(), row.geocode().adcode(), row.geocode().amapLongitude(),
+                row.geocode().amapLatitude(), row.geocode().status(), row.geocode().errorCode(),
+                timestamp(row.geocode().geocodedAt()), timestamp(row.now()), bin(row.tenantId()),
+                bin(row.id()), row.sourcePoiId());
+    }
+
     public Optional<SubmissionRow> findSubmissionByClientId(UUID tenantId, UUID clientSubmissionId) {
         return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND client_submission_id=? LIMIT 1",
                 (rs, row) -> submission(rs), bin(tenantId), bin(clientSubmissionId)).stream().findFirst();
