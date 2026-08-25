@@ -175,6 +175,16 @@ class TemporaryCheckinPublicPageContractTest {
     }
 
     @Test
+    void pinsOnlyTheExistingColoredPageHeaderWhileFormContentScrolls() throws IOException {
+        String styles = resource("static/sales-checkin/styles.css");
+
+        assertThat(styles)
+                .contains("固定现有 Logo 与页面标题色块")
+                .contains(".hero {\n    position: sticky;\n    z-index: 40;\n    top: 0;")
+                .contains(".workflow-tabs {\n    display: none;");
+    }
+
+    @Test
     void allowsManualStoreProfileWhenAmapSearchIsUnavailable() throws IOException {
         String script = resource("static/sales-checkin/app.js");
 

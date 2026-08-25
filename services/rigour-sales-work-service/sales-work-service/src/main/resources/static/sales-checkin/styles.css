@@ -3030,3 +3030,11 @@ body.is-store-page #submit-store-button {
         align-self: center;
     }
 }
+
+/* 固定现有 Logo 与页面标题色块，身份和表单内容继续随页面滚动。 */
+.hero {
+    position: sticky;
+    z-index: 40;
+    top: 0;
+    box-shadow: 0 5px 18px rgba(4, 35, 38, 0.16);
+}
