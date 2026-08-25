@@ -332,12 +332,6 @@ public class TemporaryCheckinService {
             }
             return eligibleStoreView(current);
         }
-        StoreRow boundImportedStore = bindUniqueImportedStore(normalized, geocodeWrite, now);
-        if (boundImportedStore != null) {
-            return eligibleStoreView(completeStoreForCheckinIfRequired(
-                    boundImportedStore, normalized, geocodeWrite, now));
-        }
-
         UUID id = UUID.randomUUID();
         StoreWrite write = storeWrite(id, request.clientStoreId(), salesperson.id(),
                 normalized, geocodeWrite, now);
@@ -1255,12 +1249,15 @@ public class TemporaryCheckinService {
                 .toList();
         if (store.sourcePoiId() == null) {
             String requestedName = normalizeName(store.name());
-            PoiDistance matching = candidates.stream()
+            List<PoiDistance> matching = candidates.stream()
                     .filter(item -> requestedName.equals(normalizeName(item.poi().name())))
-                    .findFirst().orElse(null);
-            if (matching != null) {
-                throw TemporaryCheckinException.conflict("附近已有高德门店“"
-                        + matching.poi().name() + "”，请从附近门店下拉列表选择后补全资料");
+                    .sorted(Comparator.comparingDouble(PoiDistance::distanceMeters)
+                            .thenComparing(item -> item.poi().poiId()))
+                    .toList();
+            if (matching.size() == 1) return withVerifiedPoi(store, matching.getFirst().poi());
+            if (matching.size() > 1) {
+                throw TemporaryCheckinException.conflict(
+                        "附近有多家同名高德门店，请从附近门店下拉列表选择准确门店");
             }
             return store;
         }
@@ -1286,61 +1283,6 @@ public class TemporaryCheckinService {
                 store.contactPhone(), store.areaRange(), store.facilityCount(), store.businessTypes(),
                 store.intendedBusinesses(), store.cooperationIntent(), store.storeGrade(), store.tags(),
                 store.location());
-    }
-
-    /**
-     * 仅当用户明确选择了服务端复核的 POI 时，才将唯一同名的无定位导入门店原子绑定。
-     * 手填路径不能凭名称吞并历史门店，必须改选 POI 或由管理员核对。
-     * 不覆盖飞书导入的业务资料；多条同名时不做猜测。
-     */
-    private StoreRow bindUniqueImportedStore(
-            NormalizedStore store, GeocodeWrite geocode, Instant now) {
-        Set<String> matchingNames = new HashSet<>();
-        matchingNames.add(normalizeName(store.name()));
-        if (store.sourcePoiName() != null) matchingNames.add(normalizeName(store.sourcePoiName()));
-        matchingNames.remove("");
-        List<StoreRow> matches = repository.findActiveStoresByCityForUpdate(tenantId, store.city()).stream()
-                .filter(row -> matchingNames.contains(normalizeName(row.name())))
-                .toList();
-        if (store.sourcePoiId() == null && !matches.isEmpty()) {
-            throw TemporaryCheckinException.conflict(
-                    "已存在同名历史门店，手工录入不能自动绑定；请从附近门店选择高德POI或联系管理员核对");
-        }
-        if (matches.size() > 1) {
-            throw TemporaryCheckinException.conflict(
-                    "发现多条同名历史门店，无法安全自动绑定；请联系管理员合并后重试");
-        }
-        if (matches.isEmpty()) return null;
-        StoreRow existing = matches.getFirst();
-        if (hasText(existing.sourcePoiId())) {
-            if (Objects.equals(existing.sourcePoiId(), store.sourcePoiId())) return existing;
-            throw TemporaryCheckinException.conflict("同名门店已绑定其他高德门店，请联系管理员核对");
-        }
-        StoreCheckinAnchorRow fallback = repository.findFirstAcceptableSubmittedStoreAnchor(
-                tenantId, existing.id(), store.city(), properties.getMaxCheckinAccuracyMeters())
-                .orElse(null);
-        CheckinAnchor existingAnchor = checkinAnchor(existing, fallback);
-        if (existingAnchor != null) {
-            throw TemporaryCheckinException.conflict(
-                    "同名门店已有可用定位，请直接选择已有门店打卡；如不是同一家店请联系管理员核对");
-        }
-        int updated;
-        try {
-            updated = repository.bindLocationAndOptionalVerifiedPoi(
-                    tenantId, existing.id(), store.sourcePoiId(), store.sourcePoiName(),
-                    store.sourcePoiAddress(), store.sourcePoiLongitude(), store.sourcePoiLatitude(),
-                    store.location().longitude(), store.location().latitude(), store.location().accuracyMeters(),
-                    store.location().capturedAt(), store.location().note(), geocode, now);
-        } catch (DataIntegrityViolationException duplicatePoi) {
-            OptionalStore concurrent = existingPoiStoreForUpdate(store);
-            if (concurrent.present()) return concurrent.row();
-            throw TemporaryCheckinException.conflict("高德门店绑定冲突，请刷新后重试");
-        }
-        if (updated != 1) {
-            throw TemporaryCheckinException.conflict("历史门店状态已变化，请刷新后重试");
-        }
-        return repository.findStore(tenantId, existing.id())
-                .orElseThrow(() -> new IllegalStateException("门店绑定后不可见"));
     }
 
     private static AdminScopeView scopeView(AdminScope scope) {
@@ -1461,16 +1403,23 @@ public class TemporaryCheckinService {
 
     private void assertSameStore(StoreRow row, NormalizedStore normalized) {
         boolean verifiedPoiRequest = normalized.sourcePoiId() != null;
+        boolean serverSelectedPoiRetry = !verifiedPoiRequest
+                && hasText(row.sourcePoiId())
+                && hasText(row.sourcePoiName())
+                && normalizeName(row.name()).equals(normalizeName(normalized.name()))
+                && normalizeName(row.sourcePoiName()).equals(normalizeName(normalized.name()));
         if (!Objects.equals(row.city(), normalized.city())
                 || !Objects.equals(row.creatorSalespersonId(), normalized.salespersonId())
-                || !Objects.equals(row.sourcePoiId(), normalized.sourcePoiId())
-                || (!verifiedPoiRequest && (!Objects.equals(row.sourcePoiName(), normalized.sourcePoiName())
+                || (!serverSelectedPoiRetry && !Objects.equals(row.sourcePoiId(), normalized.sourcePoiId()))
+                || (!verifiedPoiRequest && !serverSelectedPoiRetry
+                        && (!Objects.equals(row.sourcePoiName(), normalized.sourcePoiName())
                         || !Objects.equals(row.sourcePoiAddress(), normalized.sourcePoiAddress())
                         || !nullableDecimalEquals(row.sourcePoiLongitude(), normalized.sourcePoiLongitude())
                         || !nullableDecimalEquals(row.sourcePoiLatitude(), normalized.sourcePoiLatitude())))
                 || !Objects.equals(row.attribute(), normalized.attribute())
                 // POI 名称和摘要由服务端高德复核后固化，不与原始浏览器快照比较。
-                || (!verifiedPoiRequest && !Objects.equals(row.name(), normalized.name()))
+                || (!verifiedPoiRequest && !serverSelectedPoiRetry
+                        && !Objects.equals(row.name(), normalized.name()))
                 || !Objects.equals(row.operatingStatus(), normalized.operatingStatus())
                 || !Objects.equals(row.contactName(), normalized.contactName())
                 || !Objects.equals(row.contactPhone(), normalized.contactPhone())

@@ -735,6 +735,14 @@
         $("#store-search-spinner").hidden = true;
     }
 
+    function abortPoiSearch() {
+        clearTimeout(state.poiSearchTimer);
+        state.poiSearchTimer = null;
+        state.poiSearchController?.abort();
+        state.poiSearchController = null;
+        $("#poi-search-spinner").hidden = true;
+    }
+
     async function searchNearbyWithQuery(scope, query) {
         const isVisit = scope === "visit";
         const controllerKey = isVisit ? "searchController" : "poiSearchController";
@@ -2160,19 +2168,20 @@
             scrollToFirstError();
             return;
         }
+        const payload = buildStorePayload();
         const button = $("#submit-store-button");
         button.disabled = true;
         button.textContent = "正在保存…";
-        let storeSaved = false;
+        let savedStore = null;
         try {
-            const payload = buildStorePayload();
             const response = normalizeResponse(await requestJson("/stores", {
                 method: "POST",
                 body: payload,
                 timeout: 45000
             })) || {};
-            if (!response.id) throw new Error("门店保存成功但未返回门店编号，请联系管理员。" );
-            storeSaved = true;
+            if (!response.id) {
+                throw new Error("门店保存请求已完成，但服务端未返回门店编号。当前表单已保留，请勿重复填写并联系管理员。" );
+            }
             const locationSummary = response.locationSummary || payload.sourcePoiAddress
                 || payload.location.note || state.visit.locationContext?.address || "位置已采集";
             const createdStore = {
@@ -2187,31 +2196,93 @@
                 checkinEligible: true,
                 nextAction: "CHECK_IN"
             };
-            state.visit.city = payload.city;
-            state.visit.salespersonId = payload.salespersonId;
-            state.visit.nearbyStores = [createdStore, ...state.visit.nearbyStores.filter((item) =>
-                String(item.storeId || item.id) !== String(response.id))];
-            state.visit.nearbySearchResults = null;
-            if (!state.visit.customerName) state.visit.customerName = payload.contactName;
-            if (!state.visit.customerPhone && payload.contactPhone) state.visit.customerPhone = payload.contactPhone;
-            if (!state.visit.location) state.visit.location = { ...payload.location };
-            resetStoreDraft(payload.city, payload.salespersonId);
-            populateCitySelects();
-            renderSalespersonSelect("visit");
-            renderRestoredValues();
-            switchTab("visit");
-            selectStore(createdStore);
-            $("#store-saved-name").textContent = createdStore.name;
-            $("#store-saved-notice").hidden = false;
-            persistDraft();
-            $("#selected-store-card").scrollIntoView({ behavior: "smooth", block: "center" });
+            savedStore = createdStore;
+            completeStoreSaveTransition(createdStore, payload);
         } catch (error) {
-            showError(errorMessage(error, storeSaved
-                ? "门店已经保存，但页面回填失败。请返回拜访打卡并重新定位，门店会出现在附近列表中。"
-                : "保存门店失败，请检查信息后重试。"));
+            if (savedStore) {
+                recoverSavedStoreTransition(savedStore, payload);
+                showError(`门店“${savedStore.name}”已保存并选中，但页面局部刷新失败。请刷新页面后继续打卡，不要重复录入门店。`);
+            } else {
+                showError(errorMessage(error, "保存门店失败，已保留当前填写内容，请检查网络后重试。"));
+            }
         } finally {
             button.disabled = false;
             button.textContent = "保存并选中门店";
+        }
+    }
+
+    function completeStoreSaveTransition(createdStore, payload) {
+        // 先终止旧搜索，再一次性写入新门店和选中状态，避免迟到响应覆盖刚保存的门店。
+        abortStoreSearch();
+        abortPoiSearch();
+        hideStoreResults();
+        hidePoiResults();
+
+        state.visit.city = payload.city;
+        state.visit.salespersonId = payload.salespersonId;
+        const existingNearbyStores = Array.isArray(state.visit.nearbyStores)
+            ? state.visit.nearbyStores
+            : [];
+        state.visit.nearbyStores = [createdStore, ...existingNearbyStores.filter((item) =>
+            String(item.storeId || item.id) !== String(createdStore.storeId))];
+        state.visit.nearbySearchResults = null;
+        state.visit.selectedStore = {
+            id: createdStore.storeId,
+            name: createdStore.name,
+            city: createdStore.city,
+            locationSummary: createdStore.locationSummary
+        };
+        if (!state.visit.customerName) state.visit.customerName = payload.contactName;
+        if (!state.visit.customerPhone && payload.contactPhone) state.visit.customerPhone = payload.contactPhone;
+        if (!state.visit.location) state.visit.location = { ...payload.location };
+
+        resetStoreDraft(payload.city, payload.salespersonId);
+        state.activeTab = "visit";
+        clearAllErrors();
+        hideError();
+        persistDraft();
+        populateCitySelects();
+        renderSalespersonSelect("visit");
+        renderSalespersonSelect("store");
+        renderRestoredValues();
+        renderTab("visit");
+        renderLocation("visit");
+        renderNearbyStores();
+        renderSelectedStore();
+        $("#store-saved-name").textContent = createdStore.name;
+        $("#store-saved-notice").hidden = false;
+        persistDraft();
+        window.requestAnimationFrame(() => {
+            $("#selected-store-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+        });
+    }
+
+    function recoverSavedStoreTransition(createdStore, payload) {
+        state.visit.city = payload.city;
+        state.visit.salespersonId = payload.salespersonId;
+        const existingNearbyStores = Array.isArray(state.visit.nearbyStores)
+            ? state.visit.nearbyStores
+            : [];
+        state.visit.nearbyStores = [createdStore, ...existingNearbyStores.filter((item) =>
+            String(item.storeId || item.id) !== String(createdStore.storeId))];
+        state.visit.nearbySearchResults = null;
+        state.visit.selectedStore = {
+            id: createdStore.storeId,
+            name: createdStore.name,
+            city: createdStore.city,
+            locationSummary: createdStore.locationSummary
+        };
+        state.store = freshStore();
+        state.store.city = payload.city;
+        state.store.salespersonId = payload.salespersonId;
+        state.activeTab = "visit";
+        persistDraft();
+        try {
+            renderTab("visit");
+            renderNearbyStores();
+            renderSelectedStore();
+        } catch (_) {
+            // 状态已先写入草稿，刷新页面仍会回到拜访并选中已保存门店。
         }
     }
 
@@ -2795,10 +2866,14 @@
     }
 
     function resetStoreDraft(city, salespersonId) {
+        abortPoiSearch();
+        hidePoiResults();
         state.store = freshStore();
         state.store.city = city || "";
         state.store.salespersonId = salespersonId || "";
         $("#store-form").reset();
+        $("#poi-search").value = "";
+        $("#poi-search-help").textContent = "定位成功后，可搜索门店名称或地址。";
     }
 
     function hideStoreSavedNotice() {

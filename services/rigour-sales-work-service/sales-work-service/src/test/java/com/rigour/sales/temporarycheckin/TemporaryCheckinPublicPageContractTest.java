@@ -126,13 +126,23 @@ class TemporaryCheckinPublicPageContractTest {
     }
 
     @Test
-    void keepsCreatedStoreInNearbyState() throws IOException {
+    void returnsToVisitWithTheSavedStoreSelectedAndClearsStaleSearchState() throws IOException {
         String script = resource("static/sales-checkin/app.js");
 
         assertThat(script)
                 .contains("source: \"REGISTERED\"")
                 .contains("nextAction: \"CHECK_IN\"")
-                .contains("state.visit.nearbyStores = [createdStore");
+                .contains("function completeStoreSaveTransition(createdStore, payload)")
+                .contains("abortStoreSearch();", "abortPoiSearch();")
+                .contains("state.visit.nearbyStores = [createdStore")
+                .contains("state.visit.nearbySearchResults = null;")
+                .contains("state.visit.selectedStore = {")
+                .contains("resetStoreDraft(payload.city, payload.salespersonId);")
+                .contains("state.activeTab = \"visit\";")
+                .contains("renderTab(\"visit\");")
+                .contains("clearAllErrors();")
+                .contains("当前表单已保留")
+                .doesNotContain("switchTab(\"visit\");\n            selectStore(createdStore);");
     }
 
     private static String resource(String path) throws IOException {

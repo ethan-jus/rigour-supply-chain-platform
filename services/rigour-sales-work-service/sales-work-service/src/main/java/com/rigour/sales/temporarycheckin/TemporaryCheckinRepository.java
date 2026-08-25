@@ -102,15 +102,6 @@ public class TemporaryCheckinRepository {
                 """, (rs, row) -> store(rs), bin(tenantId), city);
     }
 
-    /** 锁定城市内已有门店，用于在不新增第四张表的前提下原子绑定导入门店与 POI。 */
-    public List<StoreRow> findActiveStoresByCityForUpdate(UUID tenantId, String city) {
-        return jdbc.query(storeSelect() + """
-                 WHERE tenant_id=? AND city=? AND status='ACTIVE'
-                 ORDER BY id
-                 FOR UPDATE
-                """, (rs, row) -> store(rs), bin(tenantId), city);
-    }
-
     public List<StoreCheckinAnchorRow> findFirstAcceptableSubmittedStoreAnchors(
             UUID tenantId, String city, int maxAccuracyMeters) {
         return jdbc.query("""
@@ -208,29 +199,6 @@ public class TemporaryCheckinRepository {
                 row.geocode().formattedAddress(), row.geocode().adcode(), row.geocode().amapLongitude(),
                 row.geocode().amapLatitude(), row.geocode().status(), row.geocode().errorCode(),
                 timestamp(row.geocode().geocodedAt()), timestamp(row.now()), timestamp(row.now()));
-    }
-
-    public int bindLocationAndOptionalVerifiedPoi(
-            UUID tenantId, UUID storeId, String sourcePoiId, String sourcePoiName,
-            String sourcePoiAddress, BigDecimal sourcePoiLongitude, BigDecimal sourcePoiLatitude,
-            BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, GeocodeWrite geocode, Instant now) {
-        return jdbc.update("""
-                UPDATE temp_sales_checkin_store
-                   SET source_poi_id=?, source_poi_name=?, source_poi_address=?,
-                       source_poi_longitude=?, source_poi_latitude=?,
-                       longitude=?, latitude=?, accuracy_meters=?, location_captured_at=?, location_note=?,
-                       location_address=?, location_formatted_address=?, location_adcode=?,
-                       amap_longitude=?, amap_latitude=?, geocode_status=?, geocode_error_code=?,
-                       geocoded_at=?, updated_at=?
-                 WHERE tenant_id=? AND id=? AND status='ACTIVE'
-                   AND (source_poi_id IS NULL OR TRIM(source_poi_id)='')
-                """, sourcePoiId, sourcePoiName, sourcePoiAddress,
-                sourcePoiLongitude, sourcePoiLatitude, longitude, latitude, accuracyMeters,
-                timestamp(locationCapturedAt), locationNote, geocode.address(), geocode.formattedAddress(),
-                geocode.adcode(), geocode.amapLongitude(), geocode.amapLatitude(), geocode.status(),
-                geocode.errorCode(), timestamp(geocode.geocodedAt()), timestamp(now),
-                bin(tenantId), bin(storeId));
     }
 
     public int completeStoreProfile(StoreWrite row) {

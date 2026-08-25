@@ -11,6 +11,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -956,7 +957,7 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void rejectsForgedFarPoiManualDuplicateAndAmapVerificationFailure() throws Exception {
+    void rejectsForgedFarPoiAutoUpgradesSingleManualPoiAndHandlesAmapFailure() throws Exception {
         when(amapPoiClient.searchAround("高德候选门店", new BigDecimal("116.403000"),
                 new BigDecimal("39.912000"), 300, 1, 20))
                 .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(
@@ -978,12 +979,17 @@ class TemporaryCheckinApiIntegrationTests {
                                 "B0FFMANUAL", "附近手工门店", "附近地址", "休闲服务", "080000",
                                 new BigDecimal("116.403000"), new BigDecimal("39.912000"),
                                 BigDecimal.ZERO)), 1, 20, 1));
-        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+        MvcResult autoUpgraded = mockMvc.perform(post("/sales-checkin/api/v1/stores")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(manualStore(
                                 UUID.randomUUID(), "附近手工门店", location()))))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message", startsWith("附近已有高德门店")));
+                .andExpect(status().isOk())
+                .andReturn();
+        UUID autoUpgradedId = UUID.fromString(objectMapper.readTree(
+                autoUpgraded.getResponse().getContentAsByteArray()).path("id").asText());
+        assertThat(jdbc.queryForObject("""
+                SELECT source_poi_id FROM temp_sales_checkin_store WHERE tenant_id=? AND id=?
+                """, String.class, bin(TENANT_ID), bin(autoUpgradedId))).isEqualTo("B0FFMANUAL");
 
         when(amapPoiClient.searchAround("高德候选门店", new BigDecimal("116.403000"),
                 new BigDecimal("39.912000"), 300, 1, 20))
@@ -998,7 +1004,52 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void atomicallyBindsUniqueUnlocatedImportedStoreAndPreservesBusinessProfile() throws Exception {
+    void retriesOriginalManualPayloadAfterServerPoiUpgradeWithoutCallingAmapAgain() throws Exception {
+        UUID clientStoreId = UUID.randomUUID();
+        LocationCommand capturedLocation = location();
+        CreateStoreRequest original = manualStore(
+                clientStoreId, "弱网自动升级门店", capturedLocation);
+        when(amapPoiClient.searchAround("弱网自动升级门店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 20))
+                .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(
+                        new AmapPoiClient.NearbyPoi(
+                                "B0FFRETRY", "弱网自动升级门店", "现场地址", "休闲服务", "080000",
+                                new BigDecimal("116.403000"), new BigDecimal("39.912000"), BigDecimal.ZERO)),
+                        1, 20, 1));
+
+        MvcResult first = mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(original)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String storeId = objectMapper.readTree(first.getResponse().getContentAsByteArray())
+                .path("id").asText();
+
+        reset(amapPoiClient);
+        when(amapPoiClient.searchAround(any(String.class), any(BigDecimal.class), any(BigDecimal.class),
+                anyInt(), anyInt(), anyInt()))
+                .thenThrow(new com.rigour.sales.application.port.out.AmapPoiException("上游已不可用"));
+        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(original)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(storeId));
+        verifyNoInteractions(amapPoiClient);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_store
+                 WHERE tenant_id=? AND client_store_id=? AND source_poi_id='B0FFRETRY'
+                """, Integer.class, bin(TENANT_ID), bin(clientStoreId))).isEqualTo(1);
+
+        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(manualStore(
+                                clientStoreId, "不同门店载荷", capturedLocation))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("clientStoreId已被不同门店数据使用"));
+    }
+
+    @Test
+    void selectedPoiCreatesNewStoreWithoutRewritingSameNameHistoricalImport() throws Exception {
         jdbc.update("""
                 UPDATE temp_sales_checkin_store
                    SET name='高德候选门店', longitude=NULL, latitude=NULL,
@@ -1008,27 +1059,29 @@ class TemporaryCheckinApiIntegrationTests {
                  WHERE tenant_id=? AND id=?
                 """, bin(TENANT_ID), bin(STORE_ID));
 
-        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/stores")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(
                                 poiStore(UUID.randomUUID(), "客户端名称", "提交店长"))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.id").value(STORE_ID.toString()))
-                .andExpect(jsonPath("$.name").value("高德候选门店"));
-        var bound = jdbc.queryForMap("""
+                .andReturn();
+        assertThat(objectMapper.readTree(created.getResponse().getContentAsByteArray())
+                .path("id").asText()).isNotEqualTo(STORE_ID.toString());
+        var historical = jdbc.queryForMap("""
                 SELECT contact_name, business_types_json, source_poi_id, source_poi_address,
                        longitude, latitude
                   FROM temp_sales_checkin_store WHERE tenant_id=? AND id=?
                 """, bin(TENANT_ID), bin(STORE_ID));
-        assertThat(bound.get("contact_name")).isEqualTo("王店长");
-        assertThat(bound.get("business_types_json").toString()).contains("竞技赛事");
-        assertThat(bound.get("source_poi_id")).isEqualTo("B0FFTESTPOI");
-        assertThat(bound.get("source_poi_address")).isEqualTo("北京市东城区服务端地址");
-        assertThat((BigDecimal) bound.get("longitude")).isEqualByComparingTo("116.3971280");
+        assertThat(historical.get("contact_name")).isEqualTo("王店长");
+        assertThat(historical.get("business_types_json").toString()).contains("竞技赛事");
+        assertThat(historical.get("source_poi_id")).isNull();
+        assertThat(historical.get("source_poi_address")).isNull();
+        assertThat(historical.get("longitude")).isNull();
+        assertThat(historical.get("latitude")).isNull();
     }
 
     @Test
-    void rejectsManualSameNameInsteadOfBindingHistoricalImportedStore() throws Exception {
+    void manualSameNameCreatesNewGpsStoreWithoutRewritingHistoricalImport() throws Exception {
         jdbc.update("""
                 UPDATE temp_sales_checkin_store
                    SET name='手工导入门店', longitude=NULL, latitude=NULL,
@@ -1038,39 +1091,91 @@ class TemporaryCheckinApiIntegrationTests {
                  WHERE tenant_id=? AND id=?
                 """, bin(TENANT_ID), bin(STORE_ID));
 
-        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/stores")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(manualStore(
                                 UUID.randomUUID(), "手工导入门店", location()))))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value(
-                        "已存在同名历史门店，手工录入不能自动绑定；请从附近门店选择高德POI或联系管理员核对"));
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(objectMapper.readTree(created.getResponse().getContentAsByteArray())
+                .path("id").asText()).isNotEqualTo(STORE_ID.toString());
         assertThat(jdbc.queryForObject("""
                 SELECT COUNT(*) FROM temp_sales_checkin_store
                  WHERE tenant_id=? AND city='北京' AND name='手工导入门店'
-                """, Integer.class, bin(TENANT_ID))).isEqualTo(1);
-        assertThat(jdbc.queryForObject("""
-                SELECT COUNT(*) FROM temp_sales_checkin_store
-                 WHERE tenant_id=? AND id=? AND longitude IS NULL AND source_poi_id IS NULL
-                """, Integer.class, bin(TENANT_ID), bin(STORE_ID))).isEqualTo(1);
+                """, Integer.class, bin(TENANT_ID))).isEqualTo(2);
+        var historical = jdbc.queryForMap("""
+                SELECT contact_name, business_types_json, longitude, latitude, source_poi_id
+                  FROM temp_sales_checkin_store WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(STORE_ID));
+        assertThat(historical.get("contact_name")).isEqualTo("王店长");
+        assertThat(historical.get("business_types_json").toString()).contains("竞技赛事");
+        assertThat(historical.get("longitude")).isNull();
+        assertThat(historical.get("latitude")).isNull();
+        assertThat(historical.get("source_poi_id")).isNull();
     }
 
     @Test
-    void rejectsAmbiguousImportedStoreNamesInsteadOfGuessing() throws Exception {
-        jdbc.update("""
-                UPDATE temp_sales_checkin_store
-                   SET name='高德候选门店', longitude=NULL, latitude=NULL,
-                       accuracy_meters=NULL, location_captured_at=NULL
-                 WHERE tenant_id=? AND id=?
-                """, bin(TENANT_ID), bin(STORE_ID));
-        insertImportedStore(UUID.randomUUID(), "高德候选门店", null);
-
+    void rejectsManualAutoUpgradeWhenSeveralNearbyPoisHaveTheExactSameName() throws Exception {
+        when(amapPoiClient.searchAround("重名高德门店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 20))
+                .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(
+                        new AmapPoiClient.NearbyPoi(
+                                "B0FFSAME01", "重名高德门店", "A座", "休闲服务", "080000",
+                                new BigDecimal("116.403000"), new BigDecimal("39.912000"), BigDecimal.ZERO),
+                        new AmapPoiClient.NearbyPoi(
+                                "B0FFSAME02", "重名高德门店", "B座", "休闲服务", "080000",
+                                new BigDecimal("116.403100"), new BigDecimal("39.912100"), BigDecimal.TEN)),
+                        1, 20, 2));
         mockMvc.perform(post("/sales-checkin/api/v1/stores")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsBytes(
-                                poiStore(UUID.randomUUID(), "不应新增", "赵店长"))))
+                        .content(objectMapper.writeValueAsBytes(manualStore(
+                                UUID.randomUUID(), "重名高德门店", location()))))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message", startsWith("发现多条同名历史门店")));
+                .andExpect(jsonPath("$.message").value(
+                        "附近有多家同名高德门店，请从附近门店下拉列表选择准确门店"));
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_store
+                 WHERE tenant_id=? AND source_poi_id IN ('B0FFSAME01', 'B0FFSAME02')
+                """, Integer.class, bin(TENANT_ID))).isZero();
+    }
+
+    @Test
+    void doesNotReuseNearbyHistoricalStoreByNameAlone() throws Exception {
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(manualStore(
+                                UUID.randomUUID(), "已导入门店", location()))))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(objectMapper.readTree(created.getResponse().getContentAsByteArray())
+                .path("id").asText()).isNotEqualTo(STORE_ID.toString());
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_store
+                 WHERE tenant_id=? AND city='北京' AND name='已导入门店'
+                """, Integer.class, bin(TENANT_ID))).isEqualTo(2);
+    }
+
+    @Test
+    void allowsNewManualBranchWhenSameNameHistoricalStoreIsFarAway() throws Exception {
+        jdbc.update("""
+                UPDATE temp_sales_checkin_store
+                   SET name='同名分店', longitude=116.5000000, latitude=39.9165270,
+                       accuracy_meters=8.50, location_captured_at=?
+                 WHERE tenant_id=? AND id=?
+                """, Timestamp.from(Instant.now().minusSeconds(60)), bin(TENANT_ID), bin(STORE_ID));
+
+        MvcResult result = mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(manualStore(
+                                UUID.randomUUID(), "同名分店", location()))))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(objectMapper.readTree(result.getResponse().getContentAsByteArray())
+                .path("id").asText()).isNotEqualTo(STORE_ID.toString());
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_store
+                 WHERE tenant_id=? AND city='北京' AND name='同名分店'
+                """, Integer.class, bin(TENANT_ID))).isEqualTo(2);
     }
 
     @Test
