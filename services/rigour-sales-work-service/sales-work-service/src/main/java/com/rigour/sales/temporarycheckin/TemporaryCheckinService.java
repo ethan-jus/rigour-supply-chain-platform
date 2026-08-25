@@ -241,8 +241,12 @@ public class TemporaryCheckinService {
         List<NearbyStoreView> poiNearby = List.of();
         if (hasValidCoordinates(geocode.amapLongitude(), geocode.amapLatitude())) {
             try {
+                Set<UUID> registeredNearbyIds = registeredNearby.stream()
+                        .map(NearbyStoreView::storeId)
+                        .filter(Objects::nonNull)
+                        .collect(java.util.stream.Collectors.toSet());
                 Set<String> registeredPoiIds = registeredStores.stream()
-                        .filter(store -> hasCompleteStoreProfile(store, configuredCities))
+                        .filter(store -> registeredNearbyIds.contains(store.id()))
                         .map(StoreRow::sourcePoiId)
                         .filter(Objects::nonNull)
                         .map(String::trim)
@@ -317,15 +321,19 @@ public class TemporaryCheckinService {
         OptionalStore existingPoi = existingPoiStore(normalized);
         if (existingPoi.present()) {
             StoreRow current = existingPoi.row();
-            if (!hasCompleteStoreProfile(current, activeCities())) {
-                current = existingPoiStoreForUpdate(normalized).row();
-                current = completeStoreProfileIfRequired(current, normalized, geocodeWrite, now);
+            if (requiresStoreCompletion(current)) {
+                OptionalStore locked = existingPoiStoreForUpdate(normalized);
+                if (!locked.present()) {
+                    throw TemporaryCheckinException.conflict("门店状态已变化，请重新定位后再试");
+                }
+                current = completeStoreForCheckinIfRequired(
+                        locked.row(), normalized, geocodeWrite, now);
             }
             return eligibleStoreView(current);
         }
         StoreRow boundImportedStore = bindUniqueImportedStore(normalized, geocodeWrite, now);
         if (boundImportedStore != null) {
-            return eligibleStoreView(completeStoreProfileIfRequired(
+            return eligibleStoreView(completeStoreForCheckinIfRequired(
                     boundImportedStore, normalized, geocodeWrite, now));
         }
 
@@ -344,7 +352,7 @@ public class TemporaryCheckinService {
             }
             OptionalStore concurrentByPoi = existingPoiStoreForUpdate(normalized);
             if (concurrentByPoi.present()) {
-                return eligibleStoreView(completeStoreProfileIfRequired(
+                return eligibleStoreView(completeStoreForCheckinIfRequired(
                         concurrentByPoi.row(), normalized, geocodeWrite, now));
             }
             throw TemporaryCheckinException.conflict("门店创建冲突，请刷新后重试");
@@ -1183,9 +1191,13 @@ public class TemporaryCheckinService {
         return reusablePoiStore(row, normalized);
     }
 
-    private StoreRow completeStoreProfileIfRequired(
+    private boolean requiresStoreCompletion(StoreRow store) {
+        return !hasCompleteStoreProfile(store, activeCities()) || checkinAnchor(store, null) == null;
+    }
+
+    private StoreRow completeStoreForCheckinIfRequired(
             StoreRow existing, NormalizedStore normalized, GeocodeWrite geocode, Instant now) {
-        if (hasCompleteStoreProfile(existing, activeCities())) return existing;
+        if (!requiresStoreCompletion(existing)) return existing;
         StoreWrite completion = storeWrite(existing.id(), existing.clientStoreId(),
                 existing.creatorSalespersonId(), normalized, geocode, now);
         int updated = repository.completeStoreProfile(completion);

@@ -809,6 +809,56 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
+    void keepsCompleteButUnanchoredBoundPoiVisibleAndRepairsItsLocation() throws Exception {
+        MvcResult first = mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(
+                                poiStore(UUID.randomUUID(), "高德候选门店", "原联系人"))))
+                .andExpect(status().isOk())
+                .andReturn();
+        UUID existingId = UUID.fromString(objectMapper.readTree(
+                first.getResponse().getContentAsByteArray()).path("id").asText());
+        jdbc.update("""
+                UPDATE temp_sales_checkin_store
+                   SET source_poi_longitude=NULL, source_poi_latitude=NULL,
+                       longitude=NULL, latitude=NULL, accuracy_meters=NULL, location_captured_at=NULL
+                 WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(existingId));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(new ResolveLocationRequest(
+                                "北京", location(), "高德候选门店"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nearbyStores", hasSize(1)))
+                .andExpect(jsonPath("$.nearbyStores[0].source").value("AMAP_POI"))
+                .andExpect(jsonPath("$.nearbyStores[0].nextAction").value("COMPLETE_STORE_PROFILE"));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(
+                                poiStore(UUID.randomUUID(), "客户端名称", "现场联系人"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(existingId.toString()));
+
+        var repaired = jdbc.queryForMap("""
+                SELECT source_poi_longitude, source_poi_latitude, longitude, latitude
+                  FROM temp_sales_checkin_store WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(existingId));
+        assertThat(repaired.get("source_poi_longitude")).isNotNull();
+        assertThat(repaired.get("source_poi_latitude")).isNotNull();
+        assertThat(repaired.get("longitude")).isNotNull();
+        assertThat(repaired.get("latitude")).isNotNull();
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submissionForStore(
+                                UUID.randomUUID(), existingId, "修复定位后拜访", location()))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DRAFT"));
+    }
+
+    @Test
     void revalidatesPoiServerSideAndPersistsOnlyCanonicalAmapSnapshot() throws Exception {
         CreateStoreRequest clientSupplied = new CreateStoreRequest(
                 UUID.randomUUID(), "北京", VISITOR_ID,
