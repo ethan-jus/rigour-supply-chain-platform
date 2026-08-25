@@ -304,6 +304,7 @@
         renderSelect(select, people, people.length ? "请选择销售" : "当前城市暂无销售", current.salespersonId,
             (person) => person.id, (person) => person.name);
         select.disabled = people.length === 0;
+        if (scope === "store") renderStoreOwnerSummary();
     }
 
     async function handleCityChange(scope) {
@@ -317,7 +318,7 @@
         if (scope === "visit") {
             abortStoreSearch();
             hideStoreResults();
-            clearSelectedStore(false);
+            clearSelectedStore(false, false);
             state.visit.nearbyStores = [];
             $("#store-search").value = "";
             renderNearbyStores();
@@ -521,22 +522,35 @@
         };
         $("#store-search").value = state.visit.selectedStore.name;
         hideStoreResults();
+        const disclosure = $(".store-search-disclosure");
+        if (disclosure) disclosure.open = false;
         renderSelectedStore();
+        renderNearbyStores();
         clearFieldError("selected-store");
         persistDraft();
     }
 
-    function clearSelectedStore(persist = true) {
+    function clearSelectedStore(persist = true, focusSearch = true) {
         state.visit.selectedStore = null;
         renderSelectedStore();
+        renderNearbyStores();
         if (persist) persistDraft();
-        $("#store-search").focus();
+        if (focusSearch) {
+            const disclosure = $(".store-search-disclosure");
+            if (disclosure) disclosure.open = true;
+            $("#store-search").focus();
+        }
     }
 
     function renderSelectedStore() {
         const selected = state.visit.selectedStore;
-        $("#selected-store-card").hidden = !selected;
-        if (!selected) return;
+        const selectedIsVisibleNearby = Boolean(selected && state.visit.nearbyStores.some((store) =>
+            store.source === "REGISTERED" && String(store.storeId) === String(selected.id)));
+        $("#selected-store-card").hidden = !selected || selectedIsVisibleNearby;
+        if (!selected) {
+            $("#store-search").value = "";
+            return;
+        }
         $("#selected-store-name").textContent = selected.name || "未命名门店";
         $("#selected-store-location").textContent = selected.locationSummary || selected.city || "";
         $("#store-search").value = selected.name || "";
@@ -573,24 +587,35 @@
             : `找到 ${stores.length} 个附近地点`;
         visibleStores.forEach((store) => {
             const registered = store.source === "REGISTERED" && store.storeId;
+            const selected = registered
+                && String(state.visit.selectedStore?.id || "") === String(store.storeId);
             const button = document.createElement("button");
             button.type = "button";
-            button.className = "nearby-store";
+            button.className = `nearby-store${selected ? " is-selected" : ""}`;
+            button.setAttribute("aria-pressed", String(selected));
 
             const content = document.createElement("span");
             content.className = "nearby-store__content";
+            const title = document.createElement("span");
+            title.className = "nearby-store__title";
             const name = document.createElement("strong");
             name.textContent = store.name || "未命名门店";
+            const badge = document.createElement("span");
+            badge.className = `nearby-store__badge${registered ? " is-registered" : ""}`;
+            badge.textContent = registered ? "已录入" : "未录入";
+            title.append(name, badge);
             const address = document.createElement("span");
             address.textContent = store.address || "暂无详细地址";
-            content.append(name, address);
+            content.append(title, address);
 
             const meta = document.createElement("span");
             meta.className = "nearby-store__meta";
             const distance = formatDistance(store.distanceMeters);
-            meta.textContent = registered
-                ? ["已收录", distance].filter(Boolean).join(" · ")
-                : ["附近地点，选择后补录", distance].filter(Boolean).join(" · ");
+            meta.textContent = selected
+                ? "已选择"
+                : registered
+                    ? distance
+                    : ["选择后补录", distance].filter(Boolean).join(" · ");
             button.append(content, meta);
             button.addEventListener("click", () => {
                 if (registered) {
@@ -613,6 +638,16 @@
 
     async function prepareNewStore(sourcePoi = null) {
         syncStateFromForm();
+        clearFieldError("visit-city");
+        clearFieldError("visit-salesperson");
+        if (!state.visit.city || !state.visit.salespersonId) {
+            if (!state.visit.city) setFieldError("visit-city", "请先选择城市。");
+            if (!state.visit.salespersonId) setFieldError("visit-salesperson", "请先选择销售。");
+            const target = !state.visit.city ? $("#visit-city") : $("#visit-salesperson");
+            target?.scrollIntoView({ behavior: "smooth", block: "center" });
+            target?.focus();
+            return;
+        }
         if (sourcePoi?.poiId && state.store.sourcePoiId !== sourcePoi.poiId) {
             state.store = freshStore();
         }
@@ -648,6 +683,7 @@
         }
         renderDictionaryControls();
         renderRestoredValues();
+        renderStoreOwnerSummary();
         renderLocation("store");
         renderStorePrefillMessage();
         switchTab("store");
@@ -671,6 +707,18 @@
         const name = state.store.sourcePoiName || state.store.name || "附近地点";
         const address = state.store.sourcePoiAddress ? `（${state.store.sourcePoiAddress}）` : "";
         message.textContent = `已预填“${name}”${address}，定位使用当前 GPS，请核对并补齐必填资料。`;
+    }
+
+    function renderStoreOwnerSummary() {
+        const city = state.store.city || $("#store-city")?.value || "";
+        const salespersonId = state.store.salespersonId || $("#store-salesperson")?.value || "";
+        const people = state.salespersonsByCity.get(city) || [];
+        const person = people.find((item) => String(item.id) === String(salespersonId));
+        const selectedName = $("#store-salesperson")?.selectedOptions?.[0]?.textContent || "";
+        $(".store-owner-card")?.classList.toggle("is-incomplete", !city || !salespersonId);
+        $("#store-owner-city").textContent = city || "未选择";
+        $("#store-owner-salesperson").textContent = person?.name
+            || (selectedName && !selectedName.startsWith("请") ? selectedName : "未选择");
     }
 
     async function captureLocation(scope) {
@@ -796,6 +844,8 @@
         const context = state[scope].locationContext;
         const status = $(`#${scope}-location-status`);
         const detail = $(`#${scope}-location-detail`);
+        const button = $(`#${scope}-location-button`);
+        button.closest(".location-card")?.classList.toggle("is-located", Boolean(location));
         if (!location) {
             status.textContent = "未定位";
             status.className = "status-pill";
@@ -1339,6 +1389,8 @@
         const error = document.querySelector(`[data-error-for="${key}"]`);
         if (!error) return;
         error.textContent = message;
+        const disclosure = error.closest("details");
+        if (disclosure) disclosure.open = true;
         error.closest(".field, .choice-fieldset, .upload-item, .audio-recorder, .consent-card, .location-card")
             ?.classList.add("has-error");
     }
@@ -1361,6 +1413,8 @@
 
     function scrollToFirstError() {
         const first = $$(".field__error").find((error) => error.textContent.trim());
+        const disclosure = first?.closest("details");
+        if (disclosure) disclosure.open = true;
         first?.closest(".form-card, .consent-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
 
@@ -1446,6 +1500,7 @@
         renderLocation("store");
         renderNearbyStores();
         renderStorePrefillMessage();
+        renderStoreOwnerSummary();
         renderUploadedBadges();
         renderTab("visit");
         clearAllErrors();
@@ -1525,6 +1580,7 @@
         setValue("#cooperation-intent", state.store.cooperationIntent);
         setValue("#store-grade", state.store.storeGrade);
         renderStorePrefillMessage();
+        renderStoreOwnerSummary();
         updateVisitResultCount();
     }
 

@@ -205,6 +205,8 @@ public class TemporaryCheckinService {
         NormalizedStore normalized = normalizeStore(request);
         OptionalStore existing = existingStore(request.clientStoreId(), normalized);
         if (existing.present()) return storeView(existing.row());
+        OptionalStore existingPoi = existingPoiStore(normalized);
+        if (existingPoi.present()) return storeView(existingPoi.row());
         var salesperson = requireSalesperson(request.salespersonId(), normalized.city());
 
         UUID id = UUID.randomUUID();
@@ -229,10 +231,16 @@ public class TemporaryCheckinService {
         try {
             repository.insertStore(write);
         } catch (DataIntegrityViolationException duplicate) {
-            StoreRow concurrent = repository.findStoreByClientId(tenantId, request.clientStoreId())
-                    .orElseThrow(() -> TemporaryCheckinException.conflict("门店创建冲突，请刷新后重试"));
-            assertSameStore(concurrent, normalized);
-            return storeView(concurrent);
+            StoreRow concurrentByClient = repository.findStoreByClientIdForUpdate(
+                            tenantId, request.clientStoreId())
+                    .orElse(null);
+            if (concurrentByClient != null) {
+                assertSameStore(concurrentByClient, normalized);
+                return storeView(concurrentByClient);
+            }
+            OptionalStore concurrentByPoi = existingPoiStoreForUpdate(normalized);
+            if (concurrentByPoi.present()) return storeView(concurrentByPoi.row());
+            throw TemporaryCheckinException.conflict("门店创建冲突，请刷新后重试");
         }
         return repository.findStore(tenantId, id).map(TemporaryCheckinService::storeView)
                 .orElseThrow(() -> new IllegalStateException("门店写入后不可见"));
@@ -451,15 +459,18 @@ public class TemporaryCheckinService {
         }
         StringBuilder csv = new StringBuilder("\uFEFF");
         appendCsv(csv, List.of("submission_id", "client_submission_id", "status", "city",
-                "salesperson_id", "salesperson_name", "store_id", "store_name", "customer_name",
-                "customer_phone", "visit_result", "longitude", "latitude", "accuracy_meters",
+                "salesperson_id", "salesperson_name", "store_id", "store_name",
+                "visit_ordinal", "visit_type", "revisit_number", "customer_name", "customer_phone", "visit_result",
+                "longitude", "latitude", "accuracy_meters",
                 "location_captured_at", "location_note", "location_address", "location_adcode",
                 "storefront_photo", "wechat_screenshot", "audio", "transcription_status", "transcript",
                 "summary_status", "summary", "created_at", "submitted_at"));
         for (ExportRow row : rows) {
             appendCsv(csv, List.of(value(row.id()), value(row.clientSubmissionId()), value(row.status()),
                     value(row.city()), value(row.salespersonId()), value(row.salespersonName()),
-                    value(row.storeId()), value(row.storeName()), value(row.customerName()),
+                    value(row.storeId()), value(row.storeName()), value(row.visitOrdinal()),
+                    value(visitType(row.visitOrdinal())), value(revisitNumber(row.visitOrdinal())),
+                    value(row.customerName()),
                     value(row.customerPhone()), value(row.visitResult()), value(row.longitude()),
                     value(row.latitude()), value(row.accuracyMeters()), value(row.locationCapturedAt()),
                     value(row.locationNote()), value(row.locationAddress()), value(row.locationAdcode()),
@@ -601,7 +612,9 @@ public class TemporaryCheckinService {
 
     private static AdminSubmissionView adminSubmissionView(AdminSubmissionRow row) {
         return new AdminSubmissionView(row.id(), row.status(), row.city(), row.salespersonId(),
-                row.salespersonName(), row.storeId(), row.storeName(), row.customerName(), row.customerPhone(),
+                row.salespersonName(), row.storeId(), row.storeName(), row.visitOrdinal(),
+                visitType(row.visitOrdinal()), revisitNumber(row.visitOrdinal()),
+                row.customerName(), row.customerPhone(),
                 row.visitResult(), row.longitude(), row.latitude(), row.accuracyMeters(),
                 row.locationCapturedAt(), row.locationNote(), row.locationAddress(), row.locationAdcode(),
                 row.storefrontPhotoAvailable(), row.wechatScreenshotAvailable(), row.audioAvailable(),
@@ -611,11 +624,45 @@ public class TemporaryCheckinService {
                 row.createdAt(), row.submittedAt());
     }
 
+    private static String visitType(Long visitOrdinal) {
+        if (visitOrdinal == null) return null;
+        return visitOrdinal == 1 ? "FIRST_VISIT" : "REVISIT";
+    }
+
+    private static Long revisitNumber(Long visitOrdinal) {
+        if (visitOrdinal == null) return null;
+        return Math.max(0, visitOrdinal - 1);
+    }
+
     private OptionalStore existingStore(UUID clientStoreId, NormalizedStore normalized) {
         StoreRow row = repository.findStoreByClientId(tenantId, clientStoreId).orElse(null);
         if (row == null) return new OptionalStore(false, null);
         assertSameStore(row, normalized);
         return new OptionalStore(true, row);
+    }
+
+    private OptionalStore existingPoiStore(NormalizedStore normalized) {
+        if (normalized.sourcePoiId() == null) return new OptionalStore(false, null);
+        StoreRow row = repository.findStoreBySourcePoiId(tenantId, normalized.sourcePoiId()).orElse(null);
+        return reusablePoiStore(row, normalized);
+    }
+
+    private static OptionalStore reusablePoiStore(StoreRow row, NormalizedStore normalized) {
+        if (row == null) return new OptionalStore(false, null);
+        if (!"ACTIVE".equals(row.status())) {
+            throw TemporaryCheckinException.conflict("该高德门店已录入但已停用，请联系管理员");
+        }
+        if (!Objects.equals(row.city(), normalized.city())) {
+            throw TemporaryCheckinException.conflict("该高德门店已录入到其他城市，请联系管理员");
+        }
+        return new OptionalStore(true, row);
+    }
+
+    private OptionalStore existingPoiStoreForUpdate(NormalizedStore normalized) {
+        if (normalized.sourcePoiId() == null) return new OptionalStore(false, null);
+        StoreRow row = repository.findStoreBySourcePoiIdForUpdate(tenantId, normalized.sourcePoiId())
+                .orElse(null);
+        return reusablePoiStore(row, normalized);
     }
 
     private void assertSameStore(StoreRow row, NormalizedStore normalized) {

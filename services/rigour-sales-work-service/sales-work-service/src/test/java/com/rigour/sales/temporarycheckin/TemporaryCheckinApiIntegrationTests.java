@@ -40,8 +40,14 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -241,6 +247,61 @@ class TemporaryCheckinApiIntegrationTests {
                                 request.location()))))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_KEY_INVALID"));
+    }
+
+    @Test
+    void reusesRegisteredAmapPoiAcrossDifferentBrowserClientIds() throws Exception {
+        CreateStoreRequest first = poiStore(UUID.randomUUID(), "高德候选门店", "张店长");
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(first)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String firstStoreId = objectMapper.readTree(created.getResponse().getContentAsByteArray())
+                .path("id").asText();
+
+        CreateStoreRequest retriedFromAnotherBrowser = poiStore(
+                UUID.randomUUID(), "高德候选门店新名", "李店长");
+        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(retriedFromAnotherBrowser)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(firstStoreId))
+                .andExpect(jsonPath("$.name").value("高德候选门店"));
+
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_store
+                 WHERE tenant_id=? AND source_poi_id='B0FFTESTPOI'
+                """, Integer.class, bin(TENANT_ID))).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentlyReusesAmapPoiAfterUniqueKeyConflictUnderRepeatableRead() throws Exception {
+        CountDownLatch bothRequestsPassedPrecheck = new CountDownLatch(2);
+        when(reverseGeocoder.resolve(any(BigDecimal.class), any(BigDecimal.class)))
+                .thenAnswer(invocation -> {
+                    bothRequestsPassedPrecheck.countDown();
+                    if (!bothRequestsPassedPrecheck.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("并发请求未同时到达写入前屏障");
+                    }
+                    return resolvedBeijingLocation();
+                });
+        CreateStoreRequest first = poiStore(UUID.randomUUID(), "并发门店甲", "张店长");
+        CreateStoreRequest second = poiStore(UUID.randomUUID(), "并发门店乙", "李店长");
+
+        CompletableFuture<MvcResult> firstResult = CompletableFuture.supplyAsync(() -> createStore(first));
+        CompletableFuture<MvcResult> secondResult = CompletableFuture.supplyAsync(() -> createStore(second));
+        MvcResult responseA = firstResult.get(20, TimeUnit.SECONDS);
+        MvcResult responseB = secondResult.get(20, TimeUnit.SECONDS);
+
+        assertThat(responseA.getResponse().getStatus()).isEqualTo(200);
+        assertThat(responseB.getResponse().getStatus()).isEqualTo(200);
+        assertThat(objectMapper.readTree(responseA.getResponse().getContentAsByteArray()).path("id").asText())
+                .isEqualTo(objectMapper.readTree(responseB.getResponse().getContentAsByteArray()).path("id").asText());
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_store
+                 WHERE tenant_id=? AND source_poi_id='B0FFTESTPOI'
+                """, Integer.class, bin(TENANT_ID))).isEqualTo(1);
     }
 
     @Test
@@ -510,6 +571,43 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
+    void keepsVisitOrdinalFromAllSubmittedHistoryBeforeApplyingAdminDateFilters() throws Exception {
+        Instant now = Instant.now();
+        UUID historical = insertAdminSubmission(
+                "北京", VISITOR_ID, STORE_ID, "已导入门店", "历史客户", "首次拜访");
+        markSubmitted(historical, now.minusSeconds(3 * 86_400), now.minusSeconds(3 * 86_400 - 60));
+        UUID today = insertAdminSubmission(
+                "北京", VISITOR_ID, STORE_ID, "已导入门店", "今日客户", "复访跟进");
+        markSubmitted(today, now.minusSeconds(120), now.minusSeconds(60));
+        String dateFilter = LocalDate.now(ZoneId.of("Asia/Shanghai")).minusDays(1).toString();
+
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
+                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .param("from", dateFilter)
+                        .param("status", "SUBMITTED")
+                        .param("q", "今日客户"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(today.toString()))
+                .andExpect(jsonPath("$.items[0].visitOrdinal").value(2))
+                .andExpect(jsonPath("$.items[0].visitType").value("REVISIT"))
+                .andExpect(jsonPath("$.items[0].revisitNumber").value(1));
+
+        String csv = new String(mockMvc.perform(get("/sales-checkin/admin/export.csv")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
+                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .param("from", dateFilter)
+                        .param("status", "SUBMITTED"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray(),
+                StandardCharsets.UTF_8);
+        assertThat(csv)
+                .contains("\"visit_ordinal\",\"visit_type\",\"revisit_number\"")
+                .contains(",\"2\",\"REVISIT\",\"1\",\"今日客户\",")
+                .doesNotContain("历史客户");
+    }
+
+    @Test
     void letsOnlyGlobalAdminPhysicallyDeleteMediaIdempotentlyAndUpdatesStorageStats() throws Exception {
         UUID submissionId = insertAdminSubmission(
                 "北京", VISITOR_ID, STORE_ID, "北京门店", "媒体清理客户", "物理删除验收");
@@ -674,6 +772,31 @@ class TemporaryCheckinApiIntegrationTests {
                 TemporaryCheckinService.PRIVACY_NOTICE_VERSION);
     }
 
+    private static CreateStoreRequest poiStore(UUID clientStoreId, String name, String contactName) {
+        return new CreateStoreRequest(clientStoreId, "北京", VISITOR_ID,
+                "B0FFTESTPOI", "高德候选门店", "北京市东城区测试路1号",
+                new BigDecimal("116.397128"), new BigDecimal("39.916527"),
+                "台球", name, "营业中", contactName, "13800000000", "100-300平米", "10张球桌",
+                List.of("竞技赛事"), List.of("高德业务"), "高意向", "A类", List.of("单店"), location());
+    }
+
+    private MvcResult createStore(CreateStoreRequest request) {
+        try {
+            return mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsBytes(request)))
+                    .andReturn();
+        } catch (Exception exception) {
+            throw new CompletionException(exception);
+        }
+    }
+
+    private static GeocodeResult resolvedBeijingLocation() {
+        return new GeocodeResult("RESOLVED", "东城区龙潭路与夕照寺街交叉口东南60米",
+                "北京市东城区龙潭路与夕照寺街交叉口东南60米", "110101", "北京市", "北京市",
+                "东城区", "龙潭街道", new BigDecimal("116.403000"), new BigDecimal("39.912000"), null);
+    }
+
     private static LocationCommand location() {
         return new LocationCommand(new BigDecimal("116.3971280"), new BigDecimal("39.9165270"),
                 new BigDecimal("8.50"), Instant.now().minusSeconds(30), "门店内");
@@ -763,6 +886,15 @@ class TemporaryCheckinApiIntegrationTests {
                 """, bin(UUID.randomUUID()), bin(TENANT_ID), bin(UUID.randomUUID()), "a".repeat(64),
                 bin(VISITOR_ID), bin(STORE_ID), "\tformula", Timestamp.from(now.minusSeconds(30)),
                 "\rformula", "b".repeat(64), "\nformula", Timestamp.from(now), Timestamp.from(now));
+    }
+
+    private void markSubmitted(UUID submissionId, Instant createdAt, Instant submittedAt) {
+        jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET status='SUBMITTED', created_at=?, submitted_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=?
+                """, Timestamp.from(createdAt), Timestamp.from(submittedAt), Timestamp.from(submittedAt),
+                bin(TENANT_ID), bin(submissionId));
     }
 
     private static byte[] bin(UUID value) {

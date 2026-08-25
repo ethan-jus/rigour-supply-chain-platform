@@ -84,6 +84,27 @@ public class TemporaryCheckinRepository {
                 (rs, row) -> store(rs), bin(tenantId), bin(clientStoreId)).stream().findFirst();
     }
 
+    public Optional<StoreRow> findStoreByClientIdForUpdate(UUID tenantId, UUID clientStoreId) {
+        return jdbc.query(storeSelect() + " WHERE tenant_id=? AND client_store_id=? LIMIT 1 FOR UPDATE",
+                (rs, row) -> store(rs), bin(tenantId), bin(clientStoreId)).stream().findFirst();
+    }
+
+    public Optional<StoreRow> findStoreBySourcePoiId(UUID tenantId, String sourcePoiId) {
+        return jdbc.query(storeSelect() + """
+                 WHERE tenant_id=? AND source_poi_id=?
+                 ORDER BY CASE WHEN status='ACTIVE' THEN 0 ELSE 1 END, updated_at DESC, id
+                 LIMIT 1
+                """, (rs, row) -> store(rs), bin(tenantId), sourcePoiId).stream().findFirst();
+    }
+
+    public Optional<StoreRow> findStoreBySourcePoiIdForUpdate(UUID tenantId, String sourcePoiId) {
+        return jdbc.query(storeSelect() + """
+                 WHERE tenant_id=? AND source_poi_id=?
+                 ORDER BY CASE WHEN status='ACTIVE' THEN 0 ELSE 1 END, updated_at DESC, id
+                 LIMIT 1 FOR UPDATE
+                """, (rs, row) -> store(rs), bin(tenantId), sourcePoiId).stream().findFirst();
+    }
+
     public void insertStore(StoreWrite row) {
         jdbc.update("""
                 INSERT INTO temp_sales_checkin_store
@@ -165,8 +186,18 @@ public class TemporaryCheckinRepository {
     public List<ExportRow> export(UUID tenantId, Instant from, Instant toExclusive, String city,
                                   UUID salespersonId, String status, int limit) {
         StringBuilder sql = new StringBuilder("""
-                SELECT id, client_submission_id, status, city, salesperson_id,
-                       salesperson_name_snapshot, store_id, store_name_snapshot,
+                WITH visit_ranks AS (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY tenant_id, salesperson_id, store_id
+                               ORDER BY submitted_at, id
+                           ) AS visit_ordinal
+                      FROM temp_sales_checkin_submission
+                     WHERE tenant_id=? AND status='SUBMITTED'
+                )
+                SELECT s.id, s.client_submission_id, s.status, s.city, s.salesperson_id,
+                       s.salesperson_name_snapshot, s.store_id, s.store_name_snapshot,
+                       r.visit_ordinal,
                        customer_name, customer_phone, visit_result,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
                        location_address, location_adcode,
@@ -175,16 +206,17 @@ public class TemporaryCheckinRepository {
                        audio_original_filename, audio_deleted_at,
                        transcription_status, transcript, summary_status, summary_text,
                        created_at, submitted_at
-                  FROM temp_sales_checkin_submission
-                 WHERE tenant_id=?
+                  FROM temp_sales_checkin_submission s
+                  LEFT JOIN visit_ranks r ON r.id=s.id
+                 WHERE s.tenant_id=?
                 """);
-        List<Object> arguments = new ArrayList<>(List.of(bin(tenantId)));
+        List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
         if (from != null) { sql.append(" AND created_at>=?"); arguments.add(timestamp(from)); }
         if (toExclusive != null) { sql.append(" AND created_at<?"); arguments.add(timestamp(toExclusive)); }
         if (city != null) { sql.append(" AND city=?"); arguments.add(city); }
         if (salespersonId != null) { sql.append(" AND salesperson_id=?"); arguments.add(bin(salespersonId)); }
         if (status != null) { sql.append(" AND status=?"); arguments.add(status); }
-        sql.append(" ORDER BY created_at DESC, id DESC LIMIT ?");
+        sql.append(" ORDER BY s.created_at DESC, s.id DESC LIMIT ?");
         arguments.add(limit);
         return jdbc.query(sql.toString(), (rs, row) -> exportRow(rs), arguments.toArray());
     }
@@ -206,8 +238,18 @@ public class TemporaryCheckinRepository {
             UUID tenantId, Instant from, Instant toExclusive, String city, UUID salespersonId,
             String status, String escapedQuery, int offset, int limit) {
         StringBuilder sql = new StringBuilder("""
-                SELECT id, status, city, salesperson_id, salesperson_name_snapshot,
-                       store_id, store_name_snapshot, customer_name, customer_phone, visit_result,
+                WITH visit_ranks AS (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY tenant_id, salesperson_id, store_id
+                               ORDER BY submitted_at, id
+                           ) AS visit_ordinal
+                      FROM temp_sales_checkin_submission
+                     WHERE tenant_id=? AND status='SUBMITTED'
+                )
+                SELECT s.id, s.status, s.city, s.salesperson_id, s.salesperson_name_snapshot,
+                       s.store_id, s.store_name_snapshot, r.visit_ordinal,
+                       customer_name, customer_phone, visit_result,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
                        location_address, location_adcode,
                        storefront_photo_object_key, storefront_photo_deleted_at,
@@ -216,12 +258,13 @@ public class TemporaryCheckinRepository {
                        transcription_status, transcript, transcription_error_code,
                        summary_status, summary_text, summary_error_code,
                        created_at, submitted_at
-                  FROM temp_sales_checkin_submission
-                 WHERE tenant_id=?
+                  FROM temp_sales_checkin_submission s
+                  LEFT JOIN visit_ranks r ON r.id=s.id
+                 WHERE s.tenant_id=?
                 """);
-        List<Object> arguments = new ArrayList<>(List.of(bin(tenantId)));
+        List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
         appendAdminFilters(sql, arguments, from, toExclusive, city, salespersonId, status, escapedQuery);
-        sql.append(" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?");
+        sql.append(" ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?");
         arguments.add(limit);
         arguments.add(offset);
         return jdbc.query(sql.toString(), (rs, row) -> adminSubmission(rs), arguments.toArray());
@@ -616,7 +659,8 @@ public class TemporaryCheckinRepository {
     private static ExportRow exportRow(ResultSet rs) throws SQLException {
         return new ExportRow(uuid(rs, "id"), uuid(rs, "client_submission_id"), rs.getString("status"),
                 rs.getString("city"), uuid(rs, "salesperson_id"), rs.getString("salesperson_name_snapshot"),
-                uuid(rs, "store_id"), rs.getString("store_name_snapshot"), rs.getString("customer_name"),
+                uuid(rs, "store_id"), rs.getString("store_name_snapshot"), nullableLong(rs, "visit_ordinal"),
+                rs.getString("customer_name"),
                 rs.getString("customer_phone"), rs.getString("visit_result"), rs.getBigDecimal("longitude"),
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
@@ -634,7 +678,8 @@ public class TemporaryCheckinRepository {
     private static AdminSubmissionRow adminSubmission(ResultSet rs) throws SQLException {
         return new AdminSubmissionRow(uuid(rs, "id"), rs.getString("status"), rs.getString("city"),
                 uuid(rs, "salesperson_id"), rs.getString("salesperson_name_snapshot"),
-                uuid(rs, "store_id"), rs.getString("store_name_snapshot"), rs.getString("customer_name"),
+                uuid(rs, "store_id"), rs.getString("store_name_snapshot"), nullableLong(rs, "visit_ordinal"),
+                rs.getString("customer_name"),
                 rs.getString("customer_phone"), rs.getString("visit_result"), rs.getBigDecimal("longitude"),
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
@@ -727,6 +772,7 @@ public class TemporaryCheckinRepository {
     public record ExportRow(
             UUID id, UUID clientSubmissionId, String status, String city,
             UUID salespersonId, String salespersonName, UUID storeId, String storeName,
+            Long visitOrdinal,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
             Instant locationCapturedAt, String locationNote, String locationAddress, String locationAdcode,
@@ -737,7 +783,8 @@ public class TemporaryCheckinRepository {
 
     public record AdminSubmissionRow(
             UUID id, String status, String city, UUID salespersonId, String salespersonName,
-            UUID storeId, String storeName, String customerName, String customerPhone, String visitResult,
+            UUID storeId, String storeName, Long visitOrdinal,
+            String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
             Instant locationCapturedAt, String locationNote, String locationAddress, String locationAdcode,
             boolean storefrontPhotoAvailable, boolean wechatScreenshotAvailable, boolean audioAvailable,

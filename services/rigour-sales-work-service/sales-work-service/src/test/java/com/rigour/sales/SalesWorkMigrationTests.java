@@ -149,6 +149,7 @@ class SalesWorkMigrationTests {
                        'uk_temp_sales_checkin_store_tenant_id',
                        'uk_temp_sales_checkin_store_client_id',
                        'uk_temp_sales_checkin_store_source_record',
+                       'uk_temp_sales_checkin_store_source_poi',
                        'uk_temp_sales_checkin_submission_tenant_id',
                        'uk_temp_sales_checkin_submission_client_id'
                    )
@@ -176,7 +177,7 @@ class SalesWorkMigrationTests {
                    AND constraint_name LIKE 'ck\\_temp\\_sales\\_checkin\\_%'
                 """, Integer.class);
 
-        assertThat(migrationCount).isEqualTo(14);
+        assertThat(migrationCount).isEqualTo(15);
         assertThat(tableCount).isEqualTo(35);
         assertThat(editableStoreTableCount).isZero();
         assertThat(storefrontEvidenceColumnCount).isEqualTo(10);
@@ -189,7 +190,7 @@ class SalesWorkMigrationTests {
         assertThat(temporaryReadableLocationColumnCount).isEqualTo(12);
         assertThat(temporarySalespersonImportColumnCount).isEqualTo(3);
         assertThat(temporaryStoreImportColumnCount).isEqualTo(6);
-        assertThat(temporaryUniqueConstraintCount).isEqualTo(8);
+        assertThat(temporaryUniqueConstraintCount).isEqualTo(9);
         assertThat(temporaryForeignKeyCount).isEqualTo(3);
         assertThat(temporarySubmissionStoreForeignKeyColumnCount).isEqualTo(2);
         assertThat(temporaryCheckConstraintCount).isEqualTo(20);

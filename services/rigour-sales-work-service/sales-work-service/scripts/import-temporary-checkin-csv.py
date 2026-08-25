@@ -36,6 +36,7 @@ STORE_HEADERS = {
 SALESPERSON_HEADERS = {"销售姓名", "职位", "城市", "在职状态"}
 IDENTITY_NAMESPACE = uuid.UUID("746ce285-9486-4a73-8701-018a44f40ca7")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+SALESPERSON_DATE_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}[\s-]+")
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,6 +114,14 @@ def canonical_row(row: dict[str, str], headers: set[str]) -> str:
                       sort_keys=True, separators=(",", ":"))
 
 
+def salesperson_display_name(value: str) -> str:
+    """去掉飞书导出中误混入销售姓名的日期前缀。
+
+    source_record_id 仍使用原始姓名构造，保证重新导入旧 CSV 时命中原记录。
+    """
+    return SALESPERSON_DATE_PREFIX.sub("", value.strip()).strip()
+
+
 def emit_insert(table: str, columns: list[str], values: list[list[str]], updates: list[str],
                 batch_size: int) -> None:
     for start in range(0, len(values), batch_size):
@@ -123,31 +132,33 @@ def emit_insert(table: str, columns: list[str], values: list[list[str]], updates
 
 
 def salesperson_values(tenant_id: uuid.UUID, rows: list[dict[str, str]], now: datetime) -> list[list[str]]:
-    accepted: list[dict[str, str]] = []
+    accepted: list[tuple[dict[str, str], str]] = []
     rejected = Counter()
     for row in rows:
-        name = row["销售姓名"]
+        raw_name = row["销售姓名"]
+        display_name = salesperson_display_name(raw_name)
         city = row["城市"]
         employment_status = row["在职状态"]
         if employment_status == "离职":
             rejected["离职"] += 1
             continue
-        if not name or not city or not employment_status:
+        if not display_name or not city or not employment_status:
             rejected["必填为空"] += 1
             continue
         if city not in CITY_ALLOWLIST:
             rejected["未知城市"] += 1
             continue
-        accepted.append(row)
-    accepted.sort(key=lambda item: (item["城市"], item["销售姓名"]))
+        accepted.append((row, display_name))
+    accepted.sort(key=lambda item: (item[0]["城市"], item[1], item[0]["销售姓名"]))
     values: list[list[str]] = []
-    for order, row in enumerate(accepted, start=1):
+    for order, (row, display_name) in enumerate(accepted, start=1):
+        # 稳定来源 ID 必须保留旧 CSV 原值，不能改用清洗后的展示名。
         canonical = "|".join((row["销售姓名"], row["城市"], row["职位"], row["在职状态"]))
         record_source_id = source_id("feishu-sales-csv", canonical)
         record_id = stable_uuid(tenant_id, "salesperson", record_source_id)
         values.append([
             sql_uuid(record_id), sql_uuid(tenant_id), sql_required_text(record_source_id),
-            sql_required_text(row["销售姓名"]), sql_required_text(row["城市"]),
+            sql_required_text(display_name), sql_required_text(row["城市"]),
             sql_text(row["职位"]), sql_required_text(row["在职状态"]), sql_required_text("ACTIVE"),
             str(order), sql_datetime(now), sql_datetime(now),
         ])

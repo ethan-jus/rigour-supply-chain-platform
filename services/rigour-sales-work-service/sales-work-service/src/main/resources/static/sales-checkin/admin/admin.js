@@ -235,6 +235,7 @@
             const status = cleanText(item.status).toUpperCase();
             field("status").textContent = status === "SUBMITTED" ? "已提交" : (status === "DRAFT" ? "草稿" : status || "未知状态");
             field("status").classList.toggle("is-draft", status !== "SUBMITTED");
+            renderVisitFrequency(row, item);
 
             field("city").textContent = cleanText(item.city) || "未记录城市";
             field("salesperson").textContent = cleanText(item.salespersonName) || "未记录销售";
@@ -247,6 +248,30 @@
             renderMedia(field("media"), item);
             root.appendChild(row);
         });
+    }
+
+    function renderVisitFrequency(row, item) {
+        const badge = row.querySelector(".visit-frequency");
+        const note = row.querySelector(".visit-frequency-note");
+        const ordinal = positiveInteger(item.visitOrdinal);
+        const explicitRevisitNumber = positiveInteger(item.revisitNumber);
+        const rawType = cleanText(item.visitType).toUpperCase();
+        const isFirst = ordinal === 1 || ["FIRST", "FIRST_VISIT", "INITIAL", "初访"].includes(rawType);
+        const revisitNumber = explicitRevisitNumber || (ordinal > 1 ? ordinal - 1 : 0);
+
+        let label = "";
+        if (isFirst) {
+            label = "初访";
+        } else if (revisitNumber > 0) {
+            label = `第${revisitNumber}次复访`;
+        } else if (["REVISIT", "RETURN_VISIT", "复访"].includes(rawType)) {
+            label = "复访";
+        }
+
+        badge.hidden = !label;
+        note.hidden = !label;
+        badge.textContent = label;
+        badge.classList.toggle("is-first", isFirst);
     }
 
     function renderPhone(link, rawPhone) {
@@ -975,6 +1000,11 @@
             if (Number.isFinite(number) && number >= 0) return Math.trunc(number);
         }
         return 0;
+    }
+
+    function positiveInteger(value) {
+        const number = Number(value);
+        return Number.isInteger(number) && number > 0 ? number : 0;
     }
 
     function formatCount(value) {
