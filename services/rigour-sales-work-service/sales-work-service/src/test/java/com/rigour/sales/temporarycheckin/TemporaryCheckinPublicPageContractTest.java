@@ -157,6 +157,8 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("新门店建档", "本次拜访草稿已保留");
         assertThat(script)
                 .contains("function visitNearbyOptions()")
+                .contains("function visitPoiLookupStatus()")
+                .contains("function storePoiLookupStatus()")
                 .contains("? state.visit.nearbySearchResults", ": state.visit.nearbyStores")
                 .contains(".filter(isUsableNearbyStore)")
                 .contains("body: { city: state[scope].city, location: locationRequestValue(scope), q: query }")
@@ -179,6 +181,9 @@ class TemporaryCheckinPublicPageContractTest {
         assertThat(script)
                 .contains("function manualStoreFallbackAvailable")
                 .contains("poiLookupStatus === \"UNAVAILABLE\"")
+                .contains("state.visit.nearbySearchPoiLookupStatus = poiLookupStatus;")
+                .contains("state.store.poiSearchLookupStatus = poiLookupStatus;")
+                .contains("高德搜索暂不可用，可点击下方手工录入继续；保存时仍校验当前位置。")
                 .contains("state.store.manualEntryAllowed = true;")
                 .contains("state.store.sourceMode = \"MANUAL\";")
                 .contains("高德搜索暂不可用，可点击下方手工录入继续")
@@ -197,6 +202,8 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("Object.values(state.locationControllers).forEach((controller) => controller?.abort());")
                 .contains("cancelLocationCapture(\"visit\");")
                 .contains("cancelLocationCapture(\"store\");")
+                .contains("!state.visit.location || !locationContextReady(state.visit.locationContext)")
+                .contains("state.visit.locationContext = state.store.locationContext")
                 .contains("state.submitting = false;\n            setFormsDisabled(false);");
     }
 

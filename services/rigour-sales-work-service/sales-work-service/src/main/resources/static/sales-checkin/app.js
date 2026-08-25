@@ -40,6 +40,7 @@
         locationContext: null,
         nearbyStores: [],
         nearbySearchResults: null,
+        nearbySearchPoiLookupStatus: null,
         privacyAccepted: false
     });
     const freshStore = () => ({
@@ -62,6 +63,7 @@
         locationContext: null,
         nearbyPois: [],
         poiSearchResults: null,
+        poiSearchLookupStatus: null,
         manualEntryAllowed: false,
         sourceMode: "",
         sourcePoiId: "",
@@ -726,6 +728,7 @@
         const query = $("#store-search").value.trim();
         if (query.length < 2) {
             state.visit.nearbySearchResults = null;
+            state.visit.nearbySearchPoiLookupStatus = null;
             showVisitStoreOptions();
             return;
         }
@@ -738,6 +741,18 @@
             ? state.visit.nearbySearchResults
             : state.visit.nearbyStores;
         return (Array.isArray(source) ? source : []).filter(isUsableNearbyStore);
+    }
+
+    function visitPoiLookupStatus() {
+        return Array.isArray(state.visit.nearbySearchResults)
+            ? cleanText(state.visit.nearbySearchPoiLookupStatus) || "UNAVAILABLE"
+            : cleanText(state.visit.locationContext?.poiLookupStatus) || "UNAVAILABLE";
+    }
+
+    function storePoiLookupStatus() {
+        return Array.isArray(state.store.poiSearchResults)
+            ? cleanText(state.store.poiSearchLookupStatus) || "UNAVAILABLE"
+            : cleanText(state.store.locationContext?.poiLookupStatus) || "UNAVAILABLE";
     }
 
     function registeredNearbyStores() {
@@ -785,15 +800,13 @@
                 ? payload.nearbyStores.filter(isUsableNearbyStore)
                 : [];
             const poiLookupStatus = cleanText(payload.poiLookupStatus) || "UNAVAILABLE";
-            state[scope].locationContext = {
-                ...(state[scope].locationContext || {}),
-                poiLookupStatus
-            };
             if (isVisit) {
                 state.visit.nearbySearchResults = stores;
+                state.visit.nearbySearchPoiLookupStatus = poiLookupStatus;
                 showVisitStoreOptions();
             } else {
                 state.store.poiSearchResults = stores;
+                state.store.poiSearchLookupStatus = poiLookupStatus;
                 state.store.manualEntryAllowed = poiLookupStatus === "UNAVAILABLE"
                     || state.store.poiSearchResults.length === 0;
                 renderStoreSource();
@@ -810,8 +823,12 @@
             if (state[controllerKey] !== controller) return;
             if (error.name === "AbortError") return;
             if (isVisit) {
+                state.visit.nearbySearchResults = [];
+                state.visit.nearbySearchPoiLookupStatus = "UNAVAILABLE";
                 $("#store-search-help").textContent = errorMessage(error, "附近门店搜索失败，请稍后重试。");
             } else {
+                state.store.poiSearchResults = [];
+                state.store.poiSearchLookupStatus = "UNAVAILABLE";
                 state.store.manualEntryAllowed = Boolean(state.store.location
                     && (locationContextReady(state.store.locationContext)
                         || manualStoreFallbackAvailable(state.store.locationContext, state.store.location)));
@@ -841,7 +858,7 @@
         renderStoreResults(stores);
         const registeredCount = options.filter((store) => store.source === "REGISTERED").length;
         const poiCount = options.length - registeredCount;
-        const lookupUnavailable = state.visit.locationContext?.poiLookupStatus === "UNAVAILABLE";
+        const lookupUnavailable = visitPoiLookupStatus() === "UNAVAILABLE";
         $("#store-search-help").textContent = stores.length
             ? lookupUnavailable
                 ? `${registeredCount} 家附近已建档门店；高德地点暂不可用`
@@ -991,7 +1008,7 @@
         const input = $("#store-search");
         const toggle = $("#store-search-toggle");
         const createButton = $("#create-store-link");
-        const lookupUnavailable = context?.poiLookupStatus === "UNAVAILABLE";
+        const lookupUnavailable = visitPoiLookupStatus() === "UNAVAILABLE";
         panel.hidden = !state.visit.location;
         hideStoreResults();
         $("#nearby-stores-scope").textContent = locationContextReady(context)
@@ -1084,6 +1101,7 @@
         state.store.manualEntryAllowed = false;
         if (query.length < 2) {
             state.store.poiSearchResults = null;
+            state.store.poiSearchLookupStatus = null;
             renderStoreSource();
             renderPoiOptions(true);
             $("#poi-search-help").textContent = query.length === 1
@@ -1260,6 +1278,7 @@
         const selected = state.store.sourceMode === "POI" && Boolean(state.store.sourcePoiId);
         const manual = state.store.sourceMode === "MANUAL";
         const ready = locationContextReady(context);
+        const lookupStatus = storePoiLookupStatus();
         const canSearch = ready && !selected;
 
         input.disabled = !canSearch;
@@ -1310,12 +1329,16 @@
                 : context?.errorMessage || "请使用上方重试按钮，或重新定位。";
         } else if (!pois.length) {
             input.placeholder = "输入至少 2 个字搜索附近地点";
-            $("#poi-search-help").textContent = state.store.manualEntryAllowed
-                ? "附近无匹配地点，可点击下方手动录入。"
+            $("#poi-search-help").textContent = lookupStatus === "UNAVAILABLE"
+                ? "高德搜索暂不可用，可点击下方手工录入继续；保存时仍校验当前位置。"
+                : state.store.manualEntryAllowed
+                    ? "附近无匹配地点，可点击下方手动录入。"
                 : "需先完成一次附近搜索，确认无结果后才可手动录入。";
         } else if (!selected) {
             input.placeholder = "点击选择，或输入名称搜索";
-            $("#poi-search-help").textContent = `附近找到 ${pois.length} 个门店或高德地点`;
+            $("#poi-search-help").textContent = lookupStatus === "UNAVAILABLE"
+                ? `附近已有 ${pois.length} 个已建档结果；高德新地点暂不可用`
+                : `附近找到 ${pois.length} 个门店或高德地点`;
         }
     }
 
@@ -1324,6 +1347,7 @@
         if (isBusinessLocked()) return;
         abortStoreSearch();
         state.visit.nearbySearchResults = null;
+        state.visit.nearbySearchPoiLookupStatus = null;
         hideStoreResults();
         $("#store-search").value = state.visit.selectedStore?.name || "";
         hideStoreSavedNotice();
@@ -1453,6 +1477,7 @@
             clearSelectedStore(false, false);
             state.visit.nearbyStores = [];
             state.visit.nearbySearchResults = null;
+            state.visit.nearbySearchPoiLookupStatus = null;
             renderNearbyStores();
         }
         button.disabled = true;
@@ -1473,10 +1498,12 @@
             if (scope === "visit") {
                 state.visit.nearbyStores = [];
                 state.visit.nearbySearchResults = null;
+                state.visit.nearbySearchPoiLookupStatus = null;
                 clearSelectedStore(false, false);
             } else {
                 state.store.nearbyPois = [];
                 state.store.poiSearchResults = null;
+                state.store.poiSearchLookupStatus = null;
                 state.store.manualEntryAllowed = false;
                 clearSourcePoi(true, true);
             }
@@ -1538,10 +1565,12 @@
         if (scope === "visit") {
             state.visit.nearbyStores = [];
             state.visit.nearbySearchResults = null;
+            state.visit.nearbySearchPoiLookupStatus = null;
             abortStoreSearch();
         } else {
             state.store.nearbyPois = [];
             state.store.poiSearchResults = null;
+            state.store.poiSearchLookupStatus = null;
             state.store.manualEntryAllowed = false;
             state.poiSearchController?.abort();
         }
@@ -2321,6 +2350,7 @@
         state.visit.nearbyStores = [createdStore, ...existingNearbyStores.filter((item) =>
             String(item.storeId || item.id) !== String(createdStore.storeId))];
         state.visit.nearbySearchResults = null;
+        state.visit.nearbySearchPoiLookupStatus = null;
         state.visit.selectedStore = {
             id: createdStore.storeId,
             name: createdStore.name,
@@ -2329,7 +2359,12 @@
         };
         if (!state.visit.customerName) state.visit.customerName = payload.contactName;
         if (!state.visit.customerPhone && payload.contactPhone) state.visit.customerPhone = payload.contactPhone;
-        if (!state.visit.location) state.visit.location = { ...payload.location };
+        if (!state.visit.location || !locationContextReady(state.visit.locationContext)) {
+            state.visit.location = { ...payload.location };
+            state.visit.locationContext = state.store.locationContext
+                ? { ...state.store.locationContext }
+                : null;
+        }
 
         resetStoreDraft(payload.city, payload.salespersonId);
         state.activeTab = "visit";
@@ -2361,12 +2396,19 @@
         state.visit.nearbyStores = [createdStore, ...existingNearbyStores.filter((item) =>
             String(item.storeId || item.id) !== String(createdStore.storeId))];
         state.visit.nearbySearchResults = null;
+        state.visit.nearbySearchPoiLookupStatus = null;
         state.visit.selectedStore = {
             id: createdStore.storeId,
             name: createdStore.name,
             city: createdStore.city,
             locationSummary: createdStore.locationSummary
         };
+        if (!state.visit.location || !locationContextReady(state.visit.locationContext)) {
+            state.visit.location = { ...payload.location };
+            state.visit.locationContext = state.store.locationContext
+                ? { ...state.store.locationContext }
+                : null;
+        }
         state.store = freshStore();
         state.store.city = payload.city;
         state.store.salespersonId = payload.salespersonId;
@@ -3158,10 +3200,12 @@
             ? state.visit.nearbyStores.filter(isUsableNearbyStore)
             : [];
         state.visit.nearbySearchResults = null;
+        state.visit.nearbySearchPoiLookupStatus = null;
         state.store.nearbyPois = Array.isArray(state.store.nearbyPois)
             ? state.store.nearbyPois.filter(isUsableNearbyStore)
             : [];
         state.store.poiSearchResults = null;
+        state.store.poiSearchLookupStatus = null;
         if (!state.visit.location || !state.visit.locationContext || typeof state.visit.locationContext !== "object") {
             state.visit.locationContext = null;
         }
@@ -3516,9 +3560,11 @@
         if (scope === "visit") {
             state.visit.nearbyStores = [];
             state.visit.nearbySearchResults = null;
+            state.visit.nearbySearchPoiLookupStatus = null;
         } else {
             state.store.nearbyPois = [];
             state.store.poiSearchResults = null;
+            state.store.poiSearchLookupStatus = null;
         }
     }
 
