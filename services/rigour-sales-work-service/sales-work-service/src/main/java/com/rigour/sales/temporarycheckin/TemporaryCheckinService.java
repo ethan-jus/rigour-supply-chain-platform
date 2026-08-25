@@ -23,7 +23,9 @@ import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.SalespersonOptio
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.StoreView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.AdminSubmissionRow;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.ExportRow;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.CompletionRiskWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.GeocodeWrite;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.IdentityRiskWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.MediaReference;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.MediaWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.StoreCheckinAnchorRow;
@@ -31,6 +33,9 @@ import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.StoreRow;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.StoreWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.SubmissionRow;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.SubmissionWrite;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinSalesIdentityService.AuthorizedRequest;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinSalesIdentityService.RequestRiskFacts;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinSalesIdentityService.RiskSnapshot;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinReverseGeocoder.GeocodeResult;
 import com.rigour.sales.application.port.out.AmapPoiClient;
 import com.rigour.sales.application.port.out.AmapPoiException;
@@ -75,8 +80,8 @@ import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * 临时打卡表单用例。该服务不读取请求中的租户或身份，只使用部署配置的固定租户；
- * submissionKey 只保存 SHA-256 摘要，明文仅在当次请求内使用。
+ * 临时打卡表单用例。租户只使用部署配置；销售身份由服务端验证后与设备绑定，
+ * 不信任请求体里单独的 salespersonId。submissionKey 只保存 SHA-256 摘要。
  */
 @Service
 @ConditionalOnProperty(prefix = "rigour.sales.temporary-checkin", name = "enabled", havingValue = "true")
@@ -87,7 +92,7 @@ public class TemporaryCheckinService {
     private static final Logger log = LoggerFactory.getLogger(TemporaryCheckinService.class);
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int MAX_EXPORT_ROWS = 20_000;
-    public static final String PRIVACY_NOTICE_VERSION = "2026-08-25-ai-v1";
+    public static final String PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
     private static final int NEARBY_LIMIT = 20;
     private static final Map<String, String> CITY_ADCODE_PREFIXES = Map.of(
             "北京", "11",
@@ -100,30 +105,36 @@ public class TemporaryCheckinService {
     private static final TypeReference<List<String>> STRING_LIST_TYPE = new TypeReference<>() { };
 
     private final TemporaryCheckinRepository repository;
+    private final TemporaryCheckinAdminAuthRepository adminAuthRepository;
     private final TemporaryCheckinProperties properties;
     private final FileStorage fileStorage;
     private final TemporaryCheckinReverseGeocoder reverseGeocoder;
     private final AmapPoiClient amapPoiClient;
     private final ObjectMapper objectMapper;
+    private final TemporaryCheckinSalesIdentityService salesIdentityService;
     private final Clock clock;
     private final UUID tenantId;
     private final boolean aiEnabled;
 
     public TemporaryCheckinService(
             TemporaryCheckinRepository repository,
+            TemporaryCheckinAdminAuthRepository adminAuthRepository,
             TemporaryCheckinProperties properties,
             FileStorage fileStorage,
             TemporaryCheckinReverseGeocoder reverseGeocoder,
             AmapPoiClient amapPoiClient,
             ObjectMapper objectMapper,
+            TemporaryCheckinSalesIdentityService salesIdentityService,
             Clock clock,
             ObjectProvider<TemporaryCheckinAiClient> aiClientProvider) {
         this.repository = repository;
+        this.adminAuthRepository = adminAuthRepository;
         this.properties = properties;
         this.fileStorage = fileStorage;
         this.reverseGeocoder = reverseGeocoder;
         this.amapPoiClient = amapPoiClient;
         this.objectMapper = objectMapper;
+        this.salesIdentityService = salesIdentityService;
         this.clock = clock;
         this.tenantId = properties.requireTenantId();
         this.aiEnabled = aiClientProvider.getIfAvailable() != null;
@@ -131,8 +142,8 @@ public class TemporaryCheckinService {
     }
 
     public OptionsResponse options(String city) {
-        String normalizedCity = optionalEnum(city, properties.getCities(), "city");
-        List<String> configuredCities = properties.getCities();
+        List<String> configuredCities = activeCities();
+        String normalizedCity = optionalEnum(city, configuredCities, "city");
         List<SalespersonOption> salespersons = repository.findSalespersons(tenantId, normalizedCity).stream()
                 .filter(row -> configuredCities.contains(row.city()))
                 .sorted(Comparator
@@ -143,21 +154,22 @@ public class TemporaryCheckinService {
                         .thenComparing(TemporaryCheckinRepository.SalespersonRow::id))
                 .map(row -> new SalespersonOption(row.id(), row.name(), row.city()))
                 .toList();
-        return new OptionsResponse(properties.getCities(), salespersons, properties.getStoreAttributes(),
+        return new OptionsResponse(configuredCities, salespersons, properties.getStoreAttributes(),
                 properties.getOperatingStatuses(), properties.getAreaRanges(), properties.getBusinessTypes(),
                 properties.getIntendedBusinesses(), properties.getCooperationIntents(),
                 properties.getStoreGrades(), properties.getStoreTags());
     }
 
     public List<StoreView> searchStores(String city, String query, Integer requestedLimit) {
-        String normalizedCity = requiredEnum(city, properties.getCities(), "city");
+        List<String> configuredCities = activeCities();
+        String normalizedCity = requiredEnum(city, configuredCities, "city");
         String normalizedQuery = required(query, "q", 128);
         if (normalizedQuery.length() < 2) throw TemporaryCheckinException.badRequest("q至少输入2个字符");
         int limit = requestedLimit == null ? 20 : requestedLimit;
         if (limit < 1 || limit > 20) throw TemporaryCheckinException.badRequest("limit必须在1到20之间");
         String escaped = normalizedQuery.replace("=", "==").replace("%", "=%").replace("_", "=_");
         return repository.searchStores(tenantId, normalizedCity, escaped, limit).stream()
-                .filter(this::hasCompleteStoreProfile)
+                .filter(store -> hasCompleteStoreProfile(store, configuredCities))
                 .filter(TemporaryCheckinService::hasValidStoreCoordinates)
                 .map(TemporaryCheckinService::storeView)
                 .toList();
@@ -165,7 +177,8 @@ public class TemporaryCheckinService {
 
     public LocationContextView resolveLocation(ResolveLocationRequest request) {
         if (request == null) throw TemporaryCheckinException.badRequest("location不能为空");
-        String city = requiredEnum(request.city(), properties.getCities(), "city");
+        List<String> configuredCities = activeCities();
+        String city = requiredEnum(request.city(), configuredCities, "city");
         NormalizedLocation location = normalizeLocation(request.location());
         String query = optional(request.q(), "q", 64);
         if (query != null && query.length() < 2) {
@@ -207,7 +220,7 @@ public class TemporaryCheckinService {
                 .collect(java.util.stream.Collectors.toMap(
                         StoreCheckinAnchorRow::storeId, anchor -> anchor, (first, ignored) -> first));
         List<NearbyStoreView> registeredNearby = registeredStores.stream()
-                .filter(this::hasCompleteStoreProfile)
+                .filter(store -> hasCompleteStoreProfile(store, configuredCities))
                 .filter(store -> query == null || normalizeName(store.name()).contains(normalizedNameQuery))
                 .map(store -> new StoreWithAnchor(store,
                         checkinAnchor(store, fallbackAnchors.get(store.id()))))
@@ -277,12 +290,16 @@ public class TemporaryCheckinService {
     }
 
     @Transactional
-    public StoreView createStore(CreateStoreRequest request) {
+    public StoreView createStore(CreateStoreRequest request, TemporaryCheckinRequestFacts requestFacts) {
         if (request == null || request.clientStoreId() == null || request.salespersonId() == null) {
             throw TemporaryCheckinException.badRequest("clientStoreId和salespersonId不能为空");
         }
+        AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
         NormalizedStore normalized = normalizeStore(request);
-        var salesperson = requireSalesperson(request.salespersonId(), normalized.city());
+        var salesperson = identity.salesperson();
+        if (!normalized.city().equals(salesperson.city())) {
+            throw TemporaryCheckinException.badRequest("销售与选择城市不一致");
+        }
         OptionalStore existing = existingStore(request.clientStoreId(), normalized);
         if (existing.present()) return storeView(existing.row());
         requireAcceptableCurrentLocation(normalized.location());
@@ -331,13 +348,15 @@ public class TemporaryCheckinService {
     }
 
     @Transactional
-    public DraftSubmissionView createDraft(CreateSubmissionRequest request) {
+    public DraftSubmissionView createDraft(
+            CreateSubmissionRequest request, TemporaryCheckinRequestFacts requestFacts) {
         if (request == null || request.clientSubmissionId() == null || request.salespersonId() == null
                 || request.storeId() == null) {
             throw TemporaryCheckinException.badRequest(
                     "clientSubmissionId、salespersonId和storeId不能为空");
         }
         String key = validateSubmissionKey(request.submissionKey());
+        AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
         String keyHash = sha256Hex(key.getBytes(StandardCharsets.UTF_8));
         if (!Boolean.TRUE.equals(request.privacyAccepted())) {
             throw TemporaryCheckinException.badRequest("必须明确同意定位、照片、录音及转写说明");
@@ -345,16 +364,21 @@ public class TemporaryCheckinService {
         if (!PRIVACY_NOTICE_VERSION.equals(request.privacyNoticeVersion())) {
             throw TemporaryCheckinException.badRequest("隐私提示版本已更新，请刷新页面后重新确认");
         }
-        String city = requiredEnum(request.city(), properties.getCities(), "city");
+        String city = requiredEnum(request.city(), activeCities(), "city");
         NormalizedSubmission normalized = new NormalizedSubmission(city, request.salespersonId(), request.storeId(),
                 required(request.customerName(), "customerName", 128),
                 optionalPhone(request.customerPhone(), "customerPhone"),
                 requiredMultiline(request.visitResult(), "visitResult", 2000),
                 normalizeLocation(request.location()), true, request.privacyNoticeVersion());
-        var salesperson = requireSalesperson(request.salespersonId(), city);
+        var salesperson = identity.salesperson();
+        if (!city.equals(salesperson.city())) {
+            throw TemporaryCheckinException.badRequest("销售与选择城市不一致");
+        }
         SubmissionRow existing = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId())
                 .orElse(null);
         if (existing != null) {
+            salesIdentityService.requireSubmission(
+                    existing.salespersonId(), existing.deviceTokenHash(), requestFacts);
             requireMatchingKey(existing, key);
             assertSameSubmission(existing, normalized);
             return new DraftSubmissionView(existing.id(), existing.status(), existing.createdAt());
@@ -375,17 +399,29 @@ public class TemporaryCheckinService {
                 geocode.formattedAddress(), geocode.adcode(), geocode.province(), geocode.city(),
                 geocode.district(), geocode.township(), geocode.amapLongitude(), geocode.amapLatitude(),
                 geocode.errorCode(), now);
+        RiskSnapshot risk = salesIdentityService.evaluateRisk(identity);
+        RequestRiskFacts riskFacts = risk.requestFacts();
+        IdentityRiskWrite identityWrite = new IdentityRiskWrite(identity.identityMethod(), identity.verifiedAt(),
+                salesperson.credentialVersion(), identity.deviceTokenHash(),
+                riskFacts == null ? null : riskFacts.ipHash(),
+                riskFacts == null ? null : riskFacts.ipNetworkHash(),
+                riskFacts == null ? null : riskFacts.ipMasked(),
+                riskFacts == null ? null : riskFacts.userAgentHash(),
+                riskFacts == null ? null : riskFacts.userAgentSummary(),
+                risk.level(), writeJson(risk.flags()), risk.evaluatedAt());
         SubmissionWrite write = new SubmissionWrite(id, tenantId, request.clientSubmissionId(), keyHash,
                 city, salesperson.id(), salesperson.name(), store.id(), store.name(),
                 normalized.customerName(), normalized.customerPhone(), normalized.visitResult(),
                 normalized.location().longitude(), normalized.location().latitude(),
                 normalized.location().accuracyMeters(), normalized.location().capturedAt(),
-                normalized.location().note(), geocodeWrite, normalized.privacyNoticeVersion(), now);
+                normalized.location().note(), geocodeWrite, normalized.privacyNoticeVersion(), identityWrite, now);
         try {
             repository.insertSubmission(write);
         } catch (DataIntegrityViolationException duplicate) {
             SubmissionRow concurrent = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId())
                     .orElseThrow(() -> TemporaryCheckinException.conflict("草稿创建冲突，请重试"));
+            salesIdentityService.requireSubmission(
+                    concurrent.salespersonId(), concurrent.deviceTokenHash(), requestFacts);
             requireMatchingKey(concurrent, key);
             assertSameSubmission(concurrent, normalized);
             return new DraftSubmissionView(concurrent.id(), concurrent.status(), concurrent.createdAt());
@@ -395,11 +431,14 @@ public class TemporaryCheckinService {
 
     @Transactional
     public MediaUploadView uploadMedia(
-            UUID submissionId, String rawKind, String submissionKey, MultipartFile file) {
+            UUID submissionId, String rawKind, String submissionKey, MultipartFile file,
+            TemporaryCheckinRequestFacts requestFacts) {
         if (submissionId == null) throw TemporaryCheckinException.badRequest("submissionId不能为空");
         MediaKind kind = MediaKind.parse(rawKind);
         SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
                 .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
+        salesIdentityService.requireSubmission(
+                submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
         requireMatchingKey(submission, submissionKey);
         if (!"DRAFT".equals(submission.status())) {
             throw TemporaryCheckinException.conflict("已提交的打卡不允许替换媒体");
@@ -478,11 +517,14 @@ public class TemporaryCheckinService {
 
     @Transactional
     public MediaDeleteView deleteDraftMedia(
-            UUID submissionId, String rawKind, String submissionKey) {
+            UUID submissionId, String rawKind, String submissionKey,
+            TemporaryCheckinRequestFacts requestFacts) {
         if (submissionId == null) throw TemporaryCheckinException.badRequest("submissionId不能为空");
         MediaKind kind = MediaKind.parse(rawKind);
         SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
                 .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
+        salesIdentityService.requireSubmission(
+                submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
         requireMatchingKey(submission, submissionKey);
         if (!"DRAFT".equals(submission.status())) {
             throw TemporaryCheckinException.conflict("已提交的打卡不允许删除媒体");
@@ -505,8 +547,11 @@ public class TemporaryCheckinService {
     }
 
     @Transactional
-    public CompletedSubmissionView complete(UUID submissionId, String submissionKey) {
+    public CompletedSubmissionView complete(
+            UUID submissionId, String submissionKey, TemporaryCheckinRequestFacts requestFacts) {
         SubmissionRow submission = requireSubmission(submissionId);
+        AuthorizedRequest identity = salesIdentityService.requireSubmission(
+                submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
         requireMatchingKey(submission, submissionKey);
         if ("SUBMITTED".equals(submission.status())) {
             queueTranscriptionIfEligible(submission);
@@ -516,7 +561,14 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.badRequest("请先上传门头照");
         }
         Instant submittedAt = clock.instant();
-        if (repository.complete(tenantId, submissionId, submittedAt) != 1) {
+        RiskSnapshot risk = salesIdentityService.evaluateRisk(identity);
+        RequestRiskFacts facts = risk.requestFacts();
+        CompletionRiskWrite completionRisk = new CompletionRiskWrite(
+                facts == null ? null : facts.ipHash(), facts == null ? null : facts.ipNetworkHash(),
+                facts == null ? null : facts.ipMasked(), facts == null ? null : facts.userAgentHash(),
+                facts == null ? null : facts.userAgentSummary(), risk.level(), writeJson(risk.flags()),
+                risk.evaluatedAt());
+        if (repository.complete(tenantId, submissionId, submittedAt, completionRisk) != 1) {
             SubmissionRow current = requireSubmission(submissionId);
             if ("SUBMITTED".equals(current.status())) {
                 queueTranscriptionIfEligible(current);
@@ -560,7 +612,7 @@ public class TemporaryCheckinService {
 
     public AdminOptionsResponse adminOptions(AdminScope scope) {
         String scopedCity = requireConfiguredScope(scope);
-        List<String> cities = scope.allCities() ? properties.getCities() : List.of(scopedCity);
+        List<String> cities = scope.allCities() ? activeCities() : List.of(scopedCity);
         List<SalespersonOption> salespersons = repository.findSalespersons(tenantId, scopedCity).stream()
                 .filter(row -> cities.contains(row.city()))
                 .map(row -> new SalespersonOption(row.id(), row.name(), row.city()))
@@ -590,7 +642,7 @@ public class TemporaryCheckinService {
         List<AdminSubmissionView> items = repository.findAdminSubmissions(
                         tenantId, filters.from(), filters.toExclusive(), filters.city(), filters.salespersonId(),
                         filters.status(), filters.escapedQuery(), (int) longOffset, size).stream()
-                .map(TemporaryCheckinService::adminSubmissionView)
+                .map(this::adminSubmissionView)
                 .toList();
         long pageCount = total == 0 ? 0 : ((total - 1) / size) + 1;
         int totalPages = (int) Math.min(Integer.MAX_VALUE, pageCount);
@@ -598,10 +650,11 @@ public class TemporaryCheckinService {
     }
 
     public String exportCsv(
-            AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId, String status) {
-        AdminQuery filters = normalizeAdminQuery(scope, from, to, city, salespersonId, status, null);
+            AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId,
+            String status, String query) {
+        AdminQuery filters = normalizeAdminQuery(scope, from, to, city, salespersonId, status, query);
         List<ExportRow> rows = repository.export(tenantId, filters.from(), filters.toExclusive(), filters.city(),
-                filters.salespersonId(), filters.status(), MAX_EXPORT_ROWS + 1);
+                filters.salespersonId(), filters.status(), filters.escapedQuery(), MAX_EXPORT_ROWS + 1);
         if (rows.size() > MAX_EXPORT_ROWS) {
             throw TemporaryCheckinException.badRequest("导出超过20000条，请缩小日期或城市范围");
         }
@@ -611,6 +664,7 @@ public class TemporaryCheckinService {
                 "visit_ordinal", "visit_type", "revisit_number", "customer_name", "customer_phone", "visit_result",
                 "longitude", "latitude", "accuracy_meters",
                 "location_captured_at", "location_note", "location_address", "location_adcode",
+                "identity_method", "submitted_ip_masked", "user_agent_summary", "risk_level", "risk_flags",
                 "storefront_photo", "wechat_screenshot", "audio", "transcription_status", "transcript",
                 "summary_status", "summary", "created_at", "submitted_at"));
         for (ExportRow row : rows) {
@@ -622,6 +676,8 @@ public class TemporaryCheckinService {
                     value(row.customerPhone()), value(row.visitResult()), value(row.longitude()),
                     value(row.latitude()), value(row.accuracyMeters()), value(row.locationCapturedAt()),
                     value(row.locationNote()), value(row.locationAddress()), value(row.locationAdcode()),
+                    value(row.identityMethod()), value(row.submittedIpMasked()), value(row.userAgentSummary()),
+                    value(row.riskLevel()), value(String.join("|", safeRiskFlags(row.riskFlagsJson()))),
                     value(row.storefrontPhotoFilename()), value(row.wechatScreenshotFilename()),
                     value(row.audioFilename()), value(row.transcriptionStatus()), value(row.transcript()),
                     value(row.summaryStatus()), value(row.summaryText()), value(row.createdAt()),
@@ -697,7 +753,7 @@ public class TemporaryCheckinService {
         if (!city.equals(store.city())) {
             throw TemporaryCheckinException.badRequest("门店与选择城市不一致");
         }
-        if (!hasCompleteStoreProfile(store)) {
+        if (!hasCompleteStoreProfile(store, activeCities())) {
             throw TemporaryCheckinException.badRequest("门店基础资料不完整，请先补全门店信息");
         }
         CheckinAnchor anchor = checkinAnchor(store, null);
@@ -793,10 +849,10 @@ public class TemporaryCheckinService {
                 + "米，请到室外或开阔处重新定位";
     }
 
-    private boolean hasCompleteStoreProfile(StoreRow store) {
+    private boolean hasCompleteStoreProfile(StoreRow store, List<String> configuredCities) {
         return store != null
                 && "ACTIVE".equals(store.status())
-                && properties.getCities().contains(store.city())
+                && configuredCities.contains(store.city())
                 && properties.getStoreAttributes().contains(store.attribute())
                 && hasText(store.name())
                 && properties.getOperatingStatuses().contains(store.operatingStatus())
@@ -900,7 +956,7 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.badRequest("导出日期范围不能超过366天");
         }
         String scopedCity = requireConfiguredScope(scope);
-        String requestedCity = optionalEnum(city, properties.getCities(), "city");
+        String requestedCity = optionalEnum(city, activeCities(), "city");
         if (!scope.allCities() && requestedCity != null && !scopedCity.equals(requestedCity)) {
             throw TemporaryCheckinException.adminForbidden("城市账号不能访问其他城市数据");
         }
@@ -920,7 +976,7 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.adminForbidden("缺少后台身份范围");
         }
         if (scope.allCities()) return null;
-        if (!properties.getCities().contains(scope.city())) {
+        if (!activeCities().contains(scope.city())) {
             throw TemporaryCheckinException.adminForbidden("后台账号城市未启用");
         }
         return scope.city();
@@ -1044,18 +1100,37 @@ public class TemporaryCheckinService {
         return new AdminScopeView(scope.username(), scope.allCities(), scope.city());
     }
 
-    private static AdminSubmissionView adminSubmissionView(AdminSubmissionRow row) {
+    private AdminSubmissionView adminSubmissionView(AdminSubmissionRow row) {
         return new AdminSubmissionView(row.id(), row.status(), row.city(), row.salespersonId(),
                 row.salespersonName(), row.storeId(), row.storeName(), row.visitOrdinal(),
                 visitType(row.visitOrdinal()), revisitNumber(row.visitOrdinal()),
                 row.customerName(), row.customerPhone(),
                 row.visitResult(), row.longitude(), row.latitude(), row.accuracyMeters(),
                 row.locationCapturedAt(), row.locationNote(), row.locationAddress(), row.locationAdcode(),
+                row.identityMethod(), row.submittedIpMasked(), row.userAgentSummary(), row.riskLevel(),
+                safeRiskFlags(row.riskFlagsJson()),
                 row.storefrontPhotoAvailable(), row.wechatScreenshotAvailable(), row.audioAvailable(),
                 row.storefrontPhotoDeletedAt(), row.wechatScreenshotDeletedAt(), row.audioDeletedAt(),
                 row.transcriptionStatus(), row.transcript(), row.transcriptionErrorCode(),
                 row.summaryStatus(), row.summaryText(), row.summaryErrorCode(),
                 row.createdAt(), row.submittedAt());
+    }
+
+    private List<String> safeRiskFlags(String json) {
+        if (!hasText(json)) return List.of();
+        try {
+            List<String> values = objectMapper.readValue(json, STRING_LIST_TYPE);
+            if (values == null || values.isEmpty()) return List.of();
+            return values.stream()
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .filter(value -> !value.isEmpty() && value.length() <= 64)
+                    .distinct()
+                    .limit(20)
+                    .toList();
+        } catch (RuntimeException exception) {
+            return List.of();
+        }
     }
 
     private static String visitType(Long visitOrdinal) {
@@ -1150,7 +1225,7 @@ public class TemporaryCheckinService {
     }
 
     private NormalizedStore normalizeStore(CreateStoreRequest request) {
-        String city = requiredEnum(request.city(), properties.getCities(), "city");
+        String city = requiredEnum(request.city(), activeCities(), "city");
         String sourcePoiId = optional(request.sourcePoiId(), "sourcePoiId", 128);
         String sourcePoiName = optional(request.sourcePoiName(), "sourcePoiName", 256);
         String sourcePoiAddress = optional(request.sourcePoiAddress(), "sourcePoiAddress", 512);
@@ -1564,6 +1639,15 @@ public class TemporaryCheckinService {
             target.append('"').append(value.replace("\"", "\"\"")).append('"');
         }
         target.append("\r\n");
+    }
+
+    /**
+     * 运行期城市以后台维护的启用目录为准；旧环境尚未建立目录数据时，
+     * 回退到部署配置以保证原有六城表单仍可用。
+     */
+    private List<String> activeCities() {
+        List<String> cities = adminAuthRepository.listActiveCities(tenantId);
+        return cities.isEmpty() ? List.copyOf(properties.getCities()) : List.copyOf(cities);
     }
 
     private static void validateConfiguration(TemporaryCheckinProperties properties) {

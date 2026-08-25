@@ -12,6 +12,16 @@ public final class TemporaryCheckinModels {
 
     public record SalespersonOption(UUID id, String name, String city) { }
 
+    public record IdentityVerifyRequest(UUID salespersonId, String city, String personalCode) { }
+
+    public record SalesIdentityView(
+            boolean authenticated,
+            UUID salespersonId,
+            String salespersonName,
+            String city,
+            Instant expiresAt,
+            boolean enforcementEnabled) { }
+
     public record OptionsResponse(
             List<String> cities,
             List<SalespersonOption> salespersons,

@@ -54,6 +54,32 @@ rigour:
       max-checkin-accuracy-meters: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_ACCURACY_METERS:200}
       # 覆盖最长20分钟录音流程，同时防止重用长时间前的定位。
       max-location-age-minutes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_LOCATION_AGE_MINUTES:60}
+      # 姓名下拉不是身份；默认强制销售用个人码首次绑定当前浏览器。
+      identity-enforcement-enabled: ${RIGOUR_SALES_TEMPORARY_CHECKIN_IDENTITY_ENFORCEMENT_ENABLED:true}
+      # 两个密钥必须是至少32字节的独立 Base64 Secret，不能进入代码或日志。
+      identity-signing-key-base64: ${RIGOUR_SALES_TEMPORARY_CHECKIN_IDENTITY_SIGNING_KEY_BASE64:}
+      risk-hmac-key-base64: ${RIGOUR_SALES_TEMPORARY_CHECKIN_RISK_HMAC_KEY_BASE64:}
+      # 与 Nginx root-only snippet 覆盖的代理标记一致，不可从浏览器透传。
+      trusted-proxy-marker: ${RIGOUR_SALES_TEMPORARY_CHECKIN_TRUSTED_PROXY_MARKER:}
+      credential-pbkdf2-iterations: ${RIGOUR_SALES_TEMPORARY_CHECKIN_PBKDF2_ITERATIONS:210000}
+      identity-ttl-days: ${RIGOUR_SALES_TEMPORARY_CHECKIN_IDENTITY_TTL_DAYS:30}
+      device-ttl-days: ${RIGOUR_SALES_TEMPORARY_CHECKIN_DEVICE_TTL_DAYS:365}
+      risk-ip-networks-per-day: ${RIGOUR_SALES_TEMPORARY_CHECKIN_RISK_IP_NETWORKS_PER_DAY:4}
+      risk-devices-per-day: ${RIGOUR_SALES_TEMPORARY_CHECKIN_RISK_DEVICES_PER_DAY:3}
+      admin-auth:
+        cookie-name: __Host-rigour-sales-checkin-admin
+        session-duration: 8h
+        idle-timeout: 30m
+        temporary-password-ttl: 24h
+        login-lock-duration: 15m
+        session-touch-interval: 5m
+        login-failure-threshold: 5
+        pbkdf2-iterations: 310000
+        # 仅用于首次从受信内部代理导入城市/账号；上线完成后必须清空并关闭入口。
+        bootstrap-secret: ${RIGOUR_SALES_TEMPORARY_CHECKIN_ADMIN_BOOTSTRAP_SECRET:}
+        bootstrap-proxy-marker: ${RIGOUR_SALES_TEMPORARY_CHECKIN_ADMIN_BOOTSTRAP_PROXY_MARKER:}
+        # Docker 部署需显式加入实际 bridge gateway /32；不能使用0.0.0.0/0。
+        bootstrap-allowed-remote-cidrs: ${RIGOUR_SALES_TEMPORARY_CHECKIN_ADMIN_BOOTSTRAP_ALLOWED_REMOTE_CIDRS:127.0.0.1/32,::1/128}
       ai:
         # 转写凭据独立显式注入；即使实际使用同一 CAM 子用户，也不从 COS 配置隐式继承。
         enabled: ${RIGOUR_SALES_TEMPORARY_CHECKIN_AI_ENABLED:false}

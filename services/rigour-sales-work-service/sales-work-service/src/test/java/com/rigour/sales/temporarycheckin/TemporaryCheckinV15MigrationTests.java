@@ -45,6 +45,7 @@ class TemporaryCheckinV15MigrationTests {
 
         var migration = Flyway.configure()
                 .dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())
+                .target(MigrationVersion.fromVersion("15"))
                 .load()
                 .migrate();
 
@@ -89,6 +90,7 @@ class TemporaryCheckinV15MigrationTests {
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertThat(Flyway.configure()
                 .dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())
+                .target(MigrationVersion.fromVersion("15"))
                 .load()
                 .migrate().migrationsExecuted).isZero();
     }

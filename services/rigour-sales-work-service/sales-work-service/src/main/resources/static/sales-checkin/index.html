@@ -38,6 +38,52 @@
         <button id="dismiss-error-button" class="text-button" type="button">关闭</button>
     </div>
 
+    <section id="identity-gate" class="identity-gate" aria-labelledby="identity-title">
+        <div class="identity-gate__heading">
+            <div>
+                <p class="section-kicker">销售身份</p>
+                <h2 id="identity-title">首次验证后，这台手机会记住你</h2>
+                <p>请选择本人并输入个人打卡码。验证后表单不再允许随意切换销售。</p>
+            </div>
+            <span class="identity-gate__shield" aria-hidden="true">✓</span>
+        </div>
+        <form id="identity-form" novalidate>
+            <div class="field-grid field-grid--two identity-gate__fields">
+                <label class="field">
+                    <span class="field__label">城市 <span class="required-mark">*</span></span>
+                    <select id="identity-city" required><option value="">请选择城市</option></select>
+                    <span class="field__error" data-error-for="identity-city"></span>
+                </label>
+                <label class="field">
+                    <span class="field__label">本人姓名 <span class="required-mark">*</span></span>
+                    <select id="identity-salesperson" required disabled>
+                        <option value="">请先选择城市</option>
+                    </select>
+                    <span class="field__error" data-error-for="identity-salesperson"></span>
+                </label>
+            </div>
+            <label class="field identity-code-field">
+                <span class="field__label">个人打卡码 <span class="required-mark">*</span></span>
+                <input id="identity-code" type="password" minlength="8" maxlength="128"
+                       autocomplete="current-password" autocapitalize="characters" spellcheck="false"
+                       placeholder="请输入管理员发放的个人码" required>
+                <span class="field__help">个人码仅用于本次验证，服务器不保存明文。</span>
+                <span class="field__error" data-error-for="identity-code"></span>
+            </label>
+            <button id="identity-submit" class="primary-button" type="submit">验证并开始打卡</button>
+        </form>
+    </section>
+
+    <div id="checkin-workspace" hidden>
+        <div id="identity-summary" class="identity-summary" role="status">
+            <div>
+                <span>当前销售</span>
+                <strong id="identity-summary-name">--</strong>
+                <small id="identity-summary-city">--</small>
+            </div>
+            <button id="identity-switch" class="text-button" type="button">切换身份</button>
+        </div>
+
     <nav class="tabs workflow-tabs" aria-label="表单类型" role="tablist">
         <button id="visit-tab" class="tab is-active" type="button" role="tab" aria-selected="true"
                 aria-controls="visit-panel" data-tab="visit">
@@ -328,10 +374,10 @@
                     <span class="custom-checkbox" aria-hidden="true"></span>
                     <span>
                         <strong>我已确认并同意提交 <span class="required-mark">*</span></strong>
-                        <small>我已告知相关人员将采集定位、照片及可能的录音；记录仅作临时匿名采集，不能作为可信考勤或 KPI 证据。</small>
+                        <small>我已告知相关人员将采集定位、照片及可能的录音；系统同时保存设备/IP风险摘要。</small>
                         <details class="privacy-details">
                             <summary>查看完整采集说明</summary>
-                            <p>如提交录音，录音可能用于后续转写和 AI 摘要。匿名选择销售、浏览器定位、照片和录音均可能被冒用或伪造，记录仅作为临时匿名自报采集数据，不得作为可信考勤、KPI、奖惩或纪律证据。</p>
+                            <p>如提交录音，录音可能用于后续转写和 AI 摘要。系统会对客户端 IP 和浏览器设备标识做加密摘要，仅用于提示频繁切换等异常。个人码、IP、浏览器定位、照片和录音仍可能被共享或伪造，记录仅作临时采集，不得单独作为考勤、KPI、奖惩或纪律证据。</p>
                         </details>
                     </span>
                 </label>
@@ -576,6 +622,7 @@
         <p id="success-submitted-at"></p>
         <button id="new-submission-button" class="primary-button" type="button">继续录入下一次拜访</button>
     </section>
+    </div>
 </main>
 
 <footer class="footer">

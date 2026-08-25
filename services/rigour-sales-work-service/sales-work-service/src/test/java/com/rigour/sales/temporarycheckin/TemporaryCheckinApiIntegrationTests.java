@@ -64,6 +64,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 import org.testcontainers.junit.jupiter.Container;
@@ -107,7 +108,14 @@ class TemporaryCheckinApiIntegrationTests {
         registry.add("spring.flyway.user", MYSQL::getUsername);
         registry.add("spring.flyway.password", MYSQL::getPassword);
         registry.add("rigour.sales.temporary-checkin.enabled", () -> true);
+        registry.add("rigour.sales.temporary-checkin.identity-enforcement-enabled", () -> false);
         registry.add("rigour.sales.temporary-checkin.tenant-id", TENANT_ID::toString);
+        registry.add("rigour.sales.temporary-checkin.identity-signing-key-base64",
+                () -> "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=");
+        registry.add("rigour.sales.temporary-checkin.risk-hmac-key-base64",
+                () -> "ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA=");
+        registry.add("rigour.sales.temporary-checkin.trusted-proxy-marker",
+                () -> "integration-test-trusted-proxy-marker-0123456789abcdef0123456789abcdef");
         registry.add("rigour.sales.temporary-checkin.max-checkin-distance-meters", () -> 300);
         registry.add("rigour.sales.temporary-checkin.max-checkin-accuracy-meters", () -> 200);
         registry.add("rigour.sales.temporary-checkin.max-location-age-minutes", () -> 60);
@@ -639,30 +647,10 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void challengesBasicAuthAndOnlyCompletesWithADifferentAdminAccount() throws Exception {
-        MvcResult started = mockMvc.perform(post("/sales-checkin/admin/account-switches")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "sales-checkin-admin"))
-                .andExpect(status().isSeeOther())
-                .andReturn();
-        String challengeLocation = started.getResponse().getHeader("Location");
-        assertThat(challengeLocation)
-                .startsWith("/sales-checkin/admin/?switchChallenge=");
-
-        mockMvc.perform(get(challengeLocation)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "sales-checkin-admin"))
-                .andExpect(status().isUnauthorized())
-                .andExpect(header().string("WWW-Authenticate", "Basic realm=\"Sales Check-in Admin\""))
-                .andExpect(header().string("Cache-Control", "no-store"));
-
-        mockMvc.perform(get(challengeLocation)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
-                .andExpect(status().isSeeOther())
-                .andExpect(header().string("Location", "/sales-checkin/admin/?switch=complete"));
-
-        mockMvc.perform(get(challengeLocation)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-shenzhen"))
-                .andExpect(status().isSeeOther())
-                .andExpect(header().string("Location", "/sales-checkin/admin/?switch=expired"));
+    void removesLegacyBasicAuthAccountSwitchEndpoint() throws Exception {
+        mockMvc.perform(post("/sales-checkin/admin/account-switches")
+                        .with(admin("sales-checkin-admin")))
+                .andExpect(status().isNotFound());
     }
 
     @Test
@@ -1261,8 +1249,7 @@ class TemporaryCheckinApiIntegrationTests {
 
         mockMvc.perform(delete("/sales-checkin/admin/api/v1/submissions/{id}/media/storefront-photo",
                         submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
-                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"reason\":\"现场照片模糊\"}"))
                 .andExpect(status().isOk());
@@ -1419,35 +1406,53 @@ class TemporaryCheckinApiIntegrationTests {
     @Test
     void protectsCsvFromFormulaPrefixesAndKeepsUtf8Bom() throws Exception {
         insertCsvFormulaSubmission();
+        jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET submitted_ip_masked='+masked', user_agent_summary='@browser',
+                       risk_flags_json=JSON_ARRAY('=RISK_FORMULA')
+                 WHERE tenant_id=? AND salesperson_name_snapshot='=formula'
+                """, bin(TENANT_ID));
 
         MvcResult exported = mockMvc.perform(get("/sales-checkin/admin/export.csv")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
-                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)))
                 .andExpect(status().isOk())
                 .andReturn();
         String csv = new String(exported.getResponse().getContentAsByteArray(), StandardCharsets.UTF_8);
 
         assertThat(csv).startsWith("\uFEFF");
         assertThat(csv).contains("\"'=formula\"", "\"'+formula\"", "\"'-formula\"", "\"'@formula\"",
-                "\"'\tformula\"", "\"'\rformula\"", "\"'\nformula\"");
+                "\"'\tformula\"", "\"'\rformula\"", "\"'\nformula\"",
+                "\"'+masked\"", "\"'@browser\"", "\"'=RISK_FORMULA\"");
     }
 
     @Test
-    void scopesAdminOptionsListsExportsAndMediaToTrustedUsername() throws Exception {
+    void scopesAdminOptionsListsExportsAndMediaToAuthenticatedPrincipal() throws Exception {
         UUID beijingSubmission = insertAdminSubmission(
                 "北京", VISITOR_ID, STORE_ID, "北京门店", "北京客户", "北京跟进");
+        jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET risk_level='LOW', risk_flags_json=JSON_OBJECT('unexpected', true)
+                 WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(beijingSubmission));
         UUID shenzhenSubmission = insertAdminSubmission(
                 "深圳", SHENZHEN_SALESPERSON_ID, SHENZHEN_STORE_ID, "深圳门店", "深圳客户", "深圳跟进");
+        jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET identity_method='PERSONAL_CODE', submitted_ip_masked='10.2.*.*',
+                       user_agent_summary='Mobile Safari / iOS', risk_level='HIGH',
+                       risk_flags_json=JSON_ARRAY('DEVICE_MULTIPLE_SALES', 'IP_SHARED')
+                 WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(shenzhenSubmission));
 
         mockMvc.perform(get("/sales-checkin/admin/api/v1/options"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_ADMIN_FORBIDDEN"));
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_ADMIN_UNAUTHORIZED"));
         mockMvc.perform(get("/sales-checkin/admin/api/v1/options")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "unknown"))
-                .andExpect(status().isForbidden());
+                        .with(admin("unknown")))
+                .andExpect(status().isUnauthorized());
 
         mockMvc.perform(get("/sales-checkin/admin/api/v1/options")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                        .with(admin("city-beijing")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.scope.username").value("city-beijing"))
                 .andExpect(jsonPath("$.scope.allCities").value(false))
@@ -1457,55 +1462,65 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(jsonPath("$.salespersons", hasSize(2)));
 
         mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                        .with(admin("city-beijing")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.total").value(1))
                 .andExpect(jsonPath("$.totalElements").value(1))
                 .andExpect(jsonPath("$.items", hasSize(1)))
                 .andExpect(jsonPath("$.items[0].id").value(beijingSubmission.toString()))
                 .andExpect(jsonPath("$.items[0].city").value("北京"))
-                .andExpect(jsonPath("$.items[0].locationAddress").value("北京市东城区测试路1号"));
+                .andExpect(jsonPath("$.items[0].locationAddress").value("北京市东城区测试路1号"))
+                .andExpect(jsonPath("$.items[0].riskLevel").value("LOW"))
+                .andExpect(jsonPath("$.items[0].riskFlags", hasSize(0)));
 
         mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
-                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
                         .param("q", "深圳客户")
                         .param("page", "0")
                         .param("size", "1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.scope.allCities").value(true))
                 .andExpect(jsonPath("$.total").value(1))
-                .andExpect(jsonPath("$.items[0].id").value(shenzhenSubmission.toString()));
+                .andExpect(jsonPath("$.items[0].id").value(shenzhenSubmission.toString()))
+                .andExpect(jsonPath("$.items[0].identityMethod").value("PERSONAL_CODE"))
+                .andExpect(jsonPath("$.items[0].submittedIpMasked").value("10.2.*.*"))
+                .andExpect(jsonPath("$.items[0].userAgentSummary").value("Mobile Safari / iOS"))
+                .andExpect(jsonPath("$.items[0].riskLevel").value("HIGH"))
+                .andExpect(jsonPath("$.items[0].riskFlags", containsInAnyOrder(
+                        "DEVICE_MULTIPLE_SALES", "IP_SHARED")));
 
         mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .with(admin("city-beijing"))
                         .param("city", "深圳"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_ADMIN_FORBIDDEN"));
 
         String beijingCsv = new String(mockMvc.perform(get("/sales-checkin/admin/export.csv")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                        .with(admin("city-beijing")))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray(),
                 StandardCharsets.UTF_8);
         assertThat(beijingCsv).contains("北京客户", "location_address").doesNotContain("深圳客户");
 
         String shenzhenCsv = new String(mockMvc.perform(get("/sales-checkin/admin/export.csv")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
-                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
                         .param("city", "深圳"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray(),
                 StandardCharsets.UTF_8);
-        assertThat(shenzhenCsv).contains("深圳客户").doesNotContain("北京客户");
+        assertThat(shenzhenCsv)
+                .contains("深圳客户", "identity_method", "submitted_ip_masked", "user_agent_summary",
+                        "risk_level", "risk_flags", "PERSONAL_CODE", "10.2.*.*", "Mobile Safari / iOS",
+                        "HIGH", "DEVICE_MULTIPLE_SALES|IP_SHARED")
+                .doesNotContain("北京客户");
 
         when(fileStorage.open(TENANT_ID.toString(), "tenant/shenzhen.jpg"))
                 .thenReturn(new ByteArrayInputStream(new byte[] {1, 2, 3, 4}));
         mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/storefront-photo",
                         shenzhenSubmission)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                        .with(admin("city-beijing")))
                 .andExpect(status().isNotFound());
         mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/storefront-photo",
                         shenzhenSubmission)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-shenzhen"))
+                        .with(admin("city-shenzhen")))
                 .andExpect(status().isOk());
     }
 
@@ -1521,8 +1536,7 @@ class TemporaryCheckinApiIntegrationTests {
         String dateFilter = LocalDate.now(ZoneId.of("Asia/Shanghai")).minusDays(1).toString();
 
         mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
-                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
                         .param("from", dateFilter)
                         .param("status", "SUBMITTED")
                         .param("q", "今日客户"))
@@ -1534,8 +1548,7 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(jsonPath("$.items[0].revisitNumber").value(1));
 
         String csv = new String(mockMvc.perform(get("/sales-checkin/admin/export.csv")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
-                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
                         .param("from", dateFilter)
                         .param("status", "SUBMITTED"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray(),
@@ -1552,8 +1565,7 @@ class TemporaryCheckinApiIntegrationTests {
                 "北京", VISITOR_ID, STORE_ID, "北京门店", "媒体清理客户", "物理删除验收");
 
         mockMvc.perform(get("/sales-checkin/admin/api/v1/options")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
-                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.mediaStats.activeFiles").value(1))
                 .andExpect(jsonPath("$.mediaStats.totalBytes").value(4))
@@ -1562,7 +1574,7 @@ class TemporaryCheckinApiIntegrationTests {
 
         mockMvc.perform(delete("/sales-checkin/admin/api/v1/submissions/{id}/media/storefront-photo",
                         submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .with(admin("city-beijing"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"reason\":\"超过临时保留期\"}"))
                 .andExpect(status().isForbidden())
@@ -1571,8 +1583,7 @@ class TemporaryCheckinApiIntegrationTests {
 
         mockMvc.perform(delete("/sales-checkin/admin/api/v1/submissions/{id}/media/storefront-photo",
                         submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
-                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"reason\":\"超过临时保留期\"}"))
                 .andExpect(status().isOk())
@@ -1584,8 +1595,7 @@ class TemporaryCheckinApiIntegrationTests {
 
         mockMvc.perform(delete("/sales-checkin/admin/api/v1/submissions/{id}/media/storefront-photo",
                         submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
-                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"reason\":\"重复请求应幂等\"}"))
                 .andExpect(status().isOk())
@@ -1593,15 +1603,13 @@ class TemporaryCheckinApiIntegrationTests {
         verify(fileStorage, times(1)).delete(TENANT_ID.toString(), "tenant/beijing.jpg");
 
         mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/storefront-photo", submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
-                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_NOT_FOUND"));
         verify(fileStorage, never()).open(any(String.class), any(String.class));
 
         mockMvc.perform(get("/sales-checkin/admin/api/v1/options")
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER,
-                                TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.mediaStats.activeFiles").value(0))
                 .andExpect(jsonPath("$.mediaStats.totalBytes").value(0))
@@ -1636,7 +1644,7 @@ class TemporaryCheckinApiIntegrationTests {
                 .thenAnswer(invocation -> new ByteArrayInputStream(wav));
 
         mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/storefront-photo", submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                        .with(admin("city-beijing")))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Disposition", startsWith("inline;")))
                 .andExpect(header().string("Accept-Ranges", "bytes"))
@@ -1646,7 +1654,7 @@ class TemporaryCheckinApiIntegrationTests {
 
         MvcResult thumbnail = mockMvc.perform(get(
                         "/sales-checkin/admin/submissions/{id}/media/storefront-photo/thumbnail", submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                        .with(admin("city-beijing")))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Disposition", startsWith("inline;")))
                 .andExpect(content().contentType(MediaType.IMAGE_JPEG))
@@ -1658,7 +1666,7 @@ class TemporaryCheckinApiIntegrationTests {
         assertThat(thumbnail.getResponse().getContentAsByteArray().length).isLessThan(jpeg.length);
 
         mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio", submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .with(admin("city-beijing"))
                         .header("Range", "bytes=0-3"))
                 .andExpect(status().isPartialContent())
                 .andExpect(header().string("Content-Range", "bytes 0-3/12"))
@@ -1668,14 +1676,14 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(content().bytes(new byte[] {'R', 'I', 'F', 'F'}));
 
         mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio", submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .with(admin("city-beijing"))
                         .header("Range", "bytes=-4"))
                 .andExpect(status().isPartialContent())
                 .andExpect(header().string("Content-Range", "bytes 8-11/12"))
                 .andExpect(content().bytes(new byte[] {'W', 'A', 'V', 'E'}));
 
         mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio", submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .with(admin("city-beijing"))
                         .param("download", "true"))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Disposition", startsWith("attachment;")))
@@ -1684,12 +1692,12 @@ class TemporaryCheckinApiIntegrationTests {
 
         clearInvocations(fileStorage);
         mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio", submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing")
+                        .with(admin("city-beijing"))
                         .header("Range", "bytes=0-1,4-5"))
                 .andExpect(status().isRequestedRangeNotSatisfiable())
                 .andExpect(header().string("Content-Range", "bytes */12"));
         mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio/thumbnail", submissionId)
-                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                        .with(admin("city-beijing")))
                 .andExpect(status().isBadRequest());
         verify(fileStorage, never()).open(any(String.class), any(String.class));
     }
@@ -1876,6 +1884,32 @@ class TemporaryCheckinApiIntegrationTests {
                  WHERE tenant_id=? AND id=?
                 """, Timestamp.from(createdAt), Timestamp.from(submittedAt), Timestamp.from(submittedAt),
                 bin(TENANT_ID), bin(submissionId));
+    }
+
+    private static RequestPostProcessor admin(String username) {
+        return request -> {
+            TemporaryCheckinAdminPrincipal principal = testAdminPrincipal(username);
+            if (principal != null) {
+                request.setAttribute(TemporaryCheckinAdminPrincipal.REQUEST_ATTRIBUTE, principal);
+            }
+            return request;
+        };
+    }
+
+    private static TemporaryCheckinAdminPrincipal testAdminPrincipal(String username) {
+        String city = switch (username == null ? "" : username) {
+            case "city-beijing" -> "北京";
+            case "city-shenzhen" -> "深圳";
+            default -> null;
+        };
+        boolean global = TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN.equals(username);
+        if (!global && city == null) return null;
+        UUID accountId = UUID.nameUUIDFromBytes(("test-account:" + username).getBytes(StandardCharsets.UTF_8));
+        UUID sessionId = UUID.nameUUIDFromBytes(("test-session:" + username).getBytes(StandardCharsets.UTF_8));
+        UUID cityId = city == null ? null
+                : UUID.nameUUIDFromBytes(("test-city:" + city).getBytes(StandardCharsets.UTF_8));
+        return new TemporaryCheckinAdminPrincipal(accountId, sessionId, username, username,
+                global ? "GLOBAL_ADMIN" : "CITY_ADMIN", cityId, city, false, "test-csrf-token");
     }
 
     private static byte[] bin(UUID value) {

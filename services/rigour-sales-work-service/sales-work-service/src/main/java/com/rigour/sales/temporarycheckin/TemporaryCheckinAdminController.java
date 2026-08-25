@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.ContentDisposition;
@@ -25,15 +26,14 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestBody;
 
 /**
- * 临时打卡后台列表、导出与媒体读取接口。生产只允许由回环监听后的 Nginx Basic Auth 入口访问，
- * Nginx 必须用 {@code $remote_user} 覆盖可信用户名头；本控制器同时强制城市范围与服务端固定租户。
+ * 临时打卡后台列表、导出与媒体读取接口。应用级数据库会话过滤器先完成认证和 CSRF 校验，
+ * 本控制器再强制总管理员/城市管理员数据范围与服务端固定租户。
  */
 @RestController
 @RequestMapping("/sales-checkin/admin")
@@ -55,14 +55,13 @@ public class TemporaryCheckinAdminController {
     }
 
     @GetMapping("/api/v1/options")
-    public AdminOptionsResponse options(
-            @RequestHeader(name = TemporaryCheckinAdminAccessPolicy.HEADER, required = false) String username) {
-        return service.adminOptions(accessPolicy.requireScope(username));
+    public AdminOptionsResponse options(HttpServletRequest request) {
+        return service.adminOptions(accessPolicy.requireScope(request));
     }
 
     @GetMapping("/api/v1/submissions")
     public AdminSubmissionPage submissions(
-            @RequestHeader(name = TemporaryCheckinAdminAccessPolicy.HEADER, required = false) String username,
+            HttpServletRequest request,
             @RequestParam(name = "from", required = false) LocalDate from,
             @RequestParam(name = "to", required = false) LocalDate to,
             @RequestParam(name = "city", required = false) String city,
@@ -71,21 +70,22 @@ public class TemporaryCheckinAdminController {
             @RequestParam(name = "q", required = false) String query,
             @RequestParam(name = "page", required = false) Integer page,
             @RequestParam(name = "size", required = false) Integer size) {
-        AdminScope scope = accessPolicy.requireScope(username);
+        AdminScope scope = accessPolicy.requireScope(request);
         return service.findAdminSubmissions(
                 scope, from, to, city, salespersonId, status, query, page, size);
     }
 
     @GetMapping(value = "/export.csv", produces = "text/csv;charset=UTF-8")
     public ResponseEntity<byte[]> export(
-            @RequestHeader(name = TemporaryCheckinAdminAccessPolicy.HEADER, required = false) String username,
+            HttpServletRequest request,
             @RequestParam(name = "from", required = false) LocalDate from,
             @RequestParam(name = "to", required = false) LocalDate to,
             @RequestParam(name = "city", required = false) String city,
             @RequestParam(name = "salespersonId", required = false) UUID salespersonId,
-            @RequestParam(name = "status", required = false) String status) {
-        AdminScope scope = accessPolicy.requireScope(username);
-        byte[] bytes = service.exportCsv(scope, from, to, city, salespersonId, status)
+            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "q", required = false) String query) {
+        AdminScope scope = accessPolicy.requireScope(request);
+        byte[] bytes = service.exportCsv(scope, from, to, city, salespersonId, status, query)
                 .getBytes(StandardCharsets.UTF_8);
         return ResponseEntity.ok()
                 .contentType(CSV)
@@ -99,12 +99,13 @@ public class TemporaryCheckinAdminController {
 
     @GetMapping("/submissions/{id}/media/{kind}")
     public ResponseEntity<?> media(
-            @RequestHeader(name = TemporaryCheckinAdminAccessPolicy.HEADER, required = false) String username,
-            @RequestHeader(name = HttpHeaders.RANGE, required = false) String rangeHeader,
+            HttpServletRequest request,
+            @org.springframework.web.bind.annotation.RequestHeader(
+                    name = HttpHeaders.RANGE, required = false) String rangeHeader,
             @PathVariable("id") UUID submissionId,
             @PathVariable("kind") String kind,
             @RequestParam(name = "download", defaultValue = "false") boolean download) {
-        AdminScope scope = accessPolicy.requireScope(username);
+        AdminScope scope = accessPolicy.requireScope(request);
         TemporaryCheckinService.AdminMedia content = service.openAdminMedia(scope, submissionId, kind);
         ContentDisposition disposition = ContentDisposition.builder(download ? "attachment" : "inline")
                 .filename(content.originalFilename(), StandardCharsets.UTF_8)
@@ -124,28 +125,28 @@ public class TemporaryCheckinAdminController {
 
     @DeleteMapping("/api/v1/submissions/{id}/media/{kind}")
     public DeleteMediaView deleteMedia(
-            @RequestHeader(name = TemporaryCheckinAdminAccessPolicy.HEADER, required = false) String username,
+            HttpServletRequest servletRequest,
             @PathVariable("id") UUID submissionId,
             @PathVariable("kind") String kind,
             @RequestBody(required = false) DeleteMediaRequest request) {
-        AdminScope scope = accessPolicy.requireScope(username);
+        AdminScope scope = accessPolicy.requireScope(servletRequest);
         return service.deleteAdminMedia(scope, submissionId, kind, request == null ? null : request.reason());
     }
 
     @PostMapping("/api/v1/submissions/{id}/transcription")
     public TranscriptionView retryTranscription(
-            @RequestHeader(name = TemporaryCheckinAdminAccessPolicy.HEADER, required = false) String username,
+            HttpServletRequest request,
             @PathVariable("id") UUID submissionId) {
-        AdminScope scope = accessPolicy.requireScope(username);
+        AdminScope scope = accessPolicy.requireScope(request);
         return service.requestAdminTranscription(scope, submissionId);
     }
 
     @GetMapping("/submissions/{id}/media/{kind}/thumbnail")
     public ResponseEntity<byte[]> thumbnail(
-            @RequestHeader(name = TemporaryCheckinAdminAccessPolicy.HEADER, required = false) String username,
+            HttpServletRequest request,
             @PathVariable("id") UUID submissionId,
             @PathVariable("kind") String kind) {
-        AdminScope scope = accessPolicy.requireScope(username);
+        AdminScope scope = accessPolicy.requireScope(request);
         TemporaryCheckinService.AdminMedia content = service.openAdminMedia(scope, submissionId, kind);
         TemporaryCheckinAdminThumbnailer.Thumbnail thumbnail = thumbnailer.create(content);
         return ResponseEntity.ok()

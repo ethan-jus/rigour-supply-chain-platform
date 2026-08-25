@@ -9,7 +9,7 @@
     const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
     const MAX_RECORDING_MS = 20 * 60 * 1000;
     const SEARCH_DELAY_MS = 350;
-    const PRIVACY_NOTICE_VERSION = "2026-08-25-ai-v1";
+    const PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
 
     const MEDIA = Object.freeze({
         photo: "storefront-photo",
@@ -80,6 +80,7 @@
 
     const state = {
         activeTab: "visit",
+        identity: null,
         visit: freshVisit(),
         store: freshStore(),
         submission: freshSubmission(),
@@ -160,6 +161,10 @@
             await fetchOptions(initialCity);
             populateCitySelects();
             await restoreDependentOptions();
+            await loadCurrentIdentity();
+            if (state.identity?.authenticated) {
+                await applyVerifiedIdentity(state.identity);
+            }
             renderDictionaryControls();
             renderRestoredValues();
             renderBusinessLock();
@@ -175,12 +180,187 @@
             showError(errorMessage(error, "加载城市和下拉选项失败，请检查网络后刷新页面。"));
         }
 
+        renderIdentityState();
+
         if (hasRestoredDraft()) {
             showRestoreNotice();
         }
     }
 
+    async function loadCurrentIdentity() {
+        try {
+            const current = normalizeResponse(await requestJson("/identity/me"));
+            state.identity = current && typeof current === "object" ? current : null;
+        } catch (error) {
+            if (error.status === 401 || error.status === 403) {
+                state.identity = null;
+                return;
+            }
+            throw error;
+        }
+    }
+
+    async function handleIdentityCityChange() {
+        hideError();
+        clearFieldError("identity-city");
+        clearFieldError("identity-salesperson");
+        const city = $("#identity-city").value;
+        if (!city) {
+            renderIdentitySalespersonSelect("");
+            return;
+        }
+        const select = $("#identity-salesperson");
+        select.disabled = true;
+        renderSelect(select, [], "正在加载销售…", "");
+        try {
+            await ensureSalespersons(city);
+            renderIdentitySalespersonSelect(city);
+        } catch (error) {
+            renderSelect(select, [], "加载失败，请重选城市", "");
+            setFieldError("identity-city", errorMessage(error, "销售列表加载失败。"));
+        }
+    }
+
+    function renderIdentitySalespersonSelect(city) {
+        const select = $("#identity-salesperson");
+        if (!city) {
+            renderSelect(select, [], "请先选择城市", "");
+            select.disabled = true;
+            return;
+        }
+        const people = state.salespersonsByCity.get(city) || [];
+        renderSelect(select, people, people.length ? "请选择本人" : "当前城市暂无销售", "",
+            (person) => person.id, (person) => person.name);
+        select.disabled = people.length === 0;
+    }
+
+    async function verifyIdentity(event) {
+        event.preventDefault();
+        hideError();
+        ["identity-city", "identity-salesperson", "identity-code"].forEach(clearFieldError);
+        const city = $("#identity-city").value;
+        const salespersonId = $("#identity-salesperson").value;
+        const personalCode = $("#identity-code").value.trim();
+        let valid = true;
+        if (!city) {
+            setFieldError("identity-city", "请选择城市。");
+            valid = false;
+        }
+        if (!salespersonId) {
+            setFieldError("identity-salesperson", "请选择本人姓名。");
+            valid = false;
+        }
+        if (personalCode.length < 8) {
+            setFieldError("identity-code", "请输入至少8位个人打卡码。");
+            valid = false;
+        }
+        if (!valid) return;
+
+        const button = $("#identity-submit");
+        const originalLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = "正在验证…";
+        try {
+            const identity = normalizeResponse(await requestJson("/identity/verify", {
+                method: "POST",
+                body: { city, salespersonId, personalCode }
+            }));
+            $("#identity-code").value = "";
+            await applyVerifiedIdentity(identity);
+            renderIdentityState();
+            persistDraft();
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        } catch (error) {
+            $("#identity-code").value = "";
+            const message = errorMessage(error, "身份验证失败，请检查个人打卡码。");
+            setFieldError("identity-code", message);
+            showError(message);
+        } finally {
+            button.disabled = false;
+            button.textContent = originalLabel;
+        }
+    }
+
+    async function applyVerifiedIdentity(identity) {
+        if (!identity?.authenticated || !identity.salespersonId || !identity.city) return;
+        const restoredMismatch = (state.visit.salespersonId
+                && state.visit.salespersonId !== String(identity.salespersonId))
+            || (state.visit.city && state.visit.city !== identity.city)
+            || (state.store.salespersonId
+                && state.store.salespersonId !== String(identity.salespersonId))
+            || (state.store.city && state.store.city !== identity.city);
+        if (restoredMismatch) {
+            removeStoredDraft();
+            state.activeTab = "visit";
+            state.visit = freshVisit();
+            state.store = freshStore();
+            state.submission = freshSubmission();
+            state.restoredAt = null;
+            $("#restore-notice").hidden = true;
+            showError("本机恢复的草稿属于另一销售，已清除本机草稿，服务端已上传内容未被删除。");
+        }
+        state.identity = identity;
+        state.visit.city = identity.city;
+        state.visit.salespersonId = String(identity.salespersonId);
+        state.store.city = identity.city;
+        state.store.salespersonId = String(identity.salespersonId);
+        await ensureSalespersons(identity.city);
+        populateCitySelects();
+        renderSalespersonSelect("visit");
+        renderSalespersonSelect("store");
+        renderRestoredValues();
+        renderStoreOwnerSummary();
+        lockIdentitySelectors();
+    }
+
+    function renderIdentityState() {
+        const authenticated = state.identity?.authenticated === true;
+        const legacyMode = state.identity?.enforcementEnabled === false;
+        $("#identity-gate").hidden = authenticated || legacyMode;
+        $("#checkin-workspace").hidden = !authenticated && !legacyMode;
+        $("#identity-summary").hidden = !authenticated;
+        if (authenticated) {
+            $("#identity-summary-name").textContent = state.identity.salespersonName || "--";
+            $("#identity-summary-city").textContent = state.identity.city || "--";
+        }
+        $("#identity-switch").disabled = state.submitting || isBusinessLocked();
+        lockIdentitySelectors();
+    }
+
+    function lockIdentitySelectors() {
+        if (!state.identity?.authenticated) return;
+        ["#visit-city", "#visit-salesperson", "#store-city", "#store-salesperson"].forEach((selector) => {
+            const element = $(selector);
+            if (element) element.disabled = true;
+        });
+    }
+
+    async function switchIdentity() {
+        if (state.submitting) return;
+        if (isBusinessLocked()) {
+            showError("当前草稿已上传或锁定，请先完成提交或放弃草稿，再切换销售身份。");
+            return;
+        }
+        if (!window.confirm("切换身份会清空当前未提交表单，确定继续吗？")) return;
+        try {
+            await requestJson("/identity/logout", { method: "POST" });
+            state.identity = null;
+            startNewSubmission();
+            renderIdentityState();
+            $("#identity-city").value = "";
+            renderIdentitySalespersonSelect("");
+            $("#identity-code").value = "";
+            $("#identity-gate").scrollIntoView({ behavior: "smooth", block: "start" });
+        } catch (error) {
+            showError(errorMessage(error, "切换身份失败，请刷新后重试。"));
+        }
+    }
+
     function bindEvents() {
+        $("#identity-form").addEventListener("submit", verifyIdentity);
+        $("#identity-city").addEventListener("change", handleIdentityCityChange);
+        $("#identity-switch").addEventListener("click", switchIdentity);
+
         $$("[data-tab]").forEach((button) => {
             button.addEventListener("click", () => switchTab(button.dataset.tab));
             button.addEventListener("keydown", handleTabKeydown);
@@ -312,6 +492,8 @@
     function populateCitySelects() {
         renderSelect($("#visit-city"), state.options.cities, "请选择城市", state.visit.city);
         renderSelect($("#store-city"), state.options.cities, "请选择城市", state.store.city);
+        renderSelect($("#identity-city"), state.options.cities, "请选择城市",
+            $("#identity-city")?.value || "");
     }
 
     async function restoreDependentOptions() {
@@ -339,7 +521,7 @@
         const people = state.salespersonsByCity.get(current.city) || [];
         renderSelect(select, people, people.length ? "请选择销售" : "当前城市暂无销售", current.salespersonId,
             (person) => person.id, (person) => person.name);
-        select.disabled = people.length === 0;
+        select.disabled = people.length === 0 || state.identity?.authenticated === true;
         if (scope === "store") renderStoreOwnerSummary();
     }
 
@@ -2051,6 +2233,8 @@
                 delete element.dataset.businessLocked;
             }
         });
+        lockIdentitySelectors();
+        $("#identity-switch").disabled = state.submitting || locked;
     }
 
     function isBusinessLocked() {
@@ -2083,6 +2267,12 @@
         state.activeTab = "visit";
         state.visit = freshVisit();
         state.store = freshStore();
+        if (state.identity?.authenticated) {
+            state.visit.city = state.identity.city;
+            state.visit.salespersonId = String(state.identity.salespersonId);
+            state.store.city = state.identity.city;
+            state.store.salespersonId = String(state.identity.salespersonId);
+        }
         state.submission = freshSubmission();
         state.submitting = false;
         state.completed = false;
@@ -2108,6 +2298,7 @@
         clearAllErrors();
         hideError();
         checkRecorderSupport();
+        renderIdentityState();
         window.scrollTo({ top: 0, behavior: "smooth" });
     }
 
@@ -2429,7 +2620,7 @@
                 method: options.method || "GET",
                 headers,
                 body,
-                credentials: "omit",
+                credentials: "same-origin",
                 cache: "no-store",
                 signal: controller.signal
             });
