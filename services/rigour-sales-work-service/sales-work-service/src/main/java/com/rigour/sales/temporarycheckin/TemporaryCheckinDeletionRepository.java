@@ -73,7 +73,7 @@ public class TemporaryCheckinDeletionRepository {
                 SELECT id, city, deletion_state,
                        storefront_photo_object_key, storefront_photo_deleted_at,
                        wechat_screenshot_object_key, wechat_screenshot_deleted_at,
-                       audio_object_key, audio_deleted_at
+                       audio_object_key, audio_deleted_at, audio_segments_json
                   FROM temp_sales_checkin_submission
                  WHERE tenant_id=? AND id IN (""" + placeholders + ")"
                 + (scopeCity == null ? "" : " AND city=?")
@@ -112,7 +112,7 @@ public class TemporaryCheckinDeletionRepository {
         return new DeletionCandidateRow(
                 uuid(rs, "id"), rs.getString("city"), rs.getString("deletion_state"),
                 activeKey(rs, "storefront_photo_"), activeKey(rs, "wechat_screenshot_"),
-                activeKey(rs, "audio_"));
+                activeKey(rs, "audio_"), rs.getString("audio_segments_json"));
     }
 
     private static String activeKey(ResultSet rs, String prefix) throws SQLException {
@@ -141,8 +141,15 @@ public class TemporaryCheckinDeletionRepository {
 
     record DeletionCandidateRow(
             UUID id, String city, String deletionState,
-            String storefrontPhotoKey, String wechatScreenshotKey, String audioKey) {
-        List<String> activeObjectKeys() {
+            String storefrontPhotoKey, String wechatScreenshotKey, String audioKey,
+            String audioSegmentsJson) {
+        DeletionCandidateRow(
+                UUID id, String city, String deletionState,
+                String storefrontPhotoKey, String wechatScreenshotKey, String audioKey) {
+            this(id, city, deletionState, storefrontPhotoKey, wechatScreenshotKey, audioKey, "[]");
+        }
+
+        List<String> projectedObjectKeys() {
             return java.util.stream.Stream.of(storefrontPhotoKey, wechatScreenshotKey, audioKey)
                     .filter(value -> value != null && !value.isBlank())
                     .toList();

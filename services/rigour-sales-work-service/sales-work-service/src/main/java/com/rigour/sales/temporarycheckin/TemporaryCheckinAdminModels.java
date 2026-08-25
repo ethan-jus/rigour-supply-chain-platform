@@ -27,6 +27,15 @@ public final class TemporaryCheckinAdminModels {
             long audioBytes,
             Instant oldestCreatedAt) { }
 
+    public record AdminAudioSegmentView(
+            UUID segmentId,
+            String originalFilename,
+            long sizeBytes,
+            String contentType,
+            Instant uploadedAt,
+            boolean available,
+            Instant deletedAt) { }
+
     public record AdminSubmissionView(
             UUID id,
             String status,
@@ -56,6 +65,7 @@ public final class TemporaryCheckinAdminModels {
             boolean storefrontPhotoAvailable,
             boolean wechatScreenshotAvailable,
             boolean audioAvailable,
+            List<AdminAudioSegmentView> audioSegments,
             Instant storefrontPhotoDeletedAt,
             Instant wechatScreenshotDeletedAt,
             Instant audioDeletedAt,
@@ -79,7 +89,12 @@ public final class TemporaryCheckinAdminModels {
 
     public record DeleteMediaRequest(String reason) { }
 
-    public record DeleteMediaView(UUID id, String kind, String status, Instant deletedAt) { }
+    public record DeleteMediaView(UUID id, String kind, String status, Instant deletedAt, UUID segmentId) {
+
+        public DeleteMediaView(UUID id, String kind, String status, Instant deletedAt) {
+            this(id, kind, status, deletedAt, null);
+        }
+    }
 
     public record TranscriptionView(UUID id, String transcriptionStatus, String summaryStatus) { }
 }

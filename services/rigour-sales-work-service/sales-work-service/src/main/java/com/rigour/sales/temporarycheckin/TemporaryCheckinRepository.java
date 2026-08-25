@@ -377,6 +377,49 @@ public class TemporaryCheckinRepository {
         return jdbc.update(sql, timestamp(now), bin(tenantId), bin(submissionId), expectedObjectKey);
     }
 
+    public int updateDraftAudioManifest(
+            UUID tenantId, UUID submissionId, String manifestJson, int activeCount, long activeBytes,
+            MediaWrite projection, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET audio_segments_json=CAST(? AS JSON),
+                       audio_active_segment_count=?, audio_active_size_bytes=?,
+                       audio_object_key=?, audio_content_type=?, audio_size_bytes=?, audio_sha256=?,
+                       audio_original_filename=?, audio_deleted_at=NULL, audio_deleted_by=NULL,
+                       audio_deletion_reason=NULL, updated_at=?
+                 WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE'
+                """, manifestJson, activeCount, activeBytes,
+                projection == null ? null : projection.objectKey(),
+                projection == null ? null : projection.contentType(),
+                projection == null ? null : projection.sizeBytes(),
+                projection == null ? null : projection.sha256(),
+                projection == null ? null : projection.originalFilename(),
+                timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public int updateAdminAudioManifest(
+            UUID tenantId, UUID submissionId, String manifestJson, int activeCount, long activeBytes,
+            MediaWrite projection, String deletedBy, String reason, Instant deletedAt) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET audio_segments_json=CAST(? AS JSON),
+                       audio_active_segment_count=?, audio_active_size_bytes=?,
+                       audio_object_key=?, audio_content_type=?, audio_size_bytes=?, audio_sha256=?,
+                       audio_original_filename=?,
+                       audio_deleted_at=?, audio_deleted_by=?, audio_deletion_reason=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND deletion_state='NONE'
+                """, manifestJson, activeCount, activeBytes,
+                projection == null ? null : projection.objectKey(),
+                projection == null ? null : projection.contentType(),
+                projection == null ? null : projection.sizeBytes(),
+                projection == null ? null : projection.sha256(),
+                projection == null ? null : projection.originalFilename(),
+                projection == null ? timestamp(deletedAt) : null,
+                projection == null ? deletedBy : null,
+                projection == null ? reason : null,
+                timestamp(deletedAt), bin(tenantId), bin(submissionId));
+    }
+
     public int complete(UUID tenantId, UUID submissionId, Instant submittedAt) {
         return complete(tenantId, submissionId, submittedAt, null);
     }
@@ -431,7 +474,7 @@ public class TemporaryCheckinRepository {
                        risk_level, risk_flags_json,
                        storefront_photo_original_filename, storefront_photo_deleted_at,
                        wechat_screenshot_original_filename, wechat_screenshot_deleted_at,
-                       audio_original_filename, audio_deleted_at,
+                       audio_original_filename, audio_deleted_at, audio_segments_json,
                        transcription_status, transcript, summary_status, summary_text,
                        created_at, submitted_at
                   FROM temp_sales_checkin_submission s
@@ -480,7 +523,9 @@ public class TemporaryCheckinRepository {
                        risk_level, risk_flags_json,
                        storefront_photo_object_key, storefront_photo_deleted_at,
                        wechat_screenshot_object_key, wechat_screenshot_deleted_at,
-                       audio_object_key, audio_deleted_at,
+                       audio_object_key, audio_content_type, audio_size_bytes, audio_sha256,
+                       audio_original_filename, audio_deleted_at, audio_deleted_by, audio_deletion_reason,
+                       audio_segments_json, audio_active_segment_count,
                        transcription_status, transcript, transcription_error_code,
                        summary_status, summary_text, summary_error_code,
                        created_at, submitted_at
@@ -526,14 +571,17 @@ public class TemporaryCheckinRepository {
                   COALESCE(SUM(
                     (storefront_photo_object_key IS NOT NULL AND storefront_photo_deleted_at IS NULL)
                     + (wechat_screenshot_object_key IS NOT NULL AND wechat_screenshot_deleted_at IS NULL)
-                    + (audio_object_key IS NOT NULL AND audio_deleted_at IS NULL)
+                    + IF(audio_active_segment_count > 0, audio_active_segment_count,
+                         IF(audio_object_key IS NOT NULL AND audio_deleted_at IS NULL, 1, 0))
                   ), 0) AS active_files,
                   COALESCE(SUM(
                     IF(storefront_photo_object_key IS NOT NULL AND storefront_photo_deleted_at IS NULL,
                        storefront_photo_size_bytes, 0)
                     + IF(wechat_screenshot_object_key IS NOT NULL AND wechat_screenshot_deleted_at IS NULL,
                          wechat_screenshot_size_bytes, 0)
-                    + IF(audio_object_key IS NOT NULL AND audio_deleted_at IS NULL, audio_size_bytes, 0)
+                    + IF(audio_active_segment_count > 0, audio_active_size_bytes,
+                         IF(audio_object_key IS NOT NULL AND audio_deleted_at IS NULL,
+                            COALESCE(audio_size_bytes, 0), 0))
                   ), 0) AS total_bytes,
                   COALESCE(SUM(
                     IF(storefront_photo_object_key IS NOT NULL AND storefront_photo_deleted_at IS NULL,
@@ -541,11 +589,15 @@ public class TemporaryCheckinRepository {
                     + IF(wechat_screenshot_object_key IS NOT NULL AND wechat_screenshot_deleted_at IS NULL,
                          wechat_screenshot_size_bytes, 0)
                   ), 0) AS image_bytes,
-                  COALESCE(SUM(IF(audio_object_key IS NOT NULL AND audio_deleted_at IS NULL,
-                                  audio_size_bytes, 0)), 0) AS audio_bytes,
+                  COALESCE(SUM(
+                    IF(audio_active_segment_count > 0, audio_active_size_bytes,
+                       IF(audio_object_key IS NOT NULL AND audio_deleted_at IS NULL,
+                          COALESCE(audio_size_bytes, 0), 0))
+                  ), 0) AS audio_bytes,
                   MIN(IF(
                     (storefront_photo_object_key IS NOT NULL AND storefront_photo_deleted_at IS NULL)
                     OR (wechat_screenshot_object_key IS NOT NULL AND wechat_screenshot_deleted_at IS NULL)
+                    OR audio_active_segment_count > 0
                     OR (audio_object_key IS NOT NULL AND audio_deleted_at IS NULL),
                     created_at, NULL
                   )) AS oldest_created_at
@@ -827,6 +879,7 @@ public class TemporaryCheckinRepository {
                        wechat_screenshot_deleted_by, wechat_screenshot_deletion_reason,
                        audio_object_key, audio_content_type, audio_size_bytes, audio_sha256,
                        audio_original_filename, audio_deleted_at, audio_deleted_by, audio_deletion_reason,
+                       audio_segments_json, audio_active_segment_count, audio_active_size_bytes,
                        transcription_status, asr_task_id, asr_request_id, transcript,
                        transcription_error_code, transcription_attempts, transcription_updated_at,
                        summary_status, summary_text, summary_error_code, summary_model, summary_updated_at,
@@ -889,6 +942,8 @@ public class TemporaryCheckinRepository {
                 rs.getString("user_agent_hash"), rs.getString("user_agent_summary"),
                 rs.getString("risk_level"), rs.getString("risk_flags_json"), instant(rs, "risk_evaluated_at"),
                 media(rs, "storefront_photo_"), media(rs, "wechat_screenshot_"), media(rs, "audio_"),
+                rs.getString("audio_segments_json"), rs.getInt("audio_active_segment_count"),
+                rs.getLong("audio_active_size_bytes"),
                 rs.getString("transcription_status"), rs.getString("asr_task_id"),
                 rs.getString("asr_request_id"), rs.getString("transcript"),
                 rs.getString("transcription_error_code"), rs.getInt("transcription_attempts"),
@@ -922,6 +977,7 @@ public class TemporaryCheckinRepository {
                 rs.getString("wechat_screenshot_deleted_at") == null
                         ? rs.getString("wechat_screenshot_original_filename") : null,
                 rs.getString("audio_deleted_at") == null ? rs.getString("audio_original_filename") : null,
+                rs.getString("audio_segments_json"),
                 rs.getString("transcription_status"), rs.getString("transcript"),
                 rs.getString("summary_status"), rs.getString("summary_text"),
                 instant(rs, "created_at"), instant(rs, "submitted_at"));
@@ -943,7 +999,11 @@ public class TemporaryCheckinRepository {
                         && instant(rs, "storefront_photo_deleted_at") == null,
                 rs.getString("wechat_screenshot_object_key") != null
                         && instant(rs, "wechat_screenshot_deleted_at") == null,
-                rs.getString("audio_object_key") != null && instant(rs, "audio_deleted_at") == null,
+                rs.getInt("audio_active_segment_count") > 0
+                        || (rs.getString("audio_object_key") != null
+                            && instant(rs, "audio_deleted_at") == null),
+                media(rs, "audio_"), rs.getString("audio_segments_json"),
+                rs.getInt("audio_active_segment_count"),
                 instant(rs, "storefront_photo_deleted_at"), instant(rs, "wechat_screenshot_deleted_at"),
                 instant(rs, "audio_deleted_at"), rs.getString("transcription_status"), rs.getString("transcript"),
                 rs.getString("transcription_error_code"), rs.getString("summary_status"),
@@ -1034,6 +1094,7 @@ public class TemporaryCheckinRepository {
             String userAgentHash, String userAgentSummary, String riskLevel, String riskFlagsJson,
             Instant riskEvaluatedAt,
             MediaReference storefrontPhoto, MediaReference wechatScreenshot, MediaReference audio,
+            String audioSegmentsJson, int audioActiveSegmentCount, long audioActiveSizeBytes,
             String transcriptionStatus, String asrTaskId, String asrRequestId, String transcript,
             String transcriptionErrorCode, int transcriptionAttempts, Instant transcriptionUpdatedAt,
             String summaryStatus, String summaryText, String summaryErrorCode, String summaryModel,
@@ -1109,7 +1170,7 @@ public class TemporaryCheckinRepository {
             String identityMethod, String submittedIpMasked, String userAgentSummary,
             String riskLevel, String riskFlagsJson,
             String storefrontPhotoFilename,
-            String wechatScreenshotFilename, String audioFilename,
+            String wechatScreenshotFilename, String audioFilename, String audioSegmentsJson,
             String transcriptionStatus, String transcript, String summaryStatus, String summaryText,
             Instant createdAt, Instant submittedAt) { }
 
@@ -1122,6 +1183,7 @@ public class TemporaryCheckinRepository {
             String identityMethod, String submittedIpMasked, String userAgentSummary,
             String riskLevel, String riskFlagsJson,
             boolean storefrontPhotoAvailable, boolean wechatScreenshotAvailable, boolean audioAvailable,
+            MediaReference audio, String audioSegmentsJson, int audioActiveSegmentCount,
             Instant storefrontPhotoDeletedAt, Instant wechatScreenshotDeletedAt, Instant audioDeletedAt,
             String transcriptionStatus, String transcript, String transcriptionErrorCode,
             String summaryStatus, String summaryText, String summaryErrorCode,

@@ -13,6 +13,7 @@
     const GEOLOCATION_TIMEOUT_MS = 30000;
     const GEOLOCATION_FALLBACK_MAX_AGE_MS = 5 * 60 * 1000;
     const PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
+    const HEADQUARTERS_CITY = "总部";
 
     const MEDIA = Object.freeze({
         photo: "storefront-photo",
@@ -78,7 +79,8 @@
         businessLocked: false,
         attemptedPayload: null,
         mediaUploadAttempts: [],
-        uploadedMedia: []
+        uploadedMedia: [],
+        audioSegments: []
     });
 
     const state = {
@@ -102,7 +104,7 @@
         files: {
             photo: null,
             wechat: null,
-            audio: null
+            audio: []
         },
         recorder: {
             instance: null,
@@ -116,8 +118,9 @@
         objectUrls: {
             photo: null,
             wechat: null,
-            audio: null
+            audio: new Map()
         },
+        audioRetrySegmentId: null,
         searchTimer: null,
         searchController: null,
         poiSearchTimer: null,
@@ -157,6 +160,7 @@
         renderNearbyStores();
         renderStoreSource();
         renderStorePrefillMessage();
+        renderAudioSegments();
         renderUploadedBadges();
         renderBusinessLock();
         updateVisitResultCount();
@@ -289,25 +293,32 @@
 
     async function applyVerifiedIdentity(identity) {
         if (!identity?.authenticated || !identity.salespersonId || !identity.city) return;
-        const restoredMismatch = (state.visit.salespersonId
+        const salespersonMismatch = (state.visit.salespersonId
                 && state.visit.salespersonId !== String(identity.salespersonId))
-            || (state.visit.city && state.visit.city !== identity.city)
             || (state.store.salespersonId
-                && state.store.salespersonId !== String(identity.salespersonId))
-            || (state.store.city && state.store.city !== identity.city);
+                && state.store.salespersonId !== String(identity.salespersonId));
+        const workCityMismatch = (state.visit.city && !identityAllowsWorkCity(identity, state.visit.city))
+            || (state.store.city && !identityAllowsWorkCity(identity, state.store.city));
+        const restoredMismatch = salespersonMismatch || workCityMismatch;
         if (restoredMismatch) {
             const hadServerDraft = Boolean(state.submission.serverId
                 || state.submission.attemptedPayload
                 || state.submission.uploadedMedia.length
-                || state.submission.mediaUploadAttempts.length);
+                || state.submission.mediaUploadAttempts.length
+                || state.submission.audioSegments.length);
             state.identity = identity;
             startNewSubmission();
             showIdentityDraftResetNotice(hadServerDraft);
         }
         state.identity = identity;
-        state.visit.city = identity.city;
+        if (isHeadquartersIdentity(identity)) {
+            state.visit.city = isEnabledHeadquartersWorkCity(state.visit.city) ? state.visit.city : "";
+            state.store.city = isEnabledHeadquartersWorkCity(state.store.city) ? state.store.city : "";
+        } else {
+            state.visit.city = identity.city;
+            state.store.city = identity.city;
+        }
         state.visit.salespersonId = String(identity.salespersonId);
-        state.store.city = identity.city;
         state.store.salespersonId = String(identity.salespersonId);
         await ensureSalespersons(identity.city);
         populateCitySelects();
@@ -321,10 +332,25 @@
     function showIdentityDraftResetNotice(hadServerDraft) {
         $("#restore-notice strong").textContent = "已为当前销售打开新表单";
         $("#restore-message").textContent = hadServerDraft
-            ? "本机曾保存其他销售的未完成表单，未带入当前账号；原服务端草稿未做任何修改。"
-            : "本机曾保存其他销售的表单内容，已安全清除，不影响当前打卡。";
+            ? "本机保存的未完成表单与当前身份或实际拜访城市不一致，未带入当前账号；原服务端草稿未做任何修改。"
+            : "本机保存的表单与当前身份或实际拜访城市不一致，已安全清除。请选择本次拜访城市后重新定位。";
         $("#discard-draft-button").hidden = true;
         $("#restore-notice").hidden = false;
+    }
+
+    function isHeadquartersIdentity(identity = state.identity) {
+        return identity?.authenticated === true && identity.city === HEADQUARTERS_CITY;
+    }
+
+    function isEnabledHeadquartersWorkCity(city) {
+        return Boolean(city && city !== HEADQUARTERS_CITY && state.options.cities.includes(city));
+    }
+
+    function identityAllowsWorkCity(identity, city) {
+        if (!city) return true;
+        return isHeadquartersIdentity(identity)
+            ? isEnabledHeadquartersWorkCity(city)
+            : city === identity.city;
     }
 
     function renderIdentityState() {
@@ -335,7 +361,9 @@
         $("#identity-summary").hidden = !authenticated;
         if (authenticated) {
             $("#identity-summary-name").textContent = state.identity.salespersonName || "--";
-            $("#identity-summary-city").textContent = state.identity.city || "--";
+            $("#identity-summary-city").textContent = state.identity.city
+                ? `所属：${state.identity.city}`
+                : "--";
         }
         $("#identity-switch").disabled = state.submitting || isBusinessLocked();
         lockIdentitySelectors();
@@ -343,7 +371,12 @@
 
     function lockIdentitySelectors() {
         if (!state.identity?.authenticated) return;
-        ["#visit-city", "#visit-salesperson", "#store-city", "#store-salesperson"].forEach((selector) => {
+        const lockWorkCity = !isHeadquartersIdentity() || isBusinessLocked();
+        ["#visit-city", "#store-city"].forEach((selector) => {
+            const element = $(selector);
+            if (element) element.disabled = lockWorkCity;
+        });
+        ["#visit-salesperson", "#store-salesperson"].forEach((selector) => {
             const element = $(selector);
             if (element) element.disabled = true;
         });
@@ -418,8 +451,9 @@
 
         $("#record-audio-button").addEventListener("click", toggleRecording);
         $("#audio-file").addEventListener("change", handleAudioFileSelection);
-        $("#remove-audio-button").addEventListener("click", async () => clearFile("audio"));
-        $("#delete-uploaded-audio-button").addEventListener("click", async () => clearFile("audio"));
+        $("#audio-file-label").addEventListener("click", () => {
+            state.audioRetrySegmentId = null;
+        });
 
         $("#visit-form").addEventListener("input", persistFromForm);
         $("#visit-form").addEventListener("change", persistFromForm);
@@ -511,8 +545,11 @@
     }
 
     function populateCitySelects() {
-        renderSelect($("#visit-city"), state.options.cities, "请选择城市", state.visit.city);
-        renderSelect($("#store-city"), state.options.cities, "请选择城市", state.store.city);
+        const workCities = isHeadquartersIdentity()
+            ? state.options.cities.filter((city) => city !== HEADQUARTERS_CITY)
+            : state.options.cities;
+        renderSelect($("#visit-city"), workCities, "请选择本次拜访城市", state.visit.city);
+        renderSelect($("#store-city"), workCities, "请选择本次拜访城市", state.store.city);
         renderSelect($("#identity-city"), state.options.cities, "请选择城市",
             $("#identity-city")?.value || "");
     }
@@ -534,6 +571,18 @@
     function renderSalespersonSelect(scope) {
         const current = state[scope];
         const select = $(`#${scope}-salesperson`);
+        if (state.identity?.authenticated) {
+            const person = {
+                id: String(state.identity.salespersonId),
+                name: state.identity.salespersonName || "当前销售"
+            };
+            current.salespersonId = person.id;
+            renderSelect(select, [person], "已验证销售", person.id,
+                (item) => item.id, (item) => item.name);
+            select.disabled = true;
+            if (scope === "store") renderStoreOwnerSummary();
+            return;
+        }
         if (!current.city) {
             renderSelect(select, [], "请先选择城市", "");
             select.disabled = true;
@@ -551,7 +600,9 @@
         hideError();
         const city = $(`#${scope}-city`).value;
         state[scope].city = city;
-        state[scope].salespersonId = "";
+        state[scope].salespersonId = state.identity?.authenticated
+            ? String(state.identity.salespersonId)
+            : "";
         cancelLocationCapture(scope);
         state.locationControllers[scope]?.abort();
         state.locationControllers[scope] = null;
@@ -1607,27 +1658,66 @@
     }
 
     function handleAudioFileSelection(event) {
-        const file = event.target.files && event.target.files[0];
-        if (!file) return;
-        clearFieldError("audio-file");
-        if (hasRemoteMediaState(MEDIA.audio)) {
-            setFieldError("audio-file", "请先删除草稿中已上传的录音，再选择替换文件。" );
-            event.target.value = "";
+        const files = Array.from(event.target.files || []);
+        event.target.value = "";
+        if (!files.length) {
+            state.audioRetrySegmentId = null;
             return;
         }
+        clearFieldError("audio-file");
         if (isRecording()) {
             setFieldError("audio-file", "请先结束当前录音，再选择已有音频文件。" );
-            event.target.value = "";
+            state.audioRetrySegmentId = null;
             return;
         }
-        if (!Number.isFinite(file.size) || file.size <= 0) {
-            setFieldError("audio-file", "没有读取到有效文件，请重新选择。" );
-            event.target.value = "";
-            return;
+
+        const retryId = state.audioRetrySegmentId;
+        state.audioRetrySegmentId = null;
+        let validFiles = files.filter((file) => Number.isFinite(file.size) && file.size > 0);
+        if (validFiles.length !== files.length) {
+            setFieldError("audio-file", "已忽略无法读取的空音频文件。" );
         }
-        state.files.audio = file;
-        renderAudioPreview(file);
+        if (!validFiles.length) return;
+
+        if (retryId) {
+            attachAudioFile(retryId, validFiles[0]);
+            validFiles = validFiles.slice(1);
+        }
+        validFiles.forEach((file) => appendAudioFile(file, null, "FILE"));
+        renderAudioSegments();
+        renderUploadedBadges();
         persistDraft();
+    }
+
+    function appendAudioFile(file, durationMs, source) {
+        const segmentId = secureUuid();
+        state.submission.audioSegments.push({
+            segmentId,
+            originalFilename: file.name || "待上传音频",
+            sizeBytes: file.size,
+            durationMs: Number.isFinite(durationMs) ? durationMs : null,
+            source: source || "FILE",
+            uploadState: "LOCAL",
+            errorMessage: ""
+        });
+        state.files.audio.push({ segmentId, file });
+        ensureAudioObjectUrl(segmentId, file);
+        return segmentId;
+    }
+
+    function attachAudioFile(segmentId, file) {
+        const segment = findAudioSegment(segmentId);
+        if (!segment) {
+            appendAudioFile(file, null, "FILE");
+            return;
+        }
+        removeLocalAudioFile(segmentId);
+        segment.originalFilename = file.name || segment.originalFilename || "待上传音频";
+        segment.sizeBytes = file.size;
+        segment.uploadState = "LOCAL";
+        segment.errorMessage = "";
+        state.files.audio.push({ segmentId, file });
+        ensureAudioObjectUrl(segmentId, file);
     }
 
     function isSupportedImageFile(file) {
@@ -1641,14 +1731,11 @@
 
     function checkRecorderSupport() {
         const supported = Boolean(window.isSecureContext && navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
-        const uploaded = hasRemoteMediaState(MEDIA.audio);
-        $("#record-audio-button").disabled = !supported || uploaded;
-        if (uploaded) {
-            $("#recorder-help").textContent = "草稿中的录音需先删除，才能重新录制或选择替换文件。";
-        } else if (!supported) {
+        $("#record-audio-button").disabled = !supported;
+        if (!supported) {
             $("#recorder-help").textContent = window.isSecureContext
-                ? "当前浏览器不支持网页录音，可直接从手机文件中选择录音上传。"
-                : "网页录音需要 HTTPS，可直接从手机文件中选择录音上传。";
+                ? "当前浏览器不支持网页录音，可直接从手机文件中多选录音上传。"
+                : "网页录音需要 HTTPS，可直接从手机文件中多选录音上传。";
         } else {
             updateRecorderHelp(preferredRecorderOptions()?.mimeType);
         }
@@ -1656,7 +1743,7 @@
 
     function updateRecorderHelp(mimeType) {
         const format = (mimeType || "").toLowerCase().includes("webm") ? "WebM" : "音频";
-        $("#recorder-help").textContent = `本机将录制 ${format}；请保持页面在前台。录音会保存，自动转文字与摘要当前已暂停。`;
+        $("#recorder-help").textContent = `本机将录制 ${format}；中断后可继续添加下一段，也可多选已有音频。自动转文字与摘要当前已暂停。`;
     }
 
     async function toggleRecording() {
@@ -1666,15 +1753,11 @@
         }
         hideError();
         clearFieldError("audio-file");
-        if (hasRemoteMediaState(MEDIA.audio)) {
-            setFieldError("audio-file", "请先删除草稿中已确认上传的录音，再重新录制。" );
-            return;
-        }
         if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
             setFieldError("audio-file", "当前环境无法录音，请通过 HTTPS 打开或选择已有音频文件。" );
             return;
         }
-        $("#audio-preview").pause();
+        pauseAllAudioPreviews();
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
@@ -1732,10 +1815,6 @@
         const mimeType = recorder?.mimeType || state.recorder.chunks[0]?.type || "audio/webm";
         const blob = new Blob(state.recorder.chunks, { type: mimeType });
         cleanupRecorder();
-        if (hasRemoteMediaState(MEDIA.audio)) {
-            setFieldError("audio-file", "草稿中已有录音，请先删除后再重新录制。" );
-            return;
-        }
         updateRecorderHelp(mimeType);
         if (!blob.size) {
             setFieldError("audio-file", "没有录到有效音频，请重新录制。" );
@@ -1747,8 +1826,9 @@
             ? new File([blob], filename, { type: mimeType, lastModified: Date.now() })
             : Object.assign(blob, { name: filename, lastModified: Date.now() });
         $("#audio-file").value = "";
-        state.files.audio = file;
-        renderAudioPreview(file, duration);
+        appendAudioFile(file, duration, "RECORDED");
+        renderAudioSegments();
+        renderUploadedBadges();
         persistDraft();
     }
 
@@ -1782,16 +1862,151 @@
         return Boolean(state.recorder.instance && state.recorder.instance.state !== "inactive");
     }
 
-    function renderAudioPreview(file, duration) {
-        releaseAudioPreview();
+    function renderAudioSegments() {
+        const root = $("#audio-preview-list");
+        const template = $("#audio-preview-template");
+        root.querySelectorAll("audio").forEach(releaseAudioElement);
+        root.replaceChildren();
+        state.submission.audioSegments.forEach((segment, index) => {
+            const card = template.content.firstElementChild.cloneNode(true);
+            card.dataset.segmentId = segment.segmentId;
+            const audio = card.querySelector("audio");
+            const local = localAudioFile(segment.segmentId);
+            const objectUrl = local ? ensureAudioObjectUrl(segment.segmentId, local.file) : null;
+            if (objectUrl) {
+                audio.src = objectUrl;
+                audio.setAttribute("aria-label", `播放第${index + 1}段现场录音`);
+                audio.addEventListener("play", () => pauseOtherAudioPreviews(audio));
+            } else {
+                audio.hidden = true;
+                audio.removeAttribute("src");
+            }
+            card.querySelector("[data-audio-name]").textContent =
+                `第${index + 1}段 · ${segment.originalFilename || "现场录音"}`;
+            card.querySelector("[data-audio-size]").textContent = audioSegmentDetail(segment);
+            const status = card.querySelector("[data-audio-status]");
+            status.textContent = audioSegmentStatusText(segment);
+            status.className = `audio-segment-status is-${String(segment.uploadState || "LOCAL").toLowerCase()}`;
+
+            const retry = card.querySelector("[data-audio-retry]");
+            retry.hidden = !audioSegmentNeedsRetry(segment);
+            retry.textContent = local && state.submission.serverId ? "重试上传" : "重新选择";
+            retry.addEventListener("click", () => retryAudioSegment(segment.segmentId));
+            const remove = card.querySelector("[data-audio-remove]");
+            remove.textContent = segment.uploadState === "DELETING" ? "删除中…" : "移除";
+            remove.disabled = segment.uploadState === "UPLOADING" || segment.uploadState === "DELETING";
+            remove.addEventListener("click", () => removeAudioSegment(segment.segmentId));
+            root.appendChild(card);
+        });
+    }
+
+    function audioSegmentDetail(segment) {
+        const details = [];
+        if (segment.sizeBytes != null && Number.isFinite(Number(segment.sizeBytes))
+                && Number(segment.sizeBytes) > 0) {
+            details.push(formatBytes(Number(segment.sizeBytes)));
+        }
+        if (Number.isFinite(Number(segment.durationMs)) && Number(segment.durationMs) > 0) {
+            details.push(formatDuration(Number(segment.durationMs)));
+        }
+        return details.join(" · ") || "文件信息待确认";
+    }
+
+    function audioSegmentStatusText(segment) {
+        if (segment.uploadState === "UPLOADED") return "草稿已上传";
+        if (segment.uploadState === "UPLOADING") return "正在上传…";
+        if (segment.uploadState === "DELETING") return "正在删除…";
+        if (segment.uploadState === "UNKNOWN") return "上次上传结果待确认，可重选原文件重试或移除";
+        if (segment.uploadState === "NEEDS_FILE") return "刷新后需重新选择原文件";
+        if (segment.uploadState === "ERROR") return segment.errorMessage || "上传失败，可重试";
+        return "待上传";
+    }
+
+    function audioSegmentNeedsRetry(segment) {
+        return ["UNKNOWN", "NEEDS_FILE", "ERROR"].includes(segment.uploadState);
+    }
+
+    function findAudioSegment(segmentId) {
+        return state.submission.audioSegments.find((segment) => segment.segmentId === segmentId) || null;
+    }
+
+    function localAudioFile(segmentId) {
+        return state.files.audio.find((entry) => entry.segmentId === segmentId) || null;
+    }
+
+    function ensureAudioObjectUrl(segmentId, file) {
+        if (state.objectUrls.audio.has(segmentId)) return state.objectUrls.audio.get(segmentId);
         const url = URL.createObjectURL(file);
-        state.objectUrls.audio = url;
-        $("#audio-preview").src = url;
-        $("#audio-file-name").textContent = file.name || "待上传音频";
-        $("#audio-file-size").textContent = duration
-            ? `${formatBytes(file.size)} · ${formatDuration(duration)}`
-            : formatBytes(file.size);
-        $("#audio-preview-card").hidden = false;
+        state.objectUrls.audio.set(segmentId, url);
+        return url;
+    }
+
+    async function retryAudioSegment(segmentId) {
+        if (state.submitting) return;
+        const segment = findAudioSegment(segmentId);
+        if (!segment) return;
+        const local = localAudioFile(segmentId);
+        if (local && state.submission.serverId) {
+            clearFieldError("audio-file");
+            try {
+                await uploadAudioSegment(segment, local.file, 1, 1);
+                renderAudioSegments();
+                renderUploadedBadges();
+            } catch (error) {
+                const message = errorMessage(error, "录音上传失败，可继续重试。");
+                segment.uploadState = segment.mayExistRemotely ? "UNKNOWN" : "ERROR";
+                segment.errorMessage = message;
+                renderAudioSegments();
+                setFieldError("audio-file", message);
+            }
+            persistDraft();
+            return;
+        }
+        state.audioRetrySegmentId = segmentId;
+        $("#audio-file").click();
+    }
+
+    async function removeAudioSegment(segmentId) {
+        if (state.submitting) return;
+        const segment = findAudioSegment(segmentId);
+        if (!segment) return;
+        clearFieldError("audio-file");
+        if (segment.mayExistRemotely) {
+            if (!state.submission.serverId) {
+                setFieldError("audio-file", "已上传录音缺少服务端草稿编号，无法安全删除。" );
+                return;
+            }
+            const previousState = segment.uploadState;
+            segment.uploadState = "DELETING";
+            renderAudioSegments();
+            try {
+                await deleteAudioSegmentRemote(segmentId);
+            } catch (error) {
+                segment.uploadState = previousState;
+                const message = errorMessage(error, "录音物理删除失败，原文件仍保留。");
+                segment.errorMessage = message;
+                renderAudioSegments();
+                setFieldError("audio-file", message);
+                return;
+            }
+        }
+        removeLocalAudioFile(segmentId);
+        state.submission.audioSegments = state.submission.audioSegments
+            .filter((item) => item.segmentId !== segmentId);
+        renderAudioSegments();
+        renderUploadedBadges();
+        persistDraft();
+    }
+
+    async function deleteAudioSegmentRemote(segmentId) {
+        await requestJson(
+            `/submissions/${encodeURIComponent(state.submission.serverId)}/media/audio/${encodeURIComponent(segmentId)}`,
+            {
+                method: "DELETE",
+                headers: { "X-Submission-Key": state.submission.submissionKey },
+                timeout: 45000
+            }
+        );
     }
 
     async function clearFile(kind) {
@@ -1801,8 +2016,6 @@
         const button = mediaRemoveButton(kind);
         const originalLabel = button.textContent;
         clearFieldError(errorKey);
-        if (kind === "audio") pauseAudioPreview();
-
         if (mayExistRemotely) {
             if (!state.submission.serverId) {
                 const message = "已上传文件缺少服务端草稿编号，无法安全删除；请刷新页面后重试。";
@@ -1852,19 +2065,22 @@
     }
 
     function resetLocalFile(kind) {
-        state.files[kind] = null;
         if (kind === "photo") {
+            state.files[kind] = null;
             revokeObjectUrl(kind);
             $("#storefront-photo").value = "";
             $("#photo-preview-card").hidden = true;
         } else if (kind === "wechat") {
+            state.files[kind] = null;
             revokeObjectUrl(kind);
             $("#wechat-screenshot").value = "";
             $("#wechat-preview-card").hidden = true;
         } else {
+            releaseAllAudioPreviews();
+            state.files.audio = [];
+            state.submission.audioSegments = [];
             $("#audio-file").value = "";
-            releaseAudioPreview();
-            $("#audio-preview-card").hidden = true;
+            renderAudioSegments();
         }
     }
 
@@ -1882,16 +2098,14 @@
 
     function mediaRemoveButton(kind) {
         const previewButton = kind === "photo"
-            ? $("#remove-photo-button")
-            : kind === "wechat" ? $("#remove-wechat-button") : $("#remove-audio-button");
+            ? $("#remove-photo-button") : $("#remove-wechat-button");
         if (!previewButton.closest("[hidden]")) return previewButton;
         if (kind === "photo") return $("#delete-uploaded-photo-button");
-        if (kind === "wechat") return $("#delete-uploaded-wechat-button");
-        return $("#delete-uploaded-audio-button");
+        return $("#delete-uploaded-wechat-button");
     }
 
-    function pauseAudioPreview() {
-        const audio = $("#audio-preview");
+    function pauseAudioElement(audio) {
+        if (!audio) return;
         audio.pause();
         try {
             audio.currentTime = 0;
@@ -1900,12 +2114,37 @@
         }
     }
 
-    function releaseAudioPreview() {
-        const audio = $("#audio-preview");
-        pauseAudioPreview();
+    function releaseAudioElement(audio) {
+        if (!audio) return;
+        pauseAudioElement(audio);
         audio.removeAttribute("src");
         audio.load();
-        revokeObjectUrl("audio");
+    }
+
+    function pauseAllAudioPreviews() {
+        $$("#audio-preview-list audio").forEach((audio) => audio.pause());
+    }
+
+    function pauseOtherAudioPreviews(current) {
+        $$("#audio-preview-list audio").forEach((audio) => {
+            if (audio !== current) audio.pause();
+        });
+    }
+
+    function removeLocalAudioFile(segmentId) {
+        $$("#audio-preview-list [data-audio-segment]").forEach((card) => {
+            if (card.dataset.segmentId === segmentId) releaseAudioElement(card.querySelector("audio"));
+        });
+        const url = state.objectUrls.audio.get(segmentId);
+        if (url) URL.revokeObjectURL(url);
+        state.objectUrls.audio.delete(segmentId);
+        state.files.audio = state.files.audio.filter((entry) => entry.segmentId !== segmentId);
+    }
+
+    function releaseAllAudioPreviews() {
+        $$("#audio-preview-list audio").forEach(releaseAudioElement);
+        state.objectUrls.audio.forEach((url) => URL.revokeObjectURL(url));
+        state.objectUrls.audio.clear();
     }
 
     function revokeObjectUrl(kind) {
@@ -1985,6 +2224,12 @@
             scrollToFirstError();
             return;
         }
+        if (state.submission.audioSegments.some((segment) =>
+            ["UPLOADING", "DELETING"].includes(segment.uploadState))) {
+            setFieldError("audio-file", "请等待当前录音上传或删除完成后再提交。" );
+            scrollToFirstError();
+            return;
+        }
         if (!validateVisit()) {
             scrollToFirstError();
             return;
@@ -2028,8 +2273,7 @@
 
             const uploads = [
                 { step: MEDIA.photo, file: state.files.photo, required: true },
-                { step: MEDIA.wechat, file: state.files.wechat, required: false },
-                { step: MEDIA.audio, file: state.files.audio, required: false }
+                { step: MEDIA.wechat, file: state.files.wechat, required: false }
             ];
             for (const upload of uploads) {
                 activeStep = upload.step;
@@ -2064,6 +2308,28 @@
                 setProgressStep(upload.step, "done");
             }
 
+            activeStep = MEDIA.audio;
+            const audioSegments = [...state.submission.audioSegments];
+            if (!audioSegments.length) {
+                setProgressStep(MEDIA.audio, "skipped");
+            } else {
+                for (let index = 0; index < audioSegments.length; index += 1) {
+                    const segment = audioSegments[index];
+                    if (segment.uploadState === "UPLOADED") continue;
+                    const local = localAudioFile(segment.segmentId);
+                    if (!local) {
+                        segment.uploadState = segment.uploadState === "UNKNOWN" ? "UNKNOWN" : "NEEDS_FILE";
+                        renderAudioSegments();
+                        persistDraft();
+                        setProgressStep(MEDIA.audio, "error", `第 ${index + 1}/${audioSegments.length} 段录音需重新选择`);
+                        throw new Error(`第${index + 1}段录音需重新选择原文件后重试，或移除该段后继续。`);
+                    }
+                    await uploadAudioSegment(segment, local.file, index + 1, audioSegments.length);
+                }
+                renderUploadedBadges();
+                setProgressStep(MEDIA.audio, "done", `已上传 ${audioSegments.length} 段现场录音`);
+            }
+
             activeStep = "complete";
             setProgressStep("complete", "active", "正在完成拜访打卡");
             const completed = normalizeResponse(await requestJson(
@@ -2086,7 +2352,41 @@
         }
     }
 
-    function uploadMedia(kind, file) {
+    async function uploadAudioSegment(segment, file, index, total) {
+        segment.uploadState = "UPLOADING";
+        segment.mayExistRemotely = true;
+        segment.errorMessage = "";
+        renderAudioSegments();
+        persistDraft();
+        const title = `正在上传现场录音 ${index}/${total}`;
+        setProgressStep(MEDIA.audio, "active", title);
+        try {
+            const response = normalizeResponse(await uploadMedia(
+                `audio/${encodeURIComponent(segment.segmentId)}`, file, title)) || {};
+            if (response.segmentId && String(response.segmentId) !== String(segment.segmentId)) {
+                throw new Error("服务端返回的录音分段编号不一致，已停止提交。");
+            }
+            segment.uploadState = "UPLOADED";
+            segment.originalFilename = response.originalFilename || segment.originalFilename;
+            segment.sizeBytes = Number.isFinite(Number(response.sizeBytes))
+                ? Number(response.sizeBytes) : segment.sizeBytes;
+            segment.errorMessage = "";
+            renderAudioSegments();
+            renderUploadedBadges();
+            persistDraft();
+            return response;
+        } catch (error) {
+            segment.uploadState = Number.isFinite(error.status) && error.status >= 400 && error.status < 500
+                ? "ERROR" : "UNKNOWN";
+            segment.errorMessage = errorMessage(error, "录音上传中断，可复用原文件重试。");
+            renderAudioSegments();
+            renderUploadedBadges();
+            persistDraft();
+            throw error;
+        }
+    }
+
+    function uploadMedia(kind, file, progressTitle) {
         return new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
             const formData = new FormData();
@@ -2104,7 +2404,8 @@
                 xhr.upload.addEventListener("progress", (event) => {
                     if (!event.lengthComputable || event.total <= 0) return;
                     const percent = Math.min(99, Math.round((event.loaded / event.total) * 100));
-                    $("#progress-title").textContent = `${progressTitleForMedia(kind)} ${percent}%`;
+                    const title = progressTitle || progressTitleForMedia(kind);
+                    $("#progress-title").textContent = `${title} ${percent}%`;
                 });
             }
             xhr.addEventListener("load", () => {
@@ -2398,10 +2699,12 @@
         state.visit = freshVisit();
         state.store = freshStore();
         if (state.identity?.authenticated) {
-            state.visit.city = state.identity.city;
             state.visit.salespersonId = String(state.identity.salespersonId);
-            state.store.city = state.identity.city;
             state.store.salespersonId = String(state.identity.salespersonId);
+            if (!isHeadquartersIdentity()) {
+                state.visit.city = state.identity.city;
+                state.store.city = state.identity.city;
+            }
         }
         state.submission = freshSubmission();
         state.submitting = false;
@@ -2444,12 +2747,14 @@
                 ...state.submission.uploadedMedia,
                 ...state.submission.mediaUploadAttempts
             ])];
+        const uploadedAudioSegments = state.submission.audioSegments
+            .filter((segment) => segment.mayExistRemotely);
         const warning = state.submission.serverId
             ? "将先永久清理草稿中可能存在的照片、截图和录音，再清除本机表单。服务端未完成草稿记录仍会保留，确定继续吗？"
             : "确定放弃当前未提交的表单内容吗？";
         if (!window.confirm(warning)) return;
 
-        if (uploadedMedia.length) {
+        if (uploadedMedia.length || uploadedAudioSegments.length) {
             if (!state.submission.serverId) {
                 showError("草稿缺少服务端编号，无法安全清理已上传文件；请刷新页面后重试。" );
                 return;
@@ -2460,10 +2765,15 @@
             setFormsDisabled(true);
             button.disabled = true;
             try {
+                const cleanupTotal = uploadedMedia.length + uploadedAudioSegments.length;
                 for (let index = 0; index < uploadedMedia.length; index += 1) {
                     const mediaKind = uploadedMedia[index];
-                    button.textContent = `清理文件 ${index + 1}/${uploadedMedia.length}…`;
+                    button.textContent = `清理文件 ${index + 1}/${cleanupTotal}…`;
                     await deleteUploadedMedia(mediaKind);
+                }
+                for (let index = 0; index < uploadedAudioSegments.length; index += 1) {
+                    button.textContent = `清理录音 ${uploadedMedia.length + index + 1}/${cleanupTotal}…`;
+                    await deleteAudioSegmentRemote(uploadedAudioSegments[index].segmentId);
                 }
             } catch (error) {
                 const message = errorMessage(error, "已上传文件清理失败，草稿仍保留，请稍后重试。" );
@@ -2618,6 +2928,51 @@
         state.submission.mediaUploadAttempts = Array.isArray(state.submission.mediaUploadAttempts)
             ? [...new Set(state.submission.mediaUploadAttempts)]
             : [];
+        const legacyAudioUploaded = state.submission.uploadedMedia.includes(MEDIA.audio);
+        const legacyAudioAttempted = state.submission.mediaUploadAttempts.includes(MEDIA.audio);
+        const rawAudioSegments = Array.isArray(state.submission.audioSegments)
+            ? state.submission.audioSegments : [];
+        const audioSegmentsById = new Map();
+        rawAudioSegments.forEach((rawSegment) => {
+            const segmentId = cleanText(rawSegment?.segmentId);
+            if (!isUuidValue(segmentId) || audioSegmentsById.has(segmentId)) return;
+            let uploadState = cleanText(rawSegment.uploadState).toUpperCase();
+            if (["UPLOADING", "DELETING"].includes(uploadState)) uploadState = "UNKNOWN";
+            if (["LOCAL", "ERROR"].includes(uploadState)) uploadState = "NEEDS_FILE";
+            if (!["UPLOADED", "UNKNOWN", "NEEDS_FILE"].includes(uploadState)) uploadState = "NEEDS_FILE";
+            audioSegmentsById.set(segmentId, {
+                segmentId,
+                originalFilename: cleanText(rawSegment.originalFilename) || "现场录音",
+                sizeBytes: finiteNumberOrNull(rawSegment.sizeBytes),
+                durationMs: finiteNumberOrNull(rawSegment.durationMs),
+                source: cleanText(rawSegment.source) || "FILE",
+                uploadState,
+                mayExistRemotely: rawSegment.mayExistRemotely === true
+                    || ["UPLOADED", "UNKNOWN"].includes(uploadState),
+                errorMessage: ""
+            });
+        });
+        const legacySegmentId = cleanText(state.submission.serverId);
+        if ((legacyAudioUploaded || legacyAudioAttempted) && isUuidValue(legacySegmentId)
+                && !audioSegmentsById.has(legacySegmentId)) {
+            audioSegmentsById.set(legacySegmentId, {
+                segmentId: legacySegmentId,
+                originalFilename: "历史拜访录音",
+                sizeBytes: null,
+                durationMs: null,
+                source: "LEGACY",
+                uploadState: legacyAudioUploaded ? "UPLOADED" : "UNKNOWN",
+                mayExistRemotely: true,
+                errorMessage: ""
+            });
+        }
+        state.submission.audioSegments = [...audioSegmentsById.values()];
+        if (isUuidValue(legacySegmentId)) {
+            state.submission.uploadedMedia = state.submission.uploadedMedia
+                .filter((item) => item !== MEDIA.audio);
+            state.submission.mediaUploadAttempts = state.submission.mediaUploadAttempts
+                .filter((item) => item !== MEDIA.audio);
+        }
         state.submission.attemptedPayload = state.submission.attemptedPayload
             && typeof state.submission.attemptedPayload === "object"
             ? state.submission.attemptedPayload
@@ -2671,9 +3026,12 @@
     }
 
     function showRestoreNotice() {
-        const uploaded = new Set(state.submission.uploadedMedia).size;
+        const uploadedAudio = state.submission.audioSegments
+            .filter((segment) => segment.uploadState === "UPLOADED").length;
+        const pendingAudio = state.submission.audioSegments.length - uploadedAudio;
+        const uploaded = new Set(state.submission.uploadedMedia).size + uploadedAudio;
         const pending = state.submission.mediaUploadAttempts
-            .filter((item) => !state.submission.uploadedMedia.includes(item)).length;
+            .filter((item) => !state.submission.uploadedMedia.includes(item)).length + pendingAudio;
         let message = `已恢复 ${formatDateTime(state.restoredAt)} 保存的表单。`;
         if (isBusinessLocked()) {
             message += uploaded
@@ -2692,30 +3050,40 @@
     function renderUploadedBadges() {
         const uploadedPhoto = hasRemoteMediaState(MEDIA.photo);
         const uploadedWechat = hasRemoteMediaState(MEDIA.wechat);
-        const uploadedAudio = hasRemoteMediaState(MEDIA.audio);
+        const audioCount = state.submission.audioSegments.length;
+        const uploadedAudioCount = state.submission.audioSegments
+            .filter((segment) => segment.uploadState === "UPLOADED").length;
         const pendingPhoto = state.submission.mediaUploadAttempts.includes(MEDIA.photo) && !uploadedPhoto;
         const pendingWechat = state.submission.mediaUploadAttempts.includes(MEDIA.wechat) && !uploadedWechat;
-        const pendingAudio = state.submission.mediaUploadAttempts.includes(MEDIA.audio) && !uploadedAudio;
         $("#photo-uploaded-badge").textContent = uploadedPhoto ? "草稿已上传" : "可重新选择并重试";
         $("#wechat-uploaded-badge").textContent = uploadedWechat ? "草稿已上传" : "可重新选择并重试";
-        $("#audio-uploaded-badge").textContent = uploadedAudio ? "草稿已上传" : "可重新选择并重试";
+        $("#audio-uploaded-badge").textContent = uploadedAudioCount === audioCount
+            ? `已添加 ${audioCount} 段`
+            : `已上传 ${uploadedAudioCount}/${audioCount} 段`;
         $("#photo-uploaded-badge").hidden = !uploadedPhoto && !pendingPhoto;
         $("#wechat-uploaded-badge").hidden = !uploadedWechat && !pendingWechat;
-        $("#audio-uploaded-badge").hidden = !uploadedAudio && !pendingAudio;
+        $("#audio-uploaded-badge").hidden = audioCount === 0;
         $("#delete-uploaded-photo-button").hidden = !mayHaveRemoteMediaState(MEDIA.photo)
             || Boolean(state.files.photo);
         $("#delete-uploaded-wechat-button").hidden = !mayHaveRemoteMediaState(MEDIA.wechat)
             || Boolean(state.files.wechat);
-        $("#delete-uploaded-audio-button").hidden = !mayHaveRemoteMediaState(MEDIA.audio)
-            || Boolean(state.files.audio);
         checkRecorderSupport();
     }
 
     function hasRemoteMediaState(mediaKind) {
+        if (mediaKind === MEDIA.audio) {
+            return state.submission.audioSegments.some((segment) => segment.uploadState === "UPLOADED")
+                || state.submission.uploadedMedia.includes(mediaKind);
+        }
         return state.submission.uploadedMedia.includes(mediaKind);
     }
 
     function mayHaveRemoteMediaState(mediaKind) {
+        if (mediaKind === MEDIA.audio) {
+            return state.submission.audioSegments.some((segment) => segment.mayExistRemotely)
+                || state.submission.uploadedMedia.includes(mediaKind)
+                || state.submission.mediaUploadAttempts.includes(mediaKind);
+        }
         return hasRemoteMediaState(mediaKind)
             || state.submission.mediaUploadAttempts.includes(mediaKind);
     }
@@ -2900,6 +3268,11 @@
         bytes[8] = (bytes[8] & 0x3f) | 0x80;
         const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
         return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+
+    function isUuidValue(value) {
+        return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+            .test(cleanText(value));
     }
 
     function secureSubmissionKey() {

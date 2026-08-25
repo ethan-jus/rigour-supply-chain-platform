@@ -949,6 +949,63 @@ button:focus-visible,
     height: 38px;
 }
 
+.audio-preview-list {
+    display: grid;
+    margin-top: 10px;
+    gap: 8px;
+}
+
+.audio-preview-list:empty {
+    display: none;
+}
+
+.audio-preview-list .audio-preview {
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin-top: 0;
+}
+
+.audio-preview-list .audio-preview audio {
+    grid-column: 1 / -1;
+}
+
+.audio-preview__meta {
+    min-width: 0;
+}
+
+.audio-preview__meta small {
+    display: block;
+    margin-top: 4px;
+    color: var(--ink-soft);
+    font-size: 10px;
+    line-height: 1.45;
+}
+
+.audio-preview__actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.audio-preview__actions .text-button {
+    min-width: 42px;
+    min-height: 36px;
+    padding: 5px 7px;
+}
+
+.audio-retry-button {
+    color: var(--brand);
+}
+
+.audio-segment-status.is-uploaded {
+    color: #16704f;
+}
+
+.audio-segment-status.is-unknown,
+.audio-segment-status.is-needs_file,
+.audio-segment-status.is-error {
+    color: #a3481b;
+}
+
 .fallback-picker {
     display: flex;
     align-items: center;

@@ -19,6 +19,8 @@ public class TemporaryCheckinProperties {
     private long maxWechatScreenshotBytes = 10L * 1024 * 1024;
     // 匿名公网入口仍需保留可配置的基础设施安全上限，页面端不再设置业务大小门槛。
     private long maxAudioBytes = 100L * 1024 * 1024;
+    private int maxAudioSegmentsPerSubmission = 20;
+    private long maxAudioTotalBytesPerSubmission = 1024L * 1024 * 1024;
     private int maxCheckinDistanceMeters = 300;
     private int maxCheckinAccuracyMeters = 200;
     private int maxLocationAgeMinutes = 60;
@@ -68,6 +70,10 @@ public class TemporaryCheckinProperties {
     public void setMaxWechatScreenshotBytes(long value) { this.maxWechatScreenshotBytes = value; }
     public long getMaxAudioBytes() { return maxAudioBytes; }
     public void setMaxAudioBytes(long value) { this.maxAudioBytes = value; }
+    public int getMaxAudioSegmentsPerSubmission() { return maxAudioSegmentsPerSubmission; }
+    public void setMaxAudioSegmentsPerSubmission(int value) { maxAudioSegmentsPerSubmission = value; }
+    public long getMaxAudioTotalBytesPerSubmission() { return maxAudioTotalBytesPerSubmission; }
+    public void setMaxAudioTotalBytesPerSubmission(long value) { maxAudioTotalBytesPerSubmission = value; }
     public int getMaxCheckinDistanceMeters() { return maxCheckinDistanceMeters; }
     public void setMaxCheckinDistanceMeters(int value) { this.maxCheckinDistanceMeters = value; }
     public int getMaxCheckinAccuracyMeters() { return maxCheckinAccuracyMeters; }

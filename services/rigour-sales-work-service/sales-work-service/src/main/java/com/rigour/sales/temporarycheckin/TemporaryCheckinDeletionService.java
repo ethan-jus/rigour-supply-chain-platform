@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -17,6 +18,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
 
 /**
  * 小批量测试记录物理删除。数据库任务先锁定记录，COS 删除在事务外执行；
@@ -115,12 +117,34 @@ final class TemporaryCheckinDeletionService {
     }
 
     private void deleteCandidate(DeletionCandidateRow candidate) {
-        for (String objectKey : candidate.activeObjectKeys()) {
+        LinkedHashSet<String> objectKeys = new LinkedHashSet<>(candidate.projectedObjectKeys());
+        objectKeys.addAll(activeAudioObjectKeys(candidate.audioSegmentsJson()));
+        for (String objectKey : objectKeys) {
             requireOwnedObjectKey(candidate.id(), objectKey);
             fileStorage.delete(tenantId.toString(), objectKey);
         }
         if (repository.hardDelete(tenantId, candidate.id()) != 1) {
             throw new IllegalStateException("submission deletion state changed");
+        }
+    }
+
+    private List<String> activeAudioObjectKeys(String manifestJson) {
+        if (manifestJson == null || manifestJson.isBlank()) return List.of();
+        try {
+            JsonNode root = objectMapper.readTree(manifestJson);
+            if (root == null || !root.isArray()) return List.of();
+            List<String> keys = new ArrayList<>();
+            for (JsonNode item : root) {
+                JsonNode deletedAt = item.get("deletedAt");
+                JsonNode objectKey = item.get("objectKey");
+                if ((deletedAt == null || deletedAt.isNull()) && objectKey != null && objectKey.isTextual()
+                        && !objectKey.asText().isBlank()) {
+                    keys.add(objectKey.asText());
+                }
+            }
+            return keys;
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("invalid audio segment manifest", exception);
         }
     }
 

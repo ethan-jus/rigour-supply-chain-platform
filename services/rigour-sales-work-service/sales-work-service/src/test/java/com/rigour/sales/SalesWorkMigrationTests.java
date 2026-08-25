@@ -337,8 +337,28 @@ class SalesWorkMigrationTests {
                        'ck_temp_sales_checkin_deletion_job_counts'
                    )
                 """, Integer.class);
+        Integer temporaryMultiAudioColumnCount = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema=DATABASE() AND table_name='temp_sales_checkin_submission'
+                   AND (
+                       (column_name='audio_segments_json' AND data_type='json' AND is_nullable='NO')
+                       OR (column_name='audio_active_segment_count' AND data_type='int'
+                            AND is_nullable='NO' AND column_default='0')
+                       OR (column_name='audio_active_size_bytes' AND data_type='bigint'
+                            AND is_nullable='NO' AND column_default='0')
+                   )
+                """, Integer.class);
+        Integer temporaryMultiAudioConstraintCount = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.table_constraints
+                 WHERE constraint_schema=DATABASE() AND constraint_type='CHECK'
+                   AND constraint_name IN (
+                       'ck_temp_sales_checkin_submission_audio_segments_json',
+                       'ck_temp_sales_checkin_submission_audio_segment_count',
+                       'ck_temp_sales_checkin_submission_audio_segment_bytes'
+                   )
+                """, Integer.class);
 
-        assertThat(migrationCount).isEqualTo(18);
+        assertThat(migrationCount).isEqualTo(19);
         assertThat(tableCount).isEqualTo(39);
         assertThat(editableStoreTableCount).isZero();
         assertThat(storefrontEvidenceColumnCount).isEqualTo(10);
@@ -354,7 +374,7 @@ class SalesWorkMigrationTests {
         assertThat(temporaryUniqueConstraintCount).isEqualTo(9);
         assertThat(temporaryForeignKeyCount).isEqualTo(3);
         assertThat(temporarySubmissionStoreForeignKeyColumnCount).isEqualTo(2);
-        assertThat(temporaryCheckConstraintCount).isEqualTo(35);
+        assertThat(temporaryCheckConstraintCount).isEqualTo(38);
         assertThat(temporaryIdentitySalespersonColumnCount).isEqualTo(5);
         assertThat(temporaryIdentityRiskSubmissionColumnCount).isEqualTo(15);
         assertThat(temporaryIdentityRiskConstraintCount).isEqualTo(5);
@@ -370,5 +390,7 @@ class SalesWorkMigrationTests {
         assertThat(temporaryDeletionUniqueConstraintCount).isEqualTo(1);
         assertThat(temporaryDeletionUniqueConstraintColumnCount).isEqualTo(2);
         assertThat(temporaryDeletionCheckConstraintCount).isEqualTo(3);
+        assertThat(temporaryMultiAudioColumnCount).isEqualTo(3);
+        assertThat(temporaryMultiAudioConstraintCount).isEqualTo(3);
     }
 }

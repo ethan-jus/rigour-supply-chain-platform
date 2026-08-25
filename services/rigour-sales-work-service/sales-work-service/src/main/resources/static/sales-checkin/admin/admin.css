@@ -936,6 +936,43 @@ td code,
     font-size: 10px;
 }
 
+.media-audio-list {
+    display: grid;
+    gap: 8px;
+}
+
+.media-audio-segment {
+    display: grid;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: #fff;
+    gap: 5px;
+}
+
+.media-audio-segment__heading {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+.media-audio-segment__heading strong,
+.media-audio-segment__heading span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.media-audio-segment__heading strong {
+    color: #29464a;
+    font-size: 11px;
+}
+
+.media-audio-segment__heading span {
+    color: #74878a;
+    font-size: 10px;
+}
+
 .audio-intelligence {
     display: grid;
     margin-top: 5px;

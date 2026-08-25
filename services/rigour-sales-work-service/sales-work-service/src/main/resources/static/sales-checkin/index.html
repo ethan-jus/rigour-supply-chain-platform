@@ -122,7 +122,7 @@
 
                 <div class="field-grid field-grid--two identity-grid">
                     <label class="field">
-                        <span class="field__label">城市 <span class="required-mark">*</span></span>
+                        <span class="field__label">本次拜访城市 <span class="required-mark">*</span></span>
                         <select id="visit-city" name="city" required>
                             <option value="">请选择城市</option>
                         </select>
@@ -334,10 +334,7 @@
                             <strong>现场录音</strong>
                             <span>选填；录音前请征得在场人员同意，超长录音建议使用系统录音后上传</span>
                         </div>
-                        <span id="audio-uploaded-badge" class="mini-badge" hidden>草稿已上传</span>
-                        <button id="delete-uploaded-audio-button" class="text-button uploaded-media-delete" type="button" hidden>
-                            删除已上传录音
-                        </button>
+                        <span id="audio-uploaded-badge" class="mini-badge" hidden></span>
                     </div>
                     <div class="recorder-controls">
                         <button id="record-audio-button" class="record-button" type="button">
@@ -349,18 +346,25 @@
                     <div id="recording-meter" class="recording-meter" hidden>
                         <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
                     </div>
-                    <div id="audio-preview-card" class="audio-preview" hidden>
-                        <audio id="audio-preview" controls preload="metadata"></audio>
-                        <div>
-                            <strong id="audio-file-name"></strong>
-                            <span id="audio-file-size"></span>
+                    <div id="audio-preview-list" class="audio-preview-list" aria-live="polite"></div>
+                    <template id="audio-preview-template">
+                        <div class="audio-preview" data-audio-segment>
+                            <audio controls preload="metadata"></audio>
+                            <div class="audio-preview__meta">
+                                <strong data-audio-name></strong>
+                                <span data-audio-size></span>
+                                <small data-audio-status></small>
+                            </div>
+                            <div class="audio-preview__actions">
+                                <button class="text-button audio-retry-button" data-audio-retry type="button" hidden>重试</button>
+                                <button class="text-button file-remove-button" data-audio-remove type="button">移除</button>
+                            </div>
                         </div>
-                        <button id="remove-audio-button" class="text-button file-remove-button" type="button">移除</button>
-                    </div>
+                    </template>
                     <div class="fallback-picker">
                         <span>无法录音？</span>
-                        <label for="audio-file">选择已有音频文件</label>
-                        <input id="audio-file" type="file">
+                        <label id="audio-file-label" for="audio-file">选择已有音频文件（可多选）</label>
+                        <input id="audio-file" type="file" multiple>
                     </div>
                     <p id="recorder-help" class="field__help">可选择 M4A、MP3、WAV、AAC、AMR、OGG 或 WebM；服务端会核验常见文件特征。</p>
                     <span class="field__error" data-error-for="audio-file"></span>
@@ -428,7 +432,7 @@
                 </div>
                 <div class="field-grid field-grid--two store-owner-fields">
                     <label class="field">
-                        <span class="field__label">城市 <span class="required-mark">*</span></span>
+                        <span class="field__label">本次拜访城市 <span class="required-mark">*</span></span>
                         <select id="store-city" required>
                             <option value="">请选择城市</option>
                         </select>

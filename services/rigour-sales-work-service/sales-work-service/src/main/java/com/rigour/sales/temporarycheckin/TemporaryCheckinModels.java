@@ -116,9 +116,26 @@ public final class TemporaryCheckinModels {
 
     public record DraftSubmissionView(UUID id, String status, Instant createdAt) { }
 
-    public record MediaUploadView(UUID id, String kind, String status, String sha256, long sizeBytes) { }
+    public record MediaUploadView(
+            UUID id,
+            String kind,
+            String status,
+            String sha256,
+            long sizeBytes,
+            UUID segmentId,
+            String originalFilename) {
 
-    public record MediaDeleteView(UUID id, String kind, String status) { }
+        public MediaUploadView(UUID id, String kind, String status, String sha256, long sizeBytes) {
+            this(id, kind, status, sha256, sizeBytes, null, null);
+        }
+    }
+
+    public record MediaDeleteView(UUID id, String kind, String status, UUID segmentId) {
+
+        public MediaDeleteView(UUID id, String kind, String status) {
+            this(id, kind, status, null);
+        }
+    }
 
     public record CompletedSubmissionView(UUID id, String status, Instant submittedAt) { }
 

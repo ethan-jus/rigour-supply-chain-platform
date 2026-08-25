@@ -594,6 +594,33 @@
         return cleanText(item && (item.id || item.submissionId));
     }
 
+    function normalizeAudioSegments(item) {
+        if (Array.isArray(item?.audioSegments)) {
+            return item.audioSegments
+                .filter((segment) => isUuid(segment?.segmentId))
+                .map((segment) => ({
+                    segmentId: cleanText(segment.segmentId),
+                    originalFilename: cleanText(segment.originalFilename) || "拜访录音",
+                    sizeBytes: numberValue(segment.sizeBytes, 0),
+                    contentType: cleanText(segment.contentType),
+                    uploadedAt: segment.uploadedAt || null,
+                    available: segment.available === true,
+                    deletedAt: segment.deletedAt || null
+                }));
+        }
+        const legacyId = submissionId(item);
+        if (!isUuid(legacyId) || (item?.audioAvailable !== true && !item?.audioDeletedAt)) return [];
+        return [{
+            segmentId: legacyId,
+            originalFilename: "历史拜访录音",
+            sizeBytes: 0,
+            contentType: "",
+            uploadedAt: null,
+            available: item.audioAvailable === true,
+            deletedAt: item.audioDeletedAt || null
+        }];
+    }
+
     function locationAddress(item) {
         return cleanText(item.locationAddress || item.formattedAddress || item.readableAddress
             || (item.location && item.location.address));
@@ -635,7 +662,11 @@
         root.replaceChildren();
         renderEvidenceState(root, "打卡照", item.storefrontPhotoAvailable, item.storefrontPhotoDeletedAt, true);
         renderEvidenceState(root, "企微截图", item.wechatScreenshotAvailable, item.wechatScreenshotDeletedAt, false);
-        renderEvidenceState(root, "录音", item.audioAvailable, item.audioDeletedAt, false);
+        const audioSegments = normalizeAudioSegments(item);
+        const activeAudioCount = audioSegments.filter((segment) => segment.available).length;
+        const deletedAudioCount = audioSegments.filter((segment) => segment.deletedAt).length;
+        if (activeAudioCount) appendChip(root, `录音${activeAudioCount}段`, "success");
+        if (deletedAudioCount) appendChip(root, `录音${deletedAudioCount}段已删`, "muted");
         if (hasAudioIntelligence(item)) {
             const status = cleanText(item.transcriptionStatus).toUpperCase();
             const tone = isFailedTranscription(status) ? "danger"
@@ -919,8 +950,9 @@
         } else if (item.wechatScreenshotDeletedAt) {
             root.appendChild(createDeletedMediaCard("wechat-screenshot", "企微截图", item.wechatScreenshotDeletedAt));
         }
-        if (item.audioAvailable === true || item.audioDeletedAt || hasAudioIntelligence(item)) {
-            root.appendChild(createAudioMedia(id, item));
+        const audioSegments = normalizeAudioSegments(item);
+        if (audioSegments.length || hasAudioIntelligence(item)) {
+            root.appendChild(createAudioMedia(id, item, audioSegments));
         }
         if (!root.hasChildNodes()) {
             renderEmptyMedia(root);
@@ -975,41 +1007,73 @@
         return card;
     }
 
-    function createAudioMedia(id, item) {
+    function createAudioMedia(id, item, audioSegments) {
         const card = document.createElement("section");
         card.className = "media-card media-card--audio";
         card.dataset.mediaId = id;
         card.dataset.mediaKind = "audio";
         const title = document.createElement("strong");
         title.className = "media-title";
-        title.textContent = "拜访录音";
+        const activeCount = audioSegments.filter((segment) => segment.available).length;
+        title.textContent = audioSegments.length ? `拜访录音（${activeCount}段可用）` : "拜访录音";
 
         card.appendChild(title);
-        if (item.audioAvailable === true) {
+        if (audioSegments.length) {
+            const list = document.createElement("div");
+            list.className = "media-audio-list";
+            audioSegments.forEach((segment, index) => {
+                list.appendChild(createAudioSegment(id, segment, index));
+            });
+            card.appendChild(list);
+        }
+
+        card.appendChild(createAudioIntelligence(id, item));
+        return card;
+    }
+
+    function createAudioSegment(submissionId, segment, index) {
+        const section = document.createElement("section");
+        section.className = "media-audio-segment";
+        section.dataset.mediaId = submissionId;
+        section.dataset.mediaKind = "audio";
+        section.dataset.segmentId = segment.segmentId;
+        const heading = document.createElement("div");
+        heading.className = "media-audio-segment__heading";
+        const name = document.createElement("strong");
+        name.textContent = `第${index + 1}段 · ${segment.originalFilename}`;
+        const detail = document.createElement("span");
+        const metadata = [];
+        if (segment.sizeBytes > 0) metadata.push(formatBytes(segment.sizeBytes));
+        if (segment.uploadedAt) metadata.push(formatFullDateTime(segment.uploadedAt));
+        detail.textContent = metadata.join(" · ") || "已记录";
+        heading.append(name, detail);
+        section.appendChild(heading);
+
+        const label = `第${index + 1}段拜访录音`;
+        if (segment.available) {
             const audio = document.createElement("audio");
             audio.className = "media-audio";
             audio.controls = true;
             audio.preload = "none";
-            audio.src = mediaUrl(id, "audio");
+            audio.src = mediaUrl(submissionId, "audio", { segmentId: segment.segmentId });
             audio.setAttribute("controlslist", "nodownload");
-            audio.setAttribute("aria-label", "播放拜访录音");
+            audio.setAttribute("aria-label", `播放${label}`);
             audio.addEventListener("play", () => {
                 document.querySelectorAll("audio.media-audio").forEach((other) => {
                     if (other !== audio) other.pause();
                 });
             });
-
             const hint = document.createElement("span");
             hint.className = "media-audio-hint";
             hint.textContent = "点击播放，可拖动进度";
-            card.append(audio, hint, createMediaActions(
-                id, "audio", "拜访录音", mediaUrl(id, "audio", { download: true })));
-        } else if (item.audioDeletedAt) {
-            card.appendChild(createDeletedMediaNotice("拜访录音", item.audioDeletedAt));
+            section.append(audio, hint, createMediaActions(
+                submissionId, "audio", label,
+                mediaUrl(submissionId, "audio", { segmentId: segment.segmentId, download: true }),
+                segment.segmentId));
+        } else if (segment.deletedAt) {
+            section.appendChild(createDeletedMediaNotice(label, segment.deletedAt));
         }
-
-        card.appendChild(createAudioIntelligence(id, item));
-        return card;
+        return section;
     }
 
     function createDeletedMediaCard(kind, label, deletedAt) {
@@ -1034,7 +1098,7 @@
         return notice;
     }
 
-    function createMediaActions(id, kind, label, downloadUrl) {
+    function createMediaActions(id, kind, label, downloadUrl, segmentId) {
         const actions = document.createElement("div");
         actions.className = "media-actions";
         actions.appendChild(createDownloadLink(downloadUrl, `下载${label}`));
@@ -1043,7 +1107,7 @@
             remove.className = "media-delete";
             remove.type = "button";
             remove.textContent = "删除";
-            remove.addEventListener("click", () => openDeleteDialog(id, kind, label, remove));
+            remove.addEventListener("click", () => openDeleteDialog(id, kind, label, remove, segmentId));
             actions.appendChild(remove);
         }
         return actions;
@@ -1108,7 +1172,7 @@
                 technical.append(summary, codeText);
                 failure.appendChild(technical);
             }
-            if (item.audioAvailable === true) {
+            if (normalizeAudioSegments(item).some((segment) => segment.available)) {
                 const retry = document.createElement("button");
                 retry.className = "retry-transcription";
                 retry.type = "button";
@@ -1212,7 +1276,9 @@
     }
 
     function mediaUrl(id, kind, options = {}) {
-        const base = `${MEDIA_PATH}/${encodeURIComponent(id)}/media/${kind}`;
+        const segmentPath = kind === "audio" && options.segmentId
+            ? `/${encodeURIComponent(options.segmentId)}` : "";
+        const base = `${MEDIA_PATH}/${encodeURIComponent(id)}/media/${kind}${segmentPath}`;
         if (options.thumbnail) return `${base}/thumbnail`;
         return options.download ? `${base}?download=true` : base;
     }
@@ -1257,9 +1323,10 @@
         state.previewIdentity = null;
     }
 
-    function openDeleteDialog(id, kind, label, trigger) {
+    function openDeleteDialog(id, kind, label, trigger, segmentId) {
         if (!state.scope.allCities || state.actionBusy || !isUuid(id)) return;
-        state.pendingDelete = { id, kind, label, trigger };
+        if (kind === "audio" && !isUuid(segmentId)) return;
+        state.pendingDelete = { id, kind, label, trigger, segmentId: segmentId || null };
         $("#delete-media-description").textContent = `即将删除“${label}”。请再次核对当前拜访记录。`;
         $("#delete-media-reason").value = "";
         $("#delete-media-acknowledge").checked = false;
@@ -1319,11 +1386,13 @@
         $("#delete-media-error").hidden = true;
         let deleted = false;
         try {
+            const segmentPath = pending.kind === "audio"
+                ? `/${encodeURIComponent(pending.segmentId)}` : "";
             await requestAction(
-                `${API_BASE}/submissions/${encodeURIComponent(pending.id)}/media/${pending.kind}`,
+                `${API_BASE}/submissions/${encodeURIComponent(pending.id)}/media/${pending.kind}${segmentPath}`,
                 { method: "DELETE", body: { reason } });
             deleted = true;
-            stopDeletedMedia(pending.id, pending.kind);
+            stopDeletedMedia(pending.id, pending.kind, pending.segmentId);
             if (state.previewIdentity && state.previewIdentity.id === pending.id
                     && state.previewIdentity.kind === pending.kind) {
                 closeImagePreview();
@@ -1351,8 +1420,11 @@
         }
     }
 
-    function stopDeletedMedia(id, kind) {
-        document.querySelectorAll(`[data-media-id="${id}"][data-media-kind="${kind}"] audio`).forEach((audio) => {
+    function stopDeletedMedia(id, kind, segmentId) {
+        const selector = segmentId
+            ? `[data-media-id="${id}"][data-media-kind="${kind}"][data-segment-id="${segmentId}"] audio`
+            : `[data-media-id="${id}"][data-media-kind="${kind}"] audio`;
+        document.querySelectorAll(selector).forEach((audio) => {
             audio.pause();
             audio.removeAttribute("src");
             audio.load();

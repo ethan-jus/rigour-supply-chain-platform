@@ -116,6 +116,17 @@ public class TemporaryCheckinController {
                 TemporaryCheckinRequestFacts.from(servletRequest));
     }
 
+    @PutMapping(path = "/submissions/{id}/media/audio/{segmentId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public MediaUploadView uploadAudioSegment(
+            @PathVariable("id") UUID submissionId,
+            @PathVariable("segmentId") UUID segmentId,
+            @RequestHeader(name = "X-Submission-Key", required = false) String submissionKey,
+            @RequestPart("file") MultipartFile file,
+            HttpServletRequest servletRequest) {
+        return service.uploadAudioSegment(submissionId, segmentId, submissionKey, file,
+                TemporaryCheckinRequestFacts.from(servletRequest));
+    }
+
     @DeleteMapping("/submissions/{id}/media/{kind}")
     public MediaDeleteView deleteMedia(
             @PathVariable("id") UUID submissionId,
@@ -123,6 +134,16 @@ public class TemporaryCheckinController {
             @RequestHeader(name = "X-Submission-Key", required = false) String submissionKey,
             HttpServletRequest servletRequest) {
         return service.deleteDraftMedia(submissionId, kind, submissionKey,
+                TemporaryCheckinRequestFacts.from(servletRequest));
+    }
+
+    @DeleteMapping("/submissions/{id}/media/audio/{segmentId}")
+    public MediaDeleteView deleteAudioSegment(
+            @PathVariable("id") UUID submissionId,
+            @PathVariable("segmentId") UUID segmentId,
+            @RequestHeader(name = "X-Submission-Key", required = false) String submissionKey,
+            HttpServletRequest servletRequest) {
+        return service.deleteDraftAudioSegment(submissionId, segmentId, submissionKey,
                 TemporaryCheckinRequestFacts.from(servletRequest));
     }
 

@@ -123,6 +123,33 @@ public class TemporaryCheckinAdminController {
         return response.body(new InputStreamResource(content.open()));
     }
 
+    @GetMapping("/submissions/{id}/media/audio/{segmentId}")
+    public ResponseEntity<?> audioSegment(
+            HttpServletRequest request,
+            @org.springframework.web.bind.annotation.RequestHeader(
+                    name = HttpHeaders.RANGE, required = false) String rangeHeader,
+            @PathVariable("id") UUID submissionId,
+            @PathVariable("segmentId") UUID segmentId,
+            @RequestParam(name = "download", defaultValue = "false") boolean download) {
+        AdminScope scope = accessPolicy.requireScope(request);
+        TemporaryCheckinService.AdminMedia content =
+                service.openAdminAudioSegment(scope, submissionId, segmentId);
+        ContentDisposition disposition = ContentDisposition.builder(download ? "attachment" : "inline")
+                .filename(content.originalFilename(), StandardCharsets.UTF_8)
+                .build();
+        if (rangeHeader != null && !rangeHeader.isBlank()) {
+            return rangedResponse(content, rangeHeader, disposition);
+        }
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok()
+                .contentType(safeMediaType(content.contentType()))
+                .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
+                .header("X-Content-Type-Options", "nosniff")
+                .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString());
+        if (content.sizeBytes() > 0) response.contentLength(content.sizeBytes());
+        return response.body(new InputStreamResource(content.open()));
+    }
+
     @DeleteMapping("/api/v1/submissions/{id}/media/{kind}")
     public DeleteMediaView deleteMedia(
             HttpServletRequest servletRequest,
@@ -131,6 +158,17 @@ public class TemporaryCheckinAdminController {
             @RequestBody(required = false) DeleteMediaRequest request) {
         AdminScope scope = accessPolicy.requireScope(servletRequest);
         return service.deleteAdminMedia(scope, submissionId, kind, request == null ? null : request.reason());
+    }
+
+    @DeleteMapping("/api/v1/submissions/{id}/media/audio/{segmentId}")
+    public DeleteMediaView deleteAudioSegment(
+            HttpServletRequest servletRequest,
+            @PathVariable("id") UUID submissionId,
+            @PathVariable("segmentId") UUID segmentId,
+            @RequestBody(required = false) DeleteMediaRequest request) {
+        AdminScope scope = accessPolicy.requireScope(servletRequest);
+        return service.deleteAdminAudioSegment(
+                scope, submissionId, segmentId, request == null ? null : request.reason());
     }
 
     @PostMapping("/api/v1/submissions/{id}/transcription")

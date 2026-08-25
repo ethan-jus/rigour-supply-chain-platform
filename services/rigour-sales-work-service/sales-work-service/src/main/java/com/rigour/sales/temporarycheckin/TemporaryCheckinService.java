@@ -2,6 +2,7 @@ package com.rigour.sales.temporarycheckin;
 
 import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminAccessPolicy.AdminScope;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.AdminOptionsResponse;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.AdminAudioSegmentView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.AdminMediaStorageStats;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.DeleteMediaView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminModels.TranscriptionView;
@@ -93,6 +94,7 @@ public class TemporaryCheckinService {
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int MAX_EXPORT_ROWS = 20_000;
     public static final String PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
+    private static final String HEADQUARTERS_CITY = "总部";
     private static final int NEARBY_LIMIT = 20;
     private static final Map<String, String> CITY_ADCODE_PREFIXES = Map.of(
             "北京", "11",
@@ -103,6 +105,7 @@ public class TemporaryCheckinService {
             "西安", "6101");
     private static final Set<String> SUBMISSION_STATUSES = Set.of("DRAFT", "SUBMITTED");
     private static final TypeReference<List<String>> STRING_LIST_TYPE = new TypeReference<>() { };
+    private static final TypeReference<List<AudioSegment>> AUDIO_SEGMENT_LIST_TYPE = new TypeReference<>() { };
 
     private final TemporaryCheckinRepository repository;
     private final TemporaryCheckinAdminAuthRepository adminAuthRepository;
@@ -302,9 +305,7 @@ public class TemporaryCheckinService {
         AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
         NormalizedStore normalized = normalizeStore(request);
         var salesperson = identity.salesperson();
-        if (!normalized.city().equals(salesperson.city())) {
-            throw TemporaryCheckinException.badRequest("销售与选择城市不一致");
-        }
+        requireSalespersonCanWorkInCity(salesperson, normalized.city());
         OptionalStore existing = existingStore(request.clientStoreId(), normalized);
         if (existing.present()) return eligibleStoreView(existing.row());
         requireAcceptableCurrentLocation(normalized.location());
@@ -386,9 +387,7 @@ public class TemporaryCheckinService {
                 requiredMultiline(request.visitResult(), "visitResult", 2000),
                 normalizeLocation(request.location()), true, request.privacyNoticeVersion());
         var salesperson = identity.salesperson();
-        if (!city.equals(salesperson.city())) {
-            throw TemporaryCheckinException.badRequest("销售与选择城市不一致");
-        }
+        requireSalespersonCanWorkInCity(salesperson, city);
         SubmissionRow existing = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId())
                 .orElse(null);
         if (existing != null) {
@@ -450,6 +449,10 @@ public class TemporaryCheckinService {
             TemporaryCheckinRequestFacts requestFacts) {
         if (submissionId == null) throw TemporaryCheckinException.badRequest("submissionId不能为空");
         MediaKind kind = MediaKind.parse(rawKind);
+        if (kind == MediaKind.AUDIO) {
+            return uploadAudioSegmentLocked(
+                    submissionId, submissionId, submissionKey, file, requestFacts);
+        }
         SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
                 .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
         salesIdentityService.requireSubmission(
@@ -497,6 +500,88 @@ public class TemporaryCheckinService {
                 validated.sizeBytes());
     }
 
+    @Transactional
+    public MediaUploadView uploadAudioSegment(
+            UUID submissionId, UUID segmentId, String submissionKey, MultipartFile file,
+            TemporaryCheckinRequestFacts requestFacts) {
+        return uploadAudioSegmentLocked(submissionId, segmentId, submissionKey, file, requestFacts);
+    }
+
+    private MediaUploadView uploadAudioSegmentLocked(
+            UUID submissionId, UUID segmentId, String submissionKey, MultipartFile file,
+            TemporaryCheckinRequestFacts requestFacts) {
+        if (submissionId == null) throw TemporaryCheckinException.badRequest("submissionId不能为空");
+        if (segmentId == null) throw TemporaryCheckinException.badRequest("segmentId不能为空");
+        SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
+                .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
+        salesIdentityService.requireSubmission(
+                submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
+        requireMatchingKey(submission, submissionKey);
+        if (!"DRAFT".equals(submission.status())) {
+            throw TemporaryCheckinException.conflict("已提交的打卡不允许增加录音");
+        }
+        ValidatedMedia validated = validateMedia(MediaKind.AUDIO, file);
+        List<AudioSegment> segments = new ArrayList<>(audioSegments(submission));
+        AudioSegment sameId = segments.stream()
+                .filter(item -> segmentId.equals(item.segmentId()))
+                .findFirst().orElse(null);
+        if (sameId != null) {
+            if (sameId.deletedAt() == null && validated.sha256().equals(sameId.sha256())) {
+                return audioUploadView(submissionId, sameId);
+            }
+            throw TemporaryCheckinException.conflict("同一录音编号对应的文件不一致，请重新选择录音");
+        }
+        AudioSegment sameContent = segments.stream()
+                .filter(item -> item.deletedAt() == null && validated.sha256().equals(item.sha256()))
+                .findFirst().orElse(null);
+        if (sameContent != null) {
+            throw TemporaryCheckinException.conflict("相同录音已经添加，请勿重复选择");
+        }
+        long activeCount = segments.stream().filter(AudioSegment::available).count();
+        if (activeCount >= properties.getMaxAudioSegmentsPerSubmission()) {
+            throw TemporaryCheckinException.badRequest("本次拜访录音分段过多，请删除无效片段后重试");
+        }
+        long activeBytes = segments.stream().filter(AudioSegment::available)
+                .mapToLong(AudioSegment::sizeBytes).sum();
+        if (validated.sizeBytes() > properties.getMaxAudioTotalBytesPerSubmission() - activeBytes) {
+            throw TemporaryCheckinException.badRequest("本次拜访录音总量过大，请删除无效片段后重试");
+        }
+
+        String objectKey = tenantId + "/temporary-sales-checkin/" + submissionId
+                + "/recordings/visit/segments/" + segmentId + "/"
+                + validated.sha256() + validated.extension();
+        Instant now = clock.instant();
+        try (InputStream content = validated.file().getInputStream()) {
+            fileStorage.put(new FileMetadata(tenantId.toString(), objectKey, validated.originalFilename(),
+                    validated.contentType(), validated.sizeBytes(), validated.sha256(),
+                    OffsetDateTime.ofInstant(now, java.time.ZoneOffset.UTC)), content);
+        } catch (IOException exception) {
+            throw TemporaryCheckinException.storage("录音文件读取失败，请重新选择后上传");
+        } catch (RuntimeException exception) {
+            throw TemporaryCheckinException.storage("录音文件存储失败，请稍后重试");
+        }
+        AudioSegment added = new AudioSegment(segmentId, objectKey, validated.contentType(),
+                validated.sizeBytes(), validated.sha256(), validated.originalFilename(), now,
+                null, null, null);
+        segments.add(added);
+        int updated;
+        try {
+            updated = repository.updateDraftAudioManifest(
+                    tenantId, submissionId, writeAudioSegments(segments),
+                    activeAudioCount(segments), activeAudioBytes(segments),
+                    audioProjection(segments), now);
+        } catch (RuntimeException exception) {
+            cleanupUnreferencedObject(objectKey, submissionId, MediaKind.AUDIO, "数据库更新异常");
+            throw exception;
+        }
+        if (updated != 1) {
+            cleanupUnreferencedObject(objectKey, submissionId, MediaKind.AUDIO, "数据库未接受更新");
+            throw TemporaryCheckinException.conflict("草稿状态已变化，请刷新后重试");
+        }
+        registerMediaObjectLifecycle(submissionId, MediaKind.AUDIO, objectKey, null);
+        return audioUploadView(submissionId, added);
+    }
+
     private void registerMediaObjectLifecycle(
             UUID submissionId, MediaKind kind, String newObjectKey, String previousObjectKey) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
@@ -538,6 +623,10 @@ public class TemporaryCheckinService {
             TemporaryCheckinRequestFacts requestFacts) {
         if (submissionId == null) throw TemporaryCheckinException.badRequest("submissionId不能为空");
         MediaKind kind = MediaKind.parse(rawKind);
+        if (kind == MediaKind.AUDIO) {
+            return deleteDraftAudioSegmentLocked(
+                    submissionId, submissionId, submissionKey, requestFacts);
+        }
         SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
                 .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
         salesIdentityService.requireSubmission(
@@ -561,6 +650,49 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.conflict("媒体引用清理冲突，请立即联系管理员核对");
         }
         return new MediaDeleteView(submissionId, kind.pathValue, "DELETED");
+    }
+
+    @Transactional
+    public MediaDeleteView deleteDraftAudioSegment(
+            UUID submissionId, UUID segmentId, String submissionKey,
+            TemporaryCheckinRequestFacts requestFacts) {
+        return deleteDraftAudioSegmentLocked(submissionId, segmentId, submissionKey, requestFacts);
+    }
+
+    private MediaDeleteView deleteDraftAudioSegmentLocked(
+            UUID submissionId, UUID segmentId, String submissionKey,
+            TemporaryCheckinRequestFacts requestFacts) {
+        if (submissionId == null) throw TemporaryCheckinException.badRequest("submissionId不能为空");
+        if (segmentId == null) throw TemporaryCheckinException.badRequest("segmentId不能为空");
+        SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
+                .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
+        salesIdentityService.requireSubmission(
+                submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
+        requireMatchingKey(submission, submissionKey);
+        if (!"DRAFT".equals(submission.status())) {
+            throw TemporaryCheckinException.conflict("已提交的打卡不允许删除录音");
+        }
+        List<AudioSegment> segments = new ArrayList<>(audioSegments(submission));
+        AudioSegment current = segments.stream()
+                .filter(item -> segmentId.equals(item.segmentId()) && item.deletedAt() == null)
+                .findFirst().orElse(null);
+        if (current == null) {
+            return new MediaDeleteView(submissionId, MediaKind.AUDIO.pathValue, "DELETED", segmentId);
+        }
+        try {
+            fileStorage.delete(tenantId.toString(), current.objectKey());
+        } catch (RuntimeException exception) {
+            throw TemporaryCheckinException.storage("录音文件物理删除失败，请稍后重试");
+        }
+        segments.removeIf(item -> segmentId.equals(item.segmentId()));
+        Instant now = clock.instant();
+        int updated = repository.updateDraftAudioManifest(
+                tenantId, submissionId, writeAudioSegments(segments),
+                activeAudioCount(segments), activeAudioBytes(segments), audioProjection(segments), now);
+        if (updated != 1) {
+            throw TemporaryCheckinException.conflict("录音引用清理冲突，请立即联系管理员核对");
+        }
+        return new MediaDeleteView(submissionId, MediaKind.AUDIO.pathValue, "DELETED", segmentId);
     }
 
     @Transactional
@@ -612,6 +744,9 @@ public class TemporaryCheckinService {
         SubmissionRow submission = requireSubmission(submissionId);
         if (!hasMedia(submission.audio())) {
             throw TemporaryCheckinException.notFound("录音不存在或已删除");
+        }
+        if (submission.audioActiveSegmentCount() != 1) {
+            throw TemporaryCheckinException.conflict("多段录音转写尚未启用");
         }
         if (!PRIVACY_NOTICE_VERSION.equals(submission.privacyNoticeVersion())) {
             throw TemporaryCheckinException.conflict("该记录未确认当前录音转写隐私提示，不能发起转写");
@@ -696,7 +831,7 @@ public class TemporaryCheckinService {
                     value(row.identityMethod()), value(row.submittedIpMasked()), value(row.userAgentSummary()),
                     value(row.riskLevel()), value(String.join("|", safeRiskFlags(row.riskFlagsJson()))),
                     value(row.storefrontPhotoFilename()), value(row.wechatScreenshotFilename()),
-                    value(row.audioFilename()), value(row.transcriptionStatus()), value(row.transcript()),
+                    value(activeAudioFilenameForExport(row)), value(row.transcriptionStatus()), value(row.transcript()),
                     value(row.summaryStatus()), value(row.summaryText()), value(row.createdAt()),
                     value(row.submittedAt())));
         }
@@ -706,6 +841,12 @@ public class TemporaryCheckinService {
     public AdminMedia openAdminMedia(AdminScope scope, UUID submissionId, String rawKind) {
         String scopedCity = requireConfiguredScope(scope);
         MediaKind kind = MediaKind.parse(rawKind);
+        if (kind == MediaKind.AUDIO) {
+            SubmissionRow submission = requireAdminSubmission(submissionId, scopedCity, false);
+            AudioSegment first = audioSegments(submission).stream().filter(AudioSegment::available)
+                    .findFirst().orElseThrow(() -> TemporaryCheckinException.notFound("媒体文件不存在"));
+            return openAudioSegment(first);
+        }
         MediaReference media = repository.findMedia(tenantId, submissionId, kind.columnPrefix, scopedCity)
                 .orElseThrow(() -> TemporaryCheckinException.notFound("媒体文件不存在"));
         Supplier<InputStream> opener = () -> {
@@ -719,6 +860,28 @@ public class TemporaryCheckinService {
                 media.contentType(), media.originalFilename());
     }
 
+    public AdminMedia openAdminAudioSegment(
+            AdminScope scope, UUID submissionId, UUID segmentId) {
+        String scopedCity = requireConfiguredScope(scope);
+        SubmissionRow submission = requireAdminSubmission(submissionId, scopedCity, false);
+        AudioSegment segment = audioSegments(submission).stream()
+                .filter(item -> segmentId.equals(item.segmentId()) && item.available())
+                .findFirst().orElseThrow(() -> TemporaryCheckinException.notFound("录音文件不存在"));
+        return openAudioSegment(segment);
+    }
+
+    private AdminMedia openAudioSegment(AudioSegment segment) {
+        Supplier<InputStream> opener = () -> {
+            try {
+                return fileStorage.open(tenantId.toString(), segment.objectKey());
+            } catch (RuntimeException exception) {
+                throw TemporaryCheckinException.storage("媒体文件读取失败");
+            }
+        };
+        return new AdminMedia(opener, segment.sizeBytes(), segment.contentType(), segment.originalFilename());
+    }
+
+    @Transactional
     public DeleteMediaView deleteAdminMedia(
             AdminScope scope, UUID submissionId, String rawKind, String rawReason) {
         requireConfiguredScope(scope);
@@ -726,6 +889,15 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.adminForbidden("只有总管理员可以物理删除媒体文件");
         }
         MediaKind kind = MediaKind.parse(rawKind);
+        if (kind == MediaKind.AUDIO) {
+            SubmissionRow submission = requireAdminSubmission(submissionId, null, true);
+            AudioSegment first = audioSegments(submission).stream().filter(AudioSegment::available)
+                    .findFirst().orElse(null);
+            if (first == null) {
+                throw TemporaryCheckinException.notFound("媒体文件不存在");
+            }
+            return deleteAdminAudioSegmentLocked(scope, submission, first.segmentId(), rawReason);
+        }
         String reason = requiredMultiline(rawReason, "reason", 512);
         MediaReference media = repository.findMedia(tenantId, submissionId, kind.columnPrefix, null)
                 .orElse(null);
@@ -757,8 +929,66 @@ public class TemporaryCheckinService {
         return new DeleteMediaView(submissionId, kind.pathValue, "DELETED", deletedAt);
     }
 
+    @Transactional
+    public DeleteMediaView deleteAdminAudioSegment(
+            AdminScope scope, UUID submissionId, UUID segmentId, String rawReason) {
+        requireConfiguredScope(scope);
+        if (!scope.allCities()) {
+            throw TemporaryCheckinException.adminForbidden("只有总管理员可以物理删除媒体文件");
+        }
+        SubmissionRow submission = requireAdminSubmission(submissionId, null, true);
+        return deleteAdminAudioSegmentLocked(scope, submission, segmentId, rawReason);
+    }
+
+    private DeleteMediaView deleteAdminAudioSegmentLocked(
+            AdminScope scope, SubmissionRow submission, UUID segmentId, String rawReason) {
+        String reason = requiredMultiline(rawReason, "reason", 512);
+        List<AudioSegment> segments = new ArrayList<>(audioSegments(submission));
+        int index = -1;
+        for (int candidate = 0; candidate < segments.size(); candidate++) {
+            if (segmentId.equals(segments.get(candidate).segmentId())) {
+                index = candidate;
+                break;
+            }
+        }
+        if (index < 0) throw TemporaryCheckinException.notFound("录音文件不存在");
+        AudioSegment current = segments.get(index);
+        if (!current.available()) {
+            return new DeleteMediaView(submission.id(), MediaKind.AUDIO.pathValue,
+                    "DELETED", current.deletedAt(), segmentId);
+        }
+        try {
+            fileStorage.delete(tenantId.toString(), current.objectKey());
+        } catch (RuntimeException exception) {
+            throw TemporaryCheckinException.storage("COS媒体物理删除失败，数据库未标记删除，请稍后重试");
+        }
+        Instant deletedAt = clock.instant();
+        segments.set(index, current.deleted(deletedAt, scope.username(), reason));
+        int updated = repository.updateAdminAudioManifest(
+                tenantId, submission.id(), writeAudioSegments(segments),
+                activeAudioCount(segments), activeAudioBytes(segments), audioProjection(segments),
+                scope.username(), reason, deletedAt);
+        if (updated != 1) {
+            throw TemporaryCheckinException.conflict("录音已删除但审计状态更新冲突，请立即联系管理员核对");
+        }
+        return new DeleteMediaView(submission.id(), MediaKind.AUDIO.pathValue,
+                "DELETED", deletedAt, segmentId);
+    }
+
+    private SubmissionRow requireAdminSubmission(UUID submissionId, String scopedCity, boolean forUpdate) {
+        SubmissionRow submission = (forUpdate
+                ? repository.findSubmissionForUpdate(tenantId, submissionId)
+                : repository.findSubmission(tenantId, submissionId))
+                .orElseThrow(() -> TemporaryCheckinException.notFound("打卡记录不存在"));
+        if (scopedCity != null && !scopedCity.equals(submission.city())) {
+            throw TemporaryCheckinException.notFound("打卡记录不存在");
+        }
+        return submission;
+    }
+
     private void queueTranscriptionIfEligible(SubmissionRow submission) {
-        if (aiEnabled && "SUBMITTED".equals(submission.status()) && hasMedia(submission.audio())
+        if (aiEnabled && submission.audioActiveSegmentCount() == 1
+                && "SUBMITTED".equals(submission.status()) && hasMedia(submission.audio())
                 && PRIVACY_NOTICE_VERSION.equals(submission.privacyNoticeVersion())) {
             repository.requestTranscription(
                     tenantId, submission.id(), PRIVACY_NOTICE_VERSION, clock.instant());
@@ -1127,10 +1357,16 @@ public class TemporaryCheckinService {
                 row.identityMethod(), row.submittedIpMasked(), row.userAgentSummary(), row.riskLevel(),
                 safeRiskFlags(row.riskFlagsJson()),
                 row.storefrontPhotoAvailable(), row.wechatScreenshotAvailable(), row.audioAvailable(),
+                adminAudioSegments(row),
                 row.storefrontPhotoDeletedAt(), row.wechatScreenshotDeletedAt(), row.audioDeletedAt(),
                 row.transcriptionStatus(), row.transcript(), row.transcriptionErrorCode(),
                 row.summaryStatus(), row.summaryText(), row.summaryErrorCode(),
                 row.createdAt(), row.submittedAt());
+    }
+
+    private String activeAudioFilenameForExport(ExportRow row) {
+        String filenames = activeAudioFilenames(readAudioSegments(row.audioSegmentsJson()));
+        return filenames.isBlank() ? row.audioFilename() : filenames;
     }
 
     private List<String> safeRiskFlags(String json) {
@@ -1313,8 +1549,22 @@ public class TemporaryCheckinService {
     private TemporaryCheckinRepository.SalespersonRow requireSalesperson(UUID id, String city) {
         var salesperson = repository.findSalesperson(tenantId, id)
                 .orElseThrow(() -> TemporaryCheckinException.notFound("销售不存在或已停用"));
-        if (!city.equals(salesperson.city())) throw TemporaryCheckinException.badRequest("销售与选择城市不一致");
+        requireSalespersonCanWorkInCity(salesperson, city);
         return salesperson;
+    }
+
+    /**
+     * “总部”是人员归属而不是可打卡的地理城市。总部人员可选择任一启用的实际城市，
+     * 但定位解析、门店所属城市和现场距离门禁仍按该实际城市完整校验。
+     */
+    private void requireSalespersonCanWorkInCity(
+            TemporaryCheckinRepository.SalespersonRow salesperson, String workCity) {
+        boolean allowed = HEADQUARTERS_CITY.equals(salesperson.city())
+                ? workCity != null && !HEADQUARTERS_CITY.equals(workCity) && activeCities().contains(workCity)
+                : Objects.equals(workCity, salesperson.city());
+        if (!allowed) {
+            throw TemporaryCheckinException.badRequest("销售与选择城市不一致");
+        }
     }
 
     private SubmissionRow requireSubmission(UUID id) {
@@ -1500,6 +1750,86 @@ public class TemporaryCheckinService {
         } catch (RuntimeException exception) {
             throw new IllegalStateException("临时打卡选项序列化失败", exception);
         }
+    }
+
+    private List<AudioSegment> audioSegments(SubmissionRow submission) {
+        String json = submission.audioSegmentsJson();
+        if (json != null && !json.isBlank()) {
+            List<AudioSegment> parsed = readAudioSegments(json);
+            if (!parsed.isEmpty() || submission.audio() == null || submission.audio().objectKey() == null) {
+                return parsed;
+            }
+        }
+        MediaReference legacy = submission.audio();
+        if (legacy == null || legacy.objectKey() == null) return List.of();
+        return List.of(new AudioSegment(submission.id(), legacy.objectKey(), legacy.contentType(),
+                legacy.sizeBytes() == null ? 0 : legacy.sizeBytes(), legacy.sha256(),
+                legacy.originalFilename(), submission.updatedAt(), legacy.deletedAt(),
+                legacy.deletedBy(), legacy.deletionReason()));
+    }
+
+    private List<AudioSegment> readAudioSegments(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            List<AudioSegment> values = objectMapper.readValue(json, AUDIO_SEGMENT_LIST_TYPE);
+            return values == null ? List.of() : values.stream().filter(Objects::nonNull).toList();
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("临时打卡录音清单损坏", exception);
+        }
+    }
+
+    private String writeAudioSegments(List<AudioSegment> values) {
+        try {
+            return objectMapper.writeValueAsString(values);
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("临时打卡录音清单序列化失败", exception);
+        }
+    }
+
+    private static int activeAudioCount(List<AudioSegment> segments) {
+        return Math.toIntExact(segments.stream().filter(AudioSegment::available).count());
+    }
+
+    private static long activeAudioBytes(List<AudioSegment> segments) {
+        return segments.stream().filter(AudioSegment::available).mapToLong(AudioSegment::sizeBytes).sum();
+    }
+
+    private static MediaWrite audioProjection(List<AudioSegment> segments) {
+        return segments.stream().filter(AudioSegment::available).findFirst()
+                .map(item -> new MediaWrite(item.objectKey(), item.contentType(), item.sizeBytes(),
+                        item.sha256(), item.originalFilename()))
+                .orElse(null);
+    }
+
+    private static MediaUploadView audioUploadView(UUID submissionId, AudioSegment segment) {
+        return new MediaUploadView(submissionId, MediaKind.AUDIO.pathValue, "DRAFT",
+                segment.sha256(), segment.sizeBytes(), segment.segmentId(), segment.originalFilename());
+    }
+
+    private static List<AdminAudioSegmentView> adminAudioSegments(List<AudioSegment> segments) {
+        return segments.stream()
+                .map(item -> new AdminAudioSegmentView(item.segmentId(), item.originalFilename(),
+                        item.sizeBytes(), item.contentType(), item.uploadedAt(), item.available(),
+                        item.deletedAt()))
+                .toList();
+    }
+
+    private List<AdminAudioSegmentView> adminAudioSegments(AdminSubmissionRow row) {
+        List<AudioSegment> segments = readAudioSegments(row.audioSegmentsJson());
+        if (!segments.isEmpty() || row.audio() == null || row.audio().objectKey() == null) {
+            return adminAudioSegments(segments);
+        }
+        MediaReference legacy = row.audio();
+        AudioSegment fallback = new AudioSegment(row.id(), legacy.objectKey(), legacy.contentType(),
+                legacy.sizeBytes() == null ? 0 : legacy.sizeBytes(), legacy.sha256(),
+                legacy.originalFilename(), row.submittedAt() == null ? row.createdAt() : row.submittedAt(),
+                legacy.deletedAt(), legacy.deletedBy(), legacy.deletionReason());
+        return adminAudioSegments(List.of(fallback));
+    }
+
+    private static String activeAudioFilenames(List<AudioSegment> segments) {
+        return segments.stream().filter(AudioSegment::available).map(AudioSegment::originalFilename)
+                .filter(Objects::nonNull).collect(java.util.stream.Collectors.joining(" | "));
     }
 
     private boolean jsonListEquals(String json, List<String> expected) {
@@ -1717,7 +2047,10 @@ public class TemporaryCheckinService {
 
     private static void validateConfiguration(TemporaryCheckinProperties properties) {
         if (properties.getMaxStorefrontPhotoBytes() <= 0 || properties.getMaxWechatScreenshotBytes() <= 0
-                || properties.getMaxAudioBytes() <= 0) {
+                || properties.getMaxAudioBytes() <= 0
+                || properties.getMaxAudioSegmentsPerSubmission() < 1
+                || properties.getMaxAudioSegmentsPerSubmission() > 100
+                || properties.getMaxAudioTotalBytesPerSubmission() < properties.getMaxAudioBytes()) {
             throw new IllegalStateException("临时打卡媒体大小限制必须大于0");
         }
         if (properties.getMaxCheckinDistanceMeters() < 50
@@ -1748,6 +2081,28 @@ public class TemporaryCheckinService {
             Supplier<InputStream> opener, long sizeBytes, String contentType, String originalFilename) {
         public InputStream open() {
             return opener.get();
+        }
+    }
+
+    private record AudioSegment(
+            UUID segmentId,
+            String objectKey,
+            String contentType,
+            long sizeBytes,
+            String sha256,
+            String originalFilename,
+            Instant uploadedAt,
+            Instant deletedAt,
+            String deletedBy,
+            String deletionReason) {
+
+        boolean available() {
+            return deletedAt == null && objectKey != null && !objectKey.isBlank() && sizeBytes > 0;
+        }
+
+        AudioSegment deleted(Instant at, String by, String reason) {
+            return new AudioSegment(segmentId, objectKey, contentType, sizeBytes, sha256,
+                    originalFilename, uploadedAt, at, by, reason);
         }
     }
 

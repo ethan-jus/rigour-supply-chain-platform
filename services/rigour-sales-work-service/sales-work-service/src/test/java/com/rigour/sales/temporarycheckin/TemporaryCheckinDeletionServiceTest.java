@@ -77,6 +77,36 @@ class TemporaryCheckinDeletionServiceTest {
     }
 
     @Test
+    void hardDeleteRemovesEveryActiveAudioSegmentWithoutDeletingProjectionTwice() {
+        String first = TENANT_ID + "/temporary-sales-checkin/" + SUBMISSION_ID
+                + "/recordings/visit/segments/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/first.m4a";
+        String second = TENANT_ID + "/temporary-sales-checkin/" + SUBMISSION_ID
+                + "/recordings/visit/segments/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/second.m4a";
+        String alreadyDeleted = TENANT_ID + "/temporary-sales-checkin/" + SUBMISSION_ID
+                + "/recordings/visit/segments/cccccccc-cccc-cccc-cccc-cccccccccccc/deleted.m4a";
+        String manifest = """
+                [
+                  {"objectKey":"%s","deletedAt":null},
+                  {"objectKey":"%s","deletedAt":null},
+                  {"objectKey":"%s","deletedAt":"2026-08-25T03:00:00Z"}
+                ]
+                """.formatted(first, second, alreadyDeleted);
+        DeletionCandidateRow candidate = new DeletionCandidateRow(
+                SUBMISSION_ID, "北京", "NONE", null, null, first, manifest);
+        when(repository.findCandidates(TENANT_ID, List.of(SUBMISSION_ID), "北京"))
+                .thenReturn(List.of(candidate));
+        when(repository.hardDelete(TENANT_ID, SUBMISSION_ID)).thenReturn(1);
+
+        var result = service.delete("city-beijing", "北京", request());
+
+        assertThat(result.status()).isEqualTo("COMPLETED");
+        verify(fileStorage).delete(TENANT_ID.toString(), first);
+        verify(fileStorage).delete(TENANT_ID.toString(), second);
+        verify(fileStorage, never()).delete(TENANT_ID.toString(), alreadyDeleted);
+        verify(repository).hardDelete(TENANT_ID, SUBMISSION_ID);
+    }
+
+    @Test
     void refusesUnexpectedObjectDirectoryAndKeepsFailedRowForRetry() {
         String foreign = TENANT_ID + "/temporary-sales-checkin/" + SUBMISSION_ID
                 + "/../another-submission/secret.m4a";

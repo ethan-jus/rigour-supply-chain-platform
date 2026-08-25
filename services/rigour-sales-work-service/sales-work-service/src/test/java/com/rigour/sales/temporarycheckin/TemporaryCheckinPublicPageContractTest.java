@@ -17,7 +17,7 @@ class TemporaryCheckinPublicPageContractTest {
         String html = resource("static/sales-checkin/index.html");
 
         assertThat(html)
-                .contains("<input id=\"audio-file\" type=\"file\">")
+                .contains("<input id=\"audio-file\" type=\"file\" multiple>")
                 .doesNotContain("accept=\"audio/*\"", "audio/x-m4a");
     }
 
@@ -27,7 +27,9 @@ class TemporaryCheckinPublicPageContractTest {
 
         assertThat(script)
                 .doesNotContain("function isSupportedAudioFile")
-                .contains("function uploadMedia(kind, file)")
+                .contains("function uploadMedia(kind, file, progressTitle)")
+                .contains("function uploadAudioSegment(segment, file, index, total)")
+                .contains("audio/${encodeURIComponent(segment.segmentId)}")
                 .contains("const xhr = new XMLHttpRequest()")
                 .contains("return state.submission.uploadedMedia.includes(mediaKind);")
                 .contains("function mayHaveRemoteMediaState(mediaKind)")
@@ -36,6 +38,21 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("function createRequestController()")
                 .doesNotContain("const controller = new AbortController()")
                 .contains("可重新选择并重试");
+    }
+
+    @Test
+    void keepsHeadquartersIdentityButRequiresAnActualWorkCity() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+
+        assertThat(html).contains("本次拜访城市", "选择已有音频文件（可多选）");
+        assertThat(script)
+                .contains("const HEADQUARTERS_CITY = \"总部\"")
+                .contains("state.options.cities.filter((city) => city !== HEADQUARTERS_CITY)")
+                .contains("const lockWorkCity = !isHeadquartersIdentity() || isBusinessLocked()")
+                .contains("所属：${state.identity.city}")
+                .contains("isEnabledHeadquartersWorkCity")
+                .doesNotContain("cityMatch(\"总部\")");
     }
 
     @Test

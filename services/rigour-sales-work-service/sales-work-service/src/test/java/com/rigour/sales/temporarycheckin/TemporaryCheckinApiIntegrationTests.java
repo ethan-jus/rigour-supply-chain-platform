@@ -88,6 +88,8 @@ class TemporaryCheckinApiIntegrationTests {
     private static final UUID STORE_CLIENT_ID = UUID.fromString("31000000-0000-0000-0000-000000000001");
     private static final UUID SHENZHEN_SALESPERSON_ID =
             UUID.fromString("20000000-0000-0000-0000-000000000004");
+    private static final UUID HEADQUARTERS_SALESPERSON_ID =
+            UUID.fromString("20000000-0000-0000-0000-000000000005");
     private static final UUID SHENZHEN_STORE_ID = UUID.fromString("30000000-0000-0000-0000-000000000002");
     private static final String SUBMISSION_KEY = "temporary-checkin-browser-key-" + "a".repeat(32);
     private static final String OTHER_SUBMISSION_KEY = "temporary-checkin-browser-key-" + "b".repeat(32);
@@ -154,6 +156,7 @@ class TemporaryCheckinApiIntegrationTests {
         insertSalesperson(TENANT_ID, CREATOR_ID, "门店创建人", "北京");
         insertSalesperson(TENANT_ID, VISITOR_ID, "当次拜访人", "北京");
         insertSalesperson(TENANT_ID, SHENZHEN_SALESPERSON_ID, "深圳拜访人", "深圳");
+        insertSalesperson(TENANT_ID, HEADQUARTERS_SALESPERSON_ID, "总部拜访人", "总部");
         insertSalesperson(OTHER_TENANT_ID, OTHER_TENANT_SALESPERSON_ID, "外部租户销售", "北京");
         insertStore();
         insertShenzhenStore();
@@ -1110,6 +1113,50 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
+    void headquartersSalespersonUsesActualWorkCityWithoutBypassingLocationOrStoreCity() throws Exception {
+        CreateSubmissionRequest headquartersVisit = new CreateSubmissionRequest(
+                UUID.randomUUID(), SUBMISSION_KEY, "北京", HEADQUARTERS_SALESPERSON_ID, STORE_ID,
+                "总部客户", "13900000000", "总部人员北京现场拜访", location(), true,
+                TemporaryCheckinService.PRIVACY_NOTICE_VERSION);
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(headquartersVisit)))
+                .andExpect(status().isOk())
+                .andReturn();
+        UUID submissionId = UUID.fromString(objectMapper.readTree(
+                created.getResponse().getContentAsByteArray()).path("id").asText());
+        var storedSubmission = jdbc.queryForMap("""
+                SELECT city, salesperson_id FROM temp_sales_checkin_submission
+                 WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(submissionId));
+        assertThat(storedSubmission.get("city")).isEqualTo("北京");
+        assertThat(storedSubmission.get("salesperson_id")).isEqualTo(bin(HEADQUARTERS_SALESPERSON_ID));
+
+        CreateStoreRequest headquartersStore = new CreateStoreRequest(
+                UUID.randomUUID(), "北京", HEADQUARTERS_SALESPERSON_ID,
+                "B0FFTESTPOI", "高德候选门店", "北京市东城区测试路1号",
+                new BigDecimal("116.397128"), new BigDecimal("39.916527"),
+                "台球", "总部现场补录门店", "营业中", "赵店长", "13800000000",
+                "100-300平米", "10张球桌", List.of("竞技赛事"), List.of("高德业务"),
+                "高意向", "A类", List.of("单店"), location());
+        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(headquartersStore)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.city").value("北京"));
+
+        CreateSubmissionRequest invalidHeadquartersCity = new CreateSubmissionRequest(
+                UUID.randomUUID(), SUBMISSION_KEY, "总部", HEADQUARTERS_SALESPERSON_ID, STORE_ID,
+                "总部客户", null, "总部不是实际打卡城市", location(), true,
+                TemporaryCheckinService.PRIVACY_NOTICE_VERSION);
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(invalidHeadquartersCity)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("销售与选择城市不一致"));
+    }
+
+    @Test
     void reservesNearbyResultCapacityForAmapPoiWhenRegisteredStoresFillTheLimit()
             throws Exception {
         for (int index = 0; index < 20; index++) {
@@ -1526,6 +1573,72 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
+    void uploadsMultipleAudioSegmentsIdempotentlyAndDeletesOnlyTheSelectedSegment() throws Exception {
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submission(
+                                UUID.randomUUID(), SUBMISSION_KEY, "多段录音", true, location()))))
+                .andExpect(status().isOk())
+                .andReturn();
+        UUID submissionId = UUID.fromString(objectMapper.readTree(
+                created.getResponse().getContentAsByteArray()).path("id").asText());
+        UUID firstSegmentId = UUID.randomUUID();
+        UUID secondSegmentId = UUID.randomUUID();
+        byte[] first = new byte[] {'R', 'I', 'F', 'F', 4, 0, 0, 0, 'W', 'A', 'V', 'E', 1};
+        byte[] second = new byte[] {'R', 'I', 'F', 'F', 5, 0, 0, 0, 'W', 'A', 'V', 'E', 2};
+
+        uploadAudioSegment(submissionId, firstSegmentId,
+                new MockMultipartFile("file", "第一段.wav", "audio/wav", first))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.segmentId").value(firstSegmentId.toString()))
+                .andExpect(jsonPath("$.originalFilename").value("第一段.wav"));
+        uploadAudioSegment(submissionId, firstSegmentId,
+                new MockMultipartFile("file", "第一段重试.wav", "audio/wav", first))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.segmentId").value(firstSegmentId.toString()));
+        uploadAudioSegment(submissionId, UUID.randomUUID(),
+                new MockMultipartFile("file", "重复内容.wav", "audio/wav", first))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("相同录音已经添加，请勿重复选择"));
+        uploadAudioSegment(submissionId, firstSegmentId,
+                new MockMultipartFile("file", "编号冲突.wav", "audio/wav", second))
+                .andExpect(status().isConflict());
+        uploadAudioSegment(submissionId, secondSegmentId,
+                new MockMultipartFile("file", "第二段.wav", "audio/wav", second))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.segmentId").value(secondSegmentId.toString()));
+
+        var stored = jdbc.queryForMap("""
+                SELECT audio_segments_json, audio_active_segment_count, audio_active_size_bytes,
+                       audio_object_key
+                  FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(submissionId));
+        assertThat(((Number) stored.get("audio_active_segment_count")).intValue()).isEqualTo(2);
+        assertThat(((Number) stored.get("audio_active_size_bytes")).longValue())
+                .isEqualTo(first.length + second.length);
+        assertThat(objectMapper.readTree(String.valueOf(stored.get("audio_segments_json")))).hasSize(2);
+        String firstObjectKey = String.valueOf(stored.get("audio_object_key"));
+        assertThat(firstObjectKey).contains("/recordings/visit/segments/" + firstSegmentId + "/");
+        verify(fileStorage, times(2)).put(any(FileMetadata.class), any(InputStream.class));
+
+        mockMvc.perform(delete(
+                        "/sales-checkin/api/v1/submissions/{id}/media/audio/{segmentId}",
+                        submissionId, firstSegmentId)
+                        .header("X-Submission-Key", SUBMISSION_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.segmentId").value(firstSegmentId.toString()));
+        verify(fileStorage).delete(TENANT_ID.toString(), firstObjectKey);
+        var remaining = jdbc.queryForMap("""
+                SELECT audio_segments_json, audio_active_segment_count, audio_object_key
+                  FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(submissionId));
+        assertThat(((Number) remaining.get("audio_active_segment_count")).intValue()).isEqualTo(1);
+        assertThat(objectMapper.readTree(String.valueOf(remaining.get("audio_segments_json")))).hasSize(1);
+        assertThat(String.valueOf(remaining.get("audio_object_key")))
+                .contains("/recordings/visit/segments/" + secondSegmentId + "/");
+    }
+
+    @Test
     void acceptsAudioAboveTheFormerTwentyFiveMegabyteCeiling() throws Exception {
         MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -1613,7 +1726,8 @@ class TemporaryCheckinApiIntegrationTests {
                 .matches(objectPrefix + "screenshots/wechat/[0-9a-f]{64}\\.png");
         assertThat(storedMedia.get(2).originalName()).isEqualTo("visit.wav");
         assertThat(storedMedia.get(2).objectKey())
-                .matches(objectPrefix + "recordings/visit/[0-9a-f]{64}\\.wav");
+                .matches(objectPrefix + "recordings/visit/segments/" + submissionId
+                        + "/[0-9a-f]{64}\\.wav");
         verify(fileStorage, never()).delete(any(String.class), any(String.class));
 
         mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete", submissionId)
@@ -1866,6 +1980,22 @@ class TemporaryCheckinApiIntegrationTests {
         when(fileStorage.open(TENANT_ID.toString(), "tenant/beijing.wav"))
                 .thenAnswer(invocation -> new ByteArrayInputStream(wav));
 
+        // 模拟 V19 执行后短暂回滚旧镜像：旧写入器只更新 audio_*，JSON 清单仍为默认空数组。
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions")
+                        .with(admin("city-beijing")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].audioAvailable").value(true))
+                .andExpect(jsonPath("$.items[0].audioSegments[0].segmentId")
+                        .value(submissionId.toString()))
+                .andExpect(jsonPath("$.items[0].audioSegments[0].originalFilename")
+                        .value("visit.wav"));
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/options")
+                        .with(admin("city-beijing")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mediaStats.activeFiles").value(2))
+                .andExpect(jsonPath("$.mediaStats.totalBytes").value(jpeg.length + wav.length))
+                .andExpect(jsonPath("$.mediaStats.audioBytes").value(wav.length));
+
         mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/storefront-photo", submissionId)
                         .with(admin("city-beijing")))
                 .andExpect(status().isOk())
@@ -1898,6 +2028,14 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(header().string("Content-Disposition", startsWith("inline;")))
                 .andExpect(content().bytes(new byte[] {'R', 'I', 'F', 'F'}));
 
+        mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio/{segmentId}",
+                        submissionId, submissionId)
+                        .with(admin("city-beijing"))
+                        .header("Range", "bytes=0-3"))
+                .andExpect(status().isPartialContent())
+                .andExpect(header().string("Content-Range", "bytes 0-3/12"))
+                .andExpect(content().bytes(new byte[] {'R', 'I', 'F', 'F'}));
+
         mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/audio", submissionId)
                         .with(admin("city-beijing"))
                         .header("Range", "bytes=-4"))
@@ -1927,6 +2065,19 @@ class TemporaryCheckinApiIntegrationTests {
 
     private ResultActions upload(UUID submissionId, String kind, MockMultipartFile file) throws Exception {
         return mockMvc.perform(multipart("/sales-checkin/api/v1/submissions/{id}/media/{kind}", submissionId, kind)
+                .file(file)
+                .header("X-Submission-Key", SUBMISSION_KEY)
+                .with(request -> {
+                    request.setMethod("PUT");
+                    return request;
+                }));
+    }
+
+    private ResultActions uploadAudioSegment(
+            UUID submissionId, UUID segmentId, MockMultipartFile file) throws Exception {
+        return mockMvc.perform(multipart(
+                        "/sales-checkin/api/v1/submissions/{id}/media/audio/{segmentId}",
+                        submissionId, segmentId)
                 .file(file)
                 .header("X-Submission-Key", SUBMISSION_KEY)
                 .with(request -> {
