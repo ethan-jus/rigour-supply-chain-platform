@@ -67,11 +67,62 @@ public class TemporaryCheckinRepository {
                 "%" + escapedQuery + "%", "%" + escapedQuery + "%", limit);
     }
 
-    public List<StoreRow> findLocatedStores(UUID tenantId, String city) {
+    public List<StoreRow> findActiveStoresByCity(UUID tenantId, String city) {
         return jdbc.query(storeSelect() + """
                  WHERE tenant_id=? AND city=? AND status='ACTIVE'
-                   AND longitude IS NOT NULL AND latitude IS NOT NULL
                 """, (rs, row) -> store(rs), bin(tenantId), city);
+    }
+
+    /** 锁定城市内已有门店，用于在不新增第四张表的前提下原子绑定导入门店与 POI。 */
+    public List<StoreRow> findActiveStoresByCityForUpdate(UUID tenantId, String city) {
+        return jdbc.query(storeSelect() + """
+                 WHERE tenant_id=? AND city=? AND status='ACTIVE'
+                 ORDER BY id
+                 FOR UPDATE
+                """, (rs, row) -> store(rs), bin(tenantId), city);
+    }
+
+    public List<StoreCheckinAnchorRow> findFirstAcceptableSubmittedStoreAnchors(
+            UUID tenantId, String city, int maxAccuracyMeters) {
+        return jdbc.query("""
+                SELECT store_id, longitude, latitude, accuracy_meters, location_captured_at
+                  FROM (
+                        SELECT store_id, longitude, latitude, accuracy_meters, location_captured_at,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY store_id
+                                   ORDER BY submitted_at ASC, id ASC
+                               ) AS anchor_rank
+                          FROM temp_sales_checkin_submission
+                         WHERE tenant_id=? AND city=? AND status='SUBMITTED'
+                           AND longitude IS NOT NULL AND latitude IS NOT NULL
+                           AND longitude BETWEEN -180 AND 180
+                           AND latitude BETWEEN -90 AND 90
+                           AND (longitude<>0 OR latitude<>0)
+                           AND accuracy_meters IS NOT NULL
+                           AND accuracy_meters>=0 AND accuracy_meters<=?
+                           AND submitted_at IS NOT NULL
+                       ) ranked
+                 WHERE anchor_rank=1
+                """, (rs, row) -> storeCheckinAnchor(rs), bin(tenantId), city, maxAccuracyMeters);
+    }
+
+    public Optional<StoreCheckinAnchorRow> findFirstAcceptableSubmittedStoreAnchor(
+            UUID tenantId, UUID storeId, String city, int maxAccuracyMeters) {
+        return jdbc.query("""
+                SELECT store_id, longitude, latitude, accuracy_meters, location_captured_at
+                  FROM temp_sales_checkin_submission
+                 WHERE tenant_id=? AND store_id=? AND city=? AND status='SUBMITTED'
+                   AND longitude IS NOT NULL AND latitude IS NOT NULL
+                   AND longitude BETWEEN -180 AND 180
+                   AND latitude BETWEEN -90 AND 90
+                   AND (longitude<>0 OR latitude<>0)
+                   AND accuracy_meters IS NOT NULL
+                   AND accuracy_meters>=0 AND accuracy_meters<=?
+                   AND submitted_at IS NOT NULL
+                 ORDER BY submitted_at ASC, id ASC
+                 LIMIT 1
+                """, (rs, row) -> storeCheckinAnchor(rs),
+                bin(tenantId), bin(storeId), city, maxAccuracyMeters).stream().findFirst();
     }
 
     public Optional<StoreRow> findStore(UUID tenantId, UUID id) {
@@ -130,6 +181,29 @@ public class TemporaryCheckinRepository {
                 timestamp(row.geocode().geocodedAt()), timestamp(row.now()), timestamp(row.now()));
     }
 
+    public int bindLocationAndOptionalVerifiedPoi(
+            UUID tenantId, UUID storeId, String sourcePoiId, String sourcePoiName,
+            String sourcePoiAddress, BigDecimal sourcePoiLongitude, BigDecimal sourcePoiLatitude,
+            BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
+            Instant locationCapturedAt, String locationNote, GeocodeWrite geocode, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_store
+                   SET source_poi_id=?, source_poi_name=?, source_poi_address=?,
+                       source_poi_longitude=?, source_poi_latitude=?,
+                       longitude=?, latitude=?, accuracy_meters=?, location_captured_at=?, location_note=?,
+                       location_address=?, location_formatted_address=?, location_adcode=?,
+                       amap_longitude=?, amap_latitude=?, geocode_status=?, geocode_error_code=?,
+                       geocoded_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND status='ACTIVE'
+                   AND (source_poi_id IS NULL OR TRIM(source_poi_id)='')
+                """, sourcePoiId, sourcePoiName, sourcePoiAddress,
+                sourcePoiLongitude, sourcePoiLatitude, longitude, latitude, accuracyMeters,
+                timestamp(locationCapturedAt), locationNote, geocode.address(), geocode.formattedAddress(),
+                geocode.adcode(), geocode.amapLongitude(), geocode.amapLatitude(), geocode.status(),
+                geocode.errorCode(), timestamp(geocode.geocodedAt()), timestamp(now),
+                bin(tenantId), bin(storeId));
+    }
+
     public Optional<SubmissionRow> findSubmissionByClientId(UUID tenantId, UUID clientSubmissionId) {
         return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND client_submission_id=? LIMIT 1",
                 (rs, row) -> submission(rs), bin(tenantId), bin(clientSubmissionId)).stream().findFirst();
@@ -137,6 +211,11 @@ public class TemporaryCheckinRepository {
 
     public Optional<SubmissionRow> findSubmission(UUID tenantId, UUID id) {
         return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND id=? LIMIT 1",
+                (rs, row) -> submission(rs), bin(tenantId), bin(id)).stream().findFirst();
+    }
+
+    public Optional<SubmissionRow> findSubmissionForUpdate(UUID tenantId, UUID id) {
+        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND id=? LIMIT 1 FOR UPDATE",
                 (rs, row) -> submission(rs), bin(tenantId), bin(id)).stream().findFirst();
     }
 
@@ -168,10 +247,23 @@ public class TemporaryCheckinRepository {
     public int updateMedia(UUID tenantId, UUID submissionId, String prefix, MediaWrite media, Instant now) {
         String sql = "UPDATE temp_sales_checkin_submission SET "
                 + prefix + "object_key=?, " + prefix + "content_type=?, " + prefix + "size_bytes=?, "
-                + prefix + "sha256=?, " + prefix + "original_filename=?, updated_at=? "
+                + prefix + "sha256=?, " + prefix + "original_filename=?, "
+                + prefix + "deleted_at=NULL, " + prefix + "deleted_by=NULL, "
+                + prefix + "deletion_reason=NULL, updated_at=? "
                 + "WHERE tenant_id=? AND id=? AND status='DRAFT'";
         return jdbc.update(sql, media.objectKey(), media.contentType(), media.sizeBytes(), media.sha256(),
                 media.originalFilename(), timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public int clearDraftMedia(
+            UUID tenantId, UUID submissionId, String prefix, String expectedObjectKey, Instant now) {
+        String sql = "UPDATE temp_sales_checkin_submission SET "
+                + prefix + "object_key=NULL, " + prefix + "content_type=NULL, "
+                + prefix + "size_bytes=NULL, " + prefix + "sha256=NULL, "
+                + prefix + "original_filename=NULL, updated_at=? "
+                + "WHERE tenant_id=? AND id=? AND status='DRAFT' AND "
+                + prefix + "object_key=?";
+        return jdbc.update(sql, timestamp(now), bin(tenantId), bin(submissionId), expectedObjectKey);
     }
 
     public int complete(UUID tenantId, UUID submissionId, Instant submittedAt) {
@@ -180,6 +272,7 @@ public class TemporaryCheckinRepository {
                    SET status='SUBMITTED', submitted_at=?, updated_at=?
                  WHERE tenant_id=? AND id=? AND status='DRAFT'
                    AND storefront_photo_object_key IS NOT NULL
+                   AND storefront_photo_deleted_at IS NULL
                 """, timestamp(submittedAt), timestamp(submittedAt), bin(tenantId), bin(submissionId));
     }
 
@@ -630,6 +723,12 @@ public class TemporaryCheckinRepository {
                 instant(rs, "updated_at"));
     }
 
+    private static StoreCheckinAnchorRow storeCheckinAnchor(ResultSet rs) throws SQLException {
+        return new StoreCheckinAnchorRow(uuid(rs, "store_id"), rs.getBigDecimal("longitude"),
+                rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
+                instant(rs, "location_captured_at"));
+    }
+
     private static SubmissionRow submission(ResultSet rs) throws SQLException {
         return new SubmissionRow(uuid(rs, "id"), uuid(rs, "client_submission_id"),
                 rs.getString("submission_key_hash"), rs.getString("status"), rs.getString("city"),
@@ -735,6 +834,14 @@ public class TemporaryCheckinRepository {
             BigDecimal accuracyMeters, Instant locationCapturedAt, String locationNote,
             String sourcePoiId, String sourcePoiName, String sourcePoiAddress,
             BigDecimal sourcePoiLongitude, BigDecimal sourcePoiLatitude, GeocodeWrite geocode, Instant now) { }
+
+    /**
+     * 门店自身无定位时的临时候选锚点。来自已提交的匿名自报拜访，
+     * 只用于降低远程误打卡风险，不是可信门店位置或考勤证据。
+     */
+    public record StoreCheckinAnchorRow(
+            UUID storeId, BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
+            Instant capturedAt) { }
 
     public record MediaReference(
             String objectKey, String contentType, Long sizeBytes, String sha256, String originalFilename,

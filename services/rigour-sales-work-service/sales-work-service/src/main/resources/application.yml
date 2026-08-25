@@ -49,6 +49,11 @@ rigour:
       max-storefront-photo-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_STOREFRONT_PHOTO_BYTES:10485760}
       max-wechat-screenshot-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_WECHAT_SCREENSHOT_BYTES:10485760}
       max-audio-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_BYTES:26214400}
+      # 公开页面不是身份认证；距离门禁仅降低远程误打卡风险。
+      max-checkin-distance-meters: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_DISTANCE_METERS:300}
+      max-checkin-accuracy-meters: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_ACCURACY_METERS:200}
+      # 覆盖最长20分钟录音流程，同时防止重用长时间前的定位。
+      max-location-age-minutes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_LOCATION_AGE_MINUTES:60}
       ai:
         # 转写凭据独立显式注入；即使实际使用同一 CAM 子用户，也不从 COS 配置隐式继承。
         enabled: ${RIGOUR_SALES_TEMPORARY_CHECKIN_AI_ENABLED:false}

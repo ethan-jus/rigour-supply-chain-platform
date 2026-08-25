@@ -18,6 +18,9 @@ public class TemporaryCheckinProperties {
     private long maxStorefrontPhotoBytes = 10L * 1024 * 1024;
     private long maxWechatScreenshotBytes = 10L * 1024 * 1024;
     private long maxAudioBytes = 25L * 1024 * 1024;
+    private int maxCheckinDistanceMeters = 300;
+    private int maxCheckinAccuracyMeters = 200;
+    private int maxLocationAgeMinutes = 60;
 
     private List<String> cities = new ArrayList<>(List.of(
             "北京", "深圳", "杭州", "成都", "武汉", "西安", "长沙", "南京", "石家庄", "重庆",
@@ -53,6 +56,12 @@ public class TemporaryCheckinProperties {
     public void setMaxWechatScreenshotBytes(long value) { this.maxWechatScreenshotBytes = value; }
     public long getMaxAudioBytes() { return maxAudioBytes; }
     public void setMaxAudioBytes(long value) { this.maxAudioBytes = value; }
+    public int getMaxCheckinDistanceMeters() { return maxCheckinDistanceMeters; }
+    public void setMaxCheckinDistanceMeters(int value) { this.maxCheckinDistanceMeters = value; }
+    public int getMaxCheckinAccuracyMeters() { return maxCheckinAccuracyMeters; }
+    public void setMaxCheckinAccuracyMeters(int value) { this.maxCheckinAccuracyMeters = value; }
+    public int getMaxLocationAgeMinutes() { return maxLocationAgeMinutes; }
+    public void setMaxLocationAgeMinutes(int value) { this.maxLocationAgeMinutes = value; }
     public List<String> getCities() { return List.copyOf(cities); }
     public void setCities(List<String> value) { cities = copy(value); }
     public List<String> getStoreAttributes() { return List.copyOf(storeAttributes); }

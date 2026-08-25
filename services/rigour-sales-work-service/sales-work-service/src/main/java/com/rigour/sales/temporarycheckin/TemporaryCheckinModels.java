@@ -56,7 +56,11 @@ public final class TemporaryCheckinModels {
 
     public record StoreView(UUID id, String name, String city, String locationSummary) { }
 
-    public record ResolveLocationRequest(String city, LocationCommand location) { }
+    public record ResolveLocationRequest(String city, LocationCommand location, String q) {
+        public ResolveLocationRequest(String city, LocationCommand location) {
+            this(city, location, null);
+        }
+    }
 
     public record NearbyStoreView(
             String source,
@@ -67,13 +71,24 @@ public final class TemporaryCheckinModels {
             String address,
             BigDecimal distanceMeters,
             BigDecimal longitude,
-            BigDecimal latitude) { }
+            BigDecimal latitude,
+            String locationSource,
+            boolean checkinEligible,
+            String nextAction) { }
 
     public record LocationContextView(
             String geocodeStatus,
             String address,
             String formattedAddress,
             String adcode,
+            Boolean cityMatched,
+            String resolvedCity,
+            String locationMessage,
+            int maxCheckinDistanceMeters,
+            int maxCheckinAccuracyMeters,
+            int maxLocationAgeMinutes,
+            boolean accuracyAccepted,
+            boolean freshnessAccepted,
             List<NearbyStoreView> nearbyStores) { }
 
     public record CreateSubmissionRequest(
@@ -92,6 +107,8 @@ public final class TemporaryCheckinModels {
     public record DraftSubmissionView(UUID id, String status, Instant createdAt) { }
 
     public record MediaUploadView(UUID id, String kind, String status, String sha256, long sizeBytes) { }
+
+    public record MediaDeleteView(UUID id, String kind, String status) { }
 
     public record CompletedSubmissionView(UUID id, String status, Instant submittedAt) { }
 

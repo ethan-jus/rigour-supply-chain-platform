@@ -14,6 +14,7 @@ import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateSubmission
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.DraftSubmissionView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.LocationCommand;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.LocationContextView;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.MediaDeleteView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.NearbyStoreView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.ResolveLocationRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.MediaUploadView;
@@ -25,6 +26,7 @@ import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.ExportRow;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.GeocodeWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.MediaReference;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.MediaWrite;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.StoreCheckinAnchorRow;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.StoreRow;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.StoreWrite;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.SubmissionRow;
@@ -66,6 +68,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
@@ -78,12 +82,13 @@ import tools.jackson.databind.ObjectMapper;
 @ConditionalOnProperty(prefix = "rigour.sales.temporary-checkin", name = "enabled", havingValue = "true")
 public class TemporaryCheckinService {
 
+    private static final Duration MAX_FUTURE_LOCATION_CLOCK_SKEW = Duration.ofMinutes(2);
+
     private static final Logger log = LoggerFactory.getLogger(TemporaryCheckinService.class);
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int MAX_EXPORT_ROWS = 20_000;
     public static final String PRIVACY_NOTICE_VERSION = "2026-08-25-ai-v1";
-    private static final int NEARBY_RADIUS_METERS = 2_000;
-    private static final int NEARBY_LIMIT = 10;
+    private static final int NEARBY_LIMIT = 20;
     private static final Map<String, String> CITY_ADCODE_PREFIXES = Map.of(
             "北京", "11",
             "深圳", "4403",
@@ -152,6 +157,8 @@ public class TemporaryCheckinService {
         if (limit < 1 || limit > 20) throw TemporaryCheckinException.badRequest("limit必须在1到20之间");
         String escaped = normalizedQuery.replace("=", "==").replace("%", "=%").replace("_", "=_");
         return repository.searchStores(tenantId, normalizedCity, escaped, limit).stream()
+                .filter(this::hasCompleteStoreProfile)
+                .filter(TemporaryCheckinService::hasValidStoreCoordinates)
                 .map(TemporaryCheckinService::storeView)
                 .toList();
     }
@@ -160,41 +167,113 @@ public class TemporaryCheckinService {
         if (request == null) throw TemporaryCheckinException.badRequest("location不能为空");
         String city = requiredEnum(request.city(), properties.getCities(), "city");
         NormalizedLocation location = normalizeLocation(request.location());
+        String query = optional(request.q(), "q", 64);
+        if (query != null && query.length() < 2) {
+            throw TemporaryCheckinException.badRequest("q至少输入2个字符");
+        }
+        String normalizedNameQuery = normalizeName(query);
+        if (query != null && normalizedNameQuery.isEmpty()) {
+            throw TemporaryCheckinException.badRequest("q必须包含可搜索的门店名称字符");
+        }
         GeocodeResult geocode = reverseGeocoder.resolve(location.longitude(), location.latitude());
-        validateResolvedCity(city, geocode);
+        CityMatch cityMatch = cityMatch(city, geocode);
+        int maxDistanceMeters = properties.getMaxCheckinDistanceMeters();
+        int maxAccuracyMeters = properties.getMaxCheckinAccuracyMeters();
+        int maxLocationAgeMinutes = properties.getMaxLocationAgeMinutes();
+        boolean accuracyAccepted = hasAcceptableAccuracy(location.accuracyMeters());
+        boolean freshnessAccepted = hasAcceptableFreshness(location);
+        if (!Boolean.TRUE.equals(cityMatch.matched())) {
+            return new LocationContextView(geocode.status(), geocode.address(), geocode.formattedAddress(),
+                    geocode.adcode(), cityMatch.matched(), cityMatch.resolvedCity(), cityMatch.message(),
+                    maxDistanceMeters, maxAccuracyMeters, maxLocationAgeMinutes,
+                    accuracyAccepted, freshnessAccepted, List.of());
+        }
+        if (!accuracyAccepted) {
+            return new LocationContextView(geocode.status(), geocode.address(), geocode.formattedAddress(),
+                    geocode.adcode(), cityMatch.matched(), cityMatch.resolvedCity(),
+                    accuracyMessage(location.accuracyMeters()), maxDistanceMeters, maxAccuracyMeters,
+                    maxLocationAgeMinutes, false, freshnessAccepted, List.of());
+        }
+        if (!freshnessAccepted) {
+            return new LocationContextView(geocode.status(), geocode.address(), geocode.formattedAddress(),
+                    geocode.adcode(), cityMatch.matched(), cityMatch.resolvedCity(),
+                    freshnessMessage(location), maxDistanceMeters, maxAccuracyMeters,
+                    maxLocationAgeMinutes, true, false, List.of());
+        }
 
-        List<NearbyStoreView> nearby = new ArrayList<>();
-        repository.findLocatedStores(tenantId, city).stream()
-                .map(store -> new StoreDistance(store, distanceMeters(
-                        location.latitude(), location.longitude(), store.latitude(), store.longitude())))
-                .filter(item -> item.distanceMeters() <= NEARBY_RADIUS_METERS)
+        List<StoreRow> registeredStores = repository.findActiveStoresByCity(tenantId, city);
+        Map<UUID, StoreCheckinAnchorRow> fallbackAnchors = repository
+                .findFirstAcceptableSubmittedStoreAnchors(tenantId, city, maxAccuracyMeters).stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        StoreCheckinAnchorRow::storeId, anchor -> anchor, (first, ignored) -> first));
+        List<NearbyStoreView> registeredNearby = registeredStores.stream()
+                .filter(this::hasCompleteStoreProfile)
+                .filter(store -> query == null || normalizeName(store.name()).contains(normalizedNameQuery))
+                .map(store -> new StoreWithAnchor(store,
+                        checkinAnchor(store, fallbackAnchors.get(store.id()))))
+                .filter(item -> item.anchor() != null)
+                .map(item -> new StoreDistance(item.store(), item.anchor(),
+                        distanceToAnchor(location, geocode, item.anchor())))
+                .filter(item -> item.distanceMeters() != null
+                        && item.distanceMeters() <= maxDistanceMeters)
                 .sorted(Comparator.comparingDouble(StoreDistance::distanceMeters)
                         .thenComparing(item -> item.store().name()))
                 .limit(NEARBY_LIMIT)
-                .forEach(item -> nearby.add(new NearbyStoreView("REGISTERED", item.store().id(), null,
-                        item.store().name(), item.store().city(), storeLocationSummary(item.store()),
-                        BigDecimal.valueOf(item.distanceMeters()).setScale(0, java.math.RoundingMode.HALF_UP),
-                        item.store().longitude(), item.store().latitude())));
+                .map(item -> new NearbyStoreView("REGISTERED", item.store().id(), null,
+                        item.store().name(), item.store().city(), registeredStoreLocationSummary(
+                                item.store(), item.anchor()),
+                        null, null, null, item.anchor().source(), true, "CHECK_IN"))
+                .toList();
 
-        if (geocode.amapLongitude() != null && geocode.amapLatitude() != null) {
+        List<NearbyStoreView> poiNearby = List.of();
+        if (hasValidCoordinates(geocode.amapLongitude(), geocode.amapLatitude())) {
             try {
-                Set<String> registeredNames = nearby.stream()
+                Set<String> registeredPoiIds = registeredStores.stream()
+                        .map(StoreRow::sourcePoiId)
+                        .filter(Objects::nonNull)
+                        .map(String::trim)
+                        .filter(value -> !value.isEmpty())
+                        .collect(java.util.stream.Collectors.toSet());
+                Set<String> registeredNames = registeredNearby.stream()
                         .map(item -> normalizeName(item.name())).collect(java.util.stream.Collectors.toSet());
-                amapPoiClient.searchAround("", geocode.amapLongitude(), geocode.amapLatitude(),
-                                NEARBY_RADIUS_METERS, 1, NEARBY_LIMIT)
+                poiNearby = amapPoiClient.searchAround(query == null ? "" : query,
+                                geocode.amapLongitude(), geocode.amapLatitude(),
+                                maxDistanceMeters, 1, NEARBY_LIMIT)
                         .items().stream()
                         .filter(poi -> poi.name() != null && !poi.name().isBlank())
+                        .filter(poi -> hasText(poi.poiId()))
+                        .filter(poi -> !registeredPoiIds.contains(poi.poiId().trim()))
                         .filter(poi -> !registeredNames.contains(normalizeName(poi.name())))
+                        .filter(poi -> hasValidCoordinates(poi.longitude(), poi.latitude()))
+                        .map(poi -> new PoiDistance(poi, distanceMeters(
+                                geocode.amapLatitude(), geocode.amapLongitude(),
+                                poi.latitude(), poi.longitude())))
+                        .filter(item -> item.distanceMeters() <= maxDistanceMeters)
+                        .sorted(Comparator.comparingDouble(PoiDistance::distanceMeters)
+                                .thenComparing(item -> item.poi().name()))
                         .limit(NEARBY_LIMIT)
-                        .forEach(poi -> nearby.add(new NearbyStoreView("AMAP_POI", null, poi.poiId(),
-                                poi.name(), city, poi.address(), poi.distanceMeters(),
-                                poi.longitude(), poi.latitude())));
+                        .map(item -> new NearbyStoreView("AMAP_POI", null, item.poi().poiId(),
+                                item.poi().name(), city, item.poi().address(),
+                                BigDecimal.valueOf(item.distanceMeters())
+                                        .setScale(0, java.math.RoundingMode.HALF_UP),
+                                item.poi().longitude(), item.poi().latitude(), "AMAP_POI", false,
+                                "COMPLETE_STORE_PROFILE"))
+                        .toList();
             } catch (AmapPoiException ignored) {
                 // 可读地址和本地门店仍然可用；高德 POI 暂时失败不阻断现场打卡。
             }
         }
+        // 有 POI 时为新店补录保留席位，避免 20 条已录入门店将其全部挤掉。
+        int reservedPoiSlots = Math.min(poiNearby.size(), query == null ? 5 : 10);
+        int registeredSlots = Math.min(registeredNearby.size(), NEARBY_LIMIT - reservedPoiSlots);
+        int poiSlots = Math.min(poiNearby.size(), NEARBY_LIMIT - registeredSlots);
+        List<NearbyStoreView> nearby = new ArrayList<>(NEARBY_LIMIT);
+        nearby.addAll(registeredNearby.subList(0, registeredSlots));
+        nearby.addAll(poiNearby.subList(0, poiSlots));
         return new LocationContextView(geocode.status(), geocode.address(), geocode.formattedAddress(),
-                geocode.adcode(), List.copyOf(nearby));
+                geocode.adcode(), cityMatch.matched(), cityMatch.resolvedCity(), cityMatch.message(),
+                maxDistanceMeters, maxAccuracyMeters, maxLocationAgeMinutes,
+                true, true, List.copyOf(nearby));
     }
 
     @Transactional
@@ -203,21 +282,26 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.badRequest("clientStoreId和salespersonId不能为空");
         }
         NormalizedStore normalized = normalizeStore(request);
+        var salesperson = requireSalesperson(request.salespersonId(), normalized.city());
         OptionalStore existing = existingStore(request.clientStoreId(), normalized);
         if (existing.present()) return storeView(existing.row());
-        OptionalStore existingPoi = existingPoiStore(normalized);
-        if (existingPoi.present()) return storeView(existingPoi.row());
-        var salesperson = requireSalesperson(request.salespersonId(), normalized.city());
+        requireAcceptableCurrentLocation(normalized.location());
 
-        UUID id = UUID.randomUUID();
         Instant now = clock.instant();
         GeocodeResult geocode = reverseGeocoder.resolve(
                 normalized.location().longitude(), normalized.location().latitude());
         validateResolvedCity(normalized.city(), geocode);
+        normalized = verifyNearbyPoi(normalized, geocode);
+        OptionalStore existingPoi = existingPoiStore(normalized);
+        if (existingPoi.present()) return storeView(existingPoi.row());
         GeocodeWrite geocodeWrite = new GeocodeWrite(geocode.status(), geocode.address(),
                 geocode.formattedAddress(), geocode.adcode(), geocode.province(), geocode.city(),
                 geocode.district(), geocode.township(), geocode.amapLongitude(), geocode.amapLatitude(),
                 geocode.errorCode(), now);
+        StoreRow boundImportedStore = bindUniqueImportedStore(normalized, geocodeWrite, now);
+        if (boundImportedStore != null) return storeView(boundImportedStore);
+
+        UUID id = UUID.randomUUID();
         StoreWrite write = new StoreWrite(id, tenantId, request.clientStoreId(), normalized.city(),
                 salesperson.id(), normalized.attribute(), normalized.name(), normalized.operatingStatus(),
                 normalized.contactName(), normalized.contactPhone(), normalized.areaRange(),
@@ -267,6 +351,7 @@ public class TemporaryCheckinService {
                 optionalPhone(request.customerPhone(), "customerPhone"),
                 requiredMultiline(request.visitResult(), "visitResult", 2000),
                 normalizeLocation(request.location()), true, request.privacyNoticeVersion());
+        var salesperson = requireSalesperson(request.salespersonId(), city);
         SubmissionRow existing = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId())
                 .orElse(null);
         if (existing != null) {
@@ -274,15 +359,18 @@ public class TemporaryCheckinService {
             assertSameSubmission(existing, normalized);
             return new DraftSubmissionView(existing.id(), existing.status(), existing.createdAt());
         }
-        var salesperson = requireSalesperson(request.salespersonId(), city);
+        requireAcceptableCurrentLocation(normalized.location());
         StoreRow store = repository.findStore(tenantId, request.storeId())
                 .orElseThrow(() -> TemporaryCheckinException.notFound("门店不存在或已停用"));
-        if (!city.equals(store.city())) throw TemporaryCheckinException.badRequest("门店与选择城市不一致");
-        UUID id = UUID.randomUUID();
-        Instant now = clock.instant();
+        if (!city.equals(store.city())) {
+            throw TemporaryCheckinException.badRequest("门店与选择城市不一致");
+        }
         GeocodeResult geocode = reverseGeocoder.resolve(
                 normalized.location().longitude(), normalized.location().latitude());
         validateResolvedCity(city, geocode);
+        requireEligibleCheckinStore(city, store, normalized.location(), geocode);
+        UUID id = UUID.randomUUID();
+        Instant now = clock.instant();
         GeocodeWrite geocodeWrite = new GeocodeWrite(geocode.status(), geocode.address(),
                 geocode.formattedAddress(), geocode.adcode(), geocode.province(), geocode.city(),
                 geocode.district(), geocode.township(), geocode.amapLongitude(), geocode.amapLatitude(),
@@ -305,17 +393,21 @@ public class TemporaryCheckinService {
         return new DraftSubmissionView(id, "DRAFT", now);
     }
 
-    public MediaUploadView uploadMedia(UUID submissionId, String rawKind, String submissionKey, MultipartFile file) {
+    @Transactional
+    public MediaUploadView uploadMedia(
+            UUID submissionId, String rawKind, String submissionKey, MultipartFile file) {
         if (submissionId == null) throw TemporaryCheckinException.badRequest("submissionId不能为空");
         MediaKind kind = MediaKind.parse(rawKind);
-        SubmissionRow submission = requireSubmission(submissionId);
+        SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
+                .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
         requireMatchingKey(submission, submissionKey);
         if (!"DRAFT".equals(submission.status())) {
             throw TemporaryCheckinException.conflict("已提交的打卡不允许替换媒体");
         }
         ValidatedMedia validated = validateMedia(kind, file);
         MediaReference previous = media(submission, kind);
-        if (previous.objectKey() != null && validated.sha256().equals(previous.sha256())) {
+        if (previous.objectKey() != null && previous.deletedAt() == null
+                && validated.sha256().equals(previous.sha256())) {
             return new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
                     validated.bytes().length);
         }
@@ -337,23 +429,79 @@ public class TemporaryCheckinService {
                     new MediaWrite(objectKey, validated.contentType(), validated.bytes().length,
                             validated.sha256(), validated.originalFilename()), now);
         } catch (RuntimeException exception) {
-            // 不在请求内删除已写入对象：并发重试可能正在引用同一内容哈希键。
-            // 孤儿对象后续应按数据库引用快照和保留期离线清理。
+            cleanupUnreferencedObject(objectKey, submissionId, kind, "数据库更新异常");
             throw exception;
         }
         if (updated != 1) {
+            cleanupUnreferencedObject(objectKey, submissionId, kind, "数据库未接受更新");
             throw TemporaryCheckinException.conflict("草稿状态已变化，请刷新后重试");
         }
-        if (previous.objectKey() != null && !previous.objectKey().equals(objectKey)) {
-            try {
-                fileStorage.delete(tenantId.toString(), previous.objectKey());
-            } catch (RuntimeException exception) {
-                log.warn("临时打卡旧媒体清理失败 submissionId={} kind={} reason={}",
-                        submissionId, kind.pathValue, exception.getClass().getSimpleName());
-            }
-        }
+        registerMediaObjectLifecycle(submissionId, kind, objectKey, previous.objectKey());
         return new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
                 validated.bytes().length);
+    }
+
+    private void registerMediaObjectLifecycle(
+            UUID submissionId, MediaKind kind, String newObjectKey, String previousObjectKey) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            if (previousObjectKey != null && !previousObjectKey.equals(newObjectKey)) {
+                cleanupUnreferencedObject(previousObjectKey, submissionId, kind, "旧媒体替换完成");
+            }
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                if (previousObjectKey != null && !previousObjectKey.equals(newObjectKey)) {
+                    cleanupUnreferencedObject(previousObjectKey, submissionId, kind, "旧媒体替换完成");
+                }
+            }
+
+            @Override
+            public void afterCompletion(int status) {
+                if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                    cleanupUnreferencedObject(newObjectKey, submissionId, kind, "数据库事务未提交");
+                }
+            }
+        });
+    }
+
+    private void cleanupUnreferencedObject(
+            String objectKey, UUID submissionId, MediaKind kind, String reason) {
+        try {
+            fileStorage.delete(tenantId.toString(), objectKey);
+        } catch (RuntimeException exception) {
+            log.warn("临时打卡未引用媒体清理失败 submissionId={} kind={} reason={} error={}",
+                    submissionId, kind.pathValue, reason, exception.getClass().getSimpleName());
+        }
+    }
+
+    @Transactional
+    public MediaDeleteView deleteDraftMedia(
+            UUID submissionId, String rawKind, String submissionKey) {
+        if (submissionId == null) throw TemporaryCheckinException.badRequest("submissionId不能为空");
+        MediaKind kind = MediaKind.parse(rawKind);
+        SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
+                .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
+        requireMatchingKey(submission, submissionKey);
+        if (!"DRAFT".equals(submission.status())) {
+            throw TemporaryCheckinException.conflict("已提交的打卡不允许删除媒体");
+        }
+        MediaReference current = media(submission, kind);
+        if (current == null || current.objectKey() == null) {
+            return new MediaDeleteView(submissionId, kind.pathValue, "DELETED");
+        }
+        try {
+            fileStorage.delete(tenantId.toString(), current.objectKey());
+        } catch (RuntimeException exception) {
+            throw TemporaryCheckinException.storage("媒体文件物理删除失败，请稍后重试");
+        }
+        int updated = repository.clearDraftMedia(
+                tenantId, submissionId, kind.columnPrefix, current.objectKey(), clock.instant());
+        if (updated != 1) {
+            throw TemporaryCheckinException.conflict("媒体引用清理冲突，请立即联系管理员核对");
+        }
+        return new MediaDeleteView(submissionId, kind.pathValue, "DELETED");
     }
 
     @Transactional
@@ -544,19 +692,191 @@ public class TemporaryCheckinService {
         }
     }
 
+    private void requireEligibleCheckinStore(
+            String city, StoreRow store, NormalizedLocation checkinLocation, GeocodeResult geocode) {
+        if (!city.equals(store.city())) {
+            throw TemporaryCheckinException.badRequest("门店与选择城市不一致");
+        }
+        if (!hasCompleteStoreProfile(store)) {
+            throw TemporaryCheckinException.badRequest("门店基础资料不完整，请先补全门店信息");
+        }
+        CheckinAnchor anchor = checkinAnchor(store, null);
+        if (anchor == null) {
+            StoreCheckinAnchorRow fallback = repository.findFirstAcceptableSubmittedStoreAnchor(
+                    tenantId, store.id(), city, properties.getMaxCheckinAccuracyMeters()).orElse(null);
+            anchor = checkinAnchor(store, fallback);
+        }
+        if (anchor == null) {
+            throw TemporaryCheckinException.badRequest("门店缺少有效定位，请先补录门店定位");
+        }
+        Double distance = distanceToAnchor(checkinLocation, geocode, anchor);
+        if (distance == null) {
+            throw TemporaryCheckinException.badRequest("当前定位无法完成高德门店距离校验，请重新定位后再试");
+        }
+        int maximum = properties.getMaxCheckinDistanceMeters();
+        if (distance > maximum) {
+            throw TemporaryCheckinException.badRequest("当前定位距离门店约"
+                    + (long) Math.ceil(distance) + "米，超过允许的" + maximum + "米，请到店后重新定位");
+        }
+    }
+
+    /**
+     * 高德门店使用服务端复核的 GCJ-02 POI 坐标；普通门店使用 WGS84 门店坐标。
+     * 两者都不可用时，才候选首次符合精度要求的已提交拜访 WGS84 坐标作为固定锚点。
+     * 该坐标是匿名自报数据，不静默回写门店档案，不能被解释为可信门店位置或考勤证据。
+     */
+    private CheckinAnchor checkinAnchor(StoreRow store, StoreCheckinAnchorRow fallback) {
+        if (hasText(store.sourcePoiId())
+                && hasValidCoordinates(store.sourcePoiLongitude(), store.sourcePoiLatitude())) {
+            return new CheckinAnchor(store.sourcePoiLongitude(), store.sourcePoiLatitude(),
+                    null, "AMAP_POI", CoordinateSystem.GCJ02);
+        }
+        if (hasUsableStoreCoordinates(store)) {
+            return new CheckinAnchor(store.longitude(), store.latitude(),
+                    store.accuracyMeters(), "STORE_LOCATION", CoordinateSystem.WGS84);
+        }
+        if (fallback == null || !hasValidCoordinates(fallback.longitude(), fallback.latitude())
+                || !hasAcceptableAccuracy(fallback.accuracyMeters())) {
+            return null;
+        }
+        return new CheckinAnchor(fallback.longitude(), fallback.latitude(), fallback.accuracyMeters(),
+                "FIRST_SUBMITTED_VISIT", CoordinateSystem.WGS84);
+    }
+
+    private static Double distanceToAnchor(
+            NormalizedLocation location, GeocodeResult geocode, CheckinAnchor anchor) {
+        if (anchor.coordinateSystem() == CoordinateSystem.GCJ02) {
+            if (geocode == null
+                    || !hasValidCoordinates(geocode.amapLongitude(), geocode.amapLatitude())) {
+                return null;
+            }
+            return distanceMeters(geocode.amapLatitude(), geocode.amapLongitude(),
+                    anchor.latitude(), anchor.longitude());
+        }
+        return distanceMeters(location.latitude(), location.longitude(),
+                anchor.latitude(), anchor.longitude());
+    }
+
+    private boolean hasAcceptableAccuracy(BigDecimal accuracyMeters) {
+        return accuracyMeters != null && accuracyMeters.signum() >= 0
+                && accuracyMeters.compareTo(BigDecimal.valueOf(properties.getMaxCheckinAccuracyMeters())) <= 0;
+    }
+
+    private void requireAcceptableCurrentLocation(NormalizedLocation location) {
+        if (!hasAcceptableAccuracy(location.accuracyMeters())) {
+            throw TemporaryCheckinException.badRequest(accuracyMessage(location.accuracyMeters()));
+        }
+        if (!hasAcceptableFreshness(location)) {
+            throw TemporaryCheckinException.badRequest(freshnessMessage(location));
+        }
+    }
+
+    private boolean hasAcceptableFreshness(NormalizedLocation location) {
+        Instant now = clock.instant();
+        return !location.capturedAt().isBefore(
+                now.minus(Duration.ofMinutes(properties.getMaxLocationAgeMinutes())))
+                && !location.capturedAt().isAfter(now.plus(MAX_FUTURE_LOCATION_CLOCK_SKEW));
+    }
+
+    private String freshnessMessage(NormalizedLocation location) {
+        if (location.capturedAt().isAfter(clock.instant().plus(MAX_FUTURE_LOCATION_CLOCK_SKEW))) {
+            return "定位采集时间晚于服务器时间超过2分钟，请校准手机时间并重新定位";
+        }
+        return "定位采集时间已超过" + properties.getMaxLocationAgeMinutes()
+                + "分钟，请重新定位后提交";
+    }
+
+    private String accuracyMessage(BigDecimal accuracyMeters) {
+        return "当前定位精度约"
+                + accuracyMeters.setScale(0, java.math.RoundingMode.CEILING).toPlainString()
+                + "米，超过允许的" + properties.getMaxCheckinAccuracyMeters()
+                + "米，请到室外或开阔处重新定位";
+    }
+
+    private boolean hasCompleteStoreProfile(StoreRow store) {
+        return store != null
+                && "ACTIVE".equals(store.status())
+                && properties.getCities().contains(store.city())
+                && properties.getStoreAttributes().contains(store.attribute())
+                && hasText(store.name())
+                && properties.getOperatingStatuses().contains(store.operatingStatus())
+                && hasText(store.contactName())
+                && properties.getAreaRanges().contains(store.areaRange())
+                && hasText(store.facilityCount())
+                && hasConfiguredJsonList(store.businessTypesJson(), properties.getBusinessTypes())
+                && hasConfiguredJsonList(store.intendedBusinessesJson(), properties.getIntendedBusinesses())
+                && properties.getCooperationIntents().contains(store.cooperationIntent())
+                && hasConfiguredJsonList(store.tagsJson(), properties.getStoreTags());
+    }
+
+    private boolean hasConfiguredJsonList(String json, List<String> allowed) {
+        if (!hasText(json)) return false;
+        try {
+            List<String> values = objectMapper.readValue(json, STRING_LIST_TYPE);
+            return values != null && !values.isEmpty()
+                    && values.stream().allMatch(value -> value != null && allowed.contains(value))
+                    && new HashSet<>(values).size() == values.size();
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static boolean hasValidStoreCoordinates(StoreRow store) {
+        return store != null && hasValidCoordinates(store.longitude(), store.latitude());
+    }
+
+    private boolean hasUsableStoreCoordinates(StoreRow store) {
+        return hasValidStoreCoordinates(store) && hasAcceptableAccuracy(store.accuracyMeters());
+    }
+
+    private static boolean hasValidCoordinates(BigDecimal longitude, BigDecimal latitude) {
+        if (longitude == null || latitude == null
+                || longitude.compareTo(BigDecimal.valueOf(-180)) < 0
+                || longitude.compareTo(BigDecimal.valueOf(180)) > 0
+                || latitude.compareTo(BigDecimal.valueOf(-90)) < 0
+                || latitude.compareTo(BigDecimal.valueOf(90)) > 0) {
+            return false;
+        }
+        return longitude.signum() != 0 || latitude.signum() != 0;
+    }
+
     private static void validateResolvedCity(String expectedCity, GeocodeResult geocode) {
-        if (geocode == null || !"RESOLVED".equals(geocode.status())) return;
+        if (geocode == null || !"RESOLVED".equals(geocode.status())) {
+            throw TemporaryCheckinException.badRequest("当前定位地址解析失败，请重新定位后再提交");
+        }
+        CityMatch match = cityMatch(expectedCity, geocode);
+        if (Boolean.FALSE.equals(match.matched())) {
+            throw TemporaryCheckinException.badRequest("当前定位不在所选城市，请重新选择城市并定位");
+        }
+    }
+
+    private static CityMatch cityMatch(String expectedCity, GeocodeResult geocode) {
+        if (geocode == null || !"RESOLVED".equals(geocode.status())) {
+            return new CityMatch(null, null, "地址暂未解析，定位坐标已记录");
+        }
+        String actualCity = firstText(geocode.city(), geocode.province());
+        String resolvedCity = actualCity == null ? null : normalizeCityName(actualCity);
         String expectedAdcodePrefix = CITY_ADCODE_PREFIXES.get(expectedCity);
         if (expectedAdcodePrefix != null && geocode.adcode() != null && !geocode.adcode().isBlank()) {
             if (!geocode.adcode().trim().startsWith(expectedAdcodePrefix)) {
-                throw TemporaryCheckinException.badRequest("当前定位不在所选城市，请重新选择城市并定位");
+                return new CityMatch(false, resolvedCity, cityMismatchMessage(resolvedCity));
             }
-            return;
+            return new CityMatch(true, resolvedCity, null);
         }
-        String actualCity = firstText(geocode.city(), geocode.province());
         if (actualCity != null && !normalizeCityName(expectedCity).equals(normalizeCityName(actualCity))) {
-            throw TemporaryCheckinException.badRequest("当前定位不在所选城市，请重新选择城市并定位");
+            return new CityMatch(false, resolvedCity, cityMismatchMessage(resolvedCity));
         }
+        return new CityMatch(true, resolvedCity, null);
+    }
+
+    private static String cityMismatchMessage(String resolvedCity) {
+        return resolvedCity == null
+                ? "当前定位不在所选城市，请切换到实际城市后重新定位"
+                : "当前位置在" + resolvedCity + "，请将城市切换为" + resolvedCity + "后重新定位";
     }
 
     private static String firstText(String first, String second) {
@@ -604,6 +924,120 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.adminForbidden("后台账号城市未启用");
         }
         return scope.city();
+    }
+
+    /**
+     * 创建门店不信任浏览器回传的 POI 坐标和摘要：用服务端转换的 GCJ-02
+     * 坐标重新查询高德，并且只接受指定距离内的精确 poiId。
+     */
+    private NormalizedStore verifyNearbyPoi(NormalizedStore store, GeocodeResult geocode) {
+        if (!hasValidCoordinates(geocode.amapLongitude(), geocode.amapLatitude())) {
+            throw TemporaryCheckinException.badRequest("当前定位无法完成附近门店校验，请重新定位后再试");
+        }
+        String keyword = store.sourcePoiId() == null ? store.name() : store.sourcePoiName();
+        AmapPoiClient.NearbyPoiPage page;
+        try {
+            page = amapPoiClient.searchAround(keyword, geocode.amapLongitude(), geocode.amapLatitude(),
+                    properties.getMaxCheckinDistanceMeters(), 1, NEARBY_LIMIT);
+        } catch (AmapPoiException exception) {
+            throw TemporaryCheckinException.badRequest("附近门店校验暂不可用，请稍后重新定位再试");
+        }
+        List<PoiDistance> candidates = page.items().stream()
+                .filter(poi -> hasText(poi.poiId()) && hasText(poi.name()))
+                .filter(poi -> hasValidCoordinates(poi.longitude(), poi.latitude()))
+                .map(poi -> new PoiDistance(poi, distanceMeters(
+                        geocode.amapLatitude(), geocode.amapLongitude(),
+                        poi.latitude(), poi.longitude())))
+                .filter(item -> item.distanceMeters() <= properties.getMaxCheckinDistanceMeters())
+                .toList();
+        if (store.sourcePoiId() == null) {
+            String requestedName = normalizeName(store.name());
+            PoiDistance matching = candidates.stream()
+                    .filter(item -> requestedName.equals(normalizeName(item.poi().name())))
+                    .findFirst().orElse(null);
+            if (matching != null) {
+                throw TemporaryCheckinException.conflict("附近已有高德门店“"
+                        + matching.poi().name() + "”，请从附近门店下拉列表选择后补全资料");
+            }
+            return store;
+        }
+        PoiDistance selected = candidates.stream()
+                .filter(item -> store.sourcePoiId().equals(item.poi().poiId().trim()))
+                .findFirst()
+                .orElseThrow(() -> TemporaryCheckinException.badRequest(
+                        "所选高德门店不在当前位置的允许距离内，请重新定位后选择"));
+        if (!normalizeName(store.sourcePoiName()).equals(normalizeName(selected.poi().name()))) {
+            throw TemporaryCheckinException.badRequest("高德门店候选信息已变化，请重新定位后从下拉列表选择");
+        }
+        return withVerifiedPoi(store, selected.poi());
+    }
+
+    private static NormalizedStore withVerifiedPoi(
+            NormalizedStore store, AmapPoiClient.NearbyPoi poi) {
+        return new NormalizedStore(store.city(), store.salespersonId(),
+                required(poi.poiId(), "sourcePoiId", 128), required(poi.name(), "sourcePoiName", 256),
+                optional(poi.address(), "sourcePoiAddress", 512),
+                poi.longitude().setScale(6, java.math.RoundingMode.HALF_UP),
+                poi.latitude().setScale(6, java.math.RoundingMode.HALF_UP),
+                store.attribute(), required(poi.name(), "name", 256), store.operatingStatus(), store.contactName(),
+                store.contactPhone(), store.areaRange(), store.facilityCount(), store.businessTypes(),
+                store.intendedBusinesses(), store.cooperationIntent(), store.storeGrade(), store.tags(),
+                store.location());
+    }
+
+    /**
+     * 仅当用户明确选择了服务端复核的 POI 时，才将唯一同名的无定位导入门店原子绑定。
+     * 手填路径不能凭名称吞并历史门店，必须改选 POI 或由管理员核对。
+     * 不覆盖飞书导入的业务资料；多条同名时不做猜测。
+     */
+    private StoreRow bindUniqueImportedStore(
+            NormalizedStore store, GeocodeWrite geocode, Instant now) {
+        Set<String> matchingNames = new HashSet<>();
+        matchingNames.add(normalizeName(store.name()));
+        if (store.sourcePoiName() != null) matchingNames.add(normalizeName(store.sourcePoiName()));
+        matchingNames.remove("");
+        List<StoreRow> matches = repository.findActiveStoresByCityForUpdate(tenantId, store.city()).stream()
+                .filter(row -> matchingNames.contains(normalizeName(row.name())))
+                .toList();
+        if (store.sourcePoiId() == null && !matches.isEmpty()) {
+            throw TemporaryCheckinException.conflict(
+                    "已存在同名历史门店，手工录入不能自动绑定；请从附近门店选择高德POI或联系管理员核对");
+        }
+        if (matches.size() > 1) {
+            throw TemporaryCheckinException.conflict(
+                    "发现多条同名历史门店，无法安全自动绑定；请联系管理员合并后重试");
+        }
+        if (matches.isEmpty()) return null;
+        StoreRow existing = matches.getFirst();
+        if (hasText(existing.sourcePoiId())) {
+            if (Objects.equals(existing.sourcePoiId(), store.sourcePoiId())) return existing;
+            throw TemporaryCheckinException.conflict("同名门店已绑定其他高德门店，请联系管理员核对");
+        }
+        StoreCheckinAnchorRow fallback = repository.findFirstAcceptableSubmittedStoreAnchor(
+                tenantId, existing.id(), store.city(), properties.getMaxCheckinAccuracyMeters())
+                .orElse(null);
+        CheckinAnchor existingAnchor = checkinAnchor(existing, fallback);
+        if (existingAnchor != null) {
+            throw TemporaryCheckinException.conflict(
+                    "同名门店已有可用定位，请直接选择已有门店打卡；如不是同一家店请联系管理员核对");
+        }
+        int updated;
+        try {
+            updated = repository.bindLocationAndOptionalVerifiedPoi(
+                    tenantId, existing.id(), store.sourcePoiId(), store.sourcePoiName(),
+                    store.sourcePoiAddress(), store.sourcePoiLongitude(), store.sourcePoiLatitude(),
+                    store.location().longitude(), store.location().latitude(), store.location().accuracyMeters(),
+                    store.location().capturedAt(), store.location().note(), geocode, now);
+        } catch (DataIntegrityViolationException duplicatePoi) {
+            OptionalStore concurrent = existingPoiStoreForUpdate(store);
+            if (concurrent.present()) return concurrent.row();
+            throw TemporaryCheckinException.conflict("高德门店绑定冲突，请刷新后重试");
+        }
+        if (updated != 1) {
+            throw TemporaryCheckinException.conflict("历史门店状态已变化，请刷新后重试");
+        }
+        return repository.findStore(tenantId, existing.id())
+                .orElseThrow(() -> new IllegalStateException("门店绑定后不可见"));
     }
 
     private static AdminScopeView scopeView(AdminScope scope) {
@@ -666,15 +1100,17 @@ public class TemporaryCheckinService {
     }
 
     private void assertSameStore(StoreRow row, NormalizedStore normalized) {
+        boolean verifiedPoiRequest = normalized.sourcePoiId() != null;
         if (!Objects.equals(row.city(), normalized.city())
                 || !Objects.equals(row.creatorSalespersonId(), normalized.salespersonId())
                 || !Objects.equals(row.sourcePoiId(), normalized.sourcePoiId())
-                || !Objects.equals(row.sourcePoiName(), normalized.sourcePoiName())
-                || !Objects.equals(row.sourcePoiAddress(), normalized.sourcePoiAddress())
-                || !nullableDecimalEquals(row.sourcePoiLongitude(), normalized.sourcePoiLongitude())
-                || !nullableDecimalEquals(row.sourcePoiLatitude(), normalized.sourcePoiLatitude())
+                || (!verifiedPoiRequest && (!Objects.equals(row.sourcePoiName(), normalized.sourcePoiName())
+                        || !Objects.equals(row.sourcePoiAddress(), normalized.sourcePoiAddress())
+                        || !nullableDecimalEquals(row.sourcePoiLongitude(), normalized.sourcePoiLongitude())
+                        || !nullableDecimalEquals(row.sourcePoiLatitude(), normalized.sourcePoiLatitude())))
                 || !Objects.equals(row.attribute(), normalized.attribute())
-                || !Objects.equals(row.name(), normalized.name())
+                // POI 名称和摘要由服务端高德复核后固化，不与原始浏览器快照比较。
+                || (!verifiedPoiRequest && !Objects.equals(row.name(), normalized.name()))
                 || !Objects.equals(row.operatingStatus(), normalized.operatingStatus())
                 || !Objects.equals(row.contactName(), normalized.contactName())
                 || !Objects.equals(row.contactPhone(), normalized.contactPhone())
@@ -724,6 +1160,9 @@ public class TemporaryCheckinService {
                 request.sourcePoiLatitude(), -90, 90, "sourcePoiLatitude");
         if ((sourcePoiLongitude == null) != (sourcePoiLatitude == null)) {
             throw TemporaryCheckinException.badRequest("高德门店候选经纬度必须同时提供");
+        }
+        if (sourcePoiId != null && sourcePoiName == null) {
+            throw TemporaryCheckinException.badRequest("高德门店候选缺少门店名称");
         }
         if (sourcePoiId == null && (sourcePoiName != null || sourcePoiAddress != null
                 || sourcePoiLongitude != null)) {
@@ -808,8 +1247,7 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.badRequest("定位坐标或精度无效");
         }
         Instant now = clock.instant();
-        if (location.capturedAt().isAfter(now.plus(Duration.ofMinutes(10)))
-                || location.capturedAt().isBefore(now.minus(Duration.ofDays(30)))) {
+        if (location.capturedAt().isAfter(now.plus(Duration.ofMinutes(10)))) {
             throw TemporaryCheckinException.badRequest("定位采集时间超出允许范围");
         }
         return new NormalizedLocation(location.longitude(), location.latitude(), location.accuracyMeters(),
@@ -1048,7 +1486,8 @@ public class TemporaryCheckinService {
     }
 
     private static boolean hasMedia(MediaReference value) {
-        return value != null && value.objectKey() != null && value.sha256() != null && value.sizeBytes() != null;
+        return value != null && value.objectKey() != null && value.sha256() != null
+                && value.sizeBytes() != null && value.deletedAt() == null;
     }
 
     private static StoreView storeView(StoreRow row) {
@@ -1060,6 +1499,15 @@ public class TemporaryCheckinService {
         if (row.locationAddress() != null && !row.locationAddress().isBlank()) return row.locationAddress();
         if (row.locationNote() != null && !row.locationNote().isBlank()) return row.locationNote();
         return "位置已采集";
+    }
+
+    /** 注册门店候选只返回门店档案摘要，不暴露距离校验所用的精确锚点。 */
+    private static String registeredStoreLocationSummary(StoreRow store, CheckinAnchor anchor) {
+        String summary = storeLocationSummary(store);
+        if ("FIRST_SUBMITTED_VISIT".equals(anchor.source()) && "位置已采集".equals(summary)) {
+            return "已有拜访定位（仅用于到店距离校验）";
+        }
+        return summary;
     }
 
     private static String normalizeName(String value) {
@@ -1123,6 +1571,18 @@ public class TemporaryCheckinService {
                 || properties.getMaxAudioBytes() <= 0) {
             throw new IllegalStateException("临时打卡媒体大小限制必须大于0");
         }
+        if (properties.getMaxCheckinDistanceMeters() < 50
+                || properties.getMaxCheckinDistanceMeters() > 10_000) {
+            throw new IllegalStateException("临时打卡距离门禁必须在50到10000米之间");
+        }
+        if (properties.getMaxCheckinAccuracyMeters() < 10
+                || properties.getMaxCheckinAccuracyMeters() > 5_000) {
+            throw new IllegalStateException("临时打卡定位精度门禁必须在10到5000米之间");
+        }
+        if (properties.getMaxLocationAgeMinutes() < 1
+                || properties.getMaxLocationAgeMinutes() > 1_440) {
+            throw new IllegalStateException("临时打卡定位新鲜度必须在1到1440分钟之间");
+        }
         List<List<String>> lists = List.of(properties.getCities(), properties.getStoreAttributes(),
                 properties.getOperatingStatuses(), properties.getAreaRanges(), properties.getBusinessTypes(),
                 properties.getIntendedBusinesses(), properties.getCooperationIntents(),
@@ -1162,9 +1622,18 @@ public class TemporaryCheckinService {
             List<String> businessTypes, List<String> intendedBusinesses, String cooperationIntent,
             String storeGrade, List<String> tags, NormalizedLocation location) { }
 
-    private record StoreDistance(StoreRow store, double distanceMeters) { }
+    private record CheckinAnchor(
+            BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters, String source,
+            CoordinateSystem coordinateSystem) { }
+    private record StoreWithAnchor(StoreRow store, CheckinAnchor anchor) { }
+    private record StoreDistance(StoreRow store, CheckinAnchor anchor, Double distanceMeters) { }
+    private record PoiDistance(AmapPoiClient.NearbyPoi poi, double distanceMeters) { }
+    private record CityMatch(Boolean matched, String resolvedCity, String message) { }
 
     private record OptionalStore(boolean present, StoreRow row) { }
+
+    private enum CoordinateSystem { WGS84, GCJ02 }
+
     private record DetectedMedia(String contentType, String extension) { }
     private record ValidatedMedia(
             byte[] bytes, String contentType, String extension, String sha256, String originalFilename) { }

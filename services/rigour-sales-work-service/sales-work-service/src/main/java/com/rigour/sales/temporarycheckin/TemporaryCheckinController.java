@@ -4,6 +4,7 @@ import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CompletedSubmiss
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateStoreRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateSubmissionRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.DraftSubmissionView;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.MediaDeleteView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.MediaUploadView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.LocationContextView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.OptionsResponse;
@@ -13,6 +14,7 @@ import java.util.List;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -75,6 +77,14 @@ public class TemporaryCheckinController {
             @RequestHeader(name = "X-Submission-Key", required = false) String submissionKey,
             @RequestPart("file") MultipartFile file) {
         return service.uploadMedia(submissionId, kind, submissionKey, file);
+    }
+
+    @DeleteMapping("/submissions/{id}/media/{kind}")
+    public MediaDeleteView deleteMedia(
+            @PathVariable("id") UUID submissionId,
+            @PathVariable("kind") String kind,
+            @RequestHeader(name = "X-Submission-Key", required = false) String submissionKey) {
+        return service.deleteDraftMedia(submissionId, kind, submissionKey);
     }
 
     @PostMapping("/submissions/{id}/complete")
