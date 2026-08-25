@@ -123,19 +123,42 @@ input {
     letter-spacing: -0.02em;
 }
 
-.collection-link {
+.topbar__actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+}
+
+.account-switch-form {
+    margin: 0;
+}
+
+.collection-link,
+.account-switch-button {
+    min-height: 40px;
     flex: 0 0 auto;
     padding: 10px 14px;
     border: 1px solid rgba(255, 255, 255, 0.38);
     border-radius: 8px;
     color: #fff;
+    background: transparent;
     text-decoration: none;
     font-size: 13px;
     font-weight: 700;
+    line-height: 1.2;
+    cursor: pointer;
 }
 
-.collection-link:hover {
+.collection-link:hover,
+.account-switch-button:hover {
     background: rgba(255, 255, 255, 0.1);
+}
+
+.collection-link:focus-visible,
+.account-switch-button:focus-visible {
+    outline: 3px solid rgba(255, 255, 255, 0.55);
+    outline-offset: 2px;
 }
 
 .page-shell {
@@ -246,6 +269,13 @@ input {
 
 .scope-card strong {
     font-size: 15px;
+}
+
+.account-switch-hint {
+    margin: 4px 0 0;
+    color: var(--ink-soft);
+    font-size: 11px;
+    line-height: 1.45;
 }
 
 .scope-card__range,
@@ -1313,8 +1343,17 @@ body.preview-open {
         font-size: 21px;
     }
 
-    .collection-link {
+    .topbar__actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .collection-link,
+    .account-switch-button {
+        width: 100%;
+        min-height: 44px;
         padding: 8px 10px;
+        text-align: center;
         font-size: 11px;
     }
 

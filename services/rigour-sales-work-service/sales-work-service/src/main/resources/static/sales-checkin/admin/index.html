@@ -19,7 +19,13 @@
                 <h1>销售拜访数据管理</h1>
             </div>
         </div>
-        <a class="collection-link" href="/sales-checkin/">打开销售采集页</a>
+        <div class="topbar__actions">
+            <a class="collection-link" href="/sales-checkin/">打开销售采集页</a>
+            <form class="account-switch-form" action="/sales-checkin/admin/account-switches" method="post">
+                <button class="account-switch-button" type="submit"
+                        title="将弹出登录框，请输入另一个管理账号">切换账号</button>
+            </form>
+        </div>
     </div>
 </header>
 
@@ -29,6 +35,7 @@
             <div>
                 <p id="scope-heading" class="scope-label">当前管理账号</p>
                 <strong id="scope-username">正在识别…</strong>
+                <p class="account-switch-hint">切换时会重新弹出登录框，请输入另一个管理账号。</p>
             </div>
         </div>
         <div class="scope-card__range">

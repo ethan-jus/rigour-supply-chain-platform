@@ -36,9 +36,21 @@
             const options = await requestJson(`${API_BASE}/options`);
             applyOptions(unwrap(options));
             await loadSubmissions();
+            renderAccountSwitchResult();
         } catch (error) {
             showError(errorMessage(error, "后台数据加载失败，请确认管理账号权限后重试。"));
             renderLoading(false);
+        }
+    }
+
+    function renderAccountSwitchResult() {
+        const result = new URLSearchParams(window.location.search).get("switch");
+        if (result === "complete") {
+            showSuccess(`已切换为 ${state.scope.username || "当前"} 管理账号。`);
+            updateBrowserUrl();
+        } else if (result === "expired") {
+            showError("账号切换请求已过期，请再次点击“切换账号”。");
+            updateBrowserUrl();
         }
     }
 

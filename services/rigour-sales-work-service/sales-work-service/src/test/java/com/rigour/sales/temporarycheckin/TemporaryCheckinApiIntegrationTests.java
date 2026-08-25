@@ -639,6 +639,33 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
+    void challengesBasicAuthAndOnlyCompletesWithADifferentAdminAccount() throws Exception {
+        MvcResult started = mockMvc.perform(post("/sales-checkin/admin/account-switches")
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "sales-checkin-admin"))
+                .andExpect(status().isSeeOther())
+                .andReturn();
+        String challengeLocation = started.getResponse().getHeader("Location");
+        assertThat(challengeLocation)
+                .startsWith("/sales-checkin/admin/?switchChallenge=");
+
+        mockMvc.perform(get(challengeLocation)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "sales-checkin-admin"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("WWW-Authenticate", "Basic realm=\"Sales Check-in Admin\""))
+                .andExpect(header().string("Cache-Control", "no-store"));
+
+        mockMvc.perform(get(challengeLocation)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-beijing"))
+                .andExpect(status().isSeeOther())
+                .andExpect(header().string("Location", "/sales-checkin/admin/?switch=complete"));
+
+        mockMvc.perform(get(challengeLocation)
+                        .header(TemporaryCheckinAdminAccessPolicy.HEADER, "city-shenzhen"))
+                .andExpect(status().isSeeOther())
+                .andExpect(header().string("Location", "/sales-checkin/admin/?switch=expired"));
+    }
+
+    @Test
     void exposesPublicFixedTenantApiAndEnforcesPayloadAwareIdempotency() throws Exception {
         mockMvc.perform(get("/sales-checkin/api/v1/options")
                         .param("city", "北京")
