@@ -145,6 +145,61 @@ class TemporaryCheckinPublicPageContractTest {
                 .doesNotContain("switchTab(\"visit\");\n            selectStore(createdStore);");
     }
 
+    @Test
+    void keepsOneLocationScopedPickerForRegisteredStoresAndNewAmapPlaces() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+        String styles = resource("static/sales-checkin/styles.css");
+
+        assertThat(html)
+                .contains("附近门店 / 高德地点")
+                .contains("id=\"nearby-stores-scope\"")
+                .contains("新门店建档", "本次拜访草稿已保留");
+        assertThat(script)
+                .contains("function visitNearbyOptions()")
+                .contains("? state.visit.nearbySearchResults", ": state.visit.nearbyStores")
+                .contains(".filter(isUsableNearbyStore)")
+                .contains("body: { city: state[scope].city, location: locationRequestValue(scope), q: query }")
+                .contains("if (registered) selectStore(store);")
+                .contains("else prepareNewStore(store);")
+                .contains("abortStoreSearch();\n        state.visit.nearbySearchResults = null;")
+                .contains("function visitRadiusLabel(context = state.visit.locationContext)")
+                .contains("context?.maxCheckinDistanceMeters")
+                .doesNotContain("/stores?city=");
+        assertThat(styles)
+                .contains("body.is-store-page")
+                .contains(".visit-store-result.is-registered")
+                .contains(".visit-store-result.is-new-poi");
+    }
+
+    @Test
+    void allowsManualStoreProfileWhenAmapSearchIsUnavailable() throws IOException {
+        String script = resource("static/sales-checkin/app.js");
+
+        assertThat(script)
+                .contains("function manualStoreFallbackAvailable")
+                .contains("poiLookupStatus === \"UNAVAILABLE\"")
+                .contains("state.store.manualEntryAllowed = true;")
+                .contains("state.store.sourceMode = \"MANUAL\";")
+                .contains("高德搜索暂不可用，可点击下方手工录入继续")
+                .contains("保存时服务端仍会校验当前位置");
+    }
+
+    @Test
+    void routesStoreEntryThroughOneTransitionAndLocksAsyncWorkWhileSaving() throws IOException {
+        String script = resource("static/sales-checkin/app.js");
+
+        assertThat(script)
+                .contains("button.dataset.tab === \"store\" && state.activeTab !== \"store\"")
+                .contains("prepareNewStore();")
+                .contains("if (state.submitting) return;")
+                .contains("state.submitting = true;\n        setFormsDisabled(true);")
+                .contains("Object.values(state.locationControllers).forEach((controller) => controller?.abort());")
+                .contains("cancelLocationCapture(\"visit\");")
+                .contains("cancelLocationCapture(\"store\");")
+                .contains("state.submitting = false;\n            setFormsDisabled(false);");
+    }
+
     private static String resource(String path) throws IOException {
         return new String(new ClassPathResource(path).getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     }

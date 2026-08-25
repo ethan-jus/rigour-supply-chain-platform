@@ -15,8 +15,8 @@
         <div class="brand-mark" aria-hidden="true">R</div>
         <div>
             <p class="eyebrow">RIGOUR · 现场专注</p>
-            <h1>销售拜访打卡</h1>
-            <p class="hero__description">定位后选择附近门店，快速完成拜访记录。</p>
+            <h1 id="hero-title">拜访打卡</h1>
+            <p id="hero-description" class="hero__description">定位、选择门店并记录本次拜访。</p>
         </div>
     </div>
 </header>
@@ -93,7 +93,7 @@
         <button id="store-tab" class="tab" type="button" role="tab" aria-selected="false"
                 aria-controls="store-panel" data-tab="store">
             <span class="tab__index">2</span>
-            门店录入
+            新门店建档
         </button>
     </nav>
 
@@ -173,13 +173,13 @@
                 <section id="nearby-stores-panel" class="nearby-panel" aria-labelledby="nearby-stores-title" hidden>
                     <div class="nearby-panel__heading">
                         <div>
-                            <strong id="nearby-stores-title">选择附近已录入门店</strong>
-                            <small>只能打卡当前定位附近、且基础资料已完整的门店</small>
+                            <strong id="nearby-stores-title">选择附近门店</strong>
+                            <small id="nearby-stores-scope">仅显示当前定位允许范围内的候选</small>
                         </div>
                         <span id="nearby-stores-summary">正在查找…</span>
                     </div>
                     <div class="field store-search-field nearby-combobox-field">
-                        <label for="store-search" class="field__label">附近门店</label>
+                        <label for="store-search" class="field__label">附近门店 / 高德地点</label>
                         <div class="search-input-wrap">
                             <input id="store-search" type="search" inputmode="search" autocomplete="off"
                                    role="combobox" placeholder="点击选择，或输入名称搜索"
@@ -189,7 +189,7 @@
                                     aria-label="展开附近门店选项" disabled>展开</button>
                             <span id="store-search-spinner" class="spinner" aria-label="正在搜索" hidden></span>
                         </div>
-                        <p id="store-search-help" class="field__help">先获取当前定位，再从附近门店中选择。</p>
+                        <p id="store-search-help" class="field__help">先获取当前定位；深绿色可直接打卡，琥珀色需先建档。</p>
                         <div id="store-search-results" class="search-results" role="listbox" hidden></div>
                         <span class="field__error" data-error-for="selected-store"></span>
                     </div>
@@ -205,10 +205,10 @@
 
                     <button id="create-store-link" class="create-store-action" type="button">
                         <span class="create-store-action__copy">
-                            <strong>附近找不到这家门店？</strong>
-                            <small>先从高德附近地点选择，再补全门店资料</small>
+                            <strong>附近仍找不到？</strong>
+                            <small>可手工新建门店；高德暂不可用时也能继续填写</small>
                         </span>
-                        <span class="create-store-action__button">录入新门店</span>
+                        <span class="create-store-action__button">手工建档</span>
                     </button>
                 </section>
             </section>
@@ -408,13 +408,14 @@
             <div class="store-editor-header">
                 <button id="cancel-store-button" class="text-button store-back-button" type="button">返回拜访打卡</button>
                 <div>
-                    <h2>完善门店资料</h2>
+                    <p class="section-kicker">当前页面</p>
+                    <h2>新门店建档</h2>
                 </div>
             </div>
 
             <div class="notice notice--plain store-prefill-notice">
                 <div>
-                    <strong>已沿用本次城市、销售和定位</strong>
+                    <strong>本次拜访草稿已保留</strong>
                     <p id="store-prefill-message">保存后会自动返回打卡并选中这家门店。</p>
                 </div>
             </div>
@@ -482,10 +483,10 @@
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">第二步</p>
-                        <h2>先搜索附近门店</h2>
+                        <h2>确认门店来源</h2>
                     </div>
                 </div>
-                <p class="section-description">已录入门店可直接返回打卡；未录入的高德地点才需补全资料。</p>
+                <p class="section-description">优先选择高德地点；确实找不到或高德暂不可用时可手工录入。</p>
                 <div class="field poi-search-field">
                     <label for="poi-search" class="field__label">附近门店 / 高德地点</label>
                     <div class="search-input-wrap">

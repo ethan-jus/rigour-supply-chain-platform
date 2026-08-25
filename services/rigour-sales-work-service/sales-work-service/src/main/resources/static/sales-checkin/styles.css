@@ -2275,7 +2275,7 @@ body {
     border-radius: 999px;
     color: #96501d;
     background: #fff2e6;
-    font-size: 9px;
+    font-size: 12px;
     white-space: nowrap;
 }
 
@@ -2286,7 +2286,7 @@ body {
 
 .poi-result__meta small {
     color: var(--ink-soft);
-    font-size: 10px;
+    font-size: 11px;
 }
 
 .selected-card {
@@ -2910,5 +2910,123 @@ body {
 
     .identity-summary .text-button {
         min-height: 44px;
+    }
+}
+
+/* 拜访与建档是两段连续流程，用色彩和页头明确当前所处页面。 */
+body.is-store-page {
+    --brand: #a65312;
+    --brand-dark: #74340b;
+    --brand-soft: #fff0d8;
+    --canvas: #fffaf3;
+    --surface-soft: #fff8ed;
+    --line: #eadcca;
+    --line-strong: #d8bea0;
+    background: #fffaf3;
+}
+
+body.is-store-page .hero {
+    background: linear-gradient(135deg, #75370d 0%, #a65312 60%, #c5772c 100%);
+}
+
+body.is-store-page .brand-mark {
+    color: #74340b;
+}
+
+body.is-store-page .identity-summary {
+    border-color: #e2c39e;
+    background: linear-gradient(135deg, #fff5e7, #fff);
+}
+
+body.is-store-page .store-editor-header {
+    border-bottom-color: #ead6bd;
+    background: #fff7eb;
+}
+
+body.is-store-page .store-editor-header .section-kicker {
+    margin-bottom: 3px;
+    color: #a65312;
+}
+
+body.is-store-page .store-prefill-notice {
+    border-color: #e5c59f;
+    color: #71380f;
+    background: #fff6e8;
+}
+
+body.is-store-page #store-panel .form-card {
+    border-bottom-color: #eadcca;
+}
+
+body.is-store-page #submit-store-button {
+    background: #a65312;
+}
+
+.visit-store-result {
+    border-left: 4px solid transparent;
+}
+
+.visit-store-result.is-registered {
+    border-left-color: #087a54;
+    background: #f6fbf8;
+}
+
+.visit-store-result.is-new-poi {
+    border-left-color: #c66a1b;
+    background: #fffaf3;
+}
+
+.visit-store-result__meta {
+    display: grid !important;
+    flex: 0 0 auto;
+    justify-items: end;
+    gap: 4px;
+}
+
+.visit-store-result__meta strong {
+    padding: 3px 7px;
+    border-radius: 999px;
+    color: #9a4f12;
+    background: #ffead0;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.visit-store-result.is-registered .visit-store-result__meta strong {
+    color: #087a54;
+    background: #e8f7f0;
+}
+
+.visit-store-result__meta small {
+    color: var(--ink-soft);
+    font-size: 11px;
+}
+
+.create-store-action {
+    border-color: #deb98d;
+    background: #fffaf3;
+}
+
+.create-store-action:hover,
+.create-store-action:focus-visible {
+    border-color: #b75c13;
+    box-shadow: 0 0 0 3px rgba(183, 92, 19, 0.1);
+}
+
+.create-store-action__copy strong {
+    color: #6f370f;
+}
+
+.create-store-action__button {
+    background: #a65312;
+}
+
+@media (max-width: 619px) {
+    .visit-store-result {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .visit-store-result__meta {
+        align-self: center;
     }
 }

@@ -202,19 +202,19 @@ public class TemporaryCheckinService {
             return new LocationContextView(geocode.status(), geocode.address(), geocode.formattedAddress(),
                     geocode.adcode(), cityMatch.matched(), cityMatch.resolvedCity(), cityMatch.message(),
                     maxDistanceMeters, maxAccuracyMeters, maxLocationAgeMinutes,
-                    accuracyAccepted, freshnessAccepted, List.of());
+                    accuracyAccepted, freshnessAccepted, "SKIPPED", List.of());
         }
         if (!accuracyAccepted) {
             return new LocationContextView(geocode.status(), geocode.address(), geocode.formattedAddress(),
                     geocode.adcode(), cityMatch.matched(), cityMatch.resolvedCity(),
                     accuracyMessage(location.accuracyMeters()), maxDistanceMeters, maxAccuracyMeters,
-                    maxLocationAgeMinutes, false, freshnessAccepted, List.of());
+                    maxLocationAgeMinutes, false, freshnessAccepted, "SKIPPED", List.of());
         }
         if (!freshnessAccepted) {
             return new LocationContextView(geocode.status(), geocode.address(), geocode.formattedAddress(),
                     geocode.adcode(), cityMatch.matched(), cityMatch.resolvedCity(),
                     freshnessMessage(location), maxDistanceMeters, maxAccuracyMeters,
-                    maxLocationAgeMinutes, true, false, List.of());
+                    maxLocationAgeMinutes, true, false, "SKIPPED", List.of());
         }
 
         List<StoreRow> registeredStores = repository.findActiveStoresByCity(tenantId, city);
@@ -242,6 +242,7 @@ public class TemporaryCheckinService {
                 .toList();
 
         List<NearbyStoreView> poiNearby = List.of();
+        String poiLookupStatus = "UNAVAILABLE";
         if (hasValidCoordinates(geocode.amapLongitude(), geocode.amapLatitude())) {
             try {
                 Set<UUID> registeredNearbyIds = registeredNearby.stream()
@@ -255,16 +256,16 @@ public class TemporaryCheckinService {
                         .map(String::trim)
                         .filter(value -> !value.isEmpty())
                         .collect(java.util.stream.Collectors.toSet());
-                Set<String> registeredNames = registeredNearby.stream()
-                        .map(item -> normalizeName(item.name())).collect(java.util.stream.Collectors.toSet());
-                poiNearby = amapPoiClient.searchAround(query == null ? "" : query,
-                                geocode.amapLongitude(), geocode.amapLatitude(),
-                                maxDistanceMeters, 1, NEARBY_LIMIT)
-                        .items().stream()
+                AmapPoiClient.NearbyPoiPage poiPage = amapPoiClient.searchAround(
+                        query == null ? "" : query, geocode.amapLongitude(), geocode.amapLatitude(),
+                        maxDistanceMeters, 1, NEARBY_LIMIT);
+                List<AmapPoiClient.NearbyPoi> poiItems = poiPage == null || poiPage.items() == null
+                        ? List.of() : poiPage.items();
+                poiLookupStatus = poiItems.isEmpty() ? "EMPTY" : "AVAILABLE";
+                poiNearby = poiItems.stream()
                         .filter(poi -> poi.name() != null && !poi.name().isBlank())
                         .filter(poi -> hasText(poi.poiId()))
                         .filter(poi -> !registeredPoiIds.contains(poi.poiId().trim()))
-                        .filter(poi -> !registeredNames.contains(normalizeName(poi.name())))
                         .filter(poi -> hasValidCoordinates(poi.longitude(), poi.latitude()))
                         .map(poi -> new PoiDistance(poi, distanceMeters(
                                 geocode.amapLatitude(), geocode.amapLongitude(),
@@ -294,7 +295,7 @@ public class TemporaryCheckinService {
         return new LocationContextView(geocode.status(), geocode.address(), geocode.formattedAddress(),
                 geocode.adcode(), cityMatch.matched(), cityMatch.resolvedCity(), cityMatch.message(),
                 maxDistanceMeters, maxAccuracyMeters, maxLocationAgeMinutes,
-                true, true, List.copyOf(nearby));
+                true, true, poiLookupStatus, List.copyOf(nearby));
     }
 
     @Transactional
@@ -1229,7 +1230,7 @@ public class TemporaryCheckinService {
      */
     private NormalizedStore verifyNearbyPoi(NormalizedStore store, GeocodeResult geocode) {
         if (!hasValidCoordinates(geocode.amapLongitude(), geocode.amapLatitude())) {
-            throw TemporaryCheckinException.badRequest("当前定位无法完成附近门店校验，请重新定位后再试");
+            return asUnverifiedGpsStore(store);
         }
         String keyword = store.sourcePoiId() == null ? store.name() : store.sourcePoiName();
         AmapPoiClient.NearbyPoiPage page;
@@ -1237,7 +1238,10 @@ public class TemporaryCheckinService {
             page = amapPoiClient.searchAround(keyword, geocode.amapLongitude(), geocode.amapLatitude(),
                     properties.getMaxCheckinDistanceMeters(), 1, NEARBY_LIMIT);
         } catch (AmapPoiException exception) {
-            throw TemporaryCheckinException.badRequest("附近门店校验暂不可用，请稍后重新定位再试");
+            // 浏览器刚从附近列表选中 POI 后，高德二次校验仍可能瞬时超时或遇到
+            // 响应格式波动。此时只按已通过城市、精度和时效校验的现场 GPS 建档，
+            // 且清除所有未经服务端复核的 POI 身份与坐标，不能冒充已验证高德门店。
+            return asUnverifiedGpsStore(store);
         }
         List<PoiDistance> candidates = page.items().stream()
                 .filter(poi -> hasText(poi.poiId()) && hasText(poi.name()))
@@ -1270,6 +1274,16 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.badRequest("高德门店候选信息已变化，请重新定位后从下拉列表选择");
         }
         return withVerifiedPoi(store, selected.poi());
+    }
+
+    private static NormalizedStore asUnverifiedGpsStore(NormalizedStore store) {
+        if (store.sourcePoiId() == null) return store;
+        return new NormalizedStore(store.city(), store.salespersonId(),
+                null, null, null, null, null,
+                store.attribute(), store.name(), store.operatingStatus(), store.contactName(),
+                store.contactPhone(), store.areaRange(), store.facilityCount(), store.businessTypes(),
+                store.intendedBusinesses(), store.cooperationIntent(), store.storeGrade(), store.tags(),
+                store.location());
     }
 
     private static NormalizedStore withVerifiedPoi(
@@ -1408,9 +1422,13 @@ public class TemporaryCheckinService {
                 && hasText(row.sourcePoiName())
                 && normalizeName(row.name()).equals(normalizeName(normalized.name()))
                 && normalizeName(row.sourcePoiName()).equals(normalizeName(normalized.name()));
+        boolean serverDegradedPoiRetry = verifiedPoiRequest
+                && !hasText(row.sourcePoiId())
+                && normalizeName(row.name()).equals(normalizeName(normalized.name()));
         if (!Objects.equals(row.city(), normalized.city())
                 || !Objects.equals(row.creatorSalespersonId(), normalized.salespersonId())
-                || (!serverSelectedPoiRetry && !Objects.equals(row.sourcePoiId(), normalized.sourcePoiId()))
+                || (!serverSelectedPoiRetry && !serverDegradedPoiRetry
+                        && !Objects.equals(row.sourcePoiId(), normalized.sourcePoiId()))
                 || (!verifiedPoiRequest && !serverSelectedPoiRetry
                         && (!Objects.equals(row.sourcePoiName(), normalized.sourcePoiName())
                         || !Objects.equals(row.sourcePoiAddress(), normalized.sourcePoiAddress())

@@ -59,6 +59,54 @@ class RestAmapPoiClientTest {
     }
 
     @Test
+    void toleratesEmptyArrayScalarsAndSkipsOnlyMalformedPois() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RestAmapPoiClient client = new RestAmapPoiClient(builder.build(), properties, JsonMapper.builder().build());
+        server.expect(requestTo(containsString("/place/around")))
+                .andRespond(withSuccess("""
+                        {"status":"1","info":"OK","count":[],"pois":[
+                          {"id":"B101","name":"空字段门店","type":[],"typecode":[],"address":[],
+                           "location":"120.100000,30.200000","distance":120},
+                          {"id":[],"name":"缺少ID","address":"坏数据",
+                           "location":"120.101000,30.201000","distance":"20"},
+                          "not-an-object",
+                          {"id":"B102","name":"正常门店","type":"体育休闲服务",
+                           "typecode":"080000","address":"科技园路2号",
+                           "location":"120.102000,30.202000","distance":[]}
+                        ]}
+                        """, MediaType.APPLICATION_JSON));
+
+        NearbyPoiPage page = client.searchAround("门店", new BigDecimal("120.1"),
+                new BigDecimal("30.2"), 3000, 1, 20);
+
+        assertThat(page.total()).isZero();
+        assertThat(page.items()).extracting(item -> item.poiId())
+                .containsExactly("B101", "B102");
+        assertThat(page.items().get(0).address()).isNull();
+        assertThat(page.items().get(0).type()).isNull();
+        assertThat(page.items().get(0).distanceMeters()).isEqualByComparingTo("120");
+        assertThat(page.items().get(1).distanceMeters()).isNull();
+        server.verify();
+    }
+
+    @Test
+    void rejectsMalformedPoisContainerInsteadOfReportingAnEmptyResult() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RestAmapPoiClient client = new RestAmapPoiClient(builder.build(), properties, JsonMapper.builder().build());
+        server.expect(requestTo(containsString("/place/around")))
+                .andRespond(withSuccess("""
+                        {"status":"1","info":"OK","count":"1","pois":{}}
+                        """, MediaType.APPLICATION_JSON));
+
+        assertThatThrownBy(() -> client.searchAround("门店", new BigDecimal("120.1"),
+                new BigDecimal("30.2"), 3000, 1, 20))
+                .isInstanceOf(AmapPoiException.class);
+        server.verify();
+    }
+
+    @Test
     void failsWhenUpstreamReturnsBusinessError() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

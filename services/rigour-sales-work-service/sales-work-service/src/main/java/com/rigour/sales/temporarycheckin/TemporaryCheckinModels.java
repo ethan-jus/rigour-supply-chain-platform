@@ -99,6 +99,7 @@ public final class TemporaryCheckinModels {
             int maxLocationAgeMinutes,
             boolean accuracyAccepted,
             boolean freshnessAccepted,
+            String poiLookupStatus,
             List<NearbyStoreView> nearbyStores) { }
 
     public record CreateSubmissionRequest(

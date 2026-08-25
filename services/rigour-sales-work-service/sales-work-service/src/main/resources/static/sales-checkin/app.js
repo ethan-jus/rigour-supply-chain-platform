@@ -409,7 +409,13 @@
         $("#identity-switch").addEventListener("click", switchIdentity);
 
         $$("[data-tab]").forEach((button) => {
-            button.addEventListener("click", () => switchTab(button.dataset.tab));
+            button.addEventListener("click", () => {
+                if (button.dataset.tab === "store" && state.activeTab !== "store") {
+                    prepareNewStore();
+                } else {
+                    switchTab(button.dataset.tab);
+                }
+            });
             button.addEventListener("keydown", handleTabKeydown);
         });
 
@@ -423,9 +429,9 @@
         $("#store-salesperson").addEventListener("change", persistFromForm);
 
         $("#store-search").addEventListener("input", scheduleStoreSearch);
-        $("#store-search").addEventListener("focus", () => showRegisteredStoreOptions());
+        $("#store-search").addEventListener("focus", () => showVisitStoreOptions());
         $("#store-search").addEventListener("keydown", handleStoreSearchKeydown);
-        $("#store-search-toggle").addEventListener("click", toggleRegisteredStoreOptions);
+        $("#store-search-toggle").addEventListener("click", toggleVisitStoreOptions);
         $("#clear-store-button").addEventListener("click", clearSelectedStore);
         $("#create-store-link").addEventListener("click", () => prepareNewStore());
         $("#cancel-store-button").addEventListener("click", () => switchTab("visit"));
@@ -485,7 +491,8 @@
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
         event.preventDefault();
         const next = event.currentTarget.dataset.tab === "visit" ? "store" : "visit";
-        switchTab(next, true);
+        if (next === "store") prepareNewStore();
+        else switchTab(next, true);
     }
 
     function switchTab(tab, focusTab = false) {
@@ -517,6 +524,13 @@
         $("#store-tab").setAttribute("aria-selected", String(!visitActive));
         $("#visit-panel").hidden = !visitActive;
         $("#store-panel").hidden = visitActive;
+        document.body.classList.toggle("is-store-page", !visitActive);
+        $("#hero-title").textContent = visitActive ? "拜访打卡" : "新门店建档";
+        $("#hero-description").textContent = visitActive
+            ? "定位、选择门店并记录本次拜访。"
+            : "补全门店资料后，将自动返回并继续本次打卡。";
+        document.title = visitActive ? "销售拜访打卡" : "新门店建档";
+        $("meta[name=\"theme-color\"]")?.setAttribute("content", visitActive ? "#073e42" : "#9a4f12");
     }
 
     async function fetchOptions(city) {
@@ -596,6 +610,7 @@
     }
 
     async function handleCityChange(scope) {
+        if (state.submitting) return;
         if (scope === "visit" && isBusinessLocked()) return;
         hideError();
         const city = $(`#${scope}-city`).value;
@@ -711,20 +726,22 @@
         const query = $("#store-search").value.trim();
         if (query.length < 2) {
             state.visit.nearbySearchResults = null;
-            showRegisteredStoreOptions();
+            showVisitStoreOptions();
             return;
         }
-        showRegisteredStoreOptions();
+        showVisitStoreOptions();
         state.searchTimer = window.setTimeout(() => searchNearbyWithQuery("visit", query), SEARCH_DELAY_MS);
     }
 
-    function registeredNearbyStores() {
+    function visitNearbyOptions() {
         const source = Array.isArray(state.visit.nearbySearchResults)
             ? state.visit.nearbySearchResults
             : state.visit.nearbyStores;
-        return (Array.isArray(source) ? source : [])
-            .filter((store) => store?.source === "REGISTERED" && (store.storeId || store.id) && store.name)
-            .filter((store) => store.checkinEligible === true && store.nextAction === "CHECK_IN");
+        return (Array.isArray(source) ? source : []).filter(isUsableNearbyStore);
+    }
+
+    function registeredNearbyStores() {
+        return visitNearbyOptions().filter((store) => store.source === "REGISTERED");
     }
 
     function abortStoreSearch() {
@@ -767,12 +784,18 @@
             const stores = Array.isArray(payload.nearbyStores)
                 ? payload.nearbyStores.filter(isUsableNearbyStore)
                 : [];
+            const poiLookupStatus = cleanText(payload.poiLookupStatus) || "UNAVAILABLE";
+            state[scope].locationContext = {
+                ...(state[scope].locationContext || {}),
+                poiLookupStatus
+            };
             if (isVisit) {
                 state.visit.nearbySearchResults = stores;
-                showRegisteredStoreOptions();
+                showVisitStoreOptions();
             } else {
                 state.store.poiSearchResults = stores;
-                state.store.manualEntryAllowed = state.store.poiSearchResults.length === 0;
+                state.store.manualEntryAllowed = poiLookupStatus === "UNAVAILABLE"
+                    || state.store.poiSearchResults.length === 0;
                 renderStoreSource();
                 if (state.store.manualEntryAllowed) {
                     hidePoiResults();
@@ -789,9 +812,13 @@
             if (isVisit) {
                 $("#store-search-help").textContent = errorMessage(error, "附近门店搜索失败，请稍后重试。");
             } else {
-                state.store.manualEntryAllowed = false;
+                state.store.manualEntryAllowed = Boolean(state.store.location
+                    && (locationContextReady(state.store.locationContext)
+                        || manualStoreFallbackAvailable(state.store.locationContext, state.store.location)));
                 renderStoreSource();
-                $("#poi-search-help").textContent = errorMessage(error, "高德附近地点搜索失败，请稍后重试。");
+                $("#poi-search-help").textContent = state.store.manualEntryAllowed
+                    ? "高德搜索暂不可用，可点击下方手工录入继续。"
+                    : errorMessage(error, "高德附近地点搜索失败，请稍后重试。");
             }
         } finally {
             if (state[controllerKey] === controller) {
@@ -801,26 +828,33 @@
         }
     }
 
-    function showRegisteredStoreOptions() {
+    function showVisitStoreOptions() {
         const input = $("#store-search");
         if (input.disabled) return;
         const query = input.value.trim().toLocaleLowerCase("zh-CN");
-        const stores = registeredNearbyStores().filter((store) => {
+        const options = visitNearbyOptions();
+        const stores = options.filter((store) => {
             if (!query) return true;
             return [store.name, store.address, store.locationSummary]
                 .some((value) => cleanText(value).toLocaleLowerCase("zh-CN").includes(query));
         });
         renderStoreResults(stores);
-        const total = registeredNearbyStores().length;
+        const registeredCount = options.filter((store) => store.source === "REGISTERED").length;
+        const poiCount = options.length - registeredCount;
+        const lookupUnavailable = state.visit.locationContext?.poiLookupStatus === "UNAVAILABLE";
         $("#store-search-help").textContent = stores.length
-            ? `当前显示 ${stores.length} 家，共 ${total} 家可打卡门店`
-            : "附近已录入门店中没有匹配结果。";
+            ? lookupUnavailable
+                ? `${registeredCount} 家附近已建档门店；高德地点暂不可用`
+                : `${visitRadiusLabel()}：${registeredCount} 家已建档 · ${poiCount} 个新地点`
+            : lookupUnavailable
+                ? "高德地点暂不可用，可使用下方手工建档。"
+                : `${visitRadiusLabel()}没有匹配结果，可换关键词或手工建档。`;
     }
 
-    function toggleRegisteredStoreOptions() {
+    function toggleVisitStoreOptions() {
         if ($("#store-search").disabled) return;
         if ($("#store-search-results").hidden) {
-            showRegisteredStoreOptions();
+            showVisitStoreOptions();
             $("#store-search").focus();
         } else {
             hideStoreResults();
@@ -833,13 +867,14 @@
         if (!stores.length) {
             const empty = document.createElement("div");
             empty.className = "search-empty";
-            empty.textContent = "未找到门店，请继续确认名称或新增门店。";
+            empty.textContent = "附近没有匹配结果，可换关键词或手工建档。";
             root.appendChild(empty);
         } else {
             stores.forEach((store) => {
+                const registered = store.source === "REGISTERED" && Boolean(store.storeId || store.id);
                 const button = document.createElement("button");
                 button.type = "button";
-                button.className = "search-result";
+                button.className = `search-result visit-store-result ${registered ? "is-registered" : "is-new-poi"}`;
                 button.setAttribute("role", "option");
 
                 const detail = document.createElement("span");
@@ -849,11 +884,19 @@
                 location.textContent = store.locationSummary || store.address || "暂无位置摘要";
                 detail.append(name, location);
 
-                const distance = document.createElement("span");
-                distance.className = "search-result__city";
+                const meta = document.createElement("span");
+                meta.className = "visit-store-result__meta";
+                const status = document.createElement("strong");
+                status.textContent = registered ? "已建档 · 直接打卡" : "新地点 · 先建档";
+                const distance = document.createElement("small");
                 distance.textContent = formatDistance(store.distanceMeters) || "附近";
-                button.append(detail, distance);
-                button.addEventListener("click", () => selectStore(store));
+                meta.append(status, distance);
+
+                button.append(detail, meta);
+                button.addEventListener("click", () => {
+                    if (registered) selectStore(store);
+                    else prepareNewStore(store);
+                });
                 root.appendChild(button);
             });
         }
@@ -873,7 +916,7 @@
         }
         if (event.key === "ArrowDown" && $("#store-search-results").hidden) {
             event.preventDefault();
-            showRegisteredStoreOptions();
+            showVisitStoreOptions();
         }
     }
 
@@ -906,7 +949,7 @@
         if (persist) persistDraft();
         if (focusSearch && !$("#store-search").disabled) {
             $("#store-search").focus();
-            showRegisteredStoreOptions();
+            showVisitStoreOptions();
         }
     }
 
@@ -933,15 +976,27 @@
             && Number.isFinite(Number(context.maxLocationAgeMinutes)));
     }
 
+    function manualStoreFallbackAvailable(context = state.visit.locationContext, location = state.visit.location) {
+        return Boolean(location
+            && context?.geocodeStatus === "FAILED"
+            && context.cityMatched !== false
+            && context.accuracyAccepted !== false
+            && context.freshnessAccepted !== false);
+    }
+
     function renderNearbyStores() {
         const panel = $("#nearby-stores-panel");
         const context = state.visit.locationContext;
-        const stores = registeredNearbyStores();
+        const options = visitNearbyOptions();
         const input = $("#store-search");
         const toggle = $("#store-search-toggle");
         const createButton = $("#create-store-link");
+        const lookupUnavailable = context?.poiLookupStatus === "UNAVAILABLE";
         panel.hidden = !state.visit.location;
         hideStoreResults();
+        $("#nearby-stores-scope").textContent = locationContextReady(context)
+            ? `${visitRadiusLabel(context)}候选：已建档直接打卡，新地点先建档`
+            : "仅显示当前定位允许范围内的候选";
         if (!state.visit.location) {
             input.disabled = true;
             toggle.disabled = true;
@@ -958,28 +1013,38 @@
             return;
         }
         if (!locationContextReady(context)) {
-            $("#nearby-stores-summary").textContent = "需要处理定位问题";
-            $("#store-search-help").textContent = context?.errorMessage
-                || "地址与附近门店未加载，请使用上方重试按钮。";
+            const manualFallback = manualStoreFallbackAvailable(context);
+            $("#nearby-stores-summary").textContent = manualFallback ? "附近地点暂不可用" : "需要处理定位问题";
+            $("#store-search-help").textContent = manualFallback
+                ? "可重试高德解析，或使用下方“手工建档”继续填写。"
+                : context?.errorMessage || "请使用上方重试按钮重新解析定位。";
             input.disabled = true;
             toggle.disabled = true;
-            createButton.disabled = true;
+            createButton.disabled = !manualFallback;
             return;
         }
         createButton.disabled = false;
-        if (!stores.length) {
-            $("#nearby-stores-summary").textContent = "附近暂无可打卡门店";
-            $("#store-search-help").textContent = "如果是新门店，请先点击下方“录入新门店”补全资料。";
-            input.placeholder = "附近暂无已录入门店";
-            input.disabled = true;
+        input.disabled = false;
+        if (!options.length) {
+            $("#nearby-stores-summary").textContent = lookupUnavailable
+                ? "高德地点暂不可用" : "附近暂无结果";
+            $("#store-search-help").textContent = lookupUnavailable
+                ? "已建档门店和高德地点暂无可用结果，可直接手工建档。"
+                : "可输入至少 2 个字继续搜索，或直接手工建档。";
+            input.placeholder = "输入门店名称搜索附近地点";
             toggle.disabled = true;
             return;
         }
-        input.disabled = false;
         toggle.disabled = false;
         input.placeholder = "点击选择，或输入名称搜索";
-        $("#nearby-stores-summary").textContent = `附近 ${stores.length} 家可选`;
-        $("#store-search-help").textContent = "下拉中仅显示当前定位附近的可打卡门店。";
+        const registeredCount = options.filter((store) => store.source === "REGISTERED").length;
+        const poiCount = options.length - registeredCount;
+        $("#nearby-stores-summary").textContent = lookupUnavailable
+            ? "高德地点暂不可用"
+            : `${visitRadiusLabel(context)} ${options.length} 个`;
+        $("#store-search-help").textContent = lookupUnavailable
+            ? `仅显示范围内已建档 ${registeredCount} 家；新门店可手工建档。`
+            : `范围内已建档 ${registeredCount} 家、新地点 ${poiCount} 个；深绿色直接打卡，琥珀色先建档。`;
     }
 
     function formatDistance(value) {
@@ -987,6 +1052,11 @@
         if (!Number.isFinite(meters) || meters < 0) return "";
         if (meters < 1000) return `${Math.max(1, Math.round(meters))} 米`;
         return `${(meters / 1000).toFixed(meters < 10000 ? 1 : 0)} 公里`;
+    }
+
+    function visitRadiusLabel(context = state.visit.locationContext) {
+        const radius = finiteNumberOrNull(context?.maxCheckinDistanceMeters);
+        return radius === null ? "当前定位附近" : `${formatDistance(radius)}内`;
     }
 
     function nearbyPoiStores() {
@@ -1235,8 +1305,9 @@
             $("#poi-search-help").textContent = "正在解析地址并加载附近地点…";
         } else if (!locationContextReady(context)) {
             input.placeholder = "定位解析未完成";
-            $("#poi-search-help").textContent = context?.errorMessage
-                || "请使用上方重试按钮，或重新定位。";
+            $("#poi-search-help").textContent = state.store.manualEntryAllowed
+                ? "高德暂不可用，可继续手工录入；保存时服务端仍会校验当前位置。"
+                : context?.errorMessage || "请使用上方重试按钮，或重新定位。";
         } else if (!pois.length) {
             input.placeholder = "输入至少 2 个字搜索附近地点";
             $("#poi-search-help").textContent = state.store.manualEntryAllowed
@@ -1249,7 +1320,12 @@
     }
 
     async function prepareNewStore(sourcePoi = null) {
+        if (state.submitting) return;
         if (isBusinessLocked()) return;
+        abortStoreSearch();
+        state.visit.nearbySearchResults = null;
+        hideStoreResults();
+        $("#store-search").value = state.visit.selectedStore?.name || "";
         hideStoreSavedNotice();
         syncStateFromForm();
         clearFieldError("visit-city");
@@ -1278,6 +1354,11 @@
         }
         state.store.nearbyPois = (Array.isArray(state.visit.nearbyStores) ? state.visit.nearbyStores : [])
             .filter(isUsableNearbyStore);
+        if (!sourcePoi) {
+            clearSourcePoi(false, false);
+            state.store.sourceMode = "MANUAL";
+            state.store.manualEntryAllowed = true;
+        }
         persistDraft();
         try {
             if (state.store.city) await ensureSalespersons(state.store.city);
@@ -1337,6 +1418,7 @@
     }
 
     async function captureLocation(scope) {
+        if (state.submitting) return;
         if (scope === "visit" && isBusinessLocked()) return;
         hideError();
         clearFieldError(`${scope}-location`);
@@ -1490,6 +1572,7 @@
                 maxCheckinDistanceMeters: finiteNumberOrNull(payload.maxCheckinDistanceMeters),
                 maxCheckinAccuracyMeters: finiteNumberOrNull(payload.maxCheckinAccuracyMeters),
                 maxLocationAgeMinutes: finiteNumberOrNull(payload.maxLocationAgeMinutes),
+                poiLookupStatus: cleanText(payload.poiLookupStatus) || "UNAVAILABLE",
                 locationMessage,
                 errorMessage: locationMessage
             };
@@ -2162,6 +2245,7 @@
 
     async function submitStore(event) {
         event.preventDefault();
+        if (state.submitting) return;
         hideError();
         syncStateFromForm();
         if (!validateStore()) {
@@ -2170,7 +2254,16 @@
         }
         const payload = buildStorePayload();
         const button = $("#submit-store-button");
-        button.disabled = true;
+        state.submitting = true;
+        setFormsDisabled(true);
+        renderBusinessLock();
+        abortStoreSearch();
+        abortPoiSearch();
+        Object.values(state.locationControllers).forEach((controller) => controller?.abort());
+        state.locationControllers.visit = null;
+        state.locationControllers.store = null;
+        cancelLocationCapture("visit");
+        cancelLocationCapture("store");
         button.textContent = "正在保存…";
         let savedStore = null;
         try {
@@ -2206,7 +2299,9 @@
                 showError(errorMessage(error, "保存门店失败，已保留当前填写内容，请检查网络后重试。"));
             }
         } finally {
-            button.disabled = false;
+            state.submitting = false;
+            setFormsDisabled(false);
+            if (state.activeTab === "store") renderStoreSource();
             button.textContent = "保存并选中门店";
         }
     }
