@@ -35,7 +35,7 @@
             <strong>操作未完成</strong>
             <p id="global-error-message"></p>
         </div>
-        <button id="dismiss-error-button" class="icon-button" type="button" aria-label="关闭错误提示">×</button>
+        <button id="dismiss-error-button" class="text-button" type="button">关闭</button>
     </div>
 
     <nav class="tabs workflow-tabs" aria-label="表单类型" role="tablist">
@@ -89,7 +89,6 @@
                         <span id="visit-location-status" class="status-pill">未定位</span>
                     </div>
                     <button id="visit-location-button" class="secondary-button location-button" type="button">
-                        <span class="location-dot" aria-hidden="true"></span>
                         <span id="visit-location-button-label">获取当前位置</span>
                     </button>
                     <div id="visit-location-detail" class="location-detail" hidden>
@@ -123,7 +122,6 @@
                     <div class="field store-search-field">
                         <label for="store-search" class="field__label">按门店名称搜索</label>
                         <div class="search-input-wrap">
-                            <span class="search-icon" aria-hidden="true"></span>
                             <input id="store-search" type="search" inputmode="search" autocomplete="off"
                                    placeholder="输入至少 2 个字搜索门店" aria-autocomplete="list"
                                    aria-controls="store-search-results" aria-expanded="false">
@@ -202,7 +200,6 @@
                         <label class="file-picker" for="storefront-photo">
                             <input id="storefront-photo" type="file" accept="image/*"
                                    capture="environment">
-                            <span class="file-picker__icon" aria-hidden="true">拍</span>
                             <span>
                                 <strong>拍照或选择照片</strong>
                                 <small>JPG、PNG、WebP、HEIC/HEIF 等常见图片，最大 10MB</small>
@@ -214,7 +211,7 @@
                                 <strong id="photo-file-name"></strong>
                                 <span id="photo-file-size"></span>
                             </div>
-                            <button id="remove-photo-button" class="icon-button" type="button" aria-label="移除现场照片">×</button>
+                            <button id="remove-photo-button" class="text-button file-remove-button" type="button">移除</button>
                         </div>
                         <span class="field__error" data-error-for="storefront-photo"></span>
                     </div>
@@ -231,7 +228,6 @@
                             </div>
                             <label class="file-picker file-picker--muted" for="wechat-screenshot">
                                 <input id="wechat-screenshot" type="file" accept="image/*">
-                                <span class="file-picker__icon" aria-hidden="true">图</span>
                                 <span>
                                     <strong>选择企微截图</strong>
                                     <small>JPG、PNG、WebP、HEIC/HEIF 等常见图片，最大 10MB</small>
@@ -243,7 +239,7 @@
                                     <strong id="wechat-file-name"></strong>
                                     <span id="wechat-file-size"></span>
                                 </div>
-                                <button id="remove-wechat-button" class="icon-button" type="button" aria-label="移除企微截图">×</button>
+                                <button id="remove-wechat-button" class="text-button file-remove-button" type="button">移除</button>
                             </div>
                             <span class="field__error" data-error-for="wechat-screenshot"></span>
                         </div>
@@ -274,7 +270,7 @@
                             <strong id="audio-file-name"></strong>
                             <span id="audio-file-size"></span>
                         </div>
-                        <button id="remove-audio-button" class="icon-button" type="button" aria-label="移除录音">×</button>
+                        <button id="remove-audio-button" class="text-button file-remove-button" type="button">移除</button>
                     </div>
                     <div class="fallback-picker">
                         <span>无法录音？</span>
@@ -304,7 +300,6 @@
 
             <button id="submit-visit-button" class="primary-button" type="submit">
                 <span>提交拜访打卡</span>
-                <span class="button-arrow" aria-hidden="true">→</span>
             </button>
             <p class="submit-hint">提交后将依次创建草稿、上传文件并完成打卡，请勿关闭页面。</p>
         </form>
@@ -448,7 +443,6 @@
                 </div>
                 <p class="section-description">请在门店现场获取位置，定位会随门店信息一起保存。</p>
                 <button id="store-location-button" class="secondary-button location-button" type="button">
-                    <span class="location-dot" aria-hidden="true"></span>
                     <span id="store-location-button-label">获取当前位置</span>
                 </button>
                 <div id="store-location-detail" class="location-detail" hidden>
@@ -492,7 +486,6 @@
     </section>
 
     <section id="success-panel" class="success-panel" role="status" hidden>
-        <div class="success-mark" aria-hidden="true">✓</div>
         <p class="section-kicker">提交成功</p>
         <h2>本次拜访已保存</h2>
         <p>提交编号：<strong id="success-submission-id"></strong></p>
