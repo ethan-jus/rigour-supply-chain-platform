@@ -9,6 +9,9 @@
     const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
     const MAX_RECORDING_MS = 20 * 60 * 1000;
     const SEARCH_DELAY_MS = 350;
+    const APPLE_REFERENCE_EPOCH_OFFSET_MS = 978307200000;
+    const LOCATION_CAPTURE_PAST_WINDOW_MS = 60 * 60 * 1000;
+    const LOCATION_CAPTURE_FUTURE_SKEW_MS = 2 * 60 * 1000;
     const PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
 
     const MEDIA = Object.freeze({
@@ -445,7 +448,14 @@
         if (isBusinessLocked() && tab === "store") return;
         state.activeTab = tab === "store" ? "store" : "visit";
         renderTab(state.activeTab);
-        if (state.activeTab === "store") renderStoreSource();
+        if (state.activeTab === "store") {
+            renderLocation("store");
+            renderStoreSource();
+        } else {
+            renderLocation("visit");
+            renderNearbyStores();
+            renderSelectedStore();
+        }
         persistFromForm();
         if (focusTab) {
             $(`#${state.activeTab}-tab`).focus();
@@ -799,6 +809,7 @@
         if (isBusinessLocked()) return;
         const storeId = store.id || store.storeId;
         if (!storeId) return;
+        hideStoreSavedNotice();
         state.visit.selectedStore = {
             id: storeId,
             name: store.name || "未命名门店",
@@ -815,6 +826,7 @@
 
     function clearSelectedStore(persist = true, focusSearch = true) {
         if (isBusinessLocked()) return;
+        hideStoreSavedNotice();
         state.visit.selectedStore = null;
         $("#store-search").value = "";
         renderSelectedStore();
@@ -1166,6 +1178,7 @@
 
     async function prepareNewStore(sourcePoi = null) {
         if (isBusinessLocked()) return;
+        hideStoreSavedNotice();
         syncStateFromForm();
         clearFieldError("visit-city");
         clearFieldError("visit-salesperson");
@@ -1283,7 +1296,7 @@
                     longitude: roundCoordinate(position.coords.longitude),
                     latitude: roundCoordinate(position.coords.latitude),
                     accuracyMeters: roundAccuracy(position.coords.accuracy),
-                    capturedAt: new Date(position.timestamp || Date.now()).toISOString(),
+                    capturedAt: normalizeGeolocationCapturedAt(position.timestamp),
                     ...(note ? { note } : {})
                 };
                 state[scope].locationContext = { geocodeStatus: "RESOLVING" };
@@ -1567,9 +1580,10 @@
         const supportedMimeTypes = new Set([
             "audio/aac", "audio/aacp", "audio/amr", "audio/mp4", "audio/m4a", "audio/x-m4a",
             "audio/mpeg", "audio/mp3", "audio/ogg", "application/ogg", "audio/wav", "audio/x-wav",
-            "audio/webm", "video/webm", "video/mp4"
+            "audio/webm"
         ]);
-        return supportedMimeTypes.has(mimeType) || /\.(aac|amr|m4a|mp3|mp4|ogg|wav|webm)$/i.test(file.name || "");
+        return supportedMimeTypes.has(mimeType)
+            || /\.(aac|amr|m4a|m4b|mp3|mp4|oga|ogg|opus|wav|wave|webm)$/i.test(file.name || "");
     }
 
     function checkRecorderSupport() {
@@ -1860,6 +1874,7 @@
         const button = $("#submit-store-button");
         button.disabled = true;
         button.textContent = "正在保存…";
+        let storeSaved = false;
         try {
             const payload = buildStorePayload();
             const response = normalizeResponse(await requestJson("/stores", {
@@ -1868,30 +1883,43 @@
                 timeout: 45000
             })) || {};
             if (!response.id) throw new Error("门店保存成功但未返回门店编号，请联系管理员。" );
-            state.visit.city = payload.city;
-            state.visit.salespersonId = payload.salespersonId;
-            state.visit.selectedStore = {
-                id: response.id,
+            storeSaved = true;
+            const locationSummary = response.locationSummary || payload.sourcePoiAddress
+                || payload.location.note || state.visit.locationContext?.address || "位置已采集";
+            const createdStore = {
+                source: "REGISTERED",
+                storeId: response.id,
                 name: response.name || payload.name,
                 city: response.city || payload.city,
-                locationSummary: response.locationSummary || payload.sourcePoiAddress
-                    || payload.location.note || "位置已采集"
+                address: locationSummary,
+                locationSummary,
+                distanceMeters: 0,
+                locationSource: payload.sourcePoiId ? "AMAP_POI" : "STORE_LOCATION",
+                checkinEligible: true,
+                nextAction: "CHECK_IN"
             };
+            state.visit.city = payload.city;
+            state.visit.salespersonId = payload.salespersonId;
+            state.visit.nearbyStores = [createdStore, ...state.visit.nearbyStores.filter((item) =>
+                String(item.storeId || item.id) !== String(response.id))];
+            state.visit.nearbySearchResults = null;
             if (!state.visit.customerName) state.visit.customerName = payload.contactName;
             if (!state.visit.customerPhone && payload.contactPhone) state.visit.customerPhone = payload.contactPhone;
             if (!state.visit.location) state.visit.location = { ...payload.location };
             resetStoreDraft(payload.city, payload.salespersonId);
-            await ensureSalespersons(state.visit.city);
             populateCitySelects();
             renderSalespersonSelect("visit");
             renderRestoredValues();
-            renderSelectedStore();
-            renderLocation("visit");
-            persistDraft();
             switchTab("visit");
+            selectStore(createdStore);
+            $("#store-saved-name").textContent = createdStore.name;
+            $("#store-saved-notice").hidden = false;
+            persistDraft();
             $("#selected-store-card").scrollIntoView({ behavior: "smooth", block: "center" });
         } catch (error) {
-            showError(errorMessage(error, "保存门店失败，请检查信息后重试。"));
+            showError(errorMessage(error, storeSaved
+                ? "门店已经保存，但页面回填失败。请返回拜访打卡并重新定位，门店会出现在附近列表中。"
+                : "保存门店失败，请检查信息后重试。"));
         } finally {
             button.disabled = false;
             button.textContent = "保存并选中门店";
@@ -2359,6 +2387,11 @@
         $("#store-form").reset();
     }
 
+    function hideStoreSavedNotice() {
+        const notice = $("#store-saved-notice");
+        if (notice) notice.hidden = true;
+    }
+
     function persistFromForm() {
         syncStateFromForm();
         persistDraft();
@@ -2488,6 +2521,10 @@
         state.submission.businessLocked = Boolean(
             state.submission.serverId || state.submission.businessLocked || state.submission.attemptedPayload
         );
+        if (!isBusinessLocked()) {
+            repairRestoredGeolocationTimestamp("visit", savedAt);
+            repairRestoredGeolocationTimestamp("store", savedAt);
+        }
         state.visit.nearbyStores = Array.isArray(state.visit.nearbyStores)
             ? state.visit.nearbyStores.filter(isUsableNearbyStore)
             : [];
@@ -2727,6 +2764,40 @@
 
     function roundAccuracy(value) {
         return Number(Number(value).toFixed(2));
+    }
+
+    function normalizeGeolocationCapturedAt(value, referenceMs = Date.now()) {
+        const reference = Number.isFinite(Number(referenceMs)) ? Number(referenceMs) : Date.now();
+        const resolved = resolveGeolocationCapturedAtMs(value, reference, LOCATION_CAPTURE_PAST_WINDOW_MS);
+        return new Date(resolved ?? reference).toISOString();
+    }
+
+    function resolveGeolocationCapturedAtMs(value, referenceMs, pastWindowMs) {
+        const raw = typeof value === "number" ? value : Date.parse(value || "");
+        if (!Number.isFinite(raw) || !Number.isFinite(referenceMs)) return null;
+        const minimum = referenceMs - pastWindowMs;
+        const maximum = referenceMs + LOCATION_CAPTURE_FUTURE_SKEW_MS;
+        const candidates = [raw, raw + APPLE_REFERENCE_EPOCH_OFFSET_MS]
+            .filter((candidate) => candidate >= minimum && candidate <= maximum)
+            .sort((left, right) => Math.abs(referenceMs - left) - Math.abs(referenceMs - right));
+        return candidates.length ? candidates[0] : null;
+    }
+
+    function repairRestoredGeolocationTimestamp(scope, savedAtMs) {
+        const location = state[scope].location;
+        if (!location?.capturedAt) return;
+        const raw = Date.parse(location.capturedAt);
+        const repaired = resolveGeolocationCapturedAtMs(location.capturedAt, savedAtMs, DRAFT_TTL_MS);
+        if (!Number.isFinite(raw) || repaired === null || repaired === raw) return;
+        location.capturedAt = new Date(repaired).toISOString();
+        state[scope].locationContext = null;
+        if (scope === "visit") {
+            state.visit.nearbyStores = [];
+            state.visit.nearbySearchResults = null;
+        } else {
+            state.store.nearbyPois = [];
+            state.store.poiSearchResults = null;
+        }
     }
 
     function formatBytes(bytes) {

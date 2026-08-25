@@ -1355,6 +1355,32 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
+    void acceptsSafeAudioMimeAliasesUsedByMobileFilePickers() throws Exception {
+        List<MockMultipartFile> files = List.of(
+                new MockMultipartFile("file", "voice.aac", "audio/aacp",
+                        new byte[] {(byte) 0xff, (byte) 0xf1, 0, 0, 0, 0, 0}),
+                new MockMultipartFile("file", "voice.mp3", "audio/mp3",
+                        new byte[] {'I', 'D', '3'}),
+                new MockMultipartFile("file", "voice.ogg", "application/ogg",
+                        new byte[] {'O', 'g', 'g', 'S'}));
+
+        for (MockMultipartFile file : files) {
+            MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsBytes(submission(
+                                    UUID.randomUUID(), SUBMISSION_KEY, "移动端音频别名", true, location()))))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            UUID submissionId = UUID.fromString(objectMapper.readTree(
+                    created.getResponse().getContentAsByteArray()).path("id").asText());
+
+            upload(submissionId, "audio", file)
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.kind").value("audio"));
+        }
+    }
+
+    @Test
     void separatesMediaByBusinessDirectoryAndUsesCanonicalHashFilenames() throws Exception {
         MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
                         .contentType(MediaType.APPLICATION_JSON)

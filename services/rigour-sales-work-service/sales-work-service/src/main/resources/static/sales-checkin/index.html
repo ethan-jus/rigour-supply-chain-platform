@@ -105,6 +105,12 @@
                     <p>城市、销售、门店和拜访内容不再变更；网络中断后刷新页面可恢复，并继续上传或删除媒体。</p>
                 </div>
             </div>
+            <div id="store-saved-notice" class="notice notice--info" role="status" hidden>
+                <div>
+                    <strong>门店已保存并选中</strong>
+                    <p><span id="store-saved-name"></span> 已回填到本次拜访，请继续填写并提交打卡。</p>
+                </div>
+            </div>
             <section class="form-card visit-main-card">
                 <div class="section-heading form-intro">
                     <div>
@@ -354,7 +360,8 @@
                     <div class="fallback-picker">
                         <span>无法录音？</span>
                         <label for="audio-file">选择已有音频文件</label>
-                        <input id="audio-file" type="file" accept="audio/*">
+                        <input id="audio-file" type="file"
+                               accept=".aac,.amr,.m4a,.m4b,.mp3,.mp4,.oga,.ogg,.opus,.wav,.wave,.webm,audio/aac,audio/aacp,audio/amr,audio/m4a,audio/mp3,audio/mp4,audio/mpeg,audio/ogg,audio/wav,audio/webm,audio/x-m4a,audio/x-wav,application/ogg">
                     </div>
                     <p id="recorder-help" class="field__help">录音时请保持页面在前台；提交后录音可能用于转写和 AI 摘要。</p>
                     <span class="field__error" data-error-for="audio-file"></span>
