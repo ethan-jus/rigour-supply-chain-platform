@@ -5,6 +5,8 @@ import com.qcloud.cos.ClientConfig;
 import com.qcloud.cos.auth.BasicCOSCredentials;
 import com.qcloud.cos.auth.BasicSessionCredentials;
 import com.qcloud.cos.auth.COSCredentials;
+import com.qcloud.cos.http.HttpMethodName;
+import com.qcloud.cos.model.GeneratePresignedUrlRequest;
 import com.qcloud.cos.model.ObjectMetadata;
 import com.qcloud.cos.region.Region;
 import com.rigour.sales.infrastructure.config.SalesRecordingProperties;
@@ -14,6 +16,10 @@ import com.rigour.shared.file.FileMetadata;
 import com.rigour.shared.file.FileStorage;
 import jakarta.annotation.PreDestroy;
 import java.io.InputStream;
+import java.net.URL;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -24,6 +30,8 @@ import org.springframework.util.StringUtils;
 @Component
 @ConditionalOnProperty(prefix = "sales.recording", name = "storage-type", havingValue = "cos")
 public class CosRecordingFileStorage implements FileStorage {
+
+    private static final Duration PRESIGNED_GET_TTL = Duration.ofMinutes(30);
 
     private final COSClient client;
     private final String bucket;
@@ -86,16 +94,46 @@ public class CosRecordingFileStorage implements FileStorage {
         }
     }
 
+    /**
+     * 为指定租户的录音对象生成 30 分钟有效的 GET 预签名地址。
+     *
+     * <p>地址仅用于服务端向语音识别供应商临时授权，不应写入日志或数据库。</p>
+     */
+    public URL generatePresignedGetUrl(String tenantId, String objectKey) {
+        validateObjectKey(tenantId, objectKey);
+        try {
+            GeneratePresignedUrlRequest request =
+                    new GeneratePresignedUrlRequest(bucket, objectKey, HttpMethodName.GET);
+            request.setExpiration(Date.from(Instant.now().plus(PRESIGNED_GET_TTL)));
+            return client.generatePresignedUrl(request);
+        } catch (RuntimeException error) {
+            throw storageFailure("录音对象访问地址生成失败", error);
+        }
+    }
+
     @PreDestroy
     void shutdown() {
         client.shutdown();
     }
 
     private static void validateObjectKey(String tenantId, String objectKey) {
-        if (!StringUtils.hasText(tenantId) || !StringUtils.hasText(objectKey)
-                || !objectKey.startsWith(tenantId + "/") || objectKey.contains("..")) {
+        if (!StringUtils.hasText(tenantId)
+                || !tenantId.equals(tenantId.trim())
+                || tenantId.indexOf('/') >= 0
+                || tenantId.indexOf('\\') >= 0
+                || hasControlCharacter(tenantId)
+                || !StringUtils.hasText(objectKey)
+                || !objectKey.startsWith(tenantId + "/")
+                || objectKey.length() == tenantId.length() + 1
+                || objectKey.contains("..")
+                || objectKey.indexOf('\\') >= 0
+                || hasControlCharacter(objectKey)) {
             throw storageFailure("录音对象键无效", null);
         }
+    }
+
+    private static boolean hasControlCharacter(String value) {
+        return value.codePoints().anyMatch(Character::isISOControl);
     }
 
     private static void requireText(String value, String name) {

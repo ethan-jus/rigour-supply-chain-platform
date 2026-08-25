@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0d5c63">
+    <meta name="description" content="销售拜访打卡与门店信息临时采集页面">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <title>销售拜访打卡</title>
+    <link rel="stylesheet" href="/sales-checkin/styles.css">
+</head>
+<body>
+<header class="hero">
+    <div class="hero__inner">
+        <div class="brand-mark" aria-hidden="true">R</div>
+        <div>
+            <p class="eyebrow">RIGOUR · 现场专注</p>
+            <h1>销售拜访打卡</h1>
+            <p class="hero__description">定位后选择附近门店，快速完成拜访记录。</p>
+        </div>
+    </div>
+</header>
+
+<main class="app-shell">
+    <div id="restore-notice" class="notice notice--info" role="status" hidden>
+        <div>
+            <strong>已恢复未完成草稿</strong>
+            <p id="restore-message">表单内容和提交凭据已恢复。</p>
+        </div>
+        <button id="discard-draft-button" class="text-button" type="button">放弃草稿</button>
+    </div>
+
+    <div id="global-error" class="notice notice--error" role="alert" hidden>
+        <div>
+            <strong>操作未完成</strong>
+            <p id="global-error-message"></p>
+        </div>
+        <button id="dismiss-error-button" class="text-button" type="button">关闭</button>
+    </div>
+
+    <nav class="tabs workflow-tabs" aria-label="表单类型" role="tablist">
+        <button id="visit-tab" class="tab is-active" type="button" role="tab" aria-selected="true"
+                aria-controls="visit-panel" data-tab="visit">
+            <span class="tab__index">1</span>
+            拜访打卡
+        </button>
+        <button id="store-tab" class="tab" type="button" role="tab" aria-selected="false"
+                aria-controls="store-panel" data-tab="store">
+            <span class="tab__index">2</span>
+            门店录入
+        </button>
+    </nav>
+
+    <section id="visit-panel" class="tab-panel" role="tabpanel" aria-labelledby="visit-tab">
+        <form id="visit-form" novalidate>
+            <div id="draft-lock-notice" class="notice notice--plain draft-lock-notice" role="status" hidden>
+                <div>
+                    <strong>打卡草稿已锁定</strong>
+                    <p>城市、销售、门店和拜访内容不再变更；网络中断后刷新页面可恢复，并继续上传或删除媒体。</p>
+                </div>
+            </div>
+            <section class="form-card visit-main-card">
+                <div class="section-heading form-intro">
+                    <div>
+                        <p class="section-kicker">拜访对象</p>
+                        <h2>选择销售、定位和门店</h2>
+                    </div>
+                    <span class="required-hint"><span aria-hidden="true">*</span> 必填</span>
+                </div>
+
+                <div class="field-grid field-grid--two identity-grid">
+                    <label class="field">
+                        <span class="field__label">城市 <span class="required-mark">*</span></span>
+                        <select id="visit-city" name="city" required>
+                            <option value="">请选择城市</option>
+                        </select>
+                        <span class="field__error" data-error-for="visit-city"></span>
+                    </label>
+
+                    <label class="field">
+                        <span class="field__label">销售 <span class="required-mark">*</span></span>
+                        <select id="visit-salesperson" name="salespersonId" required disabled>
+                            <option value="">请先选择城市</option>
+                        </select>
+                        <span class="field__error" data-error-for="visit-salesperson"></span>
+                    </label>
+                </div>
+
+                <div class="location-card quick-location">
+                    <div class="section-heading section-heading--inline">
+                        <div>
+                            <p class="section-kicker">当前位置</p>
+                            <h3>定位并查找附近门店 <span class="required-mark">*</span></h3>
+                        </div>
+                        <span id="visit-location-status" class="status-pill">未定位</span>
+                    </div>
+                    <button id="visit-location-button" class="secondary-button location-button" type="button">
+                        <span id="visit-location-button-label">获取当前位置</span>
+                    </button>
+                    <div id="visit-location-detail" class="location-detail" hidden>
+                        <div class="location-address-row">
+                            <span>实际地址</span>
+                            <strong id="visit-location-address">正在解析地址…</strong>
+                            <button id="visit-location-retry" class="location-retry-button" type="button" hidden>
+                                重试地址与附近门店解析
+                            </button>
+                        </div>
+                        <div><span>定位精度</span><strong id="visit-location-accuracy"></strong></div>
+                        <div><span>采集时间</span><strong id="visit-location-time"></strong></div>
+                    </div>
+                    <details class="optional-disclosure">
+                        <summary>添加位置备注（选填）</summary>
+                        <label class="field field--compact">
+                            <span class="field__label">位置备注</span>
+                            <input id="visit-location-note" type="text" maxlength="300" placeholder="如：商场二层、临街入口">
+                        </label>
+                    </details>
+                    <span class="field__error" data-error-for="visit-location"></span>
+                </div>
+
+                <section id="nearby-stores-panel" class="nearby-panel" aria-labelledby="nearby-stores-title" hidden>
+                    <div class="nearby-panel__heading">
+                        <div>
+                            <strong id="nearby-stores-title">选择附近已录入门店</strong>
+                            <small>只能打卡当前定位附近、且基础资料已完整的门店</small>
+                        </div>
+                        <span id="nearby-stores-summary">正在查找…</span>
+                    </div>
+                    <div class="field store-search-field nearby-combobox-field">
+                        <label for="store-search" class="field__label">附近门店</label>
+                        <div class="search-input-wrap">
+                            <input id="store-search" type="search" inputmode="search" autocomplete="off"
+                                   role="combobox" placeholder="点击选择，或输入名称搜索"
+                                   aria-autocomplete="list" aria-haspopup="listbox"
+                                   aria-controls="store-search-results" aria-expanded="false" disabled>
+                            <button id="store-search-toggle" class="combobox-toggle" type="button"
+                                    aria-label="展开附近门店选项" disabled>展开</button>
+                            <span id="store-search-spinner" class="spinner" aria-label="正在搜索" hidden></span>
+                        </div>
+                        <p id="store-search-help" class="field__help">先获取当前定位，再从附近门店中选择。</p>
+                        <div id="store-search-results" class="search-results" role="listbox" hidden></div>
+                        <span class="field__error" data-error-for="selected-store"></span>
+                    </div>
+
+                    <div id="selected-store-card" class="selected-card" hidden>
+                        <div>
+                            <span class="selected-card__eyebrow">本次拜访门店</span>
+                            <strong id="selected-store-name"></strong>
+                            <span id="selected-store-location"></span>
+                        </div>
+                        <button id="clear-store-button" class="text-button" type="button">重新选择</button>
+                    </div>
+
+                    <button id="create-store-link" class="create-store-action" type="button">
+                        <span class="create-store-action__copy">
+                            <strong>附近找不到这家门店？</strong>
+                            <small>先从高德附近地点选择，再补全门店资料</small>
+                        </span>
+                        <span class="create-store-action__button">录入新门店</span>
+                    </button>
+                </section>
+            </section>
+
+            <section class="form-card">
+                <div class="section-heading">
+                    <div>
+                        <p class="section-kicker">拜访记录</p>
+                        <h2>填写客户和沟通结果</h2>
+                    </div>
+                </div>
+
+                <div class="field-grid field-grid--two">
+                    <label class="field">
+                        <span class="field__label">客户姓名 <span class="required-mark">*</span></span>
+                        <input id="customer-name" name="customerName" type="text" maxlength="100"
+                               autocomplete="name" placeholder="请输入客户或联系人姓名" required>
+                        <span class="field__error" data-error-for="customer-name"></span>
+                    </label>
+
+                    <label class="field">
+                        <span class="field__label">客户电话</span>
+                        <input id="customer-phone" name="customerPhone" type="tel" maxlength="32"
+                               autocomplete="tel" inputmode="tel" placeholder="选填">
+                        <span class="field__error" data-error-for="customer-phone"></span>
+                    </label>
+                </div>
+
+                <label class="field">
+                    <span class="field__label">拜访结果 <span class="required-mark">*</span></span>
+                    <textarea id="visit-result" name="visitResult" rows="4" maxlength="2000"
+                              placeholder="简要记录沟通情况、客户需求和下一步安排" required></textarea>
+                    <span class="character-count"><span id="visit-result-count">0</span>/2000</span>
+                    <span class="field__error" data-error-for="visit-result"></span>
+                </label>
+            </section>
+
+            <section class="form-card evidence-card">
+                <div class="section-heading">
+                    <div>
+                        <p class="section-kicker">现场材料</p>
+                        <h2>上传照片与录音</h2>
+                    </div>
+                    <span class="section-step-hint">最少上传 1 张现场照片</span>
+                </div>
+
+                <div class="upload-grid evidence-grid">
+                    <div class="upload-item media-step media-step--required">
+                        <div class="upload-item__heading">
+                            <span class="media-step__index" aria-hidden="true">1</span>
+                            <div class="media-step__copy">
+                                <strong>现场照片 <span class="required-mark">*</span></strong>
+                                <span>拍门头或拜访现场，便于后台快速核对</span>
+                            </div>
+                            <span id="photo-uploaded-badge" class="mini-badge" hidden>草稿已上传</span>
+                            <button id="delete-uploaded-photo-button" class="text-button uploaded-media-delete" type="button" hidden>
+                                删除已上传照片
+                            </button>
+                        </div>
+                        <label class="file-picker" for="storefront-photo">
+                            <input id="storefront-photo" type="file" accept="image/*"
+                                   capture="environment">
+                            <span>
+                                <strong>拍照或选择照片</strong>
+                                <small>JPG、PNG、WebP、HEIC/HEIF 等常见图片，最大 10MB</small>
+                            </span>
+                        </label>
+                        <div id="photo-preview-card" class="file-preview" hidden>
+                            <img id="photo-preview" alt="待上传现场照片预览">
+                            <div>
+                                <strong id="photo-file-name"></strong>
+                                <span id="photo-file-size"></span>
+                            </div>
+                            <button id="remove-photo-button" class="text-button file-remove-button" type="button">移除</button>
+                        </div>
+                        <span class="field__error" data-error-for="storefront-photo"></span>
+                    </div>
+
+                    <details class="optional-media media-step">
+                        <summary>
+                            <span class="media-step__index" aria-hidden="true">2</span>
+                            <span>
+                                <strong>企微沟通截图</strong>
+                                <small>选填，有沟通记录时再添加</small>
+                            </span>
+                            <span class="optional-media__action">添加</span>
+                        </summary>
+                        <div class="upload-item">
+                            <div class="upload-item__heading">
+                                <div>
+                                    <strong>企微沟通截图</strong>
+                                    <span>选填，可上传一张截图</span>
+                                </div>
+                                <span id="wechat-uploaded-badge" class="mini-badge" hidden>草稿已上传</span>
+                                <button id="delete-uploaded-wechat-button" class="text-button uploaded-media-delete" type="button" hidden>
+                                    删除已上传截图
+                                </button>
+                            </div>
+                            <label class="file-picker file-picker--muted" for="wechat-screenshot">
+                                <input id="wechat-screenshot" type="file" accept="image/*">
+                                <span>
+                                    <strong>选择企微截图</strong>
+                                    <small>JPG、PNG、WebP、HEIC/HEIF 等常见图片，最大 10MB</small>
+                                </span>
+                            </label>
+                            <div id="wechat-preview-card" class="file-preview" hidden>
+                                <img id="wechat-preview" alt="待上传企微截图预览">
+                                <div>
+                                    <strong id="wechat-file-name"></strong>
+                                    <span id="wechat-file-size"></span>
+                                </div>
+                                <button id="remove-wechat-button" class="text-button file-remove-button" type="button">移除</button>
+                            </div>
+                            <span class="field__error" data-error-for="wechat-screenshot"></span>
+                        </div>
+                    </details>
+                </div>
+
+                <div class="audio-recorder media-step">
+                    <div class="upload-item__heading">
+                        <span class="media-step__index" aria-hidden="true">3</span>
+                        <div class="media-step__copy">
+                            <strong>现场录音</strong>
+                            <span>选填，最长 20 分钟；录音前请征得在场人员同意</span>
+                        </div>
+                        <span id="audio-uploaded-badge" class="mini-badge" hidden>草稿已上传</span>
+                        <button id="delete-uploaded-audio-button" class="text-button uploaded-media-delete" type="button" hidden>
+                            删除已上传录音
+                        </button>
+                    </div>
+                    <div class="recorder-controls">
+                        <button id="record-audio-button" class="record-button" type="button">
+                            <span class="record-button__dot" aria-hidden="true"></span>
+                            <span id="record-button-label">开始录音</span>
+                        </button>
+                        <div id="recording-clock" class="recording-clock" aria-live="polite">00:00 / 20:00</div>
+                    </div>
+                    <div id="recording-meter" class="recording-meter" hidden>
+                        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+                    </div>
+                    <div id="audio-preview-card" class="audio-preview" hidden>
+                        <audio id="audio-preview" controls preload="metadata"></audio>
+                        <div>
+                            <strong id="audio-file-name"></strong>
+                            <span id="audio-file-size"></span>
+                        </div>
+                        <button id="remove-audio-button" class="text-button file-remove-button" type="button">移除</button>
+                    </div>
+                    <div class="fallback-picker">
+                        <span>无法录音？</span>
+                        <label for="audio-file">选择已有音频文件</label>
+                        <input id="audio-file" type="file" accept="audio/*">
+                    </div>
+                    <p id="recorder-help" class="field__help">录音时请保持页面在前台；提交后录音可能用于转写和 AI 摘要。</p>
+                    <span class="field__error" data-error-for="audio-file"></span>
+                </div>
+            </section>
+
+            <section class="consent-card confirmation-card">
+                <div class="confirmation-card__heading">
+                    <span class="confirmation-card__index" aria-hidden="true">4</span>
+                    <div>
+                        <strong>确认并提交</strong>
+                        <small>最后检查门店、照片和录音是否正确</small>
+                    </div>
+                </div>
+                <label class="check-row" for="privacy-accepted">
+                    <input id="privacy-accepted" type="checkbox" required>
+                    <span class="custom-checkbox" aria-hidden="true"></span>
+                    <span>
+                        <strong>我已确认并同意提交 <span class="required-mark">*</span></strong>
+                        <small>我已告知相关人员将采集定位、照片及可能的录音；记录仅作临时匿名采集，不能作为可信考勤或 KPI 证据。</small>
+                        <details class="privacy-details">
+                            <summary>查看完整采集说明</summary>
+                            <p>如提交录音，录音可能用于后续转写和 AI 摘要。匿名选择销售、浏览器定位、照片和录音均可能被冒用或伪造，记录仅作为临时匿名自报采集数据，不得作为可信考勤、KPI、奖惩或纪律证据。</p>
+                        </details>
+                    </span>
+                </label>
+                <span class="field__error" data-error-for="privacy-accepted"></span>
+            </section>
+
+            <section class="submit-card">
+                <button id="submit-visit-button" class="primary-button" type="submit">
+                    <span>提交拜访打卡</span>
+                </button>
+                <p class="submit-hint">将依次保存草稿、上传材料并完成打卡。上传期间请保持页面在前台。</p>
+            </section>
+        </form>
+    </section>
+
+    <section id="store-panel" class="tab-panel" role="tabpanel" aria-labelledby="store-tab" hidden>
+        <form id="store-form" novalidate>
+            <div class="store-editor-header">
+                <button id="cancel-store-button" class="text-button store-back-button" type="button">返回拜访打卡</button>
+                <div>
+                    <h2>完善门店资料</h2>
+                </div>
+            </div>
+
+            <div class="notice notice--plain store-prefill-notice">
+                <div>
+                    <strong>已沿用本次城市、销售和定位</strong>
+                    <p id="store-prefill-message">保存后会自动返回打卡并选中这家门店。</p>
+                </div>
+            </div>
+
+            <section class="form-card store-owner-card">
+                <div class="section-heading">
+                    <div>
+                        <p class="section-kicker">归属信息</p>
+                        <h2>本次录入归属</h2>
+                    </div>
+                </div>
+                <div id="store-owner-summary" class="store-owner-summary">
+                    <span><small>城市</small><strong id="store-owner-city">未选择</strong></span>
+                    <span><small>销售</small><strong id="store-owner-salesperson">未选择</strong></span>
+                </div>
+                <div class="field-grid field-grid--two store-owner-fields">
+                    <label class="field">
+                        <span class="field__label">城市 <span class="required-mark">*</span></span>
+                        <select id="store-city" required>
+                            <option value="">请选择城市</option>
+                        </select>
+                        <span class="field__error" data-error-for="store-city"></span>
+                    </label>
+                    <label class="field">
+                        <span class="field__label">销售 <span class="required-mark">*</span></span>
+                        <select id="store-salesperson" required disabled>
+                            <option value="">请先选择城市</option>
+                        </select>
+                        <span class="field__error" data-error-for="store-salesperson"></span>
+                    </label>
+                </div>
+            </section>
+
+            <section class="form-card location-card store-location-card">
+                <div class="section-heading section-heading--inline">
+                    <div>
+                        <p class="section-kicker">第一步</p>
+                        <h2>本次门店现场定位 <span class="required-mark">*</span></h2>
+                    </div>
+                    <span id="store-location-status" class="status-pill">未定位</span>
+                </div>
+                <p class="section-description">已直接沿用本次拜访 GPS，无需重复定位。</p>
+                <button id="store-location-button" class="secondary-button location-button" type="button">
+                    <span id="store-location-button-label">获取当前位置</span>
+                </button>
+                <div id="store-location-detail" class="location-detail" hidden>
+                    <div class="location-address-row">
+                        <span>实际地址</span>
+                        <strong id="store-location-address">正在解析地址…</strong>
+                        <button id="store-location-retry" class="location-retry-button" type="button" hidden>
+                            重试地址与附近地点解析
+                        </button>
+                    </div>
+                    <div><span>定位精度</span><strong id="store-location-accuracy"></strong></div>
+                    <div><span>采集时间</span><strong id="store-location-time"></strong></div>
+                </div>
+                <label class="field field--compact">
+                    <span class="field__label">位置备注</span>
+                    <input id="store-location-note" type="text" maxlength="300" placeholder="如：商场二层、临街入口（选填）">
+                </label>
+                <span class="field__error" data-error-for="store-location"></span>
+            </section>
+
+            <section id="store-source-card" class="form-card store-source-card">
+                <div class="section-heading">
+                    <div>
+                        <p class="section-kicker">第二步</p>
+                        <h2>先搜索附近门店</h2>
+                    </div>
+                </div>
+                <p class="section-description">已录入门店可直接返回打卡；未录入的高德地点才需补全资料。</p>
+                <div class="field poi-search-field">
+                    <label for="poi-search" class="field__label">附近门店 / 高德地点</label>
+                    <div class="search-input-wrap">
+                        <input id="poi-search" type="search" inputmode="search" autocomplete="off"
+                               role="combobox" placeholder="先获取定位"
+                               aria-autocomplete="list" aria-haspopup="listbox"
+                               aria-controls="poi-search-results" aria-expanded="false" disabled>
+                        <button id="poi-search-toggle" class="combobox-toggle" type="button"
+                                aria-label="展开附近地点选项" disabled>展开</button>
+                        <span id="poi-search-spinner" class="spinner" aria-label="正在搜索" hidden></span>
+                    </div>
+                    <p id="poi-search-help" class="field__help">定位成功后，可搜索门店名称或地址。</p>
+                    <div id="poi-search-results" class="search-results" role="listbox" hidden></div>
+                    <span class="field__error" data-error-for="store-source"></span>
+                </div>
+
+                <div id="selected-poi-card" class="selected-card selected-poi-card" hidden>
+                    <div>
+                        <span class="selected-card__eyebrow">已选高德新门店</span>
+                        <strong id="selected-poi-name"></strong>
+                        <span id="selected-poi-address"></span>
+                    </div>
+                    <button id="clear-poi-button" class="text-button" type="button">重选</button>
+                </div>
+
+                <button id="manual-store-button" class="manual-store-action" type="button">
+                    <strong>高德附近地点没找到？</strong>
+                    <span>确认搜索无结果后，再手动录入门店名称</span>
+                </button>
+            </section>
+
+            <section id="store-profile-card" class="form-card" hidden>
+                <div class="section-heading">
+                    <div>
+                        <p class="section-kicker">第三步</p>
+                        <h2>补全门店基本信息</h2>
+                    </div>
+                </div>
+                <div class="field-grid field-grid--two">
+                    <label id="store-name-field" class="field field--full">
+                        <span class="field__label">门店名称 <span class="required-mark">*</span></span>
+                        <input id="store-name" type="text" maxlength="200" placeholder="请输入门店完整名称" required>
+                        <span id="store-name-help" class="field__help"></span>
+                        <span class="field__error" data-error-for="store-name"></span>
+                    </label>
+                    <label class="field">
+                        <span class="field__label">门店属性 <span class="required-mark">*</span></span>
+                        <select id="store-attribute" required><option value="">请选择</option></select>
+                        <span class="field__error" data-error-for="store-attribute"></span>
+                    </label>
+                    <label class="field">
+                        <span class="field__label">营业状态 <span class="required-mark">*</span></span>
+                        <select id="operating-status" required><option value="">请选择</option></select>
+                        <span class="field__error" data-error-for="operating-status"></span>
+                    </label>
+                    <label class="field">
+                        <span class="field__label">联系人 <span class="required-mark">*</span></span>
+                        <input id="contact-name" type="text" maxlength="100" autocomplete="name" placeholder="请输入联系人" required>
+                        <span class="field__error" data-error-for="contact-name"></span>
+                    </label>
+                    <label class="field">
+                        <span class="field__label">联系电话</span>
+                        <input id="contact-phone" type="tel" maxlength="32" autocomplete="tel" inputmode="tel" placeholder="选填">
+                        <span class="field__error" data-error-for="contact-phone"></span>
+                    </label>
+                    <label class="field">
+                        <span class="field__label">面积范围 <span class="required-mark">*</span></span>
+                        <select id="area-range" required><option value="">请选择</option></select>
+                        <span class="field__error" data-error-for="area-range"></span>
+                    </label>
+                    <label class="field">
+                        <span class="field__label">设施数量 <span class="required-mark">*</span></span>
+                        <input id="facility-count" type="text" maxlength="100" inputmode="numeric"
+                               placeholder="如：10张球桌" required>
+                        <span class="field__error" data-error-for="facility-count"></span>
+                    </label>
+                    <label class="field">
+                        <span class="field__label">合作意向 <span class="required-mark">*</span></span>
+                        <select id="cooperation-intent" required><option value="">请选择</option></select>
+                        <span class="field__error" data-error-for="cooperation-intent"></span>
+                    </label>
+                    <label class="field">
+                        <span class="field__label">门店等级</span>
+                        <select id="store-grade"><option value="">选填</option></select>
+                    </label>
+                </div>
+
+                <details class="store-details-group" open>
+                    <summary>
+                        <span>业务与门店标签</span>
+                        <small>三项均需选择</small>
+                    </summary>
+                    <div class="store-details-group__body">
+                        <fieldset class="choice-fieldset">
+                            <legend>业务类型 <span class="required-mark">*</span></legend>
+                            <div id="business-types" class="choice-grid"></div>
+                            <span class="field__error" data-error-for="business-types"></span>
+                        </fieldset>
+
+                        <fieldset class="choice-fieldset">
+                            <legend>意向业务 <span class="required-mark">*</span></legend>
+                            <div id="intended-businesses" class="choice-grid"></div>
+                            <span class="field__error" data-error-for="intended-businesses"></span>
+                        </fieldset>
+
+                        <fieldset class="choice-fieldset">
+                            <legend>门店标签 <span class="required-mark">*</span></legend>
+                            <div id="store-tags" class="choice-grid"></div>
+                            <span class="field__error" data-error-for="store-tags"></span>
+                        </fieldset>
+                    </div>
+                </details>
+            </section>
+
+            <div class="button-row">
+                <button id="submit-store-button" class="primary-button" type="submit">保存并选中门店</button>
+            </div>
+        </form>
+    </section>
+
+    <section id="upload-panel" class="progress-panel" aria-live="polite" hidden>
+        <div class="progress-panel__header">
+            <div>
+                <p class="section-kicker">正在提交</p>
+                <h2 id="progress-title">正在创建打卡草稿</h2>
+            </div>
+            <strong id="progress-percent">0%</strong>
+        </div>
+        <div class="progress-track"><span id="progress-bar"></span></div>
+        <ol id="progress-steps" class="progress-steps">
+            <li data-progress-step="draft"><span></span>创建草稿</li>
+            <li data-progress-step="storefront-photo"><span></span>上传现场照片</li>
+            <li data-progress-step="wechat-screenshot"><span></span>上传企微截图</li>
+            <li data-progress-step="audio"><span></span>上传现场录音</li>
+            <li data-progress-step="complete"><span></span>完成提交</li>
+        </ol>
+        <p id="progress-detail">请勿关闭页面。</p>
+    </section>
+
+    <section id="success-panel" class="success-panel" role="status" hidden>
+        <p class="section-kicker">提交成功</p>
+        <h2>本次拜访已保存</h2>
+        <p>提交编号：<strong id="success-submission-id"></strong></p>
+        <p id="success-submitted-at"></p>
+        <button id="new-submission-button" class="primary-button" type="button">继续录入下一次拜访</button>
+    </section>
+</main>
+
+<footer class="footer">
+    <p>临时过渡采集页面 · 如遇问题请保留页面中的错误信息并联系管理员</p>
+</footer>
+
+<script src="/sales-checkin/app.js" defer></script>
+</body>
+</html>
