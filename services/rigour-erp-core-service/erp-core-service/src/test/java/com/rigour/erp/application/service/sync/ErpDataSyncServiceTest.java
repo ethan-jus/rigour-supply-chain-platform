@@ -116,7 +116,8 @@ class ErpDataSyncServiceTest {
 
     private static ErpDataSyncResult result(String objectType) {
         return new ErpDataSyncResult(RUN_ID, objectType, "SUCCEEDED", CONNECTOR_ID,
-                1, 1, 0, 0, 0, 0, Map.of(), 1, Instant.parse("2026-08-10T12:00:00Z"));
+                1, 1, 0, 0, 0, 0, Map.of(), Map.of(), 1,
+                Instant.parse("2026-08-10T12:00:00Z"));
     }
 
     private static CallerIdentity scheduledCaller() {

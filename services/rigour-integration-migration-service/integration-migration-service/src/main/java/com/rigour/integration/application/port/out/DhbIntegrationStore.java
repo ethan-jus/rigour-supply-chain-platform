@@ -11,6 +11,8 @@ import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.api.v1.model.DhbExternalObjectMappingPageView;
+import com.rigour.integration.api.v1.model.DhbManualResolutionCommand;
+import com.rigour.integration.api.v1.model.DhbManualResolutionView;
 import com.rigour.integration.api.v1.model.DhbSyncExceptionView;
 import com.rigour.integration.api.v1.model.DhbSyncLogDetailView;
 import com.rigour.integration.api.v1.model.DhbSyncReconciliationCaseView;
@@ -66,6 +68,11 @@ public interface DhbIntegrationStore {
     List<DhbSyncExceptionView> syncExceptions(UUID tenantId, String status, int limit);
     List<DhbSyncReconciliationCaseView> syncReconciliationCases(
             UUID tenantId, String status, String severity, int limit);
+    List<DhbManualResolutionView> manualResolutions(
+            UUID tenantId, String resolutionType, String sourceObjectType,
+            String sourceId, String status, int limit);
+    DhbManualResolutionView createManualResolution(
+            UUID tenantId, UUID actorId, DhbManualResolutionCommand command);
 
     /** 保存订货宝技术原始业务字段；不得传入sKey、账号、密码或Token。 */
     void persistRawLanding(UUID tenantId, UUID connectorId, String sourceObjectType,

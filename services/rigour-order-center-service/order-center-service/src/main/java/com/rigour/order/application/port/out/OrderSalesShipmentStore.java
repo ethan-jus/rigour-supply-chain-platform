@@ -7,6 +7,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 /** Order 销售发货单持久化端口；只操作自研发货单业务表。 */
 public interface OrderSalesShipmentStore {
@@ -36,6 +37,9 @@ public interface OrderSalesShipmentStore {
     }
 
     record SalesShipmentWrite(
+            UUID connectorId,
+            String sourceSystemCode,
+            String sourceDocumentNo,
             Long salesOrderId,
             String salesOrderNoSnapshot,
             Long customerId,
@@ -57,6 +61,33 @@ public interface OrderSalesShipmentStore {
             Integer revision) {
         public SalesShipmentWrite {
             lines = lines == null ? List.of() : List.copyOf(lines);
+        }
+
+        public SalesShipmentWrite(
+                Long salesOrderId,
+                String salesOrderNoSnapshot,
+                Long customerId,
+                String customerCodeSnapshot,
+                String customerNameSnapshot,
+                String contactPhoneSnapshot,
+                String regionCode,
+                String ownerStaffCode,
+                Long warehouseId,
+                Long stockOutOrderId,
+                String stockOutNo,
+                String shipmentStatusCode,
+                String logisticsCompany,
+                String trackingNo,
+                Instant shipTime,
+                BigDecimal totalQuantity,
+                List<SalesShipmentLineWrite> lines,
+                String remark,
+                Integer revision) {
+            this(null, null, null, salesOrderId, salesOrderNoSnapshot, customerId,
+                    customerCodeSnapshot, customerNameSnapshot, contactPhoneSnapshot,
+                    regionCode, ownerStaffCode, warehouseId, stockOutOrderId, stockOutNo,
+                    shipmentStatusCode, logisticsCompany, trackingNo, shipTime, totalQuantity,
+                    lines, remark, revision);
         }
     }
 

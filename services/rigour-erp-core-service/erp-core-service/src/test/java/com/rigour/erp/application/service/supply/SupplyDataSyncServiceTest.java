@@ -18,13 +18,19 @@ import com.rigour.erp.application.port.out.ErpSyncRunAuditStore.ScheduledSkipRea
 import com.rigour.erp.application.port.out.SupplyDataStore;
 import com.rigour.erp.application.service.sync.BusinessDictionaryCoverageService;
 import com.rigour.erp.application.service.sync.ErpScheduledSyncSkipException;
+import com.rigour.erp.domain.model.supply.PurchaseOrder;
 import com.rigour.erp.domain.model.supply.SupplyDataObjectType;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingBatchResult;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand;
 import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.integration.client.ConnectorSyncLeaseClient.LeaseGuard;
+import com.rigour.integration.client.ExternalObjectMappingClient;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -112,10 +118,78 @@ class SupplyDataSyncServiceTest {
                 eq(RUN_ID), any(), any());
     }
 
+    @Test
+    void successfulRunPublishesResolvedSupplyMappings() {
+        SupplyDataStore store = mock(SupplyDataStore.class);
+        DhbSupplyDataClient client = mock(DhbSupplyDataClient.class);
+        ExternalObjectMappingClient mappingClient = mock(ExternalObjectMappingClient.class);
+        ExternalObjectMappingCommand mapping = new ExternalObjectMappingCommand(
+                CONNECTOR_ID, "DINGHUOBAO", "WAREHOUSE", "26914", "34",
+                "ERP", "WAREHOUSE", 9L, "WH0001", "ACTIVE", RUN_ID,
+                Instant.parse("2026-08-21T08:00:00Z"), null, "hash-warehouse",
+                null, "ERP仓库同步映射");
+        when(store.startScheduledRun(TENANT_ID.toString(), CONNECTOR_ID, null,
+                SupplyDataObjectType.WAREHOUSE, 3)).thenReturn(RUN_ID);
+        when(client.collect(any(), eq(CONNECTOR_ID), eq(SupplyDataObjectType.WAREHOUSE),
+                eq(3), eq(List.of()))).thenReturn(emptyCollected(SupplyDataObjectType.WAREHOUSE));
+        when(store.externalObjectMappings(TENANT_ID.toString(), CONNECTOR_ID, RUN_ID,
+                SupplyDataObjectType.WAREHOUSE)).thenReturn(List.of(mapping));
+        when(mappingClient.upsert(TENANT_ID, List.of(mapping)))
+                .thenReturn(new ExternalObjectMappingBatchResult(1, 1));
+        SupplyDataSyncService service = service(store, client, passthroughLease(), mappingClient);
+
+        var result = service.runScheduled(scheduledCaller(), CONNECTOR_ID,
+                SupplyDataObjectType.WAREHOUSE, 3);
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        verify(mappingClient).upsert(TENANT_ID, List.of(mapping));
+        InOrder order = inOrder(store, mappingClient);
+        order.verify(store).externalObjectMappings(TENANT_ID.toString(), CONNECTOR_ID, RUN_ID,
+                SupplyDataObjectType.WAREHOUSE);
+        order.verify(mappingClient).upsert(TENANT_ID, List.of(mapping));
+        order.verify(store).completeRunWithSourcePresence(eq(TENANT_ID.toString()),
+                eq(RUN_ID), any(), any());
+    }
+
+    @Test
+    void rejectedRecordsReturnWarningStatusAndSkipSourcePresenceReconciliation() {
+        SupplyDataStore store = mock(SupplyDataStore.class);
+        DhbSupplyDataClient client = mock(DhbSupplyDataClient.class);
+        when(store.startScheduledRun(TENANT_ID.toString(), CONNECTOR_ID, null,
+                SupplyDataObjectType.PURCHASE_ORDER, 3)).thenReturn(RUN_ID);
+        PurchaseOrder order = new PurchaseOrder("PO-1", "CG-001", "SUP-1",
+                null, "供应商", null, null, "仓库", null, null,
+                "FINISHED", "完成", null, null, null, null,
+                null, null, null, null, false, null, null,
+                List.of(), Map.of(), "hash-po-1");
+        when(client.collect(any(), eq(CONNECTOR_ID), eq(SupplyDataObjectType.PURCHASE_ORDER),
+                eq(3), eq(List.of()))).thenReturn(new DhbSupplyDataClient.Collected(
+                SupplyDataObjectType.PURCHASE_ORDER, 1, 1, List.of(), List.of(order),
+                List.of(), List.of(), List.of(), List.of()));
+        when(store.importPurchaseOrder(TENANT_ID.toString(), RUN_ID, order))
+                .thenReturn(SupplyDataStore.ImportResult.oneRejected());
+        SupplyDataSyncService service = service(store, client, passthroughLease());
+
+        var result = service.runScheduled(scheduledCaller(), CONNECTOR_ID,
+                SupplyDataObjectType.PURCHASE_ORDER, 3);
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
+        assertThat(result.rejected()).isEqualTo(1);
+        verify(store).completeRunWithSourcePresence(eq(TENANT_ID.toString()),
+                eq(RUN_ID), eq(Map.of()), any());
+    }
+
     private static SupplyDataSyncService service(SupplyDataStore store, DhbSupplyDataClient client,
                                                  ConnectorSyncLeaseClient lease) {
+        return service(store, client, lease, mock(ExternalObjectMappingClient.class));
+    }
+
+    private static SupplyDataSyncService service(SupplyDataStore store, DhbSupplyDataClient client,
+                                                 ConnectorSyncLeaseClient lease,
+                                                 ExternalObjectMappingClient mappingClient) {
         return new SupplyDataSyncService(client, mock(DhbSupplySyncTargetDiscoveryClient.class),
-                store, mock(BusinessDictionaryCoverageService.class), lease);
+                store, mock(BusinessDictionaryCoverageService.class), lease,
+                mappingClient);
     }
 
     private static CallerIdentity scheduledCaller() {

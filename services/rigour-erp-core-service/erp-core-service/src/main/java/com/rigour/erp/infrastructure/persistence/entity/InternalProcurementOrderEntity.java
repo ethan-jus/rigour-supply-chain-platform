@@ -16,6 +16,12 @@ public class InternalProcurementOrderEntity {
     private String tenantId;
     /** 采购订单号，由 ERP 编码规则生成。 */
     private String procurementNo;
+    /** Integration连接器ID；外部同步单据非空。 */
+    private String connectorId;
+    /** 来源系统编码。 */
+    private String sourceSystemCode;
+    /** 来源业务单号。 */
+    private String sourceDocumentNo;
     /** 供应商ID。 */
     private Long supplierId;
     /** 计划入库仓库ID。 */
@@ -49,6 +55,12 @@ public class InternalProcurementOrderEntity {
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getProcurementNo() { return procurementNo; }
     public void setProcurementNo(String procurementNo) { this.procurementNo = procurementNo; }
+    public String getConnectorId() { return connectorId; }
+    public void setConnectorId(String connectorId) { this.connectorId = connectorId; }
+    public String getSourceSystemCode() { return sourceSystemCode; }
+    public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
+    public String getSourceDocumentNo() { return sourceDocumentNo; }
+    public void setSourceDocumentNo(String sourceDocumentNo) { this.sourceDocumentNo = sourceDocumentNo; }
     public Long getSupplierId() { return supplierId; }
     public void setSupplierId(Long supplierId) { this.supplierId = supplierId; }
     public Long getTargetWarehouseId() { return targetWarehouseId; }

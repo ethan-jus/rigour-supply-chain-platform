@@ -112,9 +112,9 @@ public final class OrderSalesRefundRecordService {
         String tenantId = actor.tenantId().toString();
         SalesRefundWrite normalized = normalize(tenantId, command, false);
         String refundNo = codeGenerator.generateUnique(OrderBusinessCodeRules.REFUND_RECORD,
-                candidate -> !store.existsByNo(tenantId, candidate));
+                normalized.refundTime(), candidate -> !store.existsByNo(tenantId, candidate));
         SalesRefundRecordDetailView created =
-                store.create(tenantId, refundNo, normalized, actor.principalId().toString());
+                store.create(tenantId, refundNo, normalized, OrderAuditActors.writeActor(actor));
         created = withStaffName(actor, created);
         log.info("Order销售退款记录创建完成 tenantId={} refundId={} refundNo={} salesOrderId={} amount={} actorId={}",
                 tenantId, created.id(), created.refundNo(), created.orderId(),
@@ -127,7 +127,8 @@ public final class OrderSalesRefundRecordService {
         String tenantId = actor.tenantId().toString();
         SalesRefundWrite normalized = normalize(tenantId, command, true);
         SalesRefundRecordDetailView updated = store.update(
-                tenantId, requireId(id, "销售退款记录ID无效"), normalized, actor.principalId().toString());
+                tenantId, requireId(id, "销售退款记录ID无效"), normalized,
+                OrderAuditActors.writeActor(actor));
         updated = withStaffName(actor, updated);
         log.info("Order销售退款记录修改完成 tenantId={} refundId={} refundNo={} revision={} actorId={}",
                 tenantId, updated.id(), updated.refundNo(), updated.revision(), actor.principalId());
@@ -139,7 +140,7 @@ public final class OrderSalesRefundRecordService {
         requireRevision(revision);
         String tenantId = actor.tenantId().toString();
         Long refundId = requireId(id, "销售退款记录ID无效");
-        store.delete(tenantId, refundId, revision, actor.principalId().toString());
+        store.delete(tenantId, refundId, revision, OrderAuditActors.writeActor(actor));
         log.info("Order销售退款记录逻辑删除完成 tenantId={} refundId={} revision={} actorId={}",
                 tenantId, refundId, revision, actor.principalId());
     }

@@ -24,6 +24,9 @@ public interface DhbClient {
     /** 下载订货宝商品图片；实际字节只在 Integration 内部流转，不跨服务返回。 */
     DownloadedImage downloadProductImage(Connector connector, String sourceUrl);
 
+    /** 下载订货宝业务附件；实际字节只在 Integration 内部流转，落到我方私有 COS 后再跨服务传 key。 */
+    DownloadedFile downloadAttachment(Connector connector, String sourceUrl);
+
     /** 查询订货宝 getSite 商品分类；供应商接口为全量数组，不返回父级关系。 */
     List<ProductCategory> getProductCategories(Connector connector);
 
@@ -79,8 +82,8 @@ public interface DhbClient {
     /** 查询订货宝 getShipsContent 出库/发货单详情；业务键为 ships_num。 */
     ShipmentDetail getShipmentContent(Connector connector, String shipmentNumber);
 
-    OrderDetail getOrderContent(Connector connector, String orderNumber,
-                                boolean autoMarkDownloaded, boolean autoAudit);
+    /** 查询订货宝 getOrderContent 订单明细；必须以只读方式调用，不允许自动标记或自动审核。 */
+    OrderDetail getOrderContent(Connector connector, String orderNumber);
 
     /** 查询指定订货单的getWaitShips物流数据；该接口没有分页，业务键为订单号。 */
     WaitShips getWaitShips(Connector connector, String orderNumber);
@@ -96,6 +99,12 @@ public interface DhbClient {
 
     /** 查询订货宝 getPaymentList 付款单列表；分页使用 begin/step 偏移语义。 */
     Page<Payment> getPayments(Connector connector, PaymentQuery query);
+
+    /** 查询订货宝后台调拨单列表；用于官方接口暂缺时只读补全调拨主单来源。 */
+    Page<TransferOrder> getTransferOrders(Connector connector, TransferOrderQuery query);
+
+    /** 查询订货宝后台调拨单详情，并补齐关联调拨出库/入库凭证。 */
+    TransferOrder getTransferOrder(Connector connector, String sourceTransferId);
 
     /** 外部连接配置；secretRef 只能是 Secret 引用，不允许放密码或 API Key。 */
     record Connector(UUID tenantId, UUID connectorId, String baseUrl, String secretRef) {
@@ -422,7 +431,26 @@ public interface DhbClient {
         }
     }
 
+    /** 订货宝后台 transfers 查询参数；时间字段统一使用 UTC Instant。 */
+    record TransferOrderQuery(PageRequest page, String keyword,
+                              String sourceWarehouseId, String targetWarehouseId,
+                              String transferStatus, String reviewStatus,
+                              String staffId, String goodsId,
+                              TimeWindow createdWindow) {
+        public TransferOrderQuery {
+            if (page == null) {
+                throw new IllegalArgumentException("page is required");
+            }
+        }
+
+        public static TransferOrderQuery first(int step, TimeWindow createdWindow) {
+            return new TransferOrderQuery(PageRequest.first(step), null, null, null,
+                    null, null, null, null, createdWindow);
+        }
+    }
+
     record Product(String sourceId, String code, String name, String putaway,
+                   String sourceLifecycle,
                    String barcode, String unit, String categorySourceId,
                    String brandSourceId, String model, String subtitle, String keywords,
                    String allocation, String mainImageSource, String multiId,
@@ -439,13 +467,15 @@ public interface DhbClient {
                        String barcode, String unit, String categorySourceId,
                        String brandSourceId, List<ProductSku> skus,
                        Map<String, Object> attributes) {
-            this(sourceId, code, name, putaway, barcode, unit, categorySourceId, brandSourceId,
+            this(sourceId, code, name, putaway, "UNKNOWN", barcode, unit, categorySourceId, brandSourceId,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null,
                     List.<ProductImage>of(), Map.<String, String>of(), skus, attributes);
         }
 
         public Product {
+            sourceLifecycle = sourceLifecycle == null || sourceLifecycle.isBlank()
+                    ? "UNKNOWN" : sourceLifecycle.strip();
             images = images == null ? List.of() : List.copyOf(images);
             customFields = customFields == null ? Map.of() : Map.copyOf(customFields);
             skus = skus == null ? List.of() : List.copyOf(skus);
@@ -479,6 +509,14 @@ public interface DhbClient {
         public DownloadedImage {
             if (content == null || content.length == 0) {
                 throw new IllegalArgumentException("商品图片内容不能为空");
+            }
+        }
+    }
+
+    record DownloadedFile(byte[] content, String contentType) {
+        public DownloadedFile {
+            if (content == null || content.length == 0) {
+                throw new IllegalArgumentException("业务附件内容不能为空");
             }
         }
     }
@@ -673,10 +711,95 @@ public interface DhbClient {
     record Payment(String sourceId, String paymentNumber, String receiptNumber,
                    String orderNumber, String customerNumber, String customerGuid,
                    String businessType, String paymentMethod, BigDecimal amount,
-                   String status, Instant transactionAt, Instant createdAt,
+                   String status, Instant transactionAt, Instant createdAt, Instant updatedAt,
                    String serialNumber, String accountName, String bankName,
                    String accountNumber, String remark, Map<String, Object> attributes) {
         public Payment {
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    /** 订货宝后台调拨单；DB 编号只作为来源主单凭证，不能替代我方调拨单号。 */
+    record TransferOrder(String sourceId, String transferNumber,
+                         String sourceWarehouseId, String sourceWarehouseNumber,
+                         String sourceWarehouseName, String targetWarehouseId,
+                         String targetWarehouseNumber, String targetWarehouseName,
+                         String transferStatus, String transferStatusName,
+                         String reviewStatus, String reviewStatusName,
+                         String outboundOperatorStaffId, String outboundOperatorStaffName,
+                         String inboundOperatorStaffId, String inboundOperatorStaffName,
+                         Instant createdAt, Instant reviewedAt, String remark,
+                         List<TransferOrderLine> lines,
+                         List<TransferStockOutVoucher> stockOutVouchers,
+                         List<TransferStockInVoucher> stockInVouchers,
+                         Map<String, Object> attributes) {
+        public TransferOrder {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+            stockOutVouchers = stockOutVouchers == null ? List.of() : List.copyOf(stockOutVouchers);
+            stockInVouchers = stockInVouchers == null ? List.of() : List.copyOf(stockInVouchers);
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    /** 订货宝调拨主单商品明细。 */
+    record TransferOrderLine(String sourceLineId, String productSourceId,
+                             String productCode, String productName,
+                             String skuSourceId, String skuCode, String skuName,
+                             String unitName, String containerUnitName,
+                             BigDecimal conversionNumber, BigDecimal quantity,
+                             BigDecimal costPrice, BigDecimal subtotal,
+                             String remark, Map<String, Object> attributes) {
+        public TransferOrderLine {
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    /** 订货宝调拨关联出库凭证，通常是 FH...。 */
+    record TransferStockOutVoucher(String sourceId, String voucherNumber,
+                                   Instant createdAt, String sourceWarehouseId,
+                                   String sourceWarehouseNumber, String sourceWarehouseName,
+                                   Boolean cancelled,
+                                   List<TransferStockOutVoucherLine> lines,
+                                   Map<String, Object> attributes) {
+        public TransferStockOutVoucher {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    /** 订货宝调拨出库凭证明细。 */
+    record TransferStockOutVoucherLine(String sourceLineId, String productSourceId,
+                                       String productCode, String productName,
+                                       String skuSourceId, String skuCode, String skuName,
+                                       String unitName, String containerUnitName,
+                                       BigDecimal conversionNumber, BigDecimal quantity,
+                                       String remark, Map<String, Object> attributes) {
+        public TransferStockOutVoucherLine {
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    /** 订货宝调拨关联入库凭证，通常是 RK...。 */
+    record TransferStockInVoucher(String sourceId, String voucherNumber,
+                                  Instant createdAt, String targetWarehouseId,
+                                  String targetWarehouseNumber, String targetWarehouseName,
+                                  Boolean cancelled,
+                                  List<TransferStockInVoucherLine> lines,
+                                  Map<String, Object> attributes) {
+        public TransferStockInVoucher {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+            attributes = immutableAttributes(attributes);
+        }
+    }
+
+    /** 订货宝调拨入库凭证明细。 */
+    record TransferStockInVoucherLine(String sourceLineId, String productSourceId,
+                                      String productCode, String productName,
+                                      String skuSourceId, String skuCode, String skuName,
+                                      String unitName, String containerUnitName,
+                                      BigDecimal conversionNumber, BigDecimal quantity,
+                                      String remark, Map<String, Object> attributes) {
+        public TransferStockInVoucherLine {
             attributes = immutableAttributes(attributes);
         }
     }

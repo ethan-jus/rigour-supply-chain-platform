@@ -12,6 +12,7 @@
 | 数据主写者 | Integration |
 | 运行手册 | [`docs/INTEGRATION_DATABASE_RUNTIME.md`](../../docs/INTEGRATION_DATABASE_RUNTIME.md) |
 | 第三方协议 | [`docs/DHB_API_CONTRACT.md`](../../docs/DHB_API_CONTRACT.md) |
+| 只读查询接口审计 | [`docs/DHB_READ_ONLY_QUERY_INTERFACE_AUDIT_20260825.md`](../../docs/DHB_READ_ONLY_QUERY_INTERFACE_AUDIT_20260825.md) |
 
 ## 负责什么
 
@@ -21,6 +22,8 @@
 - 订货宝、飞书等外部系统的调用隔离；下游领域服务只接收内部 API/事件。
 
 订货宝唯一外部适配器是 `DhbClientAdapter`。账号、密码、API Key 和 Token 不能进入业务服务、Portal、数据库明文或日志。
+本轮订货宝只作为只读来源系统，适配器只允许已审计的查询函数；本平台 CRM、ERP、Order
+自己的新增、编辑、作废、审核等业务写操作继续归各领域服务，不反向写订货宝。
 
 ## 不负责什么
 

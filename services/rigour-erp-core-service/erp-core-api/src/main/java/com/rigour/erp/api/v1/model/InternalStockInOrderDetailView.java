@@ -8,6 +8,8 @@ import java.util.List;
 public record InternalStockInOrderDetailView(
         Long id,
         String stockInNo,
+        String sourceSystemCode,
+        String sourceDocumentNo,
         String stockInTypeCode,
         Long procurementOrderId,
         String procurementNo,

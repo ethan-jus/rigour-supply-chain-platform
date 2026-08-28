@@ -5,15 +5,25 @@ import com.rigour.shared.context.RequestContext;
 import com.rigour.shared.context.RequestHeaders;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.shared.core.api.ApiResponse;
+import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
+import org.springframework.http.client.ClientHttpResponse;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 
 /** Integration 到领域服务内部接口的可信上下文签名工具。 */
 final class SignedDomainRequest {
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final int BODY_PREVIEW_LIMIT = 1_000;
+
     private SignedDomainRequest() {
     }
 
@@ -50,14 +60,46 @@ final class SignedDomainRequest {
 
     static <T> T required(ApiResponse<T> response, String serviceName) {
         if (response == null || !"OK".equals(response.code()) || response.data() == null) {
-            throw new IllegalStateException(serviceName + "同步返回空响应");
+            throw new IllegalStateException(serviceName + "同步返回异常响应 code="
+                    + (response == null ? null : response.code())
+                    + " message=" + (response == null ? null : response.message()));
         }
         return response.data();
+    }
+
+    static <T> ApiResponse<T> readResponse(
+            ClientHttpResponse response, TypeReference<ApiResponse<T>> responseType,
+            String operation) throws IOException {
+        byte[] body = response.getBody().readAllBytes();
+        if (response.getStatusCode().isError()) {
+            throw new RestClientResponseException(operation + " failed status="
+                    + response.getStatusCode().value() + " body=" + bodyPreview(body),
+                    response.getStatusCode(), response.getStatusText(),
+                    response.getHeaders(), body, StandardCharsets.UTF_8);
+        }
+        try {
+            return JSON.readValue(body, responseType);
+        } catch (Exception error) {
+            throw new RestClientException(operation + " response is not valid JSON status="
+                    + response.getStatusCode().value()
+                    + " contentType=" + response.getHeaders().getContentType()
+                    + " body=" + bodyPreview(body), error);
+        }
     }
 
     static String requestId() {
         String value = RequestContext.getRequestId();
         return value == null || value.isBlank() ? UUID.randomUUID().toString() : value;
+    }
+
+    private static String bodyPreview(byte[] body) {
+        if (body == null || body.length == 0) return "";
+        String value = new String(body, StandardCharsets.UTF_8)
+                .replace('\n', ' ')
+                .replace('\r', ' ')
+                .trim();
+        if (value.length() <= BODY_PREVIEW_LIMIT) return value;
+        return value.substring(0, BODY_PREVIEW_LIMIT) + "...";
     }
 
     private static void put(Map<String, String> target, String name, Object value) {

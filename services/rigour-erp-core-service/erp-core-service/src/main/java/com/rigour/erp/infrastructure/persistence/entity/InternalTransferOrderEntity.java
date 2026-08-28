@@ -15,6 +15,8 @@ public class InternalTransferOrderEntity {
     private String tenantId;
     /** 调拨单号，由 ERP 编码规则生成。 */
     private String transferNo;
+    /** Integration 连接器ID；人工或历史数据可为空。 */
+    private String connectorId;
     /** 来源系统编码。 */
     private String sourceSystemCode;
     /** 来源单据号。 */
@@ -23,6 +25,14 @@ public class InternalTransferOrderEntity {
     private Long sourceWarehouseId;
     /** 目标仓库ID。 */
     private Long targetWarehouseId;
+    /** 调拨出库经办员工编码，关联 IAM 员工中心员工编码。 */
+    private String outboundOperatorStaffCode;
+    /** 调拨出库经办员工名称快照。 */
+    private String outboundOperatorStaffNameSnapshot;
+    /** 调拨入库经办员工编码，关联 IAM 员工中心员工编码。 */
+    private String inboundOperatorStaffCode;
+    /** 调拨入库经办员工名称快照。 */
+    private String inboundOperatorStaffNameSnapshot;
     /** 调拨单状态，关联 TRANSFER_STATUS 字典项。 */
     private String statusCode;
     /** 确认调拨出库时间。 */
@@ -50,6 +60,8 @@ public class InternalTransferOrderEntity {
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getTransferNo() { return transferNo; }
     public void setTransferNo(String transferNo) { this.transferNo = transferNo; }
+    public String getConnectorId() { return connectorId; }
+    public void setConnectorId(String connectorId) { this.connectorId = connectorId; }
     public String getSourceSystemCode() { return sourceSystemCode; }
     public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
     public String getSourceDocumentNo() { return sourceDocumentNo; }
@@ -58,6 +70,22 @@ public class InternalTransferOrderEntity {
     public void setSourceWarehouseId(Long sourceWarehouseId) { this.sourceWarehouseId = sourceWarehouseId; }
     public Long getTargetWarehouseId() { return targetWarehouseId; }
     public void setTargetWarehouseId(Long targetWarehouseId) { this.targetWarehouseId = targetWarehouseId; }
+    public String getOutboundOperatorStaffCode() { return outboundOperatorStaffCode; }
+    public void setOutboundOperatorStaffCode(String outboundOperatorStaffCode) {
+        this.outboundOperatorStaffCode = outboundOperatorStaffCode;
+    }
+    public String getOutboundOperatorStaffNameSnapshot() { return outboundOperatorStaffNameSnapshot; }
+    public void setOutboundOperatorStaffNameSnapshot(String outboundOperatorStaffNameSnapshot) {
+        this.outboundOperatorStaffNameSnapshot = outboundOperatorStaffNameSnapshot;
+    }
+    public String getInboundOperatorStaffCode() { return inboundOperatorStaffCode; }
+    public void setInboundOperatorStaffCode(String inboundOperatorStaffCode) {
+        this.inboundOperatorStaffCode = inboundOperatorStaffCode;
+    }
+    public String getInboundOperatorStaffNameSnapshot() { return inboundOperatorStaffNameSnapshot; }
+    public void setInboundOperatorStaffNameSnapshot(String inboundOperatorStaffNameSnapshot) {
+        this.inboundOperatorStaffNameSnapshot = inboundOperatorStaffNameSnapshot;
+    }
     public String getStatusCode() { return statusCode; }
     public void setStatusCode(String statusCode) { this.statusCode = statusCode; }
     public LocalDateTime getStockOutTime() { return stockOutTime; }

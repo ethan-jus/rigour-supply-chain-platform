@@ -30,8 +30,8 @@ Portal -> Gateway -> order-center-service -> 本地订单投影
 - 物流查询使用订货宝 `getWaitShips`，入参为订单号 `orders_num`；返回 `shipped` 已出库/已发货记录和
   `wait_stock` 待出库明细。该调用发生在 Integration，订单中心只接收已归一化的物流数据。
 - 订单中心只拥有内部订单模型和查询/导入持久化边界，不读取第三方凭据。
-- `SalesOrder` 是平台内部销售订单模型，内部流程只使用我方订单状态、收款状态和出库状态。
-- 订货宝状态只在 Integration/内部同步中映射为我方状态，不作为业务页面字段展示。
+- `SalesOrder` 是平台内部销售订单模型，内部流程只使用我方订单状态、收款状态、出库状态和发货状态。
+- 订货宝状态作为 `source_status_code` 展示、筛选和对账，不直接作为我方人工流程动作。
 - 订单中心是 `order_sales_order`、`order_sales_order_line`、`order_sales_order_payment` 的唯一写入服务；ERP、库存、客户和 BI 通过服务接口消费业务数据。
 
 ## 3. 内部数据表
@@ -57,30 +57,22 @@ sales_order_id + line_no
 
 订货宝原始报文不再放在 Order Center；来源报文、来源覆盖、外部 ID 绑定和同步对账证据由 Integration 统一保存。Order V17 会删除旧 Order 内部订货宝镜像、导入和审计表。
 
-## 4. 内部订单状态
+## 4. 订单状态边界
 
-| 状态 | 含义 |
-|---|---|
-| `RECEIVED` | 已接收外部订单，尚未进入内部流程 |
-| `PENDING_CONFIRMATION` | 待确认 |
-| `ALLOCATING` | 库存分配中 |
-| `SHIPPED` | 已发货 |
-| `COMPLETED` | 已完成 |
-| `CANCELLED` | 已取消 |
-| `EXCEPTION` | 来源状态无法识别或数据异常 |
+Order Center 不把订货宝订单状态直接折叠成我方业务状态。当前销售订单有四条状态线：
 
-订货宝状态只做初始映射：
+| 状态线 | 字段/枚举 | 用途 |
+|---|---|---|
+| 我方订单主状态 | `order_status_code` / `SalesOrderStatus` | 只表达草稿、提交、取消等我方人工流程节点 |
+| 我方出库状态 | `outbound_status_code` / `SalesOrderOutboundStatus` | 表达待出库、部分出库、已出库 |
+| 我方发货状态 | `order_sales_shipment.status_code` / `SalesShipmentStatus` | 表达发货单创建、已发货、已签收、取消 |
+| 订货宝来源状态 | `source_status_code` / `DHB_ORDER_STATUS` | 保留订货宝原始状态，用于展示、筛选和对账 |
 
-| 订货宝状态 | 内部初始状态 |
-|---|---|
-| `pricing`、`pending` | `PENDING_CONFIRMATION` |
-| `stock_up` | `ALLOCATING` |
-| `shipped` | `SHIPPED` |
-| `received`、`finished`、`forcedone` | `COMPLETED` |
-| `cancelled` | `CANCELLED` |
-| 其他或空值 | `EXCEPTION` 或 `RECEIVED` |
+订货宝同步只能按来源状态设置 `source_status_code`，以及在创建新单时根据来源状态决定是否直接生成已提交订单。同步不能把 `待发货`、`待收货`、`已收货`、`已完成`、`强制完成` 直接覆盖到我方订单主状态，否则会绕过我方出库、发货、签收等人工动作。
 
-后续订货宝同步只通过映射规则更新我方允许来源接管的字段，不覆盖已经由自研订单流程维护的人工字段和状态机。
+订货宝来源状态为取消时，Integration 通过 `POST /api/v1/orders/sales/{id}/source-cancellations` 做来源取消投影；普通用户仍只能走 `POST /api/v1/orders/sales/{id}/cancellations`，并继续受我方人工取消规则约束。取消订单会把 `payment_status_code` 置为 `CANCELLED`，并关闭 `unpaid_amount`，避免取消单继续进入待收款口径。
+
+后续如果要让我方销售订单形成“完成/强制完成”闭环，应在我方状态机里新增明确动作和触发条件，例如“出库已完成 + 发货已签收 + 收款已结清”后自动完成，或由有权限人员强制完成。这个规则属于我方业务流程，不由订货宝来源状态单独决定。
 
 ## 5. 领域事件
 

@@ -16,7 +16,7 @@ public interface ErpTransferOrderStore {
     Optional<InternalTransferOrderDetailView> transferOrder(String tenantId, Long id);
 
     Optional<InternalTransferOrderDetailView> transferOrderBySource(
-            String tenantId, String sourceSystemCode, String sourceDocumentNo);
+            String tenantId, String connectorId, String sourceSystemCode, String sourceDocumentNo);
 
     boolean existsByTransferNo(String tenantId, String transferNo);
 
@@ -74,11 +74,16 @@ public interface ErpTransferOrderStore {
 
     /** 调拨单聚合写入模型。 */
     record TransferOrderWrite(
+            String connectorId,
             String sourceSystemCode,
             String sourceDocumentNo,
             Long sourceWarehouseId,
             Long targetWarehouseId,
             String statusCode,
+            String outboundOperatorStaffCode,
+            String outboundOperatorStaffNameSnapshot,
+            String inboundOperatorStaffCode,
+            String inboundOperatorStaffNameSnapshot,
             List<TransferOrderLineWrite> lines,
             String remark,
             Integer revision) {
@@ -104,6 +109,8 @@ public interface ErpTransferOrderStore {
     record TransferOrderSnapshot(
             Long id,
             String transferNo,
+            String sourceSystemCode,
+            String sourceDocumentNo,
             Long sourceWarehouseId,
             Long targetWarehouseId,
             String statusCode,
@@ -133,6 +140,7 @@ public interface ErpTransferOrderStore {
             Long transferOrderId,
             Integer transferRevision,
             String transferNo,
+            String connectorId,
             String sourceSystemCode,
             String sourceDocumentNo,
             String stockOutTypeCode,
@@ -141,7 +149,8 @@ public interface ErpTransferOrderStore {
             Instant stockOutTime,
             Long sourceWarehouseId,
             List<TransferStockOutLineWrite> lines,
-            String remark) {
+            String remark,
+            boolean affectStockBalance) {
         public TransferStockOutWrite {
             lines = lines == null ? List.of() : List.copyOf(lines);
         }
@@ -164,11 +173,17 @@ public interface ErpTransferOrderStore {
 
     /** 外部来源调拨出库写入模型；先创建调拨单，再生成调拨出库单。 */
     record ExternalTransferStockOutWrite(
+            String connectorId,
             String sourceSystemCode,
             String sourceDocumentNo,
             Long sourceWarehouseId,
             Long targetWarehouseId,
             Instant stockOutTime,
+            boolean affectStockBalance,
+            String outboundOperatorStaffCode,
+            String outboundOperatorStaffNameSnapshot,
+            String inboundOperatorStaffCode,
+            String inboundOperatorStaffNameSnapshot,
             List<ExternalTransferStockOutLineWrite> lines,
             String remark) {
         public ExternalTransferStockOutWrite {
@@ -195,6 +210,9 @@ public interface ErpTransferOrderStore {
             Long transferOrderId,
             Integer transferRevision,
             String transferNo,
+            String connectorId,
+            String sourceSystemCode,
+            String sourceDocumentNo,
             String stockInTypeCode,
             String stockInStatusCode,
             String nextTransferStatusCode,

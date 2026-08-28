@@ -64,6 +64,7 @@ rigour:
       worker-concurrency: 4
       worker-poll-interval-ms: 1000
       worker-max-attempts: 3
+      fund-attachment-prefix: fund-attachments
       cos:
         object-prefix: product-images
         region: ap-beijing

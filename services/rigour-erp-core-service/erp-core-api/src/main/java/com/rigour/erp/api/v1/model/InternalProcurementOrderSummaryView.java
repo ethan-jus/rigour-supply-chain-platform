@@ -7,6 +7,8 @@ import java.time.Instant;
 public record InternalProcurementOrderSummaryView(
         Long id,
         String procurementNo,
+        String sourceSystemCode,
+        String sourceDocumentNo,
         Long supplierId,
         String supplierName,
         Long targetWarehouseId,

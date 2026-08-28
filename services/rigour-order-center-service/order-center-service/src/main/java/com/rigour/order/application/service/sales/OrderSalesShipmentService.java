@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -95,11 +96,11 @@ public final class OrderSalesShipmentService {
     public SalesShipmentDetailView create(SalesShipmentCommand command) {
         CallerIdentity actor = actor(WRITE_PERMISSION);
         String tenantId = actor.tenantId().toString();
-        SalesShipmentWrite normalized = normalize(tenantId, command, false);
+        SalesShipmentWrite normalized = normalize(tenantId, command, false, actor, null);
         String shipmentNo = codeGenerator.generateUnique(OrderBusinessCodeRules.SALES_SHIPMENT,
-                candidate -> !store.existsByNo(tenantId, candidate));
+                normalized.shipTime(), candidate -> !store.existsByNo(tenantId, candidate));
         SalesShipmentDetailView created = store.create(
-                tenantId, shipmentNo, normalized, actor.principalId().toString());
+                tenantId, shipmentNo, normalized, OrderAuditActors.writeActor(actor));
         log.info("Order销售发货单创建完成 tenantId={} shipmentId={} shipmentNo={} salesOrderId={} totalQuantity={} actorId={}",
                 tenantId, created.id(), created.shipmentNo(), created.salesOrderId(),
                 created.totalQuantity(), actor.principalId());
@@ -109,9 +110,14 @@ public final class OrderSalesShipmentService {
     public SalesShipmentDetailView update(Long id, SalesShipmentCommand command) {
         CallerIdentity actor = actor(WRITE_PERMISSION);
         String tenantId = actor.tenantId().toString();
-        SalesShipmentWrite normalized = normalize(tenantId, command, true);
+        Long shipmentId = requireId(id, "销售发货单ID无效");
+        SalesShipmentDetailView existing = store.shipment(tenantId, shipmentId)
+                .orElseThrow(() -> notFound("销售发货单不存在"));
+        requireExternalMutationAllowed(actor, existing.sourceSystemCode(), "销售发货单");
+        SalesShipmentWrite normalized = normalize(tenantId, command, true, actor, existing.sourceSystemCode());
         SalesShipmentDetailView updated = store.update(
-                tenantId, requireId(id, "销售发货单ID无效"), normalized, actor.principalId().toString());
+                tenantId, shipmentId, normalized,
+                OrderAuditActors.writeActor(actor));
         log.info("Order销售发货单修改完成 tenantId={} shipmentId={} shipmentNo={} revision={} actorId={}",
                 tenantId, updated.id(), updated.shipmentNo(), updated.revision(), actor.principalId());
         return updated;
@@ -122,14 +128,29 @@ public final class OrderSalesShipmentService {
         requireRevision(revision);
         String tenantId = actor.tenantId().toString();
         Long shipmentId = requireId(id, "销售发货单ID无效");
-        store.delete(tenantId, shipmentId, revision, actor.principalId().toString());
+        SalesShipmentDetailView existing = store.shipment(tenantId, shipmentId)
+                .orElseThrow(() -> notFound("销售发货单不存在"));
+        requireExternalMutationAllowed(actor, existing.sourceSystemCode(), "销售发货单");
+        store.delete(tenantId, shipmentId, revision, OrderAuditActors.writeActor(actor));
         log.info("Order销售发货单逻辑删除完成 tenantId={} shipmentId={} revision={} actorId={}",
                 tenantId, shipmentId, revision, actor.principalId());
     }
 
-    private SalesShipmentWrite normalize(String tenantId, SalesShipmentCommand command, boolean update) {
+    private SalesShipmentWrite normalize(String tenantId, SalesShipmentCommand command, boolean update,
+                                         CallerIdentity actor, String existingSourceSystemCode) {
         if (command == null) throw badRequest("销售发货单参数不能为空");
         checkRevision(command.revision(), update);
+        String sourceSystemCode = sourceSystemCode(command.sourceSystemCode());
+        String sourceDocumentNo = text(command.sourceDocumentNo(), 128, "sourceDocumentNo");
+        requireSourceFieldsAllowed(actor, command.connectorId(), sourceSystemCode, sourceDocumentNo);
+        if (hasText(existingSourceSystemCode) && !hasText(sourceSystemCode)) {
+            throw badRequest("外部来源销售发货单更新必须保留sourceSystemCode");
+        }
+        if (hasText(sourceSystemCode)) {
+            if (command.connectorId() == null) throw badRequest("外部来源销售发货单connectorId不能为空");
+            if (!hasText(sourceDocumentNo)) throw badRequest("外部来源销售发货单sourceDocumentNo不能为空");
+            if (command.shipTime() == null) throw badRequest("外部来源销售发货单shipTime必须使用来源发货时间");
+        }
         Long salesOrderId = requireId(command.salesOrderId(), "salesOrderId无效");
         SalesOrderDetailView order = orderStore.salesOrder(tenantId, salesOrderId)
                 .orElseThrow(() -> notFound("销售订单不存在"));
@@ -138,6 +159,9 @@ public final class OrderSalesShipmentService {
                 .map(SalesShipmentLineWrite::shippedQuantity)
                 .reduce(ZERO, BigDecimal::add);
         return new SalesShipmentWrite(
+                command.connectorId(),
+                sourceSystemCode,
+                sourceDocumentNo,
                 order.id(),
                 order.orderNo(),
                 order.customerId(),
@@ -258,6 +282,35 @@ public final class OrderSalesShipmentService {
     private static String upper(String value) {
         String normalized = text(value, 64, "code");
         return normalized == null ? null : normalized.toUpperCase(Locale.ROOT);
+    }
+
+    private static String sourceSystemCode(String value) {
+        String normalized = upper(value);
+        if (normalized == null) return null;
+        if (normalized.length() > 64) throw badRequest("sourceSystemCode长度不能超过64");
+        return normalized;
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static void requireSourceFieldsAllowed(
+            CallerIdentity actor, UUID connectorId, String sourceSystemCode, String sourceDocumentNo) {
+        if (!isServiceActor(actor) && (connectorId != null || hasText(sourceSystemCode) || hasText(sourceDocumentNo))) {
+            throw new AuthorizationDeniedException("external-source-write");
+        }
+    }
+
+    private static void requireExternalMutationAllowed(
+            CallerIdentity actor, String sourceSystemCode, String documentName) {
+        if (hasText(sourceSystemCode) && !isServiceActor(actor)) {
+            throw new AuthorizationDeniedException(documentName + "-external-readonly");
+        }
+    }
+
+    private static boolean isServiceActor(CallerIdentity actor) {
+        return actor != null && "SERVICE".equals(actor.principalScope());
     }
 
     private static String value(String value) {

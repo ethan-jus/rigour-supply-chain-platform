@@ -28,10 +28,16 @@ public class InternalStockBalanceEntity {
     private BigDecimal inTransitQuantity;
     /** 乐观锁。 */
     private Integer revision;
+    /** 创建人。 */
+    private String createdBy;
     /** 创建时间。 */
     private LocalDateTime createdTime;
+    /** 更新人。 */
+    private String updatedBy;
     /** 更新时间。 */
     private LocalDateTime updatedTime;
+    /** 删除标识：0未删除，1已删除。 */
+    private Integer deleted;
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
@@ -51,8 +57,14 @@ public class InternalStockBalanceEntity {
     public void setInTransitQuantity(BigDecimal inTransitQuantity) { this.inTransitQuantity = inTransitQuantity; }
     public Integer getRevision() { return revision; }
     public void setRevision(Integer revision) { this.revision = revision; }
+    public String getCreatedBy() { return createdBy; }
+    public void setCreatedBy(String createdBy) { this.createdBy = createdBy; }
     public LocalDateTime getCreatedTime() { return createdTime; }
     public void setCreatedTime(LocalDateTime createdTime) { this.createdTime = createdTime; }
+    public String getUpdatedBy() { return updatedBy; }
+    public void setUpdatedBy(String updatedBy) { this.updatedBy = updatedBy; }
     public LocalDateTime getUpdatedTime() { return updatedTime; }
     public void setUpdatedTime(LocalDateTime updatedTime) { this.updatedTime = updatedTime; }
+    public Integer getDeleted() { return deleted; }
+    public void setDeleted(Integer deleted) { this.deleted = deleted; }
 }

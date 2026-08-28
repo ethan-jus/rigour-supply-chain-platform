@@ -131,7 +131,9 @@ public final class ProductMasterDataSyncService {
         Collected collected = client.collect(tenantServiceCaller(caller.tenantId()),
                 connectorId, objectType, maxPages);
         store.heartbeatRun(tenantId, attempt.runId);
+        attempt.counts.fetched = collected.total();
         attempt.counts.pages = collected.pages();
+        attempt.counts.sourceDetails = sourceDetails(objectType, collected);
         importCollected(tenantId, attempt.runId, collected, attempt.counts);
         store.heartbeatRun(tenantId, attempt.runId);
         attempt.counts.dictionaryAudit = dictionaryCoverage.inspect(caller.tenantId(), collected);
@@ -153,7 +155,7 @@ public final class ProductMasterDataSyncService {
                 statistics.fetched(), statistics.created(), statistics.changed(),
                 statistics.duplicates(), statistics.rejected(),
                 statistics.dictionaryAudit().unmapped(), statistics.dictionaryAudit().revisions(),
-                statistics.pages(), Instant.now());
+                attempt.counts.sourceDetails, statistics.pages(), Instant.now());
     }
 
     private void importCollected(String tenantId, UUID runId, Collected collected, Accumulator counts) {
@@ -251,6 +253,7 @@ public final class ProductMasterDataSyncService {
         private long duplicates;
         private long rejected;
         private int pages;
+        private Map<String, Long> sourceDetails = Map.of();
         private DictionaryMappingAudit dictionaryAudit = DictionaryMappingAudit.empty();
 
         void add(ImportResult result) {
@@ -258,7 +261,6 @@ public final class ProductMasterDataSyncService {
             changed += result.changed();
             duplicates += result.duplicates();
             rejected += result.rejected();
-            fetched += result.created() + result.changed() + result.duplicates() + result.rejected();
         }
 
         RunStatistics statistics() {
@@ -297,6 +299,27 @@ public final class ProductMasterDataSyncService {
                     .map(item -> item.sourceId()).collect(Collectors.toSet()));
         }
         return Map.copyOf(seen);
+    }
+
+    private static Map<String, Long> sourceDetails(MasterDataObjectType objectType,
+                                                   Collected collected) {
+        Map<String, Long> details = new LinkedHashMap<>();
+        switch (objectType) {
+            case PRODUCT_SPU -> {
+                details.put("PRODUCT_SPU", collected.total());
+                details.put("PRODUCT_SKU", collected.products().stream()
+                        .mapToLong(product -> product.skus().size()).sum());
+                details.put("SOURCE_DELETED_PRODUCT", collected.products().stream()
+                        .filter(product -> "SOURCE_DELETED".equalsIgnoreCase(product.sourceLifecycle())).count());
+            }
+            case SPECIFICATION -> {
+                details.put("SPECIFICATION", collected.total());
+                details.put("SPECIFICATION_VALUE", collected.specifications().stream()
+                        .mapToLong(specification -> specification.values().size()).sum());
+            }
+            default -> details.put(objectType.name(), collected.total());
+        }
+        return java.util.Collections.unmodifiableMap(details);
     }
 
     private static String oneLine(String value) {

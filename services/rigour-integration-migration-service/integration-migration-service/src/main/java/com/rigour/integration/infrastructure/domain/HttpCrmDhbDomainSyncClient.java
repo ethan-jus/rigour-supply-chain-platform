@@ -9,13 +9,16 @@ import com.rigour.shared.core.api.ApiResponse;
 import java.net.URI;
 import java.util.Objects;
 import java.util.UUID;
-import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
+import tools.jackson.core.type.TypeReference;
 
 /** Integration 到 CRM 内部订货宝同步接口的 HTTP 客户端。 */
 public final class HttpCrmDhbDomainSyncClient implements CrmDhbDomainSyncClient {
+    private static final TypeReference<ApiResponse<SyncResult>> SYNC_RESULT_RESPONSE =
+            new TypeReference<>() { };
+
     private final RestClient restClient;
     private final TrustedContextSigner signer;
     private final URI baseUri;
@@ -45,8 +48,8 @@ public final class HttpCrmDhbDomainSyncClient implements CrmDhbDomainSyncClient 
                         .forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, SignedDomainRequest.requestId())
                 .body(new SyncCommand(connectorId, sourceTaskId, maxPages))
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SYNC_RESULT_RESPONSE, "CRM订货宝同步"));
         return SignedDomainRequest.required(response, "CRM");
     }
 

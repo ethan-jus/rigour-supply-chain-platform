@@ -13,6 +13,8 @@ public class InternalFundDocumentEntity {
     private Long id;
     private String tenantId;
     private String documentNo;
+    private String connectorId;
+    private String sourceSystemCode;
     private String directionCode;
     private Long relatedOrderId;
     private String salesOrderNoSnapshot;
@@ -29,6 +31,15 @@ public class InternalFundDocumentEntity {
     private String businessTypeCode;
     private String documentStatusCode;
     private BigDecimal amount;
+    private String sourceDocumentNo;
+    private String sourceOrderNo;
+    private String paymentSerialNo;
+    private String bankAccountName;
+    private String bankName;
+    private String bankAccountNo;
+    private LocalDateTime submittedAt;
+    private LocalDateTime confirmedAt;
+    private String sourceAttachmentKeysJson;
     private String voucherKeysJson;
     private String remark;
     private Integer revision;
@@ -44,6 +55,10 @@ public class InternalFundDocumentEntity {
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getDocumentNo() { return documentNo; }
     public void setDocumentNo(String documentNo) { this.documentNo = documentNo; }
+    public String getConnectorId() { return connectorId; }
+    public void setConnectorId(String connectorId) { this.connectorId = connectorId; }
+    public String getSourceSystemCode() { return sourceSystemCode; }
+    public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
     public String getDirectionCode() { return directionCode; }
     public void setDirectionCode(String directionCode) { this.directionCode = directionCode; }
     public Long getRelatedOrderId() { return relatedOrderId; }
@@ -76,6 +91,24 @@ public class InternalFundDocumentEntity {
     public void setDocumentStatusCode(String documentStatusCode) { this.documentStatusCode = documentStatusCode; }
     public BigDecimal getAmount() { return amount; }
     public void setAmount(BigDecimal amount) { this.amount = amount; }
+    public String getSourceDocumentNo() { return sourceDocumentNo; }
+    public void setSourceDocumentNo(String sourceDocumentNo) { this.sourceDocumentNo = sourceDocumentNo; }
+    public String getSourceOrderNo() { return sourceOrderNo; }
+    public void setSourceOrderNo(String sourceOrderNo) { this.sourceOrderNo = sourceOrderNo; }
+    public String getPaymentSerialNo() { return paymentSerialNo; }
+    public void setPaymentSerialNo(String paymentSerialNo) { this.paymentSerialNo = paymentSerialNo; }
+    public String getBankAccountName() { return bankAccountName; }
+    public void setBankAccountName(String bankAccountName) { this.bankAccountName = bankAccountName; }
+    public String getBankName() { return bankName; }
+    public void setBankName(String bankName) { this.bankName = bankName; }
+    public String getBankAccountNo() { return bankAccountNo; }
+    public void setBankAccountNo(String bankAccountNo) { this.bankAccountNo = bankAccountNo; }
+    public LocalDateTime getSubmittedAt() { return submittedAt; }
+    public void setSubmittedAt(LocalDateTime submittedAt) { this.submittedAt = submittedAt; }
+    public LocalDateTime getConfirmedAt() { return confirmedAt; }
+    public void setConfirmedAt(LocalDateTime confirmedAt) { this.confirmedAt = confirmedAt; }
+    public String getSourceAttachmentKeysJson() { return sourceAttachmentKeysJson; }
+    public void setSourceAttachmentKeysJson(String sourceAttachmentKeysJson) { this.sourceAttachmentKeysJson = sourceAttachmentKeysJson; }
     public String getVoucherKeysJson() { return voucherKeysJson; }
     public void setVoucherKeysJson(String voucherKeysJson) { this.voucherKeysJson = voucherKeysJson; }
     public String getRemark() { return remark; }

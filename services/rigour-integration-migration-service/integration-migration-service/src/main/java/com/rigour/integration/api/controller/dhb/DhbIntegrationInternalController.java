@@ -6,6 +6,7 @@ import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingBat
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.application.service.dhb.DhbIntegrationService;
 import java.util.List;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -24,14 +25,15 @@ public final class DhbIntegrationInternalController implements DhbIntegrationInt
         this.service = service;
     }
 
-    @GetMapping("/sync-targets")
+    @GetMapping(value = "/sync-targets", produces = MediaType.APPLICATION_JSON_VALUE)
     @Override
     public List<SyncTargetView> syncTargets(
             @RequestParam(name = "objectType", defaultValue = "ORDER") String objectType) {
         return service.syncTargets(objectType);
     }
 
-    @PostMapping("/object-mappings")
+    @PostMapping(value = "/object-mappings", consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE)
     @Override
     public ExternalObjectMappingBatchResult upsertObjectMappings(
             @RequestBody ExternalObjectMappingBatchCommand command) {

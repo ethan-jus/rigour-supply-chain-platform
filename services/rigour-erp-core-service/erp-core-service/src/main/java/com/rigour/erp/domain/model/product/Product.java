@@ -16,6 +16,8 @@ public record Product(
         String name,
         /** 订货宝上下架状态原值。 */
         String putaway,
+        /** 来源生命周期：NORMAL、INACTIVE、SOURCE_DELETED 或 UNKNOWN。 */
+        String sourceLifecycle,
         /** 来源商品默认条码。 */
         String barcode,
         /** 来源商品计量单位。 */
@@ -86,20 +88,29 @@ public record Product(
     public Product(String sourceId, String code, String name, String putaway, String barcode,
                    String unit, String categorySourceId, String brandSourceId,
                    List<Sku> skus, String payloadHash) {
-        this(sourceId, code, name, putaway, barcode, unit, categorySourceId, brandSourceId,
+        this(sourceId, code, name, putaway, "UNKNOWN", barcode, unit, categorySourceId, brandSourceId,
                 skus, Map.of(), payloadHash);
     }
 
     public Product(String sourceId, String code, String name, String putaway, String barcode,
                    String unit, String categorySourceId, String brandSourceId,
                    List<Sku> skus, Map<String, Object> sourceFields, String payloadHash) {
-        this(sourceId, code, name, putaway, barcode, unit, categorySourceId, brandSourceId,
+        this(sourceId, code, name, putaway, "UNKNOWN", barcode, unit, categorySourceId, brandSourceId,
+                skus, sourceFields, payloadHash);
+    }
+
+    public Product(String sourceId, String code, String name, String putaway, String sourceLifecycle,
+                   String barcode, String unit, String categorySourceId, String brandSourceId,
+                   List<Sku> skus, Map<String, Object> sourceFields, String payloadHash) {
+        this(sourceId, code, name, putaway, sourceLifecycle, barcode, unit, categorySourceId, brandSourceId,
                 null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null,
                 List.<ProductImage>of(), Map.<String, String>of(), skus, sourceFields, payloadHash);
     }
 
     public Product {
+        sourceLifecycle = sourceLifecycle == null || sourceLifecycle.isBlank()
+                ? "UNKNOWN" : sourceLifecycle.strip();
         images = images == null ? List.of() : List.copyOf(images);
         customFields = customFields == null ? Map.of() : Map.copyOf(customFields);
         skus = skus == null ? List.of() : List.copyOf(skus);

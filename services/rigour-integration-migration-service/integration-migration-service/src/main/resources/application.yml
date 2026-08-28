@@ -4,6 +4,12 @@ server:
 spring:
   application:
     name: rigour-integration-migration-service
+  datasource:
+    hikari:
+      # 统一同步可能跨数小时；保活要短于共享DEV中间网络/服务端空闲断连窗口，避免写死信/对账时拿到半开连接。
+      max-lifetime: ${RIGOUR_INTEGRATION_DATASOURCE_MAX_LIFETIME_MS:1500000}
+      keepalive-time: ${RIGOUR_INTEGRATION_DATASOURCE_KEEPALIVE_TIME_MS:300000}
+      validation-timeout: ${RIGOUR_INTEGRATION_DATASOURCE_VALIDATION_TIMEOUT_MS:5000}
 
 management:
   endpoints:
@@ -45,9 +51,12 @@ rigour:
       # 订货宝图片强制写入 COS 私桶；缺少 COS 配置时服务启动失败，不降级到本地文件。
       max-bytes: 10485760
       # 图片任务由持久化队列驱动；每个实例最多4个并发下载/上传任务。
+      worker-enabled: ${RIGOUR_INTEGRATION_PRODUCT_MEDIA_WORKER_ENABLED:true}
       worker-concurrency: 4
       worker-poll-interval-ms: 1000
       worker-max-attempts: 3
+      # 订货宝收付款附件写入同一个 COS 私桶，但必须和商品图片目录隔离。
+      fund-attachment-prefix: ${RIGOUR_INTEGRATION_FUND_ATTACHMENT_COS_OBJECT_PREFIX:fund-attachments}
       cos:
         # 非敏感项由 Nacos/环境配置；Secret 只从部署环境注入。
         object-prefix: ${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_OBJECT_PREFIX:product-images}

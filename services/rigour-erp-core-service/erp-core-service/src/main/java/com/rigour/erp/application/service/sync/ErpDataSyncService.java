@@ -79,7 +79,7 @@ public final class ErpDataSyncService {
                     caller.tenantId(), skip.blockedObjectType(), connectorId, sourceTaskId, runId,
                     skip.reason().code());
             return new ErpDataSyncResult(runId, skip.blockedObjectType(), "SKIPPED", connectorId,
-                    0, 0, 0, 0, 0, 0, Map.of(), 0, Instant.now());
+                    0, 0, 0, 0, 0, 0, Map.of(), Map.of(), 0, Instant.now());
         }
     }
 

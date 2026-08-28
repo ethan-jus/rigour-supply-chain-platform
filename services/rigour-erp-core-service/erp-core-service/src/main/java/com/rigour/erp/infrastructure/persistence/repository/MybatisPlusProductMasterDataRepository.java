@@ -35,6 +35,7 @@ import com.rigour.erp.infrastructure.persistence.mapper.MasterSourceBindingMappe
 import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand;
 import com.rigour.shared.core.code.BusinessCodeGenerator;
 import com.rigour.shared.core.code.BusinessCodeRule;
+import com.rigour.shared.core.sync.ExternalSourceCodes;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -69,13 +70,15 @@ import tools.jackson.databind.json.JsonMapper;
  */
 @Repository
 public class MybatisPlusProductMasterDataRepository implements ProductMasterDataStore {
-    private static final String SOURCE_SYSTEM = "DINGHUOBAO";
-    private static final String INTEGRATION_SOURCE_SYSTEM = "DHB";
-    private static final String SYNC_ACTOR = "DHB_SYNC";
+    private static final String SOURCE_SYSTEM = ExternalSourceCodes.DOMAIN_DINGHUOBAO;
+    private static final String INTEGRATION_SOURCE_SYSTEM = ExternalSourceCodes.INTEGRATION_DHB;
+    private static final String SYSTEM_ACTOR = "SYSTEM";
+    private static final String LEGACY_SYNC_ACTOR = "DHB_SYNC";
     private static final String TRIGGER_MANUAL = "MANUAL";
     private static final String TRIGGER_SCHEDULED = "SCHEDULED";
     private static final String PRESENT = "PRESENT";
     private static final String SOURCE_ABSENT = "SOURCE_ABSENT";
+    private static final String SOURCE_DELETED = "SOURCE_DELETED";
     private static final long RUN_LEASE_MINUTES = 30;
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter SOURCE_DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -125,6 +128,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     @Transactional
     public UUID startRun(String tenantId, UUID connectorId, UUID actorId,
                          MasterDataObjectType objectType, int maxPages) {
+        if (connectorId == null) throw new IllegalArgumentException("connectorId不能为空");
         return startRun(tenantId, connectorId, actorId, objectType, maxPages, TRIGGER_MANUAL);
     }
 
@@ -132,6 +136,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     @Transactional
     public UUID startScheduledRun(String tenantId, UUID connectorId, UUID actorId,
                                   MasterDataObjectType objectType, int maxPages) {
+        if (connectorId == null) throw new IllegalArgumentException("connectorId不能为空");
         return startRun(tenantId, connectorId, actorId, objectType, maxPages, TRIGGER_SCHEDULED);
     }
 
@@ -174,12 +179,46 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         return result;
     }
 
+    private ImportResult markSourceDeletedSkuBindings(String tenantId, UUID runId,
+                                                      Long productId, Product product) {
+        ImportResult result = ImportResult.duplicate(0);
+        LocalDateTime now = now();
+        for (Sku sku : product.skus()) {
+            if (missing(sku.sourceId())) {
+                result = result.plus(ImportResult.rejected(1));
+                continue;
+            }
+            MasterSourceBindingEntity binding = binding(tenantId, runId, "PRODUCT_SKU", sku.sourceId());
+            InternalProductVariantEntity variant = sourceBoundVariant(tenantId, productId, binding);
+            if (variant == null) {
+                variant = variantCandidate(tenantId, runId, productId, sku);
+            }
+            if (variant == null) {
+                continue;
+            }
+            boolean changed = changed(binding, sku.payloadHash(), SOURCE_DELETED)
+                    || value(variant.getDeleted(), 0) == 0;
+            if (sourceWritable(variant.getUpdatedBy()) && value(variant.getDeleted(), 0) == 0) {
+                softDeleteVariant(variant, now);
+            }
+            upsertBinding(tenantId, runId, "PRODUCT_SKU", sku.sourceId(), "PRODUCT_VARIANT",
+                    variant.getId(), sku.code(), sku.specificationName(), product.sourceLifecycle(),
+                    product.putaway(), sku.payloadHash(), now, SOURCE_DELETED);
+            result = result.plus(changed ? ImportResult.changed(1) : ImportResult.duplicate(1));
+        }
+        softDeleteProductVariants(tenantId, productId, now);
+        return result;
+    }
+
     @Override
     @Transactional
     public ImportResult importProduct(String tenantId, UUID runId, Product product) {
         if (missing(product.sourceId()) || missing(product.name())) return ImportResult.rejected(1);
         UpsertResult upserted = upsertProduct(tenantId, runId, product);
         ImportResult result = upserted.result();
+        if (sourceDeleted(product)) {
+            return result.plus(markSourceDeletedSkuBindings(tenantId, runId, upserted.id(), product));
+        }
         if (product.skus().isEmpty()) {
             return result;
         }
@@ -200,9 +239,11 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         LocalDateTime now = now();
         seenSourceIds.forEach((sourceType, values) -> {
             Set<String> seen = values == null ? Set.of() : values;
+            String connectorId = runConnectorId(tenantId, runId);
             List<MasterSourceBindingEntity> bindings = bindingMapper.selectList(
                     Wrappers.<MasterSourceBindingEntity>query()
                             .eq("tenant_id", tenantId)
+                            .eq("connector_id", connectorId)
                             .eq("source_system", SOURCE_SYSTEM)
                             .eq("source_object_type", sourceType));
             for (MasterSourceBindingEntity binding : bindings) {
@@ -210,13 +251,16 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 if (!present) {
                     softDeleteAbsentTarget(tenantId, binding, now);
                 }
-                String desired = present ? PRESENT : SOURCE_ABSENT;
+                String desired = present && SOURCE_DELETED.equals(binding.sourcePresence)
+                        ? SOURCE_DELETED : (present ? PRESENT : SOURCE_ABSENT);
                 if (Objects.equals(binding.sourcePresence, desired)) continue;
                 binding.sourcePresence = desired;
                 binding.sourceAbsentAt = present ? null : now;
                 binding.lastSyncRunId = text(runId);
-                binding.version = nextVersion(binding.version);
-                binding.updatedAt = now;
+                binding.revision = nextVersion(binding.revision);
+                binding.updatedBy = SYSTEM_ACTOR;
+                binding.updatedTime = now;
+                binding.deleted = 0;
                 bindingMapper.updateById(binding);
             }
         });
@@ -236,25 +280,30 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         if (!"PRODUCT_SPU".equals(binding.sourceObjectType)) return;
         InternalProductEntity product = productMapper.selectById(id);
         if (!valid(product, tenantId) || !sourceWritable(product.getUpdatedBy())) return;
-        for (InternalProductVariantEntity variant : variantMapper.selectList(
-                Wrappers.<InternalProductVariantEntity>lambdaQuery()
-                        .eq(InternalProductVariantEntity::getTenantId, tenantId)
-                        .eq(InternalProductVariantEntity::getProductId, product.getId())
-                        .eq(InternalProductVariantEntity::getDeleted, 0))) {
-            if (sourceWritable(variant.getUpdatedBy())) {
-                softDeleteVariant(variant, now);
-            }
-        }
+        softDeleteProductVariants(tenantId, product.getId(), now);
         product.setDeleted(1);
-        product.setUpdatedBy(SYNC_ACTOR);
+        product.setUpdatedBy(SYSTEM_ACTOR);
         product.setUpdatedTime(now);
         product.setRevision(value(product.getRevision(), 1) + 1);
         productMapper.updateById(product);
     }
 
+    private void softDeleteProductVariants(String tenantId, Long productId, LocalDateTime now) {
+        if (productId == null) return;
+        for (InternalProductVariantEntity variant : variantMapper.selectList(
+                Wrappers.<InternalProductVariantEntity>lambdaQuery()
+                        .eq(InternalProductVariantEntity::getTenantId, tenantId)
+                        .eq(InternalProductVariantEntity::getProductId, productId)
+                        .eq(InternalProductVariantEntity::getDeleted, 0))) {
+            if (sourceWritable(variant.getUpdatedBy())) {
+                softDeleteVariant(variant, now);
+            }
+        }
+    }
+
     private void softDeleteVariant(InternalProductVariantEntity variant, LocalDateTime now) {
         variant.setDeleted(1);
-        variant.setUpdatedBy(SYNC_ACTOR);
+        variant.setUpdatedBy(SYSTEM_ACTOR);
         variant.setUpdatedTime(now);
         variant.setRevision(value(variant.getRevision(), 1) + 1);
         variantMapper.updateById(variant);
@@ -292,19 +341,25 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         LocalDateTime now = now();
         syncRunMapper.update(null, Wrappers.<MasterDataSyncRunEntity>update()
                 .eq("tenant_id", tenantId).eq("id", text(runId)).eq("status", "RUNNING")
-                .set("updated_at", now));
+                .set("updated_by", SYSTEM_ACTOR)
+                .set("updated_time", now)
+                .setSql("revision = revision + 1"));
         syncLockMapper.update(null, Wrappers.<MasterDataSyncLockEntity>update()
                 .eq("tenant_id", tenantId).eq("source_system", SOURCE_SYSTEM)
                 .eq("run_id", text(runId))
-                .set("expires_at", now.plus(Duration.ofMinutes(RUN_LEASE_MINUTES))));
+                .set("expires_at", now.plus(Duration.ofMinutes(RUN_LEASE_MINUTES)))
+                .set("updated_by", SYSTEM_ACTOR)
+                .set("updated_time", now)
+                .setSql("revision = revision + 1"));
     }
 
     @Override
     public List<ExternalObjectMappingCommand> externalObjectMappings(
             String tenantId, UUID connectorId, UUID runId, MasterDataObjectType objectType) {
         if (objectType != MasterDataObjectType.PRODUCT_SPU) return List.of();
+        String connector = requiredConnectorId(connectorId);
         List<ExternalObjectMappingCommand> commands = new ArrayList<>();
-        for (MasterSourceBindingEntity binding : bindings(tenantId, "PRODUCT_SPU")) {
+        for (MasterSourceBindingEntity binding : bindings(tenantId, connector, "PRODUCT_SPU")) {
             Long id = longTargetId(binding);
             InternalProductEntity product = id == null ? null : productMapper.selectById(id);
             if (product == null || !Objects.equals(tenantId, product.getTenantId())
@@ -315,7 +370,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                     "ACTIVE", runId, instant(binding.syncedAt), null,
                     binding.sourcePayloadHash, null, "ERP商品同步映射"));
         }
-        for (MasterSourceBindingEntity binding : bindings(tenantId, "PRODUCT_SKU")) {
+        for (MasterSourceBindingEntity binding : bindings(tenantId, connector, "PRODUCT_SKU")) {
             Long id = longTargetId(binding);
             InternalProductVariantEntity variant = id == null ? null : variantMapper.selectById(id);
             if (variant == null || !Objects.equals(tenantId, variant.getTenantId())
@@ -330,20 +385,21 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private UpsertResult upsertCategory(String tenantId, UUID runId, Category value) {
-        MasterSourceBindingEntity binding = binding(tenantId, "CATEGORY", value.sourceId());
-        boolean changed = changed(binding, value.payloadHash());
+        MasterSourceBindingEntity binding = binding(tenantId, runId, "CATEGORY", value.sourceId());
+        boolean changed = changed(binding, value.payloadHash(), PRESENT);
         Long id = longTargetId(binding);
         InternalProductCategoryEntity entity = id == null ? null : categoryMapper.selectById(id);
         if (!valid(entity, tenantId)) entity = null;
         boolean created = entity == null;
         LocalDateTime now = now();
-        Long parentId = internalTargetId(tenantId, "CATEGORY", value.parentSourceId());
+        Instant sourceCreatedAt = sourceCreatedAt(value.sourceFields());
+        Long parentId = internalTargetId(tenantId, runId, "CATEGORY", value.parentSourceId());
         if (created) {
             entity = new InternalProductCategoryEntity();
             entity.setTenantId(tenantId);
-            entity.setCategoryCode(uniqueCategoryCode(tenantId));
-            entity.setCreatedBy(SYNC_ACTOR);
-            entity.setCreatedTime(now);
+            entity.setCategoryCode(uniqueCategoryCode(tenantId, sourceCreatedAt));
+            entity.setCreatedBy(SYSTEM_ACTOR);
+            entity.setCreatedTime(sourceTime(sourceCreatedAt, now));
             entity.setDeleted(0);
             entity.setRevision(1);
         }
@@ -354,7 +410,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.setCategoryLevel(parentLevel(tenantId, parentId));
             entity.setOrdinal(value.defaultCategory() != null && value.defaultCategory() ? -1 : 0);
             entity.setRemark(sourceRemark(value.sourceFields()));
-            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedBy(SYSTEM_ACTOR);
             entity.setUpdatedTime(now);
             if (created) categoryMapper.insert(entity);
             else {
@@ -369,19 +425,20 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private UpsertResult upsertBrand(String tenantId, UUID runId, Brand value) {
-        MasterSourceBindingEntity binding = binding(tenantId, "BRAND", value.sourceId());
-        boolean changed = changed(binding, value.payloadHash());
+        MasterSourceBindingEntity binding = binding(tenantId, runId, "BRAND", value.sourceId());
+        boolean changed = changed(binding, value.payloadHash(), PRESENT);
         Long id = longTargetId(binding);
         InternalProductBrandEntity entity = id == null ? null : brandMapper.selectById(id);
         if (!valid(entity, tenantId)) entity = null;
         boolean created = entity == null;
         LocalDateTime now = now();
+        Instant sourceCreatedAt = sourceCreatedAt(value.sourceFields());
         if (created) {
             entity = new InternalProductBrandEntity();
             entity.setTenantId(tenantId);
-            entity.setBrandCode(uniqueBrandCode(tenantId));
-            entity.setCreatedBy(SYNC_ACTOR);
-            entity.setCreatedTime(now);
+            entity.setBrandCode(uniqueBrandCode(tenantId, sourceCreatedAt));
+            entity.setCreatedBy(SYSTEM_ACTOR);
+            entity.setCreatedTime(sourceTime(sourceCreatedAt, now));
             entity.setDeleted(0);
             entity.setRevision(1);
         }
@@ -389,7 +446,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 && (changed || !Objects.equals(entity.getBrandName(), value.name())))) {
             entity.setBrandName(value.name());
             entity.setRemark(firstText(value.description(), sourceRemark(value.sourceFields())));
-            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedBy(SYSTEM_ACTOR);
             entity.setUpdatedTime(now);
             if (created) brandMapper.insert(entity);
             else {
@@ -404,19 +461,20 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private UpsertResult upsertTag(String tenantId, UUID runId, Tag value) {
-        MasterSourceBindingEntity binding = binding(tenantId, "TAG", value.sourceId());
-        boolean changed = changed(binding, value.payloadHash());
+        MasterSourceBindingEntity binding = binding(tenantId, runId, "TAG", value.sourceId());
+        boolean changed = changed(binding, value.payloadHash(), PRESENT);
         Long id = longTargetId(binding);
         InternalProductTagEntity entity = id == null ? null : tagMapper.selectById(id);
         if (!valid(entity, tenantId)) entity = null;
         boolean created = entity == null;
         LocalDateTime now = now();
+        Instant sourceCreatedAt = firstInstant(value.createdAt(), sourceCreatedAt(value.sourceFields()));
         if (created) {
             entity = new InternalProductTagEntity();
             entity.setTenantId(tenantId);
-            entity.setTagCode(uniqueTagCode(tenantId));
-            entity.setCreatedBy(SYNC_ACTOR);
-            entity.setCreatedTime(now);
+            entity.setTagCode(uniqueTagCode(tenantId, sourceCreatedAt));
+            entity.setCreatedBy(SYSTEM_ACTOR);
+            entity.setCreatedTime(sourceTime(sourceCreatedAt, now));
             entity.setDeleted(0);
             entity.setRevision(1);
         }
@@ -425,7 +483,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.setTagName(value.name());
             entity.setTagTypeCode("RECOMMENDED");
             entity.setRemark(firstText(value.groupName(), sourceRemark(value.sourceFields())));
-            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedBy(SYSTEM_ACTOR);
             entity.setUpdatedTime(now);
             if (created) tagMapper.insert(entity);
             else {
@@ -439,19 +497,20 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private UpsertResult upsertSpecification(String tenantId, UUID runId, Specification value) {
-        MasterSourceBindingEntity binding = binding(tenantId, "SPECIFICATION", value.sourceId());
-        boolean changed = changed(binding, value.payloadHash());
+        MasterSourceBindingEntity binding = binding(tenantId, runId, "SPECIFICATION", value.sourceId());
+        boolean changed = changed(binding, value.payloadHash(), PRESENT);
         Long id = longTargetId(binding);
         InternalProductSpecificationEntity entity = id == null ? null : specificationMapper.selectById(id);
         if (!valid(entity, tenantId)) entity = null;
         boolean created = entity == null;
         LocalDateTime now = now();
+        Instant sourceCreatedAt = sourceCreatedAt(value.sourceFields());
         if (created) {
             entity = new InternalProductSpecificationEntity();
             entity.setTenantId(tenantId);
-            entity.setSpecificationCode(uniqueSpecificationCode(tenantId));
-            entity.setCreatedBy(SYNC_ACTOR);
-            entity.setCreatedTime(now);
+            entity.setSpecificationCode(uniqueSpecificationCode(tenantId, sourceCreatedAt));
+            entity.setCreatedBy(SYSTEM_ACTOR);
+            entity.setCreatedTime(sourceTime(sourceCreatedAt, now));
             entity.setDeleted(0);
             entity.setRevision(1);
         }
@@ -459,7 +518,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 && (changed || !Objects.equals(entity.getSpecificationName(), value.name())))) {
             entity.setSpecificationName(value.name());
             entity.setStatusCode("ACTIVE");
-            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedBy(SYSTEM_ACTOR);
             entity.setUpdatedTime(now);
             if (created) specificationMapper.insert(entity);
             else {
@@ -474,22 +533,23 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
 
     private UpsertResult upsertSpecificationValue(String tenantId, UUID runId, Long specificationId,
                                                   SpecificationValue value) {
-        MasterSourceBindingEntity binding = binding(tenantId, "SPECIFICATION_VALUE", value.sourceId());
-        boolean changed = changed(binding, value.payloadHash());
+        MasterSourceBindingEntity binding = binding(tenantId, runId, "SPECIFICATION_VALUE", value.sourceId());
+        boolean changed = changed(binding, value.payloadHash(), PRESENT);
         Long id = longTargetId(binding);
         InternalProductSpecificationValueEntity entity = id == null ? null
                 : specificationValueMapper.selectById(id);
         if (!valid(entity, tenantId)) entity = null;
         boolean created = entity == null;
         LocalDateTime now = now();
+        Instant sourceCreatedAt = sourceCreatedAt(value.sourceFields());
         if (created) {
             entity = new InternalProductSpecificationValueEntity();
             entity.setTenantId(tenantId);
             entity.setSpecificationId(specificationId);
-            entity.setValueCode(uniqueSpecificationValueCode(tenantId, specificationId));
+            entity.setValueCode(uniqueSpecificationValueCode(tenantId, specificationId, sourceCreatedAt));
             entity.setOrdinal(0);
-            entity.setCreatedBy(SYNC_ACTOR);
-            entity.setCreatedTime(now);
+            entity.setCreatedBy(SYSTEM_ACTOR);
+            entity.setCreatedTime(sourceTime(sourceCreatedAt, now));
             entity.setDeleted(0);
             entity.setRevision(1);
         }
@@ -499,7 +559,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.setSpecificationId(specificationId);
             entity.setValueName(value.name());
             entity.setStatusCode("ACTIVE");
-            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setUpdatedBy(SYSTEM_ACTOR);
             entity.setUpdatedTime(now);
             if (created) specificationValueMapper.insert(entity);
             else {
@@ -514,32 +574,35 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private UpsertResult upsertProduct(String tenantId, UUID runId, Product value) {
-        MasterSourceBindingEntity binding = binding(tenantId, "PRODUCT_SPU", value.sourceId());
+        MasterSourceBindingEntity binding = binding(tenantId, runId, "PRODUCT_SPU", value.sourceId());
         Long id = longTargetId(binding);
         InternalProductEntity entity = id == null ? null : productMapper.selectById(id);
-        if (!valid(entity, tenantId)) entity = null;
+        if (!boundProductUsable(entity, tenantId)) entity = null;
         if (entity == null) {
-            entity = productCandidate(tenantId, value);
+            entity = productCandidate(tenantId, runId, value);
         }
         boolean created = entity == null;
-        boolean changed = changed(binding, value.payloadHash())
+        boolean deletedBySource = sourceDeleted(value);
+        String desiredPresence = deletedBySource ? SOURCE_DELETED : PRESENT;
+        boolean changed = changed(binding, value.payloadHash(), desiredPresence)
                 || (binding != null && entity != null && !Objects.equals(id, entity.getId()));
         LocalDateTime now = now();
-        Long categoryId = internalTargetId(tenantId, "CATEGORY", value.categorySourceId());
-        Long brandId = internalTargetId(tenantId, "BRAND", value.brandSourceId());
+        Long categoryId = internalTargetId(tenantId, runId, "CATEGORY", value.categorySourceId());
+        Long brandId = internalTargetId(tenantId, runId, "BRAND", value.brandSourceId());
         String imagesJson = imageKeysJson(value);
         String productCode = synchronizedProductCode(tenantId, value, entity);
         if (created) {
             entity = new InternalProductEntity();
             entity.setTenantId(tenantId);
             entity.setProductCode(productCode);
-            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedBy(SYSTEM_ACTOR);
             entity.setCreatedTime(now);
-            entity.setDeleted(0);
+            entity.setDeleted(deletedBySource ? 1 : 0);
             entity.setRevision(1);
         }
         if (created || (sourceWritable(entity.getUpdatedBy())
-                && (changed || productNeedsRepair(entity, value, categoryId, brandId, imagesJson, productCode)))) {
+                && (changed || productNeedsRepair(entity, value, categoryId, brandId, imagesJson, productCode)
+                || value(entity.getDeleted(), 0) != (deletedBySource ? 1 : 0)))) {
             entity.setProductCode(productCode);
             entity.setProductName(value.name());
             entity.setCategoryId(categoryId);
@@ -557,7 +620,8 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.setRecommendProductIdsJson(json(List.of()));
             entity.setSubmitStatusCode("SUBMITTED");
             entity.setRemark(firstText(value.subtitle(), sourceRemark(value.sourceFields())));
-            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setDeleted(deletedBySource ? 1 : 0);
+            entity.setUpdatedBy(SYSTEM_ACTOR);
             entity.setUpdatedTime(now);
             if (created) productMapper.insert(entity);
             else {
@@ -566,22 +630,22 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             }
         }
         upsertBinding(tenantId, runId, "PRODUCT_SPU", value.sourceId(), "PRODUCT",
-                entity.getId(), value.code(), value.name(), null, value.putaway(),
-                value.payloadHash(), now);
+                entity.getId(), value.code(), value.name(), value.sourceLifecycle(), value.putaway(),
+                value.payloadHash(), now, desiredPresence);
         return new UpsertResult(entity.getId(), importResult(binding, created, changed));
     }
 
     private UpsertResult upsertVariant(String tenantId, UUID runId, Long productId,
                                        Product product, Sku value) {
-        MasterSourceBindingEntity binding = binding(tenantId, "PRODUCT_SKU", value.sourceId());
+        MasterSourceBindingEntity binding = binding(tenantId, runId, "PRODUCT_SKU", value.sourceId());
         Long id = longTargetId(binding);
         InternalProductVariantEntity entity = id == null ? null : variantMapper.selectById(id);
-        if (!valid(entity, tenantId)) entity = null;
+        if (!boundVariantUsable(entity, tenantId)) entity = null;
         if (entity == null) {
-            entity = variantCandidate(tenantId, productId, value);
+            entity = variantCandidate(tenantId, runId, productId, value);
         }
         boolean created = entity == null;
-        boolean changed = changed(binding, value.payloadHash())
+        boolean changed = changed(binding, value.payloadHash(), PRESENT)
                 || (binding != null && entity != null && !Objects.equals(id, entity.getId()));
         LocalDateTime now = now();
         String variantCode = synchronizedVariantCode(tenantId, product, value, entity);
@@ -589,7 +653,7 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity = new InternalProductVariantEntity();
             entity.setTenantId(tenantId);
             entity.setVariantCode(variantCode);
-            entity.setCreatedBy(SYNC_ACTOR);
+            entity.setCreatedBy(SYSTEM_ACTOR);
             entity.setCreatedTime(now);
             entity.setDeleted(0);
             entity.setRevision(1);
@@ -611,7 +675,8 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.setOrderMultipleQuantity(null);
             entity.setLimitQuantity(null);
             entity.setRemark(null);
-            entity.setUpdatedBy(SYNC_ACTOR);
+            entity.setDeleted(0);
+            entity.setUpdatedBy(SYSTEM_ACTOR);
             entity.setUpdatedTime(now);
             if (created) variantMapper.insert(entity);
             else {
@@ -640,10 +705,13 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         run.status = "RUNNING";
         run.maxPages = maxPages;
         run.pageSize = 200;
-        run.createdBy = actorId == null ? SYNC_ACTOR : text(actorId);
+        run.revision = 1;
+        run.createdBy = actorId == null ? SYSTEM_ACTOR : text(actorId);
+        run.updatedBy = SYSTEM_ACTOR;
         run.startedAt = now;
-        run.createdAt = now;
-        run.updatedAt = now;
+        run.createdTime = now;
+        run.updatedTime = now;
+        run.deleted = 0;
         syncRunMapper.insert(run);
         return runId;
     }
@@ -658,6 +726,12 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         lock.runId = text(runId);
         lock.acquiredAt = now;
         lock.expiresAt = now.plus(Duration.ofMinutes(RUN_LEASE_MINUTES));
+        lock.revision = 1;
+        lock.createdBy = SYSTEM_ACTOR;
+        lock.createdTime = now;
+        lock.updatedBy = SYSTEM_ACTOR;
+        lock.updatedTime = now;
+        lock.deleted = 0;
         int updated = syncLockMapper.update(null, Wrappers.<MasterDataSyncLockEntity>update()
                 .eq("tenant_id", tenantId)
                 .eq("source_system", SOURCE_SYSTEM)
@@ -665,7 +739,10 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 .le("expires_at", now)
                 .set("run_id", text(runId))
                 .set("acquired_at", now)
-                .set("expires_at", lock.expiresAt));
+                .set("expires_at", lock.expiresAt)
+                .set("updated_by", SYSTEM_ACTOR)
+                .set("updated_time", now)
+                .setSql("revision = revision + 1"));
         if (updated == 0) {
             try {
                 syncLockMapper.insert(lock);
@@ -700,26 +777,35 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 .set("error_code", errorCode)
                 .set("error_message", errorMessage)
                 .set("finished_at", now)
-                .set("updated_at", now));
+                .set("updated_by", SYSTEM_ACTOR)
+                .set("updated_time", now)
+                .setSql("revision = revision + 1"));
         syncLockMapper.delete(Wrappers.<MasterDataSyncLockEntity>query()
                 .eq("tenant_id", tenantId)
                 .eq("source_system", SOURCE_SYSTEM)
                 .eq("run_id", text(runId)));
     }
 
-    private MasterSourceBindingEntity binding(String tenantId, String sourceType, String sourceId) {
+    private MasterSourceBindingEntity binding(String tenantId, UUID runId, String sourceType, String sourceId) {
+        return binding(tenantId, runConnectorId(tenantId, runId), sourceType, sourceId);
+    }
+
+    private MasterSourceBindingEntity binding(String tenantId, String connectorId,
+                                              String sourceType, String sourceId) {
         if (missing(sourceId)) return null;
         return bindingMapper.selectOne(Wrappers.<MasterSourceBindingEntity>query()
                 .eq("tenant_id", tenantId)
+                .eq("connector_id", connectorId)
                 .eq("source_system", SOURCE_SYSTEM)
                 .eq("source_object_type", sourceType)
                 .eq("source_object_id", sourceId)
                 .last("LIMIT 1"));
     }
 
-    private List<MasterSourceBindingEntity> bindings(String tenantId, String sourceType) {
+    private List<MasterSourceBindingEntity> bindings(String tenantId, String connectorId, String sourceType) {
         return bindingMapper.selectList(Wrappers.<MasterSourceBindingEntity>query()
                 .eq("tenant_id", tenantId)
+                .eq("connector_id", connectorId)
                 .eq("source_system", SOURCE_SYSTEM)
                 .eq("source_object_type", sourceType)
                 .eq("source_presence", PRESENT));
@@ -729,18 +815,29 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                                String targetType, Long targetId, String sourceCode,
                                String sourceName, String sourceStatus, String sourcePutaway,
                                String payloadHash, LocalDateTime now) {
-        MasterSourceBindingEntity binding = binding(tenantId, sourceType, sourceId);
+        upsertBinding(tenantId, runId, sourceType, sourceId, targetType, targetId, sourceCode,
+                sourceName, sourceStatus, sourcePutaway, payloadHash, now, PRESENT);
+    }
+
+    private void upsertBinding(String tenantId, UUID runId, String sourceType, String sourceId,
+                               String targetType, Long targetId, String sourceCode,
+                               String sourceName, String sourceStatus, String sourcePutaway,
+                               String payloadHash, LocalDateTime now, String sourcePresence) {
+        String connectorId = runConnectorId(tenantId, runId);
+        MasterSourceBindingEntity binding = binding(tenantId, connectorId, sourceType, sourceId);
         if (binding == null) {
             binding = new MasterSourceBindingEntity();
             binding.id = UUID.randomUUID().toString();
             binding.tenantId = tenantId;
+            binding.connectorId = connectorId;
             binding.sourceSystem = SOURCE_SYSTEM;
             binding.sourceObjectType = sourceType;
             binding.sourceObjectId = sourceId;
-            binding.createdAt = now;
-            binding.version = 0L;
+            binding.createdTime = now;
+            binding.createdBy = SYSTEM_ACTOR;
+            binding.revision = 0L;
         } else {
-            binding.version = nextVersion(binding.version);
+            binding.revision = nextVersion(binding.revision);
         }
         binding.targetType = targetType;
         binding.targetId = targetId == null ? null : targetId.toString();
@@ -749,22 +846,33 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         binding.sourceStatus = blank(sourceStatus);
         binding.sourcePutaway = blank(sourcePutaway);
         binding.sourcePayloadHash = requiredHash(payloadHash);
-        binding.sourcePresence = PRESENT;
+        binding.sourcePresence = blank(sourcePresence) == null ? PRESENT : sourcePresence.strip();
         binding.sourceAbsentAt = null;
         binding.lastSyncRunId = text(runId);
         binding.syncedAt = now;
-        binding.updatedAt = now;
-        if (binding.createdAt == now) bindingMapper.insert(binding);
+        binding.updatedBy = SYSTEM_ACTOR;
+        binding.updatedTime = now;
+        binding.deleted = 0;
+        if (binding.createdTime == now) bindingMapper.insert(binding);
         else bindingMapper.updateById(binding);
     }
 
-    private Long internalTargetId(String tenantId, String sourceType, String sourceId) {
-        MasterSourceBindingEntity binding = binding(tenantId, sourceType, sourceId);
+    private Long internalTargetId(String tenantId, UUID runId, String sourceType, String sourceId) {
+        MasterSourceBindingEntity binding = binding(tenantId, runId, sourceType, sourceId);
         return longTargetId(binding);
     }
 
-    private InternalProductEntity productCandidate(String tenantId, Product value) {
-        InternalProductEntity bySourceCode = productFromBindingSourceCode(tenantId, value.code());
+    private InternalProductVariantEntity sourceBoundVariant(String tenantId, Long productId,
+                                                            MasterSourceBindingEntity binding) {
+        Long id = longTargetId(binding);
+        if (id == null) return null;
+        InternalProductVariantEntity entity = variantMapper.selectById(id);
+        return boundVariantUsable(entity, tenantId) && Objects.equals(entity.getProductId(), productId)
+                ? entity : null;
+    }
+
+    private InternalProductEntity productCandidate(String tenantId, UUID runId, Product value) {
+        InternalProductEntity bySourceCode = productFromBindingSourceCode(tenantId, runId, value.code());
         if (bySourceCode != null) return bySourceCode;
         if (!missing(value.code())) {
             InternalProductEntity byLegacyCode = uniqueProduct(tenantId,
@@ -789,9 +897,10 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         return null;
     }
 
-    private InternalProductVariantEntity variantCandidate(String tenantId, Long productId, Sku value) {
+    private InternalProductVariantEntity variantCandidate(String tenantId, UUID runId, Long productId, Sku value) {
         if (productId == null) return null;
-        InternalProductVariantEntity bySourceCode = variantFromBindingSourceCode(tenantId, productId, value.code());
+        InternalProductVariantEntity bySourceCode =
+                variantFromBindingSourceCode(tenantId, runId, productId, value.code());
         if (bySourceCode != null) return bySourceCode;
         if (!missing(value.code())) {
             InternalProductVariantEntity byLegacyCode = uniqueVariant(tenantId,
@@ -819,10 +928,10 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         return null;
     }
 
-    private InternalProductEntity productFromBindingSourceCode(String tenantId, String sourceCode) {
+    private InternalProductEntity productFromBindingSourceCode(String tenantId, UUID runId, String sourceCode) {
         if (missing(sourceCode)) return null;
         java.util.LinkedHashSet<Long> targetIds = new java.util.LinkedHashSet<>();
-        for (MasterSourceBindingEntity item : bindingsBySourceCode(tenantId, "PRODUCT_SPU", sourceCode)) {
+        for (MasterSourceBindingEntity item : bindingsBySourceCode(tenantId, runId, "PRODUCT_SPU", sourceCode)) {
             Long targetId = longTargetId(item);
             if (targetId == null) continue;
             InternalProductEntity entity = productMapper.selectById(targetId);
@@ -831,11 +940,11 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         return targetIds.size() == 1 ? productMapper.selectById(targetIds.iterator().next()) : null;
     }
 
-    private InternalProductVariantEntity variantFromBindingSourceCode(String tenantId, Long productId,
-                                                                     String sourceCode) {
+    private InternalProductVariantEntity variantFromBindingSourceCode(String tenantId, UUID runId,
+                                                                     Long productId, String sourceCode) {
         if (missing(sourceCode)) return null;
         java.util.LinkedHashSet<Long> targetIds = new java.util.LinkedHashSet<>();
-        for (MasterSourceBindingEntity item : bindingsBySourceCode(tenantId, "PRODUCT_SKU", sourceCode)) {
+        for (MasterSourceBindingEntity item : bindingsBySourceCode(tenantId, runId, "PRODUCT_SKU", sourceCode)) {
             Long targetId = longTargetId(item);
             if (targetId == null) continue;
             InternalProductVariantEntity entity = variantMapper.selectById(targetId);
@@ -846,11 +955,12 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         return targetIds.size() == 1 ? variantMapper.selectById(targetIds.iterator().next()) : null;
     }
 
-    private List<MasterSourceBindingEntity> bindingsBySourceCode(String tenantId, String sourceType,
-                                                                 String sourceCode) {
+    private List<MasterSourceBindingEntity> bindingsBySourceCode(String tenantId, UUID runId,
+                                                                 String sourceType, String sourceCode) {
         if (missing(sourceCode)) return List.of();
         return bindingMapper.selectList(Wrappers.<MasterSourceBindingEntity>query()
                 .eq("tenant_id", tenantId)
+                .eq("connector_id", runConnectorId(tenantId, runId))
                 .eq("source_system", SOURCE_SYSTEM)
                 .eq("source_object_type", sourceType)
                 .eq("source_code", sourceCode.strip())
@@ -923,39 +1033,59 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private String uniqueCategoryCode(String tenantId) {
+        return uniqueCategoryCode(tenantId, null);
+    }
+
+    private String uniqueCategoryCode(String tenantId, Instant businessTime) {
         return uniqueCode(ErpBusinessCodeRules.CATEGORY, code -> categoryMapper.selectCount(
                 Wrappers.<InternalProductCategoryEntity>lambdaQuery()
                         .eq(InternalProductCategoryEntity::getTenantId, tenantId)
-                        .eq(InternalProductCategoryEntity::getCategoryCode, code)));
+                        .eq(InternalProductCategoryEntity::getCategoryCode, code)), businessTime);
     }
 
     private String uniqueBrandCode(String tenantId) {
+        return uniqueBrandCode(tenantId, null);
+    }
+
+    private String uniqueBrandCode(String tenantId, Instant businessTime) {
         return uniqueCode(ErpBusinessCodeRules.BRAND, code -> brandMapper.selectCount(
                 Wrappers.<InternalProductBrandEntity>lambdaQuery()
                         .eq(InternalProductBrandEntity::getTenantId, tenantId)
-                        .eq(InternalProductBrandEntity::getBrandCode, code)));
+                        .eq(InternalProductBrandEntity::getBrandCode, code)), businessTime);
     }
 
     private String uniqueTagCode(String tenantId) {
+        return uniqueTagCode(tenantId, null);
+    }
+
+    private String uniqueTagCode(String tenantId, Instant businessTime) {
         return uniqueCode(ErpBusinessCodeRules.TAG, code -> tagMapper.selectCount(
                 Wrappers.<InternalProductTagEntity>lambdaQuery()
                         .eq(InternalProductTagEntity::getTenantId, tenantId)
-                        .eq(InternalProductTagEntity::getTagCode, code)));
+                        .eq(InternalProductTagEntity::getTagCode, code)), businessTime);
     }
 
     private String uniqueSpecificationCode(String tenantId) {
+        return uniqueSpecificationCode(tenantId, null);
+    }
+
+    private String uniqueSpecificationCode(String tenantId, Instant businessTime) {
         return uniqueCode(ErpBusinessCodeRules.SPECIFICATION, code -> specificationMapper.selectCount(
                 Wrappers.<InternalProductSpecificationEntity>lambdaQuery()
                         .eq(InternalProductSpecificationEntity::getTenantId, tenantId)
-                        .eq(InternalProductSpecificationEntity::getSpecificationCode, code)));
+                        .eq(InternalProductSpecificationEntity::getSpecificationCode, code)), businessTime);
     }
 
     private String uniqueSpecificationValueCode(String tenantId, Long specificationId) {
+        return uniqueSpecificationValueCode(tenantId, specificationId, null);
+    }
+
+    private String uniqueSpecificationValueCode(String tenantId, Long specificationId, Instant businessTime) {
         return uniqueCode(ErpBusinessCodeRules.SPECIFICATION_VALUE, code ->
                 specificationValueMapper.selectCount(Wrappers.<InternalProductSpecificationValueEntity>lambdaQuery()
                         .eq(InternalProductSpecificationValueEntity::getTenantId, tenantId)
                         .eq(InternalProductSpecificationValueEntity::getSpecificationId, specificationId)
-                        .eq(InternalProductSpecificationValueEntity::getValueCode, code)));
+                        .eq(InternalProductSpecificationValueEntity::getValueCode, code)), businessTime);
     }
 
     private String uniqueCode(BusinessCodeRule rule, Function<String, Long> count) {
@@ -970,9 +1100,15 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         return LocalDateTime.ofInstant(Instant.now(clock), ZoneOffset.UTC);
     }
 
-    private static boolean changed(MasterSourceBindingEntity binding, String payloadHash) {
+    private static LocalDateTime sourceTime(Instant value, LocalDateTime fallback) {
+        return value == null ? fallback : LocalDateTime.ofInstant(value, ZoneOffset.UTC);
+    }
+
+    private static boolean changed(MasterSourceBindingEntity binding, String payloadHash,
+                                   String desiredPresence) {
         return binding == null || !Objects.equals(binding.sourcePayloadHash, requiredHash(payloadHash))
-                || SOURCE_ABSENT.equals(binding.sourcePresence) || longTargetId(binding) == null;
+                || !Objects.equals(blank(desiredPresence), blank(binding.sourcePresence))
+                || longTargetId(binding) == null;
     }
 
     private static ImportResult importResult(MasterSourceBindingEntity binding,
@@ -1008,7 +1144,11 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     }
 
     private static boolean sourceWritable(String updatedBy) {
-        return missing(updatedBy) || SYNC_ACTOR.equals(updatedBy);
+        return missing(updatedBy) || SYSTEM_ACTOR.equals(updatedBy) || LEGACY_SYNC_ACTOR.equals(updatedBy);
+    }
+
+    private static boolean sourceDeleted(Product product) {
+        return product != null && SOURCE_DELETED.equalsIgnoreCase(blank(product.sourceLifecycle()));
     }
 
     private static boolean valid(InternalProductCategoryEntity entity, String tenantId) {
@@ -1041,9 +1181,19 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 && value(entity.getDeleted(), 0) == 0;
     }
 
+    private static boolean boundProductUsable(InternalProductEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && (value(entity.getDeleted(), 0) == 0 || sourceWritable(entity.getUpdatedBy()));
+    }
+
     private static boolean valid(InternalProductVariantEntity entity, String tenantId) {
         return entity != null && Objects.equals(tenantId, entity.getTenantId())
                 && value(entity.getDeleted(), 0) == 0;
+    }
+
+    private static boolean boundVariantUsable(InternalProductVariantEntity entity, String tenantId) {
+        return entity != null && Objects.equals(tenantId, entity.getTenantId())
+                && (value(entity.getDeleted(), 0) == 0 || sourceWritable(entity.getUpdatedBy()));
     }
 
     private static Long longTargetId(MasterSourceBindingEntity binding) {
@@ -1063,12 +1213,34 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         return value == null ? fallback : value;
     }
 
+    private String runConnectorId(String tenantId, UUID runId) {
+        MasterDataSyncRunEntity run = syncRunMapper.selectOne(Wrappers.<MasterDataSyncRunEntity>query()
+                .eq("tenant_id", tenantId)
+                .eq("id", text(runId))
+                .last("LIMIT 1"));
+        if (run == null) throw new IllegalStateException("ERP同步run不存在");
+        return requiredConnectorId(run.connectorId);
+    }
+
+    private static String requiredConnectorId(UUID connectorId) {
+        return requiredConnectorId(text(connectorId));
+    }
+
+    private static String requiredConnectorId(String connectorId) {
+        if (missing(connectorId)) throw new IllegalStateException("ERP同步connectorId不能为空");
+        return connectorId.strip();
+    }
+
     private static String text(UUID value) {
         return value == null ? null : value.toString();
     }
 
     private static Instant instant(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC);
+    }
+
+    private static Instant firstInstant(Instant first, Instant second) {
+        return first == null ? second : first;
     }
 
     private static boolean missing(String value) {

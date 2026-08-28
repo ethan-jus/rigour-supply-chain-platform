@@ -13,11 +13,23 @@ public record DhbSyncOrchestrationCommand(
         /** 是否先同步 IAM 人员主档和订货宝员工来源映射；省略时为 true。 */
         Boolean includeIam,
         /** 是否纳入业务字典前置步骤；省略时为 true。字典值由各领域按白名单批量补齐。 */
-        Boolean includeDictionary) {
+        Boolean includeDictionary,
+        /** 是否同步 ERP 商品主数据；省略时沿用 includeErp。 */
+        Boolean includeErpProduct,
+        /** 是否同步 ERP 供应链数据；省略时沿用 includeErp。 */
+        Boolean includeErpSupply) {
+
+    public DhbSyncOrchestrationCommand(Integer maxPages, Boolean includeErp,
+                                       Boolean includeCrm, Boolean includeOrder,
+                                       Boolean includeIam, Boolean includeDictionary) {
+        this(maxPages, includeErp, includeCrm, includeOrder, includeIam, includeDictionary,
+                null, null);
+    }
 
     public DhbSyncOrchestrationCommand(Integer maxPages, Boolean includeErp,
                                        Boolean includeCrm, Boolean includeOrder,
                                        Boolean includeIam) {
-        this(maxPages, includeErp, includeCrm, includeOrder, includeIam, null);
+        this(maxPages, includeErp, includeCrm, includeOrder, includeIam, null,
+                null, null);
     }
 }

@@ -16,7 +16,7 @@ public interface ErpStockOutOrderStore {
     Optional<InternalStockOutOrderDetailView> stockOutOrder(String tenantId, Long id);
 
     Optional<InternalStockOutOrderDetailView> stockOutOrderBySource(
-            String tenantId, String sourceSystemCode, String sourceDocumentNo);
+            String tenantId, String connectorId, String sourceSystemCode, String sourceDocumentNo);
 
     boolean existsByStockOutNo(String tenantId, String stockOutNo);
 
@@ -92,8 +92,9 @@ public interface ErpStockOutOrderStore {
             String remark) {
     }
 
-    /** 外部来源出库写入模型；按 sourceSystemCode + sourceDocumentNo 做幂等。 */
+    /** 外部来源出库写入模型；按 connectorId + sourceSystemCode + sourceDocumentNo 做幂等。 */
     record ExternalStockOutWrite(
+            String connectorId,
             String sourceSystemCode,
             String sourceDocumentNo,
             Long salesOrderId,
@@ -107,6 +108,7 @@ public interface ErpStockOutOrderStore {
             String statusCode,
             Instant stockOutTime,
             List<ExternalStockOutLineWrite> lines,
+            boolean affectStockBalance,
             String remark) {
         public ExternalStockOutWrite {
             lines = lines == null ? List.of() : List.copyOf(lines);
@@ -131,6 +133,7 @@ public interface ErpStockOutOrderStore {
 
     /** 外部来源通用出库写入模型；不关联销售订单或调拨单。 */
     record ExternalGenericStockOutWrite(
+            String connectorId,
             String sourceSystemCode,
             String sourceDocumentNo,
             Long warehouseId,
@@ -138,6 +141,7 @@ public interface ErpStockOutOrderStore {
             String statusCode,
             Instant stockOutTime,
             List<ExternalGenericStockOutLineWrite> lines,
+            boolean affectStockBalance,
             String remark) {
         public ExternalGenericStockOutWrite {
             lines = lines == null ? List.of() : List.copyOf(lines);

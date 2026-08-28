@@ -18,7 +18,21 @@ logging:
   level:
     com.rigour: INFO
 
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
 rigour:
+  analytics:
+    supply-dashboard:
+      refresh:
+        enabled: ${RIGOUR_ANALYTICS_SUPPLY_REFRESH_ENABLED:true}
+        fixed-delay-ms: ${RIGOUR_ANALYTICS_SUPPLY_REFRESH_FIXED_DELAY_MS:3600000}
+        initial-delay-ms: ${RIGOUR_ANALYTICS_SUPPLY_REFRESH_INITIAL_DELAY_MS:60000}
+        lookback: ${RIGOUR_ANALYTICS_SUPPLY_REFRESH_LOOKBACK:PT2H}
+        lock-ttl: ${RIGOUR_ANALYTICS_SUPPLY_REFRESH_LOCK_TTL:PT55M}
   context:
     trust:
       active-key-id: v1

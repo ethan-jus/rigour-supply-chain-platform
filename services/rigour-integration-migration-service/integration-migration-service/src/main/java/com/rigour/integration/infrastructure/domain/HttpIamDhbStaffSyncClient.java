@@ -8,13 +8,18 @@ import com.rigour.shared.core.api.ApiResponse;
 import java.net.URI;
 import java.util.List;
 import java.util.Objects;
-import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
+import tools.jackson.core.type.TypeReference;
 
 /** Integration 到 IAM 人员中心内部订货宝员工同步接口的 HTTP 客户端。 */
 public final class HttpIamDhbStaffSyncClient implements IamDhbStaffSyncClient {
+    private static final TypeReference<ApiResponse<StaffSyncResult>> STAFF_SYNC_RESPONSE =
+            new TypeReference<>() { };
+    private static final TypeReference<ApiResponse<List<ResolvedStaff>>> STAFF_RESOLVE_RESPONSE =
+            new TypeReference<>() { };
+
     private final RestClient restClient;
     private final TrustedContextSigner signer;
     private final URI baseUri;
@@ -42,8 +47,8 @@ public final class HttpIamDhbStaffSyncClient implements IamDhbStaffSyncClient {
                         .forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, SignedDomainRequest.requestId())
                 .body(new StaffSyncRequest(rows))
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, STAFF_SYNC_RESPONSE, "IAM人员同步"));
         return SignedDomainRequest.required(response, "IAM人员同步");
     }
 
@@ -62,8 +67,8 @@ public final class HttpIamDhbStaffSyncClient implements IamDhbStaffSyncClient {
                         .forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, SignedDomainRequest.requestId())
                 .body(new StaffResolveRequest(sourceTenantKey, sourceStaffIds, sourceStaffNames))
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, STAFF_RESOLVE_RESPONSE, "IAM人员解析"));
         return SignedDomainRequest.required(response, "IAM人员解析");
     }
 

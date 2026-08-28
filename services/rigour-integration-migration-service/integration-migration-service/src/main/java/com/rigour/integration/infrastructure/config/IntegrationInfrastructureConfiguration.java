@@ -3,6 +3,7 @@ package com.rigour.integration.infrastructure.config;
 import com.rigour.integration.application.port.out.CrmDhbDomainSyncClient;
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
 import com.rigour.integration.application.port.out.DhbClient;
+import com.rigour.integration.application.port.out.DhbOrchestrationLease;
 import com.rigour.integration.application.port.out.DhbSyncStore;
 import com.rigour.integration.application.port.out.ErpDhbDomainSyncClient;
 import com.rigour.integration.application.port.out.ErpStockOutProjectionClient;
@@ -12,6 +13,7 @@ import com.rigour.integration.application.port.out.OrderSalesOrderProjectionClie
 import com.rigour.integration.application.port.out.ProductMediaSyncStore;
 import com.rigour.integration.application.port.out.ProductMediaStorage;
 import com.rigour.integration.application.service.dhb.DhbIntegrationService;
+import com.rigour.integration.application.service.dhb.DhbAttachmentObjectKeyFactory;
 import com.rigour.integration.application.service.dhb.DhbOrderSyncService;
 import com.rigour.integration.application.service.dhb.DhbSyncOrchestrationProperties;
 import com.rigour.integration.application.service.dhb.DhbSyncOrchestrationScheduler;
@@ -33,6 +35,7 @@ import com.rigour.integration.infrastructure.persistence.mapper.DhbConnectorMapp
 import com.rigour.integration.infrastructure.persistence.mapper.ExternalObjectMappingMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationDeadLetterMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFieldMappingMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationManualResolutionMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationOrderMirrorMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationOutboxEventMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationProductMediaItemMapper;
@@ -115,13 +118,15 @@ public final class IntegrationInfrastructureConfiguration {
             IntegrationSyncRunMapper syncRunMapper,
             IntegrationDeadLetterMapper deadLetterMapper,
             IntegrationReconciliationCaseMapper reconciliationCaseMapper,
+            IntegrationManualResolutionMapper manualResolutionMapper,
             IntegrationRawLandingMapper rawLandingMapper,
             PlatformTransactionManager transactionManager,
             tools.jackson.databind.ObjectMapper objectMapper) {
         return new MybatisPlusDhbIntegrationStore(connectorMapper, taskMapper,
                 fieldMappingMapper, orderMirrorMapper, syncLogMapper,
                 externalObjectMappingMapper, syncRunMapper, deadLetterMapper,
-                reconciliationCaseMapper, rawLandingMapper, transactionManager, objectMapper);
+                reconciliationCaseMapper, manualResolutionMapper, rawLandingMapper,
+                transactionManager, objectMapper);
     }
 
     @Bean
@@ -136,13 +141,14 @@ public final class IntegrationInfrastructureConfiguration {
             ExternalObjectMappingMapper externalObjectMappingMapper,
             IntegrationDeadLetterMapper deadLetterMapper,
             IntegrationReconciliationCaseMapper reconciliationCaseMapper,
+            IntegrationManualResolutionMapper manualResolutionMapper,
             IntegrationSyncLogMapper syncLogMapper,
             PlatformTransactionManager transactionManager,
             tools.jackson.databind.ObjectMapper objectMapper) {
         return new MybatisPlusDhbSyncStore(connectorMapper, taskMapper, checkpointMapper,
                 runMapper, rawLandingMapper, orderMirrorMapper, outboxEventMapper,
                 externalObjectMappingMapper, deadLetterMapper, reconciliationCaseMapper,
-                syncLogMapper, transactionManager, objectMapper);
+                manualResolutionMapper, syncLogMapper, transactionManager, objectMapper);
     }
 
     @Bean
@@ -172,17 +178,21 @@ public final class IntegrationInfrastructureConfiguration {
             ErpStockOutProjectionClient erpStockOutProjectionClient,
             IamDhbStaffSyncClient iamDhbStaffSyncClient,
             BusinessDictionaryBatchClient businessDictionaryBatchClient,
+            ProductMediaStorage productMediaStorage,
+            DhbAttachmentObjectKeyFactory dhbAttachmentObjectKeyFactory,
             @Value("${rigour.integration.dhb.order.detail-concurrency:3}") int detailConcurrency) {
         return new DhbOrderSyncService(syncStore, client, orderSalesOrderProjectionClient,
                 erpStockOutProjectionClient, iamDhbStaffSyncClient,
-                businessDictionaryBatchClient, detailConcurrency);
+                businessDictionaryBatchClient, detailConcurrency,
+                productMediaStorage, dhbAttachmentObjectKeyFactory);
     }
 
     @Bean
     OrderSalesOrderProjectionClient orderSalesOrderProjectionClient(
-            RestClient.Builder restClientBuilder, TrustedContextSigner signer,
+            SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
             @Value("${rigour.order.base-url:http://localhost:26885}") String orderBaseUrl) {
-        return new HttpOrderSalesOrderProjectionClient(restClientBuilder, signer, orderBaseUrl);
+        return new HttpOrderSalesOrderProjectionClient(
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, orderBaseUrl);
     }
 
     @Bean
@@ -248,11 +258,14 @@ public final class IntegrationInfrastructureConfiguration {
             IamDhbStaffSyncClient iamClient,
             DhbClient dhbClient,
             DhbOrderSyncService orderSyncService,
+            BusinessDictionaryBatchClient businessDictionaryBatchClient,
+            DhbOrchestrationLease dhbOrchestrationLease,
             DhbSyncOrchestrationProperties properties,
             Clock clock,
             tools.jackson.databind.ObjectMapper objectMapper) {
         return new DhbSyncOrchestrationService(store, erpClient, crmClient, iamClient, dhbClient,
-                orderSyncService, properties, clock, objectMapper);
+                orderSyncService, businessDictionaryBatchClient, dhbOrchestrationLease, properties,
+                clock, objectMapper);
     }
 
     @Bean
@@ -264,6 +277,11 @@ public final class IntegrationInfrastructureConfiguration {
     @Bean
     ProductImageObjectKeyFactory productImageObjectKeyFactory(ProductMediaProperties properties) {
         return new ProductImageObjectKeyFactory(properties.getCos().getObjectPrefix());
+    }
+
+    @Bean
+    DhbAttachmentObjectKeyFactory dhbAttachmentObjectKeyFactory(ProductMediaProperties properties) {
+        return new DhbAttachmentObjectKeyFactory(properties.getFundAttachmentPrefix());
     }
 
     @Bean

@@ -10,6 +10,7 @@ import com.rigour.order.application.port.out.OrderSalesPaymentRecordStore;
 import com.rigour.order.application.port.out.OrderSalesPaymentRecordStore.SalesPaymentSearchCriteria;
 import com.rigour.order.application.port.out.OrderSalesPaymentRecordStore.SalesPaymentWrite;
 import com.rigour.order.domain.enums.SalesOrderPaymentStatus;
+import com.rigour.order.domain.enums.SalesOrderStatus;
 import com.rigour.order.domain.enums.SalesRefundStatus;
 import com.rigour.order.infrastructure.persistence.entity.InternalSalesOrderEntity;
 import com.rigour.order.infrastructure.persistence.entity.InternalSalesPaymentRecordEntity;
@@ -27,6 +28,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -111,6 +113,9 @@ public class MybatisPlusSalesPaymentRecordRepository
         requireOrder(tenantId, command.orderId());
         LocalDateTime now = now();
         int updated = getBaseMapper().update(null, Wrappers.<InternalSalesPaymentRecordEntity>lambdaUpdate()
+                .set(InternalSalesPaymentRecordEntity::getConnectorId, uuidText(command.connectorId()))
+                .set(InternalSalesPaymentRecordEntity::getSourceSystemCode, command.sourceSystemCode())
+                .set(InternalSalesPaymentRecordEntity::getSourceDocumentNo, command.sourceDocumentNo())
                 .set(InternalSalesPaymentRecordEntity::getOrderId, command.orderId())
                 .set(InternalSalesPaymentRecordEntity::getSalesOrderNoSnapshot, command.salesOrderNoSnapshot())
                 .set(InternalSalesPaymentRecordEntity::getCustomerId, command.customerId())
@@ -195,6 +200,9 @@ public class MybatisPlusSalesPaymentRecordRepository
         InternalSalesPaymentRecordEntity entity = new InternalSalesPaymentRecordEntity();
         entity.setTenantId(tenantId);
         entity.setPaymentNo(paymentNo);
+        entity.setConnectorId(uuidText(command.connectorId()));
+        entity.setSourceSystemCode(command.sourceSystemCode());
+        entity.setSourceDocumentNo(command.sourceDocumentNo());
         entity.setOrderId(command.orderId());
         entity.setSalesOrderNoSnapshot(command.salesOrderNoSnapshot());
         entity.setCustomerId(command.customerId());
@@ -218,14 +226,20 @@ public class MybatisPlusSalesPaymentRecordRepository
 
     private void refreshOrderPayment(String tenantId, Long orderId, String actorId, LocalDateTime now) {
         InternalSalesOrderEntity order = requireOrder(tenantId, orderId);
-        BigDecimal paidAmount = getBaseMapper().selectList(Wrappers.<InternalSalesPaymentRecordEntity>lambdaQuery()
+        List<InternalSalesPaymentRecordEntity> payments = getBaseMapper().selectList(
+                Wrappers.<InternalSalesPaymentRecordEntity>lambdaQuery()
                         .eq(InternalSalesPaymentRecordEntity::getTenantId, tenantId)
                         .eq(InternalSalesPaymentRecordEntity::getOrderId, orderId)
-                        .eq(InternalSalesPaymentRecordEntity::getDeleted, 0))
-                .stream()
+                        .eq(InternalSalesPaymentRecordEntity::getDeleted, 0));
+        BigDecimal paidAmount = payments.stream()
                 .map(InternalSalesPaymentRecordEntity::getPaidAmount)
                 .filter(Objects::nonNull)
                 .reduce(ZERO, BigDecimal::add);
+        LocalDateTime paymentTime = payments.stream()
+                .map(InternalSalesPaymentRecordEntity::getPaymentTime)
+                .filter(Objects::nonNull)
+                .max(LocalDateTime::compareTo)
+                .orElse(null);
         BigDecimal refundAmount = refundMapper.selectList(Wrappers.<InternalSalesRefundRecordEntity>lambdaQuery()
                         .eq(InternalSalesRefundRecordEntity::getTenantId, tenantId)
                         .eq(InternalSalesRefundRecordEntity::getOrderId, orderId)
@@ -238,10 +252,14 @@ public class MybatisPlusSalesPaymentRecordRepository
         paidAmount = paidAmount.subtract(refundAmount);
         if (paidAmount.compareTo(ZERO) < 0) paidAmount = ZERO;
         BigDecimal payableAmount = nz(order.getPayableAmount());
-        BigDecimal unpaidAmount = payableAmount.subtract(paidAmount);
+        boolean cancelledOrder = SalesOrderStatus.CANCELLED.code().equals(order.getOrderStatusCode());
+        BigDecimal unpaidAmount = cancelledOrder ? ZERO : payableAmount.subtract(paidAmount);
         if (unpaidAmount.compareTo(ZERO) < 0) unpaidAmount = ZERO;
-        String status = paymentStatus(payableAmount, paidAmount);
+        String status = cancelledOrder
+                ? SalesOrderPaymentStatus.CANCELLED.code()
+                : paymentStatus(payableAmount, paidAmount);
         orderMapper.update(null, Wrappers.<InternalSalesOrderEntity>lambdaUpdate()
+                .set(InternalSalesOrderEntity::getPaymentTime, paymentTime)
                 .set(InternalSalesOrderEntity::getPaidAmount, paidAmount)
                 .set(InternalSalesOrderEntity::getUnpaidAmount, unpaidAmount)
                 .set(InternalSalesOrderEntity::getPaymentStatusCode, status)
@@ -264,8 +282,9 @@ public class MybatisPlusSalesPaymentRecordRepository
     }
 
     private static SalesPaymentRecordSummaryView summary(InternalSalesPaymentRecordEntity entity) {
-        return new SalesPaymentRecordSummaryView(entity.getId(), entity.getPaymentNo(), entity.getOrderId(),
-                entity.getSalesOrderNoSnapshot(), entity.getCustomerId(), entity.getCustomerCodeSnapshot(),
+        return new SalesPaymentRecordSummaryView(entity.getId(), entity.getPaymentNo(),
+                uuid(entity.getConnectorId()), entity.getSourceSystemCode(), entity.getSourceDocumentNo(),
+                entity.getOrderId(), entity.getSalesOrderNoSnapshot(), entity.getCustomerId(), entity.getCustomerCodeSnapshot(),
                 entity.getCustomerNameSnapshot(), entity.getCollectorStaffCode(),
                 entity.getCollectorNameSnapshot(), instant(entity.getPaymentTime()),
                 entity.getPaymentMethodCode(), entity.getPaidAmount(), entity.getRevision(),
@@ -273,8 +292,9 @@ public class MybatisPlusSalesPaymentRecordRepository
     }
 
     private static SalesPaymentRecordDetailView detail(InternalSalesPaymentRecordEntity entity) {
-        return new SalesPaymentRecordDetailView(entity.getId(), entity.getPaymentNo(), entity.getOrderId(),
-                entity.getSalesOrderNoSnapshot(), entity.getCustomerId(), entity.getCustomerCodeSnapshot(),
+        return new SalesPaymentRecordDetailView(entity.getId(), entity.getPaymentNo(),
+                uuid(entity.getConnectorId()), entity.getSourceSystemCode(), entity.getSourceDocumentNo(),
+                entity.getOrderId(), entity.getSalesOrderNoSnapshot(), entity.getCustomerId(), entity.getCustomerCodeSnapshot(),
                 entity.getCustomerNameSnapshot(), entity.getCollectorStaffCode(),
                 entity.getCollectorNameSnapshot(), instant(entity.getPaymentTime()),
                 entity.getPaymentMethodCode(), entity.getPaidAmount(), parseStrings(entity.getVoucherKeysJson()),
@@ -312,6 +332,19 @@ public class MybatisPlusSalesPaymentRecordRepository
 
     private static Instant instant(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC);
+    }
+
+    private static String uuidText(UUID value) {
+        return value == null ? null : value.toString();
+    }
+
+    private static UUID uuid(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return UUID.fromString(value.strip());
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private static BusinessException conflict(String message) {

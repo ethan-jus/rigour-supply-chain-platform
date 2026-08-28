@@ -70,6 +70,7 @@ public class MybatisPlusTransferOrderRepository
         implements ErpTransferOrderStore {
     private static final String ACTIVE = "ACTIVE";
     private static final String SUBMITTED = "SUBMITTED";
+    private static final String SYSTEM_ACTOR = "SYSTEM";
     private static final BigDecimal ZERO = BigDecimal.ZERO;
 
     private final InternalTransferOrderLineMapper transferLineMapper;
@@ -117,7 +118,7 @@ public class MybatisPlusTransferOrderRepository
         InternalTransferOrderMapper mapper = getBaseMapper();
         long total = mapper.selectCount(query(tenantId, criteria));
         List<InternalTransferOrderEntity> page = mapper.selectList(query(tenantId, criteria)
-                .orderByDesc(InternalTransferOrderEntity::getUpdatedTime)
+                .orderByDesc(InternalTransferOrderEntity::getCreatedTime)
                 .orderByDesc(InternalTransferOrderEntity::getId)
                 .last("LIMIT " + step + " OFFSET " + begin));
         Set<Long> transferIds = ids(page);
@@ -138,11 +139,12 @@ public class MybatisPlusTransferOrderRepository
 
     @Override
     public Optional<InternalTransferOrderDetailView> transferOrderBySource(
-            String tenantId, String sourceSystemCode, String sourceDocumentNo) {
-        if (sourceSystemCode == null || sourceDocumentNo == null) return Optional.empty();
+            String tenantId, String connectorId, String sourceSystemCode, String sourceDocumentNo) {
+        if (connectorId == null || sourceSystemCode == null || sourceDocumentNo == null) return Optional.empty();
         InternalTransferOrderEntity row = getBaseMapper().selectOne(
                 Wrappers.<InternalTransferOrderEntity>lambdaQuery()
                         .eq(InternalTransferOrderEntity::getTenantId, tenantId)
+                        .eq(InternalTransferOrderEntity::getConnectorId, connectorId)
                         .eq(InternalTransferOrderEntity::getSourceSystemCode, sourceSystemCode)
                         .eq(InternalTransferOrderEntity::getSourceDocumentNo, sourceDocumentNo)
                         .eq(InternalTransferOrderEntity::getDeleted, 0)
@@ -218,6 +220,7 @@ public class MybatisPlusTransferOrderRepository
                 .map(MybatisPlusTransferOrderRepository::lineSnapshot)
                 .toList();
         return Optional.of(new TransferOrderSnapshot(order.getId(), order.getTransferNo(),
+                order.getSourceSystemCode(), order.getSourceDocumentNo(),
                 order.getSourceWarehouseId(), order.getTargetWarehouseId(), order.getStatusCode(),
                 order.getRevision(), lineSnapshots));
     }
@@ -235,7 +238,7 @@ public class MybatisPlusTransferOrderRepository
         InternalTransferOrderEntity entity = transferOrderEntity(tenantId, transferNo, command, actorId, now);
         try {
             getBaseMapper().insert(entity);
-            insertLines(tenantId, entity.getId(), command.lines(), now);
+            insertLines(tenantId, entity.getId(), command.lines(), actorId, now);
         } catch (DataIntegrityViolationException exception) {
             throw conflict("调拨单号已存在或调拨引用数据无效");
         }
@@ -251,10 +254,16 @@ public class MybatisPlusTransferOrderRepository
         int updated = getBaseMapper().update(null, Wrappers.<InternalTransferOrderEntity>lambdaUpdate()
                 .set(InternalTransferOrderEntity::getSourceWarehouseId, command.sourceWarehouseId())
                 .set(InternalTransferOrderEntity::getTargetWarehouseId, command.targetWarehouseId())
+                .set(InternalTransferOrderEntity::getOutboundOperatorStaffCode, command.outboundOperatorStaffCode())
+                .set(InternalTransferOrderEntity::getOutboundOperatorStaffNameSnapshot,
+                        command.outboundOperatorStaffNameSnapshot())
+                .set(InternalTransferOrderEntity::getInboundOperatorStaffCode, command.inboundOperatorStaffCode())
+                .set(InternalTransferOrderEntity::getInboundOperatorStaffNameSnapshot,
+                        command.inboundOperatorStaffNameSnapshot())
                 .set(InternalTransferOrderEntity::getStatusCode, command.statusCode())
                 .set(InternalTransferOrderEntity::getRemark, command.remark())
                 .set(InternalTransferOrderEntity::getRevision, command.revision() + 1)
-                .set(InternalTransferOrderEntity::getUpdatedBy, actorId)
+                .set(InternalTransferOrderEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalTransferOrderEntity::getUpdatedTime, now)
                 .eq(InternalTransferOrderEntity::getTenantId, tenantId)
                 .eq(InternalTransferOrderEntity::getId, id)
@@ -262,8 +271,8 @@ public class MybatisPlusTransferOrderRepository
                 .eq(InternalTransferOrderEntity::getStatusCode, ErpTransferStatus.DRAFT.code())
                 .eq(InternalTransferOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("调拨单已被其他人修改，请刷新后重试");
-        logicDeleteLines(tenantId, id, now);
-        insertLines(tenantId, id, command.lines(), now);
+        logicDeleteLines(tenantId, id, actorId, now);
+        insertLines(tenantId, id, command.lines(), actorId, now);
         return transferOrder(tenantId, id).orElseThrow(() -> notFound("调拨单不存在"));
     }
 
@@ -275,7 +284,7 @@ public class MybatisPlusTransferOrderRepository
         int updated = getBaseMapper().update(null, Wrappers.<InternalTransferOrderEntity>lambdaUpdate()
                 .set(InternalTransferOrderEntity::getDeleted, 1)
                 .set(InternalTransferOrderEntity::getRevision, revision + 1)
-                .set(InternalTransferOrderEntity::getUpdatedBy, actorId)
+                .set(InternalTransferOrderEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalTransferOrderEntity::getUpdatedTime, now)
                 .eq(InternalTransferOrderEntity::getTenantId, tenantId)
                 .eq(InternalTransferOrderEntity::getId, id)
@@ -283,7 +292,7 @@ public class MybatisPlusTransferOrderRepository
                 .eq(InternalTransferOrderEntity::getStatusCode, ErpTransferStatus.DRAFT.code())
                 .eq(InternalTransferOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("调拨单已被其他人修改，请刷新后重试");
-        logicDeleteLines(tenantId, id, now);
+        logicDeleteLines(tenantId, id, actorId, now);
     }
 
     @Override
@@ -295,12 +304,14 @@ public class MybatisPlusTransferOrderRepository
         try {
             stockOutOrderMapper.insert(stockOutOrder);
             for (TransferStockOutLineWrite line : command.lines()) {
-                insertStockOutLine(tenantId, stockOutOrder.getId(), line, now);
-                StockQuantityChange quantityChange = decreaseStockBalance(
-                        tenantId, command.sourceWarehouseId(), line.productId(), line.productVariantId(),
-                        line.quantity(), now);
-                insertStockFlow(tenantId, stockOutOrder.getId(), stockOutNo, command.sourceWarehouseId(), line,
-                        quantityChange, actorId, now);
+                insertStockOutLine(tenantId, stockOutOrder.getId(), line, actorId, now);
+                if (command.affectStockBalance()) {
+                    StockQuantityChange quantityChange = decreaseStockBalance(
+                            tenantId, command.sourceWarehouseId(), line.productId(), line.productVariantId(),
+                            line.quantity(), actorId, now);
+                    insertStockFlow(tenantId, stockOutOrder.getId(), stockOutNo, command.sourceWarehouseId(), line,
+                            quantityChange, actorId, now);
+                }
             }
             updateTransferOrderStatus(tenantId, command, actorId, now);
         } catch (DataIntegrityViolationException exception) {
@@ -315,48 +326,57 @@ public class MybatisPlusTransferOrderRepository
             String tenantId, String transferNo, String stockOutNo,
             ExternalTransferStockOutWrite command, String actorId) {
         Optional<InternalTransferOrderDetailView> existing = transferOrderBySource(
-                tenantId, command.sourceSystemCode(), command.sourceDocumentNo());
+                tenantId, command.connectorId(), command.sourceSystemCode(), command.sourceDocumentNo());
         if (existing.isPresent()) return existing.get();
         LocalDateTime now = now();
         InternalTransferOrderEntity transfer = new InternalTransferOrderEntity();
         transfer.setTenantId(tenantId);
         transfer.setTransferNo(transferNo);
+        transfer.setConnectorId(command.connectorId());
         transfer.setSourceSystemCode(command.sourceSystemCode());
         transfer.setSourceDocumentNo(command.sourceDocumentNo());
         transfer.setSourceWarehouseId(command.sourceWarehouseId());
         transfer.setTargetWarehouseId(command.targetWarehouseId());
+        transfer.setOutboundOperatorStaffCode(command.outboundOperatorStaffCode());
+        transfer.setOutboundOperatorStaffNameSnapshot(command.outboundOperatorStaffNameSnapshot());
+        transfer.setInboundOperatorStaffCode(command.inboundOperatorStaffCode());
+        transfer.setInboundOperatorStaffNameSnapshot(command.inboundOperatorStaffNameSnapshot());
         transfer.setStatusCode(ErpTransferStatus.DRAFT.code());
         transfer.setRemark(command.remark());
         transfer.setRevision(1);
-        transfer.setCreatedBy(actorId);
+        transfer.setCreatedBy(auditActor(actorId));
         transfer.setCreatedTime(now);
-        transfer.setUpdatedBy(actorId);
+        transfer.setUpdatedBy(auditActor(actorId));
         transfer.setUpdatedTime(now);
         transfer.setDeleted(0);
         try {
             getBaseMapper().insert(transfer);
             List<TransferStockOutLineWrite> stockOutLines =
-                    insertExternalTransferLines(tenantId, transfer.getId(), command.lines(), now);
+                    insertExternalTransferLines(tenantId, transfer.getId(), command.lines(), actorId, now);
             TransferStockOutWrite stockOut = new TransferStockOutWrite(
                     transfer.getId(), transfer.getRevision(), transferNo,
+                    command.connectorId(),
                     command.sourceSystemCode(), command.sourceDocumentNo(),
                     ErpStockOutType.TRANSFER.code(), "CONFIRMED",
                     ErpTransferStatus.OUT_CONFIRMED.code(), command.stockOutTime(),
-                    command.sourceWarehouseId(), stockOutLines, command.remark());
+                    command.sourceWarehouseId(), stockOutLines, command.remark(), command.affectStockBalance());
             InternalStockOutOrderEntity stockOutOrder = stockOutOrderEntity(
                     tenantId, stockOutNo, stockOut, actorId, now);
             stockOutOrderMapper.insert(stockOutOrder);
             for (TransferStockOutLineWrite line : stockOut.lines()) {
-                insertStockOutLine(tenantId, stockOutOrder.getId(), line, now);
-                StockQuantityChange quantityChange = decreaseStockBalance(
-                        tenantId, command.sourceWarehouseId(), line.productId(), line.productVariantId(),
-                        line.quantity(), now);
-                insertStockFlow(tenantId, stockOutOrder.getId(), stockOutNo, command.sourceWarehouseId(), line,
-                        quantityChange, actorId, now);
+                insertStockOutLine(tenantId, stockOutOrder.getId(), line, actorId, now);
+                if (command.affectStockBalance()) {
+                    StockQuantityChange quantityChange = decreaseStockBalance(
+                            tenantId, command.sourceWarehouseId(), line.productId(), line.productVariantId(),
+                            line.quantity(), actorId, now);
+                    insertStockFlow(tenantId, stockOutOrder.getId(), stockOutNo, command.sourceWarehouseId(), line,
+                            quantityChange, actorId, now);
+                }
             }
             updateTransferOrderStatus(tenantId, stockOut, actorId, now);
         } catch (DataIntegrityViolationException exception) {
-            return transferOrderBySource(tenantId, command.sourceSystemCode(), command.sourceDocumentNo())
+            return transferOrderBySource(
+                    tenantId, command.connectorId(), command.sourceSystemCode(), command.sourceDocumentNo())
                     .orElseThrow(() -> conflict("调拨单号、出库单号或来源出库单号已存在，或出库引用数据无效"));
         }
         return transferOrder(tenantId, transfer.getId()).orElseThrow(() -> notFound("调拨单不存在"));
@@ -372,10 +392,10 @@ public class MybatisPlusTransferOrderRepository
         try {
             stockInOrderMapper.insert(stockInOrder);
             for (TransferStockInLineWrite line : command.lines()) {
-                insertStockInLine(tenantId, stockInOrder.getId(), line, now);
+                insertStockInLine(tenantId, stockInOrder.getId(), line, actorId, now);
                 StockQuantityChange quantityChange = increaseStockBalance(
                         tenantId, command.targetWarehouseId(), line.productId(), line.productVariantId(),
-                        line.quantity(), now);
+                        line.quantity(), actorId, now);
                 insertStockInFlow(tenantId, stockInOrder.getId(), stockInNo, command.targetWarehouseId(), line,
                         quantityChange, actorId, now);
             }
@@ -387,7 +407,8 @@ public class MybatisPlusTransferOrderRepository
     }
 
     private void insertStockOutLine(
-            String tenantId, Long stockOutOrderId, TransferStockOutLineWrite line, LocalDateTime now) {
+            String tenantId, Long stockOutOrderId, TransferStockOutLineWrite line, String actorId,
+            LocalDateTime now) {
         InternalStockOutOrderLineEntity entity = new InternalStockOutOrderLineEntity();
         entity.setTenantId(tenantId);
         entity.setStockOutOrderId(stockOutOrderId);
@@ -401,14 +422,18 @@ public class MybatisPlusTransferOrderRepository
         entity.setUnitCode(line.unitCode());
         entity.setQuantity(line.quantity());
         entity.setRemark(line.remark());
+        entity.setRevision(1);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
+        entity.setUpdatedBy(auditActor(actorId));
         entity.setUpdatedTime(now);
         entity.setDeleted(0);
         stockOutLineMapper.insert(entity);
     }
 
     private void insertStockInLine(
-            String tenantId, Long stockInOrderId, TransferStockInLineWrite line, LocalDateTime now) {
+            String tenantId, Long stockInOrderId, TransferStockInLineWrite line, String actorId,
+            LocalDateTime now) {
         InternalStockInOrderLineEntity entity = new InternalStockInOrderLineEntity();
         entity.setTenantId(tenantId);
         entity.setStockInOrderId(stockInOrderId);
@@ -422,7 +447,10 @@ public class MybatisPlusTransferOrderRepository
         entity.setUnitCode(line.unitCode());
         entity.setQuantity(line.quantity());
         entity.setRemark(line.remark());
+        entity.setRevision(1);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
+        entity.setUpdatedBy(auditActor(actorId));
         entity.setUpdatedTime(now);
         entity.setDeleted(0);
         stockInLineMapper.insert(entity);
@@ -430,13 +458,14 @@ public class MybatisPlusTransferOrderRepository
 
     private StockQuantityChange decreaseStockBalance(
             String tenantId, Long warehouseId, Long productId, Long productVariantId, BigDecimal quantity,
-            LocalDateTime now) {
+            String actorId, LocalDateTime now) {
         InternalStockBalanceEntity existing = stockBalanceMapper.selectOne(
                 Wrappers.<InternalStockBalanceEntity>lambdaQuery()
                         .eq(InternalStockBalanceEntity::getTenantId, tenantId)
                         .eq(InternalStockBalanceEntity::getWarehouseId, warehouseId)
                         .eq(InternalStockBalanceEntity::getProductId, productId)
                         .eq(InternalStockBalanceEntity::getProductVariantId, productVariantId)
+                        .eq(InternalStockBalanceEntity::getDeleted, 0)
                         .last("LIMIT 1"));
         if (existing == null) throw conflict("来源仓库存不足，不能确认调拨出库");
         BigDecimal before = zeroIfNull(existing.getAvailableQuantity());
@@ -445,23 +474,26 @@ public class MybatisPlusTransferOrderRepository
         int updated = stockBalanceMapper.update(null, Wrappers.<InternalStockBalanceEntity>lambdaUpdate()
                 .set(InternalStockBalanceEntity::getAvailableQuantity, after)
                 .set(InternalStockBalanceEntity::getRevision, existing.getRevision() + 1)
+                .set(InternalStockBalanceEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalStockBalanceEntity::getUpdatedTime, now)
                 .eq(InternalStockBalanceEntity::getTenantId, tenantId)
                 .eq(InternalStockBalanceEntity::getId, existing.getId())
-                .eq(InternalStockBalanceEntity::getRevision, existing.getRevision()));
+                .eq(InternalStockBalanceEntity::getRevision, existing.getRevision())
+                .eq(InternalStockBalanceEntity::getDeleted, 0));
         if (updated != 1) throw conflict("库存余额已被其他单据修改，请重试调拨出库");
         return new StockQuantityChange(before, after);
     }
 
     private StockQuantityChange increaseStockBalance(
             String tenantId, Long warehouseId, Long productId, Long productVariantId, BigDecimal quantity,
-            LocalDateTime now) {
+            String actorId, LocalDateTime now) {
         InternalStockBalanceEntity existing = stockBalanceMapper.selectOne(
                 Wrappers.<InternalStockBalanceEntity>lambdaQuery()
                         .eq(InternalStockBalanceEntity::getTenantId, tenantId)
                         .eq(InternalStockBalanceEntity::getWarehouseId, warehouseId)
                         .eq(InternalStockBalanceEntity::getProductId, productId)
                         .eq(InternalStockBalanceEntity::getProductVariantId, productVariantId)
+                        .eq(InternalStockBalanceEntity::getDeleted, 0)
                         .last("LIMIT 1"));
         if (existing == null) {
             InternalStockBalanceEntity created = new InternalStockBalanceEntity();
@@ -473,8 +505,11 @@ public class MybatisPlusTransferOrderRepository
             created.setLockedQuantity(ZERO);
             created.setInTransitQuantity(ZERO);
             created.setRevision(1);
+            created.setCreatedBy(auditActor(actorId));
             created.setCreatedTime(now);
+            created.setUpdatedBy(auditActor(actorId));
             created.setUpdatedTime(now);
+            created.setDeleted(0);
             stockBalanceMapper.insert(created);
             return new StockQuantityChange(ZERO, quantity);
         }
@@ -483,10 +518,12 @@ public class MybatisPlusTransferOrderRepository
         int updated = stockBalanceMapper.update(null, Wrappers.<InternalStockBalanceEntity>lambdaUpdate()
                 .set(InternalStockBalanceEntity::getAvailableQuantity, after)
                 .set(InternalStockBalanceEntity::getRevision, existing.getRevision() + 1)
+                .set(InternalStockBalanceEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalStockBalanceEntity::getUpdatedTime, now)
                 .eq(InternalStockBalanceEntity::getTenantId, tenantId)
                 .eq(InternalStockBalanceEntity::getId, existing.getId())
-                .eq(InternalStockBalanceEntity::getRevision, existing.getRevision()));
+                .eq(InternalStockBalanceEntity::getRevision, existing.getRevision())
+                .eq(InternalStockBalanceEntity::getDeleted, 0));
         if (updated != 1) throw conflict("库存余额已被其他单据修改，请重试调拨入库");
         return new StockQuantityChange(before, after);
     }
@@ -507,8 +544,12 @@ public class MybatisPlusTransferOrderRepository
         entity.setBeforeQuantity(quantityChange.beforeQuantity());
         entity.setAfterQuantity(quantityChange.afterQuantity());
         entity.setRemark(line.remark());
-        entity.setCreatedBy(actorId);
+        entity.setRevision(1);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
+        entity.setUpdatedBy(auditActor(actorId));
+        entity.setUpdatedTime(now);
+        entity.setDeleted(0);
         stockFlowMapper.insert(entity);
     }
 
@@ -528,8 +569,12 @@ public class MybatisPlusTransferOrderRepository
         entity.setBeforeQuantity(quantityChange.beforeQuantity());
         entity.setAfterQuantity(quantityChange.afterQuantity());
         entity.setRemark(line.remark());
-        entity.setCreatedBy(actorId);
+        entity.setRevision(1);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
+        entity.setUpdatedBy(auditActor(actorId));
+        entity.setUpdatedTime(now);
+        entity.setDeleted(0);
         stockFlowMapper.insert(entity);
     }
 
@@ -539,7 +584,7 @@ public class MybatisPlusTransferOrderRepository
                 .set(InternalTransferOrderEntity::getStatusCode, command.nextTransferStatusCode())
                 .set(InternalTransferOrderEntity::getStockOutTime, local(command.stockOutTime()))
                 .set(InternalTransferOrderEntity::getRevision, command.transferRevision() + 1)
-                .set(InternalTransferOrderEntity::getUpdatedBy, actorId)
+                .set(InternalTransferOrderEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalTransferOrderEntity::getUpdatedTime, now)
                 .eq(InternalTransferOrderEntity::getTenantId, tenantId)
                 .eq(InternalTransferOrderEntity::getId, command.transferOrderId())
@@ -555,7 +600,7 @@ public class MybatisPlusTransferOrderRepository
                 .set(InternalTransferOrderEntity::getStatusCode, command.nextTransferStatusCode())
                 .set(InternalTransferOrderEntity::getStockInTime, local(command.stockInTime()))
                 .set(InternalTransferOrderEntity::getRevision, command.transferRevision() + 1)
-                .set(InternalTransferOrderEntity::getUpdatedBy, actorId)
+                .set(InternalTransferOrderEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalTransferOrderEntity::getUpdatedTime, now)
                 .eq(InternalTransferOrderEntity::getTenantId, tenantId)
                 .eq(InternalTransferOrderEntity::getId, command.transferOrderId())
@@ -568,10 +613,17 @@ public class MybatisPlusTransferOrderRepository
     private InternalTransferOrderEntity requireEditable(String tenantId, Long id) {
         InternalTransferOrderEntity existing = selectActive(tenantId, id)
                 .orElseThrow(() -> notFound("调拨单不存在"));
+        if (externalSource(existing.getSourceSystemCode())) {
+            throw conflict("外部来源调拨单不能编辑或删除");
+        }
         if (!ErpTransferStatus.DRAFT.code().equals(existing.getStatusCode())) {
             throw conflict("调拨单已确认出库，不能直接修改或删除");
         }
         return existing;
+    }
+
+    private static boolean externalSource(String sourceSystemCode) {
+        return sourceSystemCode != null && !sourceSystemCode.isBlank();
     }
 
     private InternalTransferOrderEntity transferOrderEntity(
@@ -579,16 +631,21 @@ public class MybatisPlusTransferOrderRepository
         InternalTransferOrderEntity entity = new InternalTransferOrderEntity();
         entity.setTenantId(tenantId);
         entity.setTransferNo(transferNo);
+        entity.setConnectorId(command.connectorId());
         entity.setSourceSystemCode(command.sourceSystemCode());
         entity.setSourceDocumentNo(command.sourceDocumentNo());
         entity.setSourceWarehouseId(command.sourceWarehouseId());
         entity.setTargetWarehouseId(command.targetWarehouseId());
+        entity.setOutboundOperatorStaffCode(command.outboundOperatorStaffCode());
+        entity.setOutboundOperatorStaffNameSnapshot(command.outboundOperatorStaffNameSnapshot());
+        entity.setInboundOperatorStaffCode(command.inboundOperatorStaffCode());
+        entity.setInboundOperatorStaffNameSnapshot(command.inboundOperatorStaffNameSnapshot());
         entity.setStatusCode(command.statusCode());
         entity.setRemark(command.remark());
         entity.setRevision(1);
-        entity.setCreatedBy(actorId);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
-        entity.setUpdatedBy(actorId);
+        entity.setUpdatedBy(auditActor(actorId));
         entity.setUpdatedTime(now);
         entity.setDeleted(0);
         return entity;
@@ -599,6 +656,7 @@ public class MybatisPlusTransferOrderRepository
         InternalStockOutOrderEntity entity = new InternalStockOutOrderEntity();
         entity.setTenantId(tenantId);
         entity.setStockOutNo(stockOutNo);
+        entity.setConnectorId(command.connectorId());
         entity.setSourceSystemCode(command.sourceSystemCode());
         entity.setSourceDocumentNo(command.sourceDocumentNo());
         entity.setStockOutTypeCode(command.stockOutTypeCode());
@@ -609,9 +667,9 @@ public class MybatisPlusTransferOrderRepository
         entity.setStockOutTime(local(command.stockOutTime()));
         entity.setRemark(command.remark());
         entity.setRevision(1);
-        entity.setCreatedBy(actorId);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
-        entity.setUpdatedBy(actorId);
+        entity.setUpdatedBy(auditActor(actorId));
         entity.setUpdatedTime(now);
         entity.setDeleted(0);
         return entity;
@@ -622,6 +680,9 @@ public class MybatisPlusTransferOrderRepository
         InternalStockInOrderEntity entity = new InternalStockInOrderEntity();
         entity.setTenantId(tenantId);
         entity.setStockInNo(stockInNo);
+        entity.setConnectorId(command.connectorId());
+        entity.setSourceSystemCode(command.sourceSystemCode());
+        entity.setSourceDocumentNo(command.sourceDocumentNo());
         entity.setStockInTypeCode(command.stockInTypeCode());
         entity.setTransferOrderId(command.transferOrderId());
         entity.setTransferOrderNo(command.transferNo());
@@ -630,16 +691,16 @@ public class MybatisPlusTransferOrderRepository
         entity.setStockInTime(local(command.stockInTime()));
         entity.setRemark(command.remark());
         entity.setRevision(1);
-        entity.setCreatedBy(actorId);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
-        entity.setUpdatedBy(actorId);
+        entity.setUpdatedBy(auditActor(actorId));
         entity.setUpdatedTime(now);
         entity.setDeleted(0);
         return entity;
     }
 
     private void insertLines(String tenantId, Long orderId, List<TransferOrderLineWrite> lines,
-                             LocalDateTime now) {
+                             String actorId, LocalDateTime now) {
         for (TransferOrderLineWrite line : lines) {
             InternalTransferOrderLineEntity entity = new InternalTransferOrderLineEntity();
             entity.setTenantId(tenantId);
@@ -653,7 +714,10 @@ public class MybatisPlusTransferOrderRepository
             entity.setUnitCode(line.unitCode());
             entity.setQuantity(line.quantity());
             entity.setRemark(line.remark());
+            entity.setRevision(1);
+            entity.setCreatedBy(auditActor(actorId));
             entity.setCreatedTime(now);
+            entity.setUpdatedBy(auditActor(actorId));
             entity.setUpdatedTime(now);
             entity.setDeleted(0);
             transferLineMapper.insert(entity);
@@ -662,7 +726,7 @@ public class MybatisPlusTransferOrderRepository
 
     private List<TransferStockOutLineWrite> insertExternalTransferLines(
             String tenantId, Long orderId, List<ExternalTransferStockOutLineWrite> lines,
-            LocalDateTime now) {
+            String actorId, LocalDateTime now) {
         java.util.ArrayList<TransferStockOutLineWrite> result = new java.util.ArrayList<>();
         for (ExternalTransferStockOutLineWrite line : lines) {
             InternalTransferOrderLineEntity entity = new InternalTransferOrderLineEntity();
@@ -677,7 +741,10 @@ public class MybatisPlusTransferOrderRepository
             entity.setUnitCode(line.unitCode());
             entity.setQuantity(line.quantity());
             entity.setRemark(line.remark());
+            entity.setRevision(1);
+            entity.setCreatedBy(auditActor(actorId));
             entity.setCreatedTime(now);
+            entity.setUpdatedBy(auditActor(actorId));
             entity.setUpdatedTime(now);
             entity.setDeleted(0);
             transferLineMapper.insert(entity);
@@ -688,9 +755,11 @@ public class MybatisPlusTransferOrderRepository
         return List.copyOf(result);
     }
 
-    private void logicDeleteLines(String tenantId, Long orderId, LocalDateTime now) {
+    private void logicDeleteLines(String tenantId, Long orderId, String actorId, LocalDateTime now) {
         transferLineMapper.update(null, Wrappers.<InternalTransferOrderLineEntity>lambdaUpdate()
                 .set(InternalTransferOrderLineEntity::getDeleted, 1)
+                .setSql("revision = revision + 1")
+                .set(InternalTransferOrderLineEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalTransferOrderLineEntity::getUpdatedTime, now)
                 .eq(InternalTransferOrderLineEntity::getTenantId, tenantId)
                 .eq(InternalTransferOrderLineEntity::getTransferOrderId, orderId)
@@ -708,6 +777,8 @@ public class MybatisPlusTransferOrderRepository
                 order.getSourceSystemCode(), order.getSourceDocumentNo(),
                 order.getSourceWarehouseId(), warehouses.get(order.getSourceWarehouseId()),
                 order.getTargetWarehouseId(), warehouses.get(order.getTargetWarehouseId()),
+                order.getOutboundOperatorStaffCode(), order.getOutboundOperatorStaffNameSnapshot(),
+                order.getInboundOperatorStaffCode(), order.getInboundOperatorStaffNameSnapshot(),
                 order.getStatusCode(), instant(order.getStockOutTime()), instant(order.getStockInTime()),
                 stockOut.stockOutOrderId(), stockOut.stockOutNo(), stockIn.stockInOrderId(), stockIn.stockInNo(),
                 metrics.totalQuantity(),
@@ -726,6 +797,8 @@ public class MybatisPlusTransferOrderRepository
                 order.getSourceSystemCode(), order.getSourceDocumentNo(),
                 order.getSourceWarehouseId(), warehouses.get(order.getSourceWarehouseId()),
                 order.getTargetWarehouseId(), warehouses.get(order.getTargetWarehouseId()),
+                order.getOutboundOperatorStaffCode(), order.getOutboundOperatorStaffNameSnapshot(),
+                order.getInboundOperatorStaffCode(), order.getInboundOperatorStaffNameSnapshot(),
                 order.getStatusCode(), instant(order.getStockOutTime()), instant(order.getStockInTime()),
                 stockOut.stockOutOrderId(), stockOut.stockOutNo(), stockIn.stockInOrderId(), stockIn.stockInNo(),
                 metrics.totalQuantity(),
@@ -747,7 +820,12 @@ public class MybatisPlusTransferOrderRepository
                         .eq(InternalTransferOrderEntity::getTenantId, tenantId)
                         .eq(InternalTransferOrderEntity::getDeleted, 0);
         if (criteria.transferNo() != null) {
-            query.like(InternalTransferOrderEntity::getTransferNo, criteria.transferNo());
+            query.and(value -> value
+                    .like(InternalTransferOrderEntity::getTransferNo, criteria.transferNo())
+                    .or()
+                    .like(InternalTransferOrderEntity::getSourceDocumentNo, criteria.transferNo())
+                    .or()
+                    .like(InternalTransferOrderEntity::getRemark, criteria.transferNo()));
         }
         if (criteria.sourceWarehouseId() != null) {
             query.eq(InternalTransferOrderEntity::getSourceWarehouseId, criteria.sourceWarehouseId());
@@ -901,6 +979,10 @@ public class MybatisPlusTransferOrderRepository
 
     private static Instant instant(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC);
+    }
+
+    private static String auditActor(String actorId) {
+        return actorId == null || actorId.isBlank() ? SYSTEM_ACTOR : actorId;
     }
 
     private static BusinessException conflict(String message) {

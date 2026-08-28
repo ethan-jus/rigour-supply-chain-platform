@@ -2,17 +2,19 @@ package com.rigour.erp.application.service.supply;
 
 import com.rigour.erp.api.v1.model.ErpDataSyncResult;
 import com.rigour.erp.application.model.DictionaryMappingAudit;
-import com.rigour.erp.application.port.out.DhbSupplySyncTargetDiscoveryClient;
+import com.rigour.erp.application.model.DictionaryMappingAudit.MappingIssue;
 import com.rigour.erp.application.port.out.DhbSupplyDataClient;
+import com.rigour.erp.application.port.out.DhbSupplySyncTargetDiscoveryClient;
 import com.rigour.erp.application.port.out.SupplyDataStore;
 import com.rigour.erp.application.port.out.SupplyDataStore.ImportResult;
 import com.rigour.erp.application.port.out.SupplyDataStore.RunStatistics;
+import com.rigour.erp.application.service.sync.BusinessDictionaryCoverageService;
+import com.rigour.erp.application.service.sync.ErpScheduledSyncSkipException;
 import com.rigour.erp.domain.model.supply.SupplyDataObjectType;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.integration.client.ConnectorSyncLeaseClient.LeaseGuard;
-import com.rigour.erp.application.service.sync.BusinessDictionaryCoverageService;
-import com.rigour.erp.application.service.sync.ErpScheduledSyncSkipException;
+import com.rigour.integration.client.ExternalObjectMappingClient;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
@@ -21,6 +23,7 @@ import com.rigour.shared.core.exception.BusinessException;
 import com.rigour.shared.core.sync.SyncConflictClassifier;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,15 +47,18 @@ public final class SupplyDataSyncService {
     private final SupplyDataStore store;
     private final BusinessDictionaryCoverageService dictionaryCoverage;
     private final ConnectorSyncLeaseClient connectorLease;
+    private final ExternalObjectMappingClient mappingClient;
 
     public SupplyDataSyncService(DhbSupplyDataClient client,
                                  DhbSupplySyncTargetDiscoveryClient discovery,
                                  SupplyDataStore store,
                                  BusinessDictionaryCoverageService dictionaryCoverage,
-                                 ConnectorSyncLeaseClient connectorLease) {
+                                 ConnectorSyncLeaseClient connectorLease,
+                                 ExternalObjectMappingClient mappingClient) {
         this.client = client; this.discovery = discovery; this.store = store;
         this.dictionaryCoverage = dictionaryCoverage;
         this.connectorLease = connectorLease;
+        this.mappingClient = mappingClient;
     }
 
     public ErpDataSyncResult run(SupplyDataObjectType type, int maxPages) {
@@ -120,7 +126,7 @@ public final class SupplyDataSyncService {
         log.info("ERP供应链数据同步批次已创建 tenantId={} userId={} objectType={} connectorId={} runId={} maxPages={}",
                 tenantId, actorId, type, connectorId, attempt.runId, maxPages);
         List<String> codes = type == SupplyDataObjectType.INVENTORY
-                ? store.sourceProductCodes(tenantId) : List.of();
+                ? store.sourceProductCodes(tenantId, connectorId) : List.of();
         DhbSupplyDataClient.Collected collected = client.collect(dataCaller(caller.tenantId()),
                 connectorId, type, maxPages, codes);
         store.heartbeatRun(tenantId, attempt.runId);
@@ -130,18 +136,29 @@ public final class SupplyDataSyncService {
         attempt.counts.dictionaryAudit = dictionaryCoverage.inspect(caller.tenantId(), collected);
         store.heartbeatRun(tenantId, attempt.runId);
         RunStatistics stats = attempt.counts.statistics();
+        int mappingAccepted = registerExternalObjectMappings(
+                tenantId, connectorId, attempt.runId, type);
+        store.heartbeatRun(tenantId, attempt.runId);
         guard.ensureActive();
         store.completeRunWithSourcePresence(tenantId, attempt.runId,
                 attempt.counts.rejected == 0 ? seenSourceIds(type, collected) : Map.of(), stats);
-        log.info("ERP供应链数据同步批次完成 tenantId={} objectType={} connectorId={} runId={} fetched={} created={} changed={} duplicates={} rejected={} pages={}",
+        log.info("ERP供应链数据同步批次完成 tenantId={} objectType={} connectorId={} runId={} fetched={} created={} changed={} duplicates={} rejected={} pages={} mappingAccepted={}",
                 tenantId, type, connectorId, attempt.runId, stats.fetched(), stats.created(),
-                stats.changed(), stats.duplicates(), stats.rejected(), stats.pages());
-        String status = stats.dictionaryAudit().unmapped() == 0
+                stats.changed(), stats.duplicates(), stats.rejected(), stats.pages(), mappingAccepted);
+        String status = stats.rejected() == 0 && stats.dictionaryAudit().unmapped() == 0
                 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
         return new ErpDataSyncResult(attempt.runId, type.name(), status, connectorId,
                 stats.fetched(), stats.created(), stats.changed(), stats.duplicates(),
                 stats.rejected(), stats.dictionaryAudit().unmapped(),
-                stats.dictionaryAudit().revisions(), stats.pages(), Instant.now());
+                stats.dictionaryAudit().revisions(), Map.of(), stats.pages(), Instant.now());
+    }
+
+    private int registerExternalObjectMappings(String tenantId, UUID connectorId, UUID runId,
+                                               SupplyDataObjectType objectType) {
+        var mappings = store.externalObjectMappings(tenantId, connectorId, runId, objectType);
+        if (mappings == null || mappings.isEmpty()) return 0;
+        var result = mappingClient.upsert(UUID.fromString(tenantId), mappings);
+        return result == null ? 0 : result.accepted();
     }
 
     private void importCollected(String tenantId, UUID runId, DhbSupplyDataClient.Collected collected,
@@ -167,9 +184,10 @@ public final class SupplyDataSyncService {
             counts.add(store.importWarehouse(tenantId, runId, item));
             imported = heartbeatEvery(tenantId, runId, imported);
         }
-        for (var item : collected.inventoryBalances()) {
-            counts.add(store.importInventory(tenantId, runId, item));
-            imported = heartbeatEvery(tenantId, runId, imported);
+        if (!collected.inventoryBalances().isEmpty()) {
+            counts.add(store.importInventories(tenantId, runId, collected.inventoryBalances()));
+            imported += collected.inventoryBalances().size();
+            store.heartbeatRun(tenantId, runId);
         }
     }
 
@@ -215,14 +233,22 @@ public final class SupplyDataSyncService {
     private static final class Counts {
         long fetched; long created; long changed; long duplicates; long rejected; int pages;
         DictionaryMappingAudit dictionaryAudit = DictionaryMappingAudit.empty();
+        List<MappingIssue> issues = new ArrayList<>();
         void add(ImportResult value) {
             created += value.created(); changed += value.changed();
             duplicates += value.duplicates(); rejected += value.rejected();
             fetched += value.created() + value.changed() + value.duplicates() + value.rejected();
+            issues.addAll(value.issues());
         }
         RunStatistics statistics() {
+            DictionaryMappingAudit audit = dictionaryAudit;
+            if (!issues.isEmpty()) {
+                List<MappingIssue> combined = new ArrayList<>(audit.issues());
+                combined.addAll(issues);
+                audit = new DictionaryMappingAudit(audit.unmapped(), audit.revisions(), combined);
+            }
             return new RunStatistics(fetched, created, changed, duplicates, rejected, pages,
-                    dictionaryAudit);
+                    audit);
         }
     }
 

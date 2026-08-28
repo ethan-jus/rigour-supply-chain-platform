@@ -46,6 +46,13 @@ import com.rigour.integration.application.port.out.DhbClient.ShippingAddressQuer
 import com.rigour.integration.application.port.out.DhbClient.Staff;
 import com.rigour.integration.application.port.out.DhbClient.StaffQuery;
 import com.rigour.integration.application.port.out.DhbClient.TimeWindow;
+import com.rigour.integration.application.port.out.DhbClient.TransferOrder;
+import com.rigour.integration.application.port.out.DhbClient.TransferOrderLine;
+import com.rigour.integration.application.port.out.DhbClient.TransferOrderQuery;
+import com.rigour.integration.application.port.out.DhbClient.TransferStockInVoucher;
+import com.rigour.integration.application.port.out.DhbClient.TransferStockInVoucherLine;
+import com.rigour.integration.application.port.out.DhbClient.TransferStockOutVoucher;
+import com.rigour.integration.application.port.out.DhbClient.TransferStockOutVoucherLine;
 import com.rigour.integration.application.port.out.DhbClient.WaitShipment;
 import com.rigour.integration.application.port.out.DhbClient.WaitShipmentLine;
 import com.rigour.integration.application.port.out.DhbClient.WaitStock;
@@ -80,6 +87,7 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.util.UriComponentsBuilder;
 
 /**
  * 订货宝 ERP API 的 HTTP 适配器。
@@ -98,11 +106,25 @@ public final class DhbClientAdapter implements DhbClient {
             DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final ZoneOffset DHB_ZONE = ZoneOffset.ofHours(8);
     private static final String TOKEN_FUNCTION = "getTokenValue";
+    private static final Set<String> READ_ONLY_BUSINESS_FUNCTIONS = Set.of(
+            "getGoodsList", "getSite", "getBrands", "getMultiOptionsList", "getGoodsTag",
+            "getStockInfo", "batchGetStock", "getClientTypeList", "getArea", "getDealersList",
+            "getShippingAddressList", "getStaffList", "getStaffInfo", "getOrderList",
+            "getOrderContent", "getShipsList", "getShipsContent", "getWaitShips",
+            "getReturnsList", "getReturnsContent", "getReceiptsList", "getPaymentList",
+            "getSupplierList", "getPurchaseList", "getPurchaseContent",
+            "getPurchaseReturnList", "getPurchaseReturnContent",
+            "getWarehousingList", "getWarehousingContent");
+
+    static boolean isReadOnlyBusinessFunction(String function) {
+        return READ_ONLY_BUSINESS_FUNCTIONS.contains(function);
+    }
 
     private final RestClient restClient;
     private final DhbSecretResolver secretResolver;
     private final DhbClientProperties properties;
     private final URI imageBaseUri;
+    private final URI adminBaseUri;
     private final ConcurrentMap<String, CachedToken> tokenCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Object> tokenLocks = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, PermitBucket> rateLimiters = new ConcurrentHashMap<>();
@@ -121,6 +143,7 @@ public final class DhbClientAdapter implements DhbClient {
         this.properties = Objects.requireNonNull(properties, "properties cannot be null");
         properties.validate();
         this.imageBaseUri = endpoint(properties.getImageBaseUrl());
+        this.adminBaseUri = endpoint(properties.getAdminBaseUrl());
         this.restClient = Objects.requireNonNull(restClient, "restClient cannot be null");
     }
 
@@ -164,10 +187,20 @@ public final class DhbClientAdapter implements DhbClient {
         putInstant(values, "updateLe", query.updatedTo());
         ApiEnvelope response = callBusiness(connector, "getGoodsList", values);
         List<Map<String, Object>> rows = rows(response, "getGoodsList");
-        List<Product> items = rows.stream().map(DhbClientAdapter::product).toList();
+        List<Product> items = rows.stream()
+                .map(row -> withProductQueryContext(row, query))
+                .map(DhbClientAdapter::product)
+                .toList();
         logPage(connector, "getGoodsList", query.page(), response, items.size());
         log.info("订货宝拉取数据量:{}", items.size());
         return new Page<>(query.page(), response.total(), items);
+    }
+
+    private static Map<String, Object> withProductQueryContext(Map<String, Object> row, ProductQuery query) {
+        Map<String, Object> values = new LinkedHashMap<>(row);
+        putIfPresent(values, "_query_status", query.status());
+        putIfPresent(values, "_query_putaway", query.putaway());
+        return values;
     }
 
     @Override
@@ -213,10 +246,61 @@ public final class DhbClientAdapter implements DhbClient {
         }
     }
 
+    @Override
+    public DownloadedFile downloadAttachment(Connector connector, String sourceUrl) {
+        if (sourceUrl == null || sourceUrl.isBlank()) {
+            DhbClientException exception = new DhbClientException(
+                    "DHB_ATTACHMENT_URL_MISSING", "订货宝业务附件地址为空", false, null, null);
+            logAttachmentDownloadFailure(connector, null, exception);
+            throw exception;
+        }
+        URI uri;
+        try {
+            uri = resolveAttachmentUri(imageBaseUri, sourceUrl);
+        } catch (DhbClientException exception) {
+            logAttachmentDownloadFailure(connector, null, exception);
+            throw exception;
+        }
+        try {
+            var response = restClient.get().uri(uri)
+                    .header(HttpHeaders.ACCEPT, MediaType.ALL_VALUE)
+                    .retrieve().toEntity(byte[].class);
+            byte[] content = response.getBody();
+            if (content == null || content.length == 0) {
+                throw new DhbClientException("DHB_ATTACHMENT_EMPTY", "订货宝业务附件内容为空",
+                        false, response.getStatusCode().value(), null);
+            }
+            String contentType = response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE);
+            return new DownloadedFile(content, contentType);
+        } catch (DhbClientException exception) {
+            logAttachmentDownloadFailure(connector, uri, exception);
+            throw exception;
+        } catch (RestClientResponseException exception) {
+            DhbClientException attachmentException = new DhbClientException(
+                    "DHB_ATTACHMENT_HTTP_ERROR", "订货宝业务附件下载失败",
+                    exception.getStatusCode().is5xxServerError(), exception.getStatusCode().value(), null);
+            logAttachmentDownloadFailure(connector, uri, attachmentException);
+            throw attachmentException;
+        } catch (ResourceAccessException exception) {
+            DhbClientException attachmentException = new DhbClientException(
+                    "DHB_ATTACHMENT_NETWORK_ERROR", "订货宝业务附件网络请求失败", true, null, null);
+            logAttachmentDownloadFailure(connector, uri, attachmentException);
+            throw attachmentException;
+        }
+    }
+
     /** 只记录图片源站域名，不记录完整 URL、路径、查询参数或可能包含签名的片段。 */
     private static void logImageDownloadFailure(Connector connector, URI uri,
                                                  DhbClientException exception) {
         log.warn("订货宝商品图片下载失败 tenantId={} connectorId={} imageHost={} httpStatus={} errorType={}",
+                connector.tenantId(), connector.connectorId(), redactedImageHost(uri),
+                exception.httpStatus(), exception.code());
+    }
+
+    /** 只记录附件源站域名，不记录完整 URL、路径、查询参数或可能包含签名的片段。 */
+    private static void logAttachmentDownloadFailure(Connector connector, URI uri,
+                                                     DhbClientException exception) {
+        log.warn("订货宝业务附件下载失败 tenantId={} connectorId={} attachmentHost={} httpStatus={} errorType={}",
                 connector.tenantId(), connector.connectorId(), redactedImageHost(uri),
                 exception.httpStatus(), exception.code());
     }
@@ -489,21 +573,20 @@ public final class DhbClientAdapter implements DhbClient {
     }
 
     @Override
-    public OrderDetail getOrderContent(Connector connector, String orderNumber,
-                                       boolean autoMarkDownloaded, boolean autoAudit) {
+    public OrderDetail getOrderContent(Connector connector, String orderNumber) {
         if (orderNumber == null || orderNumber.isBlank()) {
             throw new IllegalArgumentException("orderNumber is required");
         }
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("orderSn", orderNumber.strip());
-        values.put("isAutoSign", autoMarkDownloaded ? 1 : 2);
-        values.put("isAutoAudit", autoAudit ? 1 : 2);
+        values.put("isAutoSign", 2);
+        values.put("isAutoAudit", 2);
         ApiEnvelope response = callBusiness(connector, "getOrderContent", values);
         Map<String, Object> data = object(response.data(), "getOrderContent");
         log.info("订货宝接口调用成功 tenantId={} connectorId={} function=getOrderContent orderNumber={} elapsedMs={}",
                 connector.tenantId(), connector.connectorId(), safeBusinessKey(orderNumber), response.elapsedMs());
         return new OrderDetail(first(data, "OrderSN", orderNumber),
-                text(data, "OrderStatus"), decimal(data, "OrderTotal"), data);
+                orderStatus(data), decimal(data, "OrderTotal"), data);
     }
 
     @Override
@@ -633,6 +716,53 @@ public final class DhbClientAdapter implements DhbClient {
         return new Page<>(query.page(), response.total(), items);
     }
 
+    @Override
+    public Page<TransferOrder> getTransferOrders(Connector connector, TransferOrderQuery query) {
+        Objects.requireNonNull(query, "query cannot be null");
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("page", query.page().begin() / query.page().step() + 1);
+        values.put("pageSize", query.page().step());
+        putIfPresent(values, "kw", query.keyword());
+        putIfPresent(values, "ships_stock_id", query.sourceWarehouseId());
+        putIfPresent(values, "warehouse_stock_id", query.targetWarehouseId());
+        putIfPresent(values, "transfer_status", query.transferStatus());
+        putIfPresent(values, "review_status", query.reviewStatus());
+        putIfPresent(values, "staff_id", query.staffId());
+        putIfPresent(values, "goods_id", query.goodsId());
+        putWindow(values, query.createdWindow(), "start_time", "start_time_end");
+        ApiEnvelope response = callAdminRest(connector, "transfers", "/RestfulApi/transfers", values);
+        List<Map<String, Object>> rows = businessRows(response, "transfers");
+        List<TransferOrder> items = rows.stream().map(DhbClientAdapter::transferOrderSummary).toList();
+        long total = businessTotal(response, "transfers");
+        logPage(connector, "transfers", query.page(), response, items.size(), total);
+        return new Page<>(query.page(), total, items);
+    }
+
+    @Override
+    public TransferOrder getTransferOrder(Connector connector, String sourceTransferId) {
+        if (sourceTransferId == null || sourceTransferId.isBlank()) {
+            throw new IllegalArgumentException("sourceTransferId is required");
+        }
+        String transferId = sourceTransferId.strip();
+        ApiEnvelope detail = callAdminRest(connector, "transfers/detail",
+                "/RestfulApi/transfers/" + transferId + "/detail", Map.of());
+        Map<String, Object> detailData = businessObject(detail, "transfers/detail");
+        Map<String, Object> stockOutData = optionalAdminBusinessObject(connector,
+                "transfers/ships/detail", "/RestfulApi/transfers/" + transferId + "/ships/detail",
+                "transfers/ships", "/RestfulApi/transfers/" + transferId + "/ships");
+        Map<String, Object> stockInData = optionalAdminBusinessObject(connector,
+                "transfers/warehousing/detail", "/RestfulApi/transfers/" + transferId + "/warehousing/detail",
+                "transfers/warehousing", "/RestfulApi/transfers/" + transferId + "/warehousing");
+        TransferOrder transfer = transferOrder(detailData, stockOutData, stockInData);
+        log.info("订货宝后台接口调用成功 tenantId={} connectorId={} function=transfers/detail "
+                        + "transferId={} transferNo={} lines={} stockOutVouchers={} stockInVouchers={} elapsedMs={}",
+                connector.tenantId(), connector.connectorId(), safeBusinessKey(transferId),
+                safeBusinessKey(firstNonBlank(transfer.transferNumber(), transferId)),
+                transfer.lines().size(), transfer.stockOutVouchers().size(),
+                transfer.stockInVouchers().size(), detail.elapsedMs());
+        return transfer;
+    }
+
     private CachedToken tokenFor(Connector connector) {
         String key = connectorKey(connector);
         CachedToken cached = tokenCache.get(key);
@@ -668,6 +798,10 @@ public final class DhbClientAdapter implements DhbClient {
     }
 
     private ApiEnvelope callBusiness(Connector connector, String function, Map<String, Object> values) {
+        if (!isReadOnlyBusinessFunction(function)) {
+            throw new DhbClientException("DHB_FUNCTION_NOT_READ_ONLY",
+                    "订货宝接口不在只读查询白名单中 function=" + function, false, null, null);
+        }
         String key = connectorKey(connector);
         for (int authAttempt = 0; authAttempt < 2; authAttempt++) {
             CachedToken token = tokenFor(connector);
@@ -709,6 +843,71 @@ public final class DhbClientAdapter implements DhbClient {
             }
             return parseEnvelope(body, function, elapsedMillis(started));
         });
+    }
+
+    @SuppressWarnings("unchecked")
+    private ApiEnvelope callAdminRest(Connector connector, String function,
+                                      String path, Map<String, Object> query) {
+        if (!properties.isAdminTransferEnabled()) {
+            throw new DhbClientException("DHB_ADMIN_TRANSFER_DISABLED",
+                    "订货宝后台调拨主单补全未启用", false, null, null);
+        }
+        DhbSecretResolver.Credentials credentials = secretResolver.resolve(connector.secretRef());
+        String adminCookie = credentials.adminCookie();
+        if (adminCookie == null || adminCookie.isBlank()) {
+            throw new DhbClientException("DHB_ADMIN_SESSION_NOT_CONFIGURED",
+                    "订货宝后台调拨主单补全缺少后台会话 Secret", false, null, null);
+        }
+        return executeWithRetry(connector, function, () -> {
+            URI uri = adminUri(path, query);
+            long started = System.nanoTime();
+            Map<String, Object> body = restClient.get()
+                    .uri(uri)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .header(HttpHeaders.COOKIE, adminCookie)
+                    .retrieve()
+                    .body(Map.class);
+            if (body == null) {
+                throw protocolError(function, "订货宝后台回执为空");
+            }
+            return parseAdminEnvelope(body, function, elapsedMillis(started));
+        });
+    }
+
+    private Map<String, Object> optionalAdminBusinessObject(Connector connector,
+                                                            String firstFunction,
+                                                            String firstPath,
+                                                            String fallbackFunction,
+                                                            String fallbackPath) {
+        try {
+            return businessObject(callAdminRest(connector, firstFunction, firstPath, Map.of()), firstFunction);
+        } catch (DhbClientException firstError) {
+            if (adminRequiredFailure(firstError)) {
+                throw firstError;
+            }
+            try {
+                return businessObject(callAdminRest(connector, fallbackFunction, fallbackPath, Map.of()),
+                        fallbackFunction);
+            } catch (DhbClientException secondError) {
+                if (adminRequiredFailure(secondError)) {
+                    throw secondError;
+                }
+                return Map.of();
+            }
+        }
+    }
+
+    private URI adminUri(String path, Map<String, Object> query) {
+        UriComponentsBuilder builder = UriComponentsBuilder.fromUri(adminBaseUri)
+                .path(path == null || path.isBlank() ? "/" : path);
+        if (query != null) {
+            query.forEach((key, value) -> {
+                if (value != null) {
+                    builder.queryParam(String.valueOf(key), value);
+                }
+            });
+        }
+        return builder.build().encode().toUri();
     }
 
     private ApiEnvelope executeWithRetry(Connector connector, String function,
@@ -789,6 +988,39 @@ public final class DhbClientAdapter implements DhbClient {
                     false, null, status);
         }
         return new ApiEnvelope(body.get("rData"), number(body, "rTotal", -1L), message, elapsedMs);
+    }
+
+    private static ApiEnvelope parseAdminEnvelope(Map<String, Object> body, String function, long elapsedMs) {
+        int status = (int) number(body, "code", Integer.MIN_VALUE);
+        if (status == Integer.MIN_VALUE) {
+            throw protocolError(function, "订货宝后台回执缺少 code");
+        }
+        String message = redact(text(body, "message"));
+        if (status != 200) {
+            String code = status == 401 || status == 403 ? "DHB_AUTH_FAILED" : "DHB_PROVIDER_ERROR";
+            throw new DhbClientException(code,
+                    message == null || message.isBlank() ? "订货宝后台返回业务失败" : message,
+                    false, null, status);
+        }
+        Object data = body.get("data");
+        long total = data instanceof Map<?, ?> ? number(object(data, function), "count", -1L) : -1L;
+        return new ApiEnvelope(data, total, message, elapsedMs);
+    }
+
+    private static boolean adminRequiredFailure(DhbClientException exception) {
+        if (Set.of("DHB_ADMIN_TRANSFER_DISABLED", "DHB_ADMIN_SESSION_NOT_CONFIGURED",
+                "DHB_AUTH_FAILED", "DHB_NETWORK_TIMEOUT", "DHB_RATE_LIMITED")
+                .contains(exception.code())) {
+            return true;
+        }
+        return ("DHB_HTTP_ERROR".equals(exception.code())
+                && exception.httpStatus() != null
+                && exception.httpStatus() != 400
+                && exception.httpStatus() != 404)
+                || ("DHB_PROVIDER_ERROR".equals(exception.code())
+                && exception.providerStatus() != null
+                && exception.providerStatus() != 400
+                && exception.providerStatus() != 404);
     }
 
     private static boolean isAuthFailure(int status, String message) {
@@ -907,6 +1139,45 @@ public final class DhbClientAdapter implements DhbClient {
         }
         List<Map<String, Object>> result = new ArrayList<>();
         for (Object item : iterable) result.add(object(item, function));
+        return result;
+    }
+
+    private static List<Map<String, Object>> rowsFrom(
+            Map<String, Object> parent, String function, String... keys) {
+        if (parent == null || parent.isEmpty()) {
+            return List.of();
+        }
+        for (String key : keys) {
+            List<Map<String, Object>> rows = rowsFromValue(parent.get(key), function);
+            if (!rows.isEmpty()) {
+                return rows;
+            }
+        }
+        return List.of();
+    }
+
+    private static List<Map<String, Object>> rowsFromValue(Object value, String function) {
+        if (value == null) {
+            return List.of();
+        }
+        if (value instanceof Map<?, ?>) {
+            Map<String, Object> map = object(value, function);
+            Object rows = firstObject(map, "data", "list", "items", "details");
+            if (rows != null) {
+                List<Map<String, Object>> nested = rowsFromValue(rows, function);
+                if (!nested.isEmpty()) {
+                    return nested;
+                }
+            }
+            return List.of(map);
+        }
+        if (!(value instanceof Iterable<?> iterable)) {
+            return List.of();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object item : iterable) {
+            result.add(object(item, function));
+        }
         return result;
     }
 
@@ -1118,7 +1389,7 @@ public final class DhbClientAdapter implements DhbClient {
                     mainImageSource));
         }
         return new Product(sourceId, text(row, "coding"), text(row, "name"),
-                text(row, "putaway"), text(row, "barcode"), text(row, "units"),
+                text(row, "putaway"), productLifecycle(row), text(row, "barcode"), text(row, "units"),
                 first(row, "siteID", "SiteID"), first(row, "brandID", "BrandID"),
                 text(row, "model"), text(row, "subtitle"), text(row, "keywords"),
                 text(row, "goods_allocation"), mainImageSource, text(row, "multi_id"),
@@ -1245,9 +1516,21 @@ public final class DhbClientAdapter implements DhbClient {
     }
 
     private static OrderSummary order(Map<String, Object> row) {
-        return new OrderSummary(first(row, "OrderSN"), text(row, "OrderSN"), text(row, "OrderStatus"),
+        return new OrderSummary(first(row, "OrderSN"), text(row, "OrderSN"), orderStatus(row),
                 decimal(row, "OrderTotal"), instant(row, "OrderDate"), instant(row, "OrderUpdateDate"),
-                first(row, "ClientNO"), text(row, "PayStatus"), row);
+                first(row, "ClientNO"), orderPayStatus(row), row);
+    }
+
+    private static String orderStatus(Map<String, Object> values) {
+        return first(values, "OrderStatus", "orderStatus", "order_status",
+                "OrderStatusName", "orderStatusName", "order_status_name",
+                "StatusName", "statusName", "status_name", "status");
+    }
+
+    private static String orderPayStatus(Map<String, Object> values) {
+        return first(values, "PayStatus", "payStatus", "pay_status",
+                "PayStatusName", "payStatusName", "pay_status_name",
+                "orderPayStatus", "order_pay_status", "order_pay_status_name");
     }
 
     private static Shipment shipment(Map<String, Object> row) {
@@ -1258,6 +1541,160 @@ public final class DhbClientAdapter implements DhbClient {
                 first(row, "stock_guid"), instant(row, "ships_date"), first(row, "logistics_name"),
                 valueText(row, "express_num"), first(row, "remark"), instant(row, "create_date"),
                 instant(row, "update_date"), row);
+    }
+
+    private static TransferOrder transferOrderSummary(Map<String, Object> row) {
+        return transferOrder(row, List.of(), List.of(), List.of(), row);
+    }
+
+    private static TransferOrder transferOrder(Map<String, Object> detail,
+                                               Map<String, Object> stockOut,
+                                               Map<String, Object> stockIn) {
+        Map<String, Object> payload = new LinkedHashMap<>(detail);
+        if (!stockOut.isEmpty()) {
+            payload.put("_stock_out_vouchers", stockOut);
+        }
+        if (!stockIn.isEmpty()) {
+            payload.put("_stock_in_vouchers", stockIn);
+        }
+        return transferOrder(detail,
+                transferOrderLines(detail),
+                transferStockOutVouchers(stockOut),
+                transferStockInVouchers(stockIn),
+                payload);
+    }
+
+    private static TransferOrder transferOrder(Map<String, Object> row,
+                                               List<TransferOrderLine> lines,
+                                               List<TransferStockOutVoucher> stockOutVouchers,
+                                               List<TransferStockInVoucher> stockInVouchers,
+                                               Map<String, Object> attributes) {
+        return new TransferOrder(first(row, "transfer_id", "id", "transfer_num"),
+                first(row, "transfer_num", "transfer_no", "transferNo"),
+                first(row, "ships_stock_id", "source_stock_id", "stock_id"),
+                first(row, "ships_stock_num", "source_stock_num", "stock_num"),
+                first(row, "ships_stock_name", "source_stock_name", "stock_name"),
+                first(row, "warehouse_stock_id", "target_stock_id", "in_stock_id"),
+                first(row, "warehouse_stock_num", "target_stock_num", "in_stock_num"),
+                first(row, "warehouse_stock_name", "target_stock_name", "in_stock_name"),
+                first(row, "transfer_status", "status"),
+                first(row, "transfer_status_name", "status_name"),
+                first(row, "review_status", "audit_status"),
+                first(row, "review_status_name", "audit_status_name"),
+                first(row, "staff_id", "accounts_id", "operator_id"),
+                first(row, "staff_name", "accounts_name", "operator_name"),
+                first(row, "warehouse_staff_id", "in_staff_id"),
+                first(row, "warehouse_staff_name", "in_staff_name"),
+                instant(row, "create_date"),
+                instant(row, "review_date"),
+                first(row, "remark", "internal_comtion"),
+                lines, stockOutVouchers, stockInVouchers, attributes);
+    }
+
+    private static List<TransferOrderLine> transferOrderLines(Map<String, Object> parent) {
+        return rowsFrom(parent, "transfers/detail", "transfer_list", "list", "details")
+                .stream().map(DhbClientAdapter::transferOrderLine).toList();
+    }
+
+    private static TransferOrderLine transferOrderLine(Map<String, Object> row) {
+        return new TransferOrderLine(first(row, "transfer_list_id", "list_id", "id"),
+                first(row, "goods_id", "goods_guid"),
+                first(row, "goods_num", "goods_no", "coding"),
+                first(row, "goods_name", "name"),
+                first(row, "options_id", "options_guid"),
+                first(row, "options_goods_num", "options_goods_no", "sku_num"),
+                first(row, "options_name", "goods_options"),
+                first(row, "base_units", "base_units_name", "unit_name"),
+                first(row, "container_units", "container_units_name"),
+                decimal(row, "conversion_number"),
+                firstDecimal(row, "transfer_number", "number", "quantity", "goods_number"),
+                decimal(row, "cost_price"),
+                firstDecimal(row, "subtotal", "amount"),
+                first(row, "remark"), row);
+    }
+
+    private static List<TransferStockOutVoucher> transferStockOutVouchers(Map<String, Object> parent) {
+        List<Map<String, Object>> vouchers = rowsFrom(parent, "transfers/ships",
+                "ships_list", "list", "data");
+        if (vouchers.isEmpty() && first(parent, "ships_num", "shipmentNumber") != null) {
+            vouchers = List.of(parent);
+        }
+        return vouchers.stream().map(DhbClientAdapter::transferStockOutVoucher).toList();
+    }
+
+    private static TransferStockOutVoucher transferStockOutVoucher(Map<String, Object> row) {
+        return new TransferStockOutVoucher(first(row, "ships_id", "id", "ships_num"),
+                first(row, "ships_num", "shipmentNumber"),
+                instant(row, "create_date"),
+                first(row, "ships_stock_id", "stock_id", "source_stock_id"),
+                first(row, "ships_stock_num", "stock_num", "source_stock_num"),
+                first(row, "ships_stock_name", "stock_name", "source_stock_name"),
+                cancelledVoucher(row),
+                transferStockOutVoucherLines(row),
+                row);
+    }
+
+    private static List<TransferStockOutVoucherLine> transferStockOutVoucherLines(Map<String, Object> parent) {
+        List<Map<String, Object>> rows = rowsFrom(parent, "transfers/ships", "data", "list", "details");
+        if (rows.isEmpty() && first(parent, "goods_num", "coding") != null) {
+            rows = List.of(parent);
+        }
+        return rows.stream().map(row -> new TransferStockOutVoucherLine(
+                first(row, "ships_list_id", "list_id", "id"),
+                first(row, "goods_id", "goods_guid"),
+                first(row, "goods_num", "goods_no", "coding"),
+                first(row, "goods_name", "name"),
+                first(row, "options_id", "options_guid"),
+                first(row, "options_goods_num", "options_goods_no", "sku_num"),
+                first(row, "options_name", "goods_options"),
+                first(row, "base_units", "base_units_name", "unit_name"),
+                first(row, "container_units", "container_units_name"),
+                decimal(row, "conversion_number"),
+                firstDecimal(row, "ships_number", "out_number", "number", "quantity"),
+                first(row, "remark"), row)).toList();
+    }
+
+    private static List<TransferStockInVoucher> transferStockInVouchers(Map<String, Object> parent) {
+        List<Map<String, Object>> vouchers = rowsFrom(parent, "transfers/warehousing",
+                "warehouse_list", "warehousing_list", "list", "data");
+        if (vouchers.isEmpty() && first(parent, "warehousing_num", "stockInNumber") != null) {
+            vouchers = List.of(parent);
+        }
+        return vouchers.stream().map(DhbClientAdapter::transferStockInVoucher).toList();
+    }
+
+    private static TransferStockInVoucher transferStockInVoucher(Map<String, Object> row) {
+        return new TransferStockInVoucher(first(row, "warehousing_id", "id", "warehousing_num"),
+                first(row, "warehousing_num", "stockInNumber"),
+                instant(row, "create_date"),
+                first(row, "warehouse_stock_id", "stock_id", "target_stock_id"),
+                first(row, "warehouse_stock_num", "stock_num", "target_stock_num"),
+                first(row, "warehouse_stock_name", "stock_name", "target_stock_name",
+                        "ships_stock_name"),
+                cancelledVoucher(row),
+                transferStockInVoucherLines(row),
+                row);
+    }
+
+    private static List<TransferStockInVoucherLine> transferStockInVoucherLines(Map<String, Object> parent) {
+        List<Map<String, Object>> rows = rowsFrom(parent, "transfers/warehousing",
+                "data", "list", "details");
+        if (rows.isEmpty() && first(parent, "goods_num", "coding") != null) {
+            rows = List.of(parent);
+        }
+        return rows.stream().map(row -> new TransferStockInVoucherLine(
+                first(row, "warehousing_list_id", "list_id", "id"),
+                first(row, "goods_id", "goods_guid"),
+                first(row, "goods_num", "goods_no", "coding"),
+                first(row, "goods_name", "name"),
+                first(row, "options_id", "options_guid"),
+                first(row, "options_goods_num", "options_goods_no", "sku_num"),
+                first(row, "options_name", "goods_options"),
+                first(row, "base_units", "base_units_name", "unit_name"),
+                first(row, "container_units", "container_units_name"),
+                decimal(row, "conversion_number"),
+                firstDecimal(row, "warehousing_number", "in_number", "number", "quantity"),
+                first(row, "remark"), row)).toList();
     }
 
     private static ReturnSummary returnSummary(Map<String, Object> row) {
@@ -1343,6 +1780,7 @@ public final class DhbClientAdapter implements DhbClient {
                 first(row, "Status"),
                 instant(row, "ReceiptsDate"),
                 instant(row, "CreateDate"),
+                instant(row, "UpdateDate"),
                 first(row, "SerialNumber"),
                 first(row, "AccountName"),
                 first(row, "BankName"),
@@ -1401,6 +1839,18 @@ public final class DhbClientAdapter implements DhbClient {
             String value = text(values, key);
             if (value != null) {
                 return value;
+            }
+        }
+        return null;
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.strip();
             }
         }
         return null;
@@ -1468,6 +1918,92 @@ public final class DhbClientAdapter implements DhbClient {
         return null;
     }
 
+    private static Boolean cancelledVoucher(Map<String, Object> values) {
+        Boolean flag = booleanFlag(values, "is_cancel", "is_cancelled", "cancelled",
+                "deleted", "is_delete", "is_deleted");
+        if (flag != null) {
+            return flag;
+        }
+        String status = first(values, "status", "status_name", "review_status_name");
+        if (status == null) {
+            return null;
+        }
+        return status.contains("作废") || status.contains("取消") || status.contains("删除");
+    }
+
+    private static String productLifecycle(Map<String, Object> values) {
+        if (sourceDeleted(values)) {
+            return "SOURCE_DELETED";
+        }
+        String putaway = text(values, "putaway");
+        String status = first(values, "status", "goods_status", "goodsStatus", "is_enable", "isEnable");
+        String statusName = first(values, "status_name", "statusName", "goods_status_name", "goodsStatusName");
+        String deleteFlag = first(values, "is_delete", "is_deleted", "isDelete", "isDeleted",
+                "deleted", "delete", "delete_flag", "deleteFlag", "del_flag", "delFlag",
+                "goods_deleted", "goodsDeleted", "goods_delete", "goodsDelete", "removed",
+                "delete_status", "deleteStatus", "delete_status_name", "deleteStatusName");
+        if (inactiveStatus(putaway) || inactiveStatus(status) || inactiveText(statusName)) {
+            return "INACTIVE";
+        }
+        return putaway == null && status == null && statusName == null && deleteFlag == null
+                ? "UNKNOWN" : "NORMAL";
+    }
+
+    private static boolean sourceDeleted(Map<String, Object> values) {
+        String queryStatus = text(values, "_query_status");
+        if (recycleBinStatus(queryStatus)) {
+            return true;
+        }
+        Boolean flag = booleanFlag(values, "is_delete", "is_deleted", "isDelete", "isDeleted",
+                "deleted", "delete", "delete_flag", "deleteFlag", "del_flag", "delFlag",
+                "goods_deleted", "goodsDeleted", "goods_delete", "goodsDelete", "removed");
+        if (Boolean.TRUE.equals(flag)) {
+            return true;
+        }
+        String status = first(values, "status", "goods_status", "goodsStatus", "delete_status", "deleteStatus");
+        if (status != null) {
+            String normalized = status.strip().toUpperCase(Locale.ROOT);
+            if (recycleBinStatus(status)
+                    || Set.of("D", "DEL", "DELETED", "DELETE", "REMOVED", "SOURCE_DELETED")
+                    .contains(normalized)) {
+                return true;
+            }
+        }
+        String statusName = first(values, "status_name", "statusName", "goods_status_name",
+                "goodsStatusName", "delete_status_name", "deleteStatusName");
+        return deletedText(statusName);
+    }
+
+    private static boolean recycleBinStatus(String value) {
+        return value != null && "F".equalsIgnoreCase(value.strip());
+    }
+
+    private static boolean inactiveStatus(String value) {
+        if (value == null) {
+            return false;
+        }
+        String normalized = value.strip().toUpperCase(Locale.ROOT);
+        return Set.of("F", "FALSE", "0", "STOPPED", "DISABLED", "INACTIVE", "OFF", "OFF_SHELF")
+                .contains(normalized);
+    }
+
+    private static boolean inactiveText(String value) {
+        if (value == null) {
+            return false;
+        }
+        String text = value.strip();
+        return text.contains("停用") || text.contains("禁用") || text.contains("下架")
+                || text.contains("隐藏");
+    }
+
+    private static boolean deletedText(String value) {
+        if (value == null) {
+            return false;
+        }
+        String text = value.strip();
+        return text.contains("删除") || text.contains("已删") || text.contains("作废");
+    }
+
     private static Instant instant(Map<String, Object> values, String key) {
         Object value = values.get(key);
         if (value == null) {
@@ -1533,27 +2069,40 @@ public final class DhbClientAdapter implements DhbClient {
             return null;
         }
         String redacted = value.replaceAll(
-                "(?i)(password|token|skey|serialnumber|api[-_]?key)\\s*[:=]\\s*[^,;\\s}]+",
+                "(?i)(password|token|skey|serialnumber|api[-_]?key|cookie|session|sid)\\s*[:=]\\s*[^,;\\s}]+",
                 "$1=[REDACTED]");
         return redacted.length() > 256 ? redacted.substring(0, 256) : redacted;
     }
 
     private static String safeBusinessKey(String value) {
+        if (value == null) {
+            return null;
+        }
         return value.length() > 64 ? value.substring(0, 64) : value;
     }
 
     private static URI resolveImageUri(URI imageBaseUri, String sourceUrl) {
+        return resolveDownloadUri(imageBaseUri, sourceUrl,
+                "DHB_IMAGE_URL_INVALID", "订货宝商品图片地址无效", "商品图片地址协议不受支持");
+    }
+
+    private static URI resolveAttachmentUri(URI imageBaseUri, String sourceUrl) {
+        return resolveDownloadUri(imageBaseUri, sourceUrl,
+                "DHB_ATTACHMENT_URL_INVALID", "订货宝业务附件地址无效", "业务附件地址协议不受支持");
+    }
+
+    private static URI resolveDownloadUri(URI baseUri, String sourceUrl, String invalidCode,
+                                          String invalidMessage, String unsupportedProtocolMessage) {
         try {
             URI source = URI.create(sourceUrl.strip());
-            URI resolved = source.isAbsolute() ? source : imageBaseUri.resolve(source);
+            URI resolved = source.isAbsolute() ? source : baseUri.resolve(source);
             if (!"http".equalsIgnoreCase(resolved.getScheme())
                     && !"https".equalsIgnoreCase(resolved.getScheme())) {
-                throw new IllegalArgumentException("商品图片地址协议不受支持");
+                throw new IllegalArgumentException(unsupportedProtocolMessage);
             }
             return resolved;
         } catch (IllegalArgumentException exception) {
-            throw new DhbClientException("DHB_IMAGE_URL_INVALID", "订货宝商品图片地址无效",
-                    false, null, null);
+            throw new DhbClientException(invalidCode, invalidMessage, false, null, null);
         }
     }
 

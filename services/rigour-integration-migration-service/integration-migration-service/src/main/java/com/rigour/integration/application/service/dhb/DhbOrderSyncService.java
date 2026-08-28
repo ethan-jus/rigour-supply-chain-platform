@@ -1,6 +1,8 @@
 package com.rigour.integration.application.service.dhb;
 
 import com.rigour.integration.application.port.out.DhbClient;
+import com.rigour.integration.application.port.out.DhbClient.Connector;
+import com.rigour.integration.application.port.out.DhbClient.DownloadedFile;
 import com.rigour.integration.application.port.out.DhbClient.OrderDetail;
 import com.rigour.integration.application.port.out.DhbClient.OrderQuery;
 import com.rigour.integration.application.port.out.DhbClient.OrderSummary;
@@ -14,24 +16,38 @@ import com.rigour.integration.application.port.out.DhbClient.Shipment;
 import com.rigour.integration.application.port.out.DhbClient.ShipmentDetail;
 import com.rigour.integration.application.port.out.DhbClient.ShipmentQuery;
 import com.rigour.integration.application.port.out.DhbClient.TimeWindow;
+import com.rigour.integration.application.port.out.DhbClient.TransferOrder;
+import com.rigour.integration.application.port.out.DhbClient.TransferOrderLine;
+import com.rigour.integration.application.port.out.DhbClient.TransferOrderQuery;
+import com.rigour.integration.application.port.out.DhbClient.TransferStockInVoucher;
+import com.rigour.integration.application.port.out.DhbClient.TransferStockInVoucherLine;
+import com.rigour.integration.application.port.out.DhbClient.TransferStockOutVoucher;
+import com.rigour.integration.application.port.out.DhbClient.TransferStockOutVoucherLine;
 import com.rigour.integration.application.port.out.DhbSyncStore;
 import com.rigour.integration.application.port.out.DhbSyncStore.DeadLetterWrite;
 import com.rigour.integration.application.port.out.DhbSyncStore.ExternalObjectMapping;
 import com.rigour.integration.application.port.out.DhbSyncStore.ExternalObjectMappingWrite;
+import com.rigour.integration.application.port.out.DhbSyncStore.ManualResolution;
 import com.rigour.integration.application.port.out.DhbSyncStore.RawObjectPersistResult;
 import com.rigour.integration.application.port.out.DhbSyncStore.ReconciliationCaseWrite;
 import com.rigour.integration.application.port.out.ErpStockOutProjectionClient;
+import com.rigour.integration.application.port.out.DhbSyncStore.SyncCheckpoint;
 import com.rigour.integration.application.port.out.DhbSyncStore.SyncRunStarted;
 import com.rigour.integration.application.port.out.DhbSyncStore.SyncTaskContext;
+import com.rigour.integration.application.port.out.DhbSyncStore.TransferInboundReceiptCandidate;
 import com.rigour.integration.application.port.out.IamDhbStaffSyncClient;
 import com.rigour.integration.application.port.out.IamDhbStaffSyncClient.ResolvedStaff;
 import com.rigour.integration.application.port.out.OrderSalesOrderProjectionClient;
+import com.rigour.integration.application.port.out.ProductMediaStorage;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunView;
 import com.rigour.erp.api.v1.model.ExternalGenericStockOutProjectionCommand;
 import com.rigour.erp.api.v1.model.ExternalGenericStockOutProjectionLineCommand;
 import com.rigour.erp.api.v1.model.ExternalStockOutProjectionCommand;
 import com.rigour.erp.api.v1.model.ExternalStockOutProjectionLineCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferOrderProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferOrderProjectionLineCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferStockInProjectionCommand;
 import com.rigour.erp.api.v1.model.ExternalTransferStockOutProjectionCommand;
 import com.rigour.erp.api.v1.model.ExternalTransferStockOutProjectionLineCommand;
 import com.rigour.erp.api.v1.model.InternalStockOutOrderDetailView;
@@ -42,17 +58,21 @@ import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
 import com.rigour.order.api.v1.model.SalesOrderLineCommand;
 import com.rigour.order.api.v1.model.SalesOrderLineView;
+import com.rigour.order.api.v1.model.SalesOrderSourceProjectionCommand;
+import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
 import com.rigour.order.api.v1.model.SalesPaymentRecordCommand;
 import com.rigour.order.api.v1.model.SalesPaymentRecordDetailView;
 import com.rigour.order.api.v1.model.SalesShipmentCommand;
 import com.rigour.order.api.v1.model.SalesShipmentDetailView;
 import com.rigour.order.api.v1.model.SalesShipmentLineCommand;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.core.sync.ExternalSourceCodes;
 import com.rigour.settings.client.BusinessDictionaryBatchClient;
 import com.rigour.settings.client.BusinessDictionaryBatchClient.Audit;
 import com.rigour.settings.client.BusinessDictionaryBatchClient.Observation;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -74,6 +94,9 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
@@ -91,6 +114,9 @@ public final class DhbOrderSyncService {
     private static final Logger log = LoggerFactory.getLogger(DhbOrderSyncService.class);
     private static final InheritableThreadLocal<ConcurrentMap<MappingLookupKey, Optional<ExternalObjectMapping>>>
             MAPPING_LOOKUP_CACHE = new InheritableThreadLocal<>();
+    private static final InheritableThreadLocal<Set<String>> UNIT_DICTIONARY_SYNC_CACHE =
+            new InheritableThreadLocal<>();
+    private static final AtomicInteger DETAIL_EXECUTOR_SEQUENCE = new AtomicInteger();
     private static final UUID SERVICE_PRINCIPAL_ID =
             UUID.fromString("019fb700-0000-7000-8000-00000000d0b0");
     private static final Set<String> DOMAIN_PERMISSIONS = Set.of(
@@ -99,18 +125,30 @@ public final class DhbOrderSyncService {
     private static final int DEFAULT_MAX_PAGES = 100;
     private static final int DEFAULT_DETAIL_CONCURRENCY = 3;
     private static final int MAX_DETAIL_CONCURRENCY = 16;
-    private static final String SOURCE_SYSTEM_DINGHUOBAO = "DINGHUOBAO";
+    private static final long DETAIL_PROJECTION_TIMEOUT_SECONDS = 180;
+    private static final int DEFAULT_INCREMENTAL_OVERLAP_SECONDS = 600;
+    private static final Duration SCHEDULED_WINDOW_SAFETY_LAG = Duration.ofMinutes(2);
+    private static final Duration SCHEDULED_BOOTSTRAP_LOOKBACK = Duration.ofDays(3);
+    private static final String SOURCE_SYSTEM_DINGHUOBAO = ExternalSourceCodes.DOMAIN_DINGHUOBAO;
     private static final String SOURCE_OBJECT_SALES_ORDER = "SALES_ORDER";
     private static final String SOURCE_OBJECT_SALES_PAYMENT = "SALES_PAYMENT";
     private static final String SOURCE_OBJECT_FUND_RECEIPT = "FUND_RECEIPT";
     private static final String SOURCE_OBJECT_FUND_PAYMENT = "FUND_PAYMENT";
     private static final String SOURCE_OBJECT_SALES_SHIPMENT = "SALES_SHIPMENT";
     private static final String SOURCE_OBJECT_ERP_STOCK_OUT = "ERP_STOCK_OUT";
+    private static final String SOURCE_OBJECT_ERP_STOCK_IN = "ERP_STOCK_IN";
     private static final String SOURCE_OBJECT_ERP_TRANSFER_ORDER = "ERP_TRANSFER_ORDER";
+    private static final String MANUAL_RESOLUTION_TRANSFER_INBOUND_RECEIPT = "TRANSFER_INBOUND_RECEIPT";
     private static final String RAW_OBJECT_ORDER_DETAIL = "ORDER_DETAIL";
     private static final String RAW_OBJECT_RECEIPT = "RECEIPT";
     private static final String RAW_OBJECT_PAYMENT = "PAYMENT";
     private static final String RAW_OBJECT_SHIPMENT_DETAIL = "SHIPMENT_CONTENT";
+    private static final String RAW_OBJECT_TRANSFER_ORDER = "TRANSFER_ORDER";
+    private static final String RAW_OBJECT_WAREHOUSING_RECEIPT = "WAREHOUSING_RECEIPT";
+    private static final String[] SOURCE_UNIT_FIELD_NAMES = {
+            "order_units_name", "base_units_name", "Units", "UnitsName", "Unit",
+            "unit_name", "UnitName", "unitName"
+    };
     private static final Pattern INTERNAL_CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
     private static final DateTimeFormatter D_HMS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final ZoneId SOURCE_ZONE = ZoneId.of("Asia/Shanghai");
@@ -121,7 +159,23 @@ public final class DhbOrderSyncService {
             new Observation("PRODUCT_UNIT", "orderLine.unitCode", "SET", "套"),
             new Observation("PRODUCT_UNIT", "orderLine.unitCode", "BED", "床"),
             new Observation("PRODUCT_UNIT", "orderLine.unitCode", "PAIR", "副"),
+            new Observation("PRODUCT_UNIT", "orderLine.unitCode", "BOTTLE", "瓶"),
+            new Observation("PRODUCT_UNIT", "orderLine.unitCode", "STRIP", "条"),
+            new Observation("PRODUCT_UNIT", "orderLine.unitCode", "GRAIN", "颗"),
             new Observation("PRODUCT_UNIT", "orderLine.unitCode", "PIECE", "件"));
+    private static final List<Observation> DHB_UNIT_DICTIONARY_ITEMS = List.of(
+            new Observation("DHB_UNIT", "orderLine.sourceUnit", "箱", "箱"),
+            new Observation("DHB_UNIT", "orderLine.sourceUnit", "桶", "桶"),
+            new Observation("DHB_UNIT", "orderLine.sourceUnit", "份", "份"),
+            new Observation("DHB_UNIT", "orderLine.sourceUnit", "套", "套"),
+            new Observation("DHB_UNIT", "orderLine.sourceUnit", "床", "床"),
+            new Observation("DHB_UNIT", "orderLine.sourceUnit", "副", "副"),
+            new Observation("DHB_UNIT", "orderLine.sourceUnit", "瓶", "瓶"),
+            new Observation("DHB_UNIT", "orderLine.sourceUnit", "条", "条"),
+            new Observation("DHB_UNIT", "orderLine.sourceUnit", "颗", "颗"),
+            new Observation("DHB_UNIT", "orderLine.sourceUnit", "个", "个"),
+            new Observation("DHB_UNIT", "orderLine.sourceUnit", "件", "件"));
+    private static final List<Observation> UNIT_DICTIONARY_ITEMS = unitDictionaryItems();
     private static final Map<String, String> UNIT_ALIASES = Map.ofEntries(
             Map.entry("箱", "BOX"),
             Map.entry("桶", "BUCKET"),
@@ -129,7 +183,13 @@ public final class DhbOrderSyncService {
             Map.entry("套", "SET"),
             Map.entry("床", "BED"),
             Map.entry("副", "PAIR"),
+            Map.entry("瓶", "BOTTLE"),
+            Map.entry("条", "STRIP"),
+            Map.entry("颗", "GRAIN"),
+            Map.entry("个", "PIECE"),
             Map.entry("件", "PIECE"));
+    private static final Set<String> SUPPORTED_PRODUCT_UNIT_CODES =
+            Set.copyOf(UNIT_ALIASES.values());
 
     private final DhbSyncStore store;
     private final DhbClient client;
@@ -138,6 +198,8 @@ public final class DhbOrderSyncService {
     private final IamDhbStaffSyncClient iamStaffClient;
     private final BusinessDictionaryBatchClient dictionaryClient;
     private final int detailConcurrency;
+    private final ProductMediaStorage fundAttachmentStorage;
+    private final DhbAttachmentObjectKeyFactory fundAttachmentKeyFactory;
 
     public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
                                OrderSalesOrderProjectionClient orderProjectionClient,
@@ -167,6 +229,18 @@ public final class DhbOrderSyncService {
                                IamDhbStaffSyncClient iamStaffClient,
                                BusinessDictionaryBatchClient dictionaryClient,
                                int detailConcurrency) {
+        this(store, client, orderProjectionClient, erpStockOutProjectionClient, iamStaffClient,
+                dictionaryClient, detailConcurrency, null, null);
+    }
+
+    public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
+                               OrderSalesOrderProjectionClient orderProjectionClient,
+                               ErpStockOutProjectionClient erpStockOutProjectionClient,
+                               IamDhbStaffSyncClient iamStaffClient,
+                               BusinessDictionaryBatchClient dictionaryClient,
+                               int detailConcurrency,
+                               ProductMediaStorage fundAttachmentStorage,
+                               DhbAttachmentObjectKeyFactory fundAttachmentKeyFactory) {
         this.store = Objects.requireNonNull(store, "store cannot be null");
         this.client = Objects.requireNonNull(client, "client cannot be null");
         this.orderProjectionClient = Objects.requireNonNull(orderProjectionClient,
@@ -175,6 +249,8 @@ public final class DhbOrderSyncService {
         this.iamStaffClient = Objects.requireNonNull(iamStaffClient, "iamStaffClient cannot be null");
         this.dictionaryClient = dictionaryClient;
         this.detailConcurrency = normalizeDetailConcurrency(detailConcurrency);
+        this.fundAttachmentStorage = fundAttachmentStorage;
+        this.fundAttachmentKeyFactory = fundAttachmentKeyFactory;
     }
 
     public SyncRunView runOrderPull(CallerIdentity caller, UUID taskId, SyncRunCommand command) {
@@ -188,52 +264,74 @@ public final class DhbOrderSyncService {
 
         SyncTaskContext task = store.loadTask(caller.tenantId(), taskId);
         validateTask(task);
-        Window window = resolveWindow(command);
-        int pageSize = resolvePageSize(task, command);
-        int pageLimit = resolveMaxPages(maxPages);
+        ReplayTarget replayTarget = replayTarget(command);
+        Window window = replayTarget == null ? resolveWindow(task, command) : null;
+        int pageSize = replayTarget == null ? resolvePageSize(task, command) : DEFAULT_PAGE_SIZE;
+        int pageLimit = replayTarget == null ? resolveMaxPages(maxPages) : 1;
         Instant windowFrom = windowFrom(window);
         Instant windowTo = windowTo(window);
         SyncRunStarted started = store.beginRun(caller.tenantId(), caller.userId(), taskId,
                 windowFrom, windowTo);
-        store.recordSyncLog(caller.tenantId(), taskId, started.runId(), "INFO",
-                "订货宝订单同步开始：Raw落库、映射校验、投影到Order销售订单 detailConcurrency="
-                        + detailConcurrency, null);
-        ensureProductUnitDictionary(caller.tenantId(), taskId, started.runId());
+        store.resolveRecoveredProjectionIssues(caller.tenantId(), caller.userId());
+        if (replayTarget == null) {
+            store.recordSyncLog(caller.tenantId(), taskId, started.runId(), "INFO",
+                    "订货宝订单同步开始：Raw落库、映射校验、投影到Order销售订单 detailConcurrency="
+                            + detailConcurrency, null);
+            ensureProductUnitDictionary(caller.tenantId(), taskId, started.runId());
+        } else {
+            store.recordSyncLog(caller.tenantId(), taskId, started.runId(), "INFO",
+                    "订货宝单对象重放开始 sourceObjectType=" + replayTarget.sourceObjectType()
+                            + " sourceId=" + replayTarget.sourceId(), null);
+        }
 
         Counts counts = new Counts();
         Map<String, StaffProjection> staffCache = new ConcurrentHashMap<>();
         Map<String, Object> sourceOrderLocks = new ConcurrentHashMap<>();
         MAPPING_LOOKUP_CACHE.set(new ConcurrentHashMap<>());
+        UNIT_DICTIONARY_SYNC_CACHE.set(ConcurrentHashMap.newKeySet());
+        ExecutorService detailExecutor = newDetailExecutor();
         try {
-            PageRequest pageRequest = PageRequest.first(pageSize);
-            int pages = 0;
-            while (true) {
-                Page<OrderSummary> page = client.getOrders(task.connector(), new OrderQuery(
-                        pageRequest, "all", null, timeWindow(window),
-                        "all", "all", null, null));
-                pages++;
-                counts.fetched += page.items().size();
-                store.persistOrderPage(caller.tenantId(), taskId, started.runId(),
-                        page.items(), Instant.now());
-                counts.addAll(projectDetails("order-detail", page.items(),
-                        order -> projectOrder(caller, task, started.runId(), order, staffCache)));
-                if (!page.hasNext() || pages >= pageLimit) {
-                    break;
+            if (replayTarget == null) {
+                PageRequest pageRequest = PageRequest.first(pageSize);
+                int pages = 0;
+                while (true) {
+                    Page<OrderSummary> page = client.getOrders(task.connector(), new OrderQuery(
+                            pageRequest, "all", null, timeWindow(window),
+                            "all", "all", null, null));
+                    pages++;
+                    counts.fetched += page.items().size();
+                    store.persistOrderPage(caller.tenantId(), taskId, started.runId(),
+                            page.items(), Instant.now());
+                    counts.addAll(projectDetails(detailExecutor, "order-detail", page.items(),
+                            order -> projectOrder(caller, task, started.runId(), order, staffCache)));
+                    if (!page.hasNext() || pages >= pageLimit) {
+                        break;
+                    }
+                    pageRequest = page.nextRequest();
                 }
-                pageRequest = page.nextRequest();
+                syncTransferOrders(caller, task, started.runId(), window, pageSize, pageLimit, counts,
+                        staffCache, detailExecutor);
+                syncShipments(caller, task, started.runId(), window, pageSize, pageLimit, counts,
+                        staffCache, sourceOrderLocks, detailExecutor);
+                syncReceipts(caller, task, started.runId(), window, pageSize, pageLimit, counts);
+                syncPayments(caller, task, started.runId(), window, pageSize, pageLimit, counts);
+            } else {
+                counts.fetched = 1;
+                counts.add(projectReplayTarget(caller, task, started.runId(), replayTarget,
+                        staffCache, sourceOrderLocks));
             }
-            syncShipments(caller, task, started.runId(), window, pageSize, pageLimit, counts,
-                    staffCache, sourceOrderLocks);
-            syncReceipts(caller, task, started.runId(), window, pageSize, pageLimit, counts);
-            syncPayments(caller, task, started.runId(), window, pageSize, pageLimit, counts);
 
             String status = counts.rejected == 0 ? "SUCCEEDED" : "PARTIAL";
-            String errorCode = counts.rejected == 0 ? null : "DHB_ORDER_PROJECTION_PARTIAL";
+            String errorCode = counts.rejected == 0 ? null
+                    : replayTarget == null ? "DHB_ORDER_PROJECTION_PARTIAL" : "DHB_ORDER_REPLAY_PARTIAL";
             String errorMessage = counts.rejected == 0 ? null
-                    : "部分订货宝订单缺少客户/商品/SKU映射或无法映射到自研销售订单，checkpoint 未推进";
+                    : replayTarget == null
+                    ? "部分订货宝订单缺少客户/商品/SKU映射或无法映射到自研销售订单，checkpoint 未推进"
+                    : "订货宝单对象重放未完成，checkpoint 未推进";
             store.recordSyncLog(caller.tenantId(), taskId, started.runId(),
                     counts.rejected == 0 ? "INFO" : "WARN",
-                    "订货宝订单同步结束 status=" + status + " fetched=" + counts.fetched
+                    (replayTarget == null ? "订货宝订单同步结束 " : "订货宝单对象重放结束 ")
+                            + "status=" + status + " fetched=" + counts.fetched
                             + " accepted=" + counts.accepted + " duplicate=" + counts.duplicate
                             + " rejected=" + counts.rejected,
                     errorCode);
@@ -259,7 +357,9 @@ public final class DhbOrderSyncService {
             }
             throw error;
         } finally {
+            shutdownDetailExecutor(detailExecutor);
             MAPPING_LOOKUP_CACHE.remove();
+            UNIT_DICTIONARY_SYNC_CACHE.remove();
         }
     }
 
@@ -268,19 +368,73 @@ public final class DhbOrderSyncService {
         try {
             Audit audit = dictionaryClient.sync(BusinessDictionaryBatchClient.serviceCaller(
                     "rigour-integration-migration-service", "DHB_ORDER_DICTIONARY_SYNC", tenantId),
-                    "ORDER", PRODUCT_UNIT_DICTIONARY_ITEMS);
+                    "ORDER", UNIT_DICTIONARY_ITEMS);
             if (audit.unmapped() > 0) {
                 store.recordSyncLog(tenantId, taskId, runId, "WARN",
-                        "订货宝订单同步字典补齐存在未解析项 count=" + audit.unmapped()
+                        "订货宝订单同步单位字典补齐存在未解析项 count=" + audit.unmapped()
                                 + " issues=" + audit.issues(), "DHB_ORDER_DICTIONARY_SYNC_PARTIAL");
             } else {
                 store.recordSyncLog(tenantId, taskId, runId, "INFO",
-                        "订货宝订单同步字典补齐完成 revisions=" + audit.revisions(), null);
+                        "订货宝订单同步单位字典补齐完成 revisions=" + audit.revisions(), null);
             }
         } catch (RuntimeException error) {
             store.recordSyncLog(tenantId, taskId, runId, "WARN",
-                    "订货宝订单同步字典补齐不可用 reason=" + safeMessage(error),
+                    "订货宝订单同步单位字典补齐不可用 reason=" + safeMessage(error),
                     "DHB_ORDER_DICTIONARY_SYNC_UNAVAILABLE");
+        }
+    }
+
+    private void syncObservedUnitDictionaries(UUID tenantId, UUID taskId, UUID runId,
+                                              String fieldCode, Map<String, Object> payload) {
+        if (dictionaryClient == null) return;
+        List<Observation> observations = sourceUnitDictionaryObservations(fieldCode, payload);
+        if (observations.isEmpty()) return;
+        Set<String> synced = UNIT_DICTIONARY_SYNC_CACHE.get();
+        if (synced != null) {
+            observations = observations.stream()
+                    .filter(value -> synced.add(value.dictionaryCode() + '\0' + value.sourceValue()))
+                    .toList();
+            if (observations.isEmpty()) return;
+        }
+        try {
+            Audit audit = dictionaryClient.sync(BusinessDictionaryBatchClient.serviceCaller(
+                    "rigour-integration-migration-service", "DHB_ORDER_DICTIONARY_SYNC", tenantId),
+                    "ORDER", observations);
+            if (audit.unmapped() > 0) {
+                store.recordSyncLog(tenantId, taskId, runId, "WARN",
+                        "订货宝订单同步发现未解析单位来源值 count=" + audit.unmapped()
+                                + " issues=" + audit.issues(),
+                        "DHB_ORDER_UNIT_SOURCE_SYNC_PARTIAL");
+            }
+        } catch (RuntimeException error) {
+            store.recordSyncLog(tenantId, taskId, runId, "WARN",
+                    "订货宝订单同步单位来源值补齐不可用 reason=" + safeMessage(error),
+                    "DHB_ORDER_UNIT_SOURCE_SYNC_UNAVAILABLE");
+        }
+    }
+
+    private static List<Observation> sourceUnitDictionaryObservations(
+            String fieldCode, Map<String, Object> payload) {
+        Map<String, Object> content = map(payload == null ? null : mapObject(payload.get("detail")));
+        List<Map<String, Object>> rows = rows(content,
+                "OrderProduct", "OrderProducts", "OrderGoods", "Goods", "Products",
+                "body", "Body", "list", "details");
+        if (rows.isEmpty()) return List.of();
+        List<Observation> observations = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            addSourceUnitObservation(observations, fieldCode, first(row, SOURCE_UNIT_FIELD_NAMES));
+        }
+        return List.copyOf(observations);
+    }
+
+    private static void addSourceUnitObservation(List<Observation> observations,
+                                                 String fieldCode, String sourceUnit) {
+        String rawUnit = text(sourceUnit);
+        if (rawUnit == null) return;
+        observations.add(new Observation("DHB_UNIT", fieldCode, rawUnit, rawUnit));
+        String productUnitCode = productUnitCode(rawUnit);
+        if (productUnitCode != null) {
+            observations.add(new Observation("PRODUCT_UNIT", fieldCode, productUnitCode, rawUnit));
         }
     }
 
@@ -298,12 +452,14 @@ public final class DhbOrderSyncService {
 
         RawObjectPersistResult raw = null;
         try {
-            OrderDetail detail = client.getOrderContent(task.connector(), sourceOrderNo, false, false);
+            OrderDetail detail = client.getOrderContent(task.connector(), sourceOrderNo);
             Map<String, Object> payload = combinedPayload(summary, detail);
             raw = store.persistRawObject(caller.tenantId(), task.connectorId(), runId,
                     RAW_OBJECT_ORDER_DETAIL, sourceOrderNo,
                     summary == null || summary.updatedAt() == null ? null : summary.updatedAt().toString(),
                     summary == null ? null : summary.updatedAt(), payload, Instant.now());
+            syncObservedUnitDictionaries(caller.tenantId(), task.taskId(), runId,
+                    "orderLine.sourceUnit", payload);
             ExternalObjectMapping existing = store.findActiveMapping(caller.tenantId(), task.connectorId(),
                     SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
             SalesOrderDetailView current = existing == null || existing.internalObjectId() == null
@@ -315,8 +471,9 @@ public final class DhbOrderSyncService {
                     staffCache);
             if (existing != null && existing.internalObjectId() != null
                     && Objects.equals(existing.payloadChecksum(), raw.payloadChecksum())
-                    && projectionComplete(current, prepared.command())) {
+                    && projectionComplete(current, prepared.command(), prepared.cancelled())) {
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
                 store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "DEBUG",
                         "订货宝订单未变化，跳过业务投影 orderNo=" + sourceOrderNo, null);
                 return ProjectionOutcome.DUPLICATE;
@@ -329,6 +486,7 @@ public final class DhbOrderSyncService {
                             projected.orderNo(), "ACTIVE", runId, Instant.now(), raw.payloadChecksum(),
                             null, "订货宝订单已投影到自研销售订单"));
             store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+            resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
             store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
                     "订货宝订单已投影到Order销售订单 sourceOrderNo=" + sourceOrderNo
                             + " salesOrderNo=" + projected.orderNo(),
@@ -385,10 +543,146 @@ public final class DhbOrderSyncService {
         }
     }
 
+    private void syncTransferOrders(CallerIdentity caller, SyncTaskContext task, UUID runId,
+                                    Window window, int pageSize, int pageLimit, Counts counts,
+                                    Map<String, StaffProjection> staffCache,
+                                    ExecutorService detailExecutor) {
+        PageRequest pageRequest = PageRequest.first(pageSize);
+        int pages = 0;
+        try {
+            while (true) {
+                Page<TransferOrder> page = client.getTransferOrders(task.connector(),
+                        new TransferOrderQuery(pageRequest, null, null, null,
+                                null, null, null, null, timeWindow(window)));
+                pages++;
+                counts.fetched += page.items().size();
+                counts.addAll(projectDetails(detailExecutor, "transfer-order-detail", page.items(),
+                        transfer -> projectTransferOrder(caller, task, runId, transfer, staffCache)));
+                if (!page.hasNext() || pages >= pageLimit) {
+                    break;
+                }
+                pageRequest = page.nextRequest();
+            }
+        } catch (RuntimeException error) {
+            counts.rejected++;
+            String message = "订货宝调拨主单补全不可用，已保留正式API同步但本次不能保证调拨完整："
+                    + safeMessage(error);
+            store.recordReconciliationCase(caller.tenantId(), caller.userId(),
+                    new ReconciliationCaseWrite(runId, SOURCE_OBJECT_ERP_TRANSFER_ORDER,
+                            "DHB_ADMIN_TRANSFERS", "SOURCE_AVAILABILITY",
+                            Map.of("required", "DHB admin transfers read source"),
+                            Map.of("error", safeMessage(error)), "ERROR", message));
+            store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "WARN",
+                    message, "DHB_TRANSFER_MASTER_SOURCE_UNAVAILABLE");
+        }
+    }
+
+    private ProjectionOutcome projectTransferOrder(CallerIdentity caller, SyncTaskContext task,
+                                                   UUID runId, TransferOrder summary,
+                                                   Map<String, StaffProjection> staffCache) {
+        Map<String, Object> summaryAttributes = map(summary == null ? null : summary.attributes());
+        String sourceTransferId = firstNonBlank(
+                summary == null ? null : summary.sourceId(),
+                first(summaryAttributes, "transfer_id", "id"),
+                summary == null ? null : summary.transferNumber());
+        String summaryTransferNo = firstNonBlank(
+                summary == null ? null : summary.transferNumber(),
+                first(summaryAttributes, "transfer_num", "transferNo", "transfer_no"),
+                sourceTransferId);
+        if (blank(sourceTransferId) && blank(summaryTransferNo)) {
+            store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "WARN",
+                    "订货宝调拨单缺少单号，已拒绝投影", "DHB_TRANSFER_NO_MISSING");
+            return ProjectionOutcome.REJECTED;
+        }
+
+        RawObjectPersistResult raw = null;
+        String sourceTransferNo = summaryTransferNo;
+        try {
+            TransferOrder detail = client.getTransferOrder(task.connector(),
+                    firstNonBlank(sourceTransferId, summaryTransferNo));
+            sourceTransferNo = firstNonBlank(
+                    detail == null ? null : detail.transferNumber(),
+                    summaryTransferNo,
+                    detail == null ? null : detail.sourceId(),
+                    sourceTransferId);
+            if (blank(sourceTransferNo)) {
+                throw new ProjectionRejected("DHB_TRANSFER_NO_MISSING",
+                        "订货宝调拨单缺少单号，不能生成ERP调拨单",
+                        "DETAIL", Map.of("required", "transferNumber"),
+                        Map.of("sourceTransferId", sourceTransferId));
+            }
+            Map<String, Object> payload = combinedTransferPayload(summary, detail);
+            Instant sourceUpdatedAt = firstNonNull(
+                    detail == null ? null : detail.reviewedAt(),
+                    detail == null ? null : detail.createdAt(),
+                    summary == null ? null : summary.reviewedAt(),
+                    summary == null ? null : summary.createdAt());
+            raw = store.persistRawObject(caller.tenantId(), task.connectorId(), runId,
+                    RAW_OBJECT_TRANSFER_ORDER, sourceTransferNo,
+                    sourceUpdatedAt == null ? null : sourceUpdatedAt.toString(),
+                    sourceUpdatedAt, payload, Instant.now());
+            syncObservedUnitDictionaries(caller.tenantId(), task.taskId(), runId,
+                    "transferLine.sourceUnit", payload);
+            ExternalObjectMapping existing = store.findActiveMapping(caller.tenantId(), task.connectorId(),
+                    SOURCE_OBJECT_ERP_TRANSFER_ORDER, sourceTransferNo);
+            if (existing == null) {
+                existing = legacyTransferMapping(caller, task, detail);
+            }
+            PreparedTransferOrder prepared = prepareTransferOrder(caller.tenantId(), task.connectorId(),
+                    sourceTransferNo, detail, payload, staffCache);
+            ProjectedTransferOrder projected = projectExternalTransferOrder(caller, task, runId,
+                    raw, existing, prepared);
+            boolean changed = !projected.duplicate();
+            for (TransferStockOutVoucher voucher : detail.stockOutVouchers()) {
+                if (Boolean.TRUE.equals(voucher.cancelled())) {
+                    continue;
+                }
+                String sourceVoucherNo = firstNonBlank(voucher.voucherNumber(), voucher.sourceId());
+                ProjectedTransferStockOut stockOut = projectExternalTransferStockOut(caller, task, runId, raw,
+                        blank(sourceVoucherNo) ? null : store.findActiveMapping(caller.tenantId(), task.connectorId(),
+                                SOURCE_OBJECT_ERP_STOCK_OUT, sourceVoucherNo),
+                        prepareTransferStockOutFromTransfer(caller.tenantId(), task.connectorId(),
+                                prepared, projected, voucher));
+                changed = changed || !stockOut.duplicate();
+            }
+            for (TransferStockInVoucher voucher : detail.stockInVouchers()) {
+                if (Boolean.TRUE.equals(voucher.cancelled())) {
+                    continue;
+                }
+                String sourceVoucherNo = firstNonBlank(voucher.voucherNumber(), voucher.sourceId());
+                ProjectedTransferStockIn stockIn = projectExternalTransferStockIn(caller, task, runId, raw,
+                        blank(sourceVoucherNo) ? null : store.findActiveMapping(caller.tenantId(), task.connectorId(),
+                                SOURCE_OBJECT_ERP_STOCK_IN, sourceVoucherNo),
+                        prepareTransferStockInFromTransfer(prepared, projected, voucher));
+                changed = changed || !stockIn.duplicate();
+            }
+            store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+            store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
+                    "订货宝调拨单已投影到ERP sourceTransferNo=" + sourceTransferNo
+                            + " transferNo=" + projected.transferNo()
+                            + " stockOutVouchers=" + detail.stockOutVouchers().size()
+                            + " stockInVouchers=" + detail.stockInVouchers().size(),
+                    null);
+            return changed ? ProjectionOutcome.ACCEPTED : ProjectionOutcome.DUPLICATE;
+        } catch (ProjectionRejected rejected) {
+            recordRejected(caller, task, runId, raw, SOURCE_OBJECT_ERP_TRANSFER_ORDER,
+                    sourceTransferNo, rejected.code(), rejected.getMessage(), rejected.checkType(),
+                    rejected.expected(), rejected.actual());
+            return ProjectionOutcome.REJECTED;
+        } catch (RuntimeException error) {
+            recordRejected(caller, task, runId, raw, SOURCE_OBJECT_ERP_TRANSFER_ORDER,
+                    sourceTransferNo, "DHB_TRANSFER_PROJECTION_FAILED",
+                    safeMessage(error), "PROJECTION", Map.of("sourceTransferNo", safeValue(sourceTransferNo)),
+                    Map.of("error", safeMessage(error)));
+            return ProjectionOutcome.REJECTED;
+        }
+    }
+
     private void syncShipments(CallerIdentity caller, SyncTaskContext task, UUID runId,
                                Window window, int pageSize, int pageLimit, Counts counts,
                                Map<String, StaffProjection> staffCache,
-                               Map<String, Object> sourceOrderLocks) {
+                               Map<String, Object> sourceOrderLocks,
+                               ExecutorService detailExecutor) {
         PageRequest pageRequest = PageRequest.first(pageSize);
         int pages = 0;
         while (true) {
@@ -397,7 +691,7 @@ public final class DhbOrderSyncService {
                             timeWindow(window), null, null, null, null));
             pages++;
             counts.fetched += page.items().size();
-            counts.addAll(projectDetails("shipment-detail", page.items(),
+            counts.addAll(projectDetails(detailExecutor, "shipment-detail", page.items(),
                     shipment -> projectShipment(caller, task, runId, shipment,
                             staffCache, sourceOrderLocks)));
             if (!page.hasNext() || pages >= pageLimit) {
@@ -407,10 +701,37 @@ public final class DhbOrderSyncService {
         }
     }
 
+    private ProjectionOutcome projectReplayTarget(CallerIdentity caller, SyncTaskContext task,
+                                                  UUID runId, ReplayTarget replayTarget,
+                                                  Map<String, StaffProjection> staffCache,
+                                                  Map<String, Object> sourceOrderLocks) {
+        return switch (replayTarget.sourceObjectType()) {
+            case SOURCE_OBJECT_ERP_STOCK_OUT, SOURCE_OBJECT_SALES_SHIPMENT ->
+                    projectShipment(caller, task, runId, replayShipmentSummary(replayTarget.sourceId()),
+                            staffCache, sourceOrderLocks, replayTarget.sourceObjectType());
+            default -> throw new IllegalArgumentException(
+                    "当前订货宝单对象重放暂不支持 sourceObjectType=" + replayTarget.sourceObjectType());
+        };
+    }
+
+    private static Shipment replayShipmentSummary(String sourceId) {
+        return new Shipment(sourceId, sourceId, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null,
+                null, null, null, Map.of("ShipsNum", sourceId));
+    }
+
     private ProjectionOutcome projectShipment(CallerIdentity caller, SyncTaskContext task,
                                               UUID runId, Shipment summary,
                                               Map<String, StaffProjection> staffCache,
                                               Map<String, Object> sourceOrderLocks) {
+        return projectShipment(caller, task, runId, summary, staffCache, sourceOrderLocks, null);
+    }
+
+    private ProjectionOutcome projectShipment(CallerIdentity caller, SyncTaskContext task,
+                                              UUID runId, Shipment summary,
+                                              Map<String, StaffProjection> staffCache,
+                                              Map<String, Object> sourceOrderLocks,
+                                              String expectedSourceObjectType) {
         String sourceShipmentNo = firstNonBlank(
                 summary == null ? null : summary.shipmentNumber(),
                 summary == null ? null : summary.sourceId(),
@@ -422,7 +743,9 @@ public final class DhbOrderSyncService {
         }
 
         RawObjectPersistResult raw = null;
-        String rejectedSourceObjectType = SOURCE_OBJECT_SALES_SHIPMENT;
+        String replaySourceObjectType = text(expectedSourceObjectType);
+        String rejectedSourceObjectType = replaySourceObjectType == null
+                ? SOURCE_OBJECT_SALES_SHIPMENT : replaySourceObjectType;
         try {
             ShipmentDetail detail = client.getShipmentContent(task.connector(), sourceShipmentNo);
             Map<String, Object> payload = combinedShipmentPayload(summary, detail);
@@ -430,14 +753,27 @@ public final class DhbOrderSyncService {
                     RAW_OBJECT_SHIPMENT_DETAIL, sourceShipmentNo,
                     summary == null || summary.updatedAt() == null ? null : summary.updatedAt().toString(),
                     summary == null ? null : summary.updatedAt(), payload, Instant.now());
+            syncObservedUnitDictionaries(caller.tenantId(), task.taskId(), runId,
+                    "shipmentLine.sourceUnit", payload);
             String stockOutTypeCode = stockOutTypeCode(summary, payload);
+            String actualSourceObjectType = sourceObjectTypeForShipment(stockOutTypeCode);
+            if (replaySourceObjectType != null
+                    && !replaySourceObjectType.equals(actualSourceObjectType)) {
+                throw new ProjectionRejected("DHB_REPLAY_SOURCE_OBJECT_TYPE_MISMATCH",
+                        "订货宝单对象重放来源类型不匹配",
+                        "SOURCE_TYPE",
+                        Map.of("sourceObjectType", replaySourceObjectType),
+                        Map.of("sourceObjectType", actualSourceObjectType,
+                                "sourceShipmentNo", sourceShipmentNo,
+                                "stockOutTypeCode", safeValue(stockOutTypeCode)));
+            }
             ExternalObjectMapping existingStockOut = store.findActiveMapping(caller.tenantId(), task.connectorId(),
                     SOURCE_OBJECT_ERP_STOCK_OUT, sourceShipmentNo);
             if ("TRANSFER".equals(stockOutTypeCode)) {
                 rejectedSourceObjectType = SOURCE_OBJECT_ERP_STOCK_OUT;
                 ProjectedTransferStockOut projected = projectExternalTransferStockOut(caller, task, runId, raw,
                         existingStockOut, prepareTransferStockOut(caller.tenantId(), task.connectorId(),
-                                sourceShipmentNo, summary, detail, payload));
+                                sourceShipmentNo, summary, detail, payload, staffCache));
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
                 store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
                         "订货宝调拨出库已投影到ERP调拨单和出库单 shipmentNo=" + sourceShipmentNo
@@ -471,6 +807,7 @@ public final class DhbOrderSyncService {
                     && Objects.equals(existing.payloadChecksum(), raw.payloadChecksum())
                     && shipmentProjectionComplete(current)) {
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_SHIPMENT, sourceShipmentNo);
                 store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "DEBUG",
                         "订货宝发货单未变化，跳过业务投影 shipmentNo=" + sourceShipmentNo, null);
                 return ProjectionOutcome.DUPLICATE;
@@ -481,7 +818,7 @@ public final class DhbOrderSyncService {
             PreparedSalesShipment prepared = prepareSalesShipment(caller.tenantId(), task.connectorId(),
                     sourceShipmentNo, summary, detail, payload);
             ProjectedStockOut projectedStockOut = projectExternalStockOut(caller, task, runId, raw,
-                    existingStockOut, prepareSalesStockOut(sourceShipmentNo, prepared));
+                    existingStockOut, prepareSalesStockOut(task.connectorId(), sourceShipmentNo, prepared));
             prepared = prepared.withStockOut(projectedStockOut);
             SalesShipmentDetailView projected =
                     upsertSalesShipment(caller.tenantId(), existing, current, prepared);
@@ -491,6 +828,7 @@ public final class DhbOrderSyncService {
                             projected.shipmentNo(), "ACTIVE", runId, Instant.now(), raw.payloadChecksum(),
                             null, "订货宝发货单已投影到自研销售发货单"));
             store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+            resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_SHIPMENT, sourceShipmentNo);
             store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
                     "订货宝发货单已投影到Order销售发货 shipmentNo=" + sourceShipmentNo
                             + " salesShipmentNo=" + projected.shipmentNo()
@@ -542,12 +880,16 @@ public final class DhbOrderSyncService {
                     : store.findActiveMapping(caller.tenantId(), task.connectorId(),
                     SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
             if (orderMapping == null || orderMapping.internalObjectId() == null) {
-                store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
                 store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
-                        "订货宝收款单已投影到资金收款单，未关联销售订单，跳过销售回款核销 receiptNo="
+                        "订货宝收款单已投影到资金收款单，未关联销售订单，等待订单映射后重放 receiptNo="
                                 + sourceReceiptNo + " sourceOrderNo=" + sourceOrderNo,
-                        "DHB_RECEIPT_ORDER_MAPPING_SKIPPED");
-                return ProjectionOutcome.ACCEPTED;
+                        "DHB_RECEIPT_ORDER_MAPPING_PENDING");
+                recordPaymentRejected(caller, task, runId, raw, sourceReceiptNo,
+                        "DHB_RECEIPT_ORDER_MAPPING_PENDING",
+                        "订货宝收款单已落资金收款单，但缺少销售订单映射，需映射恢复后重放销售回款",
+                        "MAPPING", Map.of("required", "SALES_ORDER mapping"),
+                        Map.of("sourceReceiptNo", sourceReceiptNo, "sourceOrderNo", safeValue(sourceOrderNo)));
+                return ProjectionOutcome.REJECTED;
             }
             ExternalObjectMapping existing = store.findActiveMapping(caller.tenantId(), task.connectorId(),
                     SOURCE_OBJECT_SALES_PAYMENT, sourceReceiptNo);
@@ -559,6 +901,7 @@ public final class DhbOrderSyncService {
                     && Objects.equals(existing.payloadChecksum(), raw.payloadChecksum())
                     && paymentProjectionComplete(current)) {
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_PAYMENT, sourceReceiptNo);
                 store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "DEBUG",
                         "订货宝收款单未变化，跳过业务投影 receiptNo=" + sourceReceiptNo, null);
                 return ProjectionOutcome.DUPLICATE;
@@ -574,6 +917,7 @@ public final class DhbOrderSyncService {
                             projected.paymentNo(), "ACTIVE", runId, Instant.now(), raw.payloadChecksum(),
                             null, "订货宝收款单已投影到自研销售回款记录"));
             store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+            resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_PAYMENT, sourceReceiptNo);
             store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
                     "订货宝收款单已投影到Order销售回款 receiptNo=" + sourceReceiptNo
                             + " paymentNo=" + projected.paymentNo(),
@@ -623,12 +967,13 @@ public final class DhbOrderSyncService {
                     && Objects.equals(existing.payloadChecksum(), raw.payloadChecksum())
                     && fundDocumentProjectionComplete(current, "PAYMENT")) {
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                resolveProjectionIssues(caller, SOURCE_OBJECT_FUND_PAYMENT, sourcePaymentNo);
                 store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "DEBUG",
                         "订货宝付款单未变化，跳过业务投影 paymentNo=" + sourcePaymentNo, null);
                 return ProjectionOutcome.DUPLICATE;
             }
 
-            PreparedFundDocument prepared = preparePaymentFundDocument(caller.tenantId(), task.connectorId(),
+            PreparedFundDocument prepared = preparePaymentFundDocument(task.connector(),
                     sourcePaymentNo, payment, attributes);
             FundDocumentDetailView projected =
                     upsertFundDocument(caller.tenantId(), existing, current, prepared);
@@ -638,6 +983,7 @@ public final class DhbOrderSyncService {
                             projected.documentNo(), "ACTIVE", runId, Instant.now(), raw.payloadChecksum(),
                             null, "订货宝付款单已投影到自研资金付款单"));
             store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+            resolveProjectionIssues(caller, SOURCE_OBJECT_FUND_PAYMENT, sourcePaymentNo);
             store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
                     "订货宝付款单已投影到Order资金付款单 paymentNo=" + sourcePaymentNo
                             + " documentNo=" + projected.documentNo(),
@@ -665,7 +1011,7 @@ public final class DhbOrderSyncService {
         if (current != null) {
             if ("CANCELLED".equalsIgnoreCase(current.orderStatusCode())) {
                 if (prepared.cancelled()) {
-                    return current;
+                    return ensureSalesOrderSourceProjection(serviceCaller, current, prepared);
                 }
                 throw new ProjectionRejected("DHB_ORDER_ALREADY_CANCELLED",
                         "已取消的我方销售订单不能被订货宝来源重新打开",
@@ -674,9 +1020,10 @@ public final class DhbOrderSyncService {
             }
             if (!salesOrderDraft(current)) {
                 if (prepared.cancelled()) {
-                    return orderProjectionClient.cancelSalesOrder(serviceCaller, current.id(), current.revision());
+                    current = orderProjectionClient.cancelSalesOrderBySource(
+                            serviceCaller, current.id(), current.revision());
                 }
-                return current;
+                return ensureSalesOrderSourceProjection(serviceCaller, current, prepared);
             }
         }
         SalesOrderCommand command = withRevision(prepared.command(),
@@ -685,9 +1032,28 @@ public final class DhbOrderSyncService {
                 ? orderProjectionClient.createSalesOrder(serviceCaller, command)
                 : orderProjectionClient.updateSalesOrder(serviceCaller, current.id(), command);
         if (prepared.cancelled() && !"CANCELLED".equalsIgnoreCase(saved.orderStatusCode())) {
-            saved = orderProjectionClient.cancelSalesOrder(serviceCaller, saved.id(), saved.revision());
+            saved = orderProjectionClient.cancelSalesOrderBySource(serviceCaller, saved.id(), saved.revision());
         }
-        return saved;
+        return ensureSalesOrderSourceProjection(serviceCaller, saved, prepared);
+    }
+
+    private SalesOrderDetailView ensureSalesOrderSourceProjection(
+            CallerIdentity serviceCaller, SalesOrderDetailView current, PreparedSalesOrder prepared) {
+        SalesOrderCommand expected = prepared.command();
+        if (current == null || salesOrderSourceProjectionComplete(current, expected)) {
+            return current;
+        }
+        return orderProjectionClient.updateSalesOrderSourceProjection(serviceCaller, current.id(),
+                new SalesOrderSourceProjectionCommand(
+                        expected.sourceStatusCode(),
+                        expected.sourceCreatorId(),
+                        expected.sourceCreatorStaffCode(),
+                        expected.sourceCreatorName(),
+                        expected.ownerSalesUserId(),
+                        expected.ownerSalesName(),
+                        expected.ownerStaffCode(),
+                        expected.ownerStaffNameSnapshot(),
+                        current.revision()));
     }
 
     private void ensureSalesOrderMapping(CallerIdentity caller, SyncTaskContext task, UUID runId,
@@ -766,7 +1132,8 @@ public final class DhbOrderSyncService {
                 : orderProjectionClient.updateSalesShipment(serviceCaller, current.id(), command);
     }
 
-    private static boolean projectionComplete(SalesOrderDetailView current, SalesOrderCommand expected) {
+    private static boolean projectionComplete(
+            SalesOrderDetailView current, SalesOrderCommand expected, boolean sourceCancelled) {
         if (current == null
                 || current.customerId() == null
                 || blank(current.customerNameSnapshot())
@@ -782,7 +1149,17 @@ public final class DhbOrderSyncService {
                         || line.unitPrice() == null)) {
             return false;
         }
+        if (sourceCancelled
+                && (!"CANCELLED".equalsIgnoreCase(current.orderStatusCode())
+                || !"CANCELLED".equalsIgnoreCase(current.paymentStatusCode())
+                || current.unpaidAmount() == null
+                || current.unpaidAmount().compareTo(BigDecimal.ZERO) != 0)) {
+            return false;
+        }
         if (expected == null) return true;
+        if (!salesOrderSourceProjectionComplete(current, expected)) {
+            return false;
+        }
         if (!blank(expected.regionCode())
                 && !Objects.equals(current.regionCode(), expected.regionCode())) {
             return false;
@@ -799,6 +1176,23 @@ public final class DhbOrderSyncService {
             if (!lineMatches(current.lines().get(i), expectedLines.get(i))) return false;
         }
         return true;
+    }
+
+    private static boolean salesOrderSourceProjectionComplete(
+            SalesOrderDetailView current, SalesOrderCommand expected) {
+        if (current == null || expected == null) return true;
+        return matchesExpected(current.sourceStatusCode(), expected.sourceStatusCode())
+                && matchesExpected(current.sourceCreatorId(), expected.sourceCreatorId())
+                && matchesExpected(current.sourceCreatorStaffCode(), expected.sourceCreatorStaffCode())
+                && matchesExpected(current.sourceCreatorName(), expected.sourceCreatorName())
+                && matchesExpected(current.ownerSalesUserId(), expected.ownerSalesUserId())
+                && matchesExpected(current.ownerSalesName(), expected.ownerSalesName())
+                && matchesExpected(current.ownerStaffCode(), expected.ownerStaffCode())
+                && matchesExpected(current.ownerStaffNameSnapshot(), expected.ownerStaffNameSnapshot());
+    }
+
+    private static boolean matchesExpected(String current, String expected) {
+        return blank(expected) || Objects.equals(current, expected);
     }
 
     private static boolean lineMatches(SalesOrderLineView current, SalesOrderLineCommand expected) {
@@ -838,6 +1232,7 @@ public final class DhbOrderSyncService {
         return current != null
                 && !blank(current.documentNo())
                 && Objects.equals(current.directionCode(), directionCode)
+                && !blank(current.sourceDocumentNo())
                 && current.occurredTime() != null
                 && !blank(current.documentStatusCode())
                 && current.amount() != null
@@ -865,7 +1260,9 @@ public final class DhbOrderSyncService {
         Map<String, Object> content = map(detail == null ? null : detail.attributes());
         String sourceStatus = firstNonBlank(
                 detail == null ? null : detail.status(),
-                first(content, list, "OrderStatus", "order_status", "status"),
+                first(content, list, "OrderStatus", "orderStatus", "order_status",
+                        "OrderStatusName", "orderStatusName", "order_status_name",
+                        "StatusName", "statusName", "status_name", "status"),
                 summary == null ? null : summary.status());
         List<String> customerSourceIds = candidates(content, list,
                 "ClientGUID", "clientGUID", "ClientGuid", "clientGuid", "client_guid",
@@ -878,26 +1275,61 @@ public final class DhbOrderSyncService {
                 sourceOrderNo, "客户");
         List<SalesOrderLineCommand> lines = salesOrderLines(tenantId, connectorId, sourceOrderNo, content);
         boolean cancelled = isCancelled(sourceStatus);
-        List<String> sourceStaffIds = candidates(content, list,
-                "StaffID", "StaffId", "staffID", "staffId", "staff_id",
+        List<String> ownerSourceStaffIds = candidates(content, list,
                 "SalesmanID", "SalesmanId", "salesmanID", "salesmanId", "salesman_id",
                 "BusinessStaffID", "BusinessStaffId", "businessStaffID", "businessStaffId",
-                "business_staff_id", "AdminID", "AdminId", "adminID", "adminId", "admin_id",
-                "UserID", "UserId", "userID", "userId", "user_id",
-                "OperatorID", "OperatorId", "operatorID", "operatorId", "operator_id");
-        List<String> sourceStaffNames = candidates(content, list,
-                "StaffName", "staffName", "staff_name", "OperationName", "operationName",
-                "operation_name", "SalesmanName", "salesmanName", "salesman_name",
+                "business_staff_id", "SellerID", "SellerId", "sellerID", "sellerId",
+                "seller_id", "SalerID", "SalerId", "salerID", "salerId", "saler_id",
+                "StaffID", "StaffId", "staffID", "staffId", "staff_id",
+                "StaffMobile", "staffMobile", "staff_mobile",
+                "StaffPhone", "staffPhone", "staff_phone");
+        List<String> ownerSourceStaffNames = candidates(content, list,
+                "SalesmanName", "salesmanName", "salesman_name",
                 "BusinessStaffName", "businessStaffName", "business_staff_name",
-                "AdminName", "adminName", "admin_name", "UserName", "userName", "user_name",
-                "OperatorName", "operatorName", "operator_name");
-        StaffProjection owner = ownerStaff(tenantId, connectorId, sourceStaffIds,
-                sourceStaffNames, staffCache);
+                "SellerName", "sellerName", "seller_name",
+                "SalerName", "salerName", "saler_name",
+                "StaffName", "staffName", "staff_name");
+        StaffProjection owner = ownerStaff(tenantId, connectorId, ownerSourceStaffIds,
+                ownerSourceStaffNames, staffCache);
+        List<String> sourceCreatorIds = candidates(content, list,
+                "CreatorID", "CreatorId", "creatorID", "creatorId", "creator_id",
+                "CreateUserID", "CreateUserId", "createUserID", "createUserId", "create_user_id",
+                "MakerID", "MakerId", "makerID", "makerId", "maker_id",
+                "AdminID", "AdminId", "adminID", "adminId", "admin_id",
+                "OperatorID", "OperatorId", "operatorID", "operatorId", "operator_id",
+                "OperationID", "OperationId", "operationID", "operationId", "operation_id",
+                "UserID", "UserId", "userID", "userId", "user_id",
+                "AccountID", "AccountId", "accountID", "accountId",
+                "AccountsID", "AccountsId", "accountsID", "accountsId", "accounts_id",
+                "LoginName", "loginName", "login_name");
+        List<String> sourceCreatorNames = candidates(content, list,
+                "CreatorName", "creatorName", "creator_name",
+                "CreateUserName", "createUserName", "create_user_name",
+                "MakerName", "makerName", "maker_name",
+                "AdminName", "adminName", "admin_name",
+                "AdminUser", "adminUser", "admin_user",
+                "OperatorName", "operatorName", "operator_name",
+                "OperationName", "operationName", "operation_name",
+                "UserName", "userName", "user_name",
+                "AccountName", "accountName", "account_name", "accounts_name");
+        StaffProjection sourceCreator = ownerStaff(tenantId, connectorId, sourceCreatorIds,
+                sourceCreatorNames, staffCache);
         String regionCode = customerAreaCode(tenantId, connectorId, content, list);
+        Instant orderDate = sourceBusinessTime(
+                "DHB_ORDER_BUSINESS_TIME_MISSING",
+                "订货宝订单缺少下单/创建时间，不能生成销售订单",
+                "sourceOrderNo",
+                sourceOrderNo,
+                firstInstant(content, list, summary == null ? null : summary.createdAt(),
+                        "OrderDate", "order_date", "createdAt"));
         SalesOrderCommand command = new SalesOrderCommand(
                 requiredInternalId(customer, sourceOrderNo, "客户"),
                 SOURCE_SYSTEM_DINGHUOBAO,
                 sourceOrderNo,
+                dhbOrderStatusCode(sourceStatus),
+                firstClean(sourceCreatorIds),
+                sourceCreator.staffCode(),
+                firstNonBlank(sourceCreator.staffName(), firstClean(sourceCreatorNames)),
                 customer.internalObjectNo(),
                 firstNonBlank(first(content, list, "ClientName", "ClientCompanyName", "client_name"),
                         customer.sourceObjectNo(), customer.internalObjectNo(), "订货宝客户"),
@@ -908,8 +1340,7 @@ public final class DhbOrderSyncService {
                 owner.staffName(),
                 owner.staffCode(),
                 owner.staffName(),
-                firstInstant(content, list, summary == null ? null : summary.createdAt(),
-                        "OrderDate", "order_date", "createdAt"),
+                orderDate,
                 null,
                 null,
                 null,
@@ -965,12 +1396,18 @@ public final class DhbOrderSyncService {
                     "DETAIL", Map.of("required", "Amount > 0"),
                     Map.of("sourceReceiptNo", sourceReceiptNo));
         }
-        Instant paymentTime = firstNonNull(
+        Instant paymentTime = sourceBusinessTime(
+                "DHB_RECEIPT_BUSINESS_TIME_MISSING",
+                "订货宝收款单缺少交易/创建/更新时间，不能生成销售回款记录",
+                "sourceReceiptNo",
+                sourceReceiptNo,
                 receipt == null ? null : receipt.transactionAt(),
                 receipt == null ? null : receipt.createdAt(),
-                receipt == null ? null : receipt.updatedAt(),
-                Instant.now());
+                receipt == null ? null : receipt.updatedAt());
         SalesPaymentRecordCommand command = new SalesPaymentRecordCommand(
+                connectorId,
+                SOURCE_SYSTEM_DINGHUOBAO,
+                sourceReceiptNo,
                 orderMapping.internalObjectId(),
                 null,
                 null,
@@ -996,9 +1433,10 @@ public final class DhbOrderSyncService {
         if (existing != null && existing.internalObjectId() != null
                 && Objects.equals(existing.payloadChecksum(), raw.payloadChecksum())
                 && fundDocumentProjectionComplete(current, "RECEIPT")) {
+            resolveProjectionIssues(caller, SOURCE_OBJECT_FUND_RECEIPT, sourceReceiptNo);
             return current;
         }
-        PreparedFundDocument prepared = prepareReceiptFundDocument(caller.tenantId(), task.connectorId(),
+        PreparedFundDocument prepared = prepareReceiptFundDocument(task.connector(),
                 sourceReceiptNo, receipt, attributes);
         FundDocumentDetailView projected =
                 upsertFundDocument(caller.tenantId(), existing, current, prepared);
@@ -1007,12 +1445,22 @@ public final class DhbOrderSyncService {
                         sourceReceiptNo, sourceReceiptNo, "ORDER", "FUND_DOCUMENT", projected.id(),
                         projected.documentNo(), "ACTIVE", runId, Instant.now(), raw.payloadChecksum(),
                         null, "订货宝收款单已投影到自研资金收款单"));
+        resolveProjectionIssues(caller, SOURCE_OBJECT_FUND_RECEIPT, sourceReceiptNo);
         return projected;
     }
 
     private PreparedFundDocument prepareReceiptFundDocument(UUID tenantId, UUID connectorId,
                                                            String sourceReceiptNo, Receipt receipt,
                                                            Map<String, Object> attributes) {
+        return prepareReceiptFundDocument(new Connector(tenantId, connectorId, null, null),
+                sourceReceiptNo, receipt, attributes);
+    }
+
+    private PreparedFundDocument prepareReceiptFundDocument(Connector connector,
+                                                           String sourceReceiptNo, Receipt receipt,
+                                                           Map<String, Object> attributes) {
+        UUID tenantId = connector.tenantId();
+        UUID connectorId = connector.connectorId();
         String sourceOrderNo = receiptSourceOrderNo(receipt, attributes);
         ExternalObjectMapping orderMapping = blank(sourceOrderNo) ? null
                 : store.findActiveMapping(tenantId, connectorId, SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
@@ -1024,16 +1472,22 @@ public final class DhbOrderSyncService {
                     "DETAIL", Map.of("required", "Amount > 0"),
                     Map.of("sourceReceiptNo", sourceReceiptNo));
         }
-        Instant occurredTime = firstNonNull(
+        Instant occurredTime = sourceBusinessTime(
+                "DHB_RECEIPT_BUSINESS_TIME_MISSING",
+                "订货宝收款单缺少交易/创建/更新时间，不能生成资金收款单",
+                "sourceReceiptNo",
+                sourceReceiptNo,
                 receipt == null ? null : receipt.transactionAt(),
                 receipt == null ? null : receipt.createdAt(),
-                receipt == null ? null : receipt.updatedAt(),
-                Instant.now());
+                receipt == null ? null : receipt.updatedAt());
+        String statusCode = fundDocumentStatusCode(receipt == null ? null : receipt.status(), attributes);
         String customerNo = firstNonBlank(
                 receipt == null ? null : receipt.customerNumber(),
                 first(attributes, "ClientNum", "clientNum", "ClientNO", "ClientNo", "customerNumber"));
         String customerName = first(attributes, "ClientName", "ClientCompanyName", "CustomerName", "customerName");
         FundDocumentCommand command = new FundDocumentCommand(
+                connectorId,
+                SOURCE_SYSTEM_DINGHUOBAO,
                 "RECEIPT",
                 orderMapping == null ? null : orderMapping.internalObjectId(),
                 sourceOrderNo,
@@ -1049,8 +1503,17 @@ public final class DhbOrderSyncService {
                 paymentMethodCode(receipt, attributes),
                 receiptFundBusinessTypeCode(receipt == null ? null : receipt.businessType(),
                         attributes, sourceOrderNo),
-                fundDocumentStatusCode(receipt == null ? null : receipt.status(), attributes),
+                statusCode,
                 amount,
+                sourceReceiptNo,
+                sourceOrderNo,
+                receiptPaymentSerialNo(receipt, attributes),
+                receiptBankAccountName(receipt, attributes),
+                receiptBankName(receipt, attributes),
+                receiptBankAccountNo(receipt, attributes),
+                sourceSubmittedAt(receipt == null ? null : receipt.createdAt(), attributes),
+                sourceConfirmedAt(statusCode, receipt == null ? null : receipt.updatedAt(), attributes),
+                sourceAttachmentKeys(connector, sourceReceiptNo, attributes),
                 List.of(),
                 receiptRemark(receipt, attributes),
                 null);
@@ -1060,6 +1523,15 @@ public final class DhbOrderSyncService {
     private PreparedFundDocument preparePaymentFundDocument(UUID tenantId, UUID connectorId,
                                                            String sourcePaymentNo, Payment payment,
                                                            Map<String, Object> attributes) {
+        return preparePaymentFundDocument(new Connector(tenantId, connectorId, null, null),
+                sourcePaymentNo, payment, attributes);
+    }
+
+    private PreparedFundDocument preparePaymentFundDocument(Connector connector,
+                                                           String sourcePaymentNo, Payment payment,
+                                                           Map<String, Object> attributes) {
+        UUID tenantId = connector.tenantId();
+        UUID connectorId = connector.connectorId();
         String sourceOrderNo = paymentSourceOrderNo(payment, attributes);
         ExternalObjectMapping orderMapping = blank(sourceOrderNo) ? null
                 : store.findActiveMapping(tenantId, connectorId, SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
@@ -1071,15 +1543,22 @@ public final class DhbOrderSyncService {
                     "DETAIL", Map.of("required", "Amount > 0"),
                     Map.of("sourcePaymentNo", sourcePaymentNo));
         }
-        Instant occurredTime = firstNonNull(
+        Instant occurredTime = sourceBusinessTime(
+                "DHB_PAYMENT_BUSINESS_TIME_MISSING",
+                "订货宝付款单缺少交易/创建/更新时间，不能生成资金付款单",
+                "sourcePaymentNo",
+                sourcePaymentNo,
                 payment == null ? null : payment.transactionAt(),
                 payment == null ? null : payment.createdAt(),
-                Instant.now());
+                payment == null ? null : payment.updatedAt());
+        String statusCode = fundDocumentStatusCode(payment == null ? null : payment.status(), attributes);
         String customerNo = firstNonBlank(
                 payment == null ? null : payment.customerNumber(),
                 first(attributes, "ClientNum", "clientNum", "ClientNO", "ClientNo", "customerNumber"));
         String customerName = first(attributes, "ClientName", "ClientCompanyName", "CustomerName", "customerName");
         FundDocumentCommand command = new FundDocumentCommand(
+                connectorId,
+                SOURCE_SYSTEM_DINGHUOBAO,
                 "PAYMENT",
                 orderMapping == null ? null : orderMapping.internalObjectId(),
                 sourceOrderNo,
@@ -1094,8 +1573,17 @@ public final class DhbOrderSyncService {
                 occurredTime,
                 paymentMethodCode(payment, attributes),
                 paymentFundBusinessTypeCode(payment == null ? null : payment.businessType(), attributes),
-                fundDocumentStatusCode(payment == null ? null : payment.status(), attributes),
+                statusCode,
                 amount,
+                sourcePaymentNo,
+                sourceOrderNo,
+                paymentSerialNo(payment, attributes),
+                paymentBankAccountName(payment, attributes),
+                paymentBankName(payment, attributes),
+                paymentBankAccountNo(payment, attributes),
+                sourceSubmittedAt(payment == null ? null : payment.createdAt(), attributes),
+                sourceConfirmedAt(statusCode, payment == null ? null : payment.updatedAt(), attributes),
+                sourceAttachmentKeys(connector, sourcePaymentNo, attributes),
                 List.of(),
                 paymentRemark(payment, attributes),
                 null);
@@ -1133,9 +1621,18 @@ public final class DhbOrderSyncService {
                             "salesOrderId", orderMapping.internalObjectId()));
         }
         Long warehouseId = warehouseId(tenantId, connectorId, sourceShipmentNo, summary, content, list);
+        if (warehouseId == null) {
+            throw new ProjectionRejected("DHB_SHIPMENT_WAREHOUSE_MAPPING_MISSING",
+                    "订货宝销售发货单缺少仓库映射，不能生成ERP销售出库单",
+                    "MAPPING", Map.of("required", "warehouse mapping"),
+                    Map.of("sourceShipmentNo", sourceShipmentNo));
+        }
         List<SalesShipmentLineCommand> lines = shipmentLines(tenantId, connectorId,
                 sourceShipmentNo, content, salesOrder);
         SalesShipmentCommand command = new SalesShipmentCommand(
+                connectorId,
+                SOURCE_SYSTEM_DINGHUOBAO,
+                sourceShipmentNo,
                 orderMapping.internalObjectId(),
                 warehouseId,
                 null,
@@ -1146,11 +1643,15 @@ public final class DhbOrderSyncService {
                         first(content, list, "LogisticsName", "logisticsName", "ExpressName")),
                 firstNonBlank(summary == null ? null : summary.trackingNumber(),
                         first(content, list, "ExpressNumber", "expressNumber", "LogisticsNumber")),
-                firstNonNull(summary == null ? null : summary.shipmentAt(),
+                sourceBusinessTime(
+                        "DHB_SHIPMENT_BUSINESS_TIME_MISSING",
+                        "订货宝发货单缺少发货/创建/更新时间，不能生成销售发货单",
+                        "sourceShipmentNo",
+                        sourceShipmentNo,
+                        summary == null ? null : summary.shipmentAt(),
                         summary == null ? null : summary.createdAt(),
                         summary == null ? null : summary.updatedAt(),
-                        detail == null ? null : instant(firstObject(detail.attributes(), "CreateDate")),
-                        Instant.now()),
+                        detail == null ? null : instant(firstObject(detail.attributes(), "CreateDate"))),
                 lines,
                 firstNonBlank(summary == null ? null : summary.remark(),
                         first(content, list, "Remark", "remark")),
@@ -1158,7 +1659,8 @@ public final class DhbOrderSyncService {
         return new PreparedSalesShipment(sourceShipmentNo, sourceOrderNo, salesOrder, command);
     }
 
-    private PreparedStockOut prepareSalesStockOut(String sourceShipmentNo, PreparedSalesShipment prepared) {
+    private PreparedStockOut prepareSalesStockOut(
+            UUID connectorId, String sourceShipmentNo, PreparedSalesShipment prepared) {
         SalesOrderDetailView salesOrder = prepared.salesOrder();
         SalesShipmentCommand shipment = prepared.command();
         List<ExternalStockOutProjectionLineCommand> lines = shipment.lines().stream()
@@ -1175,6 +1677,7 @@ public final class DhbOrderSyncService {
                         line.remark()))
                 .toList();
         ExternalStockOutProjectionCommand command = new ExternalStockOutProjectionCommand(
+                connectorId,
                 SOURCE_SYSTEM_DINGHUOBAO,
                 sourceShipmentNo,
                 "SALES",
@@ -1187,15 +1690,376 @@ public final class DhbOrderSyncService {
                 salesOrder.customerNameSnapshot(),
                 shipment.shipTime(),
                 lines,
+                false,
                 firstNonBlank(shipment.remark(), "订货宝销售出库 " + sourceShipmentNo));
         return new PreparedStockOut(sourceShipmentNo, "SALES", command);
     }
 
+    private PreparedTransferOrder prepareTransferOrder(
+            UUID tenantId, UUID connectorId, String sourceTransferNo, TransferOrder transfer,
+            Map<String, Object> payload, Map<String, StaffProjection> staffCache) {
+        Map<String, Object> attributes = map(transfer == null ? null : transfer.attributes());
+        Long sourceWarehouseId = transferWarehouseId(tenantId, connectorId, sourceTransferNo,
+                "调拨调出仓库",
+                transfer == null ? null : transfer.sourceWarehouseId(),
+                transfer == null ? null : transfer.sourceWarehouseNumber(),
+                attributes,
+                "ships_stock_id", "ships_stock_guid", "ships_stock_num", "source_stock_id",
+                "source_stock_guid", "source_stock_num", "stock_id", "stock_guid", "stock_num");
+        Long targetWarehouseId = transferWarehouseId(tenantId, connectorId, sourceTransferNo,
+                "调拨调入仓库",
+                transfer == null ? null : transfer.targetWarehouseId(),
+                transfer == null ? null : transfer.targetWarehouseNumber(),
+                attributes,
+                "warehouse_stock_id", "warehouse_stock_guid", "warehouse_stock_num",
+                "target_stock_id", "target_stock_guid", "target_stock_num",
+                "in_stock_id", "in_stock_guid", "in_stock_num");
+        List<String> outboundStaffIds = new ArrayList<>();
+        List<String> outboundStaffNames = new ArrayList<>();
+        addCandidate(outboundStaffIds, transfer == null ? null : transfer.outboundOperatorStaffId());
+        addCandidate(outboundStaffNames, transfer == null ? null : transfer.outboundOperatorStaffName());
+        StaffProjection outboundOperator = ownerStaff(tenantId, connectorId,
+                outboundStaffIds, outboundStaffNames, staffCache);
+        List<String> inboundStaffIds = new ArrayList<>();
+        List<String> inboundStaffNames = new ArrayList<>();
+        addCandidate(inboundStaffIds, transfer == null ? null : transfer.inboundOperatorStaffId());
+        addCandidate(inboundStaffNames, transfer == null ? null : transfer.inboundOperatorStaffName());
+        StaffProjection inboundOperator = ownerStaff(tenantId, connectorId,
+                inboundStaffIds, inboundStaffNames, staffCache);
+        List<ExternalTransferOrderProjectionLineCommand> lines =
+                transferOrderProjectionLines(tenantId, connectorId, sourceTransferNo,
+                        transfer == null ? List.of() : transfer.lines());
+        ExternalTransferOrderProjectionCommand command = new ExternalTransferOrderProjectionCommand(
+                connectorId,
+                SOURCE_SYSTEM_DINGHUOBAO,
+                sourceTransferNo,
+                sourceWarehouseId,
+                targetWarehouseId,
+                sourceBusinessTime(
+                        "DHB_TRANSFER_BUSINESS_TIME_MISSING",
+                        "订货宝调拨主单缺少创建时间，不能生成ERP调拨单",
+                        "sourceTransferNo",
+                        sourceTransferNo,
+                        transfer == null ? null : transfer.createdAt()),
+                firstNonBlank(transfer == null ? null : transfer.transferStatusName(),
+                        transfer == null ? null : transfer.transferStatus()),
+                firstNonBlank(transfer == null ? null : transfer.reviewStatusName(),
+                        transfer == null ? null : transfer.reviewStatus()),
+                outboundOperator.staffCode(),
+                firstNonBlank(outboundOperator.staffName(),
+                        transfer == null ? null : transfer.outboundOperatorStaffName()),
+                inboundOperator.staffCode(),
+                firstNonBlank(inboundOperator.staffName(),
+                        transfer == null ? null : transfer.inboundOperatorStaffName()),
+                lines,
+                firstNonBlank(transfer == null ? null : transfer.remark(),
+                        first(map(payload == null ? null : mapObject(payload.get("detail"))),
+                                "remark", "internal_comtion"),
+                        "订货宝调拨主单 " + sourceTransferNo));
+        return new PreparedTransferOrder(sourceTransferNo, sourceWarehouseId, targetWarehouseId,
+                command.sourceCreatedAt(), command.outboundOperatorStaffCode(),
+                command.outboundOperatorStaffName(), command.inboundOperatorStaffCode(),
+                command.inboundOperatorStaffName(), lines, command);
+    }
+
+    private ProjectedTransferOrder projectExternalTransferOrder(
+            CallerIdentity caller, SyncTaskContext task, UUID runId, RawObjectPersistResult raw,
+            ExternalObjectMapping existing, PreparedTransferOrder prepared) {
+        if (existing != null
+                && existing.internalObjectId() != null
+                && existing.internalObjectNo() != null
+                && !Objects.equals(existing.sourceObjectId(), prepared.sourceTransferNo())) {
+            store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
+                    new ExternalObjectMappingWrite(task.connectorId(), SOURCE_OBJECT_ERP_TRANSFER_ORDER,
+                            prepared.sourceTransferNo(), prepared.sourceTransferNo(), "ERP", "TRANSFER_ORDER",
+                            existing.internalObjectId(), existing.internalObjectNo(), "ACTIVE", runId,
+                            Instant.now(), raw.payloadChecksum(), null,
+                            "订货宝调拨主单已关联历史FH反推ERP调拨单"));
+            resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_TRANSFER_ORDER, prepared.sourceTransferNo());
+            return new ProjectedTransferOrder(existing.internalObjectId(), existing.internalObjectNo(), true);
+        }
+        if (existing != null
+                && existing.internalObjectId() != null
+                && existing.internalObjectNo() != null
+                && Objects.equals(existing.payloadChecksum(), raw.payloadChecksum())) {
+            resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_TRANSFER_ORDER, prepared.sourceTransferNo());
+            return new ProjectedTransferOrder(existing.internalObjectId(), existing.internalObjectNo(), true);
+        }
+        if (erpStockOutProjectionClient == null) {
+            throw new ProjectionRejected("DHB_TRANSFER_ERP_CLIENT_MISSING",
+                    "订货宝调拨主单需要投影到ERP调拨单，但Integration未配置ERP客户端",
+                    "CONFIG", Map.of("required", "ErpStockOutProjectionClient"),
+                    Map.of("sourceTransferNo", prepared.sourceTransferNo()));
+        }
+        InternalTransferOrderDetailView projected = erpStockOutProjectionClient.upsertExternalTransferOrder(
+                orderServiceCaller(caller.tenantId()), prepared.command());
+        store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
+                new ExternalObjectMappingWrite(task.connectorId(), SOURCE_OBJECT_ERP_TRANSFER_ORDER,
+                        prepared.sourceTransferNo(), prepared.sourceTransferNo(), "ERP", "TRANSFER_ORDER",
+                        projected.id(), projected.transferNo(), "ACTIVE", runId, Instant.now(),
+                        raw.payloadChecksum(), null, "订货宝调拨主单已投影到ERP调拨单"));
+        resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_TRANSFER_ORDER, prepared.sourceTransferNo());
+        return new ProjectedTransferOrder(projected.id(), projected.transferNo(), false);
+    }
+
+    private ExternalObjectMapping legacyTransferMapping(CallerIdentity caller, SyncTaskContext task,
+                                                        TransferOrder detail) {
+        for (TransferStockOutVoucher voucher : detail == null
+                ? List.<TransferStockOutVoucher>of() : detail.stockOutVouchers()) {
+            String sourceVoucherNo = firstNonBlank(voucher.voucherNumber(), voucher.sourceId());
+            if (blank(sourceVoucherNo)) {
+                continue;
+            }
+            ExternalObjectMapping mapping = store.findActiveMapping(caller.tenantId(), task.connectorId(),
+                    SOURCE_OBJECT_ERP_TRANSFER_ORDER, sourceVoucherNo);
+            if (mapping != null && mapping.internalObjectId() != null && mapping.internalObjectNo() != null) {
+                return mapping;
+            }
+        }
+        return null;
+    }
+
+    private PreparedTransferStockOut prepareTransferStockOutFromTransfer(
+            UUID tenantId, UUID connectorId, PreparedTransferOrder transfer,
+            ProjectedTransferOrder projected, TransferStockOutVoucher voucher) {
+        String sourceShipmentNo = firstNonBlank(
+                voucher == null ? null : voucher.voucherNumber(),
+                voucher == null ? null : voucher.sourceId());
+        if (blank(sourceShipmentNo)) {
+            throw new ProjectionRejected("DHB_TRANSFER_STOCK_OUT_NO_MISSING",
+                    "订货宝调拨出库凭证缺少单号，不能投影到ERP出库单",
+                    "DETAIL", Map.of("required", "stock out voucher number"),
+                    Map.of("sourceTransferNo", transfer.sourceTransferNo()));
+        }
+        List<ExternalTransferStockOutProjectionLineCommand> lines =
+                transferStockOutProjectionLines(tenantId, connectorId, sourceShipmentNo, transfer, voucher);
+        ExternalTransferStockOutProjectionCommand command = new ExternalTransferStockOutProjectionCommand(
+                connectorId,
+                SOURCE_SYSTEM_DINGHUOBAO,
+                sourceShipmentNo,
+                transfer.sourceTransferNo(),
+                projected.transferOrderId(),
+                transfer.sourceWarehouseId(),
+                transfer.targetWarehouseId(),
+                firstNonNull(voucher == null ? null : voucher.createdAt(), transfer.sourceCreatedAt()),
+                Boolean.FALSE,
+                transfer.outboundOperatorStaffCode(),
+                transfer.outboundOperatorStaffName(),
+                transfer.inboundOperatorStaffCode(),
+                transfer.inboundOperatorStaffName(),
+                lines,
+                "订货宝调拨出库 " + sourceShipmentNo + " 来源调拨单 " + transfer.sourceTransferNo());
+        return new PreparedTransferStockOut(sourceShipmentNo, transfer.sourceTransferNo(), command);
+    }
+
+    private PreparedTransferStockIn prepareTransferStockInFromTransfer(
+            PreparedTransferOrder transfer, ProjectedTransferOrder projected,
+            TransferStockInVoucher voucher) {
+        String sourceStockInNo = firstNonBlank(
+                voucher == null ? null : voucher.voucherNumber(),
+                voucher == null ? null : voucher.sourceId());
+        if (blank(sourceStockInNo)) {
+            throw new ProjectionRejected("DHB_TRANSFER_STOCK_IN_NO_MISSING",
+                    "订货宝调拨入库凭证缺少单号，不能投影到ERP入库单",
+                    "DETAIL", Map.of("required", "stock in voucher number"),
+                    Map.of("sourceTransferNo", transfer.sourceTransferNo()));
+        }
+        ExternalTransferStockInProjectionCommand command = new ExternalTransferStockInProjectionCommand(
+                transfer.command().connectorId(),
+                SOURCE_SYSTEM_DINGHUOBAO,
+                sourceStockInNo,
+                transfer.sourceTransferNo(),
+                projected.transferOrderId(),
+                firstNonNull(voucher == null ? null : voucher.createdAt(), transfer.sourceCreatedAt()),
+                "订货宝调拨入库 " + sourceStockInNo + " 来源调拨单 " + transfer.sourceTransferNo());
+        return new PreparedTransferStockIn(sourceStockInNo, transfer.sourceTransferNo(), command);
+    }
+
+    private ProjectedTransferStockIn projectExternalTransferStockIn(
+            CallerIdentity caller, SyncTaskContext task, UUID runId, RawObjectPersistResult raw,
+            ExternalObjectMapping existing, PreparedTransferStockIn prepared) {
+        if (existing != null && existing.internalObjectId() != null && existing.internalObjectNo() != null) {
+            resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_STOCK_IN, prepared.sourceStockInNo());
+            return new ProjectedTransferStockIn(existing.internalObjectId(), existing.internalObjectNo(), true);
+        }
+        if (erpStockOutProjectionClient == null) {
+            throw new ProjectionRejected("DHB_TRANSFER_ERP_CLIENT_MISSING",
+                    "订货宝调拨入库需要投影到ERP，但Integration未配置ERP客户端",
+                    "CONFIG", Map.of("required", "ErpStockOutProjectionClient"),
+                    Map.of("sourceStockInNo", prepared.sourceStockInNo(),
+                            "sourceTransferNo", prepared.transferSourceDocumentNo()));
+        }
+        InternalTransferOrderDetailView projected =
+                erpStockOutProjectionClient.confirmExternalTransferStockIn(
+                        orderServiceCaller(caller.tenantId()), prepared.command());
+        store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
+                new ExternalObjectMappingWrite(task.connectorId(), SOURCE_OBJECT_ERP_STOCK_IN,
+                        prepared.sourceStockInNo(), prepared.sourceStockInNo(), "ERP", "STOCK_IN_ORDER",
+                        projected.stockInOrderId(), projected.stockInNo(), "ACTIVE", runId, Instant.now(),
+                        raw.payloadChecksum(), null, "订货宝调拨入库已投影到ERP统一入库单"));
+        resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_STOCK_IN, prepared.sourceStockInNo());
+        return new ProjectedTransferStockIn(projected.stockInOrderId(), projected.stockInNo(), false);
+    }
+
+    private Long transferWarehouseId(UUID tenantId, UUID connectorId, String sourceTransferNo,
+                                     String label, String typedSourceId, String typedSourceNo,
+                                     Map<String, Object> attributes, String... attributeKeys) {
+        List<String> values = new ArrayList<>();
+        addCandidate(values, typedSourceId);
+        addCandidate(values, typedSourceNo);
+        values.addAll(candidates(attributes, attributeKeys));
+        if (values.isEmpty()) {
+            throw new ProjectionRejected("DHB_TRANSFER_WAREHOUSE_MISSING",
+                    "订货宝调拨单缺少" + label + "来源编码，不能生成ERP调拨单",
+                    "DETAIL", Map.of("required", label + " source id or number"),
+                    Map.of("sourceTransferNo", sourceTransferNo));
+        }
+        try {
+            ExternalObjectMapping mapping = mappingAny(tenantId, connectorId, List.of("WAREHOUSE"), values,
+                    sourceTransferNo, label);
+            Long internalObjectId = mapping.internalObjectId();
+            if (internalObjectId == null) {
+                throw new ProjectionRejected("DHB_TRANSFER_WAREHOUSE_MAPPING_MISSING",
+                        "订货宝调拨单" + label + "映射缺少我方仓库ID，不能生成ERP调拨单",
+                        "MAPPING", Map.of("required", label + " WAREHOUSE internalObjectId"),
+                        Map.of("sourceTransferNo", sourceTransferNo, "warehouseCandidates", values));
+            }
+            return internalObjectId;
+        } catch (ProjectionRejected error) {
+            throw new ProjectionRejected("DHB_TRANSFER_WAREHOUSE_MAPPING_MISSING",
+                    "订货宝调拨单" + label + "缺少我方仓库映射，不能生成ERP调拨单",
+                    "MAPPING", Map.of("required", label + " WAREHOUSE mapping"),
+                    Map.of("sourceTransferNo", sourceTransferNo, "warehouseCandidates", values));
+        }
+    }
+
+    private List<ExternalTransferOrderProjectionLineCommand> transferOrderProjectionLines(
+            UUID tenantId, UUID connectorId, String sourceTransferNo,
+            List<TransferOrderLine> lines) {
+        if (lines == null || lines.isEmpty()) {
+            throw new ProjectionRejected("DHB_TRANSFER_LINE_MISSING",
+                    "订货宝调拨主单缺少商品明细，不能生成ERP调拨单",
+                    "DETAIL", Map.of("required", "transfer lines"),
+                    Map.of("sourceTransferNo", sourceTransferNo));
+        }
+        return inventoryStockOutLines(tenantId, connectorId, sourceTransferNo,
+                lineContent(transferOrderLinePayloads(lines))).stream()
+                .map(line -> new ExternalTransferOrderProjectionLineCommand(
+                        line.productId(), line.productVariantId(), line.productCodeSnapshot(),
+                        line.skuCodeSnapshot(), line.productNameSnapshot(), line.unitCode(),
+                        line.quantity(), line.remark()))
+                .toList();
+    }
+
+    private List<ExternalTransferStockOutProjectionLineCommand> transferStockOutProjectionLines(
+            UUID tenantId, UUID connectorId, String sourceShipmentNo,
+            PreparedTransferOrder transfer, TransferStockOutVoucher voucher) {
+        if (voucher == null || voucher.lines().isEmpty()) {
+            return transfer.lines().stream()
+                    .map(line -> new ExternalTransferStockOutProjectionLineCommand(
+                            line.productId(), line.productVariantId(), line.productCodeSnapshot(),
+                            line.variantCodeSnapshot(), line.productNameSnapshot(), line.unitCode(),
+                            line.quantity(), line.remark()))
+                    .toList();
+        }
+        return inventoryStockOutLines(tenantId, connectorId, sourceShipmentNo,
+                lineContent(transferStockOutVoucherLinePayloads(voucher.lines()))).stream()
+                .map(line -> new ExternalTransferStockOutProjectionLineCommand(
+                        line.productId(), line.productVariantId(), line.productCodeSnapshot(),
+                        line.skuCodeSnapshot(), line.productNameSnapshot(), line.unitCode(),
+                        line.quantity(), line.remark()))
+                .toList();
+    }
+
+    private static Map<String, Object> lineContent(List<Map<String, Object>> rows) {
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("list", rows == null ? List.of() : rows);
+        return content;
+    }
+
+    private static List<Map<String, Object>> transferOrderLinePayloads(List<TransferOrderLine> lines) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (TransferOrderLine line : lines == null ? List.<TransferOrderLine>of() : lines) {
+            if (line == null) continue;
+            Map<String, Object> row = map(line.attributes());
+            putPayloadValue(row, "goods_id", line.productSourceId());
+            putPayloadValue(row, "goods_num", line.productCode());
+            putPayloadValue(row, "goods_name", line.productName());
+            putPayloadValue(row, "options_id", line.skuSourceId());
+            putPayloadValue(row, "options_goods_num", line.skuCode());
+            putPayloadValue(row, "options_name", line.skuName());
+            putPayloadValue(row, "base_units", line.unitName());
+            putPayloadValue(row, "container_units", line.containerUnitName());
+            putPayloadValue(row, "conversion_number", line.conversionNumber());
+            putPayloadValue(row, "transfer_number", line.quantity());
+            putPayloadValue(row, "remark", line.remark());
+            rows.add(row);
+        }
+        return List.copyOf(rows);
+    }
+
+    private static List<Map<String, Object>> transferStockOutVoucherLinePayloads(
+            List<TransferStockOutVoucherLine> lines) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (TransferStockOutVoucherLine line
+                : lines == null ? List.<TransferStockOutVoucherLine>of() : lines) {
+            if (line == null) continue;
+            Map<String, Object> row = map(line.attributes());
+            putPayloadValue(row, "goods_id", line.productSourceId());
+            putPayloadValue(row, "goods_num", line.productCode());
+            putPayloadValue(row, "goods_name", line.productName());
+            putPayloadValue(row, "options_id", line.skuSourceId());
+            putPayloadValue(row, "options_goods_num", line.skuCode());
+            putPayloadValue(row, "options_name", line.skuName());
+            putPayloadValue(row, "base_units", line.unitName());
+            putPayloadValue(row, "container_units", line.containerUnitName());
+            putPayloadValue(row, "conversion_number", line.conversionNumber());
+            putPayloadValue(row, "ships_number", line.quantity());
+            putPayloadValue(row, "remark", line.remark());
+            rows.add(row);
+        }
+        return List.copyOf(rows);
+    }
+
+    private static List<Map<String, Object>> transferStockInVoucherLinePayloads(
+            List<TransferStockInVoucherLine> lines) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (TransferStockInVoucherLine line
+                : lines == null ? List.<TransferStockInVoucherLine>of() : lines) {
+            if (line == null) continue;
+            Map<String, Object> row = map(line.attributes());
+            putPayloadValue(row, "goods_id", line.productSourceId());
+            putPayloadValue(row, "goods_num", line.productCode());
+            putPayloadValue(row, "goods_name", line.productName());
+            putPayloadValue(row, "options_id", line.skuSourceId());
+            putPayloadValue(row, "options_goods_num", line.skuCode());
+            putPayloadValue(row, "options_name", line.skuName());
+            putPayloadValue(row, "base_units", line.unitName());
+            putPayloadValue(row, "container_units", line.containerUnitName());
+            putPayloadValue(row, "conversion_number", line.conversionNumber());
+            putPayloadValue(row, "warehousing_number", line.quantity());
+            putPayloadValue(row, "remark", line.remark());
+            rows.add(row);
+        }
+        return List.copyOf(rows);
+    }
+
+    private static void putPayloadValue(Map<String, Object> row, String key, Object value) {
+        if (row == null || row.containsKey(key) || value == null) {
+            return;
+        }
+        if (value instanceof String text && text.isBlank()) {
+            return;
+        }
+        row.put(key, value);
+    }
+
     private PreparedTransferStockOut prepareTransferStockOut(
             UUID tenantId, UUID connectorId, String sourceShipmentNo, Shipment summary,
-            ShipmentDetail detail, Map<String, Object> payload) {
+            ShipmentDetail detail, Map<String, Object> payload, Map<String, StaffProjection> staffCache) {
         Map<String, Object> list = map(payload == null ? null : mapObject(payload.get("list")));
         Map<String, Object> content = map(payload == null ? null : mapObject(payload.get("detail")));
+        StaffProjection outboundOperator = operatorStaff(tenantId, connectorId, staffCache, content, list);
         Long sourceWarehouseId = warehouseId(tenantId, connectorId, sourceShipmentNo, summary, content, list);
         if (sourceWarehouseId == null) {
             throw new ProjectionRejected("DHB_TRANSFER_SOURCE_WAREHOUSE_MAPPING_MISSING",
@@ -1204,11 +2068,18 @@ public final class DhbOrderSyncService {
                     Map.of("sourceShipmentNo", sourceShipmentNo));
         }
         Long targetWarehouseId = targetWarehouseId(tenantId, connectorId, sourceShipmentNo, content, list);
+        TransferInboundMatch inboundMatch = null;
         if (targetWarehouseId == null) {
-            throw new ProjectionRejected("DHB_TRANSFER_TARGET_WAREHOUSE_MAPPING_MISSING",
-                    "订货宝调拨出库缺少目标仓库映射，不能反推我方调拨单",
-                    "MAPPING", Map.of("required", "target warehouse mapping"),
-                    Map.of("sourceShipmentNo", sourceShipmentNo));
+            inboundMatch = resolveTransferInboundReceipt(
+                    tenantId, connectorId, sourceShipmentNo, sourceWarehouseId, summary, detail, content,
+                    staffCache);
+            targetWarehouseId = inboundMatch == null ? null : inboundMatch.targetWarehouseId();
+            if (targetWarehouseId == null) {
+                throw new ProjectionRejected("DHB_TRANSFER_TARGET_WAREHOUSE_MAPPING_MISSING",
+                        "订货宝调拨出库缺少目标仓库映射，不能反推我方调拨单",
+                        "MAPPING", Map.of("required", "target warehouse mapping or unique transfer inbound receipt"),
+                        Map.of("sourceShipmentNo", sourceShipmentNo));
+            }
         }
         List<ExternalTransferStockOutProjectionLineCommand> lines =
                 inventoryStockOutLines(tenantId, connectorId, sourceShipmentNo, content).stream()
@@ -1218,11 +2089,131 @@ public final class DhbOrderSyncService {
                                 line.quantity(), line.remark()))
                         .toList();
         ExternalTransferStockOutProjectionCommand command = new ExternalTransferStockOutProjectionCommand(
-                SOURCE_SYSTEM_DINGHUOBAO, sourceShipmentNo, sourceWarehouseId, targetWarehouseId,
-                shipmentStockOutTime(summary, detail, content, list), lines,
-                firstNonBlank(first(content, list, "Remark", "remark"),
+                connectorId, SOURCE_SYSTEM_DINGHUOBAO, sourceShipmentNo, sourceWarehouseId, targetWarehouseId,
+                shipmentStockOutTime(sourceShipmentNo, summary, detail, content, list),
+                Boolean.FALSE,
+                outboundOperator.staffCode(), outboundOperator.staffName(),
+                inboundMatch == null ? null : inboundMatch.operatorStaffCode(),
+                inboundMatch == null ? null : inboundMatch.operatorStaffName(),
+                lines,
+                firstNonBlank(transferRemark(content, list, inboundMatch),
                         "订货宝调拨出库 " + sourceShipmentNo));
-        return new PreparedTransferStockOut(sourceShipmentNo, command);
+        return new PreparedTransferStockOut(sourceShipmentNo, null, command);
+    }
+
+    private TransferInboundMatch resolveTransferInboundReceipt(
+            UUID tenantId, UUID connectorId, String sourceShipmentNo, Long sourceWarehouseId,
+            Shipment summary, ShipmentDetail detail, Map<String, Object> stockOutContent,
+            Map<String, StaffProjection> staffCache) {
+        TransferLineSignature stockOutSignature = transferLineSignature(stockOutContent,
+                "body", "Body", "Products", "OrderProduct", "OrderProducts", "Goods", "list", "details");
+        if (stockOutSignature.empty()) return null;
+        Instant stockOutTime = shipmentStockOutTime(sourceShipmentNo, summary, detail, stockOutContent, Map.of());
+        List<TransferInboundMatch> rawMatches = store.findTransferInboundReceiptCandidates(tenantId, connectorId, 1000)
+                .stream()
+                .filter(candidate -> transferInboundReceipt(candidate.payload()))
+                .filter(candidate -> stockOutSignature.equals(transferLineSignature(candidate.payload(),
+                        "list_detail", "ListDetail", "details", "Details", "body", "Body", "list", "List")))
+                .map(candidate -> transferInboundMatch(
+                        tenantId, connectorId, sourceShipmentNo, sourceWarehouseId, stockOutTime, candidate,
+                        staffCache))
+                .filter(Objects::nonNull)
+                .toList();
+        List<TransferInboundMatch> matches = distinctTransferInboundMatches(rawMatches);
+        if (matches.isEmpty()) return null;
+        if (matches.size() > 1) {
+            ManualResolution resolution = store.findActiveManualResolution(tenantId, connectorId,
+                    MANUAL_RESOLUTION_TRANSFER_INBOUND_RECEIPT, SOURCE_OBJECT_ERP_STOCK_OUT,
+                    sourceShipmentNo);
+            if (resolution != null) {
+                return transferInboundMatchByManualResolution(sourceShipmentNo, resolution, matches);
+            }
+            throw new ProjectionRejected("DHB_TRANSFER_INBOUND_AMBIGUOUS",
+                    "订货宝调拨出库匹配到多个调拨入库候选，不能按时间猜目标仓库",
+                    "RECONCILIATION",
+                    Map.of("required", "unique transfer inbound receipt by line signature"),
+                    Map.of("sourceShipmentNo", sourceShipmentNo,
+                            "manualResolutionType", MANUAL_RESOLUTION_TRANSFER_INBOUND_RECEIPT,
+                            "manualResolutionSourceObjectType", SOURCE_OBJECT_ERP_STOCK_OUT,
+                            "manualResolutionSelectedSourceObjectType", RAW_OBJECT_WAREHOUSING_RECEIPT,
+                            "rawCandidateCount", rawMatches.size(),
+                            "candidateReceipts", matches.stream()
+                                    .map(TransferInboundMatch::sourceReceiptNo)
+                                    .toList()));
+        }
+        return matches.getFirst();
+    }
+
+    private static List<TransferInboundMatch> distinctTransferInboundMatches(
+            List<TransferInboundMatch> matches) {
+        Map<String, TransferInboundMatch> unique = new LinkedHashMap<>();
+        for (TransferInboundMatch match : matches) {
+            String sourceReceiptNo = firstNonBlank(match.sourceReceiptNo());
+            if (sourceReceiptNo == null) continue;
+            unique.putIfAbsent(sourceReceiptNo, match);
+        }
+        return List.copyOf(unique.values());
+    }
+
+    private TransferInboundMatch transferInboundMatchByManualResolution(
+            String sourceShipmentNo, ManualResolution resolution,
+            List<TransferInboundMatch> matches) {
+        String selected = resolution.selectedSourceId();
+        for (TransferInboundMatch match : matches) {
+            if (Objects.equals(match.sourceReceiptNo(), selected)) {
+                return match.withManualResolutionId(resolution.id());
+            }
+        }
+        throw new ProjectionRejected("DHB_TRANSFER_MANUAL_RESOLUTION_STALE",
+                "订货宝调拨人工裁决选择的入库单已不在当前候选集中，需重新确认",
+                "RECONCILIATION",
+                Map.of("required", "selected inbound receipt must be present in current candidates"),
+                Map.of("sourceShipmentNo", sourceShipmentNo,
+                        "manualResolutionId", resolution.id().toString(),
+                        "selectedSourceObjectType", safeValue(resolution.selectedSourceObjectType()),
+                        "selectedSourceId", safeValue(selected),
+                        "candidateReceipts", matches.stream()
+                                .map(TransferInboundMatch::sourceReceiptNo)
+                                .toList()));
+    }
+
+    private TransferInboundMatch transferInboundMatch(
+            UUID tenantId, UUID connectorId, String sourceShipmentNo, Long sourceWarehouseId,
+            Instant stockOutTime, TransferInboundReceiptCandidate candidate,
+            Map<String, StaffProjection> staffCache) {
+        Map<String, Object> payload = candidate.payload();
+        List<String> warehouseCandidates = candidates(payload,
+                "StockID", "StockId", "stockId", "stock_id",
+                "StockGuid", "StockGUID", "stockGuid", "stock_guid",
+                "StockNum", "stockNum", "stock_num",
+                "StockNO", "StockNo", "stockNo", "stock_no");
+        if (warehouseCandidates.isEmpty()) {
+            throw new ProjectionRejected("DHB_TRANSFER_INBOUND_WAREHOUSE_MISSING",
+                    "订货宝调拨入库单缺少入库仓库，不能反推调拨目标仓",
+                    "DETAIL", Map.of("required", "inbound warehouse"),
+                    Map.of("sourceShipmentNo", sourceShipmentNo,
+                            "sourceReceiptNo", firstNonBlank(candidate.sourceNo(), candidate.sourceId())));
+        }
+        ExternalObjectMapping warehouse;
+        try {
+            warehouse = mappingAny(tenantId, connectorId, List.of("WAREHOUSE"), warehouseCandidates,
+                    sourceShipmentNo, "调拨入库仓库");
+        } catch (ProjectionRejected exception) {
+            throw new ProjectionRejected("DHB_TRANSFER_INBOUND_WAREHOUSE_MAPPING_MISSING",
+                    "订货宝调拨入库仓库缺少我方仓库映射，不能反推调拨目标仓",
+                    "MAPPING", Map.of("required", "WAREHOUSE mapping"),
+                    Map.of("sourceShipmentNo", sourceShipmentNo,
+                            "sourceReceiptNo", firstNonBlank(candidate.sourceNo(), candidate.sourceId()),
+                            "warehouseCandidates", warehouseCandidates));
+        }
+        if (Objects.equals(sourceWarehouseId, warehouse.internalObjectId())) {
+            return null;
+        }
+        StaffProjection inboundOperator = operatorStaff(tenantId, connectorId, staffCache, payload);
+        return new TransferInboundMatch(firstNonBlank(candidate.sourceNo(), candidate.sourceId()),
+                warehouse.internalObjectId(), firstNonBlank(warehouse.internalObjectNo(), warehouse.sourceObjectNo()),
+                transferInboundTime(candidate), stockOutTime,
+                inboundOperator.staffCode(), inboundOperator.staffName(), null);
     }
 
     private PreparedGenericStockOut prepareGenericStockOut(
@@ -1245,8 +2236,9 @@ public final class DhbOrderSyncService {
                                 line.quantity(), line.remark()))
                         .toList();
         ExternalGenericStockOutProjectionCommand command = new ExternalGenericStockOutProjectionCommand(
-                SOURCE_SYSTEM_DINGHUOBAO, sourceShipmentNo, stockOutTypeCode, warehouseId,
-                shipmentStockOutTime(summary, detail, content, list), lines,
+                connectorId, SOURCE_SYSTEM_DINGHUOBAO, sourceShipmentNo, stockOutTypeCode, warehouseId,
+                shipmentStockOutTime(sourceShipmentNo, summary, detail, content, list), lines,
+                false,
                 firstNonBlank(first(content, list, "Remark", "remark"),
                         "订货宝出库 " + sourceShipmentNo));
         return new PreparedGenericStockOut(sourceShipmentNo, stockOutTypeCode, command);
@@ -1256,6 +2248,7 @@ public final class DhbOrderSyncService {
             CallerIdentity caller, SyncTaskContext task, UUID runId, RawObjectPersistResult raw,
             ExternalObjectMapping existing, PreparedStockOut prepared) {
         if (existing != null && existing.internalObjectId() != null && existing.internalObjectNo() != null) {
+            resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_STOCK_OUT, prepared.sourceShipmentNo());
             return new ProjectedStockOut(existing.internalObjectId(), existing.internalObjectNo(),
                     prepared.stockOutTypeCode(), true);
         }
@@ -1272,18 +2265,25 @@ public final class DhbOrderSyncService {
                         prepared.sourceShipmentNo(), prepared.sourceShipmentNo(), "ERP", "STOCK_OUT_ORDER",
                         projected.id(), projected.stockOutNo(), "ACTIVE", runId, Instant.now(),
                         raw.payloadChecksum(), null, "订货宝出库单已投影到ERP统一出库单"));
+        resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_STOCK_OUT, prepared.sourceShipmentNo());
         return new ProjectedStockOut(projected.id(), projected.stockOutNo(), projected.stockOutTypeCode(), false);
     }
 
     private ProjectedTransferStockOut projectExternalTransferStockOut(
             CallerIdentity caller, SyncTaskContext task, UUID runId, RawObjectPersistResult raw,
             ExternalObjectMapping existingStockOut, PreparedTransferStockOut prepared) {
+        String transferSourceNo = firstNonBlank(
+                prepared.transferSourceDocumentNo(), prepared.sourceShipmentNo());
         if (existingStockOut != null
                 && existingStockOut.internalObjectId() != null
                 && existingStockOut.internalObjectNo() != null) {
             ExternalObjectMapping existingTransfer = store.findActiveMapping(
                     caller.tenantId(), task.connectorId(), SOURCE_OBJECT_ERP_TRANSFER_ORDER,
-                    prepared.sourceShipmentNo());
+                    transferSourceNo);
+            resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_STOCK_OUT, prepared.sourceShipmentNo());
+            if (existingTransfer != null && existingTransfer.internalObjectId() != null) {
+                resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_TRANSFER_ORDER, transferSourceNo);
+            }
             return new ProjectedTransferStockOut(
                     existingTransfer == null ? null : existingTransfer.internalObjectId(),
                     existingTransfer == null ? null : existingTransfer.internalObjectNo(),
@@ -1302,7 +2302,7 @@ public final class DhbOrderSyncService {
                         orderServiceCaller(caller.tenantId()), prepared.command());
         store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
                 new ExternalObjectMappingWrite(task.connectorId(), SOURCE_OBJECT_ERP_TRANSFER_ORDER,
-                        prepared.sourceShipmentNo(), prepared.sourceShipmentNo(), "ERP", "TRANSFER_ORDER",
+                        transferSourceNo, transferSourceNo, "ERP", "TRANSFER_ORDER",
                         projected.id(), projected.transferNo(), "ACTIVE", runId, Instant.now(),
                         raw.payloadChecksum(), null, "订货宝调拨出库已反推ERP调拨单"));
         store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
@@ -1310,6 +2310,8 @@ public final class DhbOrderSyncService {
                         prepared.sourceShipmentNo(), prepared.sourceShipmentNo(), "ERP", "STOCK_OUT_ORDER",
                         projected.stockOutOrderId(), projected.stockOutNo(), "ACTIVE", runId, Instant.now(),
                         raw.payloadChecksum(), null, "订货宝调拨出库已投影到ERP统一出库单"));
+        resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_TRANSFER_ORDER, transferSourceNo);
+        resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_STOCK_OUT, prepared.sourceShipmentNo());
         return new ProjectedTransferStockOut(projected.id(), projected.transferNo(),
                 projected.stockOutOrderId(), projected.stockOutNo(), false);
     }
@@ -1318,6 +2320,7 @@ public final class DhbOrderSyncService {
             CallerIdentity caller, SyncTaskContext task, UUID runId, RawObjectPersistResult raw,
             ExternalObjectMapping existing, PreparedGenericStockOut prepared) {
         if (existing != null && existing.internalObjectId() != null && existing.internalObjectNo() != null) {
+            resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_STOCK_OUT, prepared.sourceShipmentNo());
             return new ProjectedStockOut(existing.internalObjectId(), existing.internalObjectNo(),
                     prepared.stockOutTypeCode(), true);
         }
@@ -1335,6 +2338,7 @@ public final class DhbOrderSyncService {
                         prepared.sourceShipmentNo(), prepared.sourceShipmentNo(), "ERP", "STOCK_OUT_ORDER",
                         projected.id(), projected.stockOutNo(), "ACTIVE", runId, Instant.now(),
                         raw.payloadChecksum(), null, "订货宝出库单已投影到ERP统一出库单"));
+        resolveProjectionIssues(caller, SOURCE_OBJECT_ERP_STOCK_OUT, prepared.sourceShipmentNo());
         return new ProjectedStockOut(projected.id(), projected.stockOutNo(), projected.stockOutTypeCode(), false);
     }
 
@@ -1345,7 +2349,8 @@ public final class DhbOrderSyncService {
         addCandidate(candidates, summary == null ? null : summary.warehouseGuid());
         addCandidate(candidates, summary == null ? null : summary.warehouseNumber());
         candidates.addAll(candidates(content, list, "StockID", "StockId", "stockId",
-                "StockGuid", "stockGuid", "StockNum", "stockNum", "StockNO", "stockNo"));
+                "stock_id", "StockGuid", "stockGuid", "stock_guid", "StockNum", "stockNum",
+                "stock_num", "StockNO", "stockNo", "stock_no"));
         if (candidates.isEmpty()) return null;
         try {
             return mappingAny(tenantId, connectorId, List.of("WAREHOUSE"), candidates,
@@ -1368,8 +2373,8 @@ public final class DhbOrderSyncService {
                 "InStockGuid", "InStockGUID", "inStockGuid", "in_stock_guid",
                 "InStockNum", "inStockNum", "in_stock_num",
                 "ReceiveStockID", "ReceiveStockId", "receiveStockID", "receiveStockId",
-                "ReceiveStockGuid", "ReceiveStockGUID", "receiveStockGuid",
-                "ReceiveStockNum", "receiveStockNum");
+                "receive_stock_id", "ReceiveStockGuid", "ReceiveStockGUID", "receiveStockGuid",
+                "receive_stock_guid", "ReceiveStockNum", "receiveStockNum", "receive_stock_num");
         if (candidates.isEmpty()) return null;
         try {
             return mappingAny(tenantId, connectorId, List.of("WAREHOUSE"), candidates,
@@ -1432,8 +2437,9 @@ public final class DhbOrderSyncService {
                     List.of("PRODUCT_SKU", "PRODUCT_VARIANT", "SKU"), skuCandidates,
                     sourceShipmentNo, "商品规格");
             BigDecimal quantity = decimal(firstObject(row, "ShipsNumber", "ships_number",
-                    "OutNumber", "outNumber", "ContentNumber", "Number", "Quantity",
-                    "quantity", "GoodsNumber"));
+                    "OutNumber", "outNumber", "transfer_number", "TransferNumber",
+                    "warehousing_number", "WarehousingNumber", "ContentNumber", "Number",
+                    "Quantity", "quantity", "GoodsNumber"));
             if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
                 throw new ProjectionRejected("DHB_STOCK_OUT_LINE_QUANTITY_INVALID",
                         "订货宝出库单明细数量为空或小于等于0",
@@ -1442,8 +2448,7 @@ public final class DhbOrderSyncService {
             }
             Long productId = requiredInternalId(product, sourceShipmentNo, "商品");
             Long variantId = requiredInternalId(sku, sourceShipmentNo, "商品规格");
-            String sourceUnit = first(row, "order_units_name", "base_units_name", "Units",
-                    "UnitsName", "Unit", "unit_name", "UnitName", "unitName");
+            String sourceUnit = first(row, SOURCE_UNIT_FIELD_NAMES);
             InventoryStockOutLine line = new InventoryStockOutLine(
                     productId,
                     variantId,
@@ -1541,8 +2546,7 @@ public final class DhbOrderSyncService {
             }
             Long resolvedProductId = orderLine == null ? productId : orderLine.productId();
             Long resolvedVariantId = orderLine == null ? variantId : orderLine.productVariantId();
-            String sourceUnit = first(row, "order_units_name", "base_units_name", "Units",
-                    "UnitsName", "Unit", "unit_name", "UnitName", "unitName");
+            String sourceUnit = first(row, SOURCE_UNIT_FIELD_NAMES);
             String lineUnitCode = sourceUnit == null
                     ? orderLine == null ? null : orderLine.unitCode()
                     : unitCode(sourceUnit);
@@ -1672,6 +2676,34 @@ public final class DhbOrderSyncService {
         return result;
     }
 
+    private StaffProjection operatorStaff(UUID tenantId, UUID connectorId,
+                                          Map<String, StaffProjection> staffCache,
+                                          Map<String, Object>... payloads) {
+        List<String> sourceStaffIds = candidatesFromPayloads(payloads,
+                "StaffID", "StaffId", "staffID", "staffId", "staff_id",
+                "OperatorID", "OperatorId", "operatorID", "operatorId", "operator_id",
+                "AdminID", "AdminId", "adminID", "adminId", "admin_id",
+                "UserID", "UserId", "userID", "userId", "user_id",
+                "CollaboratorID", "CollaboratorId", "collaboratorID", "collaboratorId", "collaborator_id",
+                "AccountID", "AccountId", "accountID", "accountId", "accounts_id");
+        List<String> sourceStaffNames = candidatesFromPayloads(payloads,
+                "StaffName", "staffName", "staff_name",
+                "OperatorName", "operatorName", "operator_name",
+                "AdminName", "adminName", "admin_name",
+                "UserName", "userName", "user_name",
+                "CollaboratorName", "collaboratorName", "collaborator_name");
+        return ownerStaff(tenantId, connectorId, sourceStaffIds, sourceStaffNames, staffCache);
+    }
+
+    private static List<String> candidatesFromPayloads(Map<String, Object>[] payloads, String... keys) {
+        if (payloads == null || payloads.length == 0) return List.of();
+        List<String> result = new ArrayList<>();
+        for (Map<String, Object> payload : payloads) {
+            result.addAll(candidates(payload, keys));
+        }
+        return cleanDistinct(result);
+    }
+
     private List<SalesOrderLineCommand> salesOrderLines(UUID tenantId, UUID connectorId,
                                                         String sourceOrderNo,
                                                         Map<String, Object> content) {
@@ -1766,8 +2798,7 @@ public final class DhbOrderSyncService {
                     first(row, "multiName", "MultiName", "SpecName", "SpecificationName",
                             "specificationName", "goods_options", "GoodsOptions", "OptionsName",
                             "optionsName"),
-                    unitCode(first(row, "order_units_name", "base_units_name", "Units",
-                            "UnitsName", "Unit", "unit_name", "UnitName", "unitName")),
+                    unitCode(first(row, SOURCE_UNIT_FIELD_NAMES)),
                     quantity,
                     zeroIfNull(unitPrice),
                     null,
@@ -1900,6 +2931,11 @@ public final class DhbOrderSyncService {
                         + " sourceObjectNo=" + sourceObjectNo + " reason=" + message, code);
     }
 
+    private void resolveProjectionIssues(CallerIdentity caller, String sourceObjectType, String sourceObjectNo) {
+        if (caller == null || blank(sourceObjectType) || blank(sourceObjectNo)) return;
+        store.resolveProjectionIssues(caller.tenantId(), caller.userId(), sourceObjectType, sourceObjectNo);
+    }
+
     private static Map<String, Object> combinedPayload(OrderSummary summary, OrderDetail detail) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("list", summary == null ? Map.of() : map(summary.attributes()));
@@ -1914,6 +2950,26 @@ public final class DhbOrderSyncService {
         return payload;
     }
 
+    private static Map<String, Object> combinedTransferPayload(TransferOrder summary, TransferOrder detail) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("list", summary == null ? Map.of() : map(summary.attributes()));
+        payload.put("detail", detail == null ? Map.of() : map(detail.attributes()));
+        payload.put("lines", transferOrderLinePayloads(detail == null ? List.of() : detail.lines()));
+        payload.put("stockOutVouchers", detail == null ? List.of() : detail.stockOutVouchers().stream()
+                .map(voucher -> {
+                    Map<String, Object> row = map(voucher.attributes());
+                    row.put("lines", transferStockOutVoucherLinePayloads(voucher.lines()));
+                    return row;
+                }).toList());
+        payload.put("stockInVouchers", detail == null ? List.of() : detail.stockInVouchers().stream()
+                .map(voucher -> {
+                    Map<String, Object> row = map(voucher.attributes());
+                    row.put("lines", transferStockInVoucherLinePayloads(voucher.lines()));
+                    return row;
+                }).toList());
+        return payload;
+    }
+
     private static String shipmentSourceOrderNo(Shipment summary, Map<String, Object> payload) {
         Map<String, Object> list = map(payload == null ? null : mapObject(payload.get("list")));
         Map<String, Object> content = map(payload == null ? null : mapObject(payload.get("detail")));
@@ -1922,9 +2978,13 @@ public final class DhbOrderSyncService {
                 first(content, list, "OrdersNum", "orders_num", "OrderSN", "orderSn", "order_no"));
     }
 
-    private static Instant shipmentStockOutTime(Shipment summary, ShipmentDetail detail,
+    private static Instant shipmentStockOutTime(String sourceShipmentNo, Shipment summary, ShipmentDetail detail,
                                                 Map<String, Object> content, Map<String, Object> list) {
-        return firstNonNull(
+        return sourceBusinessTime(
+                "DHB_SHIPMENT_BUSINESS_TIME_MISSING",
+                "订货宝发货单缺少发货/创建/更新时间，不能生成ERP销售出库单",
+                "sourceShipmentNo",
+                sourceShipmentNo,
                 summary == null ? null : summary.shipmentAt(),
                 instant(firstObject(content, "ShipsDate", "shipsDate", "ships_date")),
                 instant(firstObject(list, "ShipsDate", "shipsDate", "ships_date")),
@@ -1932,8 +2992,71 @@ public final class DhbOrderSyncService {
                 instant(firstObject(content, "CreateDate", "createDate", "create_date")),
                 instant(firstObject(list, "CreateDate", "createDate", "create_date")),
                 summary == null ? null : summary.updatedAt(),
-                detail == null ? null : instant(firstObject(detail.attributes(), "CreateDate")),
-                Instant.now());
+                detail == null ? null : instant(firstObject(detail.attributes(), "CreateDate")));
+    }
+
+    private static boolean transferInboundReceipt(Map<String, Object> payload) {
+        String typeId = first(payload, "TypeID", "TypeId", "typeID", "typeId", "type_id");
+        String typeName = first(payload, "TypeName", "typeName", "type_name", "StorageTypeName");
+        return "8".equals(text(typeId)) || (typeName != null && typeName.contains("调拨入库"));
+    }
+
+    private static TransferLineSignature transferLineSignature(Map<String, Object> payload, String... rowKeys) {
+        Map<String, BigDecimal> merged = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows(payload, rowKeys)) {
+            String product = first(row,
+                    "Guid", "TrueGuid", "GoodsGuid", "GoodsGUID", "goods_guid",
+                    "goods_id", "GoodsId", "GoodsID", "goodsId",
+                    "ProductGuid", "ProductGUID", "productGuid",
+                    "ProductID", "ProductId", "productId", "product_id",
+                    "Coding", "GoodsCoding", "ProductCode", "productCode",
+                    "goods_num", "GoodsNo", "GoodsNO", "goodsNo", "goods_no",
+                    "ProductNo", "productNo", "product_no");
+            String sku = first(row,
+                    "OptionsGoodsNo", "options_goods_no", "OptionsGoodsNum", "options_goods_num",
+                    "OptionsId", "OptionsID", "optionsId", "optionsID", "options_id",
+                    "OptionsGuid", "OptionsGUID", "optionsGuid", "options_guid",
+                    "GoodsOptionsId", "GoodsOptionsID", "goodsOptionsId",
+                    "SkuId", "SkuID", "skuId", "sku_id", "skuNo", "SkuNo", "sku_no",
+                    "SkuCode", "skuCode");
+            BigDecimal quantity = decimal(firstObject(row,
+                    "ShipsNumber", "ships_number", "OutNumber", "outNumber",
+                    "StorageNumber", "storage_number", "storageNumber",
+                    "WarehousingNumber", "warehousing_number", "warehousingNumber",
+                    "WarehousingListUnitsNumber", "warehousing_list_units_number",
+                    "warehousingListUnitsNumber",
+                    "InNumber", "inNumber", "ContentNumber", "Number", "Quantity",
+                    "quantity", "GoodsNumber"));
+            if (blank(product) || quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            String key = product.strip() + "::" + firstNonBlank(sku, "0");
+            merged.merge(key, quantity.stripTrailingZeros(), BigDecimal::add);
+        }
+        List<String> lines = merged.entrySet().stream()
+                .map(entry -> entry.getKey() + "::" + entry.getValue().stripTrailingZeros().toPlainString())
+                .sorted()
+                .toList();
+        return new TransferLineSignature(lines);
+    }
+
+    private static Instant transferInboundTime(TransferInboundReceiptCandidate candidate) {
+        Map<String, Object> payload = candidate.payload();
+        return firstNonNull(
+                instant(firstObject(payload, "StorageDate", "storageDate", "storage_date",
+                        "WarehousingDate", "warehousingDate", "warehousing_date")),
+                candidate.sourceUpdatedAt(),
+                candidate.receivedAt());
+    }
+
+    private static String transferRemark(Map<String, Object> content, Map<String, Object> list,
+                                         TransferInboundMatch inboundMatch) {
+        String remark = first(content, list, "Remark", "remark");
+        if (inboundMatch == null) return remark;
+        String prefix = inboundMatch.manualResolutionId() == null ? "匹配" : "人工确认匹配";
+        String inbound = prefix + "订货宝调拨入库 " + inboundMatch.sourceReceiptNo()
+                + "，目标仓 " + inboundMatch.targetWarehouseNo();
+        return blank(remark) ? inbound : remark + "；" + inbound;
     }
 
     private static String stockOutTypeCode(Shipment summary, Map<String, Object> payload) {
@@ -1968,6 +3091,8 @@ public final class DhbOrderSyncService {
 
     private static SalesOrderCommand withRevision(SalesOrderCommand source, Integer revision) {
         return new SalesOrderCommand(source.customerId(), source.sourceSystemCode(), source.sourceOrderNo(),
+                source.sourceStatusCode(),
+                source.sourceCreatorId(), source.sourceCreatorStaffCode(), source.sourceCreatorName(),
                 source.customerCodeSnapshot(),
                 source.customerNameSnapshot(), source.contactNameSnapshot(),
                 source.contactPhoneSnapshot(), source.regionCode(), source.ownerSalesUserId(),
@@ -1979,22 +3104,28 @@ public final class DhbOrderSyncService {
 
     private static SalesPaymentRecordCommand withRevision(
             SalesPaymentRecordCommand source, Integer revision) {
-        return new SalesPaymentRecordCommand(source.orderId(), source.collectorStaffCode(),
+        return new SalesPaymentRecordCommand(source.connectorId(), source.sourceSystemCode(),
+                source.sourceDocumentNo(), source.orderId(), source.collectorStaffCode(),
                 source.collectorNameSnapshot(), source.paymentTime(), source.paymentMethodCode(),
                 source.paidAmount(), source.voucherKeys(), source.remark(), revision);
     }
 
     private static FundDocumentCommand withRevision(FundDocumentCommand source, Integer revision) {
-        return new FundDocumentCommand(source.directionCode(), source.relatedOrderId(),
+        return new FundDocumentCommand(source.connectorId(), source.sourceSystemCode(),
+                source.directionCode(), source.relatedOrderId(),
                 source.salesOrderNoSnapshot(), source.customerId(), source.customerCodeSnapshot(),
                 source.customerNameSnapshot(), source.counterpartyTypeCode(), source.counterpartyCodeSnapshot(),
                 source.counterpartyNameSnapshot(), source.handlerStaffCode(), source.handlerStaffNameSnapshot(),
                 source.occurredTime(), source.settlementMethodCode(), source.businessTypeCode(),
-                source.documentStatusCode(), source.amount(), source.voucherKeys(), source.remark(), revision);
+                source.documentStatusCode(), source.amount(), source.sourceDocumentNo(), source.sourceOrderNo(),
+                source.paymentSerialNo(), source.bankAccountName(), source.bankName(), source.bankAccountNo(),
+                source.submittedAt(), source.confirmedAt(), source.sourceAttachmentKeys(),
+                source.voucherKeys(), source.remark(), revision);
     }
 
     private static SalesShipmentCommand withRevision(SalesShipmentCommand source, Integer revision) {
-        return new SalesShipmentCommand(source.salesOrderId(), source.warehouseId(),
+        return new SalesShipmentCommand(source.connectorId(), source.sourceSystemCode(),
+                source.sourceDocumentNo(), source.salesOrderId(), source.warehouseId(),
                 source.stockOutOrderId(), source.stockOutNo(), source.shipmentStatusCode(),
                 source.logisticsCompany(), source.trackingNo(), source.shipTime(),
                 source.lines(), source.remark(), revision);
@@ -2002,7 +3133,8 @@ public final class DhbOrderSyncService {
 
     private static SalesShipmentCommand withStockOut(
             SalesShipmentCommand source, ProjectedStockOut stockOut) {
-        return new SalesShipmentCommand(source.salesOrderId(), source.warehouseId(),
+        return new SalesShipmentCommand(source.connectorId(), source.sourceSystemCode(),
+                source.sourceDocumentNo(), source.salesOrderId(), source.warehouseId(),
                 stockOut.stockOutOrderId(), stockOut.stockOutNo(), source.shipmentStatusCode(),
                 source.logisticsCompany(), source.trackingNo(), source.shipTime(),
                 source.lines(), source.remark(), source.revision());
@@ -2025,13 +3157,32 @@ public final class DhbOrderSyncService {
     }
 
     private static boolean shouldSubmit(String sourceStatus) {
-        String value = lower(sourceStatus);
+        String value = dhbOrderStatusCode(sourceStatus);
         return Set.of("stockup", "stock_up", "shipped", "received", "finished", "forcedone")
-                .contains(value);
+                .contains(value) || "已收货".equals(value) || "部分出库".equals(value);
     }
 
     private static boolean isCancelled(String sourceStatus) {
-        return "cancelled".equals(lower(sourceStatus)) || "canceled".equals(lower(sourceStatus));
+        return "cancelled".equals(dhbOrderStatusCode(sourceStatus));
+    }
+
+    private static String dhbOrderStatusCode(String sourceStatus) {
+        String value = text(sourceStatus);
+        if (value == null) return null;
+        String normalized = value.toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "cancel", "closed" -> "cancelled";
+            case "canceled" -> "cancelled";
+            case "待核价" -> "pricing";
+            case "待审核" -> "pending";
+            case "待出库" -> "stock_up";
+            case "待发货" -> "shipped";
+            case "待收货" -> "received";
+            case "已完成" -> "finished";
+            case "强制完成" -> "forcedone";
+            case "已取消" -> "cancelled";
+            default -> normalized;
+        };
     }
 
     private static boolean salesOrderDraft(SalesOrderDetailView current) {
@@ -2074,7 +3225,8 @@ public final class DhbOrderSyncService {
         if (value == null) return "CONFIRMED";
         if (paymentCancelled(value) || value.contains("取消")) return "CANCELLED";
         if (Set.of("pending", "wait", "waiting", "new", "draft", "created", "pend",
-                "pend_receipt").contains(value) || value.contains("待")) {
+                "pend_receipt", "pend_receipted").contains(value) || value.startsWith("pend")
+                || value.contains("待")) {
             return "PENDING";
         }
         return "CONFIRMED";
@@ -2119,6 +3271,7 @@ public final class DhbOrderSyncService {
             return "BALANCE_DEDUCTION";
         }
         return switch (value) {
+            case "5" -> "BALANCE_DEDUCTION";
             case "9", "10" -> "REVERSAL";
             default -> "BALANCE_DEDUCTION";
         };
@@ -2174,6 +3327,146 @@ public final class DhbOrderSyncService {
         return "OTHER";
     }
 
+    private static String receiptPaymentSerialNo(Receipt receipt, Map<String, Object> attributes) {
+        return firstNonBlank(
+                receipt == null ? null : receipt.serialNumber(),
+                first(attributes, "SerialNumber", "serialNumber", "PaySerialNumber", "paySerialNumber",
+                        "TradeNo", "tradeNo", "TransactionNo", "transactionNo", "FlowNo", "flowNo"));
+    }
+
+    private static String paymentSerialNo(Payment payment, Map<String, Object> attributes) {
+        return firstNonBlank(
+                payment == null ? null : payment.serialNumber(),
+                first(attributes, "SerialNumber", "serialNumber", "PaySerialNumber", "paySerialNumber",
+                        "TradeNo", "tradeNo", "TransactionNo", "transactionNo", "FlowNo", "flowNo"));
+    }
+
+    private static String receiptBankAccountName(Receipt receipt, Map<String, Object> attributes) {
+        return firstNonBlank(
+                receipt == null ? null : receipt.accountName(),
+                first(attributes, "AccountName", "accountName", "OpenName", "openName",
+                        "BankAccountName", "bankAccountName"));
+    }
+
+    private static String paymentBankAccountName(Payment payment, Map<String, Object> attributes) {
+        return firstNonBlank(
+                payment == null ? null : payment.accountName(),
+                first(attributes, "AccountName", "accountName", "OpenName", "openName",
+                        "BankAccountName", "bankAccountName"));
+    }
+
+    private static String receiptBankName(Receipt receipt, Map<String, Object> attributes) {
+        return firstNonBlank(
+                receipt == null ? null : receipt.bankName(),
+                first(attributes, "BankName", "bankName", "Bank", "bank", "OpenBank", "openBank"));
+    }
+
+    private static String paymentBankName(Payment payment, Map<String, Object> attributes) {
+        return firstNonBlank(
+                payment == null ? null : payment.bankName(),
+                first(attributes, "BankName", "bankName", "Bank", "bank", "OpenBank", "openBank"));
+    }
+
+    private static String receiptBankAccountNo(Receipt receipt, Map<String, Object> attributes) {
+        return firstNonBlank(
+                receipt == null ? null : receipt.accountNumber(),
+                first(attributes, "AccountNumber", "accountNumber", "BankAccount", "bankAccount",
+                        "BankAccountNo", "bankAccountNo", "AccountNo", "accountNo"));
+    }
+
+    private static String paymentBankAccountNo(Payment payment, Map<String, Object> attributes) {
+        return firstNonBlank(
+                payment == null ? null : payment.accountNumber(),
+                first(attributes, "AccountNumber", "accountNumber", "BankAccount", "bankAccount",
+                        "BankAccountNo", "bankAccountNo", "AccountNo", "accountNo"));
+    }
+
+    private static Instant sourceSubmittedAt(Instant typed, Map<String, Object> attributes) {
+        return firstInstant(attributes, Map.of(), typed,
+                "SubmitDate", "submitDate", "SubmitTime", "submitTime",
+                "CreateDate", "createDate", "CreateTime", "createTime");
+    }
+
+    private static Instant sourceConfirmedAt(String statusCode, Instant typed, Map<String, Object> attributes) {
+        if (!"CONFIRMED".equals(statusCode)) return null;
+        return firstInstant(attributes, Map.of(), typed,
+                "ConfirmDate", "confirmDate", "ConfirmTime", "confirmTime",
+                "AuditDate", "auditDate", "AuditTime", "auditTime",
+                "CheckDate", "checkDate", "UpdateDate", "updateDate", "UpdateTime", "updateTime");
+    }
+
+    private List<String> sourceAttachmentKeys(Connector connector, String sourceDocumentNo,
+                                              Map<String, Object> attributes) {
+        List<SourceAttachmentRef> refs = sourceAttachmentRefs(attributes);
+        if (refs.isEmpty()) return List.of();
+        if (fundAttachmentStorage == null || fundAttachmentKeyFactory == null) {
+            return cleanDistinct(refs.stream().map(SourceAttachmentRef::displayValue).toList());
+        }
+        List<String> values = new ArrayList<>();
+        for (SourceAttachmentRef ref : refs) {
+            if (blank(ref.sourceUrl())) {
+                addCandidate(values, ref.displayValue());
+                continue;
+            }
+            try {
+                DownloadedFile downloaded = client.downloadAttachment(connector, ref.sourceUrl());
+                String objectKey = fundAttachmentKeyFactory.generate(connector.tenantId().toString(),
+                        sourceDocumentNo, ref.sourceUrl(), downloaded.content(),
+                        ref.originalName(), downloaded.contentType());
+                fundAttachmentStorage.put(connector.tenantId().toString(), objectKey,
+                        ref.originalName(), downloaded.contentType(), downloaded.content());
+                addCandidate(values, objectKey);
+            } catch (RuntimeException exception) {
+                log.warn("订货宝资金附件上传COS失败 tenantId={} connectorId={} sourceDocumentNo={} attachment={} errorType={}",
+                        connector.tenantId(), connector.connectorId(), safeLogValue(sourceDocumentNo),
+                        safeLogValue(ref.displayValue()), exception.getClass().getSimpleName());
+                addCandidate(values, ref.displayValue());
+            }
+        }
+        return cleanDistinct(values);
+    }
+
+    private static List<SourceAttachmentRef> sourceAttachmentRefs(Map<String, Object> attributes) {
+        List<SourceAttachmentRef> values = new ArrayList<>();
+        for (String key : List.of("Attachment", "Attachments", "attachment", "attachments",
+                "File", "Files", "file", "files", "Voucher", "Vouchers", "voucher", "vouchers",
+                "Bill", "Bills", "ReceiptImages", "PaymentImages", "Images", "imgs", "pics",
+                "file_url", "fileUrl", "url")) {
+            addAttachmentValue(values, firstObject(attributes, key));
+        }
+        return List.copyOf(values);
+    }
+
+    private static void addAttachmentValue(List<SourceAttachmentRef> values, Object value) {
+        if (value == null) return;
+        if (value instanceof Iterable<?> iterable) {
+            for (Object item : iterable) {
+                addAttachmentValue(values, item);
+            }
+            return;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> row = stringMap(map);
+            String url = first(row, "url", "fileUrl", "file_url", "path", "key", "objectKey", "cosKey");
+            String name = first(row, "name", "fileName", "file_name", "originalName", "original_name");
+            addAttachmentCandidate(values, url, name);
+            return;
+        }
+        String raw = text(value);
+        if (raw == null) return;
+        for (String token : raw.split("[,，;；|\\n]+")) {
+            addAttachmentCandidate(values, token, null);
+        }
+    }
+
+    private static void addAttachmentCandidate(List<SourceAttachmentRef> values, String sourceUrl, String originalName) {
+        String url = text(sourceUrl);
+        String name = text(originalName);
+        if (url == null && name == null) return;
+        SourceAttachmentRef ref = new SourceAttachmentRef(url, name);
+        if (!values.contains(ref)) values.add(ref);
+    }
+
     private static String receiptRemark(Receipt receipt, Map<String, Object> attributes) {
         List<String> parts = new ArrayList<>();
         addRemark(parts, receipt == null ? null : receipt.remark());
@@ -2207,13 +3500,12 @@ public final class DhbOrderSyncService {
                     "订货宝订单明细缺少单位，不能生成销售订单",
                     "DETAIL", Map.of("required", "unitCode"), Map.of());
         }
-        String alias = UNIT_ALIASES.get(value);
-        if (alias != null) return alias;
-        String normalized = value.toUpperCase(Locale.ROOT);
-        if (INTERNAL_CODE.matcher(normalized).matches()) return normalized;
+        String productUnitCode = productUnitCode(value);
+        if (productUnitCode != null) return productUnitCode;
         throw new ProjectionRejected("DHB_ORDER_LINE_UNIT_UNMAPPED",
                 "订货宝订单明细单位未映射到我方PRODUCT_UNIT编码",
-                "MAPPING", Map.of("required", "PRODUCT_UNIT"), Map.of("sourceUnit", value));
+                "MAPPING", Map.of("required", "PRODUCT_UNIT", "rawDictionary", "DHB_UNIT"),
+                Map.of("sourceUnit", value));
     }
 
     private static String optionalUnitCode(String sourceUnit) {
@@ -2223,6 +3515,27 @@ public final class DhbOrderSyncService {
         } catch (ProjectionRejected ignored) {
             return null;
         }
+    }
+
+    private static String productUnitCode(String sourceUnit) {
+        String value = text(sourceUnit);
+        if (value == null) return null;
+        String alias = UNIT_ALIASES.get(value);
+        if (alias != null) return alias;
+        String normalized = value.toUpperCase(Locale.ROOT);
+        if (INTERNAL_CODE.matcher(normalized).matches()
+                && SUPPORTED_PRODUCT_UNIT_CODES.contains(normalized)) {
+            return normalized;
+        }
+        return null;
+    }
+
+    private static List<Observation> unitDictionaryItems() {
+        List<Observation> observations = new ArrayList<>(
+                PRODUCT_UNIT_DICTIONARY_ITEMS.size() + DHB_UNIT_DICTIONARY_ITEMS.size());
+        observations.addAll(PRODUCT_UNIT_DICTIONARY_ITEMS);
+        observations.addAll(DHB_UNIT_DICTIONARY_ITEMS);
+        return List.copyOf(observations);
     }
 
     private static void validateTask(SyncTaskContext task) {
@@ -2243,14 +3556,34 @@ public final class DhbOrderSyncService {
         }
     }
 
-    private static Window resolveWindow(SyncRunCommand command) {
+    private static ReplayTarget replayTarget(SyncRunCommand command) {
+        if (command == null) return null;
+        String sourceObjectType = text(command.sourceObjectType());
+        String sourceId = text(command.sourceId());
+        if (sourceObjectType == null && sourceId == null) return null;
+        if (sourceObjectType == null || sourceId == null) {
+            throw new IllegalArgumentException("订货宝单对象重放必须同时提供 sourceObjectType 和 sourceId");
+        }
+        if (command.from() != null || command.to() != null) {
+            throw new IllegalArgumentException("订货宝单对象重放不能同时提供同步窗口 from/to");
+        }
+        String normalizedObjectType = sourceObjectType.toUpperCase(Locale.ROOT);
+        if (!SOURCE_OBJECT_ERP_STOCK_OUT.equals(normalizedObjectType)
+                && !SOURCE_OBJECT_SALES_SHIPMENT.equals(normalizedObjectType)) {
+            throw new IllegalArgumentException("当前订货宝单对象重放只支持 sourceObjectType="
+                    + SOURCE_OBJECT_ERP_STOCK_OUT + " 或 " + SOURCE_OBJECT_SALES_SHIPMENT);
+        }
+        return new ReplayTarget(normalizedObjectType, sourceId);
+    }
+
+    private Window resolveWindow(SyncTaskContext task, SyncRunCommand command) {
         Instant from = command == null ? null : command.from();
         Instant to = command == null ? null : command.to();
         if ((from == null) != (to == null)) {
             throw new IllegalArgumentException("同步窗口 from 和 to 必须同时提供");
         }
         if (from == null) {
-            return null;
+            return checkpointWindow(task);
         }
         if (!from.isBefore(to)) {
             throw new IllegalArgumentException("同步窗口 from 必须早于 to");
@@ -2258,8 +3591,41 @@ public final class DhbOrderSyncService {
         return new Window(from, to);
     }
 
+    private Window checkpointWindow(SyncTaskContext task) {
+        Instant to = Instant.now().minus(SCHEDULED_WINDOW_SAFETY_LAG);
+        SyncCheckpoint checkpoint = store.loadCheckpoint(task.tenantId(), task.taskId());
+        Instant checkpointAt = checkpoint == null ? null : checkpoint.sourceUpdatedAt();
+        if (checkpointAt == null && checkpoint != null) {
+            checkpointAt = parseInstant(checkpoint.cursorValue());
+        }
+        int overlapSeconds = task.overlapSeconds() > 0
+                ? task.overlapSeconds()
+                : DEFAULT_INCREMENTAL_OVERLAP_SECONDS;
+        Instant from = checkpointAt == null
+                ? to.minus(SCHEDULED_BOOTSTRAP_LOOKBACK)
+                : checkpointAt.minusSeconds(overlapSeconds);
+        if (!from.isBefore(to)) {
+            from = to.minusSeconds(1);
+        }
+        return new Window(from, to);
+    }
+
+    private static Instant parseInstant(String value) {
+        if (blank(value)) return null;
+        try {
+            return Instant.parse(value.strip());
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
     private static TimeWindow timeWindow(Window window) {
         return window == null ? null : new TimeWindow(window.from(), window.to());
+    }
+
+    private static String sourceObjectTypeForShipment(String stockOutTypeCode) {
+        return "SALES".equals(stockOutTypeCode)
+                ? SOURCE_OBJECT_SALES_SHIPMENT : SOURCE_OBJECT_ERP_STOCK_OUT;
     }
 
     private static Instant windowFrom(Window window) {
@@ -2297,51 +3663,63 @@ public final class DhbOrderSyncService {
         return value;
     }
 
-    private <T> List<ProjectionOutcome> projectDetails(String workerName, List<T> items,
+    private ExecutorService newDetailExecutor() {
+        if (detailConcurrency == 1) {
+            return null;
+        }
+        int poolId = DETAIL_EXECUTOR_SEQUENCE.incrementAndGet();
+        return Executors.newFixedThreadPool(detailConcurrency, runnable -> {
+            Thread thread = new Thread(runnable, "rigour-dhb-detail-" + poolId + "-worker");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    private static void shutdownDetailExecutor(ExecutorService executor) {
+        if (executor != null) {
+            executor.shutdownNow();
+        }
+    }
+
+    private <T> List<ProjectionOutcome> projectDetails(ExecutorService executor, String workerName,
+                                                       List<T> items,
                                                        Function<T, ProjectionOutcome> projector) {
         if (items == null || items.isEmpty()) {
             return List.of();
         }
-        if (detailConcurrency == 1 || items.size() == 1) {
+        if (executor == null || items.size() == 1) {
             List<ProjectionOutcome> outcomes = new ArrayList<>(items.size());
             for (T item : items) {
                 outcomes.add(projector.apply(item));
             }
             return outcomes;
         }
-        int workers = Math.min(detailConcurrency, items.size());
-        ExecutorService executor = Executors.newFixedThreadPool(workers, runnable -> {
-            Thread thread = new Thread(runnable, "rigour-dhb-" + workerName + "-worker");
-            thread.setDaemon(true);
-            return thread;
-        });
-        try {
-            List<Future<ProjectionOutcome>> futures = new ArrayList<>(items.size());
-            for (T item : items) {
-                futures.add(executor.submit(() -> projector.apply(item)));
-            }
-            List<ProjectionOutcome> outcomes = new ArrayList<>(futures.size());
-            for (Future<ProjectionOutcome> future : futures) {
-                try {
-                    outcomes.add(future.get());
-                } catch (InterruptedException exception) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException("订货宝" + workerName + "并发处理被中断", exception);
-                } catch (ExecutionException exception) {
-                    Throwable cause = exception.getCause();
-                    if (cause instanceof RuntimeException runtimeException) {
-                        throw runtimeException;
-                    }
-                    if (cause instanceof Error error) {
-                        throw error;
-                    }
-                    throw new IllegalStateException("订货宝" + workerName + "并发处理失败", cause);
-                }
-            }
-            return outcomes;
-        } finally {
-            executor.shutdownNow();
+        List<Future<ProjectionOutcome>> futures = new ArrayList<>(items.size());
+        for (T item : items) {
+            futures.add(executor.submit(() -> projector.apply(item)));
         }
+        List<ProjectionOutcome> outcomes = new ArrayList<>(futures.size());
+        for (Future<ProjectionOutcome> future : futures) {
+            try {
+                outcomes.add(future.get(DETAIL_PROJECTION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("订货宝" + workerName + "并发处理被中断", exception);
+            } catch (TimeoutException exception) {
+                future.cancel(true);
+                throw new IllegalStateException("订货宝" + workerName + "并发处理超时", exception);
+            } catch (ExecutionException exception) {
+                Throwable cause = exception.getCause();
+                if (cause instanceof RuntimeException runtimeException) {
+                    throw runtimeException;
+                }
+                if (cause instanceof Error error) {
+                    throw error;
+                }
+                throw new IllegalStateException("订货宝" + workerName + "并发处理失败", cause);
+            }
+        }
+        return outcomes;
     }
 
     private static List<Map<String, Object>> rows(Map<String, Object> root, String... keys) {
@@ -2412,6 +3790,11 @@ public final class DhbOrderSyncService {
         return List.copyOf(result);
     }
 
+    private static String firstClean(List<String> values) {
+        List<String> cleaned = cleanDistinct(values);
+        return cleaned.isEmpty() ? null : cleaned.getFirst();
+    }
+
     private static Object firstObject(Map<String, Object> row, String... keys) {
         if (row == null || row.isEmpty()) return null;
         for (String key : keys) {
@@ -2438,6 +3821,16 @@ public final class DhbOrderSyncService {
             if (value != null) return value;
         }
         return null;
+    }
+
+    private static Instant sourceBusinessTime(String code, String message,
+                                              String actualKey, String actualValue,
+                                              Instant... values) {
+        Instant value = firstNonNull(values);
+        if (value != null) return value;
+        throw new ProjectionRejected(code, message, "DETAIL",
+                Map.of("required", "source business time"),
+                Map.of(actualKey, safeValue(actualValue)));
     }
 
     private static Instant firstInstant(Map<String, Object> preferred, Map<String, Object> fallback,
@@ -2523,9 +3916,17 @@ public final class DhbOrderSyncService {
             return "订货宝同步失败";
         }
         String redacted = message.replaceAll(
-                "(?i)(password|token|skey|serialnumber|api[-_]?key)\\s*[:=]\\s*[^,;\\s}]+",
+                "(?i)(password|token|skey|serialnumber|api[-_]?key|cookie|session|sid)\\s*[:=]\\s*[^,;\\s}]+",
                 "$1=[REDACTED]");
         return redacted.length() > 2000 ? redacted.substring(0, 2000) : redacted;
+    }
+
+    private static String safeLogValue(String value) {
+        String text = text(value);
+        if (text == null) return null;
+        String redacted = text.replaceAll("(?i)(token|signature|sign|sid|session|key)=([^&\\s]+)",
+                "$1=[REDACTED]");
+        return redacted.length() > 80 ? redacted.substring(0, 80) : redacted;
     }
 
     private record Window(Instant from, Instant to) {
@@ -2543,6 +3944,12 @@ public final class DhbOrderSyncService {
                                         FundDocumentCommand command) {
     }
 
+    private record SourceAttachmentRef(String sourceUrl, String originalName) {
+        String displayValue() {
+            return firstNonBlank(originalName, sourceUrl);
+        }
+    }
+
     private record PreparedSalesShipment(String sourceShipmentNo, String sourceOrderNo,
                                          SalesOrderDetailView salesOrder,
                                          SalesShipmentCommand command) {
@@ -2557,7 +3964,44 @@ public final class DhbOrderSyncService {
     }
 
     private record PreparedTransferStockOut(
-            String sourceShipmentNo, ExternalTransferStockOutProjectionCommand command) {
+            String sourceShipmentNo, String transferSourceDocumentNo,
+            ExternalTransferStockOutProjectionCommand command) {
+    }
+
+    private record PreparedTransferStockIn(
+            String sourceStockInNo, String transferSourceDocumentNo,
+            ExternalTransferStockInProjectionCommand command) {
+    }
+
+    private record PreparedTransferOrder(
+            String sourceTransferNo,
+            Long sourceWarehouseId,
+            Long targetWarehouseId,
+            Instant sourceCreatedAt,
+            String outboundOperatorStaffCode,
+            String outboundOperatorStaffName,
+            String inboundOperatorStaffCode,
+            String inboundOperatorStaffName,
+            List<ExternalTransferOrderProjectionLineCommand> lines,
+            ExternalTransferOrderProjectionCommand command) {
+        private PreparedTransferOrder {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+        }
+    }
+
+    private record TransferInboundMatch(
+            String sourceReceiptNo,
+            Long targetWarehouseId,
+            String targetWarehouseNo,
+            Instant inboundTime,
+            Instant stockOutTime,
+            String operatorStaffCode,
+            String operatorStaffName,
+            UUID manualResolutionId) {
+        private TransferInboundMatch withManualResolutionId(UUID value) {
+            return new TransferInboundMatch(sourceReceiptNo, targetWarehouseId, targetWarehouseNo,
+                    inboundTime, stockOutTime, operatorStaffCode, operatorStaffName, value);
+        }
     }
 
     private record PreparedGenericStockOut(
@@ -2574,6 +4018,14 @@ public final class DhbOrderSyncService {
                                              boolean duplicate) {
     }
 
+    private record ProjectedTransferStockIn(Long stockInOrderId, String stockInNo,
+                                            boolean duplicate) {
+    }
+
+    private record ProjectedTransferOrder(Long transferOrderId, String transferNo,
+                                          boolean duplicate) {
+    }
+
     private record InventoryStockOutLine(
             Long productId,
             Long productVariantId,
@@ -2586,6 +4038,16 @@ public final class DhbOrderSyncService {
     }
 
     private record StaffProjection(String staffCode, String staffName) {
+    }
+
+    private record TransferLineSignature(List<String> lines) {
+        TransferLineSignature {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+        }
+
+        boolean empty() {
+            return lines.isEmpty();
+        }
     }
 
     private static final class InventoryStockOutLineAccumulator {
@@ -2740,6 +4202,9 @@ public final class DhbOrderSyncService {
 
     private record MappingLookupKey(UUID tenantId, UUID connectorId,
                                     String sourceObjectType, String sourceObjectId) {
+    }
+
+    private record ReplayTarget(String sourceObjectType, String sourceId) {
     }
 
     private static final class Counts {

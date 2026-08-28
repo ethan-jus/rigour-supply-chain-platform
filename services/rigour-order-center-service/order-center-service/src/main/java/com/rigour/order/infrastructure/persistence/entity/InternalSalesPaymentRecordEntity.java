@@ -13,6 +13,9 @@ public class InternalSalesPaymentRecordEntity {
     private Long id;
     private String tenantId;
     private String paymentNo;
+    private String connectorId;
+    private String sourceSystemCode;
+    private String sourceDocumentNo;
     private Long orderId;
     private String salesOrderNoSnapshot;
     private Long customerId;
@@ -39,6 +42,12 @@ public class InternalSalesPaymentRecordEntity {
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getPaymentNo() { return paymentNo; }
     public void setPaymentNo(String paymentNo) { this.paymentNo = paymentNo; }
+    public String getConnectorId() { return connectorId; }
+    public void setConnectorId(String connectorId) { this.connectorId = connectorId; }
+    public String getSourceSystemCode() { return sourceSystemCode; }
+    public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
+    public String getSourceDocumentNo() { return sourceDocumentNo; }
+    public void setSourceDocumentNo(String sourceDocumentNo) { this.sourceDocumentNo = sourceDocumentNo; }
     public Long getOrderId() { return orderId; }
     public void setOrderId(Long orderId) { this.orderId = orderId; }
     public String getSalesOrderNoSnapshot() { return salesOrderNoSnapshot; }

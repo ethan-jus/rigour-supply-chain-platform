@@ -2,6 +2,8 @@ package com.rigour.erp.api;
 
 import com.rigour.erp.api.v1.ErpTransferOrderApi;
 import com.rigour.erp.api.v1.model.ExternalTransferStockOutProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferOrderProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferStockInProjectionCommand;
 import com.rigour.erp.api.v1.model.InternalTransferOrderCommand;
 import com.rigour.erp.api.v1.model.InternalTransferOrderDetailView;
 import com.rigour.erp.api.v1.model.InternalTransferOrderSummaryView;
@@ -62,6 +64,18 @@ public final class ErpTransferOrderController implements ErpTransferOrderApi {
     public ApiResponse<InternalTransferOrderDetailView> confirmExternalTransferStockOut(
             ExternalTransferStockOutProjectionCommand command) {
         return ApiResponse.success(transferOrderService.confirmExternalStockOut(command));
+    }
+
+    @Override
+    public ApiResponse<InternalTransferOrderDetailView> confirmExternalTransferStockIn(
+            ExternalTransferStockInProjectionCommand command) {
+        return ApiResponse.success(transferOrderService.confirmExternalStockIn(command));
+    }
+
+    @Override
+    public ApiResponse<InternalTransferOrderDetailView> upsertExternalTransferOrder(
+            ExternalTransferOrderProjectionCommand command) {
+        return ApiResponse.success(transferOrderService.upsertExternalTransferOrder(command));
     }
 
     @Override

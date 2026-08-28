@@ -45,7 +45,9 @@ import static org.mockito.Mockito.when;
 class ErpStockOutOrderServiceTest {
     private static final UUID TENANT_ID = UUID.fromString("019fb700-3300-7000-8000-000000000001");
     private static final UUID USER_ID = UUID.fromString("019fb700-3300-7000-8000-000000000002");
+    private static final UUID CONNECTOR_ID = UUID.fromString("019fb700-3300-7000-8000-000000000003");
     private static final String TENANT = TENANT_ID.toString();
+    private static final String CONNECTOR = CONNECTOR_ID.toString();
     private static final String ACTOR = USER_ID.toString();
     private static final Instant STOCK_OUT_TIME = Instant.parse("2026-08-31T04:00:00Z");
 
@@ -131,8 +133,8 @@ class ErpStockOutOrderServiceTest {
     void confirmExternalSalesStockOutIsIdempotentBySourceDocumentNotSalesOrder() {
         ErpStockOutOrderStore store = mock(ErpStockOutOrderStore.class);
         ErpStockOutOrderService service = new ErpStockOutOrderService(store, fixedGenerator());
-        TestAuthorizationContext.set(caller("erp:supply:write"));
-        when(store.stockOutOrderBySource(TENANT, "DINGHUOBAO", "FH.20260820.0001"))
+        TestAuthorizationContext.set(serviceCaller("erp:supply:write"));
+        when(store.stockOutOrderBySource(TENANT, CONNECTOR, "DINGHUOBAO", "FH.20260820.0001"))
                 .thenReturn(Optional.empty());
         when(store.warehouseActive(TENANT, 2L)).thenReturn(true);
         when(store.existsByStockOutNo(TENANT, "SO202608311234")).thenReturn(false);
@@ -146,19 +148,21 @@ class ErpStockOutOrderServiceTest {
         ArgumentCaptor<ExternalStockOutWrite> write = ArgumentCaptor.forClass(ExternalStockOutWrite.class);
         verify(store).confirmExternalStockOut(eq(TENANT), eq("SO202608311234"), write.capture(), eq(ACTOR));
         verify(store, never()).existsActiveSalesStockOut(eq(TENANT), any());
+        assertThat(write.getValue().connectorId()).isEqualTo(CONNECTOR);
         assertThat(write.getValue().sourceSystemCode()).isEqualTo("DINGHUOBAO");
         assertThat(write.getValue().sourceDocumentNo()).isEqualTo("FH.20260820.0001");
         assertThat(write.getValue().stockOutTypeCode()).isEqualTo("SALES");
         assertThat(write.getValue().salesOrderId()).isEqualTo(1L);
         assertThat(write.getValue().salesOrderNo()).isEqualTo("DD202608200001");
+        assertThat(write.getValue().lines().getFirst().flowNo()).startsWith("SF20260831120000000");
     }
 
     @Test
     void confirmExternalTransferStockOutMustUseTransferOrderFlow() {
         ErpStockOutOrderStore store = mock(ErpStockOutOrderStore.class);
         ErpStockOutOrderService service = new ErpStockOutOrderService(store, fixedGenerator());
-        TestAuthorizationContext.set(caller("erp:supply:write"));
-        when(store.stockOutOrderBySource(TENANT, "DINGHUOBAO", "FH.20260820.0002"))
+        TestAuthorizationContext.set(serviceCaller("erp:supply:write"));
+        when(store.stockOutOrderBySource(TENANT, CONNECTOR, "DINGHUOBAO", "FH.20260820.0002"))
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.confirmExternalStockOut(
@@ -172,10 +176,10 @@ class ErpStockOutOrderServiceTest {
     void confirmExternalStockOutReturnsExistingSourceWithoutInventoryWrite() {
         ErpStockOutOrderStore store = mock(ErpStockOutOrderStore.class);
         ErpStockOutOrderService service = new ErpStockOutOrderService(store, fixedGenerator());
-        TestAuthorizationContext.set(caller("erp:supply:write"));
+        TestAuthorizationContext.set(serviceCaller("erp:supply:write"));
         InternalStockOutOrderDetailView existing = detail(103L, "SO202608201999",
                 "DINGHUOBAO", "FH.20260820.0003", "SALES");
-        when(store.stockOutOrderBySource(TENANT, "DINGHUOBAO", "FH.20260820.0003"))
+        when(store.stockOutOrderBySource(TENANT, CONNECTOR, "DINGHUOBAO", "FH.20260820.0003"))
                 .thenReturn(Optional.of(existing));
 
         InternalStockOutOrderDetailView result =
@@ -189,8 +193,8 @@ class ErpStockOutOrderServiceTest {
     void confirmExternalGenericStockOutUsesInternalProductVariantSnapshot() {
         ErpStockOutOrderStore store = mock(ErpStockOutOrderStore.class);
         ErpStockOutOrderService service = new ErpStockOutOrderService(store, fixedGenerator());
-        TestAuthorizationContext.set(caller("erp:supply:write"));
-        when(store.stockOutOrderBySource(TENANT, "DINGHUOBAO", "FH.20260820.0099"))
+        TestAuthorizationContext.set(serviceCaller("erp:supply:write"));
+        when(store.stockOutOrderBySource(TENANT, CONNECTOR, "DINGHUOBAO", "FH.20260820.0099"))
                 .thenReturn(Optional.empty());
         when(store.warehouseActive(TENANT, 2L)).thenReturn(true);
         when(store.productVariant(TENANT, 20L, 21L)).thenReturn(Optional.of(
@@ -202,16 +206,18 @@ class ErpStockOutOrderServiceTest {
                         "FH.20260820.0099", "OTHER"));
 
         service.confirmExternalGenericStockOut(new ExternalGenericStockOutProjectionCommand(
-                "DINGHUOBAO", "FH.20260820.0099", "OTHER", 2L, STOCK_OUT_TIME,
+                CONNECTOR_ID, "DINGHUOBAO", "FH.20260820.0099", "OTHER", 2L, STOCK_OUT_TIME,
                 List.of(new ExternalGenericStockOutProjectionLineCommand(
                         20L, 21L, "SOURCE-PRD", "SOURCE-SKU", "订货宝商品",
                         null, new BigDecimal("2"), "订货宝其他出库")),
+                null,
                 "订货宝其他出库"));
 
         ArgumentCaptor<ExternalGenericStockOutWrite> write =
                 ArgumentCaptor.forClass(ExternalGenericStockOutWrite.class);
         verify(store).confirmExternalGenericStockOut(eq(TENANT), eq("SO202608311234"),
                 write.capture(), eq(ACTOR));
+        assertThat(write.getValue().connectorId()).isEqualTo(CONNECTOR);
         assertThat(write.getValue().sourceSystemCode()).isEqualTo("DINGHUOBAO");
         assertThat(write.getValue().sourceDocumentNo()).isEqualTo("FH.20260820.0099");
         assertThat(write.getValue().stockOutTypeCode()).isEqualTo("OTHER");
@@ -220,6 +226,20 @@ class ErpStockOutOrderServiceTest {
         assertThat(write.getValue().lines().getFirst().variantCode()).isEqualTo("SKU-ERP");
         assertThat(write.getValue().lines().getFirst().productName()).isEqualTo("ERP商品");
         assertThat(write.getValue().lines().getFirst().unitCode()).isEqualTo("BOX");
+        assertThat(write.getValue().lines().getFirst().flowNo()).startsWith("SF20260831120000000");
+    }
+
+    @Test
+    void tenantCannotCallExternalStockOutProjection() {
+        ErpStockOutOrderStore store = mock(ErpStockOutOrderStore.class);
+        ErpStockOutOrderService service = new ErpStockOutOrderService(store, fixedGenerator());
+        TestAuthorizationContext.set(caller("erp:supply:write"));
+
+        assertThatThrownBy(() -> service.confirmExternalStockOut(
+                externalCommand("FH.20260820.0100", "SALES")))
+                .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+
+        verify(store, never()).confirmExternalStockOut(eq(TENANT), any(), any(), eq(ACTOR));
     }
 
     private static InternalSalesStockOutCommand command() {
@@ -233,7 +253,7 @@ class ErpStockOutOrderServiceTest {
 
     private static ExternalStockOutProjectionCommand externalCommand(
             String sourceDocumentNo, String stockOutTypeCode) {
-        return new ExternalStockOutProjectionCommand("DINGHUOBAO", sourceDocumentNo,
+        return new ExternalStockOutProjectionCommand(CONNECTOR_ID, "DINGHUOBAO", sourceDocumentNo,
                 stockOutTypeCode, 2L,
                 "SALES".equals(stockOutTypeCode) ? 1L : null,
                 "SALES".equals(stockOutTypeCode) ? "DD202608200001" : null,
@@ -245,6 +265,7 @@ class ErpStockOutOrderServiceTest {
                         "SALES".equals(stockOutTypeCode) ? 10L : null,
                         null, 20L, 21L, "PRD-1", "SKU-1",
                         "酸麻粉面菜蛋", "BOX", new BigDecimal("2"), "订货宝出库")),
+                null,
                 "订货宝出库");
     }
 
@@ -272,6 +293,11 @@ class ErpStockOutOrderServiceTest {
 
     private static CallerIdentity caller(String permission) {
         return new CallerIdentity("TENANT", USER_ID, TENANT_ID, USER_ID, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of("erp"), Set.of(permission));
+    }
+
+    private static CallerIdentity serviceCaller(String permission) {
+        return new CallerIdentity("SERVICE", USER_ID, TENANT_ID, null, null,
                 UUID.randomUUID(), 0, 0, 0, Set.of("erp"), Set.of(permission));
     }
 }

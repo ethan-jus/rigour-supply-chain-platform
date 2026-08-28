@@ -40,6 +40,8 @@ public interface ErpStockInOrderStore {
     record ProcurementOrderSnapshot(
             Long id,
             String procurementNo,
+            String sourceSystemCode,
+            String sourceDocumentNo,
             Long supplierId,
             Long targetWarehouseId,
             String statusCode,

@@ -19,10 +19,12 @@ import java.util.TreeSet;
 import java.util.UUID;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 
 /** 领域服务登记外部对象到我方新业务对象映射的内部客户端。 */
 public final class ExternalObjectMappingClient {
     private static final String WRITE_PERMISSION = "integration:dhb:write";
+    private static final int MAX_BATCH_SIZE = 200;
 
     private final RestClient restClient;
     private final TrustedContextSigner signer;
@@ -46,14 +48,59 @@ public final class ExternalObjectMappingClient {
         if (commands == null || commands.isEmpty()) {
             return new ExternalObjectMappingBatchResult(0, 0);
         }
+        if (commands.size() > MAX_BATCH_SIZE) {
+            int accepted = 0;
+            for (int begin = 0; begin < commands.size(); begin += MAX_BATCH_SIZE) {
+                int end = Math.min(begin + MAX_BATCH_SIZE, commands.size());
+                ExternalObjectMappingBatchResult result = upsertOnce(tenantId, commands.subList(begin, end));
+                accepted += result == null ? 0 : result.accepted();
+            }
+            return new ExternalObjectMappingBatchResult(commands.size(), accepted);
+        }
+        return upsertOnce(tenantId, commands);
+    }
+
+    private ExternalObjectMappingBatchResult upsertOnce(UUID tenantId,
+                                                        List<ExternalObjectMappingCommand> commands) {
         CallerIdentity caller = serviceCaller(tenantId);
         return restClient.post().uri(uri)
                 .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.APPLICATION_JSON)
                 .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
                 .body(new ExternalObjectMappingBatchCommand(commands))
-                .retrieve()
-                .body(ExternalObjectMappingBatchResult.class);
+                .exchange((request, response) -> {
+                    byte[] body = response.getBody().readAllBytes();
+                    if (response.getStatusCode().isError()) {
+                        throw new RestClientException("Integration mapping upsert failed status="
+                                + response.getStatusCode().value() + " body=" + body(body));
+                    }
+                    return parseBatchResult(body);
+                });
+    }
+
+    private static ExternalObjectMappingBatchResult parseBatchResult(byte[] body) {
+        String json = body(body);
+        return new ExternalObjectMappingBatchResult(
+                intValue(json, "requested"),
+                intValue(json, "accepted"));
+    }
+
+    private static int intValue(String json, String field) {
+        String marker = "\"" + field + "\"";
+        int key = json.indexOf(marker);
+        if (key < 0) return 0;
+        int colon = json.indexOf(':', key + marker.length());
+        if (colon < 0) return 0;
+        int start = colon + 1;
+        while (start < json.length() && Character.isWhitespace(json.charAt(start))) start++;
+        int end = start;
+        while (end < json.length() && Character.isDigit(json.charAt(end))) end++;
+        return end == start ? 0 : Integer.parseInt(json.substring(start, end));
+    }
+
+    private static String body(byte[] body) {
+        return body == null ? "" : new String(body, StandardCharsets.UTF_8);
     }
 
     private CallerIdentity serviceCaller(UUID tenantId) {

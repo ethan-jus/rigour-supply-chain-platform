@@ -30,6 +30,8 @@ import org.springframework.web.util.UriComponentsBuilder;
 public final class HttpDhbCrmMasterDataClient implements DhbCrmMasterDataClient {
     private static final int DEFAULT_PAGE_SIZE = 100;
     private static final int MAX_PAGE_SIZE = 500;
+    private static final int DHB_ALL_CUSTOMER_STATUS = 3;
+    private static final int DHB_ALL_SYNC_DATA = 3;
 
     private final RestClient client;
     private final TrustedContextSigner signer;
@@ -95,7 +97,8 @@ public final class HttpDhbCrmMasterDataClient implements DhbCrmMasterDataClient 
     private Collected customers(CallerIdentity caller, UUID connectorId, int maxPages) {
         return collectPages(CrmMasterDataObjectType.CUSTOMER, maxPages, begin -> {
             CustomerQueryCommand command = new CustomerQueryCommand(
-                    begin, pageSize, 3, 3, null, null, null, null, null, null);
+                    begin, pageSize, DHB_ALL_CUSTOMER_STATUS, DHB_ALL_SYNC_DATA,
+                    null, null, null, null, null, null);
             return post(caller, customerPath(connectorId, "query"), command,
                     CustomerPageView.class);
         }, CustomerPageView::total, CustomerPageView::items,

@@ -4,6 +4,8 @@ import com.rigour.erp.api.v1.ErpStockOutOrderApi;
 import com.rigour.erp.api.v1.ErpTransferOrderApi;
 import com.rigour.erp.api.v1.model.ExternalGenericStockOutProjectionCommand;
 import com.rigour.erp.api.v1.model.ExternalStockOutProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferOrderProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferStockInProjectionCommand;
 import com.rigour.erp.api.v1.model.ExternalTransferStockOutProjectionCommand;
 import com.rigour.erp.api.v1.model.InternalStockOutOrderDetailView;
 import com.rigour.erp.api.v1.model.InternalTransferOrderDetailView;
@@ -14,13 +16,18 @@ import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.shared.core.api.ApiResponse;
 import java.net.URI;
 import java.util.Objects;
-import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
+import tools.jackson.core.type.TypeReference;
 
 /** Integration 到 ERP 外部出库投影 HTTP 客户端。 */
 public final class HttpErpStockOutProjectionClient implements ErpStockOutProjectionClient {
+    private static final TypeReference<ApiResponse<InternalStockOutOrderDetailView>> STOCK_OUT_RESPONSE =
+            new TypeReference<>() { };
+    private static final TypeReference<ApiResponse<InternalTransferOrderDetailView>> TRANSFER_RESPONSE =
+            new TypeReference<>() { };
+
     private final RestClient restClient;
     private final TrustedContextSigner signer;
     private final URI baseUri;
@@ -53,8 +60,8 @@ public final class HttpErpStockOutProjectionClient implements ErpStockOutProject
                         .forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, SignedDomainRequest.requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, STOCK_OUT_RESPONSE, "ERP外部出库投影"));
         return SignedDomainRequest.required(response, "ERP外部出库投影");
     }
 
@@ -78,9 +85,59 @@ public final class HttpErpStockOutProjectionClient implements ErpStockOutProject
                         .forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, SignedDomainRequest.requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, TRANSFER_RESPONSE, "ERP外部调拨出库投影"));
         return SignedDomainRequest.required(response, "ERP外部调拨出库投影");
+    }
+
+    @Override
+    public InternalTransferOrderDetailView confirmExternalTransferStockIn(
+            CallerIdentity caller, ExternalTransferStockInProjectionCommand command) {
+        if (caller == null || caller.tenantId() == null) {
+            throw new IllegalArgumentException("ERP外部调拨入库投影必须携带租户上下文");
+        }
+        if (command == null) throw new IllegalArgumentException("ERP外部调拨入库投影请求不能为空");
+        URI uri = UriComponentsBuilder.fromUri(baseUri)
+                .path(ErpTransferOrderApi.BASE_PATH)
+                .path("/external-stock-in-confirmations")
+                .build()
+                .encode()
+                .toUri();
+        ApiResponse<InternalTransferOrderDetailView> response = restClient.post().uri(uri)
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.APPLICATION_JSON)
+                .headers(headers -> SignedDomainRequest.signedHeaders(signer, "POST", uri, caller)
+                        .forEach(headers::set))
+                .header(RequestHeaders.REQUEST_ID, SignedDomainRequest.requestId())
+                .body(command)
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, TRANSFER_RESPONSE, "ERP外部调拨入库投影"));
+        return SignedDomainRequest.required(response, "ERP外部调拨入库投影");
+    }
+
+    @Override
+    public InternalTransferOrderDetailView upsertExternalTransferOrder(
+            CallerIdentity caller, ExternalTransferOrderProjectionCommand command) {
+        if (caller == null || caller.tenantId() == null) {
+            throw new IllegalArgumentException("ERP外部调拨主单投影必须携带租户上下文");
+        }
+        if (command == null) throw new IllegalArgumentException("ERP外部调拨主单投影请求不能为空");
+        URI uri = UriComponentsBuilder.fromUri(baseUri)
+                .path(ErpTransferOrderApi.BASE_PATH)
+                .path("/external-projections")
+                .build()
+                .encode()
+                .toUri();
+        ApiResponse<InternalTransferOrderDetailView> response = restClient.post().uri(uri)
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.APPLICATION_JSON)
+                .headers(headers -> SignedDomainRequest.signedHeaders(signer, "POST", uri, caller)
+                        .forEach(headers::set))
+                .header(RequestHeaders.REQUEST_ID, SignedDomainRequest.requestId())
+                .body(command)
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, TRANSFER_RESPONSE, "ERP外部调拨主单投影"));
+        return SignedDomainRequest.required(response, "ERP外部调拨主单投影");
     }
 
     @Override
@@ -103,8 +160,8 @@ public final class HttpErpStockOutProjectionClient implements ErpStockOutProject
                         .forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, SignedDomainRequest.requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, STOCK_OUT_RESPONSE, "ERP外部通用出库投影"));
         return SignedDomainRequest.required(response, "ERP外部通用出库投影");
     }
 }

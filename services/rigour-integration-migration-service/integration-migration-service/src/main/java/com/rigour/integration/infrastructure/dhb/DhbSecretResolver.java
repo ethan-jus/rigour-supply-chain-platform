@@ -10,17 +10,22 @@ public interface DhbSecretResolver {
 
     Credentials resolve(String secretRef);
 
-    record Credentials(String serialNumber, String password) {
+    record Credentials(String serialNumber, String password, String adminCookie) {
         public Credentials {
             if (serialNumber == null || serialNumber.isBlank()
                     || password == null || password.isBlank()) {
                 throw new IllegalArgumentException("订货宝 Secret 未提供接口账号或密码");
             }
+            adminCookie = adminCookie == null || adminCookie.isBlank() ? null : adminCookie.strip();
+        }
+
+        public Credentials(String serialNumber, String password) {
+            this(serialNumber, password, null);
         }
 
         @Override
         public String toString() {
-            return "Credentials[serialNumber=[REDACTED], password=[REDACTED]]";
+            return "Credentials[serialNumber=[REDACTED], password=[REDACTED], adminCookie=[REDACTED]]";
         }
     }
 }

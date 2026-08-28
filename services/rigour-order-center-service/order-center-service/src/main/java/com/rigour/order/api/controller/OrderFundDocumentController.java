@@ -21,13 +21,13 @@ public final class OrderFundDocumentController implements OrderFundDocumentApi {
 
     @Override
     public ApiResponse<OrderPageView<FundDocumentSummaryView>> fundDocuments(
-            int begin, int step, String directionCode, String documentNo, String salesOrderNo,
-            String counterpartyName, String handlerStaffCode, String settlementMethodCode,
-            String businessTypeCode, String documentStatusCode,
+            int begin, int step, String keyword, String directionCode, String documentNo, String sourceDocumentNo,
+            String salesOrderNo, String sourceOrderNo, String paymentSerialNo, String counterpartyName,
+            String handlerStaffCode, String settlementMethodCode, String businessTypeCode, String documentStatusCode,
             Instant occurredTimeFrom, Instant occurredTimeTo) {
-        return ApiResponse.success(service.fundDocuments(begin, step, directionCode, documentNo, salesOrderNo,
-                counterpartyName, handlerStaffCode, settlementMethodCode, businessTypeCode, documentStatusCode,
-                occurredTimeFrom, occurredTimeTo));
+        return ApiResponse.success(service.fundDocuments(begin, step, keyword, directionCode, documentNo,
+                sourceDocumentNo, salesOrderNo, sourceOrderNo, paymentSerialNo, counterpartyName, handlerStaffCode,
+                settlementMethodCode, businessTypeCode, documentStatusCode, occurredTimeFrom, occurredTimeTo));
     }
 
     @Override

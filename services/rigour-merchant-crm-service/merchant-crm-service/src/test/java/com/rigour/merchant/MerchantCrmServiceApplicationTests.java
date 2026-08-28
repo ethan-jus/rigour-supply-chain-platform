@@ -341,12 +341,12 @@ class MerchantCrmServiceApplicationTests {
 
         UUID absentRun1 = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.ADDRESS);
         finish(tenantId, connectorId, absentRun1, CrmMasterDataObjectType.ADDRESS,
-                new ImportResult(0, 0, 0, 0, 0));
+                new ImportResult(0, 0, 0, 0, 0, 0));
         assertThat(sourcePresence(tenantId, connectorId)).isEqualTo("ABSENT_CANDIDATE");
 
         UUID absentRun2 = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.ADDRESS);
         finish(tenantId, connectorId, absentRun2, CrmMasterDataObjectType.ADDRESS,
-                new ImportResult(0, 0, 0, 0, 0));
+                new ImportResult(0, 0, 0, 0, 0, 0));
         assertThat(sourcePresence(tenantId, connectorId)).isEqualTo("ABSENT");
     }
 
@@ -397,7 +397,7 @@ class MerchantCrmServiceApplicationTests {
     private void finish(UUID tenantId, UUID connectorId, UUID runId,
                         CrmMasterDataObjectType type, ImportResult result) {
         long fetched = result.created() + result.changed() + result.repaired()
-                + result.duplicates() + result.rejected();
+                + result.duplicates() + result.rejected() + result.unmapped();
         store.completeRun(tenantId, connectorId, runId, type,
                 new RunStatistics(fetched, result.created(), result.changed(), result.repaired(),
                         result.duplicates(), 0, result.rejected(), 1), true);

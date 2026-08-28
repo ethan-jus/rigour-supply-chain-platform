@@ -25,9 +25,10 @@ public class SalesAssignmentEntity {
     public LocalDateTime effectiveTo;
     public String status;
     public String reason;
-    public Long version;
-    public byte[] createdBy;
-    public byte[] updatedBy;
-    public LocalDateTime createdAt;
-    public LocalDateTime updatedAt;
+    public Long revision;
+    public String createdBy;
+    public String updatedBy;
+    public LocalDateTime createdTime;
+    public LocalDateTime updatedTime;
+    public Integer deleted;
 }

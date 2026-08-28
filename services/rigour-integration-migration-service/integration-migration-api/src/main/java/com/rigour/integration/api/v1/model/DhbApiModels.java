@@ -74,8 +74,16 @@ public final class DhbApiModels {
                                   String status, Instant nextRunAt, long version) {
     }
 
-    /** 手动订单同步请求；首次联调建议显式提供时间窗口，避免误拉全量数据。 */
-    public record SyncRunCommand(Instant from, Instant to, Integer pageSize) {
+    /**
+     * 手动订单同步请求；首次联调建议显式提供时间窗口，避免误拉全量数据。
+     *
+     * <p>传入 sourceObjectType/sourceId 时表示单对象重放，不执行窗口扫描、不推进 checkpoint。</p>
+     */
+    public record SyncRunCommand(Instant from, Instant to, Integer pageSize,
+                                 String sourceObjectType, String sourceId) {
+        public SyncRunCommand(Instant from, Instant to, Integer pageSize) {
+            this(from, to, pageSize, null, null);
+        }
     }
 
     /** 手动同步结果；不包含第三方凭据、令牌或原始回执。 */
@@ -140,7 +148,12 @@ public final class DhbApiModels {
                                     Integer splitType) {
     }
 
-    /** 订单明细查询命令；自动标记和自动审核必须由调用方显式决定。 */
+    /**
+     * 订单明细查询命令。
+     *
+     * <p>历史版本允许传自动标记和自动审核开关；当前订货宝只读策略下服务端会忽略这两个字段，
+     * 始终以 {@code isAutoSign=2/isAutoAudit=2} 调用第三方接口。</p>
+     */
     public record OrderContentCommand(Boolean autoMarkDownloaded, Boolean autoAudit) {
     }
 
@@ -212,6 +225,7 @@ public final class DhbApiModels {
     }
 
     public record ProductView(String sourceId, String code, String name, String putaway,
+                              String sourceLifecycle,
                               String barcode, String unit, String categorySourceId,
                               String brandSourceId, String model, String subtitle,
                               String keywords, String allocation, String mainImageKey,
@@ -229,7 +243,7 @@ public final class DhbApiModels {
                            String barcode, String unit, String categorySourceId,
                            String brandSourceId, List<ProductSkuView> skus,
                            Map<String, Object> sourceFields) {
-            this(sourceId, code, name, putaway, barcode, unit, categorySourceId, brandSourceId,
+            this(sourceId, code, name, putaway, "UNKNOWN", barcode, unit, categorySourceId, brandSourceId,
                     null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null,
                     List.of(), Map.of(), skus,
@@ -237,6 +251,8 @@ public final class DhbApiModels {
         }
 
         public ProductView {
+            sourceLifecycle = sourceLifecycle == null || sourceLifecycle.isBlank()
+                    ? "UNKNOWN" : sourceLifecycle.strip();
             images = images == null ? List.of() : List.copyOf(images);
             customFields = customFields == null ? Map.of() : Map.copyOf(customFields);
             skus = skus == null ? List.of() : List.copyOf(skus);

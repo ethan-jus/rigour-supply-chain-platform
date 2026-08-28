@@ -14,8 +14,10 @@ public class CustomerTypeEntity {
     public String status;
     public String ownershipState;
     public String recordOrigin;
-    public Long version;
-    public LocalDateTime createdAt;
-    public LocalDateTime updatedAt;
-    public LocalDateTime deletedAt;
+    public Long revision;
+    public String createdBy;
+    public LocalDateTime createdTime;
+    public String updatedBy;
+    public LocalDateTime updatedTime;
+    public Integer deleted;
 }

@@ -14,6 +14,8 @@ import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
 import com.rigour.integration.api.v1.model.DhbExternalObjectMappingPageView;
 import com.rigour.integration.api.v1.model.DhbExternalObjectMappingView;
+import com.rigour.integration.api.v1.model.DhbManualResolutionCommand;
+import com.rigour.integration.api.v1.model.DhbManualResolutionView;
 import com.rigour.integration.api.v1.model.DhbSyncExceptionView;
 import com.rigour.integration.api.v1.model.DhbSyncLogDetailView;
 import com.rigour.integration.api.v1.model.DhbSyncReconciliationCaseView;
@@ -25,6 +27,7 @@ import com.rigour.integration.infrastructure.persistence.entity.DhbConnectorEnti
 import com.rigour.integration.infrastructure.persistence.entity.ExternalObjectMappingEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationDeadLetterEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationFieldMappingEntity;
+import com.rigour.integration.infrastructure.persistence.entity.IntegrationManualResolutionEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationOrderMirrorEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationRawLandingEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationReconciliationCaseEntity;
@@ -35,6 +38,7 @@ import com.rigour.integration.infrastructure.persistence.mapper.DhbConnectorMapp
 import com.rigour.integration.infrastructure.persistence.mapper.ExternalObjectMappingMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationDeadLetterMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFieldMappingMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationManualResolutionMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationOrderMirrorMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationRawLandingMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationReconciliationCaseMapper;
@@ -42,6 +46,7 @@ import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncL
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncRunMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncTaskMapper;
 import com.rigour.shared.context.AuthorizationDeniedException;
+import com.rigour.shared.core.sync.ExternalSourceCodes;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -49,6 +54,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -70,7 +76,9 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
     private static final Set<String> TASK_STATUSES = Set.of("IDLE", "RUNNING", "PAUSED", "FAILED", "COMPLETED");
     private static final Set<String> TRANSFORM_TYPES = Set.of("DIRECT", "CONSTANT", "EXPRESSION", "DICTIONARY");
     private static final Set<String> MAPPING_STATUSES = Set.of("ACTIVE", "REMOVED", "CONFLICT", "IGNORED");
-    private static final String DEFAULT_SOURCE_SYSTEM = "DHB";
+    private static final Set<String> MANUAL_RESOLUTION_TYPES = Set.of("TRANSFER_INBOUND_RECEIPT");
+    private static final Set<String> MANUAL_RESOLUTION_STATUSES = Set.of("ACTIVE", "SUPERSEDED", "CANCELLED");
+    private static final String DEFAULT_SOURCE_SYSTEM = ExternalSourceCodes.INTEGRATION_DHB;
 
     private final DhbConnectorMapper connectorMapper;
     private final IntegrationSyncTaskMapper taskMapper;
@@ -81,6 +89,7 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
     private final IntegrationSyncRunMapper syncRunMapper;
     private final IntegrationDeadLetterMapper deadLetterMapper;
     private final IntegrationReconciliationCaseMapper reconciliationCaseMapper;
+    private final IntegrationManualResolutionMapper manualResolutionMapper;
     private final IntegrationRawLandingMapper rawLandingMapper;
     private final TransactionTemplate transaction;
     private final ObjectMapper objectMapper;
@@ -95,6 +104,7 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
             IntegrationSyncRunMapper syncRunMapper,
             IntegrationDeadLetterMapper deadLetterMapper,
             IntegrationReconciliationCaseMapper reconciliationCaseMapper,
+            IntegrationManualResolutionMapper manualResolutionMapper,
             IntegrationRawLandingMapper rawLandingMapper,
             PlatformTransactionManager transactionManager,
             ObjectMapper objectMapper) {
@@ -107,6 +117,7 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
         this.syncRunMapper = syncRunMapper;
         this.deadLetterMapper = deadLetterMapper;
         this.reconciliationCaseMapper = reconciliationCaseMapper;
+        this.manualResolutionMapper = manualResolutionMapper;
         this.rawLandingMapper = rawLandingMapper;
         this.transaction = new TransactionTemplate(transactionManager);
         this.objectMapper = objectMapper;
@@ -366,10 +377,12 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
     public int saveExternalObjectMappings(UUID tenantId, UUID actorId,
                                           List<ExternalObjectMappingCommand> commands) {
         if (commands == null || commands.isEmpty()) return 0;
+        Map<ExternalMappingKey, ExternalObjectMappingEntity> existingRows =
+                externalObjectMappingRows(tenantId, commands);
         Integer accepted = transaction.execute(status -> {
             int count = 0;
             for (ExternalObjectMappingCommand command : commands) {
-                saveExternalObjectMapping(tenantId, actorId, command);
+                saveExternalObjectMapping(tenantId, actorId, command, existingRows);
                 count++;
             }
             return count;
@@ -456,6 +469,101 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
     }
 
     @Override
+    public List<DhbManualResolutionView> manualResolutions(
+            UUID tenantId, String resolutionType, String sourceObjectType,
+            String sourceId, String status, int limit) {
+        String normalizedResolutionType = optionalCode(resolutionType);
+        String normalizedSourceObjectType = optionalCode(sourceObjectType);
+        String normalizedStatus = status == null || status.isBlank()
+                ? null
+                : allowed(status, MANUAL_RESOLUTION_STATUSES, "status");
+        String sourceKey = blankToNull(sourceId);
+        return manualResolutionMapper.selectList(Wrappers.<IntegrationManualResolutionEntity>query()
+                        .eq("tenant_id", bin(tenantId))
+                        .eq("source_system", DEFAULT_SOURCE_SYSTEM)
+                        .eq(normalizedResolutionType != null, "resolution_type", normalizedResolutionType)
+                        .eq(normalizedSourceObjectType != null, "source_object_type", normalizedSourceObjectType)
+                        .eq(sourceKey != null, "source_id", sourceKey)
+                        .eq(normalizedStatus != null, "status", normalizedStatus)
+                        .orderByDesc("updated_at", "created_at")
+                        .last("LIMIT " + safeLimit(limit)))
+                .stream().map(MybatisPlusDhbIntegrationStore::manualResolution).toList();
+    }
+
+    @Override
+    public DhbManualResolutionView createManualResolution(
+            UUID tenantId, UUID actorId, DhbManualResolutionCommand command) {
+        if (command == null) throw new IllegalArgumentException("manual resolution command is required");
+        UUID connectorId = requireUuid(command.connectorId(), "connectorId");
+        String resolutionType = allowed(command.resolutionType(), MANUAL_RESOLUTION_TYPES, "resolutionType");
+        String sourceObjectType = optionalCode(command.sourceObjectType());
+        if (sourceObjectType == null) throw new IllegalArgumentException("sourceObjectType is required");
+        String requestedSelectedSourceObjectType = optionalCode(command.selectedSourceObjectType());
+        if (requestedSelectedSourceObjectType == null && "TRANSFER_INBOUND_RECEIPT".equals(resolutionType)) {
+            requestedSelectedSourceObjectType = "WAREHOUSING_RECEIPT";
+        }
+        if (requestedSelectedSourceObjectType == null) {
+            throw new IllegalArgumentException("selectedSourceObjectType is required");
+        }
+        String selectedSourceObjectType = requestedSelectedSourceObjectType;
+        if ("TRANSFER_INBOUND_RECEIPT".equals(resolutionType)) {
+            if (!"ERP_STOCK_OUT".equals(sourceObjectType)) {
+                throw new IllegalArgumentException(
+                        "TRANSFER_INBOUND_RECEIPT requires sourceObjectType ERP_STOCK_OUT");
+            }
+            if (!"WAREHOUSING_RECEIPT".equals(selectedSourceObjectType)) {
+                throw new IllegalArgumentException(
+                        "TRANSFER_INBOUND_RECEIPT requires selectedSourceObjectType WAREHOUSING_RECEIPT");
+            }
+        }
+        String sourceId = required(command.sourceId(), "sourceId");
+        String selectedSourceId = required(command.selectedSourceId(), "selectedSourceId");
+        String reason = required(command.reason(), "reason");
+        String evidenceJson = writeJson(command.evidence() == null ? Map.of() : command.evidence());
+        String selectedInternalObjectType = optionalCode(command.selectedInternalObjectType());
+        Long selectedInternalObjectId = command.selectedInternalObjectId();
+
+        return transaction.execute(txStatus -> {
+            LocalDateTime now = now();
+            manualResolutionMapper.update(null, Wrappers.<IntegrationManualResolutionEntity>update()
+                    .set("status", "SUPERSEDED")
+                    .set("updated_at", now)
+                    .set("updated_by", bin(actorId))
+                    .setSql("version=version+1")
+                    .eq("tenant_id", bin(tenantId))
+                    .eq("source_system", DEFAULT_SOURCE_SYSTEM)
+                    .eq("connector_id", bin(connectorId))
+                    .eq("resolution_type", resolutionType)
+                    .eq("source_object_type", sourceObjectType)
+                    .eq("source_id", sourceId)
+                    .eq("status", "ACTIVE"));
+
+            IntegrationManualResolutionEntity row = new IntegrationManualResolutionEntity();
+            row.id = bin(UUID.randomUUID());
+            row.tenantId = bin(tenantId);
+            row.connectorId = bin(connectorId);
+            row.sourceSystem = DEFAULT_SOURCE_SYSTEM;
+            row.resolutionType = resolutionType;
+            row.sourceObjectType = sourceObjectType;
+            row.sourceId = sourceId;
+            row.selectedSourceObjectType = selectedSourceObjectType;
+            row.selectedSourceId = selectedSourceId;
+            row.selectedInternalObjectType = selectedInternalObjectType;
+            row.selectedInternalObjectId = selectedInternalObjectId;
+            row.evidenceJson = evidenceJson;
+            row.reason = truncate(reason, 1000);
+            row.status = "ACTIVE";
+            row.version = 0L;
+            row.createdAt = now;
+            row.createdBy = bin(actorId);
+            row.updatedAt = now;
+            row.updatedBy = bin(actorId);
+            manualResolutionMapper.insert(row);
+            return manualResolution(row);
+        });
+    }
+
+    @Override
     public void persistRawLanding(UUID tenantId, UUID connectorId, String sourceObjectType,
                                   String sourceId, Instant sourceUpdatedAt,
                                   Map<String, Object> payload) {
@@ -466,14 +574,17 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
     @Override
     public void persistRawLandings(UUID tenantId, UUID connectorId, List<RawLanding> values) {
         if (values == null || values.isEmpty()) return;
+        List<RawLandingRow> rows = values.stream().map(this::prepareRawLanding).toList();
+        Set<RawLandingKey> existingKeys = existingRawLandingKeys(tenantId, connectorId, rows);
         transaction.executeWithoutResult(status -> {
-            for (RawLanding value : values) {
-                RawLandingRow row = prepareRawLanding(value);
+            for (RawLandingRow row : rows) {
+                RawLandingKey key = row.key();
+                if (existingKeys.contains(key)) continue;
                 IntegrationRawLandingEntity entity = new IntegrationRawLandingEntity();
                 entity.id = bin(row.id());
                 entity.tenantId = bin(tenantId);
                 entity.connectorId = bin(connectorId);
-                entity.sourceSystem = "DHB";
+                entity.sourceSystem = DEFAULT_SOURCE_SYSTEM;
                 entity.sourceObjectType = row.objectType();
                 entity.sourceId = row.sourceId();
                 entity.sourceVersion = row.sourceVersion();
@@ -486,11 +597,44 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
                 entity.version = 0L;
                 try {
                     rawLandingMapper.insert(entity);
+                    existingKeys.add(key);
                 } catch (DuplicateKeyException ignored) {
                     // 同一来源同一payload已经落库时保持幂等。
+                    existingKeys.add(key);
                 }
             }
         });
+    }
+
+    private Set<RawLandingKey> existingRawLandingKeys(UUID tenantId, UUID connectorId,
+                                                      List<RawLandingRow> rows) {
+        if (rows == null || rows.isEmpty()) return Set.of();
+        Map<String, List<RawLandingRow>> rowsByType = new LinkedHashMap<>();
+        for (RawLandingRow row : rows) {
+            rowsByType.computeIfAbsent(row.objectType(), ignored -> new ArrayList<>()).add(row);
+        }
+        Set<RawLandingKey> result = new java.util.LinkedHashSet<>();
+        for (Map.Entry<String, List<RawLandingRow>> entry : rowsByType.entrySet()) {
+            List<String> sourceIds = entry.getValue().stream()
+                    .map(RawLandingRow::sourceId)
+                    .distinct()
+                    .toList();
+            List<String> checksums = entry.getValue().stream()
+                    .map(RawLandingRow::checksum)
+                    .distinct()
+                    .toList();
+            for (IntegrationRawLandingEntity row : rawLandingMapper.selectList(
+                    Wrappers.<IntegrationRawLandingEntity>query()
+                            .eq("tenant_id", bin(tenantId))
+                            .eq("connector_id", bin(connectorId))
+                            .eq("source_system", DEFAULT_SOURCE_SYSTEM)
+                            .eq("source_object_type", entry.getKey())
+                            .in("source_id", sourceIds)
+                            .in("payload_checksum", checksums))) {
+                result.add(new RawLandingKey(row.sourceObjectType, row.sourceId, row.payloadChecksum));
+            }
+        }
+        return result;
     }
 
     private QueryWrapper<ExternalObjectMappingEntity> externalMappingQuery(
@@ -507,7 +651,8 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
     }
 
     private void saveExternalObjectMapping(UUID tenantId, UUID actorId,
-                                           ExternalObjectMappingCommand command) {
+                                           ExternalObjectMappingCommand command,
+                                           Map<ExternalMappingKey, ExternalObjectMappingEntity> existingRows) {
         if (command == null) throw new IllegalArgumentException("mapping command is required");
         UUID connectorId = requireUuid(command.connectorId(), "connectorId");
         String sourceSystem = optionalCode(command.sourceSystem());
@@ -528,8 +673,11 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
         }
 
         LocalDateTime now = now();
-        ExternalObjectMappingEntity row = externalObjectMappingRow(
-                tenantId, connectorId, sourceSystem, sourceType, sourceId);
+        ExternalMappingKey key = new ExternalMappingKey(connectorId, sourceSystem, sourceType, sourceId);
+        ExternalObjectMappingEntity row = existingRows == null ? null : existingRows.get(key);
+        if (row == null && existingRows == null) {
+            row = externalObjectMappingRow(tenantId, connectorId, sourceSystem, sourceType, sourceId);
+        }
         if (row == null) {
             row = new ExternalObjectMappingEntity();
             row.id = bin(UUID.randomUUID());
@@ -544,12 +692,49 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
             applyExternalObjectMapping(row, command, mappingStatus, internalDomain,
                     internalObjectType, now, actorId);
             externalObjectMappingMapper.insert(row);
+            if (existingRows != null) existingRows.put(key, row);
         } else {
             applyExternalObjectMapping(row, command, mappingStatus, internalDomain,
                     internalObjectType, now, actorId);
             row.version = zero(row.version) + 1;
             externalObjectMappingMapper.updateById(row);
         }
+    }
+
+    private Map<ExternalMappingKey, ExternalObjectMappingEntity> externalObjectMappingRows(
+            UUID tenantId, List<ExternalObjectMappingCommand> commands) {
+        Map<ExternalMappingGroup, List<String>> sourceIds = new LinkedHashMap<>();
+        for (ExternalObjectMappingCommand command : commands) {
+            if (command == null) continue;
+            UUID connectorId = command.connectorId();
+            String sourceSystem = optionalCode(command.sourceSystem());
+            if (sourceSystem == null) sourceSystem = DEFAULT_SOURCE_SYSTEM;
+            String sourceType = optionalCode(command.sourceObjectType());
+            String sourceId = blankToNull(command.sourceObjectId());
+            if (connectorId == null || sourceType == null || sourceId == null) continue;
+            ExternalMappingGroup group = new ExternalMappingGroup(connectorId, sourceSystem, sourceType);
+            sourceIds.computeIfAbsent(group, ignored -> new ArrayList<>()).add(sourceId);
+        }
+        Map<ExternalMappingKey, ExternalObjectMappingEntity> result = new LinkedHashMap<>();
+        for (Map.Entry<ExternalMappingGroup, List<String>> entry : sourceIds.entrySet()) {
+            ExternalMappingGroup group = entry.getKey();
+            List<String> ids = entry.getValue().stream().distinct().toList();
+            List<ExternalObjectMappingEntity> rows = externalObjectMappingMapper.selectList(
+                    Wrappers.<ExternalObjectMappingEntity>query()
+                            .eq("tenant_id", bin(tenantId))
+                            .eq("connector_id", bin(group.connectorId()))
+                            .eq("source_system", group.sourceSystem())
+                            .eq("source_object_type", group.sourceType())
+                            .in("source_object_id", ids));
+            for (ExternalObjectMappingEntity row : rows) {
+                result.put(new ExternalMappingKey(
+                        IntegrationUuidCodec.decode(row.connectorId),
+                        row.sourceSystem,
+                        row.sourceObjectType,
+                        row.sourceObjectId), row);
+            }
+        }
+        return result;
     }
 
     private ExternalObjectMappingEntity externalObjectMappingRow(
@@ -561,6 +746,12 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
                 .eq("source_object_type", sourceType)
                 .eq("source_object_id", sourceId)
                 .last("LIMIT 1")));
+    }
+
+    private record ExternalMappingGroup(UUID connectorId, String sourceSystem, String sourceType) {
+    }
+
+    private record ExternalMappingKey(UUID connectorId, String sourceSystem, String sourceType, String sourceId) {
     }
 
     private static void applyExternalObjectMapping(
@@ -816,6 +1007,17 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
                 instant(row.resolvedAt), instant(row.createdAt), instant(row.updatedAt));
     }
 
+    private static DhbManualResolutionView manualResolution(IntegrationManualResolutionEntity row) {
+        return new DhbManualResolutionView(IntegrationUuidCodec.decode(row.id),
+                IntegrationUuidCodec.decode(row.tenantId),
+                IntegrationUuidCodec.decode(row.connectorId), row.sourceSystem,
+                row.resolutionType, row.sourceObjectType, row.sourceId,
+                row.selectedSourceObjectType, row.selectedSourceId,
+                row.selectedInternalObjectType, row.selectedInternalObjectId,
+                row.evidenceJson, row.reason, row.status,
+                instant(row.createdAt), instant(row.updatedAt));
+    }
+
     private static <T> T first(List<T> rows) {
         return rows == null || rows.isEmpty() ? null : rows.getFirst();
     }
@@ -855,6 +1057,14 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
 
     private static void requireChanged(int changed) {
         if (changed != 1) throw new IllegalStateException("Record changed concurrently or no longer exists");
+    }
+
+    private String writeJson(Map<String, Object> values) {
+        try {
+            return objectMapper.writeValueAsString(values == null ? Map.of() : values);
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("订货宝人工裁决证据序列化失败", exception);
+        }
     }
 
     private static String required(String value, String field) {
@@ -940,5 +1150,11 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
     private record RawLandingRow(UUID id, String objectType, String sourceId,
                                  Instant sourceUpdatedAt, String sourceVersion,
                                  String payloadJson, String checksum) {
+        private RawLandingKey key() {
+            return new RawLandingKey(objectType, sourceId, checksum);
+        }
+    }
+
+    private record RawLandingKey(String objectType, String sourceId, String checksum) {
     }
 }
