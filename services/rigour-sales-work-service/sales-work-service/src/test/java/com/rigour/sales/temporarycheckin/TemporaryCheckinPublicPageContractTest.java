@@ -106,6 +106,19 @@ class TemporaryCheckinPublicPageContractTest {
     }
 
     @Test
+    void forwardsTrustedProxyFactsForTheDedicatedLocationResolver() throws IOException {
+        String nginx = Files.readString(
+                Path.of("deploy/nginx/sales-checkin-locations.conf"), StandardCharsets.UTF_8);
+        String resolverLocation = nginx.substring(
+                nginx.indexOf("location = /sales-checkin/api/v1/locations/resolve {"),
+                nginx.indexOf("# 个人码验证独立限速"));
+
+        assertThat(resolverLocation)
+                .contains("proxy_set_header X-Sales-Checkin-Client-IP $remote_addr;")
+                .contains("include /etc/nginx/snippets/sales-checkin-proxy-marker.conf;");
+    }
+
+    @Test
     void streamsLargeMediaAndShowsThatAutomaticTranscriptionIsPaused() throws IOException {
         String service = Files.readString(Path.of(
                 "src/main/java/com/rigour/sales/temporarycheckin/TemporaryCheckinService.java"),
