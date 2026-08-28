@@ -1024,7 +1024,7 @@
                 || "请使用上方重试按钮重新解析定位。";
             input.disabled = true;
             toggle.disabled = true;
-            createButton.disabled = !manualFallback;
+            createButton.disabled = true;
             return;
         }
         createButton.disabled = false;

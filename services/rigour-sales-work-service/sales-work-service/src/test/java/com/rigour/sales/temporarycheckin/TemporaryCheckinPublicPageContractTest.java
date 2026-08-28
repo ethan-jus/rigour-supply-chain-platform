@@ -323,6 +323,22 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("state.submitting = false;\n            setFormsDisabled(false);");
     }
 
+    @Test
+    void keepsExpiredLocationDraftFromBreakingInitialOptionLoading() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+        int renderStart = script.indexOf("function renderNearbyStores()");
+        int renderEnd = script.indexOf("function formatDistance", renderStart);
+        String renderNearbyStores = script.substring(renderStart, renderEnd);
+
+        assertThat(renderNearbyStores)
+                .contains("if (!locationContextReady(context)) {")
+                .contains("createButton.disabled = true;")
+                .doesNotContain("manualFallback");
+        assertThat(script).doesNotContain("manualFallback");
+        assertThat(html).contains("/sales-checkin/app.js?v=20260828-stale-draft-fix");
+    }
+
     private static String resource(String path) throws IOException {
         return new String(new ClassPathResource(path).getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     }
