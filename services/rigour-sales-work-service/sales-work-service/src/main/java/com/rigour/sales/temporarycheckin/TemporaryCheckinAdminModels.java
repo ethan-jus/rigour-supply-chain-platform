@@ -33,6 +33,11 @@ public final class TemporaryCheckinAdminModels {
             long sizeBytes,
             String contentType,
             Instant uploadedAt,
+            String captureSource,
+            Instant clientStartedAt,
+            Long clientDurationMs,
+            Instant fileLastModifiedAt,
+            String timingStatus,
             boolean available,
             Instant deletedAt) { }
 
@@ -83,6 +88,8 @@ public final class TemporaryCheckinAdminModels {
             List<AdminSubmissionView> items,
             long total,
             long totalElements,
+            long firstVisitTotal,
+            long revisitTotal,
             int page,
             int size,
             int totalPages) { }

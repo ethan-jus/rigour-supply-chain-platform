@@ -22,12 +22,42 @@ class TemporaryCheckinPublicPageContractTest {
     }
 
     @Test
+    void capturesOptionalAudioEvidenceMetadataWithoutBlockingFileUploads() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+
+        assertThat(html).contains("页面录制会记录开始时间和时长", "时间仅供参考、不可核验");
+        assertThat(script)
+                .contains("captureSource: \"BROWSER_RECORDER\"")
+                .contains("captureSource: \"FILE_UPLOAD\"")
+                .contains("state.recorder.clientStartedAt = new Date(startedAt).toISOString();")
+                .contains("clientDurationMs: duration")
+                .contains("fileLastModifiedAt: audioFileLastModifiedAt(file)")
+                .contains("function readAudioDurationMs(file)")
+                .contains("local.metadataPromise = metadataPromise;")
+                .contains("await metadataPromise;")
+                .contains("audio.hidden = true;")
+                .contains("audio.addEventListener(\"loadedmetadata\", handleLoadedMetadata")
+                .contains("文件元数据是可选证据，读取失败不阻断预览或上传")
+                .contains("captureSource: normalizeAudioCaptureSource(segment.captureSource, segment.source)")
+                .contains("clientStartedAt: normalizeOptionalInstant(segment.clientStartedAt)")
+                .contains("segment.clientDurationMs ?? segment.durationMs")
+                .contains("fileLastModifiedAt: normalizeOptionalInstant(segment.fileLastModifiedAt)")
+                .contains("Object.entries(optionalFormFields).forEach")
+                .contains("formData.append(name, String(value));")
+                .contains("rawSegment.clientDurationMs ?? rawSegment.durationMs")
+                .contains("normalizeAudioCaptureSource(rawSegment.captureSource, rawSegment.source)")
+                .contains("\"页面录制\"")
+                .contains("[\"已有文件\", \"时间不可核验\"]");
+    }
+
+    @Test
     void keepsFailedUploadsRetryableAndUsesLegacyCompatibleXhr() throws IOException {
         String script = resource("static/sales-checkin/app.js");
 
         assertThat(script)
                 .doesNotContain("function isSupportedAudioFile")
-                .contains("function uploadMedia(kind, file, progressTitle)")
+                .contains("function uploadMedia(kind, file, progressTitle, optionalFormFields = {})")
                 .contains("function uploadAudioSegment(segment, file, index, total)")
                 .contains("audio/${encodeURIComponent(segment.segmentId)}")
                 .contains("const xhr = new XMLHttpRequest()")
@@ -126,52 +156,79 @@ class TemporaryCheckinPublicPageContractTest {
     }
 
     @Test
-    void returnsToVisitWithTheSavedStoreSelectedAndClearsStaleSearchState() throws IOException {
+    void returnsToVisitWithTheSavedStoreSelectedWithoutRefreshingRemoteSearch() throws IOException {
         String script = resource("static/sales-checkin/app.js");
 
         assertThat(script)
                 .contains("source: \"REGISTERED\"")
                 .contains("nextAction: \"CHECK_IN\"")
                 .contains("function completeStoreSaveTransition(createdStore, payload)")
-                .contains("abortStoreSearch();", "abortPoiSearch();")
+                .contains("abortPoiSearch();")
                 .contains("state.visit.nearbyStores = [createdStore")
-                .contains("state.visit.nearbySearchResults = null;")
                 .contains("state.visit.selectedStore = {")
                 .contains("resetStoreDraft(payload.city, payload.salespersonId);")
                 .contains("state.activeTab = \"visit\";")
                 .contains("renderTab(\"visit\");")
                 .contains("clearAllErrors();")
                 .contains("当前表单已保留")
+                .doesNotContain("abortStoreSearch", "nearbySearchResults", "nearbySearchPoiLookupStatus")
                 .doesNotContain("switchTab(\"visit\");\n            selectStore(createdStore);");
     }
 
     @Test
-    void keepsOneLocationScopedPickerForRegisteredStoresAndNewAmapPlaces() throws IOException {
+    void keepsRegisteredStoresLocalAndSearchesNewAmapStoresOnlyOnExplicitAction() throws IOException {
         String html = resource("static/sales-checkin/index.html");
         String script = resource("static/sales-checkin/app.js");
         String styles = resource("static/sales-checkin/styles.css");
+        String inputHandler = script.substring(
+                script.indexOf("function handlePoiSearchInput()"),
+                script.indexOf("async function searchNewStoreOnce()"));
 
         assertThat(html)
-                .contains("附近门店 / 高德地点")
+                .contains("附近已建档门店")
                 .contains("id=\"nearby-stores-scope\"")
+                .contains("id=\"poi-search-button\"")
+                .contains("aria-label=\"搜索高德新门店\" disabled>搜索</button>")
+                .contains("输入、筛选和选择都不会自动调用高德")
                 .contains("新门店建档", "本次拜访草稿已保留");
         assertThat(script)
                 .contains("function visitNearbyOptions()")
-                .contains("function visitPoiLookupStatus()")
                 .contains("function storePoiLookupStatus()")
-                .contains("? state.visit.nearbySearchResults", ": state.visit.nearbyStores")
+                .contains("$(\"#store-search\").addEventListener(\"input\", showVisitStoreOptions);")
+                .contains(".filter((store) => store?.source === \"REGISTERED\")")
                 .contains(".filter(isUsableNearbyStore)")
-                .contains("body: { city: state[scope].city, location: locationRequestValue(scope), q: query }")
-                .contains("if (registered) selectStore(store);")
-                .contains("else prepareNewStore(store);")
-                .contains("abortStoreSearch();\n        state.visit.nearbySearchResults = null;")
+                .contains("requestJson(\"/locations/search-new-store\"")
+                .contains("salespersonId: state[scope].salespersonId")
+                .contains("salespersonId: state.store.salespersonId")
+                .contains("locationVerificationToken: cleanText(payload.locationVerificationToken)")
+                .contains("locationVerificationToken: state.store.locationContext?.locationVerificationToken")
+                .contains("Boolean(cleanText(context.locationVerificationToken))")
+                .contains("function locationContextCityVerified(context)")
+                .contains("if (state.submitting || state.poiSearchController) return;")
+                .contains("$(\"#poi-search-button\").addEventListener(\"click\", searchNewStoreOnce);")
+                .contains("void searchNewStoreOnce();")
+                .contains("const selectionToken = cleanText(poi.selectionToken);")
+                .contains("sourcePoiToken: optionalText(state.store.sourcePoiToken)")
+                .contains("locationVerificationToken: optionalText(\n"
+                        + "                state.store.locationContext?.locationVerificationToken)")
+                .contains("locationVerificationToken: optionalText(\n"
+                        + "                state.visit.locationContext?.locationVerificationToken)")
+                .contains("button.addEventListener(\"click\", () => selectStore(store));")
                 .contains("function visitRadiusLabel(context = state.visit.locationContext)")
                 .contains("context?.maxCheckinDistanceMeters")
-                .doesNotContain("/stores?city=");
+                .doesNotContain("/stores?city=", "SEARCH_DELAY_MS", "scheduleStoreSearch",
+                        "schedulePoiSearch", "searchNearbyWithQuery", "poi-search-toggle");
+        assertThat(inputHandler).doesNotContain("requestJson", "/locations/");
+        assertThat(script)
+                .containsOnlyOnce("/locations/search-new-store")
+                .contains("if (state.store.sourceMode === \"POI\"\n"
+                        + "            && (!state.store.sourcePoiId || !state.store.sourcePoiToken))")
+                .contains("if (state.store.sourceMode === \"POI\" && !cleanText(state.store.sourcePoiToken))");
         assertThat(styles)
                 .contains("body.is-store-page")
                 .contains(".visit-store-result.is-registered")
-                .contains(".visit-store-result.is-new-poi");
+                .contains(".explicit-search-button:disabled")
+                .doesNotContain(".visit-store-result.is-new-poi");
     }
 
     @Test
@@ -185,19 +242,55 @@ class TemporaryCheckinPublicPageContractTest {
     }
 
     @Test
-    void allowsManualStoreProfileWhenAmapSearchIsUnavailable() throws IOException {
+    void keepsAdminVisitTypeStatisticsPaginationUrlAndExportContracts() throws IOException {
+        String html = resource("static/sales-checkin/admin/index.html");
+        String script = resource("static/sales-checkin/admin/admin.js");
+
+        assertThat(html)
+                .contains("id=\"filter-visit-type\"")
+                .contains("value=\"FIRST_VISIT\"")
+                .contains("value=\"REVISIT\"")
+                .contains("id=\"result-first-visit-total\"")
+                .contains("id=\"result-revisit-total\"");
+        assertThat(script)
+                .contains("visitType: \"\"")
+                .contains("visitType: $(\"#filter-visit-type\").value")
+                .contains("params.get(\"visitType\")")
+                .contains("$(\"#filter-visit-type\").value = state.filters.visitType")
+                .contains("payload.firstVisitTotal", "payload.revisitTotal")
+                .contains("`\u7b2c ${state.page + 1} / ${state.totalPages} \u9875 · \u5171 ${formatCount(state.total)} \u6761`")
+                .contains("Object.entries(state.filters)")
+                .contains("$(\"#export-link\").href = params.toString()")
+                .contains("window.history.replaceState(null, \"\"");
+    }
+
+    @Test
+    void requiresServerManualEntryTokenAndDoesNotAuthorizeManualEntryOnNetworkFailure() throws IOException {
         String script = resource("static/sales-checkin/app.js");
+        int searchStart = script.indexOf("async function searchNewStoreOnce()");
+        int catchStart = script.indexOf("        } catch (error) {", searchStart);
+        int finallyStart = script.indexOf("        } finally {", catchStart);
+        String networkFailureHandler = script.substring(catchStart, finallyStart);
 
         assertThat(script)
-                .contains("function manualStoreFallbackAvailable")
-                .contains("poiLookupStatus === \"UNAVAILABLE\"")
-                .contains("state.visit.nearbySearchPoiLookupStatus = poiLookupStatus;")
+                .contains("const manualEntryToken = cleanText(payload.manualEntryToken);")
+                .contains("state.store.manualEntryToken = manualEntryToken;")
+                .contains("state.store.manualEntryAllowed = Boolean(manualEntryToken)")
+                .contains("&& (poiLookupStatus === \"EMPTY\" || poiLookupStatus === \"UNAVAILABLE\");")
                 .contains("state.store.poiSearchLookupStatus = poiLookupStatus;")
-                .contains("高德搜索暂不可用，可点击下方手工录入继续；保存时仍校验当前位置。")
-                .contains("state.store.manualEntryAllowed = true;")
+                .contains("if (!state.store.manualEntryAllowed) return;")
                 .contains("state.store.sourceMode = \"MANUAL\";")
-                .contains("高德搜索暂不可用，可点击下方手工录入继续")
-                .contains("保存时服务端仍会校验当前位置");
+                .contains("manualEntryToken: state.store.sourceMode === \"MANUAL\"")
+                .contains("if (state.store.sourceMode === \"MANUAL\" && !cleanText(state.store.manualEntryToken))")
+                .contains("本次高德搜索暂不可用，可点击下方手工录入继续")
+                .contains("保存时仍校验当前位置")
+                .doesNotContain("function manualStoreFallbackAvailable");
+        assertThat(networkFailureHandler)
+                .contains("state.store.poiSearchLookupStatus = null;")
+                .contains("state.store.manualEntryAllowed = false;")
+                .contains("state.store.manualEntryToken = \"\";")
+                .contains("未收到服务端搜索确认，请检查网络后重新点击搜索。")
+                .doesNotContain("manualEntryAllowed = true");
     }
 
     @Test

@@ -6,7 +6,6 @@
     const STORAGE_VERSION = 1;
     const DRAFT_TTL_MS = 8 * 60 * 60 * 1000;
     const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-    const SEARCH_DELAY_MS = 350;
     const APPLE_REFERENCE_EPOCH_OFFSET_MS = 978307200000;
     const LOCATION_CAPTURE_PAST_WINDOW_MS = 60 * 60 * 1000;
     const LOCATION_CAPTURE_FUTURE_SKEW_MS = 2 * 60 * 1000;
@@ -39,8 +38,6 @@
         location: emptyLocation(),
         locationContext: null,
         nearbyStores: [],
-        nearbySearchResults: null,
-        nearbySearchPoiLookupStatus: null,
         privacyAccepted: false
     });
     const freshStore = () => ({
@@ -64,8 +61,11 @@
         nearbyPois: [],
         poiSearchResults: null,
         poiSearchLookupStatus: null,
+        poiSearchQuery: "",
         manualEntryAllowed: false,
+        manualEntryToken: "",
         sourceMode: "",
+        sourcePoiToken: "",
         sourcePoiId: "",
         sourcePoiName: "",
         sourcePoiAddress: "",
@@ -113,6 +113,7 @@
             stream: null,
             chunks: [],
             startedAt: 0,
+            clientStartedAt: null,
             elapsedMs: 0,
             timer: null,
             stopping: false
@@ -123,9 +124,6 @@
             audio: new Map()
         },
         audioRetrySegmentId: null,
-        searchTimer: null,
-        searchController: null,
-        poiSearchTimer: null,
         poiSearchController: null,
         locationControllers: {
             visit: null,
@@ -184,7 +182,9 @@
                 const context = state[scope].locationContext;
                 if (state[scope].city && state[scope].location
                     && !(scope === "visit" && isBusinessLocked())
-                    && !locationContextReady(context)) {
+                    && !(scope === "store"
+                        ? locationContextCityVerified(context)
+                        : locationContextReady(context))) {
                     resolveLocationContext(scope);
                 }
             });
@@ -430,7 +430,7 @@
         $("#visit-salesperson").addEventListener("change", persistFromForm);
         $("#store-salesperson").addEventListener("change", persistFromForm);
 
-        $("#store-search").addEventListener("input", scheduleStoreSearch);
+        $("#store-search").addEventListener("input", showVisitStoreOptions);
         $("#store-search").addEventListener("focus", () => showVisitStoreOptions());
         $("#store-search").addEventListener("keydown", handleStoreSearchKeydown);
         $("#store-search-toggle").addEventListener("click", toggleVisitStoreOptions);
@@ -438,10 +438,10 @@
         $("#create-store-link").addEventListener("click", () => prepareNewStore());
         $("#cancel-store-button").addEventListener("click", () => switchTab("visit"));
 
-        $("#poi-search").addEventListener("input", schedulePoiSearch);
+        $("#poi-search").addEventListener("input", handlePoiSearchInput);
         $("#poi-search").addEventListener("focus", () => renderPoiOptions(true));
         $("#poi-search").addEventListener("keydown", handlePoiSearchKeydown);
-        $("#poi-search-toggle").addEventListener("click", togglePoiOptions);
+        $("#poi-search-button").addEventListener("click", searchNewStoreOnce);
         $("#clear-poi-button").addEventListener("click", clearSelectedPoi);
         $("#manual-store-button").addEventListener("click", enableManualStoreEntry);
 
@@ -625,14 +625,20 @@
         state.locationControllers[scope] = null;
         state[scope].locationContext = null;
         if (scope === "visit") {
-            abortStoreSearch();
             hideStoreResults();
             clearSelectedStore(false, false);
             state.visit.nearbyStores = [];
             $("#store-search").value = "";
             renderNearbyStores();
         } else {
+            abortPoiSearch();
             state.store.nearbyPois = [];
+            state.store.poiSearchResults = null;
+            state.store.poiSearchLookupStatus = null;
+            state.store.poiSearchQuery = "";
+            state.store.manualEntryAllowed = false;
+            state.store.manualEntryToken = "";
+            $("#poi-search").value = "";
             clearSourcePoi(true, true);
             hidePoiResults();
             renderStoreSource();
@@ -721,126 +727,121 @@
         return item.label ?? item.name ?? item.value ?? item.code ?? item.id ?? "";
     }
 
-    function scheduleStoreSearch() {
-        clearTimeout(state.searchTimer);
-        state.searchController?.abort();
-        state.searchController = null;
-        const query = $("#store-search").value.trim();
-        if (query.length < 2) {
-            state.visit.nearbySearchResults = null;
-            state.visit.nearbySearchPoiLookupStatus = null;
-            showVisitStoreOptions();
-            return;
-        }
-        showVisitStoreOptions();
-        state.searchTimer = window.setTimeout(() => searchNearbyWithQuery("visit", query), SEARCH_DELAY_MS);
-    }
-
     function visitNearbyOptions() {
-        const source = Array.isArray(state.visit.nearbySearchResults)
-            ? state.visit.nearbySearchResults
-            : state.visit.nearbyStores;
-        return (Array.isArray(source) ? source : []).filter(isUsableNearbyStore);
-    }
-
-    function visitPoiLookupStatus() {
-        return Array.isArray(state.visit.nearbySearchResults)
-            ? cleanText(state.visit.nearbySearchPoiLookupStatus) || "UNAVAILABLE"
-            : cleanText(state.visit.locationContext?.poiLookupStatus) || "UNAVAILABLE";
+        return (Array.isArray(state.visit.nearbyStores) ? state.visit.nearbyStores : [])
+            .filter((store) => store?.source === "REGISTERED")
+            .filter(isUsableNearbyStore);
     }
 
     function storePoiLookupStatus() {
         return Array.isArray(state.store.poiSearchResults)
             ? cleanText(state.store.poiSearchLookupStatus) || "UNAVAILABLE"
-            : cleanText(state.store.locationContext?.poiLookupStatus) || "UNAVAILABLE";
+            : "";
     }
 
     function registeredNearbyStores() {
-        return visitNearbyOptions().filter((store) => store.source === "REGISTERED");
-    }
-
-    function abortStoreSearch() {
-        clearTimeout(state.searchTimer);
-        state.searchTimer = null;
-        state.searchController?.abort();
-        state.searchController = null;
-        $("#store-search-spinner").hidden = true;
+        return visitNearbyOptions();
     }
 
     function abortPoiSearch() {
-        clearTimeout(state.poiSearchTimer);
-        state.poiSearchTimer = null;
         state.poiSearchController?.abort();
         state.poiSearchController = null;
         $("#poi-search-spinner").hidden = true;
     }
 
-    async function searchNearbyWithQuery(scope, query) {
-        const isVisit = scope === "visit";
-        const controllerKey = isVisit ? "searchController" : "poiSearchController";
-        const spinner = isVisit ? $("#store-search-spinner") : $("#poi-search-spinner");
-        state[controllerKey]?.abort();
+    function handlePoiSearchInput() {
+        if (state.poiSearchController) return;
+        const query = $("#poi-search").value.trim();
+        if (query !== state.store.poiSearchQuery) {
+            state.store.poiSearchResults = null;
+            state.store.poiSearchLookupStatus = null;
+            state.store.poiSearchQuery = query;
+            state.store.manualEntryAllowed = false;
+            state.store.manualEntryToken = "";
+        }
+        renderStoreSource();
+        renderPoiOptions(true);
+    }
+
+    async function searchNewStoreOnce() {
+        if (state.submitting || state.poiSearchController) return;
+        const query = $("#poi-search").value.trim();
+        if (query.length < 2) {
+            $("#poi-search-help").textContent = "请输入至少 2 个字后再点击搜索。";
+            $("#poi-search").focus();
+            return;
+        }
+        if (!locationContextCityVerified(state.store.locationContext) || !state.store.location) {
+            $("#poi-search-help").textContent = "请先完成现场定位，再搜索高德新门店。";
+            return;
+        }
         const controller = createRequestController();
-        state[controllerKey] = controller;
-        spinner.hidden = false;
+        state.poiSearchController = controller;
+        state.store.poiSearchResults = null;
+        state.store.poiSearchLookupStatus = null;
+        state.store.poiSearchQuery = query;
+        state.store.manualEntryAllowed = false;
+        state.store.manualEntryToken = "";
+        if (state.store.sourceMode === "MANUAL") {
+            state.store.sourceMode = "";
+            state.store.name = "";
+            $("#store-name").value = "";
+        }
+        hidePoiResults();
+        $("#poi-search-spinner").hidden = false;
+        renderStoreSource();
         try {
-            const payload = normalizeResponse(await requestJson("/locations/resolve", {
+            const payload = normalizeResponse(await requestJson("/locations/search-new-store", {
                 method: "POST",
-                body: { city: state[scope].city, location: locationRequestValue(scope), q: query },
+                body: {
+                    clientStoreId: state.store.clientStoreId,
+                    city: state.store.city,
+                    salespersonId: state.store.salespersonId,
+                    location: locationRequestValue("store"),
+                    q: query,
+                    locationVerificationToken: state.store.locationContext?.locationVerificationToken
+                },
                 signal: controller.signal,
                 timeout: 20000
             })) || {};
-            if (state[controllerKey] !== controller) return;
-            if (payload.cityMatched !== true || payload.accuracyAccepted !== true
-                || payload.freshnessAccepted !== true) {
-                throw new Error(cleanText(payload.locationMessage)
-                    || "当前定位未通过城市、精度或时效校验，请重新定位。");
-            }
+            if (state.poiSearchController !== controller) return;
             const stores = Array.isArray(payload.nearbyStores)
-                ? payload.nearbyStores.filter(isUsableNearbyStore)
+                ? payload.nearbyStores
+                    .filter((store) => store?.source === "AMAP_POI")
+                    .filter(isUsableNearbyStore)
                 : [];
             const poiLookupStatus = cleanText(payload.poiLookupStatus) || "UNAVAILABLE";
-            if (isVisit) {
-                state.visit.nearbySearchResults = stores;
-                state.visit.nearbySearchPoiLookupStatus = poiLookupStatus;
-                showVisitStoreOptions();
-            } else {
-                state.store.poiSearchResults = stores;
-                state.store.poiSearchLookupStatus = poiLookupStatus;
-                state.store.manualEntryAllowed = poiLookupStatus === "UNAVAILABLE"
-                    || state.store.poiSearchResults.length === 0;
+            const manualEntryToken = cleanText(payload.manualEntryToken);
+            state.store.poiSearchResults = stores;
+            state.store.poiSearchLookupStatus = poiLookupStatus;
+            state.store.manualEntryToken = manualEntryToken;
+            state.store.manualEntryAllowed = Boolean(manualEntryToken)
+                && (poiLookupStatus === "EMPTY" || poiLookupStatus === "UNAVAILABLE");
+            if (state.store.manualEntryAllowed) {
+                hidePoiResults();
+                window.requestAnimationFrame(() => {
+                    $("#manual-store-button").scrollIntoView({ behavior: "smooth", block: "nearest" });
+                });
+            }
+            persistDraft();
+        } catch (error) {
+            if (state.poiSearchController !== controller) return;
+            if (error.name === "AbortError") return;
+            state.store.poiSearchResults = [];
+            state.store.poiSearchLookupStatus = null;
+            state.store.manualEntryAllowed = false;
+            state.store.manualEntryToken = "";
+            $("#poi-search-help").textContent = "未收到服务端搜索确认，请检查网络后重新点击搜索。";
+            persistDraft();
+        } finally {
+            if (state.poiSearchController === controller) {
+                state.poiSearchController = null;
+                $("#poi-search-spinner").hidden = true;
                 renderStoreSource();
-                if (state.store.manualEntryAllowed) {
-                    hidePoiResults();
-                    window.requestAnimationFrame(() => {
-                        $("#manual-store-button").scrollIntoView({ behavior: "smooth", block: "nearest" });
-                    });
-                } else {
+                if (state.store.poiSearchLookupStatus === "AVAILABLE"
+                    && state.store.poiSearchResults?.length) {
                     renderPoiOptions(true);
                 }
-            }
-        } catch (error) {
-            if (state[controllerKey] !== controller) return;
-            if (error.name === "AbortError") return;
-            if (isVisit) {
-                state.visit.nearbySearchResults = [];
-                state.visit.nearbySearchPoiLookupStatus = "UNAVAILABLE";
-                $("#store-search-help").textContent = errorMessage(error, "附近门店搜索失败，请稍后重试。");
-            } else {
-                state.store.poiSearchResults = [];
-                state.store.poiSearchLookupStatus = "UNAVAILABLE";
-                state.store.manualEntryAllowed = Boolean(state.store.location
-                    && (locationContextReady(state.store.locationContext)
-                        || manualStoreFallbackAvailable(state.store.locationContext, state.store.location)));
-                renderStoreSource();
-                $("#poi-search-help").textContent = state.store.manualEntryAllowed
-                    ? "高德搜索暂不可用，可点击下方手工录入继续。"
-                    : errorMessage(error, "高德附近地点搜索失败，请稍后重试。");
-            }
-        } finally {
-            if (state[controllerKey] === controller) {
-                state[controllerKey] = null;
-                spinner.hidden = true;
             }
         }
     }
@@ -856,16 +857,11 @@
                 .some((value) => cleanText(value).toLocaleLowerCase("zh-CN").includes(query));
         });
         renderStoreResults(stores);
-        const registeredCount = options.filter((store) => store.source === "REGISTERED").length;
-        const poiCount = options.length - registeredCount;
-        const lookupUnavailable = visitPoiLookupStatus() === "UNAVAILABLE";
         $("#store-search-help").textContent = stores.length
-            ? lookupUnavailable
-                ? `${registeredCount} 家附近已建档门店；高德地点暂不可用`
-                : `${visitRadiusLabel()}：${registeredCount} 家已建档 · ${poiCount} 个新地点`
-            : lookupUnavailable
-                ? "高德地点暂不可用，可使用下方手工建档。"
-                : `${visitRadiusLabel()}没有匹配结果，可换关键词或手工建档。`;
+            ? `${visitRadiusLabel()}已加载 ${options.length} 家已建档门店；当前筛选显示 ${stores.length} 家`
+            : options.length
+                ? "已加载的门店中没有匹配项，可换关键词或新增门店。"
+                : "附近没有已建档门店，可点击下方“新增门店”。";
     }
 
     function toggleVisitStoreOptions() {
@@ -884,14 +880,13 @@
         if (!stores.length) {
             const empty = document.createElement("div");
             empty.className = "search-empty";
-            empty.textContent = "附近没有匹配结果，可换关键词或手工建档。";
+            empty.textContent = "已加载的门店中没有匹配结果，可换关键词或新增门店。";
             root.appendChild(empty);
         } else {
             stores.forEach((store) => {
-                const registered = store.source === "REGISTERED" && Boolean(store.storeId || store.id);
                 const button = document.createElement("button");
                 button.type = "button";
-                button.className = `search-result visit-store-result ${registered ? "is-registered" : "is-new-poi"}`;
+                button.className = "search-result visit-store-result is-registered";
                 button.setAttribute("role", "option");
 
                 const detail = document.createElement("span");
@@ -904,16 +899,13 @@
                 const meta = document.createElement("span");
                 meta.className = "visit-store-result__meta";
                 const status = document.createElement("strong");
-                status.textContent = registered ? "已建档 · 直接打卡" : "新地点 · 先建档";
+                status.textContent = "已建档 · 直接打卡";
                 const distance = document.createElement("small");
                 distance.textContent = formatDistance(store.distanceMeters) || "附近";
                 meta.append(status, distance);
 
                 button.append(detail, meta);
-                button.addEventListener("click", () => {
-                    if (registered) selectStore(store);
-                    else prepareNewStore(store);
-                });
+                button.addEventListener("click", () => selectStore(store));
                 root.appendChild(button);
             });
         }
@@ -984,21 +976,19 @@
 
     function locationContextReady(context) {
         return Boolean(context
-            && context.geocodeStatus === "RESOLVED"
-            && context.cityMatched === true
+            && context.cityMatched !== false
             && context.accuracyAccepted === true
             && context.freshnessAccepted === true
+            && Boolean(cleanText(context.locationVerificationToken))
             && Number.isFinite(Number(context.maxCheckinDistanceMeters))
             && Number.isFinite(Number(context.maxCheckinAccuracyMeters))
             && Number.isFinite(Number(context.maxLocationAgeMinutes)));
     }
 
-    function manualStoreFallbackAvailable(context = state.visit.locationContext, location = state.visit.location) {
-        return Boolean(location
-            && context?.geocodeStatus === "FAILED"
-            && context.cityMatched !== false
-            && context.accuracyAccepted !== false
-            && context.freshnessAccepted !== false);
+    function locationContextCityVerified(context) {
+        return locationContextReady(context)
+            && context.geocodeStatus === "RESOLVED"
+            && context.cityMatched === true;
     }
 
     function renderNearbyStores() {
@@ -1008,12 +998,11 @@
         const input = $("#store-search");
         const toggle = $("#store-search-toggle");
         const createButton = $("#create-store-link");
-        const lookupUnavailable = visitPoiLookupStatus() === "UNAVAILABLE";
         panel.hidden = !state.visit.location;
         hideStoreResults();
         $("#nearby-stores-scope").textContent = locationContextReady(context)
-            ? `${visitRadiusLabel(context)}候选：已建档直接打卡，新地点先建档`
-            : "仅显示当前定位允许范围内的候选";
+            ? `${visitRadiusLabel(context)}的已建档门店，可直接选择打卡`
+            : "仅显示当前定位允许范围内的已建档门店";
         if (!state.visit.location) {
             input.disabled = true;
             toggle.disabled = true;
@@ -1022,7 +1011,7 @@
         }
 
         if (context?.geocodeStatus === "RESOLVING") {
-            $("#nearby-stores-summary").textContent = "正在解析地址并查找…";
+            $("#nearby-stores-summary").textContent = "正在解析地址并加载…";
             $("#store-search-help").textContent = "正在查找当前位置附近的已录入门店。";
             input.disabled = true;
             toggle.disabled = true;
@@ -1030,11 +1019,9 @@
             return;
         }
         if (!locationContextReady(context)) {
-            const manualFallback = manualStoreFallbackAvailable(context);
-            $("#nearby-stores-summary").textContent = manualFallback ? "附近地点暂不可用" : "需要处理定位问题";
-            $("#store-search-help").textContent = manualFallback
-                ? "可重试高德解析，或使用下方“手工建档”继续填写。"
-                : context?.errorMessage || "请使用上方重试按钮重新解析定位。";
+            $("#nearby-stores-summary").textContent = "需要处理定位问题";
+            $("#store-search-help").textContent = context?.errorMessage
+                || "请使用上方重试按钮重新解析定位。";
             input.disabled = true;
             toggle.disabled = true;
             createButton.disabled = !manualFallback;
@@ -1043,25 +1030,16 @@
         createButton.disabled = false;
         input.disabled = false;
         if (!options.length) {
-            $("#nearby-stores-summary").textContent = lookupUnavailable
-                ? "高德地点暂不可用" : "附近暂无结果";
-            $("#store-search-help").textContent = lookupUnavailable
-                ? "已建档门店和高德地点暂无可用结果，可直接手工建档。"
-                : "可输入至少 2 个字继续搜索，或直接手工建档。";
-            input.placeholder = "输入门店名称搜索附近地点";
+            $("#nearby-stores-summary").textContent = "附近暂无已建档门店";
+            $("#store-search-help").textContent = "可点击下方“新增门店”，再明确搜索高德新门店。";
+            input.placeholder = "附近暂无已建档门店";
             toggle.disabled = true;
             return;
         }
         toggle.disabled = false;
-        input.placeholder = "点击选择，或输入名称搜索";
-        const registeredCount = options.filter((store) => store.source === "REGISTERED").length;
-        const poiCount = options.length - registeredCount;
-        $("#nearby-stores-summary").textContent = lookupUnavailable
-            ? "高德地点暂不可用"
-            : `${visitRadiusLabel(context)} ${options.length} 个`;
-        $("#store-search-help").textContent = lookupUnavailable
-            ? `仅显示范围内已建档 ${registeredCount} 家；新门店可手工建档。`
-            : `范围内已建档 ${registeredCount} 家、新地点 ${poiCount} 个；深绿色直接打卡，琥珀色先建档。`;
+        input.placeholder = "点击选择，或输入名称筛选";
+        $("#nearby-stores-summary").textContent = `${visitRadiusLabel(context)} ${options.length} 家`;
+        $("#store-search-help").textContent = `已加载 ${options.length} 家已建档门店；输入文字只在本地筛选。`;
     }
 
     function formatDistance(value) {
@@ -1077,12 +1055,10 @@
     }
 
     function nearbyPoiStores() {
-        if (Array.isArray(state.store.poiSearchResults)) {
-            return state.store.poiSearchResults.filter(isUsableNearbyStore);
-        }
         const candidates = [
             ...(Array.isArray(state.store.nearbyPois) ? state.store.nearbyPois : []),
-            ...(Array.isArray(state.visit.nearbyStores) ? state.visit.nearbyStores : [])
+            ...(Array.isArray(state.visit.nearbyStores) ? state.visit.nearbyStores : []),
+            ...(Array.isArray(state.store.poiSearchResults) ? state.store.poiSearchResults : [])
         ].filter(isUsableNearbyStore);
         const seen = new Set();
         return candidates.filter((store) => {
@@ -1091,27 +1067,6 @@
             seen.add(id);
             return true;
         });
-    }
-
-    function schedulePoiSearch() {
-        clearTimeout(state.poiSearchTimer);
-        state.poiSearchController?.abort();
-        state.poiSearchController = null;
-        const query = $("#poi-search").value.trim();
-        state.store.manualEntryAllowed = false;
-        if (query.length < 2) {
-            state.store.poiSearchResults = null;
-            state.store.poiSearchLookupStatus = null;
-            renderStoreSource();
-            renderPoiOptions(true);
-            $("#poi-search-help").textContent = query.length === 1
-                ? "请再输入 1 个字，确认附近是否有这家门店。"
-                : `附近找到 ${nearbyPoiStores().length} 个结果`;
-            return;
-        }
-        renderPoiOptions(true);
-        state.poiSearchTimer = window.setTimeout(
-            () => searchNearbyWithQuery("store", query), SEARCH_DELAY_MS);
     }
 
     function renderPoiOptions(open = false) {
@@ -1124,13 +1079,16 @@
                 .some((value) => cleanText(value).toLocaleLowerCase("zh-CN").includes(query));
         });
         const root = $("#poi-search-results");
+        const searched = Array.isArray(state.store.poiSearchResults);
         root.replaceChildren();
         if (!pois.length) {
             const empty = document.createElement("div");
             empty.className = "search-empty";
             empty.textContent = state.store.manualEntryAllowed
-                ? "附近未找到匹配地点，现在可使用下方手动录入。"
-                : "请输入至少 2 个字完成附近搜索；服务端确认无结果后才可手动录入。";
+                ? "本次高德搜索无结果或不可用，现在可使用下方手动录入。"
+                : searched
+                    ? "本次高德搜索没有可用候选，可换关键词后再次明确搜索。"
+                    : "没有匹配的已建档门店；输入至少 2 个字并点击搜索可查高德新门店。";
             root.appendChild(empty);
         } else {
             pois.forEach((poi) => {
@@ -1166,11 +1124,13 @@
             root.hidden = false;
             input.setAttribute("aria-expanded", "true");
         }
+        const registeredCount = pois.filter((poi) => poi.source === "REGISTERED").length;
+        const amapCount = pois.length - registeredCount;
         $("#poi-search-help").textContent = pois.length
-            ? `当前显示 ${pois.length} 个附近结果`
+            ? `当前显示 ${registeredCount} 家已建档门店、${amapCount} 个本次高德候选`
             : state.store.manualEntryAllowed
-                ? "服务端已确认附近无匹配地点，可手动录入。"
-                : "输入至少 2 个字搜索，服务端确认无结果后才可手动录入。";
+                ? "本次搜索已返回无结果或不可用，可手动录入。"
+                : "输入至少 2 个字并点击搜索；输入本身不会请求高德。";
     }
 
     function hidePoiResults() {
@@ -1178,20 +1138,17 @@
         $("#poi-search").setAttribute("aria-expanded", "false");
     }
 
-    function togglePoiOptions() {
-        if ($("#poi-search").disabled) return;
-        if ($("#poi-search-results").hidden) {
-            renderPoiOptions(true);
-            $("#poi-search").focus();
-        } else {
-            hidePoiResults();
-        }
-    }
-
     function handlePoiSearchKeydown(event) {
+        if (event.isComposing) return;
         if (event.key === "Escape") {
             hidePoiResults();
             event.currentTarget.blur();
+            return;
+        }
+        if (event.key === "Enter") {
+            event.preventDefault();
+            void searchNewStoreOnce();
+            return;
         }
         if (event.key === "ArrowDown" && $("#poi-search-results").hidden) {
             event.preventDefault();
@@ -1200,13 +1157,21 @@
     }
 
     function selectSourcePoi(poi) {
+        const selectionToken = cleanText(poi.selectionToken);
+        if (!selectionToken) {
+            showError("该高德候选已失效，请重新点击搜索后再选择。");
+            return;
+        }
         state.store.sourceMode = "POI";
         state.store.name = poi.name || "";
+        state.store.sourcePoiToken = selectionToken;
         state.store.sourcePoiId = poi.poiId || "";
         state.store.sourcePoiName = poi.name || "";
         state.store.sourcePoiAddress = poi.address || "";
         state.store.sourcePoiLongitude = finiteNumberOrNull(poi.longitude);
         state.store.sourcePoiLatitude = finiteNumberOrNull(poi.latitude);
+        state.store.manualEntryAllowed = false;
+        state.store.manualEntryToken = "";
         $("#store-name").value = state.store.name;
         clearFieldError("store-source");
         hidePoiResults();
@@ -1217,6 +1182,7 @@
     }
 
     function selectExistingStoreFromProfileFlow(store) {
+        abortPoiSearch();
         const exists = state.visit.nearbyStores.some((item) =>
             item.source === "REGISTERED"
             && String(item.storeId || item.id) === String(store.storeId || store.id));
@@ -1233,7 +1199,7 @@
 
     function clearSelectedPoi() {
         clearSourcePoi(true, true);
-        $("#poi-search").value = "";
+        $("#poi-search").value = state.store.poiSearchQuery;
         renderStoreSource();
         renderStorePrefillMessage();
         persistDraft();
@@ -1253,6 +1219,7 @@
             if (!$("#poi-search").disabled) $("#poi-search").focus();
             return;
         }
+        if (!state.store.manualEntryAllowed) return;
         const suggestedName = $("#poi-search").value.trim();
         clearSourcePoi(false, false);
         state.store.sourceMode = "MANUAL";
@@ -1267,22 +1234,24 @@
     }
 
     function renderStoreSource() {
-        if (!state.store.sourceMode) {
-            if (state.store.sourcePoiId) state.store.sourceMode = "POI";
-            else if (cleanText(state.store.name)) state.store.sourceMode = "MANUAL";
-        }
         const context = state.store.locationContext;
         const pois = nearbyPoiStores();
         const input = $("#poi-search");
-        const toggle = $("#poi-search-toggle");
-        const selected = state.store.sourceMode === "POI" && Boolean(state.store.sourcePoiId);
+        const searchButton = $("#poi-search-button");
+        const selected = state.store.sourceMode === "POI"
+            && Boolean(state.store.sourcePoiId)
+            && Boolean(state.store.sourcePoiToken);
         const manual = state.store.sourceMode === "MANUAL";
-        const ready = locationContextReady(context);
+        const ready = locationContextCityVerified(context);
         const lookupStatus = storePoiLookupStatus();
         const canSearch = ready && !selected;
+        const searching = Boolean(state.poiSearchController);
+        const searchQuery = input.value.trim();
 
-        input.disabled = !canSearch;
-        toggle.disabled = !canSearch || pois.length === 0;
+        input.disabled = !canSearch || searching;
+        searchButton.hidden = selected;
+        searchButton.disabled = !canSearch || searching || searchQuery.length < 2;
+        searchButton.textContent = searching ? "搜索中…" : "搜索";
         $(".poi-search-field").hidden = selected;
         $("#selected-poi-card").hidden = !selected;
         $("#store-profile-card").hidden = !selected && !manual;
@@ -1302,7 +1271,7 @@
         }
 
         const manualButton = $("#manual-store-button");
-        manualButton.disabled = !manual && !state.store.manualEntryAllowed;
+        manualButton.disabled = searching || (!manual && !state.store.manualEntryAllowed);
         manualButton.classList.toggle("is-active", manual);
         manualButton.classList.toggle("is-ready", !manual && state.store.manualEntryAllowed);
         manualButton.querySelector("strong").textContent = manual
@@ -1318,36 +1287,39 @@
 
         if (!state.store.location) {
             input.placeholder = "先获取定位";
-            $("#poi-search-help").textContent = "先完成上方现场定位，才能查找附近地点。";
+            $("#poi-search-help").textContent = "先完成上方现场定位，才能搜索高德新门店。";
         } else if (context?.geocodeStatus === "RESOLVING") {
-            input.placeholder = "正在查找附近地点";
-            $("#poi-search-help").textContent = "正在解析地址并加载附近地点…";
-        } else if (!locationContextReady(context)) {
+            input.placeholder = "正在解析定位";
+            $("#poi-search-help").textContent = "正在解析定位并加载已建档门店…";
+        } else if (!locationContextCityVerified(context)) {
             input.placeholder = "定位解析未完成";
-            $("#poi-search-help").textContent = state.store.manualEntryAllowed
-                ? "高德暂不可用，可继续手工录入；保存时服务端仍会校验当前位置。"
-                : context?.errorMessage || "请使用上方重试按钮，或重新定位。";
-        } else if (!pois.length) {
-            input.placeholder = "输入至少 2 个字搜索附近地点";
-            $("#poi-search-help").textContent = lookupStatus === "UNAVAILABLE"
-                ? "高德搜索暂不可用，可点击下方手工录入继续；保存时仍校验当前位置。"
-                : state.store.manualEntryAllowed
-                    ? "附近无匹配地点，可点击下方手动录入。"
-                : "需先完成一次附近搜索，确认无结果后才可手动录入。";
+            $("#poi-search-help").textContent = context?.errorMessage
+                || "请使用上方重试按钮，或重新定位。";
+        } else if (searching) {
+            input.placeholder = "正在搜索高德新门店";
+            $("#poi-search-help").textContent = `正在按“${state.store.poiSearchQuery}”搜索，本次操作只发起一次请求…`;
+        } else if (lookupStatus === "UNAVAILABLE") {
+            input.placeholder = "可换关键词后再次搜索";
+            $("#poi-search-help").textContent = "本次高德搜索暂不可用，可点击下方手工录入继续；保存时仍校验当前位置。";
+        } else if (lookupStatus === "EMPTY") {
+            input.placeholder = "可换关键词后再次搜索";
+            $("#poi-search-help").textContent = "本次高德搜索无结果，可点击下方手工录入。";
+        } else if (Array.isArray(state.store.poiSearchResults)) {
+            const amapCount = state.store.poiSearchResults.length;
+            input.placeholder = "可换关键词后再次搜索";
+            $("#poi-search-help").textContent = `本次高德搜索返回 ${amapCount} 个候选；输入新关键词不会自动请求。`;
         } else if (!selected) {
-            input.placeholder = "点击选择，或输入名称搜索";
-            $("#poi-search-help").textContent = lookupStatus === "UNAVAILABLE"
-                ? `附近已有 ${pois.length} 个已建档结果；高德新地点暂不可用`
-                : `附近找到 ${pois.length} 个门店或高德地点`;
+            const registeredCount = pois.filter((poi) => poi.source === "REGISTERED").length;
+            input.placeholder = "输入至少 2 个字，再点击搜索";
+            $("#poi-search-help").textContent = registeredCount
+                ? `已加载 ${registeredCount} 家已建档门店，可直接筛选选择；搜索高德需点击“搜索”。`
+                : "输入至少 2 个字并点击“搜索”；输入本身不会请求高德。";
         }
     }
 
-    async function prepareNewStore(sourcePoi = null) {
+    async function prepareNewStore() {
         if (state.submitting) return;
         if (isBusinessLocked()) return;
-        abortStoreSearch();
-        state.visit.nearbySearchResults = null;
-        state.visit.nearbySearchPoiLookupStatus = null;
         hideStoreResults();
         $("#store-search").value = state.visit.selectedStore?.name || "";
         hideStoreSavedNotice();
@@ -1377,12 +1349,8 @@
                 : null;
         }
         state.store.nearbyPois = (Array.isArray(state.visit.nearbyStores) ? state.visit.nearbyStores : [])
+            .filter((store) => store?.source === "REGISTERED")
             .filter(isUsableNearbyStore);
-        if (!sourcePoi) {
-            clearSourcePoi(false, false);
-            state.store.sourceMode = "MANUAL";
-            state.store.manualEntryAllowed = true;
-        }
         persistDraft();
         try {
             if (state.store.city) await ensureSalespersons(state.store.city);
@@ -1396,7 +1364,6 @@
         renderStoreSource();
         renderStorePrefillMessage();
         switchTab("store");
-        if (sourcePoi) selectSourcePoi(sourcePoi);
         window.setTimeout(() => {
             if (state.store.sourceMode === "MANUAL") $("#store-name").focus();
             else if (!$("#poi-search").disabled) $("#poi-search").focus();
@@ -1404,6 +1371,7 @@
     }
 
     function clearSourcePoi(resetMode = false, clearName = false) {
+        state.store.sourcePoiToken = "";
         state.store.sourcePoiId = "";
         state.store.sourcePoiName = "";
         state.store.sourcePoiAddress = "";
@@ -1418,10 +1386,10 @@
 
     function renderStorePrefillMessage() {
         const message = $("#store-prefill-message");
-        if (!state.store.sourcePoiId) {
+        if (!state.store.sourcePoiToken) {
             message.textContent = state.store.sourceMode === "MANUAL"
                 ? "已明确选择手动录入；保存后会自动返回打卡并选中这家门店。"
-                : "请先定位并从高德附近地点选择；确实找不到时再手动录入。";
+                : "请输入门店名称并明确点击搜索；无结果或高德不可用时才可手工录入。";
             return;
         }
         const name = state.store.sourcePoiName || state.store.name || "附近地点";
@@ -1452,7 +1420,14 @@
             $(`#${scope}-city`).focus();
             return;
         }
+        const salespersonId = state[scope].salespersonId || $(`#${scope}-salesperson`).value;
+        if (!salespersonId) {
+            setFieldError(`${scope}-salesperson`, "请先确认销售身份，再获取定位。");
+            $(`#${scope}-salesperson`).focus();
+            return;
+        }
         state[scope].city = city;
+        state[scope].salespersonId = salespersonId;
         if (!window.isSecureContext) {
             setFieldError(`${scope}-location`, "浏览器要求通过 HTTPS 才能获取定位，请使用正式网页地址打开。" );
             return;
@@ -1473,12 +1448,12 @@
             errorMessage: "正在重新获取当前位置，请稍候。"
         };
         if (scope === "visit") {
-            abortStoreSearch();
             clearSelectedStore(false, false);
             state.visit.nearbyStores = [];
-            state.visit.nearbySearchResults = null;
-            state.visit.nearbySearchPoiLookupStatus = null;
             renderNearbyStores();
+        } else {
+            abortPoiSearch();
+            hidePoiResults();
         }
         button.disabled = true;
         renderLocation(scope);
@@ -1497,14 +1472,15 @@
             state[scope].locationContext = { geocodeStatus: "RESOLVING" };
             if (scope === "visit") {
                 state.visit.nearbyStores = [];
-                state.visit.nearbySearchResults = null;
-                state.visit.nearbySearchPoiLookupStatus = null;
                 clearSelectedStore(false, false);
             } else {
                 state.store.nearbyPois = [];
                 state.store.poiSearchResults = null;
                 state.store.poiSearchLookupStatus = null;
+                state.store.poiSearchQuery = "";
                 state.store.manualEntryAllowed = false;
+                state.store.manualEntryToken = "";
+                $("#poi-search").value = "";
                 clearSourcePoi(true, true);
             }
             button.disabled = false;
@@ -1564,15 +1540,16 @@
         state[scope].locationContext = { geocodeStatus: "RESOLVING" };
         if (scope === "visit") {
             state.visit.nearbyStores = [];
-            state.visit.nearbySearchResults = null;
-            state.visit.nearbySearchPoiLookupStatus = null;
-            abortStoreSearch();
         } else {
+            abortPoiSearch();
             state.store.nearbyPois = [];
             state.store.poiSearchResults = null;
             state.store.poiSearchLookupStatus = null;
+            state.store.poiSearchQuery = "";
             state.store.manualEntryAllowed = false;
-            state.poiSearchController?.abort();
+            state.store.manualEntryToken = "";
+            $("#poi-search").value = "";
+            hidePoiResults();
         }
         renderLocation(scope);
         if (scope === "visit") renderNearbyStores();
@@ -1581,7 +1558,11 @@
         try {
             const payload = normalizeResponse(await requestJson("/locations/resolve", {
                 method: "POST",
-                body: { city, location: locationRequestValue(scope) },
+                body: {
+                    city,
+                    salespersonId: state[scope].salespersonId,
+                    location: locationRequestValue(scope)
+                },
                 signal: controller.signal,
                 timeout: 20000
             })) || {};
@@ -1594,7 +1575,9 @@
                 address,
                 formattedAddress,
                 adcode: cleanText(payload.adcode),
-                cityMatched: payload.cityMatched === true,
+                cityMatched: payload.cityMatched === true
+                    ? true
+                    : payload.cityMatched === false ? false : null,
                 resolvedCity: cleanText(payload.resolvedCity),
                 accuracyAccepted: payload.accuracyAccepted === true,
                 freshnessAccepted: payload.freshnessAccepted === true,
@@ -1602,10 +1585,13 @@
                 maxCheckinAccuracyMeters: finiteNumberOrNull(payload.maxCheckinAccuracyMeters),
                 maxLocationAgeMinutes: finiteNumberOrNull(payload.maxLocationAgeMinutes),
                 poiLookupStatus: cleanText(payload.poiLookupStatus) || "UNAVAILABLE",
+                locationVerificationToken: cleanText(payload.locationVerificationToken),
                 locationMessage,
                 errorMessage: locationMessage
             };
-            const ready = locationContextReady(state[scope].locationContext);
+            const ready = scope === "store"
+                ? locationContextCityVerified(state[scope].locationContext)
+                : locationContextReady(state[scope].locationContext);
             if (ready) clearFieldError(`${scope}-location`);
             else setFieldError(`${scope}-location`, locationMessage
                 || (payload.cityMatched === false
@@ -1615,7 +1601,9 @@
                         : "定位精度不足，请移到信号较好的位置后重新定位。"));
             if (scope === "visit") {
                 state.visit.nearbyStores = ready && Array.isArray(payload.nearbyStores)
-                    ? payload.nearbyStores.filter(isUsableNearbyStore)
+                    ? payload.nearbyStores
+                        .filter((store) => store?.source === "REGISTERED")
+                        .filter(isUsableNearbyStore)
                     : [];
                 const selectedId = state.visit.selectedStore?.id;
                 if (!isBusinessLocked() && selectedId && !registeredNearbyStores().some((store) =>
@@ -1626,7 +1614,9 @@
                 }
             } else {
                 state.store.nearbyPois = ready && Array.isArray(payload.nearbyStores)
-                    ? payload.nearbyStores.filter(isUsableNearbyStore)
+                    ? payload.nearbyStores
+                        .filter((store) => store?.source === "REGISTERED")
+                        .filter(isUsableNearbyStore)
                     : [];
             }
         } catch (error) {
@@ -1669,6 +1659,7 @@
                 && store.nextAction === "CHECK_IN");
         }
         return store.source === "AMAP_POI" && Boolean(store.poiId && store.name
+            && cleanText(store.selectionToken)
             && store.checkinEligible === false
             && store.nextAction === "COMPLETE_STORE_PROFILE");
     }
@@ -1695,8 +1686,12 @@
             return;
         }
         const resolving = context?.geocodeStatus === "RESOLVING";
-        const ready = locationContextReady(context);
+        const ready = scope === "store"
+            ? locationContextCityVerified(context)
+            : locationContextReady(context);
         const cityMismatch = context?.cityMatched === false;
+        const cityUnverified = context?.cityMatched == null
+            && Boolean(cleanText(context?.locationVerificationToken));
         const inaccurate = context?.accuracyAccepted === false;
         const expired = context?.freshnessAccepted === false;
         status.textContent = capturing
@@ -1709,10 +1704,12 @@
                     ? "精度不足"
                     : expired
                         ? "定位已过期"
-                        : ready ? "已定位" : "需重试";
+                        : ready
+                            ? cityUnverified ? "已定位·地址待恢复" : "已定位"
+                            : "需重试";
         status.className = capturing || resolving
             ? "status-pill is-loading"
-            : ready ? "status-pill is-ready" : "status-pill is-warning";
+            : ready && !cityUnverified ? "status-pill is-ready" : "status-pill is-warning";
         detail.hidden = false;
         const address = cleanText(context?.address || context?.formattedAddress);
         const addressElement = $(`#${scope}-location-address`);
@@ -1721,7 +1718,7 @@
                 : resolving ? "正在解析实际地址…"
                 : context?.errorMessage || "地址解析失败，请重试");
         addressElement.classList.toggle("is-missing", !address && !capturing && !resolving);
-        retry.hidden = capturing || resolving || ready;
+        retry.hidden = capturing || resolving || (ready && !cityUnverified);
         $(`#${scope}-location-accuracy`).textContent = `约 ${location.accuracyMeters} 米`;
         $(`#${scope}-location-time`).textContent = formatDateTime(location.capturedAt);
         $(`#${scope}-location-note`).value = location.note || "";
@@ -1799,24 +1796,38 @@
         }
         if (!validFiles.length) return;
 
+        const metadataTasks = [];
         if (retryId) {
-            attachAudioFile(retryId, validFiles[0]);
+            const file = validFiles[0];
+            const segmentId = attachAudioFile(retryId, file);
+            metadataTasks.push({ segmentId, file });
             validFiles = validFiles.slice(1);
         }
-        validFiles.forEach((file) => appendAudioFile(file, null, "FILE"));
+        validFiles.forEach((file) => {
+            const segmentId = appendAudioFile(file, {
+                captureSource: "FILE_UPLOAD",
+                fileLastModifiedAt: audioFileLastModifiedAt(file)
+            });
+            metadataTasks.push({ segmentId, file });
+        });
         renderAudioSegments();
         renderUploadedBadges();
         persistDraft();
+        metadataTasks.forEach(({ segmentId, file }) => {
+            beginAudioFileMetadataRead(segmentId, file);
+        });
     }
 
-    function appendAudioFile(file, durationMs, source) {
+    function appendAudioFile(file, evidence = {}) {
         const segmentId = secureUuid();
         state.submission.audioSegments.push({
             segmentId,
             originalFilename: file.name || "待上传音频",
             sizeBytes: file.size,
-            durationMs: Number.isFinite(durationMs) ? durationMs : null,
-            source: source || "FILE",
+            captureSource: normalizeAudioCaptureSource(evidence.captureSource, evidence.source),
+            clientStartedAt: normalizeOptionalInstant(evidence.clientStartedAt),
+            clientDurationMs: normalizePositiveDurationMs(evidence.clientDurationMs),
+            fileLastModifiedAt: normalizeOptionalInstant(evidence.fileLastModifiedAt),
             uploadState: "LOCAL",
             errorMessage: ""
         });
@@ -1825,19 +1836,117 @@
         return segmentId;
     }
 
+    function beginAudioFileMetadataRead(segmentId, file) {
+        const local = localAudioFile(segmentId);
+        if (!local || local.file !== file) return;
+        const metadataPromise = enrichAudioFileMetadata(segmentId, file);
+        local.metadataPromise = metadataPromise;
+        const clearPromise = () => {
+            const current = localAudioFile(segmentId);
+            if (current?.metadataPromise === metadataPromise) delete current.metadataPromise;
+        };
+        void metadataPromise.then(clearPromise, clearPromise);
+    }
+
     function attachAudioFile(segmentId, file) {
         const segment = findAudioSegment(segmentId);
         if (!segment) {
-            appendAudioFile(file, null, "FILE");
-            return;
+            return appendAudioFile(file, {
+                captureSource: "FILE_UPLOAD",
+                fileLastModifiedAt: audioFileLastModifiedAt(file)
+            });
         }
         removeLocalAudioFile(segmentId);
         segment.originalFilename = file.name || segment.originalFilename || "待上传音频";
         segment.sizeBytes = file.size;
+        segment.captureSource = "FILE_UPLOAD";
+        segment.clientStartedAt = null;
+        segment.clientDurationMs = null;
+        segment.fileLastModifiedAt = audioFileLastModifiedAt(file);
         segment.uploadState = "LOCAL";
         segment.errorMessage = "";
         state.files.audio.push({ segmentId, file });
         ensureAudioObjectUrl(segmentId, file);
+        return segmentId;
+    }
+
+    async function enrichAudioFileMetadata(segmentId, file) {
+        let durationMs = null;
+        try {
+            durationMs = await readAudioDurationMs(file);
+        } catch (_) {
+            // 文件元数据是可选证据，读取失败不阻断预览或上传。
+        }
+        const segment = findAudioSegment(segmentId);
+        const local = localAudioFile(segmentId);
+        if (!segment || local?.file !== file) return;
+        segment.clientDurationMs = durationMs;
+        renderAudioSegments();
+        persistDraft();
+    }
+
+    function readAudioDurationMs(file) {
+        return new Promise((resolve) => {
+            const audio = document.createElement("audio");
+            const objectUrl = URL.createObjectURL(file);
+            let settled = false;
+            const finish = (durationMs = null) => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
+                audio.removeEventListener("error", handleFailure);
+                audio.removeAttribute("src");
+                try {
+                    audio.load();
+                } catch (_) {
+                    // 元数据不可读时不阻断文件上传。
+                }
+                audio.remove();
+                URL.revokeObjectURL(objectUrl);
+                resolve(normalizePositiveDurationMs(durationMs));
+            };
+            const handleLoadedMetadata = () => finish(Number(audio.duration) * 1000);
+            const handleFailure = () => finish();
+            const timeoutId = window.setTimeout(handleFailure, 5000);
+            audio.hidden = true;
+            audio.preload = "metadata";
+            audio.addEventListener("loadedmetadata", handleLoadedMetadata, { once: true });
+            audio.addEventListener("error", handleFailure, { once: true });
+            document.body.appendChild(audio);
+            audio.src = objectUrl;
+            try {
+                audio.load();
+            } catch (_) {
+                finish();
+            }
+        });
+    }
+
+    function audioFileLastModifiedAt(file) {
+        const lastModified = Number(file?.lastModified);
+        return Number.isFinite(lastModified) && lastModified > 0
+            ? new Date(lastModified).toISOString()
+            : null;
+    }
+
+    function normalizeAudioCaptureSource(captureSource, legacySource = "") {
+        const source = cleanText(captureSource || legacySource).toUpperCase();
+        if (source === "BROWSER_RECORDER" || source === "RECORDED") return "BROWSER_RECORDER";
+        return "FILE_UPLOAD";
+    }
+
+    function normalizeOptionalInstant(value) {
+        if (!value) return null;
+        const milliseconds = typeof value === "number" ? value : Date.parse(value);
+        return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : null;
+    }
+
+    function normalizePositiveDurationMs(value) {
+        const milliseconds = Number(value);
+        return Number.isFinite(milliseconds) && milliseconds > 0
+            ? Math.round(milliseconds)
+            : null;
     }
 
     function isSupportedImageFile(file) {
@@ -1892,7 +2001,9 @@
             state.recorder.stream = stream;
             state.recorder.instance = recorder;
             state.recorder.chunks = [];
-            state.recorder.startedAt = Date.now();
+            const startedAt = Date.now();
+            state.recorder.startedAt = startedAt;
+            state.recorder.clientStartedAt = new Date(startedAt).toISOString();
             state.recorder.elapsedMs = 0;
             state.recorder.stopping = false;
 
@@ -1932,6 +2043,7 @@
     function finishRecording() {
         const recorder = state.recorder.instance;
         const duration = state.recorder.elapsedMs || Date.now() - state.recorder.startedAt;
+        const clientStartedAt = state.recorder.clientStartedAt;
         const mimeType = recorder?.mimeType || state.recorder.chunks[0]?.type || "audio/webm";
         const blob = new Blob(state.recorder.chunks, { type: mimeType });
         cleanupRecorder();
@@ -1946,7 +2058,11 @@
             ? new File([blob], filename, { type: mimeType, lastModified: Date.now() })
             : Object.assign(blob, { name: filename, lastModified: Date.now() });
         $("#audio-file").value = "";
-        appendAudioFile(file, duration, "RECORDED");
+        appendAudioFile(file, {
+            captureSource: "BROWSER_RECORDER",
+            clientStartedAt,
+            clientDurationMs: duration
+        });
         renderAudioSegments();
         renderUploadedBadges();
         persistDraft();
@@ -1959,6 +2075,7 @@
         state.recorder.stream = null;
         state.recorder.chunks = [];
         state.recorder.startedAt = 0;
+        state.recorder.clientStartedAt = null;
         state.recorder.timer = null;
         state.recorder.stopping = false;
         setRecordingUi(false);
@@ -2021,13 +2138,24 @@
     }
 
     function audioSegmentDetail(segment) {
-        const details = [];
+        const captureSource = normalizeAudioCaptureSource(segment.captureSource, segment.source);
+        const details = captureSource === "BROWSER_RECORDER"
+            ? [
+                "页面录制",
+                segment.clientStartedAt
+                    ? `录制时间 ${formatDateTime(segment.clientStartedAt)}`
+                    : "录制时间未保留"
+            ]
+            : ["已有文件", "时间不可核验"];
+        if (captureSource === "FILE_UPLOAD" && segment.fileLastModifiedAt) {
+            details.push(`文件标记 ${formatDateTime(segment.fileLastModifiedAt)}`);
+        }
+        if (Number.isFinite(Number(segment.clientDurationMs)) && Number(segment.clientDurationMs) > 0) {
+            details.push(`时长 ${formatDuration(Number(segment.clientDurationMs))}`);
+        }
         if (segment.sizeBytes != null && Number.isFinite(Number(segment.sizeBytes))
                 && Number(segment.sizeBytes) > 0) {
             details.push(formatBytes(Number(segment.sizeBytes)));
-        }
-        if (Number.isFinite(Number(segment.durationMs)) && Number(segment.durationMs) > 0) {
-            details.push(formatDuration(Number(segment.durationMs)));
         }
         return details.join(" · ") || "文件信息待确认";
     }
@@ -2286,7 +2414,6 @@
         state.submitting = true;
         setFormsDisabled(true);
         renderBusinessLock();
-        abortStoreSearch();
         abortPoiSearch();
         Object.values(state.locationControllers).forEach((controller) => controller?.abort());
         state.locationControllers.visit = null;
@@ -2314,7 +2441,7 @@
                 address: locationSummary,
                 locationSummary,
                 distanceMeters: 0,
-                locationSource: payload.sourcePoiId ? "AMAP_POI" : "STORE_LOCATION",
+                locationSource: payload.sourcePoiToken ? "AMAP_POI" : "STORE_LOCATION",
                 checkinEligible: true,
                 nextAction: "CHECK_IN"
             };
@@ -2337,7 +2464,6 @@
 
     function completeStoreSaveTransition(createdStore, payload) {
         // 先终止旧搜索，再一次性写入新门店和选中状态，避免迟到响应覆盖刚保存的门店。
-        abortStoreSearch();
         abortPoiSearch();
         hideStoreResults();
         hidePoiResults();
@@ -2349,8 +2475,6 @@
             : [];
         state.visit.nearbyStores = [createdStore, ...existingNearbyStores.filter((item) =>
             String(item.storeId || item.id) !== String(createdStore.storeId))];
-        state.visit.nearbySearchResults = null;
-        state.visit.nearbySearchPoiLookupStatus = null;
         state.visit.selectedStore = {
             id: createdStore.storeId,
             name: createdStore.name,
@@ -2395,8 +2519,6 @@
             : [];
         state.visit.nearbyStores = [createdStore, ...existingNearbyStores.filter((item) =>
             String(item.storeId || item.id) !== String(createdStore.storeId))];
-        state.visit.nearbySearchResults = null;
-        state.visit.nearbySearchPoiLookupStatus = null;
         state.visit.selectedStore = {
             id: createdStore.storeId,
             name: createdStore.name,
@@ -2561,6 +2683,14 @@
     }
 
     async function uploadAudioSegment(segment, file, index, total) {
+        const metadataPromise = localAudioFile(segment.segmentId)?.metadataPromise;
+        if (metadataPromise) {
+            try {
+                await metadataPromise;
+            } catch (_) {
+                // 可选证据读取失败不阻断录音上传。
+            }
+        }
         segment.uploadState = "UPLOADING";
         segment.mayExistRemotely = true;
         segment.errorMessage = "";
@@ -2570,7 +2700,13 @@
         setProgressStep(MEDIA.audio, "active", title);
         try {
             const response = normalizeResponse(await uploadMedia(
-                `audio/${encodeURIComponent(segment.segmentId)}`, file, title)) || {};
+                `audio/${encodeURIComponent(segment.segmentId)}`, file, title, {
+                    captureSource: normalizeAudioCaptureSource(segment.captureSource, segment.source),
+                    clientStartedAt: normalizeOptionalInstant(segment.clientStartedAt),
+                    clientDurationMs: normalizePositiveDurationMs(
+                        segment.clientDurationMs ?? segment.durationMs),
+                    fileLastModifiedAt: normalizeOptionalInstant(segment.fileLastModifiedAt)
+                })) || {};
             if (response.segmentId && String(response.segmentId) !== String(segment.segmentId)) {
                 throw new Error("服务端返回的录音分段编号不一致，已停止提交。");
             }
@@ -2578,6 +2714,14 @@
             segment.originalFilename = response.originalFilename || segment.originalFilename;
             segment.sizeBytes = Number.isFinite(Number(response.sizeBytes))
                 ? Number(response.sizeBytes) : segment.sizeBytes;
+            segment.captureSource = normalizeAudioCaptureSource(
+                response.captureSource || segment.captureSource, segment.source);
+            segment.clientStartedAt = normalizeOptionalInstant(
+                response.clientStartedAt || segment.clientStartedAt);
+            segment.clientDurationMs = normalizePositiveDurationMs(
+                response.clientDurationMs ?? segment.clientDurationMs ?? segment.durationMs);
+            segment.fileLastModifiedAt = normalizeOptionalInstant(
+                response.fileLastModifiedAt || segment.fileLastModifiedAt);
             segment.errorMessage = "";
             renderAudioSegments();
             renderUploadedBadges();
@@ -2594,11 +2738,16 @@
         }
     }
 
-    function uploadMedia(kind, file, progressTitle) {
+    function uploadMedia(kind, file, progressTitle, optionalFormFields = {}) {
         return new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
             const formData = new FormData();
             formData.append("file", file, file.name || kind);
+            Object.entries(optionalFormFields).forEach(([name, value]) => {
+                if (value !== null && value !== undefined && value !== "") {
+                    formData.append(name, String(value));
+                }
+            });
             xhr.open("PUT",
                 `${API_BASE}/submissions/${encodeURIComponent(state.submission.serverId)}/media/${kind}`,
                 true);
@@ -2661,6 +2810,11 @@
             cooperationIntent: state.store.cooperationIntent,
             storeGrade: optionalText(state.store.storeGrade),
             tags: [...state.store.tags],
+            sourcePoiToken: optionalText(state.store.sourcePoiToken),
+            manualEntryToken: state.store.sourceMode === "MANUAL"
+                ? optionalText(state.store.manualEntryToken) : undefined,
+            locationVerificationToken: optionalText(
+                state.store.locationContext?.locationVerificationToken),
             sourcePoiId: optionalText(state.store.sourcePoiId),
             sourcePoiName: optionalText(state.store.sourcePoiName),
             sourcePoiAddress: optionalText(state.store.sourcePoiAddress),
@@ -2681,6 +2835,8 @@
             customerPhone: optionalText(state.visit.customerPhone),
             visitResult: state.visit.visitResult.trim(),
             location: withCurrentLocationNote("visit"),
+            locationVerificationToken: optionalText(
+                state.visit.locationContext?.locationVerificationToken),
             privacyAccepted: state.visit.privacyAccepted === true,
             privacyNoticeVersion: PRIVACY_NOTICE_VERSION
         });
@@ -2731,6 +2887,14 @@
         valid = requireValue(state.store.city, "store-city", "请选择城市。") && valid;
         valid = requireValue(state.store.salespersonId, "store-salesperson", "请选择销售。") && valid;
         valid = requireValue(state.store.sourceMode, "store-source", "请先从附近地点选择；搜索确认没有后再手动录入。") && valid;
+        if (state.store.sourceMode === "POI" && !cleanText(state.store.sourcePoiToken)) {
+            setFieldError("store-source", "高德候选凭证已失效，请重新搜索并选择门店。");
+            valid = false;
+        }
+        if (state.store.sourceMode === "MANUAL" && !cleanText(state.store.manualEntryToken)) {
+            setFieldError("store-source", "人工建店凭证已失效，请重新搜索确认无结果。");
+            valid = false;
+        }
         valid = requireValue(state.store.name.trim(), "store-name", "请输入门店名称。") && valid;
         valid = requireValue(state.store.attribute, "store-attribute", "请选择门店属性。") && valid;
         valid = requireValue(state.store.operatingStatus, "operating-status", "请选择营业状态。") && valid;
@@ -2751,7 +2915,7 @@
             valid = false;
         }
         valid = requireValue(state.store.location, "store-location", "请在现场获取门店定位。") && valid;
-        if (state.store.location && !locationContextReady(state.store.locationContext)) {
+        if (state.store.location && !locationContextCityVerified(state.store.locationContext)) {
             setFieldError("store-location", state.store.locationContext?.errorMessage
                 || "当前定位未通过城市和精度校验，请重新定位。");
             valid = false;
@@ -2849,7 +3013,7 @@
         const locked = isBusinessLocked();
         state.submission.businessLocked = locked;
         if (locked) {
-            abortStoreSearch();
+            abortPoiSearch();
             hideStoreResults();
             hidePoiResults();
         }
@@ -2893,10 +3057,7 @@
 
     function startNewSubmission() {
         cleanupRecorder();
-        abortStoreSearch();
-        clearTimeout(state.poiSearchTimer);
-        state.poiSearchController?.abort();
-        state.poiSearchController = null;
+        abortPoiSearch();
         Object.keys(state.files).forEach(resetLocalFile);
         Object.values(state.locationControllers).forEach((controller) => controller?.abort());
         state.locationControllers.visit = null;
@@ -3010,7 +3171,7 @@
         state.store.salespersonId = salespersonId || "";
         $("#store-form").reset();
         $("#poi-search").value = "";
-        $("#poi-search-help").textContent = "定位成功后，可搜索门店名称或地址。";
+        $("#poi-search-help").textContent = "定位成功后，输入至少 2 个字并点击搜索。";
     }
 
     function hideStoreSavedNotice() {
@@ -3063,6 +3224,7 @@
 
         setValue("#store-city", state.store.city);
         setValue("#store-salesperson", state.store.salespersonId);
+        setValue("#poi-search", state.store.poiSearchQuery);
         setValue("#store-name", state.store.name);
         setValue("#store-attribute", state.store.attribute);
         setValue("#operating-status", state.store.operatingStatus);
@@ -3156,8 +3318,11 @@
                 segmentId,
                 originalFilename: cleanText(rawSegment.originalFilename) || "现场录音",
                 sizeBytes: finiteNumberOrNull(rawSegment.sizeBytes),
-                durationMs: finiteNumberOrNull(rawSegment.durationMs),
-                source: cleanText(rawSegment.source) || "FILE",
+                captureSource: normalizeAudioCaptureSource(rawSegment.captureSource, rawSegment.source),
+                clientStartedAt: normalizeOptionalInstant(rawSegment.clientStartedAt),
+                clientDurationMs: normalizePositiveDurationMs(
+                    rawSegment.clientDurationMs ?? rawSegment.durationMs),
+                fileLastModifiedAt: normalizeOptionalInstant(rawSegment.fileLastModifiedAt),
                 uploadState,
                 mayExistRemotely: rawSegment.mayExistRemotely === true
                     || ["UPLOADED", "UNKNOWN"].includes(uploadState),
@@ -3171,8 +3336,10 @@
                 segmentId: legacySegmentId,
                 originalFilename: "历史拜访录音",
                 sizeBytes: null,
-                durationMs: null,
-                source: "LEGACY",
+                captureSource: "FILE_UPLOAD",
+                clientStartedAt: null,
+                clientDurationMs: null,
+                fileLastModifiedAt: null,
                 uploadState: legacyAudioUploaded ? "UPLOADED" : "UNKNOWN",
                 mayExistRemotely: true,
                 errorMessage: ""
@@ -3197,15 +3364,17 @@
             repairRestoredGeolocationTimestamp("store", savedAt);
         }
         state.visit.nearbyStores = Array.isArray(state.visit.nearbyStores)
-            ? state.visit.nearbyStores.filter(isUsableNearbyStore)
+            ? state.visit.nearbyStores
+                .filter((store) => store?.source === "REGISTERED")
+                .filter(isUsableNearbyStore)
             : [];
-        state.visit.nearbySearchResults = null;
-        state.visit.nearbySearchPoiLookupStatus = null;
         state.store.nearbyPois = Array.isArray(state.store.nearbyPois)
-            ? state.store.nearbyPois.filter(isUsableNearbyStore)
+            ? state.store.nearbyPois
+                .filter((store) => store?.source === "REGISTERED")
+                .filter(isUsableNearbyStore)
             : [];
         state.store.poiSearchResults = null;
-        state.store.poiSearchLookupStatus = null;
+        state.store.poiSearchQuery = cleanText(state.store.poiSearchQuery);
         if (!state.visit.location || !state.visit.locationContext || typeof state.visit.locationContext !== "object") {
             state.visit.locationContext = null;
         }
@@ -3220,12 +3389,31 @@
             state.visit.selectedStore = null;
             state.visit.nearbyStores = [];
         }
+        state.store.sourcePoiToken = cleanText(state.store.sourcePoiToken);
+        state.store.sourcePoiId = cleanText(state.store.sourcePoiId);
         state.store.sourcePoiLongitude = finiteNumberOrNull(state.store.sourcePoiLongitude);
         state.store.sourcePoiLatitude = finiteNumberOrNull(state.store.sourcePoiLatitude);
-        state.store.manualEntryAllowed = Boolean(state.store.manualEntryAllowed || state.store.sourceMode === "MANUAL");
-        if (!state.store.sourceMode) {
-            if (state.store.sourcePoiId) state.store.sourceMode = "POI";
-            else if (cleanText(state.store.name)) state.store.sourceMode = "MANUAL";
+        const restoredLookupStatus = cleanText(state.store.poiSearchLookupStatus);
+        const manualAuthorized = restoredLookupStatus === "EMPTY" || restoredLookupStatus === "UNAVAILABLE";
+        if (state.store.sourceMode === "POI"
+            && (!state.store.sourcePoiId || !state.store.sourcePoiToken)) {
+            state.store.sourceMode = "";
+            state.store.sourcePoiToken = "";
+            state.store.sourcePoiId = "";
+            state.store.sourcePoiName = "";
+            state.store.sourcePoiAddress = "";
+            state.store.sourcePoiLongitude = null;
+            state.store.sourcePoiLatitude = null;
+        }
+        if (state.store.sourceMode === "MANUAL" && !manualAuthorized) {
+            state.store.sourceMode = "";
+        }
+        state.store.manualEntryToken = cleanText(state.store.manualEntryToken);
+        state.store.manualEntryAllowed = state.store.sourceMode === "MANUAL"
+            && manualAuthorized && Boolean(state.store.manualEntryToken);
+        if (!state.store.manualEntryAllowed) {
+            state.store.poiSearchLookupStatus = null;
+            state.store.manualEntryToken = "";
         }
         if (!state.store.clientStoreId) state.store.clientStoreId = secureUuid();
         if (!state.submission.clientSubmissionId) state.submission.clientSubmissionId = secureUuid();
@@ -3559,12 +3747,13 @@
         }
         if (scope === "visit") {
             state.visit.nearbyStores = [];
-            state.visit.nearbySearchResults = null;
-            state.visit.nearbySearchPoiLookupStatus = null;
         } else {
             state.store.nearbyPois = [];
             state.store.poiSearchResults = null;
             state.store.poiSearchLookupStatus = null;
+            state.store.poiSearchQuery = "";
+            state.store.manualEntryAllowed = false;
+            state.store.manualEntryToken = "";
         }
     }
 

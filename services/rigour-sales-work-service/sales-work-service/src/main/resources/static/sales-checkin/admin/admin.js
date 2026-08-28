@@ -20,9 +20,11 @@
         salespersons: [],
         mediaStats: null,
         audioIntelligenceEnabled: false,
-        filters: { q: "", from: "", to: "", city: "", salespersonId: "", status: "" },
+        filters: { q: "", from: "", to: "", city: "", salespersonId: "", status: "", visitType: "" },
         page: 0,
         total: 0,
+        firstVisitTotal: 0,
+        revisitTotal: 0,
         totalPages: 1,
         loading: false,
         controller: null,
@@ -469,6 +471,8 @@
             state.itemsById = new Map(items.map((item) => [submissionId(item), item]).filter(([id]) => id));
             state.currentItemIds = [...state.itemsById.keys()];
             state.total = numberValue(payload.totalElements, payload.total, items.length);
+            state.firstVisitTotal = numberValue(payload.firstVisitTotal, 0);
+            state.revisitTotal = numberValue(payload.revisitTotal, 0);
             state.totalPages = Math.max(1, numberValue(payload.totalPages, Math.ceil(state.total / PAGE_SIZE)));
             state.page = Math.max(0, numberValue(payload.page, state.page));
             renderRows(items);
@@ -480,6 +484,8 @@
             renderResultSummary(items.length);
             renderPagination();
             $("#result-total").textContent = formatCount(state.total);
+            $("#result-first-visit-total").textContent = formatCount(state.firstVisitTotal);
+            $("#result-revisit-total").textContent = formatCount(state.revisitTotal);
             renderLoading(false, items.length === 0);
         } catch (error) {
             if (error.name === "AbortError") return;
@@ -604,6 +610,11 @@
                     sizeBytes: numberValue(segment.sizeBytes, 0),
                     contentType: cleanText(segment.contentType),
                     uploadedAt: segment.uploadedAt || null,
+                    captureSource: normalizeAudioCaptureSource(segment.captureSource),
+                    clientStartedAt: segment.clientStartedAt || null,
+                    clientDurationMs: optionalNonNegativeNumber(segment.clientDurationMs),
+                    fileLastModifiedAt: segment.fileLastModifiedAt || null,
+                    timingStatus: normalizeAudioTimingStatus(segment.timingStatus),
                     available: segment.available === true,
                     deletedAt: segment.deletedAt || null
                 }));
@@ -616,9 +627,31 @@
             sizeBytes: 0,
             contentType: "",
             uploadedAt: null,
+            captureSource: "UNKNOWN",
+            clientStartedAt: null,
+            clientDurationMs: null,
+            fileLastModifiedAt: null,
+            timingStatus: "MISSING",
             available: item.audioAvailable === true,
             deletedAt: item.audioDeletedAt || null
         }];
+    }
+
+    function normalizeAudioCaptureSource(value) {
+        const source = cleanText(value).toUpperCase();
+        return ["BROWSER_RECORDER", "FILE_UPLOAD"].includes(source) ? source : "UNKNOWN";
+    }
+
+    function normalizeAudioTimingStatus(value) {
+        const status = cleanText(value).toUpperCase();
+        return ["ALIGNED", "MISMATCH", "UNVERIFIED_FILE", "MISSING"].includes(status)
+            ? status : "MISSING";
+    }
+
+    function optionalNonNegativeNumber(value) {
+        if (value === null || value === undefined || value === "") return null;
+        const number = Number(value);
+        return Number.isFinite(number) && number >= 0 ? number : null;
     }
 
     function locationAddress(item) {
@@ -1022,7 +1055,7 @@
             const list = document.createElement("div");
             list.className = "media-audio-list";
             audioSegments.forEach((segment, index) => {
-                list.appendChild(createAudioSegment(id, segment, index));
+                list.appendChild(createAudioSegment(id, segment, index, item));
             });
             card.appendChild(list);
         }
@@ -1031,7 +1064,7 @@
         return card;
     }
 
-    function createAudioSegment(submissionId, segment, index) {
+    function createAudioSegment(submissionId, segment, index, submission) {
         const section = document.createElement("section");
         section.className = "media-audio-segment";
         section.dataset.mediaId = submissionId;
@@ -1044,28 +1077,40 @@
         const detail = document.createElement("span");
         const metadata = [];
         if (segment.sizeBytes > 0) metadata.push(formatBytes(segment.sizeBytes));
-        if (segment.uploadedAt) metadata.push(formatFullDateTime(segment.uploadedAt));
+        if (segment.uploadedAt) metadata.push(`上传 ${formatFullDateTime(segment.uploadedAt)}`);
         detail.textContent = metadata.join(" · ") || "已记录";
         heading.append(name, detail);
-        section.appendChild(heading);
+        const evidence = createAudioTimingEvidence(segment, submission);
+        section.append(heading, evidence);
 
         const label = `第${index + 1}段拜访录音`;
         if (segment.available) {
             const audio = document.createElement("audio");
             audio.className = "media-audio";
             audio.controls = true;
-            audio.preload = "none";
-            audio.src = mediaUrl(submissionId, "audio", { segmentId: segment.segmentId });
+            audio.preload = "metadata";
             audio.setAttribute("controlslist", "nodownload");
             audio.setAttribute("aria-label", `播放${label}`);
+            const parsedDuration = evidence.querySelector("[data-audio-media-duration]");
+            audio.addEventListener("loadedmetadata", () => {
+                if (!parsedDuration) return;
+                parsedDuration.textContent = Number.isFinite(audio.duration) && audio.duration >= 0
+                    ? formatAudioDurationMs(audio.duration * 1000) : "无法解析";
+            });
+            audio.addEventListener("error", () => {
+                if (parsedDuration && parsedDuration.textContent === "读取中…") {
+                    parsedDuration.textContent = "无法解析";
+                }
+            });
             audio.addEventListener("play", () => {
                 document.querySelectorAll("audio.media-audio").forEach((other) => {
                     if (other !== audio) other.pause();
                 });
             });
+            audio.src = mediaUrl(submissionId, "audio", { segmentId: segment.segmentId });
             const hint = document.createElement("span");
             hint.className = "media-audio-hint";
-            hint.textContent = "点击播放，可拖动进度";
+            hint.textContent = "已读取媒体元数据；点击播放后可拖动进度";
             section.append(audio, hint, createMediaActions(
                 submissionId, "audio", label,
                 mediaUrl(submissionId, "audio", { segmentId: segment.segmentId, download: true }),
@@ -1074,6 +1119,138 @@
             section.appendChild(createDeletedMediaNotice(label, segment.deletedAt));
         }
         return section;
+    }
+
+    function createAudioTimingEvidence(segment, submission) {
+        const panel = document.createElement("section");
+        panel.className = "audio-timing-evidence";
+        const heading = document.createElement("strong");
+        heading.className = "audio-timing-evidence__title";
+        heading.textContent = "录音时间证据";
+        const grid = document.createElement("dl");
+        grid.className = "audio-timing-evidence__grid";
+
+        appendAudioTimingField(grid, "客户端上报来源", audioCaptureSourceText(segment.captureSource));
+        appendAudioTimingField(grid, "服务端上传时间",
+            segment.uploadedAt ? formatFullDateTime(segment.uploadedAt) : "未记录");
+        if (segment.captureSource === "BROWSER_RECORDER") {
+            appendAudioTimingField(grid, "页面录制开始（客户端报告）",
+                segment.clientStartedAt ? formatFullDateTime(segment.clientStartedAt) : "未采集");
+            const endedAt = audioClientEndedAt(segment);
+            appendAudioTimingField(grid, "页面录制结束（客户端报告）",
+                endedAt ? formatFullDateTime(endedAt) : "未采集");
+        } else if (segment.captureSource === "FILE_UPLOAD") {
+            appendAudioTimingField(grid, "文件修改时间（客户端报告，不可核验）",
+                segment.fileLastModifiedAt ? formatFullDateTime(segment.fileLastModifiedAt) : "未采集");
+        } else {
+            appendAudioTimingField(grid, "录制时间", "录制时间未采集");
+        }
+        appendAudioTimingField(grid, "客户端报告时长",
+            segment.clientDurationMs === null ? "未采集" : formatAudioDurationMs(segment.clientDurationMs));
+        const mediaDuration = document.createElement("span");
+        mediaDuration.dataset.audioMediaDuration = "true";
+        mediaDuration.textContent = segment.available ? "读取中…" : "文件已删除，无法解析";
+        appendAudioTimingField(grid, "媒体解析时长", mediaDuration);
+
+        const relation = audioTimingRelationship(segment, submission);
+        const status = document.createElement("p");
+        status.className = `audio-timing-evidence__status is-${relation.tone}`;
+        const statusTitle = document.createElement("strong");
+        statusTitle.textContent = relation.title;
+        const statusDetail = document.createElement("span");
+        statusDetail.textContent = relation.detail;
+        status.append(statusTitle, statusDetail);
+        panel.append(heading, grid, status);
+        return panel;
+    }
+
+    function appendAudioTimingField(root, label, value) {
+        const item = document.createElement("div");
+        item.className = "audio-timing-evidence__field";
+        const term = document.createElement("dt");
+        term.textContent = label;
+        const description = document.createElement("dd");
+        if (value instanceof Node) description.appendChild(value);
+        else description.textContent = value;
+        item.append(term, description);
+        root.appendChild(item);
+    }
+
+    function audioCaptureSourceText(source) {
+        if (source === "BROWSER_RECORDER") return "客户端声明为页面录制（不可独立证明）";
+        if (source === "FILE_UPLOAD") return "已有文件上传（录制时间不可核验）";
+        return "来源未采集";
+    }
+
+    function audioClientEndedAt(segment) {
+        const startedAt = timestampValue(segment.clientStartedAt);
+        if (startedAt === null || segment.clientDurationMs === null) return null;
+        const endedAt = startedAt + segment.clientDurationMs;
+        if (!Number.isFinite(endedAt)) return null;
+        const endedDate = new Date(endedAt);
+        return Number.isNaN(endedDate.getTime()) ? null : endedDate;
+    }
+
+    function audioTimingRelationship(segment, submission) {
+        if (segment.timingStatus === "UNVERIFIED_FILE" || segment.captureSource === "FILE_UPLOAD") {
+            return {
+                tone: "warning",
+                title: "文件录制时间不可核验",
+                detail: "文件修改时间只是客户端报告，不能证明实际录制时间，也无法核验与本次定位、提交的先后关系。"
+            };
+        }
+        if (segment.timingStatus === "MISSING" || segment.captureSource !== "BROWSER_RECORDER") {
+            return {
+                tone: "muted",
+                title: "录制时间未采集",
+                detail: "无法核验录制与本次定位、提交的先后关系。"
+            };
+        }
+
+        const startedAt = timestampValue(segment.clientStartedAt);
+        const endedAt = audioClientEndedAt(segment)?.getTime() ?? null;
+        const locatedAt = timestampValue(submission?.locationCapturedAt);
+        const submittedAt = timestampValue(submission?.submittedAt);
+        const relations = [];
+        if (startedAt !== null && locatedAt !== null) {
+            relations.push(startedAt >= locatedAt ? "录制开始在定位之后" : "录制开始早于定位");
+        } else {
+            relations.push("无法计算与定位的关系");
+        }
+        if (submittedAt === null) {
+            relations.push("当前仍为草稿，尚无提交时间");
+        } else if (endedAt !== null) {
+            relations.push(endedAt <= submittedAt ? "录制结束在提交之前" : "录制结束晚于提交");
+        } else {
+            relations.push("无法计算与提交的关系");
+        }
+        return segment.timingStatus === "ALIGNED" ? {
+            tone: "warning",
+            title: "客户端报告时间顺序一致（仅供参考）",
+            detail: `客户端报告的录制区间与定位、服务端上传顺序一致，但不能证明实际录制时间；${relations.join("；")}。`
+        } : {
+            tone: "danger",
+            title: "客户端报告时间顺序异常",
+            detail: `客户端报告的录制区间超出2分钟设备时钟容差，与定位或服务端上传顺序不一致；${relations.join("；")}。`
+        };
+    }
+
+    function timestampValue(value) {
+        if (!value) return null;
+        const timestamp = new Date(value).getTime();
+        return Number.isFinite(timestamp) ? timestamp : null;
+    }
+
+    function formatAudioDurationMs(value) {
+        const milliseconds = Number(value);
+        if (!Number.isFinite(milliseconds) || milliseconds < 0) return "未采集";
+        const totalSeconds = Math.round(milliseconds / 1000);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return hours > 0
+            ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+            : `${minutes}:${String(seconds).padStart(2, "0")}`;
     }
 
     function createDeletedMediaCard(kind, label, deletedAt) {
@@ -2076,7 +2253,8 @@
         pagination.hidden = state.total === 0;
         $("#previous-page").disabled = state.page <= 0;
         $("#next-page").disabled = state.page + 1 >= state.totalPages;
-        $("#page-indicator").textContent = `第 ${state.page + 1} / ${state.totalPages} 页`;
+        $("#page-indicator").textContent =
+            `第 ${state.page + 1} / ${state.totalPages} 页 · 共 ${formatCount(state.total)} 条`;
     }
 
     function renderLoading(loading, empty = false) {
@@ -2103,7 +2281,8 @@
             to: "",
             city: state.scope.allCities ? "" : state.scope.city,
             salespersonId: "",
-            status: ""
+            status: "",
+            visitType: ""
         };
         state.page = 0;
         renderCityOptions();
@@ -2128,7 +2307,8 @@
             to,
             city: state.scope.allCities ? $("#filter-city").value : state.scope.city,
             salespersonId: $("#filter-salesperson").value,
-            status: $("#filter-status").value
+            status: $("#filter-status").value,
+            visitType: $("#filter-visit-type").value
         };
         return true;
     }
@@ -2141,7 +2321,9 @@
             to: safeDate(params.get("to")),
             city: cleanText(params.get("city")),
             salespersonId: cleanText(params.get("salespersonId")),
-            status: ["DRAFT", "SUBMITTED"].includes(params.get("status")) ? params.get("status") : ""
+            status: ["DRAFT", "SUBMITTED"].includes(params.get("status")) ? params.get("status") : "",
+            visitType: ["FIRST_VISIT", "REVISIT"].includes(params.get("visitType"))
+                ? params.get("visitType") : ""
         };
         const page = Number.parseInt(params.get("page"), 10);
         state.page = Number.isInteger(page) && page > 0 ? page - 1 : 0;
@@ -2152,6 +2334,7 @@
         $("#filter-from").value = state.filters.from;
         $("#filter-to").value = state.filters.to;
         $("#filter-status").value = state.filters.status;
+        $("#filter-visit-type").value = state.filters.visitType;
         if (Array.from($("#filter-city").options).some((item) => item.value === state.filters.city)) {
             $("#filter-city").value = state.filters.city;
         }

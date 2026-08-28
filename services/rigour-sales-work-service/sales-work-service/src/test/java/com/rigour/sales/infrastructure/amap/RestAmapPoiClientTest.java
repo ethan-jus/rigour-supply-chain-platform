@@ -36,7 +36,8 @@ class RestAmapPoiClientTest {
                         {"status":"1","info":"OK","count":"2","pois":[
                           {"id":"B001","name":"测试便利店A","type":"购物服务",
                            "typecode":"060100","address":"科技园路1号",
-                           "location":"120.100000,30.200000","distance":"120"},
+                           "location":"120.100000,30.200000","distance":"120",
+                           "cityname":"杭州市","adcode":"330106"},
                           {"id":"B002","name":"测试便利店B","type":"购物服务",
                            "typecode":"060100","address":"科技园路2号",
                            "location":"120.101000,30.201000","distance":"260"}
@@ -51,6 +52,8 @@ class RestAmapPoiClientTest {
         assertThat(page.items().get(0).poiId()).isEqualTo("B001");
         assertThat(page.items().get(0).name()).isEqualTo("测试便利店A");
         assertThat(page.items().get(0).distanceMeters()).isEqualByComparingTo("120");
+        assertThat(page.items().get(0).cityName()).isEqualTo("杭州市");
+        assertThat(page.items().get(0).adcode()).isEqualTo("330106");
         assertThat(page.items().get(1).longitude()).isEqualByComparingTo("120.101000");
         NearbyPoiPage cached = client.searchAround("便利店", new BigDecimal("120.10004"),
                 new BigDecimal("30.20004"), 3000, 1, 20);

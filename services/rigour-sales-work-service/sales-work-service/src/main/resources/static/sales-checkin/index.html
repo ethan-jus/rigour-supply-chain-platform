@@ -142,7 +142,7 @@
                     <div class="section-heading section-heading--inline">
                         <div>
                             <p class="section-kicker">当前位置</p>
-                            <h3>定位并查找附近门店 <span class="required-mark">*</span></h3>
+                            <h3>定位并加载已建档门店 <span class="required-mark">*</span></h3>
                         </div>
                         <span id="visit-location-status" class="status-pill">未定位</span>
                     </div>
@@ -154,7 +154,7 @@
                             <span>实际地址</span>
                             <strong id="visit-location-address">正在解析地址…</strong>
                             <button id="visit-location-retry" class="location-retry-button" type="button" hidden>
-                                重试地址与附近门店解析
+                                重试地址与已建档门店解析
                             </button>
                         </div>
                         <div><span>定位精度</span><strong id="visit-location-accuracy"></strong></div>
@@ -179,17 +179,16 @@
                         <span id="nearby-stores-summary">正在查找…</span>
                     </div>
                     <div class="field store-search-field nearby-combobox-field">
-                        <label for="store-search" class="field__label">附近门店 / 高德地点</label>
+                        <label for="store-search" class="field__label">附近已建档门店</label>
                         <div class="search-input-wrap">
                             <input id="store-search" type="search" inputmode="search" autocomplete="off"
-                                   role="combobox" placeholder="点击选择，或输入名称搜索"
+                                   role="combobox" placeholder="点击选择，或输入名称筛选"
                                    aria-autocomplete="list" aria-haspopup="listbox"
                                    aria-controls="store-search-results" aria-expanded="false" disabled>
                             <button id="store-search-toggle" class="combobox-toggle" type="button"
                                     aria-label="展开附近门店选项" disabled>展开</button>
-                            <span id="store-search-spinner" class="spinner" aria-label="正在搜索" hidden></span>
                         </div>
-                        <p id="store-search-help" class="field__help">先获取当前定位；深绿色可直接打卡，琥珀色需先建档。</p>
+                        <p id="store-search-help" class="field__help">先获取当前定位；输入文字只筛选已加载的门店，不会发起网络搜索。</p>
                         <div id="store-search-results" class="search-results" role="listbox" hidden></div>
                         <span class="field__error" data-error-for="selected-store"></span>
                     </div>
@@ -205,10 +204,10 @@
 
                     <button id="create-store-link" class="create-store-action" type="button">
                         <span class="create-store-action__copy">
-                            <strong>附近仍找不到？</strong>
-                            <small>可手工新建门店；高德暂不可用时也能继续填写</small>
+                            <strong>附近没有已建档门店？</strong>
+                            <small>进入新门店后明确搜索一次；无结果或高德不可用时可手工录入</small>
                         </span>
-                        <span class="create-store-action__button">手工建档</span>
+                        <span class="create-store-action__button">新增门店</span>
                     </button>
                 </section>
             </section>
@@ -332,7 +331,7 @@
                         <span class="media-step__index" aria-hidden="true">3</span>
                         <div class="media-step__copy">
                             <strong>现场录音</strong>
-                            <span>选填；录音前请征得在场人员同意，超长录音建议使用系统录音后上传</span>
+                            <span>选填；页面录制会记录开始时间和时长，已有文件的时间仅供参考、不可核验</span>
                         </div>
                         <span id="audio-uploaded-badge" class="mini-badge" hidden></span>
                     </div>
@@ -486,19 +485,19 @@
                         <h2>确认门店来源</h2>
                     </div>
                 </div>
-                <p class="section-description">优先选择高德地点；确实找不到或高德暂不可用时可手工录入。</p>
+                <p class="section-description">输入门店名称后点击“搜索”；输入、筛选和选择都不会自动调用高德。</p>
                 <div class="field poi-search-field">
-                    <label for="poi-search" class="field__label">附近门店 / 高德地点</label>
+                    <label for="poi-search" class="field__label">搜索高德新门店</label>
                     <div class="search-input-wrap">
                         <input id="poi-search" type="search" inputmode="search" autocomplete="off"
                                role="combobox" placeholder="先获取定位"
                                aria-autocomplete="list" aria-haspopup="listbox"
                                aria-controls="poi-search-results" aria-expanded="false" disabled>
-                        <button id="poi-search-toggle" class="combobox-toggle" type="button"
-                                aria-label="展开附近地点选项" disabled>展开</button>
+                        <button id="poi-search-button" class="combobox-toggle explicit-search-button" type="button"
+                                aria-label="搜索高德新门店" disabled>搜索</button>
                         <span id="poi-search-spinner" class="spinner" aria-label="正在搜索" hidden></span>
                     </div>
-                    <p id="poi-search-help" class="field__help">定位成功后，可搜索门店名称或地址。</p>
+                    <p id="poi-search-help" class="field__help">定位成功后，输入至少 2 个字并点击搜索。</p>
                     <div id="poi-search-results" class="search-results" role="listbox" hidden></div>
                     <span class="field__error" data-error-for="store-source"></span>
                 </div>
@@ -514,7 +513,7 @@
 
                 <button id="manual-store-button" class="manual-store-action" type="button">
                     <strong>高德附近地点没找到？</strong>
-                    <span>确认搜索无结果后，再手动录入门店名称</span>
+                    <span>明确搜索返回无结果或不可用后，再手动录入门店名称</span>
                 </button>
             </section>
 

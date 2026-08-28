@@ -136,7 +136,8 @@ public class RestAmapPoiClient implements AmapPoiClient {
         }
         return new NearbyPoi(id, name, scalarText(source.get("address")), scalarText(source.get("type")),
                 scalarText(source.get("typecode")), coordinates[0], coordinates[1],
-                distance(scalarText(source.get("distance"))));
+                distance(scalarText(source.get("distance"))), scalarText(source.get("cityname")),
+                scalarText(source.get("adcode")));
     }
 
     /** 高德空字段有时会返回 []；对预期标量的非标量值按缺失处理。 */

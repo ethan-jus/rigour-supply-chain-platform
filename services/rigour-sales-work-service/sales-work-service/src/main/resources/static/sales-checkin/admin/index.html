@@ -42,6 +42,10 @@
         <div class="scope-card__total">
             <span>当前条件共</span>
             <strong><span id="result-total">--</span> 条</strong>
+            <div class="scope-card__visit-summary" aria-live="polite">
+                <span>初访 <b id="result-first-visit-total">--</b></span>
+                <span>复访 <b id="result-revisit-total">--</b></span>
+            </div>
         </div>
     </section>
 
@@ -146,6 +150,14 @@
                     <option value="DRAFT">草稿</option>
                 </select>
             </label>
+            <label class="field">
+                <span>拜访类型</span>
+                <select id="filter-visit-type" name="visitType">
+                    <option value="">全部类型</option>
+                    <option value="FIRST_VISIT">初访</option>
+                    <option value="REVISIT">复访</option>
+                </select>
+            </label>
             <div class="filter-actions">
                 <button id="search-button" class="primary-button" type="submit">
                     查询数据
@@ -210,7 +222,7 @@
 
         <div id="empty-state" class="empty-state" hidden>
             <strong>没有找到拜访数据</strong>
-            <p>请调整日期、城市或状态后重试。</p>
+            <p>请调整日期、城市、状态或拜访类型后重试。</p>
         </div>
 
         <nav id="pagination" class="pagination" aria-label="拜访记录分页" hidden>

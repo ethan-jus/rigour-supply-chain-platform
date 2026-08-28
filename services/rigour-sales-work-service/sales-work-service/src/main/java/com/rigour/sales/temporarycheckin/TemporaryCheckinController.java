@@ -11,6 +11,7 @@ import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.IdentityVerifyRe
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.OptionsResponse;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.SalesIdentityView;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.ResolveLocationRequest;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.SearchNewStoreRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.StoreView;
 import java.util.List;
 import java.util.UUID;
@@ -95,8 +96,19 @@ public class TemporaryCheckinController {
     }
 
     @PostMapping("/locations/resolve")
-    public LocationContextView resolveLocation(@RequestBody ResolveLocationRequest request) {
-        return service.resolveLocation(request);
+    public LocationContextView resolveLocation(
+            @RequestBody ResolveLocationRequest request,
+            HttpServletRequest servletRequest) {
+        return service.resolveLocation(
+                request, TemporaryCheckinRequestFacts.from(servletRequest));
+    }
+
+    @PostMapping("/locations/search-new-store")
+    public LocationContextView searchNewStore(
+            @RequestBody SearchNewStoreRequest request,
+            HttpServletRequest servletRequest) {
+        return service.searchNewStore(
+                request, TemporaryCheckinRequestFacts.from(servletRequest));
     }
 
     @PostMapping("/submissions")
@@ -122,8 +134,13 @@ public class TemporaryCheckinController {
             @PathVariable("segmentId") UUID segmentId,
             @RequestHeader(name = "X-Submission-Key", required = false) String submissionKey,
             @RequestPart("file") MultipartFile file,
+            @RequestParam(name = "captureSource", required = false) String captureSource,
+            @RequestParam(name = "clientStartedAt", required = false) String clientStartedAt,
+            @RequestParam(name = "clientDurationMs", required = false) String clientDurationMs,
+            @RequestParam(name = "fileLastModifiedAt", required = false) String fileLastModifiedAt,
             HttpServletRequest servletRequest) {
         return service.uploadAudioSegment(submissionId, segmentId, submissionKey, file,
+                captureSource, clientStartedAt, clientDurationMs, fileLastModifiedAt,
                 TemporaryCheckinRequestFacts.from(servletRequest));
     }
 

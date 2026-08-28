@@ -67,12 +67,13 @@ public class TemporaryCheckinAdminController {
             @RequestParam(name = "city", required = false) String city,
             @RequestParam(name = "salespersonId", required = false) UUID salespersonId,
             @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "visitType", required = false) String visitType,
             @RequestParam(name = "q", required = false) String query,
             @RequestParam(name = "page", required = false) Integer page,
             @RequestParam(name = "size", required = false) Integer size) {
         AdminScope scope = accessPolicy.requireScope(request);
         return service.findAdminSubmissions(
-                scope, from, to, city, salespersonId, status, query, page, size);
+                scope, from, to, city, salespersonId, status, visitType, query, page, size);
     }
 
     @GetMapping(value = "/export.csv", produces = "text/csv;charset=UTF-8")
@@ -83,9 +84,10 @@ public class TemporaryCheckinAdminController {
             @RequestParam(name = "city", required = false) String city,
             @RequestParam(name = "salespersonId", required = false) UUID salespersonId,
             @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "visitType", required = false) String visitType,
             @RequestParam(name = "q", required = false) String query) {
         AdminScope scope = accessPolicy.requireScope(request);
-        byte[] bytes = service.exportCsv(scope, from, to, city, salespersonId, status, query)
+        byte[] bytes = service.exportCsv(scope, from, to, city, salespersonId, status, visitType, query)
                 .getBytes(StandardCharsets.UTF_8);
         return ResponseEntity.ok()
                 .contentType(CSV)

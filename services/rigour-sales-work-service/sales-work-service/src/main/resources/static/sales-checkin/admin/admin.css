@@ -399,6 +399,23 @@ input {
     font-size: 18px;
 }
 
+.scope-card__visit-summary {
+    display: flex;
+    flex-wrap: wrap;
+    margin-top: 2px;
+    gap: 4px 12px;
+}
+
+.scope-card__visit-summary span {
+    color: var(--ink-soft);
+    font-size: 11px;
+}
+
+.scope-card__visit-summary b {
+    color: var(--brand-dark);
+    font-size: 12px;
+}
+
 .notice {
     display: flex;
     align-items: center;
@@ -971,6 +988,83 @@ td code,
 .media-audio-segment__heading span {
     color: #74878a;
     font-size: 10px;
+}
+
+.audio-timing-evidence {
+    display: grid;
+    padding: 8px;
+    border: 1px solid #d9aaa4;
+    border-radius: 6px;
+    background: #fff8f7;
+    gap: 7px;
+}
+
+.audio-timing-evidence__title {
+    color: #714843;
+    font-size: 11px;
+}
+
+.audio-timing-evidence__grid {
+    display: grid;
+    margin: 0;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 6px 12px;
+}
+
+.audio-timing-evidence__field {
+    min-width: 0;
+}
+
+.audio-timing-evidence__field dt {
+    margin: 0 0 2px;
+    color: #8a6662;
+    font-size: 9px;
+}
+
+.audio-timing-evidence__field dd {
+    overflow-wrap: anywhere;
+    margin: 0;
+    color: #3f5558;
+    font-size: 10px;
+    line-height: 1.45;
+}
+
+.audio-timing-evidence__status {
+    display: grid;
+    margin: 0;
+    padding: 6px 7px;
+    border-radius: 5px;
+    background: #f1f4f4;
+    gap: 2px;
+}
+
+.audio-timing-evidence__status strong,
+.audio-timing-evidence__status span {
+    font-size: 10px;
+    line-height: 1.45;
+}
+
+.audio-timing-evidence__status span {
+    color: #53696c;
+}
+
+.audio-timing-evidence__status.is-success {
+    background: #eaf5ef;
+    color: #286048;
+}
+
+.audio-timing-evidence__status.is-warning {
+    background: #fff2da;
+    color: #865b18;
+}
+
+.audio-timing-evidence__status.is-danger {
+    background: #fde9e7;
+    color: #9b3434;
+}
+
+.audio-timing-evidence__status.is-muted {
+    color: #607477;
 }
 
 .audio-intelligence {
@@ -1779,7 +1873,7 @@ body.preview-open {
 }
 
 .filter-form {
-    grid-template-columns: minmax(180px, 1.25fr) repeat(5, minmax(105px, 0.75fr)) minmax(270px, auto);
+    grid-template-columns: minmax(180px, 1.25fr) repeat(6, minmax(105px, 0.75fr)) minmax(270px, auto);
 }
 
 .bulk-toolbar {

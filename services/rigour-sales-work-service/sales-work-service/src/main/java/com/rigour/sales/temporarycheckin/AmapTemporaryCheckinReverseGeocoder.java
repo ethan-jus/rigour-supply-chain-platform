@@ -6,6 +6,7 @@ import java.math.RoundingMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -15,8 +16,9 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-/** 高德 Web 服务坐标转换与逆地理编码适配器；密钥不进入前端、业务数据或日志。 */
+/** 本地完成坐标转换后调用一次高德逆地理编码；密钥不进入前端、业务数据或日志。 */
 @Component
+@ConditionalOnProperty(prefix = "rigour.sales.temporary-checkin", name = "enabled", havingValue = "true")
 public class AmapTemporaryCheckinReverseGeocoder implements TemporaryCheckinReverseGeocoder {
 
     private static final Logger log = LoggerFactory.getLogger(AmapTemporaryCheckinReverseGeocoder.class);
@@ -25,22 +27,33 @@ public class AmapTemporaryCheckinReverseGeocoder implements TemporaryCheckinReve
     private final RestClient restClient;
     private final AmapProperties properties;
     private final ObjectMapper objectMapper;
+    private final Wgs84Gcj02Converter coordinateConverter;
 
     @Autowired
     public AmapTemporaryCheckinReverseGeocoder(
             RestClient.Builder builder,
             AmapProperties properties,
-            ObjectMapper objectMapper) {
-        this(createRestClient(builder, properties), properties, objectMapper);
+            ObjectMapper objectMapper,
+            Wgs84Gcj02Converter coordinateConverter) {
+        this(createRestClient(builder, properties), properties, objectMapper, coordinateConverter);
     }
 
     AmapTemporaryCheckinReverseGeocoder(
             RestClient restClient,
             AmapProperties properties,
             ObjectMapper objectMapper) {
+        this(restClient, properties, objectMapper, new Wgs84Gcj02Converter());
+    }
+
+    AmapTemporaryCheckinReverseGeocoder(
+            RestClient restClient,
+            AmapProperties properties,
+            ObjectMapper objectMapper,
+            Wgs84Gcj02Converter coordinateConverter) {
         this.restClient = restClient;
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.coordinateConverter = coordinateConverter;
     }
 
     private static RestClient createRestClient(RestClient.Builder builder, AmapProperties properties) {
@@ -57,7 +70,7 @@ public class AmapTemporaryCheckinReverseGeocoder implements TemporaryCheckinReve
         }
         long startedAt = System.nanoTime();
         try {
-            Coordinates amap = convertGps(longitude, latitude);
+            Wgs84Gcj02Converter.Coordinates amap = coordinateConverter.convert(longitude, latitude);
             GeocodeResult result = reverseGeocode(amap);
             log.info("临时打卡逆地理编码成功 endpoint=/geocode/regeo elapsedMs={}",
                     (System.nanoTime() - startedAt) / 1_000_000);
@@ -78,35 +91,7 @@ public class AmapTemporaryCheckinReverseGeocoder implements TemporaryCheckinReve
         }
     }
 
-    private Coordinates convertGps(BigDecimal longitude, BigDecimal latitude) {
-        String gps = coordinate(longitude) + "," + coordinate(latitude);
-        String body = restClient.get().uri(uriBuilder -> uriBuilder
-                .path("/assistant/coordinate/convert")
-                .queryParam("key", properties.getWebKey())
-                .queryParam("locations", gps)
-                .queryParam("coordsys", "gps")
-                .queryParam("output", "JSON")
-                .build()).retrieve().body(String.class);
-        JsonNode root = objectMapper.readTree(body);
-        requireSuccess(root, "/assistant/coordinate/convert");
-        String converted = text(root.path("locations"));
-        if (!StringUtils.hasText(converted)) {
-            throw new AmapBusinessException("/assistant/coordinate/convert", "AMAP_CONVERT_EMPTY");
-        }
-        String first = converted.split(";", -1)[0];
-        String[] parts = first.split(",", -1);
-        if (parts.length != 2) {
-            throw new AmapBusinessException("/assistant/coordinate/convert", "AMAP_CONVERT_INVALID");
-        }
-        try {
-            return new Coordinates(new BigDecimal(parts[0].trim()).setScale(6, RoundingMode.HALF_UP),
-                    new BigDecimal(parts[1].trim()).setScale(6, RoundingMode.HALF_UP));
-        } catch (NumberFormatException exception) {
-            throw new AmapBusinessException("/assistant/coordinate/convert", "AMAP_CONVERT_INVALID");
-        }
-    }
-
-    private GeocodeResult reverseGeocode(Coordinates coordinates) {
+    private GeocodeResult reverseGeocode(Wgs84Gcj02Converter.Coordinates coordinates) {
         String location = coordinates.longitude().toPlainString() + "," + coordinates.latitude().toPlainString();
         String body = restClient.get().uri(uriBuilder -> uriBuilder
                 .path("/geocode/regeo")
@@ -187,10 +172,6 @@ public class AmapTemporaryCheckinReverseGeocoder implements TemporaryCheckinReve
         }
     }
 
-    private static String coordinate(BigDecimal value) {
-        return value.setScale(6, RoundingMode.HALF_UP).toPlainString();
-    }
-
     private static String text(JsonNode node) {
         return node != null && node.isTextual() && StringUtils.hasText(node.asText()) ? node.asText().trim() : null;
     }
@@ -211,8 +192,6 @@ public class AmapTemporaryCheckinReverseGeocoder implements TemporaryCheckinReve
     private static int toMillis(java.time.Duration duration) {
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, duration.toMillis()));
     }
-
-    private record Coordinates(BigDecimal longitude, BigDecimal latitude) { }
 
     private static final class AmapBusinessException extends RuntimeException {
         private static final long serialVersionUID = 1L;

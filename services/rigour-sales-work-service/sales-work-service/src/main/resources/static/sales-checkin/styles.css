@@ -2197,8 +2197,7 @@ body {
     background: #fff;
 }
 
-.nearby-combobox-field input:disabled,
-.poi-search-field input:disabled {
+.nearby-combobox-field input:disabled {
     padding-right: 13px;
 }
 
@@ -2224,7 +2223,16 @@ body {
     display: none;
 }
 
-.nearby-combobox-field .spinner,
+.explicit-search-button:disabled {
+    display: block;
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.explicit-search-button[hidden] {
+    display: none;
+}
+
 .poi-search-field .spinner {
     right: 75px;
 }
@@ -2969,11 +2977,6 @@ body.is-store-page #submit-store-button {
 .visit-store-result.is-registered {
     border-left-color: #087a54;
     background: #f6fbf8;
-}
-
-.visit-store-result.is-new-poi {
-    border-left-color: #c66a1b;
-    background: #fffaf3;
 }
 
 .visit-store-result__meta {
