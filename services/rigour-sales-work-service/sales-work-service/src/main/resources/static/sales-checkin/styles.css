@@ -949,6 +949,63 @@ button:focus-visible,
     height: 38px;
 }
 
+.audio-preview-list {
+    display: grid;
+    margin-top: 10px;
+    gap: 8px;
+}
+
+.audio-preview-list:empty {
+    display: none;
+}
+
+.audio-preview-list .audio-preview {
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin-top: 0;
+}
+
+.audio-preview-list .audio-preview audio {
+    grid-column: 1 / -1;
+}
+
+.audio-preview__meta {
+    min-width: 0;
+}
+
+.audio-preview__meta small {
+    display: block;
+    margin-top: 4px;
+    color: var(--ink-soft);
+    font-size: 10px;
+    line-height: 1.45;
+}
+
+.audio-preview__actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.audio-preview__actions .text-button {
+    min-width: 42px;
+    min-height: 36px;
+    padding: 5px 7px;
+}
+
+.audio-retry-button {
+    color: var(--brand);
+}
+
+.audio-segment-status.is-uploaded {
+    color: #16704f;
+}
+
+.audio-segment-status.is-unknown,
+.audio-segment-status.is-needs_file,
+.audio-segment-status.is-error {
+    color: #a3481b;
+}
+
 .fallback-picker {
     display: flex;
     align-items: center;
@@ -2140,8 +2197,7 @@ body {
     background: #fff;
 }
 
-.nearby-combobox-field input:disabled,
-.poi-search-field input:disabled {
+.nearby-combobox-field input:disabled {
     padding-right: 13px;
 }
 
@@ -2167,7 +2223,16 @@ body {
     display: none;
 }
 
-.nearby-combobox-field .spinner,
+.explicit-search-button:disabled {
+    display: block;
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.explicit-search-button[hidden] {
+    display: none;
+}
+
 .poi-search-field .spinner {
     right: 75px;
 }
@@ -2218,7 +2283,7 @@ body {
     border-radius: 999px;
     color: #96501d;
     background: #fff2e6;
-    font-size: 9px;
+    font-size: 12px;
     white-space: nowrap;
 }
 
@@ -2229,7 +2294,7 @@ body {
 
 .poi-result__meta small {
     color: var(--ink-soft);
-    font-size: 10px;
+    font-size: 11px;
 }
 
 .selected-card {
@@ -2733,4 +2798,246 @@ body {
     .recording-clock {
         text-align: center;
     }
+}
+
+.identity-gate {
+    overflow: hidden;
+    padding: 24px;
+    border: 1px solid rgba(191, 208, 205, 0.9);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+}
+
+.identity-gate__heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 46px;
+    align-items: start;
+    margin-bottom: 22px;
+    gap: 18px;
+}
+
+.identity-gate__heading h2 {
+    margin: 0;
+    font-size: clamp(20px, 5vw, 25px);
+    line-height: 1.28;
+}
+
+.identity-gate__heading p:not(.section-kicker) {
+    margin: 9px 0 0;
+    color: var(--ink-soft);
+    font-size: 14px;
+    line-height: 1.65;
+}
+
+.identity-gate__heading .section-kicker {
+    color: var(--brand);
+}
+
+.identity-gate__shield {
+    display: grid;
+    width: 46px;
+    height: 46px;
+    place-items: center;
+    border-radius: 15px;
+    color: var(--brand);
+    background: var(--brand-soft);
+    font-size: 22px;
+    font-weight: 800;
+}
+
+.identity-gate__fields {
+    margin-bottom: 16px;
+}
+
+.identity-code-field {
+    margin-bottom: 20px;
+}
+
+#identity-submit {
+    width: 100%;
+    min-height: 52px;
+}
+
+.identity-summary {
+    display: flex;
+    min-height: 64px;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    padding: 12px 16px;
+    border: 1px solid rgba(13, 92, 99, 0.18);
+    border-radius: 15px;
+    background: linear-gradient(135deg, #f3faf8, #fff);
+    gap: 16px;
+}
+
+.identity-summary > div {
+    display: grid;
+    grid-template-columns: auto auto;
+    align-items: baseline;
+    gap: 2px 10px;
+}
+
+.identity-summary span {
+    grid-column: 1 / -1;
+    color: var(--ink-soft);
+    font-size: 11px;
+}
+
+.identity-summary strong {
+    color: var(--brand-dark);
+    font-size: 17px;
+}
+
+.identity-summary small {
+    color: var(--ink-soft);
+    font-size: 13px;
+}
+
+.identity-summary .text-button {
+    min-width: 88px;
+    min-height: 40px;
+}
+
+@media (max-width: 619px) {
+    .identity-gate {
+        padding: 20px;
+        border-radius: 19px;
+    }
+
+    .identity-gate__heading {
+        grid-template-columns: minmax(0, 1fr) 40px;
+    }
+
+    .identity-gate__shield {
+        width: 40px;
+        height: 40px;
+        border-radius: 13px;
+    }
+
+    .identity-summary .text-button {
+        min-height: 44px;
+    }
+}
+
+/* 拜访与建档是两段连续流程，用色彩和页头明确当前所处页面。 */
+body.is-store-page {
+    --brand: #a65312;
+    --brand-dark: #74340b;
+    --brand-soft: #fff0d8;
+    --canvas: #fffaf3;
+    --surface-soft: #fff8ed;
+    --line: #eadcca;
+    --line-strong: #d8bea0;
+    background: #fffaf3;
+}
+
+body.is-store-page .hero {
+    background: linear-gradient(135deg, #75370d 0%, #a65312 60%, #c5772c 100%);
+}
+
+body.is-store-page .brand-mark {
+    color: #74340b;
+}
+
+body.is-store-page .identity-summary {
+    border-color: #e2c39e;
+    background: linear-gradient(135deg, #fff5e7, #fff);
+}
+
+body.is-store-page .store-editor-header {
+    border-bottom-color: #ead6bd;
+    background: #fff7eb;
+}
+
+body.is-store-page .store-editor-header .section-kicker {
+    margin-bottom: 3px;
+    color: #a65312;
+}
+
+body.is-store-page .store-prefill-notice {
+    border-color: #e5c59f;
+    color: #71380f;
+    background: #fff6e8;
+}
+
+body.is-store-page #store-panel .form-card {
+    border-bottom-color: #eadcca;
+}
+
+body.is-store-page #submit-store-button {
+    background: #a65312;
+}
+
+.visit-store-result {
+    border-left: 4px solid transparent;
+}
+
+.visit-store-result.is-registered {
+    border-left-color: #087a54;
+    background: #f6fbf8;
+}
+
+.visit-store-result__meta {
+    display: grid !important;
+    flex: 0 0 auto;
+    justify-items: end;
+    gap: 4px;
+}
+
+.visit-store-result__meta strong {
+    padding: 3px 7px;
+    border-radius: 999px;
+    color: #9a4f12;
+    background: #ffead0;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.visit-store-result.is-registered .visit-store-result__meta strong {
+    color: #087a54;
+    background: #e8f7f0;
+}
+
+.visit-store-result__meta small {
+    color: var(--ink-soft);
+    font-size: 11px;
+}
+
+.create-store-action {
+    border-color: #deb98d;
+    background: #fffaf3;
+}
+
+.create-store-action:hover,
+.create-store-action:focus-visible {
+    border-color: #b75c13;
+    box-shadow: 0 0 0 3px rgba(183, 92, 19, 0.1);
+}
+
+.create-store-action__copy strong {
+    color: #6f370f;
+}
+
+.create-store-action__button {
+    background: #a65312;
+}
+
+@media (max-width: 619px) {
+    .visit-store-result {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .visit-store-result__meta {
+        align-self: center;
+    }
+}
+
+/* 固定现有 Logo 与页面标题色块，身份和表单内容继续随页面滚动。 */
+.hero {
+    position: sticky;
+    z-index: 40;
+    top: 0;
+    box-shadow: 0 5px 18px rgba(4, 35, 38, 0.16);
 }

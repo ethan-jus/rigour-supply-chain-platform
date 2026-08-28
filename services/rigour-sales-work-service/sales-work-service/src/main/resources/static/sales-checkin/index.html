@@ -15,8 +15,8 @@
         <div class="brand-mark" aria-hidden="true">R</div>
         <div>
             <p class="eyebrow">RIGOUR · 现场专注</p>
-            <h1>销售拜访打卡</h1>
-            <p class="hero__description">定位后选择附近门店，快速完成拜访记录。</p>
+            <h1 id="hero-title">拜访打卡</h1>
+            <p id="hero-description" class="hero__description">定位、选择门店并记录本次拜访。</p>
         </div>
     </div>
 </header>
@@ -38,6 +38,52 @@
         <button id="dismiss-error-button" class="text-button" type="button">关闭</button>
     </div>
 
+    <section id="identity-gate" class="identity-gate" aria-labelledby="identity-title">
+        <div class="identity-gate__heading">
+            <div>
+                <p class="section-kicker">销售身份</p>
+                <h2 id="identity-title">首次验证后，这台手机会记住你</h2>
+                <p>请选择本人并输入个人打卡码。验证后表单不再允许随意切换销售。</p>
+            </div>
+            <span class="identity-gate__shield" aria-hidden="true">✓</span>
+        </div>
+        <form id="identity-form" novalidate>
+            <div class="field-grid field-grid--two identity-gate__fields">
+                <label class="field">
+                    <span class="field__label">城市 <span class="required-mark">*</span></span>
+                    <select id="identity-city" required><option value="">请选择城市</option></select>
+                    <span class="field__error" data-error-for="identity-city"></span>
+                </label>
+                <label class="field">
+                    <span class="field__label">本人姓名 <span class="required-mark">*</span></span>
+                    <select id="identity-salesperson" required disabled>
+                        <option value="">请先选择城市</option>
+                    </select>
+                    <span class="field__error" data-error-for="identity-salesperson"></span>
+                </label>
+            </div>
+            <label class="field identity-code-field">
+                <span class="field__label">个人打卡码 <span class="required-mark">*</span></span>
+                <input id="identity-code" type="password" minlength="8" maxlength="128"
+                       autocomplete="current-password" autocapitalize="characters" spellcheck="false"
+                       placeholder="请输入管理员发放的个人码" required>
+                <span class="field__help">个人码仅用于本次验证，服务器不保存明文。</span>
+                <span class="field__error" data-error-for="identity-code"></span>
+            </label>
+            <button id="identity-submit" class="primary-button" type="submit">验证并开始打卡</button>
+        </form>
+    </section>
+
+    <div id="checkin-workspace" hidden>
+        <div id="identity-summary" class="identity-summary" role="status">
+            <div>
+                <span>当前销售</span>
+                <strong id="identity-summary-name">--</strong>
+                <small id="identity-summary-city">--</small>
+            </div>
+            <button id="identity-switch" class="text-button" type="button">切换身份</button>
+        </div>
+
     <nav class="tabs workflow-tabs" aria-label="表单类型" role="tablist">
         <button id="visit-tab" class="tab is-active" type="button" role="tab" aria-selected="true"
                 aria-controls="visit-panel" data-tab="visit">
@@ -47,7 +93,7 @@
         <button id="store-tab" class="tab" type="button" role="tab" aria-selected="false"
                 aria-controls="store-panel" data-tab="store">
             <span class="tab__index">2</span>
-            门店录入
+            新门店建档
         </button>
     </nav>
 
@@ -57,6 +103,12 @@
                 <div>
                     <strong>打卡草稿已锁定</strong>
                     <p>城市、销售、门店和拜访内容不再变更；网络中断后刷新页面可恢复，并继续上传或删除媒体。</p>
+                </div>
+            </div>
+            <div id="store-saved-notice" class="notice notice--info" role="status" hidden>
+                <div>
+                    <strong>门店已保存并选中</strong>
+                    <p><span id="store-saved-name"></span> 已回填到本次拜访，请继续填写并提交打卡。</p>
                 </div>
             </div>
             <section class="form-card visit-main-card">
@@ -70,7 +122,7 @@
 
                 <div class="field-grid field-grid--two identity-grid">
                     <label class="field">
-                        <span class="field__label">城市 <span class="required-mark">*</span></span>
+                        <span class="field__label">本次拜访城市 <span class="required-mark">*</span></span>
                         <select id="visit-city" name="city" required>
                             <option value="">请选择城市</option>
                         </select>
@@ -90,7 +142,7 @@
                     <div class="section-heading section-heading--inline">
                         <div>
                             <p class="section-kicker">当前位置</p>
-                            <h3>定位并查找附近门店 <span class="required-mark">*</span></h3>
+                            <h3>定位并加载已建档门店 <span class="required-mark">*</span></h3>
                         </div>
                         <span id="visit-location-status" class="status-pill">未定位</span>
                     </div>
@@ -102,7 +154,7 @@
                             <span>实际地址</span>
                             <strong id="visit-location-address">正在解析地址…</strong>
                             <button id="visit-location-retry" class="location-retry-button" type="button" hidden>
-                                重试地址与附近门店解析
+                                重试地址与已建档门店解析
                             </button>
                         </div>
                         <div><span>定位精度</span><strong id="visit-location-accuracy"></strong></div>
@@ -121,23 +173,22 @@
                 <section id="nearby-stores-panel" class="nearby-panel" aria-labelledby="nearby-stores-title" hidden>
                     <div class="nearby-panel__heading">
                         <div>
-                            <strong id="nearby-stores-title">选择附近已录入门店</strong>
-                            <small>只能打卡当前定位附近、且基础资料已完整的门店</small>
+                            <strong id="nearby-stores-title">选择附近门店</strong>
+                            <small id="nearby-stores-scope">仅显示当前定位允许范围内的候选</small>
                         </div>
                         <span id="nearby-stores-summary">正在查找…</span>
                     </div>
                     <div class="field store-search-field nearby-combobox-field">
-                        <label for="store-search" class="field__label">附近门店</label>
+                        <label for="store-search" class="field__label">附近已建档门店</label>
                         <div class="search-input-wrap">
                             <input id="store-search" type="search" inputmode="search" autocomplete="off"
-                                   role="combobox" placeholder="点击选择，或输入名称搜索"
+                                   role="combobox" placeholder="点击选择，或输入名称筛选"
                                    aria-autocomplete="list" aria-haspopup="listbox"
                                    aria-controls="store-search-results" aria-expanded="false" disabled>
                             <button id="store-search-toggle" class="combobox-toggle" type="button"
                                     aria-label="展开附近门店选项" disabled>展开</button>
-                            <span id="store-search-spinner" class="spinner" aria-label="正在搜索" hidden></span>
                         </div>
-                        <p id="store-search-help" class="field__help">先获取当前定位，再从附近门店中选择。</p>
+                        <p id="store-search-help" class="field__help">先获取当前定位；输入文字只筛选已加载的门店，不会发起网络搜索。</p>
                         <div id="store-search-results" class="search-results" role="listbox" hidden></div>
                         <span class="field__error" data-error-for="selected-store"></span>
                     </div>
@@ -153,10 +204,10 @@
 
                     <button id="create-store-link" class="create-store-action" type="button">
                         <span class="create-store-action__copy">
-                            <strong>附近找不到这家门店？</strong>
-                            <small>先从高德附近地点选择，再补全门店资料</small>
+                            <strong>附近没有已建档门店？</strong>
+                            <small>进入新门店后明确搜索一次；无结果或高德不可用时可手工录入</small>
                         </span>
-                        <span class="create-store-action__button">录入新门店</span>
+                        <span class="create-store-action__button">新增门店</span>
                     </button>
                 </section>
             </section>
@@ -280,37 +331,41 @@
                         <span class="media-step__index" aria-hidden="true">3</span>
                         <div class="media-step__copy">
                             <strong>现场录音</strong>
-                            <span>选填，最长 20 分钟；录音前请征得在场人员同意</span>
+                            <span>选填；页面录制会记录开始时间和时长，已有文件的时间仅供参考、不可核验</span>
                         </div>
-                        <span id="audio-uploaded-badge" class="mini-badge" hidden>草稿已上传</span>
-                        <button id="delete-uploaded-audio-button" class="text-button uploaded-media-delete" type="button" hidden>
-                            删除已上传录音
-                        </button>
+                        <span id="audio-uploaded-badge" class="mini-badge" hidden></span>
                     </div>
                     <div class="recorder-controls">
                         <button id="record-audio-button" class="record-button" type="button">
                             <span class="record-button__dot" aria-hidden="true"></span>
                             <span id="record-button-label">开始录音</span>
                         </button>
-                        <div id="recording-clock" class="recording-clock" aria-live="polite">00:00 / 20:00</div>
+                        <div id="recording-clock" class="recording-clock" aria-live="polite">00:00</div>
                     </div>
                     <div id="recording-meter" class="recording-meter" hidden>
                         <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
                     </div>
-                    <div id="audio-preview-card" class="audio-preview" hidden>
-                        <audio id="audio-preview" controls preload="metadata"></audio>
-                        <div>
-                            <strong id="audio-file-name"></strong>
-                            <span id="audio-file-size"></span>
+                    <div id="audio-preview-list" class="audio-preview-list" aria-live="polite"></div>
+                    <template id="audio-preview-template">
+                        <div class="audio-preview" data-audio-segment>
+                            <audio controls preload="metadata"></audio>
+                            <div class="audio-preview__meta">
+                                <strong data-audio-name></strong>
+                                <span data-audio-size></span>
+                                <small data-audio-status></small>
+                            </div>
+                            <div class="audio-preview__actions">
+                                <button class="text-button audio-retry-button" data-audio-retry type="button" hidden>重试</button>
+                                <button class="text-button file-remove-button" data-audio-remove type="button">移除</button>
+                            </div>
                         </div>
-                        <button id="remove-audio-button" class="text-button file-remove-button" type="button">移除</button>
-                    </div>
+                    </template>
                     <div class="fallback-picker">
                         <span>无法录音？</span>
-                        <label for="audio-file">选择已有音频文件</label>
-                        <input id="audio-file" type="file" accept="audio/*">
+                        <label id="audio-file-label" for="audio-file">选择已有音频文件（可多选）</label>
+                        <input id="audio-file" type="file" multiple>
                     </div>
-                    <p id="recorder-help" class="field__help">录音时请保持页面在前台；提交后录音可能用于转写和 AI 摘要。</p>
+                    <p id="recorder-help" class="field__help">可选择 M4A、MP3、WAV、AAC、AMR、OGG 或 WebM；服务端会核验常见文件特征。</p>
                     <span class="field__error" data-error-for="audio-file"></span>
                 </div>
             </section>
@@ -328,10 +383,10 @@
                     <span class="custom-checkbox" aria-hidden="true"></span>
                     <span>
                         <strong>我已确认并同意提交 <span class="required-mark">*</span></strong>
-                        <small>我已告知相关人员将采集定位、照片及可能的录音；记录仅作临时匿名采集，不能作为可信考勤或 KPI 证据。</small>
+                        <small>我已告知相关人员将采集定位、照片及可能的录音；系统同时保存设备/IP风险摘要。</small>
                         <details class="privacy-details">
                             <summary>查看完整采集说明</summary>
-                            <p>如提交录音，录音可能用于后续转写和 AI 摘要。匿名选择销售、浏览器定位、照片和录音均可能被冒用或伪造，记录仅作为临时匿名自报采集数据，不得作为可信考勤、KPI、奖惩或纪律证据。</p>
+                            <p>如提交录音，录音可能用于后续转写和 AI 摘要。系统会对客户端 IP 和浏览器设备标识做加密摘要，仅用于提示频繁切换等异常。个人码、IP、浏览器定位、照片和录音仍可能被共享或伪造，记录仅作临时采集，不得单独作为考勤、KPI、奖惩或纪律证据。</p>
                         </details>
                     </span>
                 </label>
@@ -352,13 +407,14 @@
             <div class="store-editor-header">
                 <button id="cancel-store-button" class="text-button store-back-button" type="button">返回拜访打卡</button>
                 <div>
-                    <h2>完善门店资料</h2>
+                    <p class="section-kicker">当前页面</p>
+                    <h2>新门店建档</h2>
                 </div>
             </div>
 
             <div class="notice notice--plain store-prefill-notice">
                 <div>
-                    <strong>已沿用本次城市、销售和定位</strong>
+                    <strong>本次拜访草稿已保留</strong>
                     <p id="store-prefill-message">保存后会自动返回打卡并选中这家门店。</p>
                 </div>
             </div>
@@ -376,7 +432,7 @@
                 </div>
                 <div class="field-grid field-grid--two store-owner-fields">
                     <label class="field">
-                        <span class="field__label">城市 <span class="required-mark">*</span></span>
+                        <span class="field__label">本次拜访城市 <span class="required-mark">*</span></span>
                         <select id="store-city" required>
                             <option value="">请选择城市</option>
                         </select>
@@ -426,22 +482,22 @@
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">第二步</p>
-                        <h2>先搜索附近门店</h2>
+                        <h2>确认门店来源</h2>
                     </div>
                 </div>
-                <p class="section-description">已录入门店可直接返回打卡；未录入的高德地点才需补全资料。</p>
+                <p class="section-description">输入门店名称后点击“搜索”；输入、筛选和选择都不会自动调用高德。</p>
                 <div class="field poi-search-field">
-                    <label for="poi-search" class="field__label">附近门店 / 高德地点</label>
+                    <label for="poi-search" class="field__label">搜索高德新门店</label>
                     <div class="search-input-wrap">
                         <input id="poi-search" type="search" inputmode="search" autocomplete="off"
                                role="combobox" placeholder="先获取定位"
                                aria-autocomplete="list" aria-haspopup="listbox"
                                aria-controls="poi-search-results" aria-expanded="false" disabled>
-                        <button id="poi-search-toggle" class="combobox-toggle" type="button"
-                                aria-label="展开附近地点选项" disabled>展开</button>
+                        <button id="poi-search-button" class="combobox-toggle explicit-search-button" type="button"
+                                aria-label="搜索高德新门店" disabled>搜索</button>
                         <span id="poi-search-spinner" class="spinner" aria-label="正在搜索" hidden></span>
                     </div>
-                    <p id="poi-search-help" class="field__help">定位成功后，可搜索门店名称或地址。</p>
+                    <p id="poi-search-help" class="field__help">定位成功后，输入至少 2 个字并点击搜索。</p>
                     <div id="poi-search-results" class="search-results" role="listbox" hidden></div>
                     <span class="field__error" data-error-for="store-source"></span>
                 </div>
@@ -457,7 +513,7 @@
 
                 <button id="manual-store-button" class="manual-store-action" type="button">
                     <strong>高德附近地点没找到？</strong>
-                    <span>确认搜索无结果后，再手动录入门店名称</span>
+                    <span>明确搜索返回无结果或不可用后，再手动录入门店名称</span>
                 </button>
             </section>
 
@@ -576,12 +632,13 @@
         <p id="success-submitted-at"></p>
         <button id="new-submission-button" class="primary-button" type="button">继续录入下一次拜访</button>
     </section>
+    </div>
 </main>
 
 <footer class="footer">
     <p>临时过渡采集页面 · 如遇问题请保留页面中的错误信息并联系管理员</p>
 </footer>
 
-<script src="/sales-checkin/app.js" defer></script>
+<script src="/sales-checkin/app.js?v=20260828-stale-draft-fix" defer></script>
 </body>
 </html>

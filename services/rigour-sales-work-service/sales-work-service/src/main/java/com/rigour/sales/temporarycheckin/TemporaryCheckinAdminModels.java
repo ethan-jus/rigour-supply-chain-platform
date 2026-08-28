@@ -17,7 +17,8 @@ public final class TemporaryCheckinAdminModels {
             AdminScopeView scope,
             List<String> cities,
             List<SalespersonOption> salespersons,
-            AdminMediaStorageStats mediaStats) { }
+            AdminMediaStorageStats mediaStats,
+            boolean audioIntelligenceEnabled) { }
 
     public record AdminMediaStorageStats(
             long activeFiles,
@@ -25,6 +26,20 @@ public final class TemporaryCheckinAdminModels {
             long imageBytes,
             long audioBytes,
             Instant oldestCreatedAt) { }
+
+    public record AdminAudioSegmentView(
+            UUID segmentId,
+            String originalFilename,
+            long sizeBytes,
+            String contentType,
+            Instant uploadedAt,
+            String captureSource,
+            Instant clientStartedAt,
+            Long clientDurationMs,
+            Instant fileLastModifiedAt,
+            String timingStatus,
+            boolean available,
+            Instant deletedAt) { }
 
     public record AdminSubmissionView(
             UUID id,
@@ -47,9 +62,15 @@ public final class TemporaryCheckinAdminModels {
             String locationNote,
             String locationAddress,
             String locationAdcode,
+            String identityMethod,
+            String submittedIpMasked,
+            String userAgentSummary,
+            String riskLevel,
+            List<String> riskFlags,
             boolean storefrontPhotoAvailable,
             boolean wechatScreenshotAvailable,
             boolean audioAvailable,
+            List<AdminAudioSegmentView> audioSegments,
             Instant storefrontPhotoDeletedAt,
             Instant wechatScreenshotDeletedAt,
             Instant audioDeletedAt,
@@ -67,13 +88,20 @@ public final class TemporaryCheckinAdminModels {
             List<AdminSubmissionView> items,
             long total,
             long totalElements,
+            long firstVisitTotal,
+            long revisitTotal,
             int page,
             int size,
             int totalPages) { }
 
     public record DeleteMediaRequest(String reason) { }
 
-    public record DeleteMediaView(UUID id, String kind, String status, Instant deletedAt) { }
+    public record DeleteMediaView(UUID id, String kind, String status, Instant deletedAt, UUID segmentId) {
+
+        public DeleteMediaView(UUID id, String kind, String status, Instant deletedAt) {
+            this(id, kind, status, deletedAt, null);
+        }
+    }
 
     public record TranscriptionView(UUID id, String transcriptionStatus, String summaryStatus) { }
 }

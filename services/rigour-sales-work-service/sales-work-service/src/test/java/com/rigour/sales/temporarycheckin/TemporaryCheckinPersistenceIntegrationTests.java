@@ -51,6 +51,7 @@ class TemporaryCheckinPersistenceIntegrationTests {
         registry.add("spring.flyway.user", MYSQL::getUsername);
         registry.add("spring.flyway.password", MYSQL::getPassword);
         registry.add("rigour.sales.temporary-checkin.enabled", () -> true);
+        registry.add("rigour.sales.temporary-checkin.identity-enforcement-enabled", () -> false);
         registry.add("rigour.sales.temporary-checkin.tenant-id", CONFIGURED_TENANT_ID::toString);
     }
 

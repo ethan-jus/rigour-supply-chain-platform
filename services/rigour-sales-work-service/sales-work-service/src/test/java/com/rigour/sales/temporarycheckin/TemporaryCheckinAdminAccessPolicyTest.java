@@ -3,7 +3,8 @@ package com.rigour.sales.temporarycheckin;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.util.Map;
+import java.util.UUID;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.junit.jupiter.api.Test;
 
 class TemporaryCheckinAdminAccessPolicyTest {
@@ -11,42 +12,37 @@ class TemporaryCheckinAdminAccessPolicyTest {
     private final TemporaryCheckinAdminAccessPolicy policy = new TemporaryCheckinAdminAccessPolicy();
 
     @Test
-    void mapsGlobalAndAllConfiguredCityAccounts() {
-        var global = policy.requireScope("sales-checkin-admin");
+    void mapsDatabasePrincipalsToGlobalAndCityScopes() {
+        var global = policy.requireScope(principal("sales-checkin-admin", "GLOBAL_ADMIN", null));
         assertThat(global.allCities()).isTrue();
         assertThat(global.city()).isNull();
 
-        Map<String, String> cities = Map.ofEntries(
-                Map.entry("city-beijing", "北京"), Map.entry("city-shenzhen", "深圳"),
-                Map.entry("city-hangzhou", "杭州"), Map.entry("city-chengdu", "成都"),
-                Map.entry("city-wuhan", "武汉"), Map.entry("city-xian", "西安"),
-                Map.entry("city-changsha", "长沙"), Map.entry("city-nanjing", "南京"),
-                Map.entry("city-shijiazhuang", "石家庄"), Map.entry("city-chongqing", "重庆"),
-                Map.entry("city-suzhou", "苏州"), Map.entry("city-jinhua", "金华"),
-                Map.entry("city-dongguan", "东莞"), Map.entry("city-shanghai", "上海"),
-                Map.entry("city-luoyang", "洛阳"), Map.entry("city-guangzhou", "广州"),
-                Map.entry("city-zongbu", "总部"));
-        assertThat(cities).allSatisfy((username, city) -> {
-            var scope = policy.requireScope(username);
-            assertThat(scope.allCities()).isFalse();
-            assertThat(scope.city()).isEqualTo(city);
-        });
+        var city = policy.requireScope(principal("city-beijing", "CITY_ADMIN", "北京"));
+        assertThat(city.allCities()).isFalse();
+        assertThat(city.city()).isEqualTo("北京");
     }
 
     @Test
-    void rejectsMissingUnknownOrAmbiguousHeaders() {
-        assertForbidden(null);
-        assertForbidden(" ");
-        assertForbidden("unknown");
-        assertForbidden("city-beijing,city-shenzhen");
-        assertForbidden(" city-beijing");
+    void readsOnlyServerRequestAttributeAndRejectsMissingOrForcedChange() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        assertThatThrownBy(() -> policy.currentPrincipal(request))
+                .isInstanceOf(TemporaryCheckinException.class);
+
+        TemporaryCheckinAdminPrincipal principal = principal("city-beijing", "CITY_ADMIN", "北京");
+        request.setAttribute(TemporaryCheckinAdminPrincipal.REQUEST_ATTRIBUTE, principal);
+        assertThat(policy.currentPrincipal(request)).isSameAs(principal);
+
+        TemporaryCheckinAdminPrincipal forced = new TemporaryCheckinAdminPrincipal(
+                UUID.randomUUID(), UUID.randomUUID(), "city-beijing", "北京管理员", "CITY_ADMIN",
+                UUID.randomUUID(), "北京", true, "csrf");
+        assertThatThrownBy(() -> policy.requireScope(forced))
+                .isInstanceOfSatisfying(TemporaryCheckinException.class,
+                        exception -> assertThat(exception.code()).isEqualTo("TEMP_CHECKIN_PASSWORD_CHANGE_REQUIRED"));
     }
 
-    private void assertForbidden(String username) {
-        assertThatThrownBy(() -> policy.requireScope(username))
-                .isInstanceOfSatisfying(TemporaryCheckinException.class, exception -> {
-                    assertThat(exception.status().value()).isEqualTo(403);
-                    assertThat(exception.code()).isEqualTo("TEMP_CHECKIN_ADMIN_FORBIDDEN");
-                });
+    private static TemporaryCheckinAdminPrincipal principal(String username, String role, String city) {
+        return new TemporaryCheckinAdminPrincipal(
+                UUID.randomUUID(), UUID.randomUUID(), username, username, role,
+                city == null ? null : UUID.randomUUID(), city, false, "csrf");
     }
 }

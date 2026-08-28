@@ -17,10 +17,22 @@ public class TemporaryCheckinProperties {
     private String tenantId;
     private long maxStorefrontPhotoBytes = 10L * 1024 * 1024;
     private long maxWechatScreenshotBytes = 10L * 1024 * 1024;
-    private long maxAudioBytes = 25L * 1024 * 1024;
+    // 匿名公网入口仍需保留可配置的基础设施安全上限，页面端不再设置业务大小门槛。
+    private long maxAudioBytes = 100L * 1024 * 1024;
+    private int maxAudioSegmentsPerSubmission = 20;
+    private long maxAudioTotalBytesPerSubmission = 1024L * 1024 * 1024;
     private int maxCheckinDistanceMeters = 300;
     private int maxCheckinAccuracyMeters = 200;
     private int maxLocationAgeMinutes = 60;
+    private boolean identityEnforcementEnabled = true;
+    private String identitySigningKeyBase64;
+    private String riskHmacKeyBase64;
+    private String trustedProxyMarker;
+    private int credentialPbkdf2Iterations = 210_000;
+    private int identityTtlDays = 30;
+    private int deviceTtlDays = 365;
+    private int riskIpNetworksPerDay = 4;
+    private int riskDevicesPerDay = 3;
 
     private List<String> cities = new ArrayList<>(List.of(
             "北京", "深圳", "杭州", "成都", "武汉", "西安", "长沙", "南京", "石家庄", "重庆",
@@ -33,7 +45,9 @@ public class TemporaryCheckinProperties {
     private List<String> intendedBusinesses = new ArrayList<>(List.of("高德业务", "零售业务", "台球周边", "鹰眼业务"));
     private List<String> cooperationIntents = new ArrayList<>(List.of("高意向", "中意向", "低意向", "无意向"));
     private List<String> storeGrades = new ArrayList<>(List.of("A类", "B类", "C类"));
-    private List<String> storeTags = new ArrayList<>(List.of("追分", "连锁", "单店", "好沟通", "品牌店", "可动销"));
+    private List<String> storeTags = new ArrayList<>(List.of(
+            "追分", "连锁", "单店", "好沟通", "品牌店", "可动销",
+            "已加微信", "老板不在", "已合作", "商场店", "已有竞品合作"));
 
     public UUID requireTenantId() {
         if (tenantId == null || tenantId.isBlank()) {
@@ -56,12 +70,34 @@ public class TemporaryCheckinProperties {
     public void setMaxWechatScreenshotBytes(long value) { this.maxWechatScreenshotBytes = value; }
     public long getMaxAudioBytes() { return maxAudioBytes; }
     public void setMaxAudioBytes(long value) { this.maxAudioBytes = value; }
+    public int getMaxAudioSegmentsPerSubmission() { return maxAudioSegmentsPerSubmission; }
+    public void setMaxAudioSegmentsPerSubmission(int value) { maxAudioSegmentsPerSubmission = value; }
+    public long getMaxAudioTotalBytesPerSubmission() { return maxAudioTotalBytesPerSubmission; }
+    public void setMaxAudioTotalBytesPerSubmission(long value) { maxAudioTotalBytesPerSubmission = value; }
     public int getMaxCheckinDistanceMeters() { return maxCheckinDistanceMeters; }
     public void setMaxCheckinDistanceMeters(int value) { this.maxCheckinDistanceMeters = value; }
     public int getMaxCheckinAccuracyMeters() { return maxCheckinAccuracyMeters; }
     public void setMaxCheckinAccuracyMeters(int value) { this.maxCheckinAccuracyMeters = value; }
     public int getMaxLocationAgeMinutes() { return maxLocationAgeMinutes; }
     public void setMaxLocationAgeMinutes(int value) { this.maxLocationAgeMinutes = value; }
+    public boolean isIdentityEnforcementEnabled() { return identityEnforcementEnabled; }
+    public void setIdentityEnforcementEnabled(boolean value) { identityEnforcementEnabled = value; }
+    public String getIdentitySigningKeyBase64() { return identitySigningKeyBase64; }
+    public void setIdentitySigningKeyBase64(String value) { identitySigningKeyBase64 = value; }
+    public String getRiskHmacKeyBase64() { return riskHmacKeyBase64; }
+    public void setRiskHmacKeyBase64(String value) { riskHmacKeyBase64 = value; }
+    public String getTrustedProxyMarker() { return trustedProxyMarker; }
+    public void setTrustedProxyMarker(String value) { trustedProxyMarker = value; }
+    public int getCredentialPbkdf2Iterations() { return credentialPbkdf2Iterations; }
+    public void setCredentialPbkdf2Iterations(int value) { credentialPbkdf2Iterations = value; }
+    public int getIdentityTtlDays() { return identityTtlDays; }
+    public void setIdentityTtlDays(int value) { identityTtlDays = value; }
+    public int getDeviceTtlDays() { return deviceTtlDays; }
+    public void setDeviceTtlDays(int value) { deviceTtlDays = value; }
+    public int getRiskIpNetworksPerDay() { return riskIpNetworksPerDay; }
+    public void setRiskIpNetworksPerDay(int value) { riskIpNetworksPerDay = value; }
+    public int getRiskDevicesPerDay() { return riskDevicesPerDay; }
+    public void setRiskDevicesPerDay(int value) { riskDevicesPerDay = value; }
     public List<String> getCities() { return List.copyOf(cities); }
     public void setCities(List<String> value) { cities = copy(value); }
     public List<String> getStoreAttributes() { return List.copyOf(storeAttributes); }

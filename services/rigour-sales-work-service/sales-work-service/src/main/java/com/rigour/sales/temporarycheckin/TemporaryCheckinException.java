@@ -33,8 +33,32 @@ final class TemporaryCheckinException extends RuntimeException {
         return new TemporaryCheckinException(HttpStatus.FORBIDDEN, "TEMP_CHECKIN_KEY_INVALID", message);
     }
 
+    static TemporaryCheckinException unauthorizedIdentity(String message) {
+        return new TemporaryCheckinException(
+                HttpStatus.UNAUTHORIZED, "TEMP_CHECKIN_IDENTITY_REQUIRED", message);
+    }
+
+    static TemporaryCheckinException forbiddenIdentity(String message) {
+        return new TemporaryCheckinException(
+                HttpStatus.FORBIDDEN, "TEMP_CHECKIN_IDENTITY_INVALID", message);
+    }
+
     static TemporaryCheckinException adminForbidden(String message) {
         return new TemporaryCheckinException(HttpStatus.FORBIDDEN, "TEMP_CHECKIN_ADMIN_FORBIDDEN", message);
+    }
+
+    static TemporaryCheckinException adminUnauthorized(String message) {
+        return new TemporaryCheckinException(
+                HttpStatus.UNAUTHORIZED, "TEMP_CHECKIN_ADMIN_UNAUTHORIZED", message);
+    }
+
+    static TemporaryCheckinException passwordChangeRequired(String message) {
+        return new TemporaryCheckinException(
+                HttpStatus.FORBIDDEN, "TEMP_CHECKIN_PASSWORD_CHANGE_REQUIRED", message);
+    }
+
+    static TemporaryCheckinException loginLocked(String message) {
+        return new TemporaryCheckinException(HttpStatus.TOO_MANY_REQUESTS, "TEMP_CHECKIN_LOGIN_LOCKED", message);
     }
 
     static TemporaryCheckinException storage(String message) {

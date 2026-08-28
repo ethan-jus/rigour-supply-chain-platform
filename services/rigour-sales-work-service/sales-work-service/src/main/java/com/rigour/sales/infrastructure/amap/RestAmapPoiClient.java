@@ -6,6 +6,7 @@ import com.rigour.sales.infrastructure.config.AmapProperties;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,6 +20,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /** 高德 Web 服务 place/around 适配器；key 只出现在请求参数，永不进入日志。 */
@@ -83,16 +85,14 @@ public class RestAmapPoiClient implements AmapPoiClient {
                 }
                 return uriBuilder.build();
             }).retrieve().body(String.class);
-            AmapResponse response = objectMapper.readValue(body, AmapResponse.class);
-            if (response == null || !"1".equals(response.status())) {
-                String info = response == null ? "empty" : response.info();
+            JsonNode response = objectMapper.readTree(body);
+            if (response == null || !"1".equals(scalarText(response.get("status")))) {
+                String info = response == null ? "empty" : scalarText(response.get("info"));
                 log.warn("高德附近门店返回失败 endpoint=/place/around info={}", info);
                 throw new AmapPoiException("高德附近门店返回失败");
             }
-            List<NearbyPoi> pois = response.pois() == null ? List.of() : response.pois().stream()
-                    .map(RestAmapPoiClient::poi)
-                    .toList();
-            long total = parseCount(response.count());
+            List<NearbyPoi> pois = pois(response.get("pois"));
+            long total = parseCount(scalarText(response.get("count")));
             log.info("高德附近门店查询成功 endpoint=/place/around radiusMeters={} items={} elapsedMs={}",
                     radiusMeters, pois.size(), (System.nanoTime() - startedAt) / 1_000_000);
             NearbyPoiPage result = new NearbyPoiPage(pois, page, pageSize, total);
@@ -113,10 +113,41 @@ public class RestAmapPoiClient implements AmapPoiClient {
         }
     }
 
-    private static NearbyPoi poi(AmapPoi source) {
-        BigDecimal[] coordinates = coordinates(source.location());
-        return new NearbyPoi(source.id(), source.name(), source.address(), source.type(),
-                source.typecode(), coordinates[0], coordinates[1], distance(source.distance()));
+    private static List<NearbyPoi> pois(JsonNode values) {
+        if (values == null || !values.isArray()) {
+            throw new IllegalArgumentException("pois must be an array");
+        }
+        List<NearbyPoi> result = new ArrayList<>(values.size());
+        for (JsonNode value : values) {
+            NearbyPoi parsed = poi(value);
+            if (parsed != null) result.add(parsed);
+        }
+        return List.copyOf(result);
+    }
+
+    private static NearbyPoi poi(JsonNode source) {
+        if (source == null || !source.isObject()) return null;
+        String id = scalarText(source.get("id"));
+        String name = scalarText(source.get("name"));
+        BigDecimal[] coordinates = coordinates(scalarText(source.get("location")));
+        if (!StringUtils.hasText(id) || !StringUtils.hasText(name)
+                || coordinates[0] == null || coordinates[1] == null) {
+            return null;
+        }
+        return new NearbyPoi(id, name, scalarText(source.get("address")), scalarText(source.get("type")),
+                scalarText(source.get("typecode")), coordinates[0], coordinates[1],
+                distance(scalarText(source.get("distance"))), scalarText(source.get("cityname")),
+                scalarText(source.get("adcode")));
+    }
+
+    /** 高德空字段有时会返回 []；对预期标量的非标量值按缺失处理。 */
+    private static String scalarText(JsonNode value) {
+        if (value == null || value.isNull() || value.isMissingNode()) return null;
+        if (value.isTextual() || value.isNumber() || value.isBoolean()) {
+            String text = value.asText();
+            return StringUtils.hasText(text) ? text : null;
+        }
+        return null;
     }
 
     private static BigDecimal[] coordinates(String location) {
@@ -173,13 +204,6 @@ public class RestAmapPoiClient implements AmapPoiClient {
 
     private static int toMillis(Duration duration) {
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, duration.toMillis()));
-    }
-
-    private record AmapResponse(String status, String info, String count, List<AmapPoi> pois) {
-    }
-
-    private record AmapPoi(String id, String name, String type, String typecode,
-                           String address, String location, String distance) {
     }
 
     private record CacheKey(BigDecimal longitude, BigDecimal latitude, String keyword,

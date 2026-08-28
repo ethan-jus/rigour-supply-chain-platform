@@ -19,16 +19,20 @@
                 <h1>销售拜访数据管理</h1>
             </div>
         </div>
-        <a class="collection-link" href="/sales-checkin/">打开销售采集页</a>
+        <div class="topbar__actions">
+            <a class="collection-link" href="/sales-checkin/">打开销售采集页</a>
+            <button id="logout-button" class="account-switch-button" type="button" hidden>退出账号</button>
+        </div>
     </div>
 </header>
 
-<main class="page-shell">
+<main id="admin-main" class="page-shell" hidden>
     <section class="scope-card" aria-labelledby="scope-heading">
         <div class="scope-card__identity">
             <div>
                 <p id="scope-heading" class="scope-label">当前管理账号</p>
                 <strong id="scope-username">正在识别…</strong>
+                <p class="account-switch-hint">退出后可使用另一个城市或总管理员账号登录。</p>
             </div>
         </div>
         <div class="scope-card__range">
@@ -38,6 +42,10 @@
         <div class="scope-card__total">
             <span>当前条件共</span>
             <strong><span id="result-total">--</span> 条</strong>
+            <div class="scope-card__visit-summary" aria-live="polite">
+                <span>初访 <b id="result-first-visit-total">--</b></span>
+                <span>复访 <b id="result-revisit-total">--</b></span>
+            </div>
         </div>
     </section>
 
@@ -56,6 +64,15 @@
         </div>
         <button id="success-close-button" type="button" aria-label="关闭成功提示">关闭</button>
     </div>
+
+    <nav class="admin-tabs" role="tablist" aria-label="后台管理功能">
+        <button id="records-tab" class="admin-tab is-active" type="button" role="tab"
+                aria-selected="true" aria-controls="records-panel" data-admin-view="records">拜访记录</button>
+        <button id="salespersons-tab" class="admin-tab" type="button" role="tab"
+                aria-selected="false" aria-controls="salespersons-panel" data-admin-view="salespersons" hidden>销售目录</button>
+    </nav>
+
+    <div id="records-panel" role="tabpanel" aria-labelledby="records-tab">
 
     <section id="media-storage-card" class="storage-card" aria-labelledby="storage-heading" hidden>
         <div class="storage-card__heading">
@@ -99,6 +116,11 @@
         </div>
 
         <form id="filter-form" class="filter-form">
+            <label class="field field--query">
+                <span>关键词</span>
+                <input id="filter-query" name="q" type="search" maxlength="64"
+                       placeholder="门店、客户、销售或电话">
+            </label>
             <label class="field">
                 <span>开始日期</span>
                 <input id="filter-from" name="from" type="date">
@@ -128,6 +150,14 @@
                     <option value="DRAFT">草稿</option>
                 </select>
             </label>
+            <label class="field">
+                <span>拜访类型</span>
+                <select id="filter-visit-type" name="visitType">
+                    <option value="">全部类型</option>
+                    <option value="FIRST_VISIT">初访</option>
+                    <option value="REVISIT">复访</option>
+                </select>
+            </label>
             <div class="filter-actions">
                 <button id="search-button" class="primary-button" type="submit">
                     查询数据
@@ -148,20 +178,42 @@
             <p id="result-summary" aria-live="polite">正在加载…</p>
         </div>
 
+        <div id="bulk-toolbar" class="bulk-toolbar" role="region" aria-label="批量操作" aria-live="polite" hidden>
+            <p>已选 <strong id="selected-count">0</strong> 条</p>
+            <div>
+                <button id="clear-selection-button" class="text-button" type="button">取消选择</button>
+                <button id="bulk-delete-button" class="danger-outline-button" type="button">删除所选记录</button>
+            </div>
+        </div>
+
         <div id="loading-state" class="loading-state" role="status">
             <span>正在读取拜访数据…</span>
         </div>
 
         <div id="table-wrap" class="table-wrap" hidden>
-            <table>
+            <table class="records-table">
+                <colgroup>
+                    <col class="records-col records-col--select">
+                    <col class="records-col records-col--time">
+                    <col class="records-col records-col--person">
+                    <col class="records-col records-col--store">
+                    <col class="records-col records-col--visit">
+                    <col class="records-col records-col--location">
+                    <col class="records-col records-col--evidence">
+                    <col class="records-col records-col--action">
+                </colgroup>
                 <thead>
                 <tr>
+                    <th scope="col" class="selection-cell">
+                        <input id="select-page" class="row-checkbox" type="checkbox" aria-label="选择本页全部记录">
+                    </th>
                     <th scope="col">时间 / 状态</th>
                     <th scope="col">城市 / 销售</th>
-                    <th scope="col">拜访对象</th>
+                    <th scope="col">门店 / 客户</th>
                     <th scope="col">拜访结果</th>
-                    <th scope="col">实际位置</th>
+                    <th scope="col">实际位置 / 异常</th>
                     <th scope="col">现场材料</th>
+                    <th scope="col">操作</th>
                 </tr>
                 </thead>
                 <tbody id="submission-rows"></tbody>
@@ -170,7 +222,7 @@
 
         <div id="empty-state" class="empty-state" hidden>
             <strong>没有找到拜访数据</strong>
-            <p>请调整日期、城市或状态后重试。</p>
+            <p>请调整日期、城市、状态或拜访类型后重试。</p>
         </div>
 
         <nav id="pagination" class="pagination" aria-label="拜访记录分页" hidden>
@@ -184,7 +236,205 @@
         <strong>数据说明</strong>
         <p>本页为临时匿名自报采集数据。位置、照片、录音和销售姓名均可能被冒用或伪造，不能单独作为考勤、KPI、奖惩或纪律证据。</p>
     </aside>
+    </div>
+
+    <section id="salespersons-panel" class="salespersons-panel" role="tabpanel"
+             aria-labelledby="salespersons-tab" hidden>
+        <section class="city-directory-card" aria-labelledby="city-directory-heading">
+            <div class="directory-heading directory-heading--compact">
+                <div>
+                    <p class="section-kicker">城市与管理员</p>
+                    <h2 id="city-directory-heading">城市管理范围</h2>
+                    <p id="city-directory-scope">正在读取城市目录…</p>
+                </div>
+            </div>
+            <div id="city-directory-loading" class="loading-state" role="status" hidden>正在读取城市目录…</div>
+            <div id="city-directory-list" class="city-directory-list"></div>
+            <form id="city-create-form" class="city-create-form" hidden>
+                <label class="field">
+                    <span>城市名</span>
+                    <input id="city-create-name" maxlength="64" required placeholder="例如：南京">
+                </label>
+                <label class="field">
+                    <span>城市管理员用户名</span>
+                    <input id="city-create-username" maxlength="128" required autocomplete="off"
+                           placeholder="用于后台登录">
+                </label>
+                <button id="city-create-button" class="primary-button" type="submit">新增城市</button>
+                <p id="city-create-error" class="delete-media-error" role="alert" hidden></p>
+            </form>
+            <section id="city-credential-result" class="credential-result" aria-live="polite" hidden>
+                <strong id="city-credential-title">城市管理员临时密码（仅显示本次）</strong>
+                <p>请立即复制并通过可信渠道交给对应管理员，关闭或刷新后无法再次查看。</p>
+                <div class="credential-result__copy">
+                    <input id="city-temporary-password" type="text" readonly aria-label="城市管理员临时密码">
+                    <button id="city-password-copy-button" class="secondary-button" type="button">复制临时密码</button>
+                </div>
+            </section>
+        </section>
+
+        <div class="directory-heading">
+            <div>
+                <p class="section-kicker">基础目录</p>
+                <h2>销售人员维护</h2>
+                <p>禁用后将不再出现于公开打卡页，历史拜访快照不会被改写。</p>
+            </div>
+            <button id="add-salesperson-button" class="primary-button" type="button">新增销售</button>
+        </div>
+
+        <form id="salesperson-filter-form" class="directory-filters">
+            <label class="field">
+                <span>搜索</span>
+                <input id="salesperson-query" name="q" type="search" maxlength="64" placeholder="销售姓名或职位">
+            </label>
+            <label class="field">
+                <span>城市</span>
+                <select id="salesperson-city" name="city"></select>
+            </label>
+            <label class="field">
+                <span>启用状态</span>
+                <select id="salesperson-status" name="status">
+                    <option value="">全部状态</option>
+                    <option value="ACTIVE">已启用</option>
+                    <option value="INACTIVE">已禁用</option>
+                </select>
+            </label>
+            <button id="salesperson-search-button" class="primary-button" type="submit">查询</button>
+        </form>
+
+        <div id="salesperson-loading" class="loading-state" role="status" hidden>正在读取销售目录…</div>
+        <div id="salesperson-empty" class="empty-state" hidden>
+            <strong>没有找到销售</strong>
+            <p>请调整城市、状态或搜索关键词。</p>
+        </div>
+        <div id="salesperson-table-wrap" class="directory-table-wrap" hidden>
+            <table class="directory-table">
+                <thead>
+                <tr>
+                    <th scope="col">姓名</th>
+                    <th scope="col">城市</th>
+                    <th scope="col">职位</th>
+                    <th scope="col">在职状态</th>
+                    <th scope="col">启用状态</th>
+                    <th scope="col">排序</th>
+                    <th scope="col">操作</th>
+                </tr>
+                </thead>
+                <tbody id="salesperson-rows"></tbody>
+            </table>
+        </div>
+        <nav id="salesperson-pagination" class="pagination" aria-label="销售目录分页" hidden>
+            <button id="salesperson-previous-page" type="button">上一页</button>
+            <span id="salesperson-page-indicator">第 1 / 1 页</span>
+            <button id="salesperson-next-page" type="button">下一页</button>
+        </nav>
+    </section>
 </main>
+
+<dialog id="login-dialog" class="auth-dialog" aria-labelledby="login-title">
+    <form id="login-form" class="auth-panel">
+        <header>
+            <span class="brand__mark" aria-hidden="true">R</span>
+            <div>
+                <p class="section-kicker">RIGOUR · 销售拜访</p>
+                <h2 id="login-title">登录数据管理后台</h2>
+            </div>
+        </header>
+        <p class="auth-description">城市负责人只能查看和维护自己城市的数据；总管理员可管理全部城市。</p>
+        <label class="auth-field" for="login-username">
+            <span>用户名</span>
+            <input id="login-username" name="username" maxlength="64" autocomplete="username" required>
+        </label>
+        <label class="auth-field" for="login-password">
+            <span>密码</span>
+            <input id="login-password" name="password" type="password" maxlength="256"
+                   autocomplete="current-password" required>
+        </label>
+        <p id="login-error" class="auth-error" role="alert" hidden></p>
+        <button id="login-submit" class="primary-button auth-submit" type="submit">登录</button>
+        <p class="auth-footnote">临时密码首次登录后必须立即修改。连续输错会暂时锁定账号。</p>
+    </form>
+</dialog>
+
+<dialog id="change-password-dialog" class="auth-dialog" aria-labelledby="change-password-title">
+    <form id="change-password-form" class="auth-panel">
+        <header>
+            <span class="brand__mark" aria-hidden="true">R</span>
+            <div>
+                <p class="section-kicker">首次登录保护</p>
+                <h2 id="change-password-title">请先设置自己的密码</h2>
+            </div>
+        </header>
+        <p class="auth-description">临时密码只能用于首次登录。新密码至少 12 位，并同时包含大小写字母和数字。</p>
+        <label class="auth-field" for="change-current-password">
+            <span>当前临时密码</span>
+            <input id="change-current-password" type="password" maxlength="256"
+                   autocomplete="current-password" required>
+        </label>
+        <label class="auth-field" for="change-new-password">
+            <span>新密码</span>
+            <input id="change-new-password" type="password" minlength="12" maxlength="256"
+                   autocomplete="new-password" required>
+        </label>
+        <label class="auth-field" for="change-confirm-password">
+            <span>再次输入新密码</span>
+            <input id="change-confirm-password" type="password" minlength="12" maxlength="256"
+                   autocomplete="new-password" required>
+        </label>
+        <p id="change-password-error" class="auth-error" role="alert" hidden></p>
+        <button id="change-password-submit" class="primary-button auth-submit" type="submit">保存新密码并进入后台</button>
+        <button id="change-password-logout" class="text-button auth-logout" type="button">退出，稍后再处理</button>
+    </form>
+</dialog>
+
+<dialog id="submission-detail-dialog" class="detail-drawer" aria-labelledby="detail-title">
+    <article class="detail-drawer__panel">
+        <header class="detail-drawer__header">
+            <div>
+                <p class="section-kicker">拜访详情</p>
+                <h2 id="detail-title">拜访记录</h2>
+                <div id="detail-heading-badges" class="record-badges"></div>
+            </div>
+            <button id="detail-close" class="detail-close" type="button" aria-label="关闭拜访详情">关闭</button>
+        </header>
+        <div id="detail-body" class="detail-drawer__body">
+            <section class="detail-section" aria-labelledby="detail-overview-heading">
+                <h3 id="detail-overview-heading">基本信息</h3>
+                <dl class="detail-facts">
+                    <div><dt>提交时间</dt><dd id="detail-submitted-at"></dd></div>
+                    <div><dt>定位采集</dt><dd id="detail-captured-at"></dd></div>
+                    <div><dt>城市 / 销售</dt><dd id="detail-person"></dd></div>
+                    <div><dt>客户 / 电话</dt><dd id="detail-customer"></dd></div>
+                </dl>
+            </section>
+            <section class="detail-section" aria-labelledby="detail-location-heading">
+                <h3 id="detail-location-heading">实际位置</h3>
+                <p id="detail-address" class="detail-address"></p>
+                <p id="detail-location-note" class="detail-muted"></p>
+                <div id="detail-risk-chips" class="risk-chips"></div>
+                <dl class="detail-risk-facts">
+                    <div><dt>身份方式</dt><dd id="detail-identity-method"></dd></div>
+                    <div><dt>提交 IP（脱敏）</dt><dd id="detail-ip-masked"></dd></div>
+                    <div><dt>设备摘要</dt><dd id="detail-user-agent"></dd></div>
+                </dl>
+                <p class="risk-evidence-note">IP 和设备信息只是异常线索，共享 Wi-Fi 和移动网络会产生正常变化，不能单独认定代打。</p>
+                <details class="technical-details">
+                    <summary>查看经纬度和精度</summary>
+                    <code id="detail-coordinates"></code>
+                    <span id="detail-accuracy"></span>
+                </details>
+            </section>
+            <section class="detail-section" aria-labelledby="detail-result-heading">
+                <h3 id="detail-result-heading">拜访结果</h3>
+                <p id="detail-result" class="detail-result"></p>
+            </section>
+            <section class="detail-section" aria-labelledby="detail-media-heading">
+                <h3 id="detail-media-heading">现场材料与录音摘要</h3>
+                <div id="detail-media" class="media-links detail-media"></div>
+            </section>
+        </div>
+    </article>
+</dialog>
 
 <dialog id="image-preview-dialog" class="image-preview-dialog" aria-labelledby="image-preview-title">
     <section class="image-preview-panel">
@@ -200,6 +450,116 @@
             <a id="image-preview-download" class="media-download" href="#">下载原图</a>
         </footer>
     </section>
+</dialog>
+
+<dialog id="batch-delete-dialog" class="delete-media-dialog" aria-labelledby="batch-delete-title">
+    <form id="batch-delete-form" class="delete-media-panel">
+        <header class="delete-media-header">
+            <div>
+                <p class="section-kicker section-kicker--danger">高风险操作</p>
+                <h2 id="batch-delete-title">删除所选拜访记录</h2>
+            </div>
+            <button id="batch-delete-close" class="image-preview-close" type="button">关闭</button>
+        </header>
+        <div class="delete-media-body">
+            <p id="batch-delete-description" class="delete-media-description"></p>
+            <div class="delete-media-warning" role="alert">
+                <strong>整条打卡及其 COS 照片、录音将永久删除</strong>
+                <p>删除后无法恢复；该销售对对应门店的初访/复访序号也会重新计算。单次最多删除 20 条，请确认选中范围和删除原因。</p>
+            </div>
+            <label class="delete-media-field" for="batch-delete-reason">
+                <span>删除原因</span>
+                <textarea id="batch-delete-reason" minlength="2" maxlength="512" rows="3" required
+                          placeholder="请输入删除原因"></textarea>
+            </label>
+            <label class="delete-media-acknowledgement">
+                <input id="batch-delete-acknowledge" type="checkbox">
+                <span>我已核对所选记录，并确认删除后无法恢复。</span>
+            </label>
+            <p id="batch-delete-error" class="delete-media-error" role="alert" hidden></p>
+        </div>
+        <footer class="delete-media-actions">
+            <button id="batch-delete-cancel" class="secondary-button" type="button">取消</button>
+            <button id="batch-delete-confirm" class="danger-button" type="submit" disabled>确认删除</button>
+        </footer>
+    </form>
+</dialog>
+
+<dialog id="salesperson-dialog" class="salesperson-dialog" aria-labelledby="salesperson-dialog-title">
+    <form id="salesperson-form" class="salesperson-form">
+        <header class="salesperson-dialog__header">
+            <div>
+                <p class="section-kicker">销售目录</p>
+                <h2 id="salesperson-dialog-title">新增销售</h2>
+            </div>
+            <button id="salesperson-dialog-close" class="image-preview-close" type="button">关闭</button>
+        </header>
+        <div class="salesperson-form__body">
+            <input id="salesperson-id" type="hidden">
+            <label class="field"><span>姓名</span><input id="salesperson-name" maxlength="128" required></label>
+            <label class="field"><span>城市</span><select id="salesperson-form-city" required></select></label>
+            <label class="field"><span>职位</span><input id="salesperson-position" maxlength="64"></label>
+            <label class="field">
+                <span>在职状态</span>
+                <select id="salesperson-employment-status" required>
+                    <option value="在职">在职</option>
+                    <option value="离职">离职</option>
+                </select>
+            </label>
+            <label class="field">
+                <span>启用状态</span>
+                <select id="salesperson-form-status" required>
+                    <option value="ACTIVE">已启用</option>
+                    <option value="INACTIVE">已禁用</option>
+                </select>
+            </label>
+            <label class="field"><span>排序</span><input id="salesperson-sort-order" type="number" min="0" step="1" value="0" required></label>
+            <p id="salesperson-form-error" class="delete-media-error" role="alert" hidden></p>
+        </div>
+        <footer class="salesperson-form__actions">
+            <button id="salesperson-dialog-cancel" class="secondary-button" type="button">取消</button>
+            <button id="salesperson-save-button" class="primary-button" type="submit">保存</button>
+        </footer>
+    </form>
+</dialog>
+
+<dialog id="credential-reset-dialog" class="salesperson-dialog" aria-labelledby="credential-reset-title">
+    <form id="credential-reset-form" class="salesperson-form">
+        <header class="salesperson-dialog__header">
+            <div>
+                <p class="section-kicker section-kicker--danger">个人码与设备</p>
+                <h2 id="credential-reset-title">重置销售个人码</h2>
+            </div>
+            <button id="credential-reset-close" class="image-preview-close" type="button">关闭</button>
+        </header>
+        <div class="salesperson-form__body">
+            <div id="credential-reset-confirmation">
+                <p id="credential-reset-description" class="delete-media-description"></p>
+                <div class="delete-media-warning" role="alert">
+                    <strong>原个人码和已绑定设备将立即失效</strong>
+                    <p>新个人码只显示一次，请当面或通过可信渠道交给销售本人。</p>
+                </div>
+                <label class="delete-media-field" for="credential-reset-reason">
+                    <span>重置原因</span>
+                    <textarea id="credential-reset-reason" maxlength="512" rows="3" required
+                              placeholder="例如：销售更换手机"></textarea>
+                </label>
+            </div>
+            <section id="credential-reset-result" class="credential-result" aria-live="polite" hidden>
+                <strong>新的个人码（仅显示本次）</strong>
+                <p>关闭后无法再次查看，请先复制并妥善交付。</p>
+                <div class="credential-result__copy">
+                    <input id="credential-reset-code" type="text" readonly aria-label="新的销售个人码">
+                    <button id="credential-copy-button" class="secondary-button" type="button">复制个人码</button>
+                </div>
+            </section>
+            <p id="credential-reset-error" class="delete-media-error" role="alert" hidden></p>
+        </div>
+        <footer class="salesperson-form__actions">
+            <button id="credential-reset-cancel" class="secondary-button" type="button">取消</button>
+            <button id="credential-reset-confirm" class="danger-button" type="submit">确认重置</button>
+        </footer>
+    </form>
 </dialog>
 
 <dialog id="delete-media-dialog" class="delete-media-dialog" aria-labelledby="delete-media-title">
@@ -238,20 +598,21 @@
 
 <template id="submission-row-template">
     <tr>
+        <td data-label="选择" class="selection-cell">
+            <input data-field="select" class="row-checkbox" type="checkbox">
+        </td>
         <td data-label="时间 / 状态" class="time-cell">
             <strong data-field="time"></strong>
-            <span data-field="captured-time"></span>
             <div class="record-badges">
                 <span data-field="status" class="status-badge"></span>
                 <span class="visit-frequency" hidden></span>
             </div>
-            <span class="visit-frequency-note" hidden>本临时系统内</span>
         </td>
         <td data-label="城市 / 销售">
             <strong data-field="city"></strong>
             <span data-field="salesperson"></span>
         </td>
-        <td data-label="拜访对象">
+        <td data-label="门店 / 客户">
             <strong data-field="store"></strong>
             <span data-field="customer"></span>
             <a data-field="phone" class="inline-link" hidden></a>
@@ -259,14 +620,32 @@
         <td data-label="拜访结果">
             <p data-field="result" class="visit-result"></p>
         </td>
-        <td data-label="实际位置" class="location-cell">
+        <td data-label="实际位置 / 异常" class="location-cell">
             <strong data-field="address"></strong>
-            <span data-field="location-note"></span>
-            <code data-field="coordinates"></code>
-            <span data-field="accuracy"></span>
+            <div data-field="risks" class="risk-chips"></div>
         </td>
         <td data-label="现场材料">
-            <div data-field="media" class="media-links"></div>
+            <div data-field="evidence" class="evidence-chips"></div>
+        </td>
+        <td data-label="操作" class="action-cell">
+            <button data-field="detail" class="row-detail-button" type="button">查看详情</button>
+        </td>
+    </tr>
+</template>
+
+<template id="salesperson-row-template">
+    <tr>
+        <td data-label="姓名"><strong data-field="name"></strong></td>
+        <td data-label="城市"><span data-field="city"></span></td>
+        <td data-label="职位"><span data-field="position"></span></td>
+        <td data-label="在职状态"><span data-field="employment-status"></span></td>
+        <td data-label="启用状态"><span data-field="status" class="directory-status"></span></td>
+        <td data-label="排序"><span data-field="sort-order"></span></td>
+        <td data-label="操作">
+            <div class="directory-actions">
+                <button data-field="edit" class="row-detail-button" type="button">编辑</button>
+                <button data-field="reset-credential" class="directory-reset-button" type="button">重置个人码/设备</button>
+            </div>
         </td>
     </tr>
 </template>
