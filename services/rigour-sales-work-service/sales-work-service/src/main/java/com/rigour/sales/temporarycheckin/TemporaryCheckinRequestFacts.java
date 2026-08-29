@@ -13,10 +13,21 @@ record TemporaryCheckinRequestFacts(
         String proxyMarker,
         String userAgent,
         String deviceCookie,
-        String identityCookie) {
+        String identityCookie,
+        String clientEventId) {
 
     static final String CLIENT_IP_HEADER = "X-Sales-Checkin-Client-IP";
     static final String PROXY_MARKER_HEADER = "X-Sales-Checkin-Proxy-Marker";
+    static final String CLIENT_EVENT_ID_HEADER = "X-Sales-Checkin-Client-Event-Id";
+
+    TemporaryCheckinRequestFacts(
+            String clientIp,
+            String proxyMarker,
+            String userAgent,
+            String deviceCookie,
+            String identityCookie) {
+        this(clientIp, proxyMarker, userAgent, deviceCookie, identityCookie, null);
+    }
 
     static TemporaryCheckinRequestFacts from(HttpServletRequest request) {
         return new TemporaryCheckinRequestFacts(
@@ -24,7 +35,8 @@ record TemporaryCheckinRequestFacts(
                 request.getHeader(PROXY_MARKER_HEADER),
                 request.getHeader("User-Agent"),
                 cookie(request, TemporaryCheckinSalesIdentityService.DEVICE_COOKIE),
-                cookie(request, TemporaryCheckinSalesIdentityService.IDENTITY_COOKIE));
+                cookie(request, TemporaryCheckinSalesIdentityService.IDENTITY_COOKIE),
+                request.getHeader(CLIENT_EVENT_ID_HEADER));
     }
 
     private static String cookie(HttpServletRequest request, String name) {

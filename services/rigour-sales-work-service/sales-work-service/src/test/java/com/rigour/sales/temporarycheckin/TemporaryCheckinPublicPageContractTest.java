@@ -153,19 +153,30 @@ class TemporaryCheckinPublicPageContractTest {
 
         assertThat(script)
                 .contains("APPLE_REFERENCE_EPOCH_OFFSET_MS = 978307200000")
-                .contains("GEOLOCATION_TIMEOUT_MS = 30000")
-                .contains("GEOLOCATION_FALLBACK_MAX_AGE_MS = 5 * 60 * 1000")
-                .contains("enableHighAccuracy: false")
-                .contains("status.textContent = \"兼容定位中\"")
-                .contains("capturedAt: normalizeGeolocationCapturedAt(position.timestamp)")
-                .contains("return new Date(resolved ?? reference).toISOString()")
+                .contains("GEOLOCATION_FRESH_MAX_AGE_MS = 60 * 1000")
+                .contains("GEOLOCATION_REFRESH_TIMEOUT_MS = 30000")
+                .contains("GEOLOCATION_ATTEMPT_TIMEOUT_MS = 15000")
+                .contains("navigator.geolocation.watchPosition")
+                .contains("navigator.geolocation.clearWatch")
+                .contains("startWatch(false)")
+                .contains("startSinglePosition(false)")
+                .contains("let geolocationAttemptSequence = 0")
+                .contains("attemptSequence === geolocationAttemptSequence")
+                .contains("status.textContent = \"兼容刷新中\"")
+                .contains("maximumAge: 0")
+                .contains("state[scope].location = null")
+                .contains("capturedAt: new Date(capturedAtMs).toISOString()")
+                .contains("检测到历史定位，正在等待手机刷新当前位置")
+                .contains("本次没有使用旧位置")
                 .contains("geocodeStatus: \"CAPTURING\"")
                 .contains("if (repaired === null)")
                 .contains("state[scope].location = null")
                 .contains("if (!state.visit.location || !state.visit.locationContext")
+                .contains("function stopGeolocationRefresh(scope)")
                 .contains("function cancelLocationCapture(scope)")
                 .doesNotContain("repaired ?? savedAtMs")
-                .doesNotContain("timeout: 15000");
+                .doesNotContain("GEOLOCATION_FALLBACK_MAX_AGE_MS")
+                .doesNotContain("resolved ?? reference");
     }
 
     @Test
@@ -255,6 +266,80 @@ class TemporaryCheckinPublicPageContractTest {
     }
 
     @Test
+    void makesMobileActionsObviousAndKeepsExplicitAmapCandidatesVisible() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+        String styles = resource("static/sales-checkin/styles.css");
+
+        assertThat(html)
+                .contains("class=\"field__help action-feedback\"")
+                .contains("role=\"status\" aria-live=\"polite\"")
+                .contains("/sales-checkin/styles.css?v=20260830-fresh-location-ui")
+                .contains("/sales-checkin/app.js?v=20260830-fresh-location-ui")
+                .contains("点击按钮会刷新手机当前定位，不使用历史位置")
+                .contains("高德城市搜索没找到对应门店");
+        assertThat(script)
+                .contains("const explicitPoiIds = new Set")
+                .contains("explicitPoiIds.has(cleanText(poi.poiId))")
+                .contains("poi.nextAction === \"OUT_OF_RANGE\"")
+                .contains("超过${formatDistance(maximum) || \"允许距离\"}，无法选择")
+                .contains("本次返回")
+                .contains("城市内高德候选");
+        assertThat(styles)
+                .contains("移动端操作反馈：按钮必须一眼可见")
+                .contains(".poi-search-field .explicit-search-button")
+                .contains("grid-template-columns: minmax(0, 1fr) 94px")
+                .contains(".poi-result.is-out-of-range")
+                .contains(".file-preview__icon")
+                .contains("专业化收口")
+                .contains("scroll-padding-top: calc(92px + env(safe-area-inset-top))")
+                .contains("-webkit-line-clamp: 2");
+    }
+
+    @Test
+    void doesNotDecodeFullResolutionCameraImagesForAThumbnail() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+        int previewStart = script.indexOf("function renderImagePreview(kind, file)");
+        int previewEnd = script.indexOf("function handleAudioFileSelection", previewStart);
+        String imagePreview = script.substring(previewStart, previewEnd);
+
+        assertThat(html)
+                .contains("id=\"photo-preview-card\" class=\"file-preview\"")
+                .contains("class=\"file-preview__icon\"")
+                .doesNotContain("id=\"photo-preview\"", "id=\"wechat-preview\"");
+        assertThat(imagePreview)
+                .contains("已选择，提交时上传原图")
+                .doesNotContain("URL.createObjectURL", ".src = url");
+    }
+
+    @Test
+    void emitsPrivacySafeOperatorDiagnosticsForMobileStages() throws IOException {
+        String script = resource("static/sales-checkin/app.js");
+        String controller = Files.readString(Path.of(
+                "src/main/java/com/rigour/sales/temporarycheckin/TemporaryCheckinController.java"),
+                StandardCharsets.UTF_8);
+        String service = Files.readString(Path.of(
+                "src/main/java/com/rigour/sales/temporarycheckin/TemporaryCheckinService.java"),
+                StandardCharsets.UTF_8);
+
+        assertThat(script)
+                .contains("function emitClientDiagnostic")
+                .contains("/diagnostics/events")
+                .contains("PHOTO_PICKER_OPEN", "PHOTO_SELECTED", "PHOTO_READY")
+                .contains("SEARCH_CLICK", "SEARCH_RESULT")
+                .contains("LOCATION_CLICK", "LOCATION_RESULT")
+                .contains("STORE_SAVE_CLICK", "CLIENT_ERROR")
+                .contains("X-Sales-Checkin-Client-Event-Id");
+        assertThat(controller).contains("recordClientDiagnosticEvent");
+        assertThat(service)
+                .contains("operatorId={}", "operatorName={}", "clientEventId={}")
+                .contains("queryLength={}", "sourceItems={}", "visibleItems={}")
+                .contains("fileSizeBytes={}", "client={}")
+                .doesNotContain("personalCode={}", "longitude={}", "latitude={}", "filename={}");
+    }
+
+    @Test
     void keepsAdminVisitTypeStatisticsPaginationUrlAndExportContracts() throws IOException {
         String html = resource("static/sales-checkin/admin/index.html");
         String script = resource("static/sales-checkin/admin/admin.js");
@@ -336,7 +421,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("createButton.disabled = true;")
                 .doesNotContain("manualFallback");
         assertThat(script).doesNotContain("manualFallback");
-        assertThat(html).contains("/sales-checkin/app.js?v=20260828-stale-draft-fix");
+        assertThat(html).contains("/sales-checkin/app.js?v=20260830-fresh-location-ui");
     }
 
     private static String resource(String path) throws IOException {

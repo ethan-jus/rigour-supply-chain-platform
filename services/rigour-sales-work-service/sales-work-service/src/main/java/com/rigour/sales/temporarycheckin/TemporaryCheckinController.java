@@ -1,6 +1,7 @@
 package com.rigour.sales.temporarycheckin;
 
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CompletedSubmissionView;
+import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.ClientDiagnosticEventRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateStoreRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.CreateSubmissionRequest;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.DraftSubmissionView;
@@ -20,6 +21,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -30,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -66,6 +69,15 @@ public class TemporaryCheckinController {
     @GetMapping("/identity/me")
     public SalesIdentityView currentIdentity(HttpServletRequest request) {
         return identityService.current(TemporaryCheckinRequestFacts.from(request));
+    }
+
+    @PostMapping("/diagnostics/events")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void recordClientDiagnosticEvent(
+            @RequestBody ClientDiagnosticEventRequest request,
+            HttpServletRequest servletRequest) {
+        service.recordClientDiagnosticEvent(
+                request, TemporaryCheckinRequestFacts.from(servletRequest));
     }
 
     @PostMapping("/identity/logout")

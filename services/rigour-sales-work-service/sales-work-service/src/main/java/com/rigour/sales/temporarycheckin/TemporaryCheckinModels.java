@@ -22,6 +22,17 @@ public final class TemporaryCheckinModels {
             Instant expiresAt,
             boolean enforcementEnabled) { }
 
+    /**
+     * 客户端关键阶段诊断事件。只接收枚举化状态和计数，不接收查询词、文件名、坐标或媒体内容。
+     */
+    public record ClientDiagnosticEventRequest(
+            UUID salespersonId,
+            UUID clientEventId,
+            String event,
+            String result,
+            Integer itemCount,
+            Long fileSizeBytes) { }
+
     public record OptionsResponse(
             List<String> cities,
             List<SalespersonOption> salespersons,

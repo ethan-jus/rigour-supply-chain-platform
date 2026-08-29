@@ -7,10 +7,10 @@
     const DRAFT_TTL_MS = 8 * 60 * 60 * 1000;
     const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
     const APPLE_REFERENCE_EPOCH_OFFSET_MS = 978307200000;
-    const LOCATION_CAPTURE_PAST_WINDOW_MS = 60 * 60 * 1000;
     const LOCATION_CAPTURE_FUTURE_SKEW_MS = 2 * 60 * 1000;
-    const GEOLOCATION_TIMEOUT_MS = 30000;
-    const GEOLOCATION_FALLBACK_MAX_AGE_MS = 5 * 60 * 1000;
+    const GEOLOCATION_FRESH_MAX_AGE_MS = 60 * 1000;
+    const GEOLOCATION_REFRESH_TIMEOUT_MS = 30000;
+    const GEOLOCATION_ATTEMPT_TIMEOUT_MS = 15000;
     const PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
     const HEADQUARTERS_CITY = "总部";
 
@@ -133,6 +133,14 @@
             visit: 0,
             store: 0
         },
+        geolocationWatchIds: {
+            visit: null,
+            store: null
+        },
+        geolocationTimeoutIds: {
+            visit: null,
+            store: null
+        },
         submitting: false,
         completed: false,
         storageUnavailableShown: false
@@ -196,6 +204,7 @@
 
         if (hasRestoredDraft()) {
             showRestoreNotice();
+            emitClientDiagnostic("PAGE_RESTORED", "SUCCEEDED");
         }
     }
 
@@ -452,6 +461,9 @@
 
         $("#storefront-photo").addEventListener("change", (event) => handleImageSelection("photo", event));
         $("#wechat-screenshot").addEventListener("change", (event) => handleImageSelection("wechat", event));
+        $("#storefront-photo").addEventListener("click", () => {
+            emitClientDiagnostic("PHOTO_PICKER_OPEN", "STARTED");
+        });
         $("#remove-photo-button").addEventListener("click", async () => clearFile("photo"));
         $("#remove-wechat-button").addEventListener("click", async () => clearFile("wechat"));
         $("#delete-uploaded-photo-button").addEventListener("click", async () => clearFile("photo"));
@@ -486,6 +498,12 @@
                 event.preventDefault();
                 event.returnValue = "";
             }
+        });
+        window.addEventListener("error", () => {
+            emitClientDiagnostic("CLIENT_ERROR", "FAILED");
+        });
+        window.addEventListener("unhandledrejection", () => {
+            emitClientDiagnostic("CLIENT_ERROR", "FAILED");
         });
     }
 
@@ -765,16 +783,21 @@
 
     async function searchNewStoreOnce() {
         if (state.submitting || state.poiSearchController) return;
+        const diagnosticId = secureUuid();
         const query = $("#poi-search").value.trim();
         if (query.length < 2) {
+            emitClientDiagnostic("SEARCH_CLICK", "BLOCKED", {}, diagnosticId);
             $("#poi-search-help").textContent = "请输入至少 2 个字后再点击搜索。";
             $("#poi-search").focus();
             return;
         }
         if (!locationContextCityVerified(state.store.locationContext) || !state.store.location) {
+            emitClientDiagnostic("SEARCH_CLICK", "BLOCKED", {}, diagnosticId);
             $("#poi-search-help").textContent = "请先完成现场定位，再搜索高德新门店。";
             return;
         }
+        emitClientDiagnostic("SEARCH_CLICK", "STARTED", {}, diagnosticId);
+        clearFieldError("store-source");
         const controller = createRequestController();
         state.poiSearchController = controller;
         state.store.poiSearchResults = null;
@@ -793,6 +816,7 @@
         try {
             const payload = normalizeResponse(await requestJson("/locations/search-new-store", {
                 method: "POST",
+                headers: { "X-Sales-Checkin-Client-Event-Id": diagnosticId },
                 body: {
                     clientStoreId: state.store.clientStoreId,
                     city: state.store.city,
@@ -817,6 +841,9 @@
             state.store.manualEntryToken = manualEntryToken;
             state.store.manualEntryAllowed = Boolean(manualEntryToken)
                 && (poiLookupStatus === "EMPTY" || poiLookupStatus === "UNAVAILABLE");
+            emitClientDiagnostic("SEARCH_RESULT", poiLookupStatus, {
+                itemCount: stores.length
+            }, diagnosticId);
             if (state.store.manualEntryAllowed) {
                 hidePoiResults();
                 window.requestAnimationFrame(() => {
@@ -831,6 +858,7 @@
             state.store.poiSearchLookupStatus = null;
             state.store.manualEntryAllowed = false;
             state.store.manualEntryToken = "";
+            emitClientDiagnostic("SEARCH_RESULT", "FAILED", {}, diagnosticId);
             $("#poi-search-help").textContent = "未收到服务端搜索确认，请检查网络后重新点击搜索。";
             persistDraft();
         } finally {
@@ -1073,7 +1101,13 @@
         const input = $("#poi-search");
         if (input.disabled) return;
         const query = input.value.trim().toLocaleLowerCase("zh-CN");
+        // 高德已经按明确提交的关键词完成服务端检索。部分 POI 名称会使用别名、英文名或
+        // 分店名，不能再要求返回名称必须逐字包含输入值，否则接口有结果却会被页面隐藏。
+        const explicitPoiIds = new Set((state.store.poiSearchResults || [])
+            .map((poi) => cleanText(poi?.poiId))
+            .filter(Boolean));
         const pois = nearbyPoiStores().filter((poi) => {
+            if (poi.source === "AMAP_POI" && explicitPoiIds.has(cleanText(poi.poiId))) return true;
             if (!query) return true;
             return [poi.name, poi.address]
                 .some((value) => cleanText(value).toLocaleLowerCase("zh-CN").includes(query));
@@ -1095,7 +1129,8 @@
                 const registered = poi.source === "REGISTERED" && (poi.storeId || poi.id);
                 const button = document.createElement("button");
                 button.type = "button";
-                button.className = `search-result poi-result${registered ? " is-registered" : ""}`;
+                const outOfRange = !registered && poi.nextAction === "OUT_OF_RANGE";
+                button.className = `search-result poi-result${registered ? " is-registered" : ""}${outOfRange ? " is-out-of-range" : ""}`;
                 button.setAttribute("role", "option");
 
                 const detail = document.createElement("span");
@@ -1108,7 +1143,11 @@
                 const meta = document.createElement("span");
                 meta.className = "poi-result__meta";
                 const badge = document.createElement("strong");
-                badge.textContent = registered ? "已录入 · 直接打卡" : "未录入 · 补资料";
+                badge.textContent = registered
+                    ? "已录入 · 直接打卡"
+                    : outOfRange
+                        ? "未录入 · 距离超限"
+                        : "未录入 · 可建档";
                 const distance = document.createElement("small");
                 distance.textContent = formatDistance(poi.distanceMeters) || "附近";
                 meta.append(badge, distance);
@@ -1126,11 +1165,16 @@
         }
         const registeredCount = pois.filter((poi) => poi.source === "REGISTERED").length;
         const amapCount = pois.length - registeredCount;
-        $("#poi-search-help").textContent = pois.length
-            ? `当前显示 ${registeredCount} 家已建档门店、${amapCount} 个本次高德候选`
+        const selectableCount = pois.filter((poi) => poi.source === "REGISTERED"
+            || poi.nextAction !== "OUT_OF_RANGE").length;
+        const maximumDistance = finiteNumberOrNull(state.store.locationContext?.maxCheckinDistanceMeters);
+        $("#poi-search-help").textContent = pois.length && selectableCount > 0
+            ? `本次返回：${registeredCount} 家已建档门店、${amapCount} 个城市内高德候选；请选择一项继续。`
+            : pois.length
+                ? `本次返回 ${amapCount} 个高德候选，但均超过${formatDistance(maximumDistance) || "允许距离"}，已展示供核对，暂不可选择；请到店后重新定位。`
             : state.store.manualEntryAllowed
-                ? "本次搜索已返回无结果或不可用，可手动录入。"
-                : "输入至少 2 个字并点击搜索；输入本身不会请求高德。";
+                ? "搜索完成：没有找到可用候选，请点击下方“手动录入门店”继续。"
+                : "建议输入或粘贴高德完整店名，也可用名称关键字；只有点击搜索才会请求一次高德。";
     }
 
     function hidePoiResults() {
@@ -1157,6 +1201,15 @@
     }
 
     function selectSourcePoi(poi) {
+        const distance = finiteNumberOrNull(poi.distanceMeters);
+        const maximum = finiteNumberOrNull(state.store.locationContext?.maxCheckinDistanceMeters);
+        if (poi.nextAction === "OUT_OF_RANGE"
+                || (distance !== null && maximum !== null && distance > maximum)) {
+            const message = `该门店距当前位置约${formatDistance(distance) || "较远"}，超过${formatDistance(maximum) || "允许距离"}，无法选择；请到店后重新定位。`;
+            setFieldError("store-source", message);
+            $("#poi-search-help").textContent = message;
+            return;
+        }
         const selectionToken = cleanText(poi.selectionToken);
         if (!selectionToken) {
             showError("该高德候选已失效，请重新点击搜索后再选择。");
@@ -1278,9 +1331,9 @@
             ? "已选择手动录入"
             : state.store.manualEntryAllowed
                 ? "仍未找到，手动录入门店"
-                : "高德附近地点没找到？";
+                : "高德城市搜索没找到？";
         manualButton.querySelector("span").textContent = manual
-            ? "点击可返回高德附近地点选择"
+            ? "点击可返回高德城市搜索结果"
             : state.store.manualEntryAllowed
                 ? "继续补全门店名称和基础资料"
                 : "确认搜索无结果后，再手动录入门店名称";
@@ -1437,15 +1490,21 @@
             return;
         }
 
+        const diagnosticId = secureUuid();
+        emitClientDiagnostic("LOCATION_CLICK", "STARTED", {}, diagnosticId);
         const button = $(`#${scope}-location-button`);
         const status = $(`#${scope}-location-status`);
         const captureSequence = ++state.locationCaptureSequence[scope];
-        const captureIsActive = () => state.locationCaptureSequence[scope] === captureSequence;
+        let captureSettled = false;
+        const captureIsActive = () => !captureSettled
+            && state.locationCaptureSequence[scope] === captureSequence;
+        stopGeolocationRefresh(scope);
         state.locationControllers[scope]?.abort();
         state.locationControllers[scope] = null;
+        state[scope].location = null;
         state[scope].locationContext = {
             geocodeStatus: "CAPTURING",
-            errorMessage: "正在重新获取当前位置，请稍候。"
+            errorMessage: "正在刷新手机当前位置，请稍候。"
         };
         if (scope === "visit") {
             clearSelectedStore(false, false);
@@ -1453,20 +1512,37 @@
             renderNearbyStores();
         } else {
             abortPoiSearch();
+            state.store.nearbyPois = [];
+            state.store.poiSearchResults = null;
+            state.store.poiSearchLookupStatus = null;
+            state.store.poiSearchQuery = "";
+            state.store.manualEntryAllowed = false;
+            state.store.manualEntryToken = "";
+            clearSourcePoi(true, false);
+            $("#poi-search").value = "";
             hidePoiResults();
         }
         button.disabled = true;
         renderLocation(scope);
+        if (scope === "store") renderStoreSource();
         persistDraft();
 
-        const acceptPosition = (position) => {
+        let compatibleAttempted = false;
+        let stalePositionReceived = false;
+        let geolocationAttemptSequence = 0;
+        let usingWatch = typeof navigator.geolocation.watchPosition === "function"
+            && typeof navigator.geolocation.clearWatch === "function";
+
+        const acceptPosition = (position, capturedAtMs) => {
             if (!captureIsActive() || state.submitting || (scope === "visit" && isBusinessLocked())) return;
+            captureSettled = true;
+            stopGeolocationRefresh(scope);
             const note = $(`#${scope}-location-note`).value.trim();
             state[scope].location = {
                 longitude: roundCoordinate(position.coords.longitude),
                 latitude: roundCoordinate(position.coords.latitude),
                 accuracyMeters: roundAccuracy(position.coords.accuracy),
-                capturedAt: normalizeGeolocationCapturedAt(position.timestamp),
+                capturedAt: new Date(capturedAtMs).toISOString(),
                 ...(note ? { note } : {})
             };
             state[scope].locationContext = { geocodeStatus: "RESOLVING" };
@@ -1481,7 +1557,7 @@
                 state.store.manualEntryAllowed = false;
                 state.store.manualEntryToken = "";
                 $("#poi-search").value = "";
-                clearSourcePoi(true, true);
+                clearSourcePoi(true, false);
             }
             button.disabled = false;
             renderLocation(scope);
@@ -1489,11 +1565,16 @@
             else renderStoreSource();
             renderBusinessLock();
             persistDraft();
-            resolveLocationContext(scope);
+            emitClientDiagnostic("LOCATION_RESULT", "SUCCEEDED", {}, diagnosticId);
+            resolveLocationContext(scope, diagnosticId);
         };
-        const failLocation = (error) => {
+        const failLocation = (error, staleOnly = stalePositionReceived) => {
             if (!captureIsActive()) return;
-            const message = geolocationErrorMessage(error, true);
+            captureSettled = true;
+            stopGeolocationRefresh(scope);
+            const message = staleOnly
+                ? "手机持续返回历史定位，本次没有使用旧位置。请打开系统定位、保持页面在前台后重试。"
+                : geolocationErrorMessage(error, compatibleAttempted);
             state[scope].locationContext = {
                 geocodeStatus: "FAILED",
                 errorMessage: message
@@ -1502,34 +1583,118 @@
             renderLocation(scope);
             setFieldError(`${scope}-location`, message);
             persistDraft();
+            emitClientDiagnostic("LOCATION_RESULT", "FAILED", {}, diagnosticId);
         };
-        const retryCompatibleLocation = (error) => {
-            if (!captureIsActive()) return;
-            if (error?.code === 1) {
-                failLocation(error);
-                return;
+
+        const handlePosition = (position) => {
+            if (!captureIsActive()) return true;
+            if (!Number.isFinite(Number(position?.coords?.longitude))
+                    || !Number.isFinite(Number(position?.coords?.latitude))
+                    || !Number.isFinite(Number(position?.coords?.accuracy))) {
+                failLocation({ code: 2 }, false);
+                return true;
             }
-            status.textContent = "兼容定位中";
-            status.className = "status-pill is-loading";
+            const receivedAtMs = Date.now();
+            const capturedAtMs = resolveGeolocationCapturedAtMs(
+                position?.timestamp, receivedAtMs, GEOLOCATION_FRESH_MAX_AGE_MS);
+            if (capturedAtMs === null) {
+                stalePositionReceived = true;
+                state[scope].locationContext = {
+                    geocodeStatus: "CAPTURING",
+                    stalePosition: true,
+                    errorMessage: "检测到历史定位，正在等待手机刷新当前位置。"
+                };
+                setFieldError(`${scope}-location`, "检测到历史定位，正在等待手机刷新当前位置…");
+                renderLocation(scope);
+                return false;
+            }
             clearFieldError(`${scope}-location`);
+            acceptPosition(position, capturedAtMs);
+            return true;
+        };
+
+        const startSinglePosition = (enableHighAccuracy) => {
+            const attemptSequence = ++geolocationAttemptSequence;
+            const attemptIsActive = () => captureIsActive()
+                && attemptSequence === geolocationAttemptSequence;
             navigator.geolocation.getCurrentPosition(
-                acceptPosition,
-                failLocation,
+                (position) => {
+                    if (!attemptIsActive()) return;
+                    if (handlePosition(position)) return;
+                    if (!compatibleAttempted) {
+                        compatibleAttempted = true;
+                        status.textContent = "兼容刷新中";
+                        startSinglePosition(false);
+                    } else {
+                        failLocation({ code: 3 }, true);
+                    }
+                },
+                (error) => {
+                    if (attemptIsActive()) retryCompatibleLocation(error);
+                },
                 {
-                    enableHighAccuracy: false,
-                    timeout: GEOLOCATION_TIMEOUT_MS,
-                    maximumAge: GEOLOCATION_FALLBACK_MAX_AGE_MS
+                    enableHighAccuracy,
+                    timeout: GEOLOCATION_ATTEMPT_TIMEOUT_MS,
+                    maximumAge: 0
                 }
             );
         };
-        navigator.geolocation.getCurrentPosition(
-            acceptPosition,
-            retryCompatibleLocation,
-            { enableHighAccuracy: true, timeout: GEOLOCATION_TIMEOUT_MS, maximumAge: 0 }
-        );
+
+        const startWatch = (enableHighAccuracy) => {
+            const attemptSequence = ++geolocationAttemptSequence;
+            const attemptIsActive = () => captureIsActive()
+                && attemptSequence === geolocationAttemptSequence;
+            try {
+                const watchId = navigator.geolocation.watchPosition(
+                    (position) => {
+                        if (attemptIsActive()) handlePosition(position);
+                    },
+                    (error) => {
+                        if (attemptIsActive()) retryCompatibleLocation(error);
+                    },
+                    {
+                        enableHighAccuracy,
+                        timeout: GEOLOCATION_ATTEMPT_TIMEOUT_MS,
+                        maximumAge: 0
+                    }
+                );
+                state.geolocationWatchIds[scope] = watchId;
+            } catch (_) {
+                usingWatch = false;
+                state.geolocationWatchIds[scope] = null;
+                startSinglePosition(enableHighAccuracy);
+            }
+        };
+
+        const retryCompatibleLocation = (error) => {
+            if (!captureIsActive()) return;
+            if (error?.code === 1) {
+                failLocation(error, false);
+                return;
+            }
+            if (compatibleAttempted) {
+                failLocation(error);
+                return;
+            }
+            compatibleAttempted = true;
+            if (usingWatch && state.geolocationWatchIds[scope] !== null) {
+                navigator.geolocation.clearWatch(state.geolocationWatchIds[scope]);
+                state.geolocationWatchIds[scope] = null;
+            }
+            status.textContent = "兼容刷新中";
+            status.className = "status-pill is-loading";
+            clearFieldError(`${scope}-location`);
+            if (usingWatch) startWatch(false);
+            else startSinglePosition(false);
+        };
+
+        state.geolocationTimeoutIds[scope] = window.setTimeout(
+            () => failLocation({ code: 3 }), GEOLOCATION_REFRESH_TIMEOUT_MS);
+        if (usingWatch) startWatch(true);
+        else startSinglePosition(true);
     }
 
-    async function resolveLocationContext(scope) {
+    async function resolveLocationContext(scope, clientEventId = secureUuid()) {
         const city = state[scope].city;
         const location = state[scope].location;
         if (!city || !location) return;
@@ -1558,6 +1723,7 @@
         try {
             const payload = normalizeResponse(await requestJson("/locations/resolve", {
                 method: "POST",
+                headers: { "X-Sales-Checkin-Client-Event-Id": clientEventId },
                 body: {
                     city,
                     salespersonId: state[scope].salespersonId,
@@ -1658,10 +1824,11 @@
                 && store.checkinEligible === true
                 && store.nextAction === "CHECK_IN");
         }
-        return store.source === "AMAP_POI" && Boolean(store.poiId && store.name
-            && cleanText(store.selectionToken)
-            && store.checkinEligible === false
-            && store.nextAction === "COMPLETE_STORE_PROFILE");
+        if (store.source !== "AMAP_POI" || !store.poiId || !store.name
+                || store.checkinEligible !== false) return false;
+        if (store.nextAction === "OUT_OF_RANGE") return true;
+        return store.nextAction === "COMPLETE_STORE_PROFILE"
+            && Boolean(cleanText(store.selectionToken));
     }
 
     function renderLocation(scope) {
@@ -1672,17 +1839,20 @@
         const button = $(`#${scope}-location-button`);
         const retry = $(`#${scope}-location-retry`);
         const capturing = context?.geocodeStatus === "CAPTURING";
+        const awaitingFreshPosition = capturing && context?.stalePosition === true;
         const failed = context?.geocodeStatus === "FAILED";
         button.closest(".location-card")?.classList.toggle("is-located", Boolean(location));
         if (scope === "store") {
             button.closest(".location-card")?.classList.toggle("has-inherited-location", Boolean(location));
         }
         if (!location) {
-            status.textContent = capturing ? "定位中" : failed ? "定位失败" : "未定位";
+            status.textContent = awaitingFreshPosition ? "刷新定位中" : capturing ? "定位中" : failed ? "定位失败" : "未定位";
             status.className = capturing ? "status-pill is-loading" : failed ? "status-pill is-warning" : "status-pill";
             detail.hidden = true;
             retry.hidden = true;
-            $(`#${scope}-location-button-label`).textContent = capturing ? "正在获取当前位置…" : "获取当前位置";
+            $(`#${scope}-location-button-label`).textContent = awaitingFreshPosition
+                ? "正在等待手机刷新…"
+                : capturing ? "正在刷新当前位置…" : "获取当前位置";
             return;
         }
         const resolving = context?.geocodeStatus === "RESOLVING";
@@ -1740,7 +1910,11 @@
 
     function handleImageSelection(kind, event) {
         const file = event.target.files && event.target.files[0];
-        if (!file) return;
+        if (!file) {
+            if (kind === "photo") emitClientDiagnostic("PHOTO_REJECTED", "CANCELLED");
+            return;
+        }
+        const diagnosticId = kind === "photo" ? secureUuid() : null;
         const errorKey = kind === "photo" ? "storefront-photo" : "wechat-screenshot";
         clearFieldError(errorKey);
         if (hasRemoteMediaState(MEDIA[kind])) {
@@ -1749,28 +1923,44 @@
             return;
         }
         if (!isSupportedImageFile(file)) {
+            if (diagnosticId) {
+                emitClientDiagnostic("PHOTO_REJECTED", "UNSUPPORTED", {}, diagnosticId);
+            }
             setFieldError(errorKey, "仅支持 JPG、PNG、WebP、HEIC/HEIF 或 AVIF 图片。" );
             event.target.value = "";
             return;
         }
         if (file.size > MAX_IMAGE_BYTES) {
+            if (diagnosticId) {
+                emitClientDiagnostic("PHOTO_REJECTED", "TOO_LARGE", {}, diagnosticId);
+            }
             setFieldError(errorKey, "图片超过 10MB，请压缩或重新拍摄。" );
             event.target.value = "";
             return;
         }
+        if (diagnosticId) {
+            emitClientDiagnostic("PHOTO_SELECTED", "ACCEPTED", {
+                fileSizeBytes: file.size
+            }, diagnosticId);
+        }
         state.files[kind] = file;
         renderImagePreview(kind, file);
+        if (diagnosticId) {
+            emitClientDiagnostic("PHOTO_READY", "SUCCEEDED", {
+                fileSizeBytes: file.size
+            }, diagnosticId);
+        }
         persistDraft();
     }
 
     function renderImagePreview(kind, file) {
         revokeObjectUrl(kind);
-        const url = URL.createObjectURL(file);
-        state.objectUrls[kind] = url;
         const prefix = kind === "photo" ? "photo" : "wechat";
-        $(`#${prefix}-preview`).src = url;
         $(`#${prefix}-file-name`).textContent = file.name || "待上传图片";
-        $(`#${prefix}-file-size`).textContent = formatBytes(file.size);
+        // 相机原图即使压缩文件不到 10MB，解码后的 40MP~50MP RGBA 仍可能占用
+        // 160MB~200MB，足以让部分 Android/微信 WebView 在系统确认照片后闪退。
+        // 这里只展示选择状态与文件信息，提交时仍上传未经二次处理的原文件。
+        $(`#${prefix}-file-size`).textContent = `${formatBytes(file.size)} · 已选择，提交时上传原图`;
         $(`#${prefix}-preview-card`).hidden = false;
     }
 
@@ -2405,10 +2595,13 @@
         if (state.submitting) return;
         hideError();
         syncStateFromForm();
+        const diagnosticId = secureUuid();
         if (!validateStore()) {
+            emitClientDiagnostic("STORE_SAVE_CLICK", "BLOCKED", {}, diagnosticId);
             scrollToFirstError();
             return;
         }
+        emitClientDiagnostic("STORE_SAVE_CLICK", "STARTED", {}, diagnosticId);
         const payload = buildStorePayload();
         const button = $("#submit-store-button");
         state.submitting = true;
@@ -2425,6 +2618,7 @@
         try {
             const response = normalizeResponse(await requestJson("/stores", {
                 method: "POST",
+                headers: { "X-Sales-Checkin-Client-Event-Id": diagnosticId },
                 body: payload,
                 timeout: 45000
             })) || {};
@@ -2447,7 +2641,9 @@
             };
             savedStore = createdStore;
             completeStoreSaveTransition(createdStore, payload);
+            emitClientDiagnostic("STORE_SAVE_CLICK", "SUCCEEDED", {}, diagnosticId);
         } catch (error) {
+            emitClientDiagnostic("STORE_SAVE_CLICK", "FAILED", {}, diagnosticId);
             if (savedStore) {
                 recoverSavedStoreTransition(savedStore, payload);
                 showError(`门店“${savedStore.name}”已保存并选中，但页面局部刷新失败。请刷新页面后继续打卡，不要重复录入门店。`);
@@ -2886,7 +3082,7 @@
         let valid = true;
         valid = requireValue(state.store.city, "store-city", "请选择城市。") && valid;
         valid = requireValue(state.store.salespersonId, "store-salesperson", "请选择销售。") && valid;
-        valid = requireValue(state.store.sourceMode, "store-source", "请先从附近地点选择；搜索确认没有后再手动录入。") && valid;
+        valid = requireValue(state.store.sourceMode, "store-source", "请先从高德城市搜索结果选择；搜索确认没有后再手动录入。") && valid;
         if (state.store.sourceMode === "POI" && !cleanText(state.store.sourcePoiToken)) {
             setFieldError("store-source", "高德候选凭证已失效，请重新搜索并选择门店。");
             valid = false;
@@ -3521,6 +3717,42 @@
         }
     }
 
+    function emitClientDiagnostic(event, result, details = {}, clientEventId = secureUuid()) {
+        const salespersonId = state.identity?.salespersonId
+            || state.visit.salespersonId || state.store.salespersonId;
+        if (!isUuidValue(salespersonId) || !isUuidValue(clientEventId)) return clientEventId;
+        const payload = compactObject({
+            salespersonId,
+            clientEventId,
+            event,
+            result,
+            itemCount: Number.isInteger(details.itemCount) ? details.itemCount : undefined,
+            fileSizeBytes: Number.isFinite(details.fileSizeBytes)
+                ? Math.max(0, Math.round(details.fileSizeBytes)) : undefined
+        });
+        const body = JSON.stringify(payload);
+        const endpoint = `${API_BASE}/diagnostics/events`;
+        try {
+            if (typeof navigator.sendBeacon === "function") {
+                const blob = new Blob([body], { type: "application/json" });
+                if (navigator.sendBeacon(endpoint, blob)) return clientEventId;
+            }
+        } catch (_) {
+            // 部分 X5/XWeb 不允许 Blob beacon，继续使用 keepalive fetch。
+        }
+        if (typeof window.fetch === "function") {
+            window.fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                body,
+                credentials: "same-origin",
+                cache: "no-store",
+                keepalive: true
+            }).catch(() => {});
+        }
+        return clientEventId;
+    }
+
     async function requestJson(path, options = {}) {
         if (typeof window.fetch !== "function" || typeof window.Headers !== "function") {
             return requestJsonWithXhr(path, options);
@@ -3712,12 +3944,6 @@
         return Number(Number(value).toFixed(2));
     }
 
-    function normalizeGeolocationCapturedAt(value, referenceMs = Date.now()) {
-        const reference = Number.isFinite(Number(referenceMs)) ? Number(referenceMs) : Date.now();
-        const resolved = resolveGeolocationCapturedAtMs(value, reference, LOCATION_CAPTURE_PAST_WINDOW_MS);
-        return new Date(resolved ?? reference).toISOString();
-    }
-
     function resolveGeolocationCapturedAtMs(value, referenceMs, pastWindowMs) {
         const raw = typeof value === "number" ? value : Date.parse(value || "");
         if (!Number.isFinite(raw) || !Number.isFinite(referenceMs)) return null;
@@ -3757,8 +3983,20 @@
         }
     }
 
+    function stopGeolocationRefresh(scope) {
+        const watchId = state.geolocationWatchIds[scope];
+        if (watchId !== null && typeof navigator.geolocation?.clearWatch === "function") {
+            navigator.geolocation.clearWatch(watchId);
+        }
+        state.geolocationWatchIds[scope] = null;
+        const timeoutId = state.geolocationTimeoutIds[scope];
+        if (timeoutId !== null) window.clearTimeout(timeoutId);
+        state.geolocationTimeoutIds[scope] = null;
+    }
+
     function cancelLocationCapture(scope) {
         state.locationCaptureSequence[scope] += 1;
+        stopGeolocationRefresh(scope);
         if (state[scope].locationContext?.geocodeStatus === "CAPTURING") {
             state[scope].locationContext = null;
         }

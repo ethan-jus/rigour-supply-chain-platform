@@ -3,11 +3,17 @@ package com.rigour.sales.application.port.out;
 import java.math.BigDecimal;
 import java.util.List;
 
-/** 高德附近门店查询端口；坐标约定为 GCJ-02，由调用方在本地完成坐标转换。 */
+/** 高德门店查询端口；坐标约定为 GCJ-02，由调用方在本地完成坐标转换。 */
 public interface AmapPoiClient {
 
     NearbyPoiPage searchAround(String keyword, BigDecimal longitude, BigDecimal latitude,
                                int radiusMeters, int page, int pageSize);
+
+    /**
+     * 在指定城市内按关键词检索，不用打卡距离裁剪搜索结果。
+     * 返回的文本搜索 POI 通常不带 distance，由调用方使用当前 GCJ-02 坐标本地计算。
+     */
+    NearbyPoiPage searchText(String keyword, String city, int page, int pageSize);
 
     record NearbyPoi(String poiId, String name, String address, String type, String typeCode,
                      BigDecimal longitude, BigDecimal latitude, BigDecimal distanceMeters,

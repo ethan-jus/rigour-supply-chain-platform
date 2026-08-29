@@ -3041,3 +3041,227 @@ body.is-store-page #submit-store-button {
     top: 0;
     box-shadow: 0 5px 18px rgba(4, 35, 38, 0.16);
 }
+
+/* 2026-08-30 移动端操作反馈：按钮必须一眼可见，并在按下、禁用和加载时可区分。 */
+button,
+.file-picker,
+.fallback-picker label,
+.optional-media > summary {
+    touch-action: manipulation;
+}
+
+button:not(.combobox-toggle):not(:disabled):active,
+.file-picker:active,
+.fallback-picker label:active,
+.optional-media > summary:active {
+    transform: scale(0.985);
+}
+
+.combobox-toggle:not(:disabled):active {
+    transform: translateY(-50%) scale(0.985);
+}
+
+.primary-button {
+    border-width: 2px;
+    box-shadow: 0 8px 18px rgba(10, 79, 83, 0.22);
+}
+
+.secondary-button {
+    border-width: 2px;
+    border-color: var(--brand);
+    color: var(--brand-dark);
+    background: var(--brand-soft);
+    box-shadow: 0 4px 10px rgba(10, 79, 83, 0.09);
+}
+
+.text-button {
+    min-height: 38px;
+    padding: 7px 10px;
+    border: 1px solid #9ebfbb;
+    border-radius: 7px;
+    color: var(--brand-dark);
+    background: #fff;
+}
+
+.text-button:disabled,
+.location-retry-button:disabled,
+.manual-store-action:disabled,
+.create-store-action:disabled {
+    color: #839094;
+    background: #eef1f1;
+    opacity: 1;
+}
+
+.poi-search-field .search-input-wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 94px;
+    align-items: stretch;
+    gap: 9px;
+}
+
+.poi-search-field input {
+    min-width: 0;
+    min-height: 50px;
+    padding-right: 13px;
+}
+
+.poi-search-field .explicit-search-button {
+    position: static;
+    min-width: 94px;
+    min-height: 50px;
+    padding: 10px 13px;
+    border: 2px solid var(--brand-dark);
+    border-radius: 9px;
+    color: #fff;
+    background: var(--brand);
+    box-shadow: 0 6px 14px rgba(10, 79, 83, 0.22);
+    font-size: 14px;
+    transform: none;
+}
+
+.poi-search-field .explicit-search-button:not(:disabled):active {
+    transform: scale(0.97);
+}
+
+.poi-search-field .explicit-search-button:disabled {
+    display: block;
+    border-color: #c6cecf;
+    color: #7d898c;
+    background: #e8ecec;
+    box-shadow: none;
+    opacity: 1;
+}
+
+.poi-search-field .spinner {
+    top: 14px;
+    right: 105px;
+}
+
+.action-feedback {
+    min-height: 38px;
+    margin-top: 8px;
+    padding: 9px 11px;
+    border: 1px solid #d4e1df;
+    border-radius: 8px;
+    color: #40575c;
+    background: #f5f9f8;
+    line-height: 1.5;
+}
+
+.poi-result.is-out-of-range {
+    border-color: #d98a6b;
+    background: #fff8f4;
+}
+
+.poi-result.is-out-of-range .poi-result__meta strong {
+    color: #a94320;
+}
+
+.store-location-card.has-inherited-location .location-button {
+    min-height: 40px;
+    padding: 8px 12px;
+    border: 1px solid var(--brand);
+    border-radius: 7px;
+    color: var(--brand-dark);
+    background: var(--brand-soft);
+}
+
+.file-picker {
+    border-width: 2px;
+    border-style: solid;
+    border-color: var(--brand);
+    background: var(--brand-soft);
+    box-shadow: 0 5px 12px rgba(10, 79, 83, 0.1);
+}
+
+.file-preview__icon {
+    display: grid;
+    width: 48px;
+    height: 48px;
+    place-items: center;
+    border-radius: 8px;
+    color: #fff;
+    background: var(--success);
+    font-size: 23px;
+    font-weight: 800;
+}
+
+.record-button {
+    border-width: 2px;
+    box-shadow: 0 4px 10px rgba(143, 67, 23, 0.12);
+}
+
+.create-store-action,
+.manual-store-action {
+    border-width: 2px;
+}
+
+@media (max-width: 390px) {
+    .poi-search-field .search-input-wrap {
+        grid-template-columns: minmax(0, 1fr) 86px;
+        gap: 7px;
+    }
+
+    .poi-search-field .explicit-search-button {
+        min-width: 86px;
+        padding-right: 9px;
+        padding-left: 9px;
+    }
+}
+
+/* 2026-08-30 专业化收口：保持现有品牌与流程，只统一层级、可读性和户外触控尺寸。 */
+:root {
+    --ink-soft: #5f7377;
+}
+
+html {
+    scroll-padding-top: calc(92px + env(safe-area-inset-top));
+}
+
+body {
+    line-height: 1.5;
+}
+
+.hero {
+    box-shadow: 0 3px 14px rgba(4, 35, 38, 0.14);
+}
+
+.form-card,
+.selected-card,
+.identity-gate,
+.progress-panel,
+.success-panel {
+    scroll-margin-top: calc(92px + env(safe-area-inset-top));
+}
+
+.text-button,
+.combobox-toggle,
+.location-address-row .location-retry-button,
+.uploaded-media-delete,
+.fallback-picker label,
+.choice-chip span,
+.optional-disclosure > summary,
+.store-search-disclosure > summary,
+.optional-media > summary,
+.store-details-group > summary,
+.privacy-details > summary {
+    min-height: 44px;
+}
+
+.field__help,
+.action-feedback,
+.field__error {
+    font-size: 12px;
+}
+
+.poi-result > span:first-child strong {
+    display: -webkit-box;
+    overflow: hidden;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.poi-result > span:first-child span {
+    white-space: nowrap;
+}

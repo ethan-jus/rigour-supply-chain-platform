@@ -7,7 +7,7 @@
     <meta name="description" content="销售拜访打卡与门店信息临时采集页面">
     <meta name="robots" content="noindex,nofollow,noarchive">
     <title>销售拜访打卡</title>
-    <link rel="stylesheet" href="/sales-checkin/styles.css">
+    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260830-fresh-location-ui">
 </head>
 <body>
 <header class="hero">
@@ -276,7 +276,7 @@
                             </span>
                         </label>
                         <div id="photo-preview-card" class="file-preview" hidden>
-                            <img id="photo-preview" alt="待上传现场照片预览">
+                            <span class="file-preview__icon" aria-hidden="true">✓</span>
                             <div>
                                 <strong id="photo-file-name"></strong>
                                 <span id="photo-file-size"></span>
@@ -314,7 +314,7 @@
                                 </span>
                             </label>
                             <div id="wechat-preview-card" class="file-preview" hidden>
-                                <img id="wechat-preview" alt="待上传企微截图预览">
+                                <span class="file-preview__icon" aria-hidden="true">✓</span>
                                 <div>
                                     <strong id="wechat-file-name"></strong>
                                     <span id="wechat-file-size"></span>
@@ -456,7 +456,7 @@
                     </div>
                     <span id="store-location-status" class="status-pill">未定位</span>
                 </div>
-                <p class="section-description">已直接沿用本次拜访 GPS，无需重复定位。</p>
+                <p class="section-description">已带入本次拜访信息；点击按钮会刷新手机当前定位，不使用历史位置。</p>
                 <button id="store-location-button" class="secondary-button location-button" type="button">
                     <span id="store-location-button-label">获取当前位置</span>
                 </button>
@@ -465,7 +465,7 @@
                         <span>实际地址</span>
                         <strong id="store-location-address">正在解析地址…</strong>
                         <button id="store-location-retry" class="location-retry-button" type="button" hidden>
-                            重试地址与附近地点解析
+                            重试地址与已建档门店解析
                         </button>
                     </div>
                     <div><span>定位精度</span><strong id="store-location-accuracy"></strong></div>
@@ -497,7 +497,9 @@
                                 aria-label="搜索高德新门店" disabled>搜索</button>
                         <span id="poi-search-spinner" class="spinner" aria-label="正在搜索" hidden></span>
                     </div>
-                    <p id="poi-search-help" class="field__help">定位成功后，输入至少 2 个字并点击搜索。</p>
+                    <p id="poi-search-help" class="field__help action-feedback" role="status" aria-live="polite">
+                        定位成功后，输入至少 2 个字并点击搜索。
+                    </p>
                     <div id="poi-search-results" class="search-results" role="listbox" hidden></div>
                     <span class="field__error" data-error-for="store-source"></span>
                 </div>
@@ -512,7 +514,7 @@
                 </div>
 
                 <button id="manual-store-button" class="manual-store-action" type="button">
-                    <strong>高德附近地点没找到？</strong>
+                    <strong>高德城市搜索没找到对应门店？</strong>
                     <span>明确搜索返回无结果或不可用后，再手动录入门店名称</span>
                 </button>
             </section>
@@ -639,6 +641,6 @@
     <p>临时过渡采集页面 · 如遇问题请保留页面中的错误信息并联系管理员</p>
 </footer>
 
-<script src="/sales-checkin/app.js?v=20260828-stale-draft-fix" defer></script>
+<script src="/sales-checkin/app.js?v=20260830-fresh-location-ui" defer></script>
 </body>
 </html>
