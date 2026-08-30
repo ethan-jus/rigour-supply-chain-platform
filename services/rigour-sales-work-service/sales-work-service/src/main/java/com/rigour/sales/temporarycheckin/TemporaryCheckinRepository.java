@@ -96,14 +96,14 @@ public class TemporaryCheckinRepository {
                 "%" + escapedQuery + "%", "%" + escapedQuery + "%", limit);
     }
 
-    public List<StoreRow> findActiveStoresByCity(UUID tenantId, String city) {
+    public List<StoreRow> findActiveStores(UUID tenantId) {
         return jdbc.query(storeSelect() + """
-                 WHERE tenant_id=? AND city=? AND status='ACTIVE'
-                """, (rs, row) -> store(rs), bin(tenantId), city);
+                 WHERE tenant_id=? AND status='ACTIVE'
+                """, (rs, row) -> store(rs), bin(tenantId));
     }
 
     public List<StoreCheckinAnchorRow> findFirstAcceptableSubmittedStoreAnchors(
-            UUID tenantId, String city, int maxAccuracyMeters) {
+            UUID tenantId, int maxAccuracyMeters) {
         return jdbc.query("""
                 SELECT store_id, longitude, latitude, accuracy_meters, location_captured_at
                   FROM (
@@ -113,7 +113,7 @@ public class TemporaryCheckinRepository {
                                    ORDER BY submitted_at ASC, id ASC
                                ) AS anchor_rank
                           FROM temp_sales_checkin_submission
-                         WHERE tenant_id=? AND city=? AND status='SUBMITTED'
+                         WHERE tenant_id=? AND status='SUBMITTED'
                            AND longitude IS NOT NULL AND latitude IS NOT NULL
                            AND longitude BETWEEN -180 AND 180
                            AND latitude BETWEEN -90 AND 90
@@ -123,15 +123,15 @@ public class TemporaryCheckinRepository {
                            AND submitted_at IS NOT NULL
                        ) ranked
                  WHERE anchor_rank=1
-                """, (rs, row) -> storeCheckinAnchor(rs), bin(tenantId), city, maxAccuracyMeters);
+                """, (rs, row) -> storeCheckinAnchor(rs), bin(tenantId), maxAccuracyMeters);
     }
 
     public Optional<StoreCheckinAnchorRow> findFirstAcceptableSubmittedStoreAnchor(
-            UUID tenantId, UUID storeId, String city, int maxAccuracyMeters) {
+            UUID tenantId, UUID storeId, int maxAccuracyMeters) {
         return jdbc.query("""
                 SELECT store_id, longitude, latitude, accuracy_meters, location_captured_at
                   FROM temp_sales_checkin_submission
-                 WHERE tenant_id=? AND store_id=? AND city=? AND status='SUBMITTED'
+                 WHERE tenant_id=? AND store_id=? AND status='SUBMITTED'
                    AND longitude IS NOT NULL AND latitude IS NOT NULL
                    AND longitude BETWEEN -180 AND 180
                    AND latitude BETWEEN -90 AND 90
@@ -142,7 +142,7 @@ public class TemporaryCheckinRepository {
                  ORDER BY submitted_at ASC, id ASC
                  LIMIT 1
                 """, (rs, row) -> storeCheckinAnchor(rs),
-                bin(tenantId), bin(storeId), city, maxAccuracyMeters).stream().findFirst();
+                bin(tenantId), bin(storeId), maxAccuracyMeters).stream().findFirst();
     }
 
     public Optional<StoreRow> findStore(UUID tenantId, UUID id) {

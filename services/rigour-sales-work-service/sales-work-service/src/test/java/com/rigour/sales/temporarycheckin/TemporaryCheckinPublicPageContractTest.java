@@ -75,12 +75,12 @@ class TemporaryCheckinPublicPageContractTest {
         String html = resource("static/sales-checkin/index.html");
         String script = resource("static/sales-checkin/app.js");
 
-        assertThat(html).contains("本次拜访城市", "选择已有音频文件（可多选）");
+        assertThat(html).contains("业务归属城市", "选择已有音频文件（可多选）");
         assertThat(script)
                 .contains("const HEADQUARTERS_CITY = \"总部\"")
                 .contains("state.options.cities.filter((city) => city !== HEADQUARTERS_CITY)")
                 .contains("const lockWorkCity = !isHeadquartersIdentity() || isBusinessLocked()")
-                .contains("· ${state.identity.city}")
+                .contains("· 归属${state.identity.city}")
                 .contains("isEnabledHeadquartersWorkCity")
                 .doesNotContain("cityMatch(\"总部\")");
     }
@@ -198,6 +198,8 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("state.activeTab = \"visit\";")
                 .contains("renderTab(\"visit\");")
                 .contains("clearAllErrors();")
+                .contains("$(\"#restore-notice\").hidden = true;")
+                .contains("$(\"#store-saved-notice\")?.scrollIntoView")
                 .contains("当前表单已保留")
                 .doesNotContain("abortStoreSearch", "nearbySearchResults", "nearbySearchPoiLookupStatus")
                 .doesNotContain("switchTab(\"visit\");\n            selectStore(createdStore);");
@@ -217,8 +219,9 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("id=\"nearby-stores-scope\"")
                 .contains("id=\"poi-search-button\"")
                 .contains("aria-label=\"搜索高德新门店\" disabled>搜索</button>")
-                .contains("输入、筛选和选择都不会自动调用高德")
-                .contains("新门店建档", "本次拜访草稿已保留");
+                .contains("只返回当前位置300米内候选；输入本身不会调用高德")
+                .contains("你正在新增门店", "保存门店并返回打卡")
+                .contains("进入蓝色新增门店流程，保存后自动返回打卡");
         assertThat(script)
                 .contains("function visitNearbyOptions()")
                 .contains("function storePoiLookupStatus()")
@@ -231,7 +234,9 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("locationVerificationToken: cleanText(payload.locationVerificationToken)")
                 .contains("locationVerificationToken: state.store.locationContext?.locationVerificationToken")
                 .contains("Boolean(cleanText(context.locationVerificationToken))")
-                .contains("function locationContextCityVerified(context)")
+                .contains("finiteNumberOrNull(context.maxCheckinDistanceMeters) !== null")
+                .contains("finiteNumberOrNull(context.maxCheckinAccuracyMeters) !== null")
+                .contains("finiteNumberOrNull(context.maxLocationAgeMinutes) !== null")
                 .contains("if (state.submitting || state.poiSearchController) return;")
                 .contains("$(\"#poi-search-button\").addEventListener(\"click\", searchNewStoreOnce);")
                 .contains("void searchNewStoreOnce();")
@@ -245,7 +250,8 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("function visitRadiusLabel(context = state.visit.locationContext)")
                 .contains("context?.maxCheckinDistanceMeters")
                 .doesNotContain("/stores?city=", "SEARCH_DELAY_MS", "scheduleStoreSearch",
-                        "schedulePoiSearch", "searchNearbyWithQuery", "poi-search-toggle");
+                        "schedulePoiSearch", "searchNearbyWithQuery", "poi-search-toggle",
+                        "locationContextCityVerified", "context.cityMatched !== false");
         assertThat(inputHandler).doesNotContain("requestJson", "/locations/");
         assertThat(script)
                 .containsOnlyOnce("/locations/search-new-store")
@@ -256,26 +262,69 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains(".workflow-stepper")
                 .contains(".visit-store-result__meta")
                 .contains(".explicit-search-button:disabled")
-                .doesNotContain(".visit-store-result.is-new-poi")
-                .doesNotContain("body.is-store-page .hero");
+                .contains("body.is-store-page {")
+                .contains("--brand: #1f4e6b")
+                .contains("#create-store-link")
+                .doesNotContain(".visit-store-result.is-new-poi");
+    }
+
+    @Test
+    void treatsCityAsBusinessAttributionAndKeepsActualGpsLocationUsable() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+        String styles = resource("static/sales-checkin/styles.css");
+
+        assertThat(html)
+                .contains("本人所属城市")
+                .contains("业务归属城市")
+                .contains("用于门店、报表归属，不限制手机实际定位城市")
+                .contains("定位地址")
+                .contains("重试获取详细地址")
+                .contains("仅显示当前位置300米内候选，不限业务归属城市")
+                .contains("只返回当前位置300米内候选")
+                .doesNotContain("本次拜访城市", "实际地址", "高德城市搜索");
+        assertThat(script)
+                .contains("function locationContextReady(context)")
+                .contains("const cityMismatch = ready && context?.cityMatched === false")
+                .contains("const addressUnavailable = ready && !address")
+                .contains("function formatLocationCoordinates(location)")
+                .contains("详细地址暂未取得")
+                .contains("不受业务归属城市限制")
+                .contains("门店归属${cleanText(store.city)}")
+                .contains("当前位置300米内高德搜索结果")
+                .doesNotContain("locationContextCityVerified", "城市不一致", "地址解析失败",
+                        "Number.isFinite(Number(context.max");
+        assertThat(styles).contains(".status-pill.is-info", "color: var(--warning);");
     }
 
     @Test
     void usesCompactHeaderAndVisibleThreeStepNavigation() throws IOException {
         String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
         String styles = resource("static/sales-checkin/styles.css");
 
         assertThat(html)
                 .contains("aria-label=\"拜访打卡步骤\"")
                 .contains("data-flow-step=\"visit\" data-step-target=\"1\"")
                 .contains("data-flow-step=\"visit\" data-step-target=\"2\"")
-                .contains("data-flow-step=\"visit\" data-step-target=\"3\"");
+                .contains("data-flow-step=\"visit\" data-step-target=\"3\"")
+                .contains("id=\"hero-description\" class=\"hero__description\" aria-live=\"polite\"")
+                .contains("退出新增，返回打卡");
+        assertThat(script)
+                .contains("const FLOW_STEP_LABELS = Object.freeze")
+                .contains("function renderFlowHeader()")
+                .contains("`第 ${current}/${FLOW_STEPS[flow]} 步 · ${stepLabel}`")
+                .contains("storeActive ? \"#1f4e6b\" : \"#133c3f\"")
+                .contains("function releaseActiveInput()")
+                .contains("runAfterMobileInputSettles(")
+                .contains("window.scrollTo({ top: 0, behavior: \"auto\" });");
         assertThat(styles)
                 .contains("--header-height: 70px")
                 .contains(".hero {\n    position: sticky;\n    z-index: 50;\n    top: 0;")
                 .contains(".workflow-tabs {\n    display: none;")
                 .contains(".workflow-stepper {")
-                .contains(".step-actions {\n    position: fixed;");
+                .contains(".step-actions {\n    position: fixed;")
+                .doesNotContain(".has-verified-identity .hero__description");
     }
 
     @Test
@@ -287,10 +336,10 @@ class TemporaryCheckinPublicPageContractTest {
         assertThat(html)
                 .contains("class=\"field__help action-feedback\"")
                 .contains("role=\"status\" aria-live=\"polite\"")
-                .contains("/sales-checkin/styles.css?v=20260830-three-step-ui")
-                .contains("/sales-checkin/app.js?v=20260830-three-step-ui")
-                .contains("点击按钮会刷新手机当前定位，不使用历史位置")
-                .contains("高德城市搜索没找到对应门店")
+                .contains("/sales-checkin/styles.css?v=20260830-location-radius")
+                .contains("/sales-checkin/app.js?v=20260830-location-radius")
+                .contains("实际定位不受业务归属城市限制")
+                .contains("当前位置附近没找到对应门店")
                 .contains("id=\"visit-step-1-next\"")
                 .contains("id=\"nearby-stores-empty\"")
                 .contains("class=\"optional-evidence-group\"");
@@ -300,15 +349,74 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("poi.nextAction === \"OUT_OF_RANGE\"")
                 .contains("超过${formatDistance(maximum) || \"允许距离\"}，无法选择")
                 .contains("本次返回")
-                .contains("城市内高德候选");
+                .contains("个300米内高德候选");
         assertThat(styles)
                 .contains(".explicit-search-button")
                 .contains("grid-template-columns: minmax(0, 1fr) 86px")
                 .contains(".poi-result.is-out-of-range")
                 .contains(".file-preview__icon")
-                .contains("scroll-padding-top: calc(var(--header-height) + 18px)")
+                .contains("scroll-padding-top: calc(var(--header-height) + env(safe-area-inset-top) + 18px)")
                 .contains("--page-gutter: 28px")
                 .contains("--brand: #133c3f");
+    }
+
+    @Test
+    void declaresMobileViewportAndKeyboardStabilitySafeguards() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+        String styles = resource("static/sales-checkin/styles.css");
+        String prepareStoreTail = script.substring(
+                script.indexOf("        switchTab(\"store\");"),
+                script.indexOf("    function clearSourcePoi"));
+        String manualEntry = script.substring(
+                script.indexOf("function enableManualStoreEntry"),
+                script.indexOf("function renderStoreSource"));
+        String mobileControls = styles.substring(
+                styles.indexOf("input:not([type=\"checkbox\"]):not([type=\"file\"]),"),
+                styles.indexOf("input::placeholder"));
+        String releaseInput = script.substring(
+                script.indexOf("function releaseActiveInput"),
+                script.indexOf("function runAfterMobileInputSettles"));
+        String flowNavigation = script.substring(
+                script.indexOf("function goToFlowStep"),
+                script.indexOf("async function fetchOptions"));
+
+        assertThat(html)
+                .contains("width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content")
+                .doesNotContain("maximum-scale", "user-scalable=no");
+        assertThat(mobileControls)
+                .contains("font-size: 16px;\n    line-height: 1.4;");
+        assertThat(styles)
+                .contains("min-height: 100svh")
+                .contains("touch-action: manipulation")
+                .contains("body.has-mobile-input-focus .step-actions")
+                .contains("visibility: hidden;\n        opacity: 0;\n        pointer-events: none;")
+                .contains("scroll-padding-bottom: calc(var(--action-height) + env(safe-area-inset-bottom) + 18px)")
+                .contains("env(safe-area-inset-left)")
+                .contains("env(safe-area-inset-right)");
+        assertThat(script)
+                .contains("function isMobileTextEntryControl(element)")
+                .contains("function handleMobileFocusIn(event)")
+                .contains("const MOBILE_KEYBOARD_MIN_DELTA = 120")
+                .contains("mobileViewportBaselineHeight - mobileViewportHeight()")
+                .contains("inputActive && (viewportCompressed || withinFocusGrace)")
+                .contains("function ensureActiveInputVisible()")
+                .contains("activeElement.scrollIntoView({ behavior: \"auto\", block: \"center\" })")
+                .contains("scheduleActiveInputVisibilityCheck();")
+                .contains("document.addEventListener(\"focusin\", handleMobileFocusIn)")
+                .contains("document.addEventListener(\"focusout\", scheduleMobileInputStateSync)")
+                .contains("window.visualViewport?.addEventListener(\"resize\", handleMobileViewportResize)")
+                .contains("\"has-mobile-input-focus\", inputActive && (viewportCompressed || withinFocusGrace)");
+        assertThat(prepareStoreTail).doesNotContain(".focus(");
+        assertThat(manualEntry).doesNotContain(".focus(");
+        assertThat(releaseInput)
+                .contains("if (inputWasActive) scheduleMobileInputStateSync();")
+                .doesNotContain("classList.remove");
+        assertThat(flowNavigation)
+                .contains("const inputWasActive = releaseActiveInput();")
+                .contains("if (target === current) return true;")
+                .contains("behavior: \"auto\", block: \"start\"")
+                .doesNotContain("behavior: \"smooth\"");
     }
 
     @Test
@@ -437,7 +545,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("createButton.disabled = createUnavailable;")
                 .doesNotContain("manualFallback");
         assertThat(script).doesNotContain("manualFallback");
-        assertThat(html).contains("/sales-checkin/app.js?v=20260830-three-step-ui");
+        assertThat(html).contains("/sales-checkin/app.js?v=20260830-location-radius");
     }
 
     @Test
@@ -477,6 +585,26 @@ class TemporaryCheckinPublicPageContractTest {
         assertThat(flowNavigation)
                 .doesNotContain("requestJson(", "captureLocation(", "resolveLocationContext(",
                         "searchNewStoreOnce(", "uploadMedia(");
+    }
+
+    @Test
+    void avoidsReopeningTheMobileKeyboardWhenRevealingValidationErrors() throws IOException {
+        String script = resource("static/sales-checkin/app.js");
+        String styles = resource("static/sales-checkin/styles.css");
+        String errorNavigation = script.substring(
+                script.indexOf("function scrollToFirstError"),
+                script.indexOf("function prepareProgress"));
+
+        assertThat(errorNavigation)
+                .contains("const inputWasActive = document.body.classList.contains(\"has-mobile-input-focus\")")
+                .contains("changedStep = normalizeFlowStep(state.ui[flowStateKey(flow)]) !== targetStep;")
+                .contains("const avoidTextEntryFocus = changedStep || viewportWidth <= 700;")
+                .contains("first.tabIndex = -1;")
+                .contains("first.focus({ preventScroll: true });")
+                .contains("runAfterMobileInputSettles(revealError, inputWasActive);");
+        assertThat(styles)
+                .contains(".store-owner-summary {", "flex-wrap: wrap;")
+                .contains("flex: 1 1 120px;", "overflow-wrap: anywhere;");
     }
 
     private static String resource(String path) throws IOException {

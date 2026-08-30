@@ -14,6 +14,13 @@
     const PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
     const HEADQUARTERS_CITY = "总部";
     const FLOW_STEPS = Object.freeze({ visit: 3, store: 3 });
+    const MOBILE_INPUT_SETTLE_MS = 320;
+    const MOBILE_INPUT_FOCUS_GRACE_MS = 650;
+    const MOBILE_KEYBOARD_MIN_DELTA = 120;
+    const FLOW_STEP_LABELS = Object.freeze({
+        visit: Object.freeze(["", "选择门店", "记录拜访", "现场证明"]),
+        store: Object.freeze(["", "搜索门店", "基础资料", "业务标签"])
+    });
 
     const MEDIA = Object.freeze({
         photo: "storefront-photo",
@@ -154,6 +161,12 @@
 
     const $ = (selector, root = document) => root.querySelector(selector);
     const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+    let mobileInputBlurTimer = null;
+    let mobileInputFocusGraceTimer = null;
+    let mobileInputFocusGraceUntil = 0;
+    let mobileViewportSettleTimer = null;
+    let mobileViewportBaselineHeight = 0;
+    let mobileViewportBaselineWidth = 0;
 
     document.addEventListener("DOMContentLoaded", init);
 
@@ -166,6 +179,7 @@
             $("#submit-visit-button").disabled = true;
         }
 
+        rememberMobileViewportBaseline();
         bindEvents();
         renderRestoredValues();
         renderTab(state.activeTab);
@@ -197,9 +211,7 @@
                 const context = state[scope].locationContext;
                 if (state[scope].city && state[scope].location
                     && !(scope === "visit" && isBusinessLocked())
-                    && !(scope === "store"
-                        ? locationContextCityVerified(context)
-                        : locationContextReady(context))) {
+                    && !locationContextReady(context)) {
                     resolveLocationContext(scope);
                 }
             });
@@ -214,6 +226,107 @@
             showRestoreNotice();
             emitClientDiagnostic("PAGE_RESTORED", "SUCCEEDED");
         }
+    }
+
+    function isMobileTextEntryControl(element) {
+        if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return true;
+        if (!(element instanceof HTMLInputElement)) return false;
+        return !["button", "checkbox", "color", "file", "hidden", "radio", "range", "reset", "submit"]
+            .includes(element.type);
+    }
+
+    function syncMobileInputState() {
+        window.clearTimeout(mobileInputBlurTimer);
+        mobileInputBlurTimer = null;
+        const inputActive = window.innerWidth <= 700 && isMobileTextEntryControl(document.activeElement);
+        const viewportCompressed = mobileViewportBaselineHeight - mobileViewportHeight()
+            >= MOBILE_KEYBOARD_MIN_DELTA;
+        const withinFocusGrace = Date.now() < mobileInputFocusGraceUntil;
+        document.body.classList.toggle(
+            "has-mobile-input-focus", inputActive && (viewportCompressed || withinFocusGrace));
+        if (!inputActive) {
+            mobileInputFocusGraceUntil = 0;
+            rememberMobileViewportBaseline();
+        }
+    }
+
+    function mobileViewportHeight() {
+        const viewport = window.visualViewport;
+        return (viewport?.height || window.innerHeight) * (viewport?.scale || 1);
+    }
+
+    function rememberMobileViewportBaseline() {
+        const width = window.innerWidth;
+        const height = mobileViewportHeight();
+        if (!mobileViewportBaselineWidth || Math.abs(width - mobileViewportBaselineWidth) > 80) {
+            mobileViewportBaselineWidth = width;
+            mobileViewportBaselineHeight = height;
+            return;
+        }
+        mobileViewportBaselineHeight = Math.max(mobileViewportBaselineHeight, height);
+    }
+
+    function scheduleMobileInputStateSync() {
+        window.clearTimeout(mobileInputBlurTimer);
+        mobileInputBlurTimer = window.setTimeout(syncMobileInputState, MOBILE_INPUT_SETTLE_MS);
+    }
+
+    function ensureActiveInputVisible() {
+        const activeElement = document.activeElement;
+        const viewport = window.visualViewport;
+        const viewportWidth = viewport?.width || window.innerWidth;
+        if (viewportWidth > 700 || !isMobileTextEntryControl(activeElement)) return;
+        const fieldRect = activeElement.getBoundingClientRect();
+        const headerBottom = $(".hero")?.getBoundingClientRect().bottom || 0;
+        const viewportTop = viewport?.offsetTop || 0;
+        const visibleTop = Math.max(viewportTop, headerBottom) + 12;
+        const visibleBottom = viewportTop + (viewport?.height || window.innerHeight) - 16;
+        if (fieldRect.top < visibleTop || fieldRect.bottom > visibleBottom) {
+            activeElement.scrollIntoView({ behavior: "auto", block: "center" });
+        }
+    }
+
+    function scheduleActiveInputVisibilityCheck() {
+        window.clearTimeout(mobileViewportSettleTimer);
+        mobileViewportSettleTimer = window.setTimeout(ensureActiveInputVisible, 140);
+    }
+
+    function handleMobileFocusIn(event) {
+        if (isMobileTextEntryControl(event.target)) {
+            if (!mobileViewportBaselineHeight) rememberMobileViewportBaseline();
+            mobileInputFocusGraceUntil = Date.now() + MOBILE_INPUT_FOCUS_GRACE_MS;
+            window.clearTimeout(mobileInputFocusGraceTimer);
+            mobileInputFocusGraceTimer = window.setTimeout(
+                syncMobileInputState, MOBILE_INPUT_FOCUS_GRACE_MS + 20);
+            syncMobileInputState();
+            scheduleActiveInputVisibilityCheck();
+        } else {
+            scheduleMobileInputStateSync();
+        }
+    }
+
+    function handleMobileViewportResize() {
+        if (isMobileTextEntryControl(document.activeElement)) {
+            syncMobileInputState();
+            scheduleActiveInputVisibilityCheck();
+        } else if (mobileInputBlurTimer === null) {
+            rememberMobileViewportBaseline();
+            syncMobileInputState();
+        }
+    }
+
+    function releaseActiveInput() {
+        const activeElement = document.activeElement;
+        const inputWasActive = document.body.classList.contains("has-mobile-input-focus")
+            || isMobileTextEntryControl(activeElement);
+        if (isMobileTextEntryControl(activeElement)) activeElement.blur();
+        if (inputWasActive) scheduleMobileInputStateSync();
+        else syncMobileInputState();
+        return inputWasActive;
+    }
+
+    function runAfterMobileInputSettles(callback, inputWasActive) {
+        window.setTimeout(callback, inputWasActive ? MOBILE_INPUT_SETTLE_MS + 20 : 0);
     }
 
     function invalidateUnlockedVisitLocationForFreshEntry() {
@@ -289,7 +402,7 @@
         const personalCode = $("#identity-code").value.trim();
         let valid = true;
         if (!city) {
-            setFieldError("identity-city", "请选择城市。");
+            setFieldError("identity-city", "请选择本人所属城市。");
             valid = false;
         }
         if (!salespersonId) {
@@ -368,8 +481,8 @@
     function showIdentityDraftResetNotice(hadServerDraft) {
         $("#restore-notice strong").textContent = "已为当前销售打开新表单";
         $("#restore-message").textContent = hadServerDraft
-            ? "本机保存的未完成表单与当前身份或实际拜访城市不一致，未带入当前账号；原服务端草稿未做任何修改。"
-            : "本机保存的表单与当前身份或实际拜访城市不一致，已安全清除。请选择本次拜访城市后重新定位。";
+            ? "本机保存的未完成表单与当前身份或业务归属不一致，未带入当前账号；原服务端草稿未做任何修改。"
+            : "本机保存的表单与当前身份或业务归属不一致，已安全清除。请确认业务归属后重新定位。";
         $("#discard-draft-button").hidden = true;
         $("#restore-notice").hidden = false;
     }
@@ -400,7 +513,7 @@
         if (authenticated) {
             $("#identity-summary-name").textContent = state.identity.salespersonName || "--";
             $("#identity-summary-city").textContent = state.identity.city
-                ? `· ${state.identity.city}`
+                ? `· 归属${state.identity.city}`
                 : "--";
         }
         $("#identity-switch").disabled = state.submitting || isBusinessLocked();
@@ -531,6 +644,10 @@
             if (!event.target.closest(".store-search-field")) hideStoreResults();
             if (!event.target.closest(".poi-search-field")) hidePoiResults();
         });
+        document.addEventListener("focusin", handleMobileFocusIn);
+        document.addEventListener("focusout", scheduleMobileInputStateSync);
+        window.addEventListener("resize", handleMobileViewportResize);
+        window.visualViewport?.addEventListener("resize", handleMobileViewportResize);
 
         window.addEventListener("beforeunload", (event) => {
             if (!state.completed) {
@@ -561,6 +678,7 @@
     function switchTab(tab, focusTab = false) {
         if (state.submitting) return;
         if (isBusinessLocked() && tab === "store") return;
+        const inputWasActive = releaseActiveInput();
         state.activeTab = tab === "store" ? "store" : "visit";
         renderTab(state.activeTab);
         if (state.activeTab === "store") {
@@ -575,7 +693,8 @@
         if (focusTab) {
             $(`#${state.activeTab}-tab`).focus();
         } else {
-            window.scrollTo({ top: 0, behavior: "smooth" });
+            runAfterMobileInputSettles(
+                () => window.scrollTo({ top: 0, behavior: "auto" }), inputWasActive);
         }
     }
 
@@ -588,13 +707,25 @@
         $("#visit-panel").hidden = !visitActive;
         $("#store-panel").hidden = visitActive;
         document.body.classList.toggle("is-store-page", !visitActive);
-        $("#hero-title").textContent = visitActive ? "拜访打卡" : "新门店建档";
-        $("#hero-description").textContent = visitActive
-            ? "现场拜访记录"
-            : "搜索并建立本次拜访门店";
-        document.title = visitActive ? "销售拜访打卡" : "新门店建档";
-        $("meta[name=\"theme-color\"]")?.setAttribute("content", "#133c3f");
         renderFlowSteps();
+    }
+
+    function renderFlowHeader() {
+        const flow = state.activeTab === "store" ? "store" : "visit";
+        const storeActive = flow === "store";
+        const title = storeActive ? "新增门店" : "拜访打卡";
+        const current = normalizeFlowStep(state.ui?.[flowStateKey(flow)]);
+        const stepLabel = FLOW_STEP_LABELS[flow][current];
+        const description = state.identity?.authenticated
+            ? `第 ${current}/${FLOW_STEPS[flow]} 步 · ${stepLabel}`
+            : "现场拜访记录";
+        const titleElement = $("#hero-title");
+        const descriptionElement = $("#hero-description");
+        if (titleElement.textContent !== title) titleElement.textContent = title;
+        if (descriptionElement.textContent !== description) descriptionElement.textContent = description;
+        document.title = storeActive ? "新增门店" : "销售拜访打卡";
+        $("meta[name=\"theme-color\"]")?.setAttribute(
+            "content", storeActive ? "#1f4e6b" : "#133c3f");
     }
 
     function flowStateKey(flow) {
@@ -636,7 +767,7 @@
             return Boolean(state.store.city
                 && state.store.salespersonId
                 && state.store.location
-                && locationContextCityVerified(state.store.locationContext)
+                && locationContextReady(state.store.locationContext)
                 && hasValidStoreSource());
         }
         if (step === 2) {
@@ -712,6 +843,7 @@
                 button.disabled = state.submitting || step > maximum;
             });
         });
+        renderFlowHeader();
         renderFlowActions();
     }
 
@@ -754,12 +886,12 @@
         clearFlowStepErrors(flow, step);
         let valid = true;
         if (flow === "visit" && step === 1) {
-            valid = requireValue(state.visit.city, "visit-city", "请选择城市。") && valid;
+            valid = requireValue(state.visit.city, "visit-city", "请选择业务归属城市。") && valid;
             valid = requireValue(state.visit.salespersonId, "visit-salesperson", "请选择销售。") && valid;
             valid = requireValue(state.visit.location, "visit-location", "请刷新并获取本次现场定位。") && valid;
             if (state.visit.location && !locationContextReady(state.visit.locationContext)) {
                 setFieldError("visit-location", state.visit.locationContext?.errorMessage
-                    || "当前定位未通过城市、精度或时效校验，请重新定位。");
+                    || "当前定位未通过精度或时效校验，请重新定位。");
                 valid = false;
             }
             valid = requireValue(state.visit.selectedStore?.id, "selected-store", "请选择本次拜访门店。") && valid;
@@ -767,12 +899,12 @@
             valid = requireValue(cleanText(state.visit.customerName), "customer-name", "请输入客户姓名。") && valid;
             valid = requireValue(cleanText(state.visit.visitResult), "visit-result", "请填写拜访结果。") && valid;
         } else if (flow === "store" && step === 1) {
-            valid = requireValue(state.store.city, "store-city", "请选择城市。") && valid;
+            valid = requireValue(state.store.city, "store-city", "请选择业务归属城市。") && valid;
             valid = requireValue(state.store.salespersonId, "store-salesperson", "请选择销售。") && valid;
             valid = requireValue(state.store.location, "store-location", "请刷新并获取本次现场定位。") && valid;
-            if (state.store.location && !locationContextCityVerified(state.store.locationContext)) {
+            if (state.store.location && !locationContextReady(state.store.locationContext)) {
                 setFieldError("store-location", state.store.locationContext?.errorMessage
-                    || "当前定位未通过城市、精度或时效校验，请重新定位。");
+                    || "当前定位未通过精度或时效校验，请重新定位。");
                 valid = false;
             }
             if (!hasValidStoreSource()) {
@@ -811,6 +943,8 @@
                 }
             }
         }
+        const inputWasActive = releaseActiveInput();
+        if (target === current) return true;
         state.ui[key] = target;
         renderFlowSteps();
         if (options.persist !== false) {
@@ -820,9 +954,9 @@
         if (options.scroll !== false) {
             const panel = document.querySelector(
                 '[data-flow-step-panel="' + flow + '"][data-step-value="' + target + '"]');
-            window.requestAnimationFrame(() => panel?.scrollIntoView({
-                behavior: "smooth", block: "start"
-            }));
+            runAfterMobileInputSettles(() => panel?.scrollIntoView({
+                behavior: "auto", block: "start"
+            }), inputWasActive);
         }
         return true;
     }
@@ -856,9 +990,9 @@
         const workCities = isHeadquartersIdentity()
             ? state.options.cities.filter((city) => city !== HEADQUARTERS_CITY)
             : state.options.cities;
-        renderSelect($("#visit-city"), workCities, "请选择本次拜访城市", state.visit.city);
-        renderSelect($("#store-city"), workCities, "请选择本次拜访城市", state.store.city);
-        renderSelect($("#identity-city"), state.options.cities, "请选择城市",
+        renderSelect($("#visit-city"), workCities, "请选择业务归属城市", state.visit.city);
+        renderSelect($("#store-city"), workCities, "请选择业务归属城市", state.store.city);
+        renderSelect($("#identity-city"), state.options.cities, "请选择本人所属城市",
             $("#identity-city")?.value || "");
     }
 
@@ -1065,7 +1199,7 @@
             $("#poi-search").focus();
             return;
         }
-        if (!locationContextCityVerified(state.store.locationContext) || !state.store.location) {
+        if (!locationContextReady(state.store.locationContext) || !state.store.location) {
             emitClientDiagnostic("SEARCH_CLICK", "BLOCKED", {}, diagnosticId);
             $("#poi-search-help").textContent = "请先完成现场定位，再搜索高德新门店。";
             return;
@@ -1195,7 +1329,11 @@
                 const name = document.createElement("strong");
                 name.textContent = store.name || "未命名门店";
                 const location = document.createElement("span");
-                location.textContent = store.locationSummary || store.address || "暂无位置摘要";
+                const businessCityHint = cleanText(store.city)
+                    && cleanText(store.city) !== cleanText(state.visit.city)
+                    ? ` · 门店归属${cleanText(store.city)}` : "";
+                location.textContent = `${store.locationSummary || store.address
+                    || "暂无位置摘要"}${businessCityHint}`;
                 detail.append(name, location);
 
                 const meta = document.createElement("span");
@@ -1266,10 +1404,14 @@
 
     function renderSelectedStore() {
         const selected = state.visit.selectedStore;
+        const businessCityHint = cleanText(selected?.city)
+            && cleanText(selected?.city) !== cleanText(state.visit.city)
+            ? ` · 门店归属${cleanText(selected.city)}` : "";
         $("#selected-store-card").hidden = !selected;
         $("#visit-step-store-name").textContent = selected?.name || "尚未选择门店";
         $("#visit-step-store-address").textContent = selected
-            ? selected.locationSummary || selected.address || selected.city || "位置已采集"
+            ? `${selected.locationSummary || selected.address || selected.city
+                || "位置已采集"}${businessCityHint}`
             : "请返回第一步选择门店";
         if (!selected) {
             $("#store-search").value = "";
@@ -1277,26 +1419,20 @@
             return;
         }
         $("#selected-store-name").textContent = selected.name || "未命名门店";
-        $("#selected-store-location").textContent = selected.locationSummary || selected.city || "";
+        $("#selected-store-location").textContent = `${selected.locationSummary
+            || selected.city || ""}${businessCityHint}`;
         $("#store-search").value = selected.name || "";
         renderFlowActions();
     }
 
     function locationContextReady(context) {
         return Boolean(context
-            && context.cityMatched !== false
             && context.accuracyAccepted === true
             && context.freshnessAccepted === true
             && Boolean(cleanText(context.locationVerificationToken))
-            && Number.isFinite(Number(context.maxCheckinDistanceMeters))
-            && Number.isFinite(Number(context.maxCheckinAccuracyMeters))
-            && Number.isFinite(Number(context.maxLocationAgeMinutes)));
-    }
-
-    function locationContextCityVerified(context) {
-        return locationContextReady(context)
-            && context.geocodeStatus === "RESOLVED"
-            && context.cityMatched === true;
+            && finiteNumberOrNull(context.maxCheckinDistanceMeters) !== null
+            && finiteNumberOrNull(context.maxCheckinAccuracyMeters) !== null
+            && finiteNumberOrNull(context.maxLocationAgeMinutes) !== null);
     }
 
     function renderNearbyStores() {
@@ -1312,8 +1448,8 @@
         $(".store-search-field", panel).hidden = !state.visit.location;
         hideStoreResults();
         $("#nearby-stores-scope").textContent = locationContextReady(context)
-            ? `${visitRadiusLabel(context)}的已建档门店，可直接选择打卡`
-            : "仅显示当前定位允许范围内的已建档门店";
+            ? `${visitRadiusLabel(context)}的已建档门店，不受业务归属城市限制`
+            : "定位通过后，仅显示当前位置允许范围内的已建档门店";
         if (!state.visit.location) {
             input.disabled = true;
             toggle.disabled = true;
@@ -1454,7 +1590,7 @@
             || poi.nextAction !== "OUT_OF_RANGE").length;
         const maximumDistance = finiteNumberOrNull(state.store.locationContext?.maxCheckinDistanceMeters);
         $("#poi-search-help").textContent = pois.length && selectableCount > 0
-            ? `本次返回：${registeredCount} 家已建档门店、${amapCount} 个城市内高德候选；请选择一项继续。`
+            ? `本次返回：${registeredCount} 家已建档门店、${amapCount} 个300米内高德候选；请选择一项继续。`
             : pois.length
                 ? `本次返回 ${amapCount} 个高德候选，但均超过${formatDistance(maximumDistance) || "允许距离"}，已展示供核对，暂不可选择；请到店后重新定位。`
             : state.store.manualEntryAllowed
@@ -1519,6 +1655,7 @@
     }
 
     function selectExistingStoreFromProfileFlow(store) {
+        const inputWasActive = releaseActiveInput();
         abortPoiSearch();
         const exists = state.visit.nearbyStores.some((item) =>
             item.source === "REGISTERED"
@@ -1529,10 +1666,13 @@
         state.ui.visitStep = 2;
         renderTab("visit");
         renderNearbyStores();
+        $("#restore-notice").hidden = true;
+        $("#store-saved-name").textContent = store.name;
+        $("#store-saved-notice").hidden = false;
         persistDraft();
-        window.setTimeout(() => $("#selected-store-card").scrollIntoView({
-            behavior: "smooth", block: "center"
-        }), 100);
+        runAfterMobileInputSettles(() => $("#store-saved-notice").scrollIntoView({
+            behavior: "auto", block: "start"
+        }), inputWasActive);
     }
 
     function clearSelectedPoi() {
@@ -1542,10 +1682,6 @@
         renderStoreSource();
         renderStorePrefillMessage();
         persistDraft();
-        if (!$("#poi-search").disabled) {
-            $("#poi-search").focus();
-            renderPoiOptions(true);
-        }
     }
 
     function enableManualStoreEntry() {
@@ -1556,7 +1692,6 @@
             $("#store-name").value = "";
             renderStoreSource();
             persistDraft();
-            if (!$("#poi-search").disabled) $("#poi-search").focus();
             return;
         }
         if (!state.store.manualEntryAllowed) return;
@@ -1570,7 +1705,6 @@
         renderStoreSource();
         renderStorePrefillMessage();
         goToFlowStep("store", 2, { validateForward: false });
-        window.setTimeout(() => $("#store-name").focus(), 100);
     }
 
     function renderStoreSource() {
@@ -1582,7 +1716,7 @@
             && Boolean(state.store.sourcePoiId)
             && Boolean(state.store.sourcePoiToken);
         const manual = state.store.sourceMode === "MANUAL";
-        const ready = locationContextCityVerified(context);
+        const ready = locationContextReady(context);
         const lookupStatus = storePoiLookupStatus();
         const canSearch = ready && !selected;
         const searching = Boolean(state.poiSearchController);
@@ -1618,12 +1752,12 @@
             ? "已选择手动录入"
             : state.store.manualEntryAllowed
                 ? "仍未找到，手动录入门店"
-                : "高德城市搜索没找到？";
+                : "高德附近搜索没找到？";
         manualButton.querySelector("span").textContent = manual
-            ? "点击可返回高德城市搜索结果"
+            ? "点击可返回高德附近搜索结果"
             : state.store.manualEntryAllowed
-                ? "继续补全门店名称和基础资料"
-                : "确认搜索无结果后，再手动录入门店名称";
+                ? "以当前 GPS 作为门店位置，继续补全基础资料"
+                : "确认当前位置300米内搜索无结果后，再手动录入门店名称";
 
         if (!state.store.location) {
             input.placeholder = "先获取定位";
@@ -1631,10 +1765,10 @@
         } else if (context?.geocodeStatus === "RESOLVING") {
             input.placeholder = "正在解析定位";
             $("#poi-search-help").textContent = "正在解析定位并加载已建档门店…";
-        } else if (!locationContextCityVerified(context)) {
-            input.placeholder = "定位解析未完成";
+        } else if (!locationContextReady(context)) {
+            input.placeholder = "定位暂不可用";
             $("#poi-search-help").textContent = context?.errorMessage
-                || "请使用上方重试按钮，或重新定位。";
+                || "请重新获取符合精度和时效要求的定位。";
         } else if (searching) {
             input.placeholder = "正在搜索高德新门店";
             $("#poi-search-help").textContent = `正在按“${state.store.poiSearchQuery}”搜索，本次操作只发起一次请求…`;
@@ -1652,8 +1786,8 @@
             const registeredCount = pois.filter((poi) => poi.source === "REGISTERED").length;
             input.placeholder = "输入至少 2 个字，再点击搜索";
             $("#poi-search-help").textContent = registeredCount
-                ? `已加载 ${registeredCount} 家已建档门店，可直接筛选选择；搜索高德需点击“搜索”。`
-                : "输入至少 2 个字并点击“搜索”；输入本身不会请求高德。";
+                ? `已加载 ${registeredCount} 家300米内已建档门店；搜索附近高德门店需点击“搜索”。`
+                : "输入至少 2 个字并点击“搜索”当前位置300米内门店；输入本身不会请求高德。";
         }
         renderFlowSteps();
     }
@@ -1714,10 +1848,6 @@
         renderStoreSource();
         renderStorePrefillMessage();
         switchTab("store");
-        window.setTimeout(() => {
-            if (state.store.sourceMode === "MANUAL") $("#store-name").focus();
-            else if (!$("#poi-search").disabled) $("#poi-search").focus();
-        }, 250);
     }
 
     function clearSourcePoi(resetMode = false, clearName = false) {
@@ -2052,16 +2182,12 @@
                 locationMessage,
                 errorMessage: locationMessage
             };
-            const ready = scope === "store"
-                ? locationContextCityVerified(state[scope].locationContext)
-                : locationContextReady(state[scope].locationContext);
+            const ready = locationContextReady(state[scope].locationContext);
             if (ready) clearFieldError(`${scope}-location`);
             else setFieldError(`${scope}-location`, locationMessage
-                || (payload.cityMatched === false
-                    ? "当前位置与所选城市不一致，请修正城市后重新定位。"
-                    : payload.freshnessAccepted === false
-                        ? "定位已过期，请重新获取当前位置。"
-                        : "定位精度不足，请移到信号较好的位置后重新定位。"));
+                || (payload.freshnessAccepted === false
+                    ? "定位已过期，请重新获取当前位置。"
+                    : "定位精度不足，请移到信号较好的位置后重新定位。"));
             if (scope === "visit") {
                 state.visit.nearbyStores = ready && Array.isArray(payload.nearbyStores)
                     ? payload.nearbyStores
@@ -2085,7 +2211,7 @@
         } catch (error) {
             if (state.locationControllers[scope] !== controller) return;
             if (error.name === "AbortError") return;
-            const message = errorMessage(error, "地址与附近门店解析失败，请重试。");
+            const message = errorMessage(error, "暂时无法确认附近门店，请检查网络后重试。");
             state[scope].locationContext = { geocodeStatus: "FAILED", errorMessage: message };
             setFieldError(`${scope}-location`, message);
             if (scope === "visit") state.visit.nearbyStores = [];
@@ -2154,39 +2280,39 @@
             return;
         }
         const resolving = context?.geocodeStatus === "RESOLVING";
-        const ready = scope === "store"
-            ? locationContextCityVerified(context)
-            : locationContextReady(context);
-        const cityMismatch = context?.cityMatched === false;
-        const cityUnverified = context?.cityMatched == null
-            && Boolean(cleanText(context?.locationVerificationToken));
+        const ready = locationContextReady(context);
+        const cityMismatch = ready && context?.cityMatched === false;
         const inaccurate = context?.accuracyAccepted === false;
         const expired = context?.freshnessAccepted === false;
+        const address = cleanText(context?.formattedAddress || context?.address);
+        const addressUnavailable = ready && !address;
         status.textContent = capturing
             ? "定位中"
             : resolving
             ? "解析地址中"
-            : cityMismatch
-                ? "城市不一致"
-                : inaccurate
+            : inaccurate
                     ? "精度不足"
                     : expired
                         ? "定位已过期"
                         : ready
-                            ? cityUnverified ? "已定位·地址待恢复" : "已定位"
+                            ? cityMismatch
+                                ? `已定位·${cleanText(context?.resolvedCity) || "跨城"}`
+                                : addressUnavailable ? "坐标已获取" : "已定位"
                             : "需重试";
         status.className = capturing || resolving
             ? "status-pill is-loading"
-            : ready && !cityUnverified ? "status-pill is-ready" : "status-pill is-warning";
+            : ready && (cityMismatch || addressUnavailable)
+                ? "status-pill is-info"
+                : ready ? "status-pill is-ready" : "status-pill is-warning";
         detail.hidden = false;
-        const address = cleanText(context?.address || context?.formattedAddress);
         const addressElement = $(`#${scope}-location-address`);
         addressElement.textContent = address
             || (capturing ? "正在重新获取当前位置…"
-                : resolving ? "正在解析实际地址…"
-                : context?.errorMessage || "地址解析失败，请重试");
+                : resolving ? "正在解析定位地址…"
+                : ready ? `${formatLocationCoordinates(location)} · 详细地址暂未取得`
+                    : context?.errorMessage || "详细地址暂未取得，请重试");
         addressElement.classList.toggle("is-missing", !address && !capturing && !resolving);
-        retry.hidden = capturing || resolving || (ready && !cityUnverified);
+        retry.hidden = capturing || resolving || Boolean(address);
         $(`#${scope}-location-accuracy`).textContent = `约 ${location.accuracyMeters} 米`;
         $(`#${scope}-location-time`).textContent = formatDateTime(location.capturedAt);
         $(`#${scope}-location-note`).value = location.note || "";
@@ -2194,6 +2320,13 @@
             ? "定位不准？重新获取"
             : "重新定位";
         renderFlowActions();
+    }
+
+    function formatLocationCoordinates(location) {
+        const longitude = Number(location?.longitude);
+        const latitude = Number(location?.latitude);
+        if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return "GPS 坐标已获取";
+        return `GPS ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
     }
 
     function geolocationErrorMessage(error, fallbackAttempted = false) {
@@ -2953,11 +3086,12 @@
             state.submitting = false;
             setFormsDisabled(false);
             if (state.activeTab === "store") renderStoreSource();
-            button.textContent = "保存并选中门店";
+            button.textContent = "保存门店并返回打卡";
         }
     }
 
     function completeStoreSaveTransition(createdStore, payload) {
+        const inputWasActive = releaseActiveInput();
         // 先终止旧搜索，再一次性写入新门店和选中状态，避免迟到响应覆盖刚保存的门店。
         abortPoiSearch();
         hideStoreResults();
@@ -2999,12 +3133,13 @@
         renderLocation("visit");
         renderNearbyStores();
         renderSelectedStore();
+        $("#restore-notice").hidden = true;
         $("#store-saved-name").textContent = createdStore.name;
         $("#store-saved-notice").hidden = false;
         persistDraft();
-        window.requestAnimationFrame(() => {
-            $("#selected-store-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
-        });
+        runAfterMobileInputSettles(() => {
+            $("#store-saved-notice")?.scrollIntoView({ behavior: "auto", block: "start" });
+        }, inputWasActive);
     }
 
     function recoverSavedStoreTransition(createdStore, payload) {
@@ -3038,6 +3173,10 @@
             renderTab("visit");
             renderNearbyStores();
             renderSelectedStore();
+            $("#restore-notice").hidden = true;
+            $("#store-saved-name").textContent = createdStore.name;
+            $("#store-saved-notice").hidden = false;
+            window.scrollTo({ top: 0, behavior: "auto" });
         } catch (_) {
             // 状态已先写入草稿，刷新页面仍会回到拜访并选中已保存门店。
         }
@@ -3353,7 +3492,7 @@
     function validateVisit() {
         clearAllErrors();
         let valid = true;
-        valid = requireValue(state.visit.city, "visit-city", "请选择城市。") && valid;
+        valid = requireValue(state.visit.city, "visit-city", "请选择业务归属城市。") && valid;
         valid = requireValue(state.visit.salespersonId, "visit-salesperson", "请选择销售。") && valid;
         valid = requireValue(state.visit.selectedStore?.id, "selected-store", "请搜索并选择拜访门店。") && valid;
         valid = requireValue(state.visit.customerName.trim(), "customer-name", "请输入客户姓名。") && valid;
@@ -3361,7 +3500,7 @@
         valid = requireValue(state.visit.location, "visit-location", "请在现场获取拜访定位。") && valid;
         if (state.visit.location && !isBusinessLocked() && !locationContextReady(state.visit.locationContext)) {
             setFieldError("visit-location", state.visit.locationContext?.errorMessage
-                || "当前定位未通过城市和精度校验，请修正后重新定位。");
+                || "当前定位未通过精度或时效校验，请重新定位。");
             valid = false;
         }
         if (!state.files.photo && !state.submission.uploadedMedia.includes(MEDIA.photo)) {
@@ -3382,9 +3521,9 @@
     function validateStore() {
         clearAllErrors();
         let valid = true;
-        valid = requireValue(state.store.city, "store-city", "请选择城市。") && valid;
+        valid = requireValue(state.store.city, "store-city", "请选择业务归属城市。") && valid;
         valid = requireValue(state.store.salespersonId, "store-salesperson", "请选择销售。") && valid;
-        valid = requireValue(state.store.sourceMode, "store-source", "请先从高德城市搜索结果选择；搜索确认没有后再手动录入。") && valid;
+        valid = requireValue(state.store.sourceMode, "store-source", "请先从当前位置300米内高德搜索结果选择；确认没有后再手动录入。") && valid;
         if (state.store.sourceMode === "POI" && !cleanText(state.store.sourcePoiToken)) {
             setFieldError("store-source", "高德候选凭证已失效，请重新搜索并选择门店。");
             valid = false;
@@ -3413,9 +3552,9 @@
             valid = false;
         }
         valid = requireValue(state.store.location, "store-location", "请在现场获取门店定位。") && valid;
-        if (state.store.location && !locationContextCityVerified(state.store.locationContext)) {
+        if (state.store.location && !locationContextReady(state.store.locationContext)) {
             setFieldError("store-location", state.store.locationContext?.errorMessage
-                || "当前定位未通过城市和精度校验，请重新定位。");
+                || "当前定位未通过精度或时效校验，请重新定位。");
             valid = false;
         }
         return valid;
@@ -3459,21 +3598,36 @@
         const first = $$(".field__error").find((error) => error.textContent.trim());
         if (!first) return;
         const flowPanel = first.closest("[data-flow-step-panel]");
+        const inputWasActive = document.body.classList.contains("has-mobile-input-focus")
+            || isMobileTextEntryControl(document.activeElement);
+        let changedStep = false;
         if (flowPanel) {
-            goToFlowStep(flowPanel.dataset.flowStepPanel, Number(flowPanel.dataset.stepValue), {
+            const flow = flowPanel.dataset.flowStepPanel;
+            const targetStep = normalizeFlowStep(Number(flowPanel.dataset.stepValue));
+            changedStep = normalizeFlowStep(state.ui[flowStateKey(flow)]) !== targetStep;
+            goToFlowStep(flow, targetStep, {
                 validateForward: false,
                 scroll: false
             });
         }
         const disclosure = first?.closest("details");
         if (disclosure) disclosure.open = true;
-        window.requestAnimationFrame(() => {
+        const revealError = () => window.requestAnimationFrame(() => {
             const container = first.closest(".form-card, .consent-card, .flow-step-panel");
             container?.scrollIntoView({ behavior: "smooth", block: "center" });
+            const viewportWidth = window.visualViewport?.width || window.innerWidth;
+            const avoidTextEntryFocus = changedStep || viewportWidth <= 700;
+            if (avoidTextEntryFocus) {
+                first.tabIndex = -1;
+                first.focus({ preventScroll: true });
+                first.addEventListener("blur", () => first.removeAttribute("tabindex"), { once: true });
+                return;
+            }
             first.closest(".field, .choice-fieldset, .upload-item, .audio-recorder, .consent-card, .location-card")
                 ?.querySelector("input, select, textarea, button")
                 ?.focus({ preventScroll: true });
         });
+        runAfterMobileInputSettles(revealError, inputWasActive);
     }
 
     function prepareProgress() {

@@ -2,7 +2,6 @@ package com.rigour.sales.temporarycheckin;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
-import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.startsWith;
 import static org.mockito.ArgumentMatchers.any;
@@ -185,7 +184,8 @@ class TemporaryCheckinApiIntegrationTests {
         when(coordinateConverter.convert(any(BigDecimal.class), any(BigDecimal.class)))
                 .thenReturn(new Wgs84Gcj02Converter.Coordinates(
                         new BigDecimal("116.403000"), new BigDecimal("39.912000")));
-        when(amapPoiClient.searchText(any(String.class), any(String.class), anyInt(), anyInt()))
+        when(amapPoiClient.searchAround(any(String.class), any(BigDecimal.class), any(BigDecimal.class),
+                anyInt(), anyInt(), anyInt()))
                 .thenAnswer(invocation -> "高德候选门店".equals(invocation.getArgument(0))
                         ? new AmapPoiClient.NearbyPoiPage(List.of(
                                 new AmapPoiClient.NearbyPoi(
@@ -232,7 +232,7 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void rejectsResolvedCityMismatchBeforeReturningLocalStoresOrLocationProof() throws Exception {
+    void keepsActualCrossCityAddressAndReturnsLocationProofAndNearbyStores() throws Exception {
         when(reverseGeocoder.resolve(any(BigDecimal.class), any(BigDecimal.class)))
                 .thenReturn(new GeocodeResult(
                         "RESOLVED", "深圳市南山区测试路1号", "深圳市南山区测试路1号",
@@ -247,17 +247,66 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(jsonPath("$.geocodeStatus").value("RESOLVED"))
                 .andExpect(jsonPath("$.cityMatched").value(false))
                 .andExpect(jsonPath("$.resolvedCity").value("深圳"))
+                .andExpect(jsonPath("$.locationMessage").value(
+                        "实际定位在深圳，业务归属按北京记录；门店仅按当前位置300米范围选择"))
                 .andExpect(jsonPath("$.poiLookupStatus").value("SKIPPED"))
-                .andExpect(jsonPath("$.nearbyStores", hasSize(0)))
-                .andExpect(jsonPath("$.locationVerificationToken").doesNotExist());
+                .andExpect(jsonPath("$.nearbyStores", hasSize(1)))
+                .andExpect(jsonPath("$.nearbyStores[0].storeId").value(STORE_ID.toString()))
+                .andExpect(jsonPath("$.locationVerificationToken").isNotEmpty());
 
         verify(reverseGeocoder, times(1)).resolve(any(BigDecimal.class), any(BigDecimal.class));
         verifyNoInteractions(amapPoiClient, coordinateConverter);
     }
 
     @Test
+    void allowsNearbyRegisteredStoreAcrossBusinessCitiesWhileKeepingSubmissionAttribution() throws Exception {
+        UUID nearbyShenzhenStoreId = UUID.randomUUID();
+        insertImportedStore(nearbyShenzhenStoreId, "深圳", SHENZHEN_SALESPERSON_ID,
+                "跨归属附近门店", location());
+        when(reverseGeocoder.resolve(any(BigDecimal.class), any(BigDecimal.class)))
+                .thenReturn(new GeocodeResult(
+                        "RESOLVED", "深圳市南山区测试路1号", "深圳市南山区测试路1号",
+                        "440305", "广东省", "深圳市", "南山区", "粤海街道",
+                        new BigDecimal("113.930000"), new BigDecimal("22.530000"), null));
+
+        LocationCommand captured = location();
+        MvcResult resolved = mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(
+                                resolveRequest("北京", VISITOR_ID, captured))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cityMatched").value(false))
+                .andExpect(jsonPath("$.nearbyStores[*].storeId", containsInAnyOrder(
+                        STORE_ID.toString(), nearbyShenzhenStoreId.toString())))
+                .andReturn();
+        String locationProof = objectMapper.readTree(resolved.getResponse().getContentAsByteArray())
+                .path("locationVerificationToken").asText();
+
+        CreateSubmissionRequest visit = new CreateSubmissionRequest(
+                UUID.randomUUID(), SUBMISSION_KEY, "北京", VISITOR_ID, nearbyShenzhenStoreId,
+                "跨归属客户", null, "现场距离满足要求", captured, true,
+                TemporaryCheckinService.PRIVACY_NOTICE_VERSION, locationProof);
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(visit)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DRAFT"))
+                .andReturn();
+        UUID submissionId = UUID.fromString(objectMapper.readTree(
+                created.getResponse().getContentAsByteArray()).path("id").asText());
+        var stored = jdbc.queryForMap("""
+                SELECT city, store_id, location_city FROM temp_sales_checkin_submission
+                 WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(submissionId));
+        assertThat(stored.get("city")).isEqualTo("北京");
+        assertThat(stored.get("store_id")).isEqualTo(bin(nearbyShenzhenStoreId));
+        assertThat(stored.get("location_city")).isEqualTo("深圳市");
+    }
+
+    @Test
     void distinguishesNearbyUnregisteredAmapPoiAsProfileCompletionCandidate() throws Exception {
-        when(amapPoiClient.searchText("台球", "北京", 1, 25))
+        when(amapPoiClient.searchAround("台球", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25))
                 .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(
                         new AmapPoiClient.NearbyPoi("B0FFNEWPOI", "附近新门店", "北京市东城区测试路2号",
                                 "休闲服务", "080000", new BigDecimal("116.403100"),
@@ -280,13 +329,83 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(jsonPath("$.nearbyStores[0].locationSource").value("AMAP_POI"))
                 .andExpect(jsonPath("$.nearbyStores[0].checkinEligible").value(false))
                 .andExpect(jsonPath("$.nearbyStores[0].nextAction").value("COMPLETE_STORE_PROFILE"));
-        verify(amapPoiClient, times(1)).searchText("台球", "北京", 1, 25);
+        verify(amapPoiClient, times(1)).searchAround("台球", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25);
         verifyNoInteractions(reverseGeocoder);
     }
 
     @Test
-    void filtersExplicitCandidatesByConfiguredCityAndKnownAdcodePrefix() throws Exception {
-        when(amapPoiClient.searchText("南京球馆", "南京", 1, 25))
+    void createsNearbyPoiStoreFromActualCrossCityLocationUnderAuthorizedBusinessCity() throws Exception {
+        when(reverseGeocoder.resolve(any(BigDecimal.class), any(BigDecimal.class)))
+                .thenReturn(new GeocodeResult(
+                        "RESOLVED", "深圳市南山区现场路1号", "深圳市南山区现场路1号",
+                        "440305", "广东省", "深圳市", "南山区", "粤海街道",
+                        new BigDecimal("113.930000"), new BigDecimal("22.530000"), null));
+        when(amapPoiClient.searchAround("跨城新店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25))
+                .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(
+                        new AmapPoiClient.NearbyPoi(
+                                "B0FFCROSSCITY", "深圳跨城新店", "深圳市南山区现场路1号",
+                                "休闲服务", "080000", new BigDecimal("116.403000"),
+                                new BigDecimal("39.912000"), BigDecimal.ZERO,
+                                "深圳市", "440305")), 1, 25, 1));
+
+        UUID clientStoreId = UUID.randomUUID();
+        LocationCommand captured = location();
+        MvcResult resolved = mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(
+                                resolveRequest("北京", VISITOR_ID, captured))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cityMatched").value(false))
+                .andExpect(jsonPath("$.locationVerificationToken").isNotEmpty())
+                .andReturn();
+        String locationProof = objectMapper.readTree(resolved.getResponse().getContentAsByteArray())
+                .path("locationVerificationToken").asText();
+
+        MvcResult searched = mockMvc.perform(post("/sales-checkin/api/v1/locations/search-new-store")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(new SearchNewStoreRequest(
+                                clientStoreId, "北京", VISITOR_ID, captured,
+                                "跨城新店", locationProof))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nearbyStores", hasSize(1)))
+                .andExpect(jsonPath("$.nearbyStores[0].distanceMeters").value(0))
+                .andExpect(jsonPath("$.nearbyStores[0].selectionToken").isNotEmpty())
+                .andReturn();
+        String selectionToken = objectMapper.readTree(searched.getResponse().getContentAsByteArray())
+                .path("nearbyStores").get(0).path("selectionToken").asText();
+
+        CreateStoreRequest store = new CreateStoreRequest(
+                clientStoreId, "北京", VISITOR_ID,
+                "B0FFCROSSCITY", "深圳跨城新店", "深圳市南山区现场路1号",
+                new BigDecimal("116.403000"), new BigDecimal("39.912000"),
+                "台球", "深圳跨城新店", "营业中", "深店长", "13800000000",
+                "100-300平米", "10张球桌", List.of("竞技赛事"), List.of("高德业务"),
+                "高意向", "A类", List.of("单店"), captured,
+                selectionToken, locationProof, null);
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(store)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.city").value("北京"))
+                .andReturn();
+        UUID storeId = UUID.fromString(objectMapper.readTree(
+                created.getResponse().getContentAsByteArray()).path("id").asText());
+        var stored = jdbc.queryForMap("""
+                SELECT city, location_formatted_address, location_adcode, source_poi_id
+                  FROM temp_sales_checkin_store WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(storeId));
+        assertThat(stored.get("city")).isEqualTo("北京");
+        assertThat(stored.get("location_formatted_address")).isEqualTo("深圳市南山区现场路1号");
+        assertThat(stored.get("location_adcode")).isEqualTo("440305");
+        assertThat(stored.get("source_poi_id")).isEqualTo("B0FFCROSSCITY");
+    }
+
+    @Test
+    void searchesByCurrentCoordinatesWithoutFilteringCandidatesByBusinessCity() throws Exception {
+        when(amapPoiClient.searchAround("南京球馆", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25))
                 .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(
                         new AmapPoiClient.NearbyPoi(
                                 "B0FFNANJING", "南京球馆", "南京市玄武区", "休闲服务", "080000",
@@ -303,15 +422,18 @@ class TemporaryCheckinApiIntegrationTests {
                         .content(objectMapper.writeValueAsBytes(searchNewStoreRequest(
                                 "南京", HEADQUARTERS_SALESPERSON_ID, location(), "南京球馆"))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.nearbyStores", hasSize(1)))
-                .andExpect(jsonPath("$.nearbyStores[0].poiId").value("B0FFNANJING"))
-                .andExpect(jsonPath("$.nearbyStores[0].selectionToken").isNotEmpty());
-        verify(amapPoiClient, times(1)).searchText("南京球馆", "南京", 1, 25);
+                .andExpect(jsonPath("$.nearbyStores", hasSize(2)))
+                .andExpect(jsonPath("$.nearbyStores[*].poiId",
+                        containsInAnyOrder("B0FFNANJING", "B0FFBEIJING")))
+                .andExpect(jsonPath("$.nearbyStores[0].selectionToken").isNotEmpty())
+                .andExpect(jsonPath("$.nearbyStores[1].selectionToken").isNotEmpty());
+        verify(amapPoiClient, times(1)).searchAround("南京球馆", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25);
         verifyNoInteractions(reverseGeocoder);
     }
 
     @Test
-    void acceptsDynamicConfiguredCityByExactCityNameButRejectsAdcodeOnlyEvidence() throws Exception {
+    void keepsDynamicBusinessCityAuthorizationSeparateFromNearbyPoiCities() throws Exception {
         UUID cityId = UUID.randomUUID();
         Instant now = Instant.now();
         jdbc.update("""
@@ -320,7 +442,8 @@ class TemporaryCheckinApiIntegrationTests {
                 VALUES (?, ?, '无锡', 'ACTIVE', 999, ?, ?)
                 """, bin(cityId), bin(TENANT_ID), Timestamp.from(now), Timestamp.from(now));
         try {
-            when(amapPoiClient.searchText("无锡球馆", "无锡", 1, 25))
+            when(amapPoiClient.searchAround("无锡球馆", new BigDecimal("116.403000"),
+                    new BigDecimal("39.912000"), 300, 1, 25))
                     .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(
                             new AmapPoiClient.NearbyPoi(
                                     "B0FFWUXI", "无锡球馆", "无锡市滨湖区", "休闲服务", "080000",
@@ -341,10 +464,14 @@ class TemporaryCheckinApiIntegrationTests {
                             .content(objectMapper.writeValueAsBytes(searchNewStoreRequest(
                                     "无锡", HEADQUARTERS_SALESPERSON_ID, location(), "无锡球馆"))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.nearbyStores", hasSize(1)))
-                    .andExpect(jsonPath("$.nearbyStores[0].poiId").value("B0FFWUXI"))
-                    .andExpect(jsonPath("$.nearbyStores[0].selectionToken").isNotEmpty());
-            verify(amapPoiClient, times(1)).searchText("无锡球馆", "无锡", 1, 25);
+                    .andExpect(jsonPath("$.nearbyStores", hasSize(3)))
+                    .andExpect(jsonPath("$.nearbyStores[*].poiId", containsInAnyOrder(
+                            "B0FFWUXI", "B0FFADCODEONLY", "B0FFSUZHOU")))
+                    .andExpect(jsonPath("$.nearbyStores[0].selectionToken").isNotEmpty())
+                    .andExpect(jsonPath("$.nearbyStores[1].selectionToken").isNotEmpty())
+                    .andExpect(jsonPath("$.nearbyStores[2].selectionToken").isNotEmpty());
+            verify(amapPoiClient, times(1)).searchAround("无锡球馆", new BigDecimal("116.403000"),
+                    new BigDecimal("39.912000"), 300, 1, 25);
             verifyNoInteractions(reverseGeocoder);
         } finally {
             jdbc.update("DELETE FROM temp_sales_checkin_city WHERE tenant_id=? AND id=?",
@@ -356,7 +483,8 @@ class TemporaryCheckinApiIntegrationTests {
     void keepsRegisteredAndExplicitAmapSearchesAsSeparateCallPaths() throws Exception {
         UUID registeredId = UUID.randomUUID();
         insertImportedStore(registeredId, "统一同名门店", location());
-        when(amapPoiClient.searchText("统一同名门店", "北京", 1, 25))
+        when(amapPoiClient.searchAround("统一同名门店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25))
                 .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(
                         new AmapPoiClient.NearbyPoi(
                                 "B0FFSAMENAME", "统一同名门店", "另一座", "休闲服务", "080000",
@@ -382,7 +510,7 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void keepsLocalLookupInsideRadiusButDisplaysFarCitySearchCandidateAsUnselectable() throws Exception {
+    void keepsBothRegisteredAndAmapCandidatesInsideTheServerEnforcedRadius() throws Exception {
         UUID clientStoreId = UUID.randomUUID();
         UUID farRegisteredId = UUID.randomUUID();
         LocationCommand farLocation = new LocationCommand(new BigDecimal("116.4071280"),
@@ -403,19 +531,17 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(jsonPath("$.nearbyStores", hasSize(1)))
                 .andExpect(jsonPath("$.nearbyStores[0].storeId").value(STORE_ID.toString()));
 
-        when(amapPoiClient.searchText("远距门店", "北京", 1, 25))
+        when(amapPoiClient.searchAround("远距门店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25))
                 .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(farPoi), 1, 25, 1));
         mockMvc.perform(post("/sales-checkin/api/v1/locations/search-new-store")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(searchNewStoreRequest(
                                 clientStoreId, "北京", VISITOR_ID, location(), "远距门店"))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.poiLookupStatus").value("AVAILABLE"))
-                .andExpect(jsonPath("$.nearbyStores", hasSize(1)))
-                .andExpect(jsonPath("$.nearbyStores[0].poiId").value("B0FFFAR300"))
-                .andExpect(jsonPath("$.nearbyStores[0].distanceMeters").value(greaterThan(800)))
-                .andExpect(jsonPath("$.nearbyStores[0].selectionToken").doesNotExist())
-                .andExpect(jsonPath("$.nearbyStores[0].nextAction").value("OUT_OF_RANGE"));
+                .andExpect(jsonPath("$.poiLookupStatus").value("EMPTY"))
+                .andExpect(jsonPath("$.nearbyStores", hasSize(0)))
+                .andExpect(jsonPath("$.manualEntryToken").isNotEmpty());
 
         LocationCommand captured = location();
         CreateStoreRequest forgedWithoutToken = new CreateStoreRequest(
@@ -435,7 +561,8 @@ class TemporaryCheckinApiIntegrationTests {
                 SELECT COUNT(*) FROM temp_sales_checkin_store
                  WHERE tenant_id=? AND client_store_id=?
                 """, Integer.class, bin(TENANT_ID), bin(clientStoreId))).isZero();
-        verify(amapPoiClient, times(1)).searchText("远距门店", "北京", 1, 25);
+        verify(amapPoiClient, times(1)).searchAround("远距门店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25);
     }
 
     @Test
@@ -443,7 +570,8 @@ class TemporaryCheckinApiIntegrationTests {
         UUID clientStoreId = UUID.randomUUID();
         LocationCommand captured = location();
         String locationProof = locationVerificationToken(VISITOR_ID, "北京", captured);
-        when(amapPoiClient.searchText("高德故障手工新店", "北京", 1, 25))
+        when(amapPoiClient.searchAround("高德故障手工新店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25))
                 .thenThrow(new com.rigour.sales.application.port.out.AmapPoiException("响应解析失败"));
 
         MvcResult searched = mockMvc.perform(post("/sales-checkin/api/v1/locations/search-new-store")
@@ -458,7 +586,8 @@ class TemporaryCheckinApiIntegrationTests {
                 .andReturn();
         String manualEntryToken = objectMapper.readTree(searched.getResponse().getContentAsByteArray())
                 .path("manualEntryToken").asText();
-        verify(amapPoiClient, times(1)).searchText("高德故障手工新店", "北京", 1, 25);
+        verify(amapPoiClient, times(1)).searchAround("高德故障手工新店",
+                new BigDecimal("116.403000"), new BigDecimal("39.912000"), 300, 1, 25);
         verify(coordinateConverter, times(1)).convert(captured.longitude(), captured.latitude());
         verifyNoInteractions(reverseGeocoder);
         clearInvocations(reverseGeocoder, amapPoiClient, coordinateConverter);
@@ -532,7 +661,8 @@ class TemporaryCheckinApiIntegrationTests {
                 .andReturn();
         String manualEntryToken = objectMapper.readTree(searched.getResponse().getContentAsByteArray())
                 .path("manualEntryToken").asText();
-        verify(amapPoiClient, times(1)).searchText("不存在新店", "北京", 1, 25);
+        verify(amapPoiClient, times(1)).searchAround("不存在新店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25);
         verify(coordinateConverter, times(1)).convert(captured.longitude(), captured.latitude());
         verifyNoInteractions(reverseGeocoder);
         clearInvocations(reverseGeocoder, amapPoiClient, coordinateConverter);
@@ -876,7 +1006,7 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void reverseGeocoderFailureProofCannotAuthorizeAStoreSearch() throws Exception {
+    void reverseGeocoderFailureStillUsesSignedCoordinatesForVisitAndNewStoreFlows() throws Exception {
         when(reverseGeocoder.resolve(any(BigDecimal.class), any(BigDecimal.class)))
                 .thenReturn(GeocodeResult.failed("AMAP_UNAVAILABLE"));
 
@@ -888,20 +1018,48 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.geocodeStatus").value("FAILED"))
                 .andExpect(jsonPath("$.cityMatched").doesNotExist())
+                .andExpect(jsonPath("$.locationMessage").value(
+                        "真实坐标已获取，详细地址暂未取得；门店仅按当前位置300米范围选择"))
                 .andExpect(jsonPath("$.nearbyStores", hasSize(1)))
                 .andExpect(jsonPath("$.locationVerificationToken").isNotEmpty())
                 .andReturn();
         String failedProof = objectMapper.readTree(resolved.getResponse().getContentAsByteArray())
                 .path("locationVerificationToken").asText();
 
-        mockMvc.perform(post("/sales-checkin/api/v1/locations/search-new-store")
+        UUID clientStoreId = UUID.randomUUID();
+        MvcResult searched = mockMvc.perform(post("/sales-checkin/api/v1/locations/search-new-store")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(new SearchNewStoreRequest(
-                                UUID.randomUUID(), "北京", VISITOR_ID, captured, "台球", failedProof))))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("当前定位地址解析失败，请重新定位"));
+                                clientStoreId, "北京", VISITOR_ID, captured, "台球", failedProof))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.poiLookupStatus").value("EMPTY"))
+                .andExpect(jsonPath("$.nearbyStores", hasSize(0)))
+                .andExpect(jsonPath("$.manualEntryToken").isNotEmpty())
+                .andReturn();
+        String manualEntryToken = objectMapper.readTree(searched.getResponse().getContentAsByteArray())
+                .path("manualEntryToken").asText();
+
+        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(manualStore(
+                                clientStoreId, "地址待恢复新店", captured,
+                                failedProof, manualEntryToken))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("地址待恢复新店"));
+
+        CreateSubmissionRequest visit = new CreateSubmissionRequest(
+                UUID.randomUUID(), SUBMISSION_KEY, "北京", VISITOR_ID, STORE_ID,
+                "地址待恢复客户", null, "按签名坐标完成现场校验", captured, true,
+                TemporaryCheckinService.PRIVACY_NOTICE_VERSION, failedProof);
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(visit)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DRAFT"));
         verify(reverseGeocoder, times(1)).resolve(any(BigDecimal.class), any(BigDecimal.class));
-        verifyNoInteractions(amapPoiClient, coordinateConverter);
+        verify(amapPoiClient, times(1)).searchAround("台球", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25);
+        verify(coordinateConverter, times(1)).convert(captured.longitude(), captured.latitude());
     }
 
     @Test
@@ -1164,7 +1322,8 @@ class TemporaryCheckinApiIntegrationTests {
         var searchPayload = objectMapper.readTree(searched.getResponse().getContentAsByteArray());
         String selectionToken = searchPayload.path("nearbyStores").get(0).path("selectionToken").asText();
         String locationVerificationToken = searchPayload.path("locationVerificationToken").asText();
-        verify(amapPoiClient, times(1)).searchText("高德候选门店", "北京", 1, 25);
+        verify(amapPoiClient, times(1)).searchAround("高德候选门店",
+                new BigDecimal("116.403000"), new BigDecimal("39.912000"), 300, 1, 25);
         verifyNoInteractions(reverseGeocoder);
         clearInvocations(reverseGeocoder, amapPoiClient, coordinateConverter);
 
@@ -1345,7 +1504,8 @@ class TemporaryCheckinApiIntegrationTests {
         UUID selectedClientStoreId = UUID.randomUUID();
         CreateStoreRequest selectedPoi = poiStore(
                 selectedClientStoreId, "客户端名称", "赵店长");
-        when(amapPoiClient.searchText("高德候选门店", "北京", 1, 25))
+        when(amapPoiClient.searchAround("高德候选门店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25))
                 .thenThrow(new com.rigour.sales.application.port.out.AmapPoiException("上游失败"));
         MvcResult selected = mockMvc.perform(post("/sales-checkin/api/v1/stores")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -1379,7 +1539,8 @@ class TemporaryCheckinApiIntegrationTests {
         LocationCommand capturedLocation = location();
         CreateStoreRequest original = manualStore(
                 clientStoreId, "弱网自动升级门店", capturedLocation);
-        when(amapPoiClient.searchText("弱网自动升级门店", "北京", 1, 25))
+        when(amapPoiClient.searchAround("弱网自动升级门店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25))
                 .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(
                         new AmapPoiClient.NearbyPoi(
                                 "B0FFRETRY", "弱网自动升级门店", "现场地址", "休闲服务", "080000",
@@ -1395,7 +1556,8 @@ class TemporaryCheckinApiIntegrationTests {
                 .path("id").asText();
 
         reset(amapPoiClient);
-        when(amapPoiClient.searchText(any(String.class), any(String.class), anyInt(), anyInt()))
+        when(amapPoiClient.searchAround(any(String.class), any(BigDecimal.class), any(BigDecimal.class),
+                anyInt(), anyInt(), anyInt()))
                 .thenThrow(new com.rigour.sales.application.port.out.AmapPoiException("上游已不可用"));
         mockMvc.perform(post("/sales-checkin/api/v1/stores")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -1485,7 +1647,8 @@ class TemporaryCheckinApiIntegrationTests {
 
     @Test
     void savesManualSameNameStoreWithoutImplicitAmapLookup() throws Exception {
-        when(amapPoiClient.searchText("重名高德门店", "北京", 1, 25))
+        when(amapPoiClient.searchAround("重名高德门店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25))
                 .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(
                         new AmapPoiClient.NearbyPoi(
                                 "B0FFSAME01", "重名高德门店", "A座", "休闲服务", "080000",
@@ -1647,7 +1810,8 @@ class TemporaryCheckinApiIntegrationTests {
         for (int index = 0; index < 20; index++) {
             insertImportedStore(UUID.randomUUID(), "附近门店" + index, location());
         }
-        when(amapPoiClient.searchText("门店", "北京", 1, 25))
+        when(amapPoiClient.searchAround("门店", new BigDecimal("116.403000"),
+                new BigDecimal("39.912000"), 300, 1, 25))
                 .thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(
                         new AmapPoiClient.NearbyPoi(
                                 "B0FFCAPACITY", "附近新门店", "附近地址", "休闲服务", "080000",
@@ -3003,6 +3167,11 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     private void insertImportedStore(UUID id, String name, LocationCommand location) {
+        insertImportedStore(id, "北京", CREATOR_ID, name, location);
+    }
+
+    private void insertImportedStore(
+            UUID id, String city, UUID creatorSalespersonId, String name, LocationCommand location) {
         Instant now = Instant.now();
         jdbc.update("""
                 INSERT INTO temp_sales_checkin_store
@@ -3011,11 +3180,12 @@ class TemporaryCheckinApiIntegrationTests {
                      business_types_json, intended_businesses_json, cooperation_intent, store_grade,
                      tags_json, longitude, latitude, accuracy_meters, location_captured_at, location_note,
                      status, created_at, updated_at)
-                VALUES (?, ?, ?, '北京', ?, '台球', ?, '营业中', '历史店长',
+                VALUES (?, ?, ?, ?, ?, '台球', ?, '营业中', '历史店长',
                         '13800000000', '100-300平米', '8张球桌', JSON_ARRAY('竞技赛事'),
                         JSON_ARRAY('高德业务'), '中意向', 'B类', JSON_ARRAY('单店'),
                         ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
-                """, bin(id), bin(TENANT_ID), bin(UUID.randomUUID()), bin(CREATOR_ID), name,
+                """, bin(id), bin(TENANT_ID), bin(UUID.randomUUID()), city,
+                bin(creatorSalespersonId), name,
                 location == null ? null : location.longitude(),
                 location == null ? null : location.latitude(),
                 location == null ? null : location.accuracyMeters(),

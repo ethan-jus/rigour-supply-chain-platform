@@ -2,12 +2,12 @@
 <html lang="zh-CN">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
     <meta name="theme-color" content="#133c3f">
     <meta name="description" content="销售拜访打卡与门店信息临时采集页面">
     <meta name="robots" content="noindex,nofollow,noarchive">
     <title>销售拜访打卡</title>
-    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260830-three-step-ui">
+    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260830-location-radius">
 </head>
 <body>
 <header class="hero">
@@ -15,7 +15,7 @@
         <div class="brand-mark" aria-hidden="true">R</div>
         <div class="hero__copy">
             <h1 id="hero-title">拜访打卡</h1>
-            <p id="hero-description" class="hero__description">现场拜访记录</p>
+            <p id="hero-description" class="hero__description" aria-live="polite">现场拜访记录</p>
         </div>
         <div id="identity-summary" class="identity-summary" role="status" hidden>
             <div>
@@ -56,8 +56,8 @@
         <form id="identity-form" novalidate>
             <div class="field-grid field-grid--two identity-gate__fields">
                 <label class="field">
-                    <span class="field__label">城市 <span class="required-mark">*</span></span>
-                    <select id="identity-city" required><option value="">请选择城市</option></select>
+                    <span class="field__label">本人所属城市 <span class="required-mark">*</span></span>
+                    <select id="identity-city" required><option value="">请选择本人所属城市</option></select>
                     <span class="field__error" data-error-for="identity-city"></span>
                 </label>
                 <label class="field">
@@ -90,7 +90,7 @@
         <button id="store-tab" class="tab" type="button" role="tab" aria-selected="false"
                 aria-controls="store-panel" data-tab="store">
             <span class="tab__index">2</span>
-            新门店建档
+            新增门店
         </button>
     </nav>
 
@@ -99,13 +99,13 @@
             <div id="draft-lock-notice" class="notice notice--plain draft-lock-notice" role="status" hidden>
                 <div>
                     <strong>打卡草稿已锁定</strong>
-                    <p>城市、销售、门店和拜访内容不再变更；网络中断后刷新页面可恢复，并继续上传或删除媒体。</p>
+                    <p>业务归属、销售、门店和拜访内容不再变更；网络中断后刷新页面可恢复，并继续上传或删除媒体。</p>
                 </div>
             </div>
             <div id="store-saved-notice" class="notice notice--info" role="status" hidden>
                 <div>
-                    <strong>门店已保存并选中</strong>
-                    <p><span id="store-saved-name"></span> 已回填到本次拜访，请继续填写并提交打卡。</p>
+                    <strong>已返回拜访打卡 · 第 2/3 步</strong>
+                    <p><span id="store-saved-name"></span> 已选中，请继续填写客户姓名和拜访结果。</p>
                 </div>
             </div>
 
@@ -126,17 +126,18 @@
                 <div class="section-heading form-intro">
                     <div>
                         <p class="section-kicker">拜访对象</p>
-                        <h2>选择销售、定位和门店</h2>
+                        <h2>确认归属、定位和门店</h2>
                     </div>
                     <span class="required-hint"><span aria-hidden="true">*</span> 必填</span>
                 </div>
 
                 <div class="field-grid field-grid--two identity-grid">
                     <label class="field">
-                        <span class="field__label">本次拜访城市 <span class="required-mark">*</span></span>
+                        <span class="field__label">业务归属城市 <span class="required-mark">*</span></span>
                         <select id="visit-city" name="city" required>
-                            <option value="">请选择城市</option>
+                            <option value="">请选择业务归属城市</option>
                         </select>
+                        <span class="field__help">用于门店、报表归属，不限制手机实际定位城市。</span>
                         <span class="field__error" data-error-for="visit-city"></span>
                     </label>
 
@@ -162,10 +163,10 @@
                     </button>
                     <div id="visit-location-detail" class="location-detail" hidden>
                         <div class="location-address-row">
-                            <span>实际地址</span>
+                            <span>定位地址</span>
                             <strong id="visit-location-address">正在解析地址…</strong>
                             <button id="visit-location-retry" class="location-retry-button" type="button" hidden>
-                                重试地址与已建档门店解析
+                                重试获取详细地址
                             </button>
                         </div>
                         <div><span>定位精度</span><strong id="visit-location-accuracy"></strong></div>
@@ -185,7 +186,7 @@
                     <div class="nearby-panel__heading">
                         <div>
                             <strong id="nearby-stores-title">选择门店</strong>
-                            <small id="nearby-stores-scope">仅显示当前定位允许范围内的候选</small>
+                            <small id="nearby-stores-scope">仅显示当前位置300米内候选，不限业务归属城市</small>
                         </div>
                         <span id="nearby-stores-summary">正在查找…</span>
                     </div>
@@ -219,10 +220,10 @@
 
                     <button id="create-store-link" class="create-store-action" type="button">
                         <span class="create-store-action__copy">
-                            <strong>附近没有已建档门店？</strong>
-                            <small>进入新门店后明确搜索一次；无结果或高德不可用时可手工录入</small>
+                            <strong>附近没有这家门店？</strong>
+                            <small>进入蓝色新增门店流程，保存后自动返回打卡</small>
                         </span>
-                        <span class="create-store-action__button">新增门店</span>
+                        <span class="create-store-action__button">去新增</span>
                     </button>
                 </section>
             </section>
@@ -241,7 +242,7 @@
                     <strong id="visit-step-store-name">--</strong>
                     <span id="visit-step-store-address">--</span>
                 </div>
-                <button id="visit-step-2-edit-store" class="text-button" type="button">返回修改</button>
+                <button id="visit-step-2-edit-store" class="text-button" type="button">返回：选择门店</button>
             </div>
             <section class="form-card">
                 <div class="section-heading">
@@ -277,7 +278,7 @@
             </section>
 
                 <div class="step-actions">
-                    <button id="visit-step-2-back" class="secondary-button" type="button">上一步</button>
+                    <button id="visit-step-2-back" class="secondary-button" type="button">返回选店</button>
                     <button id="visit-step-2-next" class="primary-button" type="button" disabled>
                         下一步：现场证明
                     </button>
@@ -438,7 +439,7 @@
 
             <section class="submit-card">
                 <div class="step-actions">
-                    <button id="visit-step-3-back" class="secondary-button" type="button">上一步</button>
+                    <button id="visit-step-3-back" class="secondary-button" type="button">返回记录</button>
                     <button id="submit-visit-button" class="primary-button" type="submit">
                         <span>提交拜访打卡</span>
                     </button>
@@ -452,16 +453,17 @@
     <section id="store-panel" class="tab-panel" role="tabpanel" aria-labelledby="store-tab" hidden>
         <form id="store-form" novalidate>
             <div class="store-editor-header">
-                <button id="cancel-store-button" class="text-button store-back-button" type="button">返回拜访打卡</button>
+                <button id="cancel-store-button" class="text-button store-back-button" type="button">退出新增，返回打卡</button>
                 <div>
                     <p class="section-kicker">当前页面</p>
-                    <h2>新门店建档</h2>
+                    <h2>新增门店</h2>
                 </div>
             </div>
 
             <div class="notice notice--plain store-prefill-notice">
                 <div>
-                    <strong>本次拜访草稿已保留</strong>
+                    <strong>你正在新增门店</strong>
+                    <p class="store-return-hint">保存后自动返回“拜访打卡”第 2 步，本次拜访草稿不会丢失。</p>
                     <p id="store-prefill-message">保存后会自动返回打卡并选中这家门店。</p>
                 </div>
             </div>
@@ -487,15 +489,16 @@
                     </div>
                 </div>
                 <div id="store-owner-summary" class="store-owner-summary">
-                    <span><small>城市</small><strong id="store-owner-city">未选择</strong></span>
+                    <span><small>业务归属</small><strong id="store-owner-city">未选择</strong></span>
                     <span><small>销售</small><strong id="store-owner-salesperson">未选择</strong></span>
                 </div>
                 <div class="field-grid field-grid--two store-owner-fields">
                     <label class="field">
-                        <span class="field__label">本次拜访城市 <span class="required-mark">*</span></span>
+                        <span class="field__label">业务归属城市 <span class="required-mark">*</span></span>
                         <select id="store-city" required>
-                            <option value="">请选择城市</option>
+                            <option value="">请选择业务归属城市</option>
                         </select>
+                        <span class="field__help">只决定门店与报表归属，现场位置以手机 GPS 为准。</span>
                         <span class="field__error" data-error-for="store-city"></span>
                     </label>
                     <label class="field">
@@ -516,16 +519,16 @@
                     </div>
                     <span id="store-location-status" class="status-pill">未定位</span>
                 </div>
-                <p class="section-description">已带入本次拜访信息；点击按钮会刷新手机当前定位，不使用历史位置。</p>
+                <p class="section-description">已带入本次拜访信息；实际定位不受业务归属城市限制，点击按钮会刷新手机 GPS。</p>
                 <button id="store-location-button" class="secondary-button location-button" type="button">
                     <span id="store-location-button-label">刷新当前位置</span>
                 </button>
                 <div id="store-location-detail" class="location-detail" hidden>
                     <div class="location-address-row">
-                        <span>实际地址</span>
+                        <span>定位地址</span>
                         <strong id="store-location-address">正在解析地址…</strong>
                         <button id="store-location-retry" class="location-retry-button" type="button" hidden>
-                            重试地址与已建档门店解析
+                            重试获取详细地址
                         </button>
                     </div>
                     <div><span>定位精度</span><strong id="store-location-accuracy"></strong></div>
@@ -545,7 +548,7 @@
                         <h2>确认门店来源</h2>
                     </div>
                 </div>
-                <p class="section-description">输入门店名称后点击“搜索”；输入、筛选和选择都不会自动调用高德。</p>
+                <p class="section-description">输入门店名称后点击“搜索”，只返回当前位置300米内候选；输入本身不会调用高德。</p>
                 <div class="field poi-search-field">
                     <label for="poi-search" class="field__label">搜索高德新门店</label>
                     <div class="search-input-wrap">
@@ -574,8 +577,8 @@
                 </div>
 
                 <button id="manual-store-button" class="manual-store-action" type="button">
-                    <strong>高德城市搜索没找到对应门店？</strong>
-                    <span>明确搜索返回无结果或不可用后，再手动录入门店名称</span>
+                    <strong>当前位置附近没找到对应门店？</strong>
+                    <span>确认300米内搜索无结果后，再以当前 GPS 手动录入</span>
                 </button>
             </section>
 
@@ -644,7 +647,7 @@
                 </div>
 
                     <div class="step-actions">
-                        <button id="store-step-2-back" class="secondary-button" type="button">上一步</button>
+                        <button id="store-step-2-back" class="secondary-button" type="button">返回搜索</button>
                         <button id="store-step-2-next" class="primary-button" type="button" disabled>
                             下一步：业务标签
                         </button>
@@ -679,8 +682,8 @@
                 </details>
 
                     <div class="button-row step-actions">
-                        <button id="store-step-3-back" class="secondary-button" type="button">上一步</button>
-                        <button id="submit-store-button" class="primary-button" type="submit">保存并选中门店</button>
+                        <button id="store-step-3-back" class="secondary-button" type="button">返回资料</button>
+                        <button id="submit-store-button" class="primary-button" type="submit">保存门店并返回打卡</button>
                     </div>
                 </div>
             </section>
@@ -720,6 +723,6 @@
     <p>临时过渡采集页面 · 如遇问题请保留页面中的错误信息并联系管理员</p>
 </footer>
 
-<script src="/sales-checkin/app.js?v=20260830-three-step-ui" defer></script>
+    <script src="/sales-checkin/app.js?v=20260830-location-radius" defer></script>
 </body>
 </html>
