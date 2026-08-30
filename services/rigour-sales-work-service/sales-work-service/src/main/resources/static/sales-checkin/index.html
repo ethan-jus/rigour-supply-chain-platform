@@ -3,20 +3,26 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#0d5c63">
+    <meta name="theme-color" content="#133c3f">
     <meta name="description" content="销售拜访打卡与门店信息临时采集页面">
     <meta name="robots" content="noindex,nofollow,noarchive">
     <title>销售拜访打卡</title>
-    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260830-fresh-location-ui">
+    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260830-three-step-ui">
 </head>
 <body>
 <header class="hero">
     <div class="hero__inner">
         <div class="brand-mark" aria-hidden="true">R</div>
-        <div>
-            <p class="eyebrow">RIGOUR · 现场专注</p>
+        <div class="hero__copy">
             <h1 id="hero-title">拜访打卡</h1>
-            <p id="hero-description" class="hero__description">定位、选择门店并记录本次拜访。</p>
+            <p id="hero-description" class="hero__description">现场拜访记录</p>
+        </div>
+        <div id="identity-summary" class="identity-summary" role="status" hidden>
+            <div>
+                <strong id="identity-summary-name">--</strong>
+                <small id="identity-summary-city">--</small>
+            </div>
+            <button id="identity-switch" class="text-button" type="button">切换身份</button>
         </div>
     </div>
 </header>
@@ -75,15 +81,6 @@
     </section>
 
     <div id="checkin-workspace" hidden>
-        <div id="identity-summary" class="identity-summary" role="status">
-            <div>
-                <span>当前销售</span>
-                <strong id="identity-summary-name">--</strong>
-                <small id="identity-summary-city">--</small>
-            </div>
-            <button id="identity-switch" class="text-button" type="button">切换身份</button>
-        </div>
-
     <nav class="tabs workflow-tabs" aria-label="表单类型" role="tablist">
         <button id="visit-tab" class="tab is-active" type="button" role="tab" aria-selected="true"
                 aria-controls="visit-panel" data-tab="visit">
@@ -111,6 +108,20 @@
                     <p><span id="store-saved-name"></span> 已回填到本次拜访，请继续填写并提交打卡。</p>
                 </div>
             </div>
+
+            <nav class="workflow-stepper" aria-label="拜访打卡步骤">
+                <button type="button" data-flow-step="visit" data-step-target="1" aria-current="step">
+                    <span>1</span><strong>选择门店</strong>
+                </button>
+                <button type="button" data-flow-step="visit" data-step-target="2" disabled>
+                    <span>2</span><strong>记录拜访</strong>
+                </button>
+                <button type="button" data-flow-step="visit" data-step-target="3" disabled>
+                    <span>3</span><strong>现场证明</strong>
+                </button>
+            </nav>
+
+            <div id="visit-step-1" class="flow-step-panel" data-flow-step-panel="visit" data-step-value="1">
             <section class="form-card visit-main-card">
                 <div class="section-heading form-intro">
                     <div>
@@ -142,12 +153,12 @@
                     <div class="section-heading section-heading--inline">
                         <div>
                             <p class="section-kicker">当前位置</p>
-                            <h3>定位并加载已建档门店 <span class="required-mark">*</span></h3>
+                            <h3>打卡地点 <span class="required-mark">*</span></h3>
                         </div>
                         <span id="visit-location-status" class="status-pill">未定位</span>
                     </div>
                     <button id="visit-location-button" class="secondary-button location-button" type="button">
-                        <span id="visit-location-button-label">获取当前位置</span>
+                        <span id="visit-location-button-label">刷新当前位置</span>
                     </button>
                     <div id="visit-location-detail" class="location-detail" hidden>
                         <div class="location-address-row">
@@ -173,10 +184,14 @@
                 <section id="nearby-stores-panel" class="nearby-panel" aria-labelledby="nearby-stores-title" hidden>
                     <div class="nearby-panel__heading">
                         <div>
-                            <strong id="nearby-stores-title">选择附近门店</strong>
+                            <strong id="nearby-stores-title">选择门店</strong>
                             <small id="nearby-stores-scope">仅显示当前定位允许范围内的候选</small>
                         </div>
                         <span id="nearby-stores-summary">正在查找…</span>
+                    </div>
+                    <div id="nearby-stores-empty" class="empty-state">
+                        <strong>请先定位，获取附近门店</strong>
+                        <span>定位后即可选择本次拜访门店</span>
                     </div>
                     <div class="field store-search-field nearby-combobox-field">
                         <label for="store-search" class="field__label">附近已建档门店</label>
@@ -212,6 +227,22 @@
                 </section>
             </section>
 
+                <div class="step-actions step-actions--single">
+                    <button id="visit-step-1-next" class="primary-button" type="button" disabled>
+                        下一步：记录拜访
+                    </button>
+                </div>
+            </div>
+
+            <div id="visit-step-2" class="flow-step-panel" data-flow-step-panel="visit" data-step-value="2" hidden>
+            <div class="step-context" aria-label="已选拜访门店">
+                <div>
+                    <small>本次拜访门店</small>
+                    <strong id="visit-step-store-name">--</strong>
+                    <span id="visit-step-store-address">--</span>
+                </div>
+                <button id="visit-step-2-edit-store" class="text-button" type="button">返回修改</button>
+            </div>
             <section class="form-card">
                 <div class="section-heading">
                     <div>
@@ -245,6 +276,15 @@
                 </label>
             </section>
 
+                <div class="step-actions">
+                    <button id="visit-step-2-back" class="secondary-button" type="button">上一步</button>
+                    <button id="visit-step-2-next" class="primary-button" type="button" disabled>
+                        下一步：现场证明
+                    </button>
+                </div>
+            </div>
+
+            <div id="visit-step-3" class="flow-step-panel" data-flow-step-panel="visit" data-step-value="3" hidden>
             <section class="form-card evidence-card">
                 <div class="section-heading">
                     <div>
@@ -285,16 +325,18 @@
                         </div>
                         <span class="field__error" data-error-for="storefront-photo"></span>
                     </div>
+                </div>
 
-                    <details class="optional-media media-step">
-                        <summary>
-                            <span class="media-step__index" aria-hidden="true">2</span>
-                            <span>
-                                <strong>企微沟通截图</strong>
-                                <small>选填，有沟通记录时再添加</small>
-                            </span>
-                            <span class="optional-media__action">添加</span>
-                        </summary>
+                <details class="optional-evidence-group">
+                    <summary>
+                        <span>
+                            <strong>添加更多材料</strong>
+                            <small>企微截图、现场录音（选填）</small>
+                        </span>
+                        <span class="optional-media__action">展开</span>
+                    </summary>
+                    <div class="optional-evidence-group__body">
+                    <section class="optional-media media-step">
                         <div class="upload-item">
                             <div class="upload-item__heading">
                                 <div>
@@ -323,8 +365,7 @@
                             </div>
                             <span class="field__error" data-error-for="wechat-screenshot"></span>
                         </div>
-                    </details>
-                </div>
+                    </section>
 
                 <div class="audio-recorder media-step">
                     <div class="upload-item__heading">
@@ -368,6 +409,8 @@
                     <p id="recorder-help" class="field__help">可选择 M4A、MP3、WAV、AAC、AMR、OGG 或 WebM；服务端会核验常见文件特征。</p>
                     <span class="field__error" data-error-for="audio-file"></span>
                 </div>
+                    </div>
+                </details>
             </section>
 
             <section class="consent-card confirmation-card">
@@ -384,21 +427,25 @@
                     <span>
                         <strong>我已确认并同意提交 <span class="required-mark">*</span></strong>
                         <small>我已告知相关人员将采集定位、照片及可能的录音；系统同时保存设备/IP风险摘要。</small>
-                        <details class="privacy-details">
-                            <summary>查看完整采集说明</summary>
-                            <p>如提交录音，录音可能用于后续转写和 AI 摘要。系统会对客户端 IP 和浏览器设备标识做加密摘要，仅用于提示频繁切换等异常。个人码、IP、浏览器定位、照片和录音仍可能被共享或伪造，记录仅作临时采集，不得单独作为考勤、KPI、奖惩或纪律证据。</p>
-                        </details>
                     </span>
                 </label>
+                <details class="privacy-details">
+                    <summary>查看完整采集说明</summary>
+                    <p>如提交录音，录音可能用于后续转写和 AI 摘要。系统会对客户端 IP 和浏览器设备标识做加密摘要，仅用于提示频繁切换等异常。个人码、IP、浏览器定位、照片和录音仍可能被共享或伪造，记录仅作临时采集，不得单独作为考勤、KPI、奖惩或纪律证据。</p>
+                </details>
                 <span class="field__error" data-error-for="privacy-accepted"></span>
             </section>
 
             <section class="submit-card">
-                <button id="submit-visit-button" class="primary-button" type="submit">
-                    <span>提交拜访打卡</span>
-                </button>
-                <p class="submit-hint">将依次保存草稿、上传材料并完成打卡。上传期间请保持页面在前台。</p>
+                <div class="step-actions">
+                    <button id="visit-step-3-back" class="secondary-button" type="button">上一步</button>
+                    <button id="submit-visit-button" class="primary-button" type="submit">
+                        <span>提交拜访打卡</span>
+                    </button>
+                </div>
+                <p class="submit-hint">提交期间请保持页面在前台。</p>
             </section>
+            </div>
         </form>
     </section>
 
@@ -419,6 +466,19 @@
                 </div>
             </div>
 
+            <nav class="workflow-stepper" aria-label="新增门店步骤">
+                <button type="button" data-flow-step="store" data-step-target="1" aria-current="step">
+                    <span>1</span><strong>搜索门店</strong>
+                </button>
+                <button type="button" data-flow-step="store" data-step-target="2" disabled>
+                    <span>2</span><strong>基础资料</strong>
+                </button>
+                <button type="button" data-flow-step="store" data-step-target="3" disabled>
+                    <span>3</span><strong>业务标签</strong>
+                </button>
+            </nav>
+
+            <div id="store-step-1" class="flow-step-panel" data-flow-step-panel="store" data-step-value="1">
             <section class="form-card store-owner-card">
                 <div class="section-heading">
                     <div>
@@ -458,7 +518,7 @@
                 </div>
                 <p class="section-description">已带入本次拜访信息；点击按钮会刷新手机当前定位，不使用历史位置。</p>
                 <button id="store-location-button" class="secondary-button location-button" type="button">
-                    <span id="store-location-button-label">获取当前位置</span>
+                    <span id="store-location-button-label">刷新当前位置</span>
                 </button>
                 <div id="store-location-detail" class="location-detail" hidden>
                     <div class="location-address-row">
@@ -519,10 +579,18 @@
                 </button>
             </section>
 
+                <div class="step-actions step-actions--single">
+                    <button id="store-step-1-next" class="primary-button" type="button" disabled>
+                        下一步：基础资料
+                    </button>
+                </div>
+            </div>
+
             <section id="store-profile-card" class="form-card" hidden>
+                <div id="store-step-2" class="flow-step-panel" data-flow-step-panel="store" data-step-value="2">
                 <div class="section-heading">
                     <div>
-                        <p class="section-kicker">第三步</p>
+                        <p class="section-kicker">基础资料</p>
                         <h2>补全门店基本信息</h2>
                     </div>
                 </div>
@@ -575,6 +643,15 @@
                     </label>
                 </div>
 
+                    <div class="step-actions">
+                        <button id="store-step-2-back" class="secondary-button" type="button">上一步</button>
+                        <button id="store-step-2-next" class="primary-button" type="button" disabled>
+                            下一步：业务标签
+                        </button>
+                    </div>
+                </div>
+
+                <div id="store-step-3" class="flow-step-panel" data-flow-step-panel="store" data-step-value="3" hidden>
                 <details class="store-details-group" open>
                     <summary>
                         <span>业务与门店标签</span>
@@ -600,11 +677,13 @@
                         </fieldset>
                     </div>
                 </details>
-            </section>
 
-            <div class="button-row">
-                <button id="submit-store-button" class="primary-button" type="submit">保存并选中门店</button>
-            </div>
+                    <div class="button-row step-actions">
+                        <button id="store-step-3-back" class="secondary-button" type="button">上一步</button>
+                        <button id="submit-store-button" class="primary-button" type="submit">保存并选中门店</button>
+                    </div>
+                </div>
+            </section>
         </form>
     </section>
 
@@ -641,6 +720,6 @@
     <p>临时过渡采集页面 · 如遇问题请保留页面中的错误信息并联系管理员</p>
 </footer>
 
-<script src="/sales-checkin/app.js?v=20260830-fresh-location-ui" defer></script>
+<script src="/sales-checkin/app.js?v=20260830-three-step-ui" defer></script>
 </body>
 </html>

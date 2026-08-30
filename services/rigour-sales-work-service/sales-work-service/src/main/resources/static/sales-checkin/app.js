@@ -13,6 +13,7 @@
     const GEOLOCATION_ATTEMPT_TIMEOUT_MS = 15000;
     const PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
     const HEADQUARTERS_CITY = "总部";
+    const FLOW_STEPS = Object.freeze({ visit: 3, store: 3 });
 
     const MEDIA = Object.freeze({
         photo: "storefront-photo",
@@ -84,9 +85,14 @@
         uploadedMedia: [],
         audioSegments: []
     });
+    const freshUiState = () => ({
+        visitStep: 1,
+        storeStep: 1
+    });
 
     const state = {
         activeTab: "visit",
+        ui: freshUiState(),
         identity: null,
         visit: freshVisit(),
         store: freshStore(),
@@ -154,6 +160,7 @@
     async function init() {
         try {
             restoreDraft();
+            invalidateUnlockedVisitLocationForFreshEntry();
         } catch (error) {
             showError(errorMessage(error, "无法生成安全的提交凭据，请使用新版浏览器并通过 HTTPS 打开页面。"));
             $("#submit-visit-button").disabled = true;
@@ -201,11 +208,29 @@
         }
 
         renderIdentityState();
+        scheduleInitialVisitLocationCapture();
 
         if (hasRestoredDraft()) {
             showRestoreNotice();
             emitClientDiagnostic("PAGE_RESTORED", "SUCCEEDED");
         }
+    }
+
+    function invalidateUnlockedVisitLocationForFreshEntry() {
+        if (!hasRestoredDraft() || isBusinessLocked()) return;
+        state.visit.location = null;
+        state.visit.locationContext = null;
+        state.visit.nearbyStores = [];
+        state.visit.selectedStore = null;
+        state.ui.visitStep = 1;
+    }
+
+    function scheduleInitialVisitLocationCapture() {
+        if (state.activeTab !== "visit"
+                || !state.identity?.authenticated
+                || !state.visit.city
+                || isBusinessLocked()) return;
+        window.requestAnimationFrame(() => captureLocation("visit"));
     }
 
     async function loadCurrentIdentity() {
@@ -367,17 +392,20 @@
     function renderIdentityState() {
         const authenticated = state.identity?.authenticated === true;
         const legacyMode = state.identity?.enforcementEnabled === false;
+        document.body.classList.toggle("has-verified-identity", authenticated);
+        document.body.classList.toggle("is-headquarters-identity", isHeadquartersIdentity());
         $("#identity-gate").hidden = authenticated || legacyMode;
         $("#checkin-workspace").hidden = !authenticated && !legacyMode;
         $("#identity-summary").hidden = !authenticated;
         if (authenticated) {
             $("#identity-summary-name").textContent = state.identity.salespersonName || "--";
             $("#identity-summary-city").textContent = state.identity.city
-                ? `所属：${state.identity.city}`
+                ? `· ${state.identity.city}`
                 : "--";
         }
         $("#identity-switch").disabled = state.submitting || isBusinessLocked();
         lockIdentitySelectors();
+        renderFlowSteps();
     }
 
     function lockIdentitySelectors() {
@@ -429,6 +457,21 @@
             });
             button.addEventListener("keydown", handleTabKeydown);
         });
+
+        $$("[data-flow-step]").forEach((button) => {
+            button.addEventListener("click", () => {
+                goToFlowStep(button.dataset.flowStep, Number(button.dataset.stepTarget));
+            });
+        });
+        $("#visit-step-1-next").addEventListener("click", () => goToFlowStep("visit", 2));
+        $("#visit-step-2-back").addEventListener("click", () => goToFlowStep("visit", 1));
+        $("#visit-step-2-edit-store").addEventListener("click", () => goToFlowStep("visit", 1));
+        $("#visit-step-2-next").addEventListener("click", () => goToFlowStep("visit", 3));
+        $("#visit-step-3-back").addEventListener("click", () => goToFlowStep("visit", 2));
+        $("#store-step-1-next").addEventListener("click", () => goToFlowStep("store", 2));
+        $("#store-step-2-back").addEventListener("click", () => goToFlowStep("store", 1));
+        $("#store-step-2-next").addEventListener("click", () => goToFlowStep("store", 3));
+        $("#store-step-3-back").addEventListener("click", () => goToFlowStep("store", 2));
 
         $("#dismiss-error-button").addEventListener("click", hideError);
         $("#discard-draft-button").addEventListener("click", async () => discardDraft());
@@ -547,10 +590,241 @@
         document.body.classList.toggle("is-store-page", !visitActive);
         $("#hero-title").textContent = visitActive ? "拜访打卡" : "新门店建档";
         $("#hero-description").textContent = visitActive
-            ? "定位、选择门店并记录本次拜访。"
-            : "补全门店资料后，将自动返回并继续本次打卡。";
+            ? "现场拜访记录"
+            : "搜索并建立本次拜访门店";
         document.title = visitActive ? "销售拜访打卡" : "新门店建档";
-        $("meta[name=\"theme-color\"]")?.setAttribute("content", visitActive ? "#073e42" : "#9a4f12");
+        $("meta[name=\"theme-color\"]")?.setAttribute("content", "#133c3f");
+        renderFlowSteps();
+    }
+
+    function flowStateKey(flow) {
+        return flow === "store" ? "storeStep" : "visitStep";
+    }
+
+    function normalizeFlowStep(value, fallback = 1) {
+        const parsed = Number(value);
+        return Number.isInteger(parsed) && parsed >= 1 && parsed <= 3 ? parsed : fallback;
+    }
+
+    function hasValidStoreSource() {
+        if (state.store.sourceMode === "POI") {
+            return Boolean(cleanText(state.store.sourcePoiId) && cleanText(state.store.sourcePoiToken));
+        }
+        if (state.store.sourceMode === "MANUAL") {
+            return Boolean(state.store.manualEntryAllowed && cleanText(state.store.manualEntryToken));
+        }
+        return false;
+    }
+
+    function isVisitStepReady(step) {
+        if (step === 1) {
+            return Boolean(state.visit.city
+                && state.visit.salespersonId
+                && state.visit.selectedStore?.id
+                && state.visit.location
+                && locationContextReady(state.visit.locationContext));
+        }
+        if (step === 2) {
+            return Boolean(cleanText(state.visit.customerName) && cleanText(state.visit.visitResult));
+        }
+        return Boolean((state.files.photo || state.submission.uploadedMedia.includes(MEDIA.photo))
+            && state.visit.privacyAccepted);
+    }
+
+    function isStoreStepReady(step) {
+        if (step === 1) {
+            return Boolean(state.store.city
+                && state.store.salespersonId
+                && state.store.location
+                && locationContextCityVerified(state.store.locationContext)
+                && hasValidStoreSource());
+        }
+        if (step === 2) {
+            return Boolean(cleanText(state.store.name)
+                && state.store.attribute
+                && state.store.operatingStatus
+                && cleanText(state.store.contactName)
+                && state.store.areaRange
+                && cleanText(state.store.facilityCount)
+                && state.store.cooperationIntent);
+        }
+        return Boolean(state.store.businessTypes.length
+            && state.store.intendedBusinesses.length
+            && state.store.tags.length);
+    }
+
+    function deriveVisitStep() {
+        if (isBusinessLocked()) return 3;
+        if (!isVisitStepReady(1)) return 1;
+        if (!isVisitStepReady(2)) return 2;
+        return 3;
+    }
+
+    function deriveStoreStep() {
+        if (!isStoreStepReady(1)) return 1;
+        if (!isStoreStepReady(2)) return 2;
+        return 3;
+    }
+
+    function sanitizeRestoredUi(savedUi) {
+        const derivedVisit = deriveVisitStep();
+        const derivedStore = deriveStoreStep();
+        const requestedVisit = normalizeFlowStep(savedUi?.visitStep, derivedVisit);
+        const requestedStore = normalizeFlowStep(savedUi?.storeStep, derivedStore);
+        return {
+            visitStep: isBusinessLocked() ? 3 : Math.min(requestedVisit, derivedVisit),
+            storeStep: Math.min(requestedStore, derivedStore)
+        };
+    }
+
+    function maximumAccessibleStep(flow) {
+        let maximum = 1;
+        if (flow === "visit") {
+            if (isVisitStepReady(1)) maximum = 2;
+            if (maximum === 2 && isVisitStepReady(2)) maximum = 3;
+            if (isBusinessLocked()) maximum = 3;
+        } else {
+            if (isStoreStepReady(1)) maximum = 2;
+            if (maximum === 2 && isStoreStepReady(2)) maximum = 3;
+        }
+        const current = normalizeFlowStep(state.ui[flowStateKey(flow)]);
+        return Math.max(maximum, current);
+    }
+
+    function renderFlowSteps() {
+        if (!state.ui) state.ui = freshUiState();
+        ["visit", "store"].forEach((flow) => {
+            const key = flowStateKey(flow);
+            const current = normalizeFlowStep(state.ui[key]);
+            state.ui[key] = current;
+            const maximum = maximumAccessibleStep(flow);
+
+            $$('[data-flow-step-panel="' + flow + '"]').forEach((panel) => {
+                panel.hidden = Number(panel.dataset.stepValue) !== current;
+            });
+            $$('[data-flow-step="' + flow + '"]').forEach((button) => {
+                const step = Number(button.dataset.stepTarget);
+                const active = step === current;
+                button.classList.toggle("is-active", active);
+                button.classList.toggle("is-complete", step < current);
+                button.toggleAttribute("aria-current", active);
+                if (active) button.setAttribute("aria-current", "step");
+                button.disabled = state.submitting || step > maximum;
+            });
+        });
+        renderFlowActions();
+    }
+
+    function renderFlowActions() {
+        const visitNextOne = $("#visit-step-1-next");
+        const visitNextTwo = $("#visit-step-2-next");
+        const storeNextOne = $("#store-step-1-next");
+        const storeNextTwo = $("#store-step-2-next");
+        setFlowNextState(visitNextOne, isVisitStepReady(1));
+        setFlowNextState(visitNextTwo, isVisitStepReady(2));
+        setFlowNextState(storeNextOne, isStoreStepReady(1));
+        setFlowNextState(storeNextTwo, isStoreStepReady(2));
+    }
+
+    function setFlowNextState(button, ready) {
+        if (!button) return;
+        button.disabled = state.submitting;
+        if (ready) {
+            delete button.dataset.incomplete;
+            button.removeAttribute("title");
+        } else {
+            button.dataset.incomplete = "true";
+            button.setAttribute("title", "点击后会提示还需完成的内容");
+        }
+    }
+
+    function clearFlowStepErrors(flow, step) {
+        const panel = document.querySelector(
+            '[data-flow-step-panel="' + flow + '"][data-step-value="' + step + '"]');
+        if (!panel) return;
+        $$(".field__error", panel).forEach((error) => {
+            error.textContent = "";
+            error.closest(".field, .choice-fieldset, .upload-item, .audio-recorder, .consent-card, .location-card")
+                ?.classList.remove("has-error");
+        });
+    }
+
+    function validateFlowStep(flow, step) {
+        syncStateFromForm();
+        clearFlowStepErrors(flow, step);
+        let valid = true;
+        if (flow === "visit" && step === 1) {
+            valid = requireValue(state.visit.city, "visit-city", "请选择城市。") && valid;
+            valid = requireValue(state.visit.salespersonId, "visit-salesperson", "请选择销售。") && valid;
+            valid = requireValue(state.visit.location, "visit-location", "请刷新并获取本次现场定位。") && valid;
+            if (state.visit.location && !locationContextReady(state.visit.locationContext)) {
+                setFieldError("visit-location", state.visit.locationContext?.errorMessage
+                    || "当前定位未通过城市、精度或时效校验，请重新定位。");
+                valid = false;
+            }
+            valid = requireValue(state.visit.selectedStore?.id, "selected-store", "请选择本次拜访门店。") && valid;
+        } else if (flow === "visit" && step === 2) {
+            valid = requireValue(cleanText(state.visit.customerName), "customer-name", "请输入客户姓名。") && valid;
+            valid = requireValue(cleanText(state.visit.visitResult), "visit-result", "请填写拜访结果。") && valid;
+        } else if (flow === "store" && step === 1) {
+            valid = requireValue(state.store.city, "store-city", "请选择城市。") && valid;
+            valid = requireValue(state.store.salespersonId, "store-salesperson", "请选择销售。") && valid;
+            valid = requireValue(state.store.location, "store-location", "请刷新并获取本次现场定位。") && valid;
+            if (state.store.location && !locationContextCityVerified(state.store.locationContext)) {
+                setFieldError("store-location", state.store.locationContext?.errorMessage
+                    || "当前定位未通过城市、精度或时效校验，请重新定位。");
+                valid = false;
+            }
+            if (!hasValidStoreSource()) {
+                setFieldError("store-source", "请从高德搜索结果选择门店；无结果后可使用人工录入。");
+                valid = false;
+            }
+        } else if (flow === "store" && step === 2) {
+            valid = requireValue(cleanText(state.store.name), "store-name", "请输入门店名称。") && valid;
+            valid = requireValue(state.store.attribute, "store-attribute", "请选择门店属性。") && valid;
+            valid = requireValue(state.store.operatingStatus, "operating-status", "请选择营业状态。") && valid;
+            valid = requireValue(cleanText(state.store.contactName), "contact-name", "请输入联系人。") && valid;
+            valid = requireValue(state.store.areaRange, "area-range", "请选择面积范围。") && valid;
+            valid = requireValue(cleanText(state.store.facilityCount), "facility-count", "请输入设施数量。") && valid;
+            valid = requireValue(state.store.cooperationIntent, "cooperation-intent", "请选择合作意向。") && valid;
+        }
+        return valid;
+    }
+
+    function goToFlowStep(flow, requestedStep, options = {}) {
+        if (!Object.prototype.hasOwnProperty.call(FLOW_STEPS, flow) || state.submitting) return false;
+        const key = flowStateKey(flow);
+        const current = normalizeFlowStep(state.ui[key]);
+        const target = normalizeFlowStep(requestedStep, current);
+        if (flow === "visit" && current === 3 && target !== 3 && isRecording()) {
+            setFieldError("audio-file", "请先停止录音，再返回修改前面的内容。");
+            $(".optional-evidence-group").open = true;
+            scrollToFirstError();
+            return false;
+        }
+        if (options.validateForward !== false && target > current) {
+            for (let step = current; step < target; step += 1) {
+                if (!validateFlowStep(flow, step)) {
+                    renderFlowSteps();
+                    scrollToFirstError();
+                    return false;
+                }
+            }
+        }
+        state.ui[key] = target;
+        renderFlowSteps();
+        if (options.persist !== false) {
+            syncStateFromForm();
+            persistDraft();
+        }
+        if (options.scroll !== false) {
+            const panel = document.querySelector(
+                '[data-flow-step-panel="' + flow + '"][data-step-value="' + target + '"]');
+            window.requestAnimationFrame(() => panel?.scrollIntoView({
+                behavior: "smooth", block: "start"
+            }));
+        }
+        return true;
     }
 
     async function fetchOptions(city) {
@@ -993,13 +1267,19 @@
     function renderSelectedStore() {
         const selected = state.visit.selectedStore;
         $("#selected-store-card").hidden = !selected;
+        $("#visit-step-store-name").textContent = selected?.name || "尚未选择门店";
+        $("#visit-step-store-address").textContent = selected
+            ? selected.locationSummary || selected.address || selected.city || "位置已采集"
+            : "请返回第一步选择门店";
         if (!selected) {
             $("#store-search").value = "";
+            renderFlowActions();
             return;
         }
         $("#selected-store-name").textContent = selected.name || "未命名门店";
         $("#selected-store-location").textContent = selected.locationSummary || selected.city || "";
         $("#store-search").value = selected.name || "";
+        renderFlowActions();
     }
 
     function locationContextReady(context) {
@@ -1026,7 +1306,10 @@
         const input = $("#store-search");
         const toggle = $("#store-search-toggle");
         const createButton = $("#create-store-link");
-        panel.hidden = !state.visit.location;
+        const createUnavailable = state.submitting || isBusinessLocked();
+        panel.hidden = false;
+        $("#nearby-stores-empty").hidden = Boolean(state.visit.location);
+        $(".store-search-field", panel).hidden = !state.visit.location;
         hideStoreResults();
         $("#nearby-stores-scope").textContent = locationContextReady(context)
             ? `${visitRadiusLabel(context)}的已建档门店，可直接选择打卡`
@@ -1034,7 +1317,9 @@
         if (!state.visit.location) {
             input.disabled = true;
             toggle.disabled = true;
-            createButton.disabled = true;
+            createButton.disabled = createUnavailable;
+            $("#nearby-stores-summary").textContent = "等待定位";
+            renderFlowActions();
             return;
         }
 
@@ -1043,7 +1328,7 @@
             $("#store-search-help").textContent = "正在查找当前位置附近的已录入门店。";
             input.disabled = true;
             toggle.disabled = true;
-            createButton.disabled = true;
+            createButton.disabled = createUnavailable;
             return;
         }
         if (!locationContextReady(context)) {
@@ -1052,10 +1337,10 @@
                 || "请使用上方重试按钮重新解析定位。";
             input.disabled = true;
             toggle.disabled = true;
-            createButton.disabled = true;
+            createButton.disabled = createUnavailable;
             return;
         }
-        createButton.disabled = false;
+        createButton.disabled = createUnavailable;
         input.disabled = false;
         if (!options.length) {
             $("#nearby-stores-summary").textContent = "附近暂无已建档门店";
@@ -1230,8 +1515,7 @@
         hidePoiResults();
         renderStoreSource();
         renderStorePrefillMessage();
-        persistDraft();
-        $("#store-profile-card").scrollIntoView({ behavior: "smooth", block: "start" });
+        goToFlowStep("store", 2, { validateForward: false });
     }
 
     function selectExistingStoreFromProfileFlow(store) {
@@ -1242,6 +1526,7 @@
         if (!exists) state.visit.nearbyStores.unshift(store);
         selectStore(store);
         state.activeTab = "visit";
+        state.ui.visitStep = 2;
         renderTab("visit");
         renderNearbyStores();
         persistDraft();
@@ -1252,6 +1537,7 @@
 
     function clearSelectedPoi() {
         clearSourcePoi(true, true);
+        state.ui.storeStep = 1;
         $("#poi-search").value = state.store.poiSearchQuery;
         renderStoreSource();
         renderStorePrefillMessage();
@@ -1266,6 +1552,7 @@
         if (state.store.sourceMode === "MANUAL") {
             state.store.sourceMode = "";
             state.store.name = "";
+            state.ui.storeStep = 1;
             $("#store-name").value = "";
             renderStoreSource();
             persistDraft();
@@ -1282,7 +1569,7 @@
         clearFieldError("store-source");
         renderStoreSource();
         renderStorePrefillMessage();
-        persistDraft();
+        goToFlowStep("store", 2, { validateForward: false });
         window.setTimeout(() => $("#store-name").focus(), 100);
     }
 
@@ -1368,6 +1655,7 @@
                 ? `已加载 ${registeredCount} 家已建档门店，可直接筛选选择；搜索高德需点击“搜索”。`
                 : "输入至少 2 个字并点击“搜索”；输入本身不会请求高德。";
         }
+        renderFlowSteps();
     }
 
     async function prepareNewStore() {
@@ -1387,6 +1675,14 @@
             target?.focus();
             return;
         }
+        clearFieldError("visit-location");
+        if (!state.visit.location || !locationContextReady(state.visit.locationContext)) {
+            setFieldError("visit-location", state.visit.locationContext?.errorMessage
+                || "请先刷新并确认本次现场定位，再新增门店。");
+            $("#visit-location-button")?.scrollIntoView({ behavior: "smooth", block: "center" });
+            $("#visit-location-button")?.focus();
+            return;
+        }
         const locationChanged = state.store.location?.capturedAt
             && state.visit.location?.capturedAt
             && state.store.location.capturedAt !== state.visit.location.capturedAt;
@@ -1404,6 +1700,7 @@
         state.store.nearbyPois = (Array.isArray(state.visit.nearbyStores) ? state.visit.nearbyStores : [])
             .filter((store) => store?.source === "REGISTERED")
             .filter(isUsableNearbyStore);
+        state.ui.storeStep = deriveStoreStep();
         persistDraft();
         try {
             if (state.store.city) await ensureSalespersons(state.store.city);
@@ -1852,7 +2149,8 @@
             retry.hidden = true;
             $(`#${scope}-location-button-label`).textContent = awaitingFreshPosition
                 ? "正在等待手机刷新…"
-                : capturing ? "正在刷新当前位置…" : "获取当前位置";
+                : capturing ? "正在刷新当前位置…" : "刷新当前位置";
+            renderFlowActions();
             return;
         }
         const resolving = context?.geocodeStatus === "RESOLVING";
@@ -1895,6 +2193,7 @@
         $(`#${scope}-location-button-label`).textContent = scope === "store"
             ? "定位不准？重新获取"
             : "重新定位";
+        renderFlowActions();
     }
 
     function geolocationErrorMessage(error, fallbackAttempted = false) {
@@ -2688,6 +2987,7 @@
 
         resetStoreDraft(payload.city, payload.salespersonId);
         state.activeTab = "visit";
+        state.ui.visitStep = 2;
         clearAllErrors();
         hideError();
         persistDraft();
@@ -2730,7 +3030,9 @@
         state.store = freshStore();
         state.store.city = payload.city;
         state.store.salespersonId = payload.salespersonId;
+        state.ui.storeStep = 1;
         state.activeTab = "visit";
+        state.ui.visitStep = 2;
         persistDraft();
         try {
             renderTab("visit");
@@ -3155,9 +3457,23 @@
 
     function scrollToFirstError() {
         const first = $$(".field__error").find((error) => error.textContent.trim());
+        if (!first) return;
+        const flowPanel = first.closest("[data-flow-step-panel]");
+        if (flowPanel) {
+            goToFlowStep(flowPanel.dataset.flowStepPanel, Number(flowPanel.dataset.stepValue), {
+                validateForward: false,
+                scroll: false
+            });
+        }
         const disclosure = first?.closest("details");
         if (disclosure) disclosure.open = true;
-        first?.closest(".form-card, .consent-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+        window.requestAnimationFrame(() => {
+            const container = first.closest(".form-card, .consent-card, .flow-step-panel");
+            container?.scrollIntoView({ behavior: "smooth", block: "center" });
+            first.closest(".field, .choice-fieldset, .upload-item, .audio-recorder, .consent-card, .location-card")
+                ?.querySelector("input, select, textarea, button")
+                ?.focus({ preventScroll: true });
+        });
     }
 
     function prepareProgress() {
@@ -3209,6 +3525,8 @@
         const locked = isBusinessLocked();
         state.submission.businessLocked = locked;
         if (locked) {
+            state.activeTab = "visit";
+            state.ui.visitStep = 3;
             abortPoiSearch();
             hideStoreResults();
             hidePoiResults();
@@ -3228,6 +3546,7 @@
         });
         lockIdentitySelectors();
         $("#identity-switch").disabled = state.submitting || locked;
+        renderFlowSteps();
     }
 
     function isBusinessLocked() {
@@ -3261,6 +3580,7 @@
         cancelLocationCapture("visit");
         cancelLocationCapture("store");
         state.activeTab = "visit";
+        state.ui = freshUiState();
         state.visit = freshVisit();
         state.store = freshStore();
         if (state.identity?.authenticated) {
@@ -3363,6 +3683,7 @@
         abortPoiSearch();
         hidePoiResults();
         state.store = freshStore();
+        state.ui.storeStep = 1;
         state.store.city = city || "";
         state.store.salespersonId = salespersonId || "";
         $("#store-form").reset();
@@ -3377,6 +3698,7 @@
 
     function persistFromForm() {
         syncStateFromForm();
+        renderFlowActions();
         persistDraft();
     }
 
@@ -3451,6 +3773,7 @@
                 version: STORAGE_VERSION,
                 savedAt: new Date().toISOString(),
                 activeTab: state.activeTab,
+                ui: state.ui,
                 visit: state.visit,
                 store: state.store,
                 submission: state.submission
@@ -3615,6 +3938,11 @@
         if (!state.submission.clientSubmissionId) state.submission.clientSubmissionId = secureUuid();
         if (!state.submission.submissionKey || state.submission.submissionKey.length < 32) {
             state.submission.submissionKey = secureSubmissionKey();
+        }
+        state.ui = sanitizeRestoredUi(saved.ui);
+        if (isBusinessLocked()) {
+            state.activeTab = "visit";
+            state.ui.visitStep = 3;
         }
         state.restoredAt = saved.savedAt || null;
     }

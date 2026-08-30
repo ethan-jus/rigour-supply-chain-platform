@@ -80,7 +80,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("const HEADQUARTERS_CITY = \"总部\"")
                 .contains("state.options.cities.filter((city) => city !== HEADQUARTERS_CITY)")
                 .contains("const lockWorkCity = !isHeadquartersIdentity() || isBusinessLocked()")
-                .contains("所属：${state.identity.city}")
+                .contains("· ${state.identity.city}")
                 .contains("isEnabledHeadquartersWorkCity")
                 .doesNotContain("cityMatch(\"总部\")");
     }
@@ -172,6 +172,10 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("if (repaired === null)")
                 .contains("state[scope].location = null")
                 .contains("if (!state.visit.location || !state.visit.locationContext")
+                .contains("invalidateUnlockedVisitLocationForFreshEntry();")
+                .contains("scheduleInitialVisitLocationCapture();")
+                .contains("window.requestAnimationFrame(() => captureLocation(\"visit\"))")
+                .contains("state.visit.selectedStore = null")
                 .contains("function stopGeolocationRefresh(scope)")
                 .contains("function cancelLocationCapture(scope)")
                 .doesNotContain("repaired ?? savedAtMs")
@@ -249,20 +253,29 @@ class TemporaryCheckinPublicPageContractTest {
                         + "            && (!state.store.sourcePoiId || !state.store.sourcePoiToken))")
                 .contains("if (state.store.sourceMode === \"POI\" && !cleanText(state.store.sourcePoiToken))");
         assertThat(styles)
-                .contains("body.is-store-page")
-                .contains(".visit-store-result.is-registered")
+                .contains(".workflow-stepper")
+                .contains(".visit-store-result__meta")
                 .contains(".explicit-search-button:disabled")
-                .doesNotContain(".visit-store-result.is-new-poi");
+                .doesNotContain(".visit-store-result.is-new-poi")
+                .doesNotContain("body.is-store-page .hero");
     }
 
     @Test
-    void pinsOnlyTheExistingColoredPageHeaderWhileFormContentScrolls() throws IOException {
+    void usesCompactHeaderAndVisibleThreeStepNavigation() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
         String styles = resource("static/sales-checkin/styles.css");
 
+        assertThat(html)
+                .contains("aria-label=\"拜访打卡步骤\"")
+                .contains("data-flow-step=\"visit\" data-step-target=\"1\"")
+                .contains("data-flow-step=\"visit\" data-step-target=\"2\"")
+                .contains("data-flow-step=\"visit\" data-step-target=\"3\"");
         assertThat(styles)
-                .contains("固定现有 Logo 与页面标题色块")
-                .contains(".hero {\n    position: sticky;\n    z-index: 40;\n    top: 0;")
-                .contains(".workflow-tabs {\n    display: none;");
+                .contains("--header-height: 70px")
+                .contains(".hero {\n    position: sticky;\n    z-index: 50;\n    top: 0;")
+                .contains(".workflow-tabs {\n    display: none;")
+                .contains(".workflow-stepper {")
+                .contains(".step-actions {\n    position: fixed;");
     }
 
     @Test
@@ -274,10 +287,13 @@ class TemporaryCheckinPublicPageContractTest {
         assertThat(html)
                 .contains("class=\"field__help action-feedback\"")
                 .contains("role=\"status\" aria-live=\"polite\"")
-                .contains("/sales-checkin/styles.css?v=20260830-fresh-location-ui")
-                .contains("/sales-checkin/app.js?v=20260830-fresh-location-ui")
+                .contains("/sales-checkin/styles.css?v=20260830-three-step-ui")
+                .contains("/sales-checkin/app.js?v=20260830-three-step-ui")
                 .contains("点击按钮会刷新手机当前定位，不使用历史位置")
-                .contains("高德城市搜索没找到对应门店");
+                .contains("高德城市搜索没找到对应门店")
+                .contains("id=\"visit-step-1-next\"")
+                .contains("id=\"nearby-stores-empty\"")
+                .contains("class=\"optional-evidence-group\"");
         assertThat(script)
                 .contains("const explicitPoiIds = new Set")
                 .contains("explicitPoiIds.has(cleanText(poi.poiId))")
@@ -286,14 +302,13 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("本次返回")
                 .contains("城市内高德候选");
         assertThat(styles)
-                .contains("移动端操作反馈：按钮必须一眼可见")
-                .contains(".poi-search-field .explicit-search-button")
-                .contains("grid-template-columns: minmax(0, 1fr) 94px")
+                .contains(".explicit-search-button")
+                .contains("grid-template-columns: minmax(0, 1fr) 86px")
                 .contains(".poi-result.is-out-of-range")
                 .contains(".file-preview__icon")
-                .contains("专业化收口")
-                .contains("scroll-padding-top: calc(92px + env(safe-area-inset-top))")
-                .contains("-webkit-line-clamp: 2");
+                .contains("scroll-padding-top: calc(var(--header-height) + 18px)")
+                .contains("--page-gutter: 28px")
+                .contains("--brand: #133c3f");
     }
 
     @Test
@@ -418,10 +433,50 @@ class TemporaryCheckinPublicPageContractTest {
 
         assertThat(renderNearbyStores)
                 .contains("if (!locationContextReady(context)) {")
-                .contains("createButton.disabled = true;")
+                .contains("const createUnavailable = state.submitting || isBusinessLocked();")
+                .contains("createButton.disabled = createUnavailable;")
                 .doesNotContain("manualFallback");
         assertThat(script).doesNotContain("manualFallback");
-        assertThat(html).contains("/sales-checkin/app.js?v=20260830-fresh-location-ui");
+        assertThat(html).contains("/sales-checkin/app.js?v=20260830-three-step-ui");
+    }
+
+    @Test
+    void keepsThreeStepNavigationLocalDraftCompatibleAndMediaSafe() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+        String flowNavigation = script.substring(
+                script.indexOf("function goToFlowStep"),
+                script.indexOf("async function fetchOptions"));
+
+        assertThat(html)
+                .contains("data-flow-step-panel=\"visit\" data-step-value=\"1\"")
+                .contains("data-flow-step-panel=\"visit\" data-step-value=\"2\"")
+                .contains("data-flow-step-panel=\"visit\" data-step-value=\"3\"")
+                .contains("data-flow-step-panel=\"store\" data-step-value=\"1\"")
+                .contains("data-flow-step-panel=\"store\" data-step-value=\"2\"")
+                .contains("data-flow-step-panel=\"store\" data-step-value=\"3\"")
+                .contains("id=\"storefront-photo\" type=\"file\"")
+                .contains("id=\"audio-preview-list\"")
+                .contains("id=\"audio-preview-template\"")
+                .contains("id=\"visit-step-store-name\"")
+                .contains("id=\"visit-step-store-address\"")
+                .contains("id=\"visit-step-2-edit-store\"")
+                .contains("id=\"submit-visit-button\" class=\"primary-button\" type=\"submit\"")
+                .contains("id=\"submit-store-button\" class=\"primary-button\" type=\"submit\"");
+        assertThat(script)
+                .contains("const freshUiState = () => ({")
+                .contains("ui: state.ui")
+                .contains("state.ui = sanitizeRestoredUi(saved.ui)")
+                .contains("state.ui.visitStep = 3")
+                .contains("state.ui.visitStep = 2")
+                .contains("state.ui = freshUiState()")
+                .contains("setFlowNextState(visitNextOne, isVisitStepReady(1))")
+                .contains("button.dataset.incomplete = \"true\"")
+                .contains("flowPanel.dataset.flowStepPanel")
+                .contains("请先停止录音，再返回修改前面的内容");
+        assertThat(flowNavigation)
+                .doesNotContain("requestJson(", "captureLocation(", "resolveLocationContext(",
+                        "searchNewStoreOnce(", "uploadMedia(");
     }
 
     private static String resource(String path) throws IOException {

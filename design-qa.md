@@ -1,47 +1,58 @@
-# Sales Check-in Product Design QA
+# 销售拜访打卡三步重构 Design QA
 
-## Scope
+## 验收范围
 
-- Reference: `/Users/ethan/.codex/generated_images/01a032c2-a8fd-7cd0-9402-b40bcb449cf7/exec-ed0841e1-efc8-43e9-ad77-99052be11af1.png`
-- Implemented page: `services/rigour-sales-work-service/sales-work-service/src/main/resources/static/sales-checkin/`
-- Tested viewport: 426 x 926 CSS pixels
-- Tested state: Beijing, salesperson selected, synthetic readable location resolved, three nearby stores loaded, first registered store selected
-- Implementation capture: `/tmp/rigour-sales-checkin-option1-local-selected-final-v2.png`
-- Side-by-side comparison: `/tmp/rigour-sales-checkin-design-comparison-passed.png`
+- 视觉基准：`/Users/ethan/.codex/generated_images/01a0460c-43ed-79c2-8e07-5d8d38b8ae73/exec-b20c7b93-b8a5-4275-9e58-b4fafc172e66.png`
+- 实现目录：`services/rigour-sales-work-service/sales-work-service/src/main/resources/static/sales-checkin/`
+- 浏览器：Codex Browser 连接的 Chrome；CSS 视口 `390 × 844`，DPR 1
+- 对比状态：已绑定总部销售、尚未选择工作城市、第一步未定位
+- 实现截图：`/private/tmp/rigour-sales-checkin-ui-preview/final-390-step1.jpg`
+- 同尺寸并排证据：`/private/tmp/rigour-sales-checkin-ui-preview/final-step1-side-by-side.png`
+- 第三步完整截图：`/private/tmp/rigour-sales-checkin-ui-preview/qa-step3-full.jpg`
 
-## Interaction QA
+## 可见结果
 
-- City and salesperson selectors work; salesperson options display names only.
-- Successful positioning shows a readable address, collection time, and accuracy without exposing raw coordinates as the primary UI.
-- Nearby registered stores can be selected directly.
-- Nearby unregistered Amap POIs open the prefilled store-enrichment flow.
-- A missing store can be added without maintaining a second equal-level workflow.
-- The selected nearby row is highlighted without rendering a duplicate selected-store card.
-- Recording removal pauses playback, clears the audio source, reloads the player, revokes the object URL, and removes the file from form state.
-- Static JavaScript syntax and DOM ID contracts passed; the tested browser console had no warnings or errors.
+- 顶部压缩为深墨绿色标题栏，已绑定身份只显示姓名、所属城市和弱化的“切换身份”。
+- 拜访打卡和新增门店均为真实三步向导；当前仅挂载显示一个步骤，底部只有一个主操作。
+- 页面移除橙色建档主题、营销横幅、渐变和多层卡片；表单使用白色表面、分隔线和统一 8px 圆角。
+- 第一步 `390 × 844` 首屏可同时看到城市、定位、门店空状态、新增门店和固定主操作。
+- 第二步顶部保留已选门店与地址摘要，并提供“返回修改”。
+- 第三步默认只展开必填现场照片，企微截图和录音折叠为选填材料。
 
-## Visual Comparison History
+## 交互和业务验证
 
-The first comparison found P2 density mismatches: the hero, located-state button, and nearby rows were too tall, which delayed the core customer and visit fields. The implementation was tightened with a shorter solid-color hero, a compact reposition link after location succeeds, denser nearby-store rows, reduced repeated section headings, and a single selected-row state.
+- 未绑定身份节点、既有绑定 Cookie、全部原控件 ID、两个 form、照片/录音节点均保持原位和兼容。
+- 页面进入后，普通已绑定销售会先请求全新定位；未锁定历史草稿不复用旧定位或旧门店。总部销售选定工作城市后由按钮获取定位。
+- 缺项的灰色“下一步”仍可点击，会显示具体错误并聚焦首个缺失字段；不再出现无反应的灰按钮。
+- 本地上游桩计数：输入完整店名后 `searchNewStore=0`；主动点击搜索后为 `1`；候选选择、步骤切换、保存门店和返回拜访后仍为 `1`。
+- 超过 300 米候选提示：`该门店距当前位置约862 米，超过300 米，无法选择；请到店后重新定位。`
+- 建档保存后自动返回拜访第二步并带回门店，不追加高德搜索。
+- 模拟照片选择后预览正常；第二步/第三步往返后文件名和预览仍保留。
+- 第三步未勾选确认时提交，会停留在第三步并聚焦确认框。
+- 完整主流程浏览器控制台 `error/warn = 0`。
 
-The final same-width comparison found no actionable P0, P1, or P2 differences.
+## 响应式和可访问性
 
-## Fidelity Surfaces
+- `320 / 360 / 390 / 430px`：`scrollWidth == innerWidth`，无横向溢出。
+- 可见输入框、按钮和文字操作触控高度均不小于 44px；主按钮 52px。
+- 隐私说明已移出 checkbox label，恢复合法的键盘和读屏语义。
+- 焦点、错误、禁用、加载、成功和减少动态效果状态均有统一样式。
+- 浏览器自动化未提供可验证的页面 200% 缩放倍率信号；已用最窄 320px 重排覆盖布局压力。iPhone Safari、微信 WebView、Android Chrome/X5 的字级与拍照返回仍作为发布后的真实设备验收，不伪造为已完成。
 
-- Typography: compact native sans-serif hierarchy matches the selected direction; field labels and values remain readable on a phone.
-- Spacing and density: the core flow fits more actions above the fold while preserving touch targets.
-- Color: deep teal brand header, white cards, neutral borders, and restrained status colors match the selected direction.
-- Shape: flat cards and modest radii are consistent across location, store, media, and consent areas.
-- Assets and image quality: the reference contains no photographic assets. No placeholder, fake raster asset, handcrafted SVG, emoji icon, or CSS illustration was introduced.
-- Copy: labels prioritize action language and readable addresses; privacy details remain available without dominating the primary flow.
+## 修正历史
 
-## Intentional Differences
+1. 首轮同尺寸对比发现未定位时“新增门店”被固定操作栏遮挡；定位前隐藏非必要的位置备注入口并收紧首屏，已修复。
+2. 发现灰色“下一步”因原生 disabled 无法触发校验；改为视觉未完成态但保留点击反馈，已修复。
+3. 发现隐私说明的 details 嵌套在 checkbox label 中；移为相邻节点，已修复。
+4. 发现三个文字按钮触控高度为 40px；统一提升到 44px，已修复。
+5. 发现新门店页内外重复标题；保留顶部主标题，内部仅保留返回操作，已修复。
 
-- City and salesperson are side by side instead of stacked to shorten the anonymous mobile form.
-- Decorative line icons from the visual reference are not approximated with text symbols or fake drawings; clear text labels and native controls retain the affordances.
-- The public page does not show first-visit or revisit counts. Those counts are available only in the protected admin list and CSV because exposing them through anonymous store/salesperson identifiers would disclose visit-history aggregates.
-- Required media and consent steps can extend below the first viewport because they are functional and compliance constraints, not decorative content.
+## 有意差异
 
-## Result
+- 未使用视觉稿中的装饰图标，因为项目没有对应图标资产；没有用 emoji、CSS 图形或手绘 SVG 伪造。
+- 实现保留“切换身份”、定位状态和业务错误文字，它们是生产流程所需信息。
+- 页面左右留白在移动端为 20px，介于方案要求的 16px 与视觉稿约 28px 之间，以兼顾 320px 设备的字段宽度。
+
+## 结果
 
 final result: passed
