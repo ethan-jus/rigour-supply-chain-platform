@@ -7,7 +7,7 @@
     <meta name="description" content="销售拜访打卡与门店信息临时采集页面">
     <meta name="robots" content="noindex,nofollow,noarchive">
     <title>销售拜访打卡</title>
-    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260901-location-compat">
+    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260901-recording-flow">
 </head>
 <body>
 <header class="hero">
@@ -114,12 +114,85 @@
                     <span>1</span><strong>选择门店</strong>
                 </button>
                 <button type="button" data-flow-step="visit" data-step-target="2" disabled>
-                    <span>2</span><strong>记录拜访</strong>
+                    <span>2</span><strong>进店沟通</strong>
                 </button>
                 <button type="button" data-flow-step="visit" data-step-target="3" disabled>
                     <span>3</span><strong>现场证明</strong>
                 </button>
             </nav>
+
+            <section id="visit-recording-workspace" class="recording-workspace"
+                     aria-labelledby="recording-workspace-title" hidden>
+                <div class="recording-workspace__heading">
+                    <div>
+                        <p class="section-kicker">进店沟通</p>
+                        <h2 id="recording-workspace-title">先告知，再开始现场录音</h2>
+                    </div>
+                    <span id="recording-stage-badge" class="recording-stage-badge">第 2 步</span>
+                </div>
+                <div class="recording-sequence" aria-label="现场录音流程">
+                    <span><strong>1</strong> 告知现场人员</span>
+                    <span><strong>2</strong> 开录并沟通</span>
+                    <span><strong>3</strong> 停止后拍照</span>
+                </div>
+                <label class="recording-consent" for="recording-consent">
+                    <input id="recording-consent" type="checkbox">
+                    <span>
+                        <strong>我已告知现场人员并获得允许</strong>
+                        <small>勾选后才能请求麦克风权限；录音仍为选填。</small>
+                    </span>
+                </label>
+
+                <div class="audio-recorder media-step">
+                    <div class="upload-item__heading">
+                        <div class="media-step__copy">
+                            <strong>现场录音（选填）</strong>
+                            <span id="recording-workspace-copy">开始后可继续填写客户信息；请结束录音后再进入现场证明</span>
+                        </div>
+                        <span id="audio-uploaded-badge" class="mini-badge" hidden></span>
+                    </div>
+                    <div class="recorder-controls">
+                        <button id="record-audio-button" class="record-button" type="button">
+                            <span class="record-button__dot" aria-hidden="true"></span>
+                            <span id="record-button-label">开始现场录音</span>
+                        </button>
+                        <div id="recording-clock" class="recording-clock" aria-live="polite">00:00</div>
+                    </div>
+                    <div id="recording-meter" class="recording-meter" hidden>
+                        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+                    </div>
+                    <div id="audio-preview-list" class="audio-preview-list" aria-live="polite"></div>
+                    <template id="audio-preview-template">
+                        <div class="audio-preview" data-audio-segment>
+                            <audio controls preload="metadata"></audio>
+                            <div class="audio-preview__meta">
+                                <strong data-audio-name></strong>
+                                <span data-audio-size></span>
+                                <small data-audio-status></small>
+                            </div>
+                            <div class="audio-preview__actions">
+                                <button class="text-button audio-retry-button" data-audio-retry type="button" hidden>重试</button>
+                                <button class="text-button file-remove-button" data-audio-remove type="button">移除</button>
+                            </div>
+                        </div>
+                    </template>
+                    <details class="recording-options">
+                        <summary>无法网页录音或已有音频？</summary>
+                        <div class="recording-options__body">
+                            <div class="fallback-picker">
+                                <label id="audio-file-label" for="audio-file">选择已有音频文件（可多选）</label>
+                                <input id="audio-file" type="file" multiple>
+                            </div>
+                            <p id="recorder-help" class="field__help">可选择 M4A、MP3、WAV、AAC、AMR、OGG 或 WebM；服务端会核验常见文件特征。</p>
+                            <p class="field__help">页面录制会记录开始时间和时长；选择已有音频的时间仅供参考、不可核验。</p>
+                        </div>
+                    </details>
+                    <p id="recording-status-note" class="recording-status-note" role="status" aria-live="polite">
+                        录音只暂存在当前页面；请保持页面前台，停止录音后再进入现场证明。
+                    </p>
+                    <span class="field__error" data-error-for="audio-file"></span>
+                </div>
+            </section>
 
             <div id="visit-step-1" class="flow-step-panel" data-flow-step-panel="visit" data-step-value="1">
             <section class="form-card visit-main-card">
@@ -230,12 +303,13 @@
 
                 <div class="step-actions step-actions--single">
                     <button id="visit-step-1-next" class="primary-button" type="button" disabled>
-                        下一步：记录拜访
+                        下一步：进店沟通
                     </button>
                 </div>
             </div>
 
             <div id="visit-step-2" class="flow-step-panel" data-flow-step-panel="visit" data-step-value="2" hidden>
+            <div id="visit-recording-step-2-slot"></div>
             <div class="step-context" aria-label="已选拜访门店">
                 <div>
                     <small>本次拜访门店</small>
@@ -247,8 +321,8 @@
             <section class="form-card">
                 <div class="section-heading">
                     <div>
-                        <p class="section-kicker">拜访记录</p>
-                        <h2>填写客户和沟通结果</h2>
+                        <p class="section-kicker">进店沟通</p>
+                        <h2>边沟通，边记录客户信息</h2>
                     </div>
                 </div>
 
@@ -290,7 +364,7 @@
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">现场材料</p>
-                        <h2>上传照片与录音</h2>
+                        <h2>上传现场证明</h2>
                     </div>
                     <span class="section-step-hint">最少上传 1 张现场照片</span>
                 </div>
@@ -332,7 +406,7 @@
                     <summary>
                         <span>
                             <strong>添加更多材料</strong>
-                            <small>企微截图、现场录音（选填）</small>
+                            <small>企微截图（选填）</small>
                         </span>
                         <span class="optional-media__action">展开</span>
                     </summary>
@@ -368,55 +442,15 @@
                         </div>
                     </section>
 
-                <div class="audio-recorder media-step">
-                    <div class="upload-item__heading">
-                        <span class="media-step__index" aria-hidden="true">3</span>
-                        <div class="media-step__copy">
-                            <strong>现场录音</strong>
-                            <span>选填；页面录制会记录开始时间和时长，已有文件的时间仅供参考、不可核验</span>
-                        </div>
-                        <span id="audio-uploaded-badge" class="mini-badge" hidden></span>
-                    </div>
-                    <div class="recorder-controls">
-                        <button id="record-audio-button" class="record-button" type="button">
-                            <span class="record-button__dot" aria-hidden="true"></span>
-                            <span id="record-button-label">开始录音</span>
-                        </button>
-                        <div id="recording-clock" class="recording-clock" aria-live="polite">00:00</div>
-                    </div>
-                    <div id="recording-meter" class="recording-meter" hidden>
-                        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
-                    </div>
-                    <div id="audio-preview-list" class="audio-preview-list" aria-live="polite"></div>
-                    <template id="audio-preview-template">
-                        <div class="audio-preview" data-audio-segment>
-                            <audio controls preload="metadata"></audio>
-                            <div class="audio-preview__meta">
-                                <strong data-audio-name></strong>
-                                <span data-audio-size></span>
-                                <small data-audio-status></small>
-                            </div>
-                            <div class="audio-preview__actions">
-                                <button class="text-button audio-retry-button" data-audio-retry type="button" hidden>重试</button>
-                                <button class="text-button file-remove-button" data-audio-remove type="button">移除</button>
-                            </div>
-                        </div>
-                    </template>
-                    <div class="fallback-picker">
-                        <span>无法录音？</span>
-                        <label id="audio-file-label" for="audio-file">选择已有音频文件（可多选）</label>
-                        <input id="audio-file" type="file" multiple>
-                    </div>
-                    <p id="recorder-help" class="field__help">可选择 M4A、MP3、WAV、AAC、AMR、OGG 或 WebM；服务端会核验常见文件特征。</p>
-                    <span class="field__error" data-error-for="audio-file"></span>
-                </div>
                     </div>
                 </details>
             </section>
 
+            <div id="visit-recording-step-3-slot"></div>
+
             <section class="consent-card confirmation-card">
                 <div class="confirmation-card__heading">
-                    <span class="confirmation-card__index" aria-hidden="true">4</span>
+                    <span class="confirmation-card__index" aria-hidden="true">2</span>
                     <div>
                         <strong>确认并提交</strong>
                         <small>最后检查门店、照片和录音是否正确</small>
@@ -723,6 +757,6 @@
     <p>临时过渡采集页面 · 如遇问题请保留页面中的错误信息并联系管理员</p>
 </footer>
 
-    <script src="/sales-checkin/app.js?v=20260901-location-compat" defer></script>
+    <script src="/sales-checkin/app.js?v=20260901-recording-flow" defer></script>
 </body>
 </html>

@@ -20,7 +20,7 @@
     const MOBILE_INPUT_FOCUS_GRACE_MS = 650;
     const MOBILE_KEYBOARD_MIN_DELTA = 120;
     const FLOW_STEP_LABELS = Object.freeze({
-        visit: Object.freeze(["", "选择门店", "记录拜访", "现场证明"]),
+        visit: Object.freeze(["", "选择门店", "进店沟通", "现场证明"]),
         store: Object.freeze(["", "搜索门店", "基础资料", "业务标签"])
     });
 
@@ -131,7 +131,12 @@
             clientStartedAt: null,
             elapsedMs: 0,
             timer: null,
-            stopping: false
+            starting: false,
+            stopping: false,
+            startSequence: 0,
+            sessionId: null,
+            activeSession: null,
+            stopFallbackTimer: null
         },
         objectUrls: {
             photo: null,
@@ -542,6 +547,10 @@
 
     async function switchIdentity() {
         if (state.submitting) return;
+        if (recordingBusy()) {
+            showRecordingNavigationError("请先结束录音，再切换销售身份。");
+            return;
+        }
         if (isBusinessLocked()) {
             showError("当前草稿已上传或锁定，请先完成提交或放弃草稿，再切换销售身份。");
             return;
@@ -585,7 +594,13 @@
         $("#visit-step-1-next").addEventListener("click", () => goToFlowStep("visit", 2));
         $("#visit-step-2-back").addEventListener("click", () => goToFlowStep("visit", 1));
         $("#visit-step-2-edit-store").addEventListener("click", () => goToFlowStep("visit", 1));
-        $("#visit-step-2-next").addEventListener("click", () => goToFlowStep("visit", 3));
+        $("#visit-step-2-next").addEventListener("click", () => {
+            if (recordingBusy()) {
+                stopRecording();
+                return;
+            }
+            goToFlowStep("visit", 3);
+        });
         $("#visit-step-3-back").addEventListener("click", () => goToFlowStep("visit", 2));
         $("#store-step-1-next").addEventListener("click", () => goToFlowStep("store", 2));
         $("#store-step-2-back").addEventListener("click", () => goToFlowStep("store", 1));
@@ -632,6 +647,9 @@
         $("#delete-uploaded-wechat-button").addEventListener("click", async () => clearFile("wechat"));
 
         $("#record-audio-button").addEventListener("click", toggleRecording);
+        $("#recording-consent").addEventListener("change", () => {
+            if ($("#recording-consent").checked) clearFieldError("audio-file");
+        });
         $("#audio-file").addEventListener("change", handleAudioFileSelection);
         $("#audio-file-label").addEventListener("click", () => {
             state.audioRetrySegmentId = null;
@@ -660,7 +678,7 @@
                 syncStateFromForm();
                 persistDraft();
             }
-            if (isRecording() || state.submitting) {
+            if (recordingBusy() || state.submitting) {
                 event.preventDefault();
                 event.returnValue = "";
             }
@@ -683,6 +701,10 @@
 
     function switchTab(tab, focusTab = false) {
         if (state.submitting) return;
+        if (tab !== state.activeTab && recordingBusy()) {
+            showRecordingNavigationError("请先结束录音，再切换页面。");
+            return;
+        }
         if (isBusinessLocked() && tab === "store") return;
         const inputWasActive = releaseActiveInput();
         state.activeTab = tab === "store" ? "store" : "visit";
@@ -846,9 +868,32 @@
                 button.classList.toggle("is-complete", step < current);
                 button.toggleAttribute("aria-current", active);
                 if (active) button.setAttribute("aria-current", "step");
-                button.disabled = state.submitting || step > maximum;
+                const recordingGuard = flow === "visit" && recordingBusy() && step !== current;
+                const lockedGuard = flow === "visit" && isBusinessLocked() && step !== 3;
+                button.disabled = state.submitting || step > maximum || recordingGuard || lockedGuard;
             });
         });
+        const visitStep = normalizeFlowStep(state.ui.visitStep);
+        const recordingWorkspace = $("#visit-recording-workspace");
+        const recordingSlot = visitStep === 3
+            ? $("#visit-recording-step-3-slot") : $("#visit-recording-step-2-slot");
+        if (recordingWorkspace.parentElement !== recordingSlot) {
+            recordingSlot.appendChild(recordingWorkspace);
+        }
+        recordingWorkspace.hidden = state.activeTab !== "visit" || visitStep === 1;
+        recordingWorkspace.classList.toggle("is-review-mode", visitStep === 3);
+        recordingWorkspace.classList.toggle("is-locked-recovery", visitStep === 3 && isBusinessLocked());
+        $("#recording-stage-badge").textContent = visitStep === 3
+            ? "第 3 步 · 核对" : "第 2 步 · 录音";
+        $("#recording-workspace-copy").textContent = visitStep === 3
+            ? isBusinessLocked()
+                ? "草稿已锁定，可在此回放、重选原文件或补录"
+                : "在此回放确认；需要补录时请先返回第2步"
+            : "开始后可继续填写客户信息；请结束录音后再进入现场证明";
+        if (!recordingBusy()) {
+            $("#record-button-label").textContent = visitStep === 3 && !isBusinessLocked()
+                ? "返回第2步补录" : "开始现场录音";
+        }
         renderFlowHeader();
         renderFlowActions();
     }
@@ -862,6 +907,31 @@
         setFlowNextState(visitNextTwo, isVisitStepReady(2));
         setFlowNextState(storeNextOne, isStoreStepReady(1));
         setFlowNextState(storeNextTwo, isStoreStepReady(2));
+        const recorderBusy = recordingBusy();
+        const activeRecording = isRecording();
+        visitNextTwo.classList.toggle("is-recording-action", activeRecording);
+        visitNextTwo.disabled = state.submitting
+            || state.recorder.starting
+            || state.recorder.stopping
+            || (!activeRecording && (recorderBusy || !isVisitStepReady(2)));
+        visitNextTwo.textContent = state.recorder.starting
+            ? "正在等待麦克风"
+            : state.recorder.stopping ? "正在生成录音"
+                : activeRecording ? "结束并保存录音"
+                    : recorderBusy ? "正在保留录音" : "下一步：现场证明";
+        ["#visit-step-2-back", "#visit-step-2-edit-store", "#visit-step-3-back"].forEach((selector) => {
+            const button = $(selector);
+            if (button) button.disabled = state.submitting || recorderBusy || isBusinessLocked();
+        });
+        ["#storefront-photo", "#wechat-screenshot", "#audio-file", "#privacy-accepted"].forEach((selector) => {
+            const input = $(selector);
+            if (input) input.disabled = state.submitting || recorderBusy;
+        });
+        $("#audio-file-label").setAttribute("aria-disabled", String(state.submitting || recorderBusy));
+        $("#submit-visit-button").disabled = state.submitting || recorderBusy;
+        $("#store-tab").disabled = state.submitting || recorderBusy || isBusinessLocked();
+        $("#identity-switch").disabled = state.submitting || recorderBusy || isBusinessLocked();
+        $("#discard-draft-button").disabled = state.submitting || recorderBusy;
     }
 
     function setFlowNextState(button, ready) {
@@ -929,15 +999,65 @@
         return valid;
     }
 
+    function recordingBusy() {
+        const session = state.recorder.activeSession;
+        const pendingSession = Boolean(
+            session
+            && !session.finished
+            && state.recorder.sessionId === session.id
+        );
+        return Boolean(state.recorder.starting || state.recorder.stopping || pendingSession || isRecording());
+    }
+
+    function showRecordingNavigationError(message) {
+        setFieldError("audio-file", message);
+        const workspace = $("#visit-recording-workspace");
+        workspace.hidden = false;
+        window.requestAnimationFrame(() => {
+            workspace.scrollIntoView({ behavior: "smooth", block: "center" });
+        });
+    }
+
+    function confirmVisitMediaResetForStoreChange() {
+        const hasVisitMedia = Boolean(
+            state.files.photo
+            || state.files.wechat
+            || state.submission.audioSegments.length
+            || state.submission.uploadedMedia.length
+            || state.submission.mediaUploadAttempts.length
+        );
+        if (!hasVisitMedia) return true;
+        if (!window.confirm("返回选择门店会清除本次已添加的录音、照片和截图，确定继续吗？")) {
+            return false;
+        }
+        resetLocalFile("photo");
+        resetLocalFile("wechat");
+        resetLocalFile("audio");
+        state.submission.uploadedMedia = [];
+        state.submission.mediaUploadAttempts = [];
+        $("#recording-consent").checked = false;
+        clearFieldError("audio-file");
+        clearFieldError("storefront-photo");
+        clearFieldError("wechat-screenshot");
+        renderUploadedBadges();
+        return true;
+    }
+
     function goToFlowStep(flow, requestedStep, options = {}) {
         if (!Object.prototype.hasOwnProperty.call(FLOW_STEPS, flow) || state.submitting) return false;
         const key = flowStateKey(flow);
         const current = normalizeFlowStep(state.ui[key]);
         const target = normalizeFlowStep(requestedStep, current);
-        if (flow === "visit" && current === 3 && target !== 3 && isRecording()) {
-            setFieldError("audio-file", "请先停止录音，再返回修改前面的内容。");
-            $(".optional-evidence-group").open = true;
-            scrollToFirstError();
+        if (flow === "visit" && isBusinessLocked() && target !== 3) {
+            showError("当前草稿的门店和拜访内容已锁定，请继续完成媒体上传或放弃草稿。");
+            return false;
+        }
+        if (flow === "visit" && target !== current && recordingBusy()) {
+            showRecordingNavigationError("请先结束录音，再进入下一步或返回选店。");
+            return false;
+        }
+        if (flow === "visit" && target === 1 && current > 1
+                && !confirmVisitMediaResetForStoreChange()) {
             return false;
         }
         if (options.validateForward !== false && target > current) {
@@ -960,7 +1080,9 @@
         if (options.scroll !== false) {
             const panel = document.querySelector(
                 '[data-flow-step-panel="' + flow + '"][data-step-value="' + target + '"]');
-            runAfterMobileInputSettles(() => panel?.scrollIntoView({
+            const scrollTarget = flow === "visit" && target === 2
+                ? $("#visit-recording-workspace") : panel;
+            runAfterMobileInputSettles(() => scrollTarget?.scrollIntoView({
                 behavior: "auto", block: "start"
             }), inputWasActive);
         }
@@ -1800,6 +1922,10 @@
 
     async function prepareNewStore() {
         if (state.submitting) return;
+        if (recordingBusy()) {
+            showRecordingNavigationError("请先结束录音，再进入新增门店。");
+            return;
+        }
         if (isBusinessLocked()) return;
         hideStoreResults();
         $("#store-search").value = state.visit.selectedStore?.name || "";
@@ -2668,9 +2794,12 @@
         return supportedMimeTypes.has(mimeType) || /\.(avif|heic|heif|jpe?g|png|webp)$/i.test(file.name || "");
     }
 
+    function recorderSupported() {
+        return Boolean(window.isSecureContext && navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+    }
+
     function checkRecorderSupport() {
-        const supported = Boolean(window.isSecureContext && navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
-        $("#record-audio-button").disabled = !supported;
+        const supported = recorderSupported();
         if (!supported) {
             $("#recorder-help").textContent = window.isSecureContext
                 ? "当前浏览器不支持网页录音，可直接从手机文件中多选录音上传。"
@@ -2678,6 +2807,7 @@
         } else {
             updateRecorderHelp(preferredRecorderOptions()?.mimeType);
         }
+        setRecordingUi(isRecording(), state.recorder.stopping, state.recorder.starting);
     }
 
     function updateRecorderHelp(mimeType) {
@@ -2686,51 +2816,112 @@
     }
 
     async function toggleRecording() {
-        if (isRecording()) {
+        if (state.recorder.starting || state.recorder.stopping || state.submitting) return;
+        const activeSession = state.recorder.activeSession;
+        if (activeSession && !activeSession.finished
+                && state.recorder.sessionId === activeSession.id) {
             stopRecording();
             return;
         }
         hideError();
         clearFieldError("audio-file");
-        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+        const visitStep = normalizeFlowStep(state.ui.visitStep);
+        if (state.activeTab !== "visit" || visitStep === 1) {
+            setFieldError("audio-file", "请先完成现场定位和门店选择，再开始录音。");
+            return;
+        }
+        if (visitStep === 3 && !isBusinessLocked()) {
+            goToFlowStep("visit", 2);
+            return;
+        }
+        if (!$("#recording-consent").checked) {
+            setFieldError("audio-file", "请先告知现场人员并勾选确认，再开始录音。");
+            $("#recording-consent").scrollIntoView({ behavior: "smooth", block: "center" });
+            return;
+        }
+        if (!recorderSupported()) {
             setFieldError("audio-file", "当前环境无法录音，请通过 HTTPS 打开或选择已有音频文件。" );
             return;
         }
         pauseAllAudioPreviews();
+        state.recorder.starting = true;
+        const requestSequence = ++state.recorder.startSequence;
+        setRecordingUi(false, false, true);
+        let stream = null;
+        let session = null;
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({
+            stream = await navigator.mediaDevices.getUserMedia({
                 audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
             });
+            const requestInvalidated = requestSequence !== state.recorder.startSequence;
+            if (requestInvalidated
+                    || state.submitting
+                    || state.activeTab !== "visit"
+                    || normalizeFlowStep(state.ui.visitStep) === 1) {
+                stopRecorderStream(stream);
+                if (!requestInvalidated) cleanupRecorder();
+                return;
+            }
             const options = preferredRecorderOptions();
             let recorder;
             try {
                 recorder = options ? new MediaRecorder(stream, options) : new MediaRecorder(stream);
-            } catch (_) {
-                recorder = new MediaRecorder(stream);
+            } catch (firstError) {
+                try {
+                    recorder = new MediaRecorder(stream);
+                } catch (fallbackError) {
+                    stopRecorderStream(stream);
+                    throw fallbackError;
+                }
             }
+            const startedAt = Date.now();
+            const clientStartedAt = new Date(startedAt).toISOString();
+            session = {
+                id: secureUuid(),
+                recorder,
+                stream,
+                chunks: [],
+                startedAt,
+                clientStartedAt,
+                failed: false,
+                finished: false
+            };
             state.recorder.stream = stream;
             state.recorder.instance = recorder;
-            state.recorder.chunks = [];
-            const startedAt = Date.now();
+            state.recorder.chunks = session.chunks;
             state.recorder.startedAt = startedAt;
-            state.recorder.clientStartedAt = new Date(startedAt).toISOString();
+            state.recorder.clientStartedAt = clientStartedAt;
             state.recorder.elapsedMs = 0;
+            state.recorder.starting = false;
             state.recorder.stopping = false;
+            state.recorder.sessionId = session.id;
+            state.recorder.activeSession = session;
 
             recorder.addEventListener("dataavailable", (event) => {
-                if (event.data && event.data.size > 0) state.recorder.chunks.push(event.data);
+                if (event.data && event.data.size > 0) session.chunks.push(event.data);
             });
             recorder.addEventListener("error", () => {
-                setFieldError("audio-file", "录音意外中断，请重新录制或选择已有音频。" );
-                cleanupRecorder();
+                interruptRecordingSession(session, "录音意外中断；如已生成音频，请回放确认后再提交。");
             });
-            recorder.addEventListener("stop", finishRecording, { once: true });
+            recorder.addEventListener("pause", () => {
+                interruptRecordingSession(session, "系统暂停了录音，已停止并尝试保留录到的内容。");
+            });
+            recorder.addEventListener("stop", () => finishRecording(session), { once: true });
+            stream.getAudioTracks?.().forEach((track) => {
+                track.addEventListener("ended", () => {
+                    if (!session.finished && !state.recorder.stopping) {
+                        interruptRecordingSession(session, "麦克风被系统中断，已停止并尝试保留录到的内容。");
+                    }
+                });
+            });
             recorder.start(1000);
             setRecordingUi(true);
             updateRecordingClock();
             state.recorder.timer = window.setInterval(updateRecordingClock, 500);
         } catch (error) {
-            cleanupRecorder();
+            stopRecorderStream(stream);
+            if (requestSequence !== state.recorder.startSequence) return;
+            cleanupRecorder(session?.id || null);
             setFieldError("audio-file", microphoneErrorMessage(error));
         }
     }
@@ -2743,20 +2934,77 @@
 
     function stopRecording() {
         const recorder = state.recorder.instance;
-        if (!recorder || recorder.state === "inactive" || state.recorder.stopping) return;
+        const session = state.recorder.activeSession;
+        if (!recorder || !session || session.finished
+                || state.recorder.sessionId !== session.id) return;
+        if (state.recorder.stopping) {
+            scheduleRecordingStopFallback(session);
+            return;
+        }
         state.recorder.stopping = true;
         state.recorder.elapsedMs = Date.now() - state.recorder.startedAt;
-        recorder.stop();
         setRecordingUi(false, true);
+        if (recorder.state === "inactive") {
+            scheduleRecordingStopFallback(session);
+            return;
+        }
+        try {
+            recorder.stop();
+            scheduleRecordingStopFallback(session);
+        } catch (_) {
+            if (session) session.failed = true;
+            setFieldError("audio-file", "录音停止异常，正在尝试保留已录内容，请稍候。");
+            scheduleRecordingStopFallback(session);
+        }
     }
 
-    function finishRecording() {
-        const recorder = state.recorder.instance;
-        const duration = state.recorder.elapsedMs || Date.now() - state.recorder.startedAt;
-        const clientStartedAt = state.recorder.clientStartedAt;
-        const mimeType = recorder?.mimeType || state.recorder.chunks[0]?.type || "audio/webm";
-        const blob = new Blob(state.recorder.chunks, { type: mimeType });
-        cleanupRecorder();
+    function interruptRecordingSession(session, message) {
+        if (!session || session.finished || state.recorder.sessionId !== session.id) return;
+        session.failed = true;
+        setFieldError("audio-file", message);
+        if (!state.recorder.stopping) {
+            state.recorder.stopping = true;
+            state.recorder.elapsedMs = Date.now() - session.startedAt;
+            setRecordingUi(false, true);
+        }
+        if (session.recorder.state !== "inactive") {
+            try {
+                session.recorder.stop();
+            } catch (_) {
+                // 仍等待可能已经排队的 dataavailable/stop，超时后再统一清理。
+            }
+        }
+        scheduleRecordingStopFallback(session);
+    }
+
+    function scheduleRecordingStopFallback(session) {
+        if (!session || session.finished || state.recorder.sessionId !== session.id) return;
+        window.clearTimeout(state.recorder.stopFallbackTimer);
+        state.recorder.stopFallbackTimer = window.setTimeout(() => {
+            if (session.finished || state.recorder.sessionId !== session.id) return;
+            session.failed = true;
+            if (session.chunks.length) {
+                finishRecording(session);
+                return;
+            }
+            session.finished = true;
+            cleanupRecorder(session.id);
+            setFieldError("audio-file", "录音停止超时且未生成有效音频，请重新录制或选择已有音频。");
+        }, 5000);
+    }
+
+    function finishRecording(session) {
+        if (!session || session.finished || state.recorder.sessionId !== session.id) {
+            stopRecorderStream(session?.stream);
+            return;
+        }
+        window.clearTimeout(state.recorder.stopFallbackTimer);
+        state.recorder.stopFallbackTimer = null;
+        session.finished = true;
+        const duration = state.recorder.elapsedMs || Date.now() - session.startedAt;
+        const mimeType = session.recorder?.mimeType || session.chunks[0]?.type || "audio/webm";
+        const blob = new Blob(session.chunks, { type: mimeType });
+        cleanupRecorder(session.id);
         updateRecorderHelp(mimeType);
         if (!blob.size) {
             setFieldError("audio-file", "没有录到有效音频，请重新录制。" );
@@ -2770,34 +3018,92 @@
         $("#audio-file").value = "";
         appendAudioFile(file, {
             captureSource: "BROWSER_RECORDER",
-            clientStartedAt,
+            clientStartedAt: session.clientStartedAt,
             clientDurationMs: duration
         });
         renderAudioSegments();
         renderUploadedBadges();
+        if (session.failed) {
+            setFieldError("audio-file", "录音曾被系统中断，已保留可用部分；请回放确认是否完整。");
+        }
         persistDraft();
     }
 
-    function cleanupRecorder() {
+    function stopRecorderStream(stream) {
+        stream?.getTracks?.().forEach((track) => {
+            try {
+                track.stop();
+            } catch (_) {
+                // 某些 WebView 会在系统已回收麦克风后再次抛错。
+            }
+        });
+    }
+
+    function cleanupRecorder(expectedSessionId = null) {
+        if (expectedSessionId && state.recorder.sessionId !== expectedSessionId) return false;
+        state.recorder.startSequence += 1;
         clearInterval(state.recorder.timer);
-        state.recorder.stream?.getTracks().forEach((track) => track.stop());
+        window.clearTimeout(state.recorder.stopFallbackTimer);
+        stopRecorderStream(state.recorder.stream);
         state.recorder.instance = null;
         state.recorder.stream = null;
         state.recorder.chunks = [];
         state.recorder.startedAt = 0;
         state.recorder.clientStartedAt = null;
         state.recorder.timer = null;
+        state.recorder.starting = false;
         state.recorder.stopping = false;
+        state.recorder.sessionId = null;
+        state.recorder.activeSession = null;
+        state.recorder.stopFallbackTimer = null;
         setRecordingUi(false);
+        return true;
     }
 
-    function setRecordingUi(recording, stopping = false) {
+    function setRecordingUi(recording, stopping = false, starting = false) {
         const button = $("#record-audio-button");
         button.classList.toggle("is-recording", recording);
-        button.disabled = stopping;
-        $("#record-button-label").textContent = recording ? "结束录音" : stopping ? "正在保存" : "开始录音";
+        button.classList.toggle("is-starting", starting);
+        button.disabled = state.submitting || starting || stopping || !recorderSupported();
+        $("#record-button-label").textContent = recording
+            ? "结束并保存录音"
+            : starting ? "等待麦克风权限"
+                : stopping ? "正在生成录音"
+                    : normalizeFlowStep(state.ui.visitStep) === 3 && !isBusinessLocked()
+                        ? "返回第2步补录" : "开始现场录音";
         $("#recording-meter").hidden = !recording;
-        if (!recording && !stopping) button.disabled = false;
+        $("#recording-consent").disabled = state.submitting || recording || starting || stopping;
+        $("#visit-recording-workspace").classList.toggle("is-recording", recording || stopping);
+        renderRecordingStatus();
+        renderFlowSteps();
+    }
+
+    function renderRecordingStatus() {
+        const note = $("#recording-status-note");
+        if (state.recorder.starting) {
+            note.textContent = "正在等待系统麦克风权限，请不要重复点击或切换页面。";
+            return;
+        }
+        if (isRecording()) {
+            note.textContent = "正在录音，可继续填写本页客户信息；请保持页面前台，并先结束录音再进入现场证明。";
+            return;
+        }
+        if (state.recorder.stopping) {
+            note.textContent = "正在生成录音文件，请稍候，不要切换步骤或关闭页面。";
+            return;
+        }
+        const audioCount = state.submission.audioSegments.length;
+        if (audioCount) {
+            note.textContent = `已添加 ${audioCount} 段录音，可回放确认、继续补录或选择已有音频；刷新页面前请先完成提交。`;
+            return;
+        }
+        if (!recorderSupported()) {
+            note.textContent = "当前浏览器不支持网页录音；请展开“已有音频”并选择文件。";
+            return;
+        }
+        note.textContent = normalizeFlowStep(state.ui.visitStep) === 3
+            ? "本次未添加录音（选填）；需要补录时可返回第2步。"
+            : "录音只暂存在当前页面；请保持页面前台，停止录音后再进入现场证明。";
     }
 
     function updateRecordingClock() {
@@ -3274,8 +3580,10 @@
         event.preventDefault();
         hideError();
         syncStateFromForm();
-        if (isRecording()) {
-            setFieldError("audio-file", "请先结束录音，确认音频已生成后再提交。" );
+        if (recordingBusy()) {
+            setFieldError("audio-file", state.recorder.starting
+                ? "请先完成麦克风授权并结束录音，再提交。"
+                : "请先结束录音，确认音频已生成后再提交。" );
             scrollToFirstError();
             return;
         }
@@ -3814,6 +4122,8 @@
 
     function startNewSubmission() {
         cleanupRecorder();
+        state.recorder.elapsedMs = 0;
+        $("#recording-clock").textContent = "00:00";
         abortPoiSearch();
         Object.keys(state.files).forEach(resetLocalFile);
         Object.values(state.locationControllers).forEach((controller) => controller?.abort());
@@ -3841,6 +4151,7 @@
         setFormsDisabled(false);
         $("#visit-form").reset();
         $("#store-form").reset();
+        $("#recording-consent").checked = false;
         $("#success-panel").hidden = true;
         $("#restore-notice").hidden = true;
         $(".tabs").hidden = false;
@@ -3866,6 +4177,10 @@
 
     async function discardDraft() {
         if (state.submitting) return;
+        if (recordingBusy()) {
+            showRecordingNavigationError("请先结束录音，再放弃草稿。");
+            return;
+        }
         // 服务端草稿可能在 PUT 成功后丢失响应，旧版页面也可能未留下本地标记。
         // DELETE 本身是幂等的：只要已有服务端草稿，放弃时就尝试清理全部三类媒体。
         const uploadedMedia = state.submission.serverId
@@ -4226,8 +4541,10 @@
         $("#photo-uploaded-badge").textContent = uploadedPhoto ? "草稿已上传" : "可重新选择并重试";
         $("#wechat-uploaded-badge").textContent = uploadedWechat ? "草稿已上传" : "可重新选择并重试";
         $("#audio-uploaded-badge").textContent = uploadedAudioCount === audioCount
-            ? `已添加 ${audioCount} 段`
-            : `已上传 ${uploadedAudioCount}/${audioCount} 段`;
+            ? `已上传 ${audioCount} 段`
+            : uploadedAudioCount === 0
+                ? `已添加 ${audioCount} 段`
+                : `已上传 ${uploadedAudioCount}/${audioCount} 段`;
         $("#photo-uploaded-badge").hidden = !uploadedPhoto && !pendingPhoto;
         $("#wechat-uploaded-badge").hidden = !uploadedWechat && !pendingWechat;
         $("#audio-uploaded-badge").hidden = audioCount === 0;
@@ -4236,6 +4553,7 @@
         $("#delete-uploaded-wechat-button").hidden = !mayHaveRemoteMediaState(MEDIA.wechat)
             || Boolean(state.files.wechat);
         checkRecorderSupport();
+        renderRecordingStatus();
     }
 
     function hasRemoteMediaState(mediaKind) {

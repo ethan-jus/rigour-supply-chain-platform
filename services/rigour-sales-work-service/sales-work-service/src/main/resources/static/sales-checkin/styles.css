@@ -1494,9 +1494,157 @@ input[readonly] {
     padding-top: 4px;
 }
 
+.recording-workspace {
+    margin: -2px 0 26px;
+    padding: 18px;
+    border: 1px solid #c9dbd9;
+    border-left: 4px solid var(--brand);
+    border-radius: 12px;
+    background: var(--brand-soft);
+    scroll-margin-top: calc(var(--header-height) + env(safe-area-inset-top) + 14px);
+}
+
+.recording-workspace.is-recording {
+    border-color: #dfaaa5;
+    border-left-color: var(--danger);
+    background: var(--danger-soft);
+}
+
+.recording-workspace.is-review-mode {
+    margin: 22px 0 0;
+    padding: 16px;
+    border-left-width: 1px;
+    background: var(--surface);
+}
+
+.recording-workspace.is-review-mode .recording-workspace__heading,
+.recording-workspace.is-review-mode .recording-sequence,
+.recording-workspace.is-review-mode:not(.is-locked-recovery) .recording-consent,
+.recording-workspace.is-review-mode:not(.is-locked-recovery) .recording-options {
+    display: none;
+}
+
+.recording-workspace.is-review-mode .audio-recorder {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+}
+
+.recording-workspace.is-review-mode .recorder-controls {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.recording-workspace.is-review-mode .recording-clock {
+    display: none;
+}
+
+.recording-workspace.is-review-mode.is-locked-recovery .recorder-controls {
+    grid-template-columns: minmax(0, 1fr) 74px;
+}
+
+.recording-workspace.is-review-mode.is-locked-recovery .recording-clock {
+    display: grid;
+}
+
+.recording-workspace__heading {
+    margin-bottom: 14px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.recording-workspace__heading h2 {
+    margin: 2px 0 0;
+    font-size: 18px;
+    line-height: 1.35;
+}
+
+.recording-stage-badge {
+    min-height: 28px;
+    padding: 4px 9px;
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    border: 1px solid var(--brand-line);
+    border-radius: 999px;
+    color: var(--brand);
+    background: var(--surface);
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.recording-sequence {
+    margin-bottom: 14px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.recording-sequence > span {
+    min-width: 0;
+    padding: 3px 2px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.35;
+    text-align: center;
+}
+
+.recording-sequence strong {
+    margin-right: 2px;
+    color: var(--brand);
+    font-variant-numeric: tabular-nums;
+}
+
+.recording-workspace.is-recording .recording-sequence,
+.recording-workspace.is-recording .recording-consent {
+    display: none;
+}
+
+.recording-consent {
+    min-height: 52px;
+    padding: 11px 12px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    border: 1px solid #c9dbd9;
+    border-radius: var(--radius);
+    background: var(--surface);
+    cursor: pointer;
+}
+
+.recording-consent > input {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    margin: 2px 0 0;
+    accent-color: var(--brand);
+}
+
+.recording-consent > span {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+}
+
+.recording-consent strong {
+    font-size: 14px;
+}
+
+.recording-consent small {
+    color: var(--muted);
+    font-size: 12px;
+}
+
 .audio-recorder {
     padding-top: 22px;
     border-top: 1px solid var(--line);
+}
+
+.recording-workspace .audio-recorder {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top-color: rgba(36, 83, 88, .18);
 }
 
 .recorder-controls {
@@ -1517,6 +1665,18 @@ input[readonly] {
     border-color: var(--danger);
     color: var(--danger);
     background: var(--danger-soft);
+}
+
+.record-button.is-starting {
+    color: var(--warning);
+    border-color: #d9ba83;
+    background: var(--warning-soft);
+}
+
+.step-actions .primary-button.is-recording-action {
+    border-color: var(--danger);
+    color: #fff;
+    background: var(--danger);
 }
 
 .recording-clock {
@@ -1583,7 +1743,6 @@ input[readonly] {
 }
 
 .fallback-picker {
-    margin-top: 14px;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1605,6 +1764,41 @@ input[readonly] {
     width: 1px;
     height: 1px;
     opacity: 0;
+}
+
+.recording-options {
+    margin-top: 12px;
+    border-top: 1px solid rgba(36, 83, 88, .14);
+}
+
+.recording-options > summary {
+    min-height: 42px;
+    display: flex;
+    align-items: center;
+    color: var(--brand);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.recording-options__body {
+    padding: 0 0 8px;
+}
+
+.recording-options__body .field__help {
+    margin: 6px 0 0;
+}
+
+.recording-status-note {
+    margin: 8px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.recording-workspace.is-recording .recording-status-note {
+    color: var(--danger);
+    font-weight: 600;
 }
 
 .confirmation-card {

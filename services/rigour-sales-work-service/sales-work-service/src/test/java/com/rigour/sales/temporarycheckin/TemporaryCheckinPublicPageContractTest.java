@@ -30,7 +30,8 @@ class TemporaryCheckinPublicPageContractTest {
         assertThat(script)
                 .contains("captureSource: \"BROWSER_RECORDER\"")
                 .contains("captureSource: \"FILE_UPLOAD\"")
-                .contains("state.recorder.clientStartedAt = new Date(startedAt).toISOString();")
+                .contains("state.recorder.clientStartedAt = clientStartedAt;")
+                .contains("clientStartedAt: session.clientStartedAt")
                 .contains("clientDurationMs: duration")
                 .contains("fileLastModifiedAt: audioFileLastModifiedAt(file)")
                 .contains("function readAudioDurationMs(file)")
@@ -49,6 +50,57 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("normalizeAudioCaptureSource(rawSegment.captureSource, rawSegment.source)")
                 .contains("\"页面录制\"")
                 .contains("[\"已有文件\", \"时间不可核验\"]");
+    }
+
+    @Test
+    void startsRecordingDuringConversationAndKeepsOneRecoveryWorkspace() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+        String styles = resource("static/sales-checkin/styles.css");
+        int workspaceStart = html.indexOf("id=\"visit-recording-workspace\"");
+        int visitStepOneStart = html.indexOf("id=\"visit-step-1\"");
+        int optionalStart = html.indexOf("<details class=\"optional-evidence-group\">");
+        int optionalEnd = html.indexOf("</details>", optionalStart);
+        String optionalEvidence = html.substring(optionalStart, optionalEnd);
+
+        assertThat(workspaceStart).isGreaterThanOrEqualTo(0).isLessThan(visitStepOneStart);
+        assertThat(html)
+                .contains("<strong>进店沟通</strong>")
+                .contains("先告知，再开始现场录音")
+                .contains("我已告知现场人员并获得允许")
+                .contains("开始后可继续填写客户信息")
+                .contains("录音仍为选填")
+                .contains("id=\"visit-recording-step-2-slot\"")
+                .contains("id=\"visit-recording-step-3-slot\"");
+        assertThat(optionalEvidence)
+                .contains("企微截图（选填）")
+                .doesNotContain("record-audio-button", "audio-preview-list");
+        assertThat(script)
+                .contains("visitStep === 1")
+                .contains("state.recorder.starting")
+                .contains("const requestSequence = ++state.recorder.startSequence")
+                .contains("state.recorder.sessionId !== session.id")
+                .contains("state.recorder.activeSession = session")
+                .contains("const pendingSession = Boolean(")
+                .contains("pendingSession || isRecording()")
+                .contains("if (recorder.state === \"inactive\") {")
+                .contains("scheduleRecordingStopFallback(session)")
+                .contains("if (session.chunks.length) {")
+                .contains("stopRecorderStream(stream)")
+                .contains("请先告知现场人员并勾选确认，再开始录音")
+                .contains("请先结束录音，再进入下一步或返回选店")
+                .contains("返回选择门店会清除本次已添加的录音、照片和截图")
+                .contains("activeRecording ? \"结束并保存录音\"")
+                .contains("recordingSlot.appendChild(recordingWorkspace)")
+                .contains("target === 2")
+                .contains("if (recordingBusy()) {\n"
+                        + "                stopRecording();");
+        assertThat(styles)
+                .contains(".recording-workspace")
+                .contains(".recording-consent")
+                .contains(".recording-workspace.is-recording")
+                .contains(".recording-workspace.is-review-mode")
+                .contains(".recording-workspace.is-review-mode:not(.is-locked-recovery) .recording-consent");
     }
 
     @Test
@@ -351,8 +403,8 @@ class TemporaryCheckinPublicPageContractTest {
         assertThat(html)
                 .contains("class=\"field__help action-feedback\"")
                 .contains("role=\"status\" aria-live=\"polite\"")
-                .contains("/sales-checkin/styles.css?v=20260901-location-compat")
-                .contains("/sales-checkin/app.js?v=20260901-location-compat")
+                .contains("/sales-checkin/styles.css?v=20260901-recording-flow")
+                .contains("/sales-checkin/app.js?v=20260901-recording-flow")
                 .contains("实际定位不受业务归属城市限制")
                 .contains("当前位置附近没找到对应门店")
                 .contains("id=\"visit-step-1-next\"")
@@ -560,7 +612,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("createButton.disabled = createUnavailable;")
                 .doesNotContain("manualFallback");
         assertThat(script).doesNotContain("manualFallback");
-        assertThat(html).contains("/sales-checkin/app.js?v=20260901-location-compat");
+        assertThat(html).contains("/sales-checkin/app.js?v=20260901-recording-flow");
     }
 
     @Test
@@ -596,7 +648,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("setFlowNextState(visitNextOne, isVisitStepReady(1))")
                 .contains("button.dataset.incomplete = \"true\"")
                 .contains("flowPanel.dataset.flowStepPanel")
-                .contains("请先停止录音，再返回修改前面的内容");
+                .contains("请先结束录音，再进入下一步或返回选店");
         assertThat(flowNavigation)
                 .doesNotContain("requestJson(", "captureLocation(", "resolveLocationContext(",
                         "searchNewStoreOnce(", "uploadMedia(");
