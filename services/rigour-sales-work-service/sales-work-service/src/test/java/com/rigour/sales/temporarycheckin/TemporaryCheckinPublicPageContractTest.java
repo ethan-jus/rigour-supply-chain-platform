@@ -156,19 +156,34 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("GEOLOCATION_FRESH_MAX_AGE_MS = 60 * 1000")
                 .contains("GEOLOCATION_REFRESH_TIMEOUT_MS = 30000")
                 .contains("GEOLOCATION_ATTEMPT_TIMEOUT_MS = 15000")
+                .contains("GEOLOCATION_CLOCK_PROGRESS_MIN_MS = 250")
                 .contains("navigator.geolocation.watchPosition")
                 .contains("navigator.geolocation.clearWatch")
                 .contains("startWatch(false)")
                 .contains("startSinglePosition(false)")
+                .contains("startCompatibleAttempt();")
                 .contains("let geolocationAttemptSequence = 0")
                 .contains("attemptSequence === geolocationAttemptSequence")
-                .contains("status.textContent = \"兼容刷新中\"")
+                .contains("const captureDeadlineMs = Date.now() + GEOLOCATION_REFRESH_TIMEOUT_MS")
+                .contains("document.addEventListener(\"visibilitychange\", handleCaptureVisibility)")
+                .contains("window.addEventListener(\"pageshow\", handleCapturePageShow)")
+                .contains("compatibleSingleTimestampRetries < 1")
+                .contains("rejectedTimestampSample = null")
+                .contains("? \"兼容定位中\"")
+                .contains("? \"正在兼容获取当前位置…\"")
                 .contains("maximumAge: 0")
                 .contains("state[scope].location = null")
                 .contains("capturedAt: new Date(capturedAtMs).toISOString()")
-                .contains("检测到历史定位，正在等待手机刷新当前位置")
-                .contains("本次没有使用旧位置")
+                .contains("手机返回的定位时间需要刷新，正在切换兼容定位")
+                .contains("正在兼容获取本次现场定位，最多等待30秒")
+                .contains("本次未采用该位置")
                 .contains("geocodeStatus: \"CAPTURING\"")
+                .contains("function assessGeolocationTimestamp")
+                .contains("EPOCH_SECONDS", "EPOCH_MICROSECONDS", "EPOCH_NANOSECONDS")
+                .contains("APPLE_SECONDS", "APPLE_MICROSECONDS", "APPLE_NANOSECONDS")
+                .contains("MONOTONIC_MILLISECONDS", "MONOTONIC_MICROSECONDS", "MONOTONIC_NANOSECONDS")
+                .contains("function resolveAdvancingGeolocationClockCapturedAtMs")
+                .contains("LOCATION_TIMESTAMP", "NORMALIZED", "ADVANCING")
                 .contains("if (repaired === null)")
                 .contains("state[scope].location = null")
                 .contains("if (!state.visit.location || !state.visit.locationContext")
@@ -336,8 +351,8 @@ class TemporaryCheckinPublicPageContractTest {
         assertThat(html)
                 .contains("class=\"field__help action-feedback\"")
                 .contains("role=\"status\" aria-live=\"polite\"")
-                .contains("/sales-checkin/styles.css?v=20260830-location-radius")
-                .contains("/sales-checkin/app.js?v=20260830-location-radius")
+                .contains("/sales-checkin/styles.css?v=20260901-location-compat")
+                .contains("/sales-checkin/app.js?v=20260901-location-compat")
                 .contains("实际定位不受业务归属城市限制")
                 .contains("当前位置附近没找到对应门店")
                 .contains("id=\"visit-step-1-next\"")
@@ -451,7 +466,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("/diagnostics/events")
                 .contains("PHOTO_PICKER_OPEN", "PHOTO_SELECTED", "PHOTO_READY")
                 .contains("SEARCH_CLICK", "SEARCH_RESULT")
-                .contains("LOCATION_CLICK", "LOCATION_RESULT")
+                .contains("LOCATION_CLICK", "LOCATION_RESULT", "LOCATION_TIMESTAMP")
                 .contains("STORE_SAVE_CLICK", "CLIENT_ERROR")
                 .contains("X-Sales-Checkin-Client-Event-Id");
         assertThat(controller).contains("recordClientDiagnosticEvent");
@@ -545,7 +560,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("createButton.disabled = createUnavailable;")
                 .doesNotContain("manualFallback");
         assertThat(script).doesNotContain("manualFallback");
-        assertThat(html).contains("/sales-checkin/app.js?v=20260830-location-radius");
+        assertThat(html).contains("/sales-checkin/app.js?v=20260901-location-compat");
     }
 
     @Test

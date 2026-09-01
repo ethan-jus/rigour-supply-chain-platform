@@ -11,6 +11,8 @@
     const GEOLOCATION_FRESH_MAX_AGE_MS = 60 * 1000;
     const GEOLOCATION_REFRESH_TIMEOUT_MS = 30000;
     const GEOLOCATION_ATTEMPT_TIMEOUT_MS = 15000;
+    const GEOLOCATION_CLOCK_PROGRESS_MIN_MS = 250;
+    const GEOLOCATION_MAX_MONOTONIC_UPTIME_MS = 366 * 24 * 60 * 60 * 1000;
     const PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
     const HEADQUARTERS_CITY = "总部";
     const FLOW_STEPS = Object.freeze({ visit: 3, store: 3 });
@@ -151,6 +153,10 @@
             store: null
         },
         geolocationTimeoutIds: {
+            visit: null,
+            store: null
+        },
+        geolocationLifecycleCleanups: {
             visit: null,
             store: null
         },
@@ -1920,8 +1926,8 @@
         const diagnosticId = secureUuid();
         emitClientDiagnostic("LOCATION_CLICK", "STARTED", {}, diagnosticId);
         const button = $(`#${scope}-location-button`);
-        const status = $(`#${scope}-location-status`);
         const captureSequence = ++state.locationCaptureSequence[scope];
+        const captureDeadlineMs = Date.now() + GEOLOCATION_REFRESH_TIMEOUT_MS;
         let captureSettled = false;
         const captureIsActive = () => !captureSettled
             && state.locationCaptureSequence[scope] === captureSequence;
@@ -1957,8 +1963,14 @@
         let compatibleAttempted = false;
         let stalePositionReceived = false;
         let geolocationAttemptSequence = 0;
+        let geolocationCallbackCount = 0;
+        let rejectedTimestampSample = null;
+        let timestampIssueReported = false;
+        let compatibleSingleTimestampRetries = 0;
         let usingWatch = typeof navigator.geolocation.watchPosition === "function"
             && typeof navigator.geolocation.clearWatch === "function";
+
+        const diagnosticCallbackCount = () => Math.min(25, geolocationCallbackCount);
 
         const acceptPosition = (position, capturedAtMs) => {
             if (!captureIsActive() || state.submitting || (scope === "visit" && isBusinessLocked())) return;
@@ -1992,7 +2004,9 @@
             else renderStoreSource();
             renderBusinessLock();
             persistDraft();
-            emitClientDiagnostic("LOCATION_RESULT", "SUCCEEDED", {}, diagnosticId);
+            emitClientDiagnostic("LOCATION_RESULT", "SUCCEEDED", {
+                itemCount: diagnosticCallbackCount()
+            }, diagnosticId);
             resolveLocationContext(scope, diagnosticId);
         };
         const failLocation = (error, staleOnly = stalePositionReceived) => {
@@ -2000,7 +2014,7 @@
             captureSettled = true;
             stopGeolocationRefresh(scope);
             const message = staleOnly
-                ? "手机持续返回历史定位，本次没有使用旧位置。请打开系统定位、保持页面在前台后重试。"
+                ? "手机定位没有刷新成功，本次未采用该位置。请打开系统定位、关闭省电模式并保持页面在前台后重试。"
                 : geolocationErrorMessage(error, compatibleAttempted);
             state[scope].locationContext = {
                 geocodeStatus: "FAILED",
@@ -2010,11 +2024,30 @@
             renderLocation(scope);
             setFieldError(`${scope}-location`, message);
             persistDraft();
-            emitClientDiagnostic("LOCATION_RESULT", "FAILED", {}, diagnosticId);
+            emitClientDiagnostic("LOCATION_RESULT", "FAILED", {
+                itemCount: diagnosticCallbackCount()
+            }, diagnosticId);
+        };
+        const captureDeadlineExceeded = () => {
+            if (!captureIsActive()) return true;
+            if (Date.now() < captureDeadlineMs) return false;
+            failLocation({ code: 3 });
+            return true;
+        };
+        const handleCaptureVisibility = () => {
+            if (document.visibilityState === "visible") captureDeadlineExceeded();
+        };
+        const handleCapturePageShow = () => captureDeadlineExceeded();
+        document.addEventListener("visibilitychange", handleCaptureVisibility);
+        window.addEventListener("pageshow", handleCapturePageShow);
+        state.geolocationLifecycleCleanups[scope] = () => {
+            document.removeEventListener("visibilitychange", handleCaptureVisibility);
+            window.removeEventListener("pageshow", handleCapturePageShow);
         };
 
         const handlePosition = (position) => {
-            if (!captureIsActive()) return true;
+            if (captureDeadlineExceeded()) return true;
+            geolocationCallbackCount += 1;
             if (!Number.isFinite(Number(position?.coords?.longitude))
                     || !Number.isFinite(Number(position?.coords?.latitude))
                     || !Number.isFinite(Number(position?.coords?.accuracy))) {
@@ -2022,18 +2055,46 @@
                 return true;
             }
             const receivedAtMs = Date.now();
-            const capturedAtMs = resolveGeolocationCapturedAtMs(
+            const timestamp = assessGeolocationTimestamp(
                 position?.timestamp, receivedAtMs, GEOLOCATION_FRESH_MAX_AGE_MS);
+            let capturedAtMs = timestamp.capturedAtMs;
+            if (capturedAtMs === null && rejectedTimestampSample) {
+                capturedAtMs = resolveAdvancingGeolocationClockCapturedAtMs(
+                    rejectedTimestampSample,
+                    { value: position?.timestamp, receivedAtMs });
+                if (capturedAtMs !== null) {
+                    emitClientDiagnostic("LOCATION_TIMESTAMP", "ADVANCING", {
+                        itemCount: diagnosticCallbackCount()
+                    }, diagnosticId);
+                }
+            }
             if (capturedAtMs === null) {
                 stalePositionReceived = true;
+                rejectedTimestampSample = { value: position?.timestamp, receivedAtMs };
                 state[scope].locationContext = {
                     geocodeStatus: "CAPTURING",
                     stalePosition: true,
-                    errorMessage: "检测到历史定位，正在等待手机刷新当前位置。"
+                    compatibleAttempt: compatibleAttempted,
+                    errorMessage: compatibleAttempted
+                        ? "正在兼容获取本次现场定位，最多等待30秒。"
+                        : "手机返回的定位时间需要刷新，正在切换兼容定位。"
                 };
-                setFieldError(`${scope}-location`, "检测到历史定位，正在等待手机刷新当前位置…");
+                setFieldError(`${scope}-location`, compatibleAttempted
+                    ? "正在兼容获取本次现场定位，最多等待30秒…"
+                    : "手机返回的定位时间需要刷新，正在切换兼容定位…");
                 renderLocation(scope);
+                if (!timestampIssueReported) {
+                    timestampIssueReported = true;
+                    emitClientDiagnostic("LOCATION_TIMESTAMP", timestamp.kind, {
+                        itemCount: diagnosticCallbackCount()
+                    }, diagnosticId);
+                }
                 return false;
+            }
+            if (timestamp.kind === "NORMALIZED") {
+                emitClientDiagnostic("LOCATION_TIMESTAMP", "NORMALIZED", {
+                    itemCount: diagnosticCallbackCount()
+                }, diagnosticId);
             }
             clearFieldError(`${scope}-location`);
             acceptPosition(position, capturedAtMs);
@@ -2048,16 +2109,18 @@
                 (position) => {
                     if (!attemptIsActive()) return;
                     if (handlePosition(position)) return;
-                    if (!compatibleAttempted) {
-                        compatibleAttempted = true;
-                        status.textContent = "兼容刷新中";
+                    if (!compatibleAttempted) startCompatibleAttempt();
+                    else if (compatibleSingleTimestampRetries < 1) {
+                        compatibleSingleTimestampRetries += 1;
                         startSinglePosition(false);
                     } else {
                         failLocation({ code: 3 }, true);
                     }
                 },
                 (error) => {
-                    if (attemptIsActive()) retryCompatibleLocation(error);
+                    if (attemptIsActive() && !captureDeadlineExceeded()) {
+                        retryCompatibleLocation(error);
+                    }
                 },
                 {
                     enableHighAccuracy,
@@ -2074,10 +2137,15 @@
             try {
                 const watchId = navigator.geolocation.watchPosition(
                     (position) => {
-                        if (attemptIsActive()) handlePosition(position);
+                        if (!attemptIsActive()) return;
+                        if (!handlePosition(position) && !compatibleAttempted) {
+                            startCompatibleAttempt();
+                        }
                     },
                     (error) => {
-                        if (attemptIsActive()) retryCompatibleLocation(error);
+                        if (attemptIsActive() && !captureDeadlineExceeded()) {
+                            retryCompatibleLocation(error);
+                        }
                     },
                     {
                         enableHighAccuracy,
@@ -2103,20 +2171,36 @@
                 failLocation(error);
                 return;
             }
+            startCompatibleAttempt();
+        };
+
+        const startCompatibleAttempt = () => {
+            if (!captureIsActive() || compatibleAttempted) return;
             compatibleAttempted = true;
+            rejectedTimestampSample = null;
             if (usingWatch && state.geolocationWatchIds[scope] !== null) {
                 navigator.geolocation.clearWatch(state.geolocationWatchIds[scope]);
                 state.geolocationWatchIds[scope] = null;
             }
-            status.textContent = "兼容刷新中";
-            status.className = "status-pill is-loading";
-            clearFieldError(`${scope}-location`);
+            state[scope].locationContext = {
+                geocodeStatus: "CAPTURING",
+                stalePosition: true,
+                compatibleAttempt: true,
+                errorMessage: "正在兼容获取本次现场定位，最多等待30秒。"
+            };
+            setFieldError(`${scope}-location`, "正在兼容获取本次现场定位，最多等待30秒…");
+            renderLocation(scope);
             if (usingWatch) startWatch(false);
             else startSinglePosition(false);
         };
 
+        const enforceCaptureDeadline = () => {
+            if (captureDeadlineExceeded()) return;
+            state.geolocationTimeoutIds[scope] = window.setTimeout(
+                enforceCaptureDeadline, Math.max(0, captureDeadlineMs - Date.now()));
+        };
         state.geolocationTimeoutIds[scope] = window.setTimeout(
-            () => failLocation({ code: 3 }), GEOLOCATION_REFRESH_TIMEOUT_MS);
+            enforceCaptureDeadline, GEOLOCATION_REFRESH_TIMEOUT_MS);
         if (usingWatch) startWatch(true);
         else startSinglePosition(true);
     }
@@ -2263,18 +2347,22 @@
         const retry = $(`#${scope}-location-retry`);
         const capturing = context?.geocodeStatus === "CAPTURING";
         const awaitingFreshPosition = capturing && context?.stalePosition === true;
+        const compatibleAttempt = capturing && context?.compatibleAttempt === true;
         const failed = context?.geocodeStatus === "FAILED";
         button.closest(".location-card")?.classList.toggle("is-located", Boolean(location));
         if (scope === "store") {
             button.closest(".location-card")?.classList.toggle("has-inherited-location", Boolean(location));
         }
         if (!location) {
-            status.textContent = awaitingFreshPosition ? "刷新定位中" : capturing ? "定位中" : failed ? "定位失败" : "未定位";
+            status.textContent = compatibleAttempt
+                ? "兼容定位中"
+                : awaitingFreshPosition ? "刷新定位中" : capturing ? "定位中" : failed ? "定位失败" : "未定位";
             status.className = capturing ? "status-pill is-loading" : failed ? "status-pill is-warning" : "status-pill";
             detail.hidden = true;
             retry.hidden = true;
-            $(`#${scope}-location-button-label`).textContent = awaitingFreshPosition
-                ? "正在等待手机刷新…"
+            $(`#${scope}-location-button-label`).textContent = compatibleAttempt
+                ? "正在兼容获取当前位置…"
+                : awaitingFreshPosition ? "正在等待手机刷新…"
                 : capturing ? "正在刷新当前位置…" : "刷新当前位置";
             renderFlowActions();
             return;
@@ -4426,15 +4514,122 @@
         return Number(Number(value).toFixed(2));
     }
 
-    function resolveGeolocationCapturedAtMs(value, referenceMs, pastWindowMs) {
-        const raw = typeof value === "number" ? value : Date.parse(value || "");
-        if (!Number.isFinite(raw) || !Number.isFinite(referenceMs)) return null;
+    function numericGeolocationTimestamp(value) {
+        if (typeof value === "number") return Number.isFinite(value) && value !== 0 ? value : null;
+        if (typeof value !== "string" || !value.trim()) return null;
+        const numeric = Number(value.trim());
+        return Number.isFinite(numeric) && numeric !== 0 ? numeric : null;
+    }
+
+    function uniqueTimestampCandidates(candidates) {
+        const seen = new Set();
+        return candidates.filter((candidate) => {
+            if (!Number.isFinite(candidate.value)) return false;
+            const key = Math.round(candidate.value * 1000) / 1000;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
+    function epochTimestampCandidates(value) {
+        const numeric = numericGeolocationTimestamp(value);
+        if (numeric !== null) {
+            return uniqueTimestampCandidates([
+                { value: numeric, source: "EPOCH_MILLISECONDS", clockScale: 1 },
+                { value: numeric * 1000, source: "EPOCH_SECONDS", clockScale: 1000 },
+                { value: numeric / 1000, source: "EPOCH_MICROSECONDS", clockScale: 0.001 },
+                { value: numeric / 1000000, source: "EPOCH_NANOSECONDS", clockScale: 0.000001 },
+                { value: numeric + APPLE_REFERENCE_EPOCH_OFFSET_MS,
+                    source: "APPLE_MILLISECONDS", clockScale: 1 },
+                { value: numeric * 1000 + APPLE_REFERENCE_EPOCH_OFFSET_MS,
+                    source: "APPLE_SECONDS", clockScale: 1000 },
+                { value: numeric / 1000 + APPLE_REFERENCE_EPOCH_OFFSET_MS,
+                    source: "APPLE_MICROSECONDS", clockScale: 0.001 },
+                { value: numeric / 1000000 + APPLE_REFERENCE_EPOCH_OFFSET_MS,
+                    source: "APPLE_NANOSECONDS", clockScale: 0.000001 }
+            ]);
+        }
+        const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+        return Number.isFinite(parsed)
+            ? [{ value: parsed, source: "DATE_STRING", clockScale: 1 }] : [];
+    }
+
+    function monotonicTimestampCandidates(value) {
+        const numeric = numericGeolocationTimestamp(value);
+        if (numeric === null) return [];
+        return uniqueTimestampCandidates([
+            { value: numeric, source: "MONOTONIC_MILLISECONDS", clockScale: 1 },
+            { value: numeric * 1000, source: "MONOTONIC_SECONDS", clockScale: 1000 },
+            { value: numeric / 1000, source: "MONOTONIC_MICROSECONDS", clockScale: 0.001 },
+            { value: numeric / 1000000, source: "MONOTONIC_NANOSECONDS", clockScale: 0.000001 }
+        ]);
+    }
+
+    function plausibleMonotonicClockScales(value) {
+        return monotonicTimestampCandidates(value)
+            .filter((candidate) => candidate.value >= 0
+                && candidate.value <= GEOLOCATION_MAX_MONOTONIC_UPTIME_MS)
+            .map((candidate) => candidate.clockScale);
+    }
+
+    function assessGeolocationTimestamp(value, referenceMs, pastWindowMs) {
+        if (!Number.isFinite(referenceMs) || !Number.isFinite(pastWindowMs) || pastWindowMs < 0) {
+            return { capturedAtMs: null, kind: "UNSUPPORTED" };
+        }
         const minimum = referenceMs - pastWindowMs;
         const maximum = referenceMs + LOCATION_CAPTURE_FUTURE_SKEW_MS;
-        const candidates = [raw, raw + APPLE_REFERENCE_EPOCH_OFFSET_MS]
-            .filter((candidate) => candidate >= minimum && candidate <= maximum)
-            .sort((left, right) => Math.abs(referenceMs - left) - Math.abs(referenceMs - right));
-        return candidates.length ? candidates[0] : null;
+        const epochCandidates = epochTimestampCandidates(value);
+        const freshEpoch = epochCandidates
+            .filter((candidate) => candidate.value >= minimum && candidate.value <= maximum)
+            .sort((left, right) => Math.abs(referenceMs - left.value)
+                - Math.abs(referenceMs - right.value));
+        if (freshEpoch.length) {
+            return {
+                capturedAtMs: freshEpoch[0].value,
+                kind: freshEpoch[0].source === "EPOCH_MILLISECONDS" ? "FRESH" : "NORMALIZED"
+            };
+        }
+
+        const plausibleEpochMinimum = Date.UTC(2000, 0, 1);
+        const hasPlausibleEpoch = epochCandidates.some((candidate) =>
+            candidate.value >= plausibleEpochMinimum
+                && candidate.value <= referenceMs + 10 * 365.25 * 24 * 60 * 60 * 1000);
+        return {
+            capturedAtMs: null,
+            kind: hasPlausibleEpoch ? "STALE" : "UNSUPPORTED"
+        };
+    }
+
+    function resolveGeolocationCapturedAtMs(value, referenceMs, pastWindowMs) {
+        return assessGeolocationTimestamp(value, referenceMs, pastWindowMs).capturedAtMs;
+    }
+
+    function resolveAdvancingGeolocationClockCapturedAtMs(previous, current) {
+        const receiptElapsedMs = Number(current?.receivedAtMs) - Number(previous?.receivedAtMs);
+        if (!Number.isFinite(receiptElapsedMs)
+                || receiptElapsedMs < GEOLOCATION_CLOCK_PROGRESS_MIN_MS
+                || receiptElapsedMs > GEOLOCATION_REFRESH_TIMEOUT_MS + GEOLOCATION_ATTEMPT_TIMEOUT_MS) {
+            return null;
+        }
+        const previousRaw = numericGeolocationTimestamp(previous?.value)
+            ?? (typeof previous?.value === "string" ? Date.parse(previous.value) : NaN);
+        const currentRaw = numericGeolocationTimestamp(current?.value)
+            ?? (typeof current?.value === "string" ? Date.parse(current.value) : NaN);
+        if (!Number.isFinite(previousRaw) || !Number.isFinite(currentRaw)) return null;
+        const currentScales = new Set(plausibleMonotonicClockScales(current?.value));
+        const clockScales = plausibleMonotonicClockScales(previous?.value)
+            .filter((clockScale) => currentScales.has(clockScale));
+        const minimumSourceProgressMs = Math.max(
+            GEOLOCATION_CLOCK_PROGRESS_MIN_MS, receiptElapsedMs * 0.5);
+        const maximumSourceProgressMs = Math.max(1000, receiptElapsedMs * 2);
+        const clockAdvanced = clockScales.some((clockScale) => {
+            const sourceElapsedMs = (currentRaw - previousRaw) * clockScale;
+            return sourceElapsedMs >= minimumSourceProgressMs
+                && sourceElapsedMs <= maximumSourceProgressMs;
+        });
+        return clockAdvanced && Number.isFinite(Number(current.receivedAtMs))
+            ? Number(current.receivedAtMs) : null;
     }
 
     function repairRestoredGeolocationTimestamp(scope, savedAtMs) {
@@ -4474,6 +4669,9 @@
         const timeoutId = state.geolocationTimeoutIds[scope];
         if (timeoutId !== null) window.clearTimeout(timeoutId);
         state.geolocationTimeoutIds[scope] = null;
+        const lifecycleCleanup = state.geolocationLifecycleCleanups[scope];
+        if (typeof lifecycleCleanup === "function") lifecycleCleanup();
+        state.geolocationLifecycleCleanups[scope] = null;
     }
 
     function cancelLocationCapture(scope) {

@@ -125,12 +125,13 @@ public class TemporaryCheckinService {
     private static final Set<String> SUBMISSION_STATUSES = Set.of("DRAFT", "SUBMITTED");
     private static final Set<String> ADMIN_VISIT_TYPES = Set.of("FIRST_VISIT", "REVISIT");
     private static final Set<String> CLIENT_DIAGNOSTIC_EVENTS = Set.of(
-            "LOCATION_CLICK", "LOCATION_RESULT", "SEARCH_CLICK", "SEARCH_RESULT",
+            "LOCATION_CLICK", "LOCATION_RESULT", "LOCATION_TIMESTAMP", "SEARCH_CLICK", "SEARCH_RESULT",
             "PHOTO_PICKER_OPEN", "PHOTO_SELECTED", "PHOTO_REJECTED", "PHOTO_READY",
             "STORE_SAVE_CLICK", "CLIENT_ERROR", "PAGE_RESTORED");
     private static final Set<String> CLIENT_DIAGNOSTIC_RESULTS = Set.of(
             "STARTED", "SUCCEEDED", "FAILED", "BLOCKED", "AVAILABLE", "EMPTY",
-            "UNAVAILABLE", "ACCEPTED", "TOO_LARGE", "UNSUPPORTED", "CANCELLED");
+            "UNAVAILABLE", "ACCEPTED", "TOO_LARGE", "UNSUPPORTED", "CANCELLED",
+            "STALE", "NORMALIZED", "ADVANCING");
     private static final TypeReference<List<String>> STRING_LIST_TYPE = new TypeReference<>() { };
     private static final TypeReference<List<AudioSegment>> AUDIO_SEGMENT_LIST_TYPE = new TypeReference<>() { };
 
