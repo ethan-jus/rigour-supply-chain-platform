@@ -124,6 +124,10 @@ public class TemporaryCheckinService {
             Map.entry("广州", "4401"));
     private static final Set<String> SUBMISSION_STATUSES = Set.of("DRAFT", "SUBMITTED");
     private static final Set<String> ADMIN_VISIT_TYPES = Set.of("FIRST_VISIT", "REVISIT");
+    private static final Set<String> LOCATION_FAILURE_REASONS = Set.of(
+            "PERMISSION_DENIED", "POSITION_UNAVAILABLE", "TIMEOUT", "UNSUPPORTED",
+            "INSECURE_CONTEXT", "INVALID_POSITION", "TIMESTAMP_UNUSABLE",
+            "ACCURACY_INSUFFICIENT", "RESOLVE_FAILED", "USER_CONTINUED_AFTER_WAIT");
     private static final Set<String> CLIENT_DIAGNOSTIC_EVENTS = Set.of(
             "LOCATION_CLICK", "LOCATION_RESULT", "LOCATION_TIMESTAMP", "SEARCH_CLICK", "SEARCH_RESULT",
             "PHOTO_PICKER_OPEN", "PHOTO_SELECTED", "PHOTO_REJECTED", "PHOTO_READY",
@@ -237,7 +241,6 @@ public class TemporaryCheckinService {
         String escaped = normalizedQuery.replace("=", "==").replace("%", "=%").replace("_", "=_");
         return repository.searchStores(tenantId, normalizedCity, escaped, limit).stream()
                 .filter(store -> hasCompleteStoreProfile(store, configuredCities))
-                .filter(TemporaryCheckinService::hasValidStoreCoordinates)
                 .map(TemporaryCheckinService::storeView)
                 .toList();
     }
@@ -400,14 +403,16 @@ public class TemporaryCheckinService {
         if (request == null || request.clientStoreId() == null || request.salespersonId() == null) {
             throw TemporaryCheckinException.badRequest("clientStoreId和salespersonId不能为空");
         }
+        requireNoLocationException(request.locationFailureReason(), request.locationAttemptId());
         AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
-        NormalizedStore normalized = normalizeStore(request);
+        NormalizedStore normalized = normalizeStore(request, LocationVerification.verified());
         var salesperson = identity.salesperson();
         requireSalespersonCanWorkInCity(salesperson, normalized.city());
-        OptionalStore existing = existingStore(request.clientStoreId(), normalized);
-        if (existing.present()) {
+        StoreRow existingByClient = repository.findStoreByClientId(tenantId, request.clientStoreId()).orElse(null);
+        if (existingByClient != null && !"UNVERIFIED".equals(existingByClient.locationVerificationStatus())) {
+            assertSameStore(existingByClient, normalized);
             return loggedStoreOperation(identity, requestFacts, request, "IDEMPOTENT_CLIENT_ID",
-                    eligibleStoreView(existing.row()));
+                    eligibleStoreView(existingByClient));
         }
         requireAcceptableCurrentLocation(normalized.location());
         GeocodeResult verifiedGeocode = verifyLocationProof(
@@ -419,6 +424,22 @@ public class TemporaryCheckinService {
 
         Instant now = clock.instant();
         GeocodeWrite geocodeWrite = geocodeWrite(verifiedGeocode, now);
+        if (existingByClient != null) {
+            assertSameStoreProfileForLocationUpgrade(existingByClient, normalized);
+            StoreWrite upgrade = storeWrite(existingByClient.id(), request.clientStoreId(), salesperson.id(),
+                    normalized, geocodeWrite, now);
+            try {
+                if (repository.upgradeUnverifiedStoreLocation(upgrade) != 1) {
+                    throw TemporaryCheckinException.conflict("门店定位状态已变化，请刷新后重试");
+                }
+            } catch (DataIntegrityViolationException duplicate) {
+                throw TemporaryCheckinException.conflict("该门店定位已关联其他门店，请联系管理员合并");
+            }
+            StoreRow upgraded = repository.findStore(tenantId, existingByClient.id())
+                    .orElseThrow(() -> new IllegalStateException("门店定位补全后不可见"));
+            return loggedStoreOperation(identity, requestFacts, request, "UPGRADED_LOCATION",
+                    eligibleStoreView(upgraded));
+        }
         OptionalStore existingPoi = existingPoiStore(normalized);
         if (existingPoi.present()) {
             StoreRow current = existingPoi.row();
@@ -460,6 +481,53 @@ public class TemporaryCheckinService {
         return loggedStoreOperation(identity, requestFacts, request, "CREATED", eligibleStoreView(created));
     }
 
+    /**
+     * GPS 最终失败后的显式留档入口。该路径不签发或接受位置凭证，也不声称通过300米校验；
+     * 门店仍绑定已验证销售身份，并把失败原因和定位尝试编号持久化供后台复核。
+     */
+    @Transactional
+    public StoreView createStoreWithoutVerifiedLocation(
+            CreateStoreRequest request, TemporaryCheckinRequestFacts requestFacts) {
+        if (request == null || request.clientStoreId() == null || request.salespersonId() == null) {
+            throw TemporaryCheckinException.badRequest("clientStoreId和salespersonId不能为空");
+        }
+        LocationVerification verification = unverifiedLocation(
+                request.locationFailureReason(), request.locationAttemptId());
+        if (hasText(request.locationVerificationToken()) || hasText(request.sourcePoiToken())
+                || hasText(request.manualEntryToken()) || hasText(request.sourcePoiId())
+                || hasText(request.sourcePoiName()) || hasText(request.sourcePoiAddress())
+                || request.sourcePoiLongitude() != null || request.sourcePoiLatitude() != null) {
+            throw TemporaryCheckinException.badRequest("定位未核验时只能手工录入门店资料");
+        }
+        AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
+        NormalizedStore normalized = normalizeStore(request, verification);
+        var salesperson = identity.salesperson();
+        requireSalespersonCanWorkInCity(salesperson, normalized.city());
+        OptionalStore existing = existingStore(request.clientStoreId(), normalized);
+        if (existing.present()) {
+            return loggedStoreOperation(identity, requestFacts, request, "IDEMPOTENT_UNVERIFIED",
+                    eligibleStoreView(existing.row()));
+        }
+
+        Instant now = clock.instant();
+        GeocodeWrite geocodeWrite = unverifiedGeocodeWrite(normalized.location(), verification, now);
+        UUID id = UUID.randomUUID();
+        StoreWrite write = storeWrite(id, request.clientStoreId(), salesperson.id(), normalized, geocodeWrite, now);
+        try {
+            repository.insertStore(write);
+        } catch (DataIntegrityViolationException duplicate) {
+            StoreRow concurrent = repository.findStoreByClientIdForUpdate(tenantId, request.clientStoreId())
+                    .orElseThrow(() -> TemporaryCheckinException.conflict("门店创建冲突，请刷新后重试"));
+            assertSameStore(concurrent, normalized);
+            return loggedStoreOperation(identity, requestFacts, request, "CONCURRENT_UNVERIFIED",
+                    eligibleStoreView(concurrent));
+        }
+        StoreRow created = repository.findStore(tenantId, id)
+                .orElseThrow(() -> new IllegalStateException("门店写入后不可见"));
+        return loggedStoreOperation(identity, requestFacts, request, "CREATED_UNVERIFIED",
+                eligibleStoreView(created));
+    }
+
     @Transactional
     public DraftSubmissionView createDraft(
             CreateSubmissionRequest request, TemporaryCheckinRequestFacts requestFacts) {
@@ -468,6 +536,7 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.badRequest(
                     "clientSubmissionId、salespersonId和storeId不能为空");
         }
+        requireNoLocationException(request.locationFailureReason(), request.locationAttemptId());
         String key = validateSubmissionKey(request.submissionKey());
         AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
         String keyHash = sha256Hex(key.getBytes(StandardCharsets.UTF_8));
@@ -482,7 +551,8 @@ public class TemporaryCheckinService {
                 required(request.customerName(), "customerName", 128),
                 optionalPhone(request.customerPhone(), "customerPhone"),
                 requiredMultiline(request.visitResult(), "visitResult", 2000),
-                normalizeLocation(request.location()), true, request.privacyNoticeVersion());
+                normalizeLocation(request.location()), LocationVerification.verified(),
+                true, request.privacyNoticeVersion());
         var salesperson = identity.salesperson();
         requireSalespersonCanWorkInCity(salesperson, city);
         SubmissionRow existing = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId())
@@ -519,7 +589,95 @@ public class TemporaryCheckinService {
                 normalized.customerName(), normalized.customerPhone(), normalized.visitResult(),
                 normalized.location().longitude(), normalized.location().latitude(),
                 normalized.location().accuracyMeters(), normalized.location().capturedAt(),
-                normalized.location().note(), geocodeWrite, normalized.privacyNoticeVersion(), identityWrite, now);
+                normalized.location().note(), normalized.verification().status(),
+                normalized.verification().failureReason(), normalized.verification().attemptId(),
+                geocodeWrite, normalized.privacyNoticeVersion(), identityWrite, now);
+        try {
+            repository.insertSubmission(write);
+        } catch (DataIntegrityViolationException duplicate) {
+            SubmissionRow concurrent = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId())
+                    .orElseThrow(() -> TemporaryCheckinException.conflict("草稿创建冲突，请重试"));
+            salesIdentityService.requireSubmission(
+                    concurrent.salespersonId(), concurrent.deviceTokenHash(), requestFacts);
+            requireMatchingKey(concurrent, key);
+            assertSameSubmission(concurrent, normalized);
+            return new DraftSubmissionView(concurrent.id(), concurrent.status(), concurrent.createdAt());
+        }
+        return new DraftSubmissionView(id, "DRAFT", now);
+    }
+
+    /**
+     * GPS 最终不可用时仍保存拜访事实。记录会明确标记 UNVERIFIED，跳过位置凭证和距离门禁，
+     * 但身份、门店资料、隐私确认、幂等密钥及后续门头照要求均与正常路径相同。
+     */
+    @Transactional
+    public DraftSubmissionView createDraftWithoutVerifiedLocation(
+            CreateSubmissionRequest request, TemporaryCheckinRequestFacts requestFacts) {
+        if (request == null || request.clientSubmissionId() == null || request.salespersonId() == null
+                || request.storeId() == null) {
+            throw TemporaryCheckinException.badRequest(
+                    "clientSubmissionId、salespersonId和storeId不能为空");
+        }
+        if (hasText(request.locationVerificationToken())) {
+            throw TemporaryCheckinException.badRequest("定位未核验留档不能携带位置验证凭证");
+        }
+        LocationVerification verification = unverifiedLocation(
+                request.locationFailureReason(), request.locationAttemptId());
+        String key = validateSubmissionKey(request.submissionKey());
+        AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
+        String keyHash = sha256Hex(key.getBytes(StandardCharsets.UTF_8));
+        if (!Boolean.TRUE.equals(request.privacyAccepted())) {
+            throw TemporaryCheckinException.badRequest("必须明确同意定位、照片、录音及转写说明");
+        }
+        if (!PRIVACY_NOTICE_VERSION.equals(request.privacyNoticeVersion())) {
+            throw TemporaryCheckinException.badRequest("隐私提示版本已更新，请刷新页面后重新确认");
+        }
+        String city = requiredEnum(request.city(), activeCities(), "city");
+        NormalizedSubmission normalized = new NormalizedSubmission(
+                city, request.salespersonId(), request.storeId(),
+                required(request.customerName(), "customerName", 128),
+                optionalPhone(request.customerPhone(), "customerPhone"),
+                requiredMultiline(request.visitResult(), "visitResult", 2000),
+                normalizeOptionalUnverifiedLocation(request.location()), verification,
+                true, request.privacyNoticeVersion());
+        var salesperson = identity.salesperson();
+        requireSalespersonCanWorkInCity(salesperson, city);
+        SubmissionRow existing = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId())
+                .orElse(null);
+        if (existing != null) {
+            salesIdentityService.requireSubmission(
+                    existing.salespersonId(), existing.deviceTokenHash(), requestFacts);
+            requireMatchingKey(existing, key);
+            assertSameSubmission(existing, normalized);
+            return new DraftSubmissionView(existing.id(), existing.status(), existing.createdAt());
+        }
+        StoreRow store = repository.findStore(tenantId, request.storeId())
+                .orElseThrow(() -> TemporaryCheckinException.notFound("门店不存在或已停用"));
+        requireEligibleUnverifiedCheckinStore(store, city);
+        UUID id = UUID.randomUUID();
+        Instant now = clock.instant();
+        GeocodeWrite geocodeWrite = unverifiedGeocodeWrite(normalized.location(), verification, now);
+        RiskSnapshot risk = withUnverifiedLocationRisk(salesIdentityService.evaluateRisk(identity));
+        RequestRiskFacts riskFacts = risk.requestFacts();
+        IdentityRiskWrite identityWrite = new IdentityRiskWrite(identity.identityMethod(), identity.verifiedAt(),
+                salesperson.credentialVersion(), identity.deviceTokenHash(),
+                riskFacts == null ? null : riskFacts.ipHash(),
+                riskFacts == null ? null : riskFacts.ipNetworkHash(),
+                riskFacts == null ? null : riskFacts.ipMasked(),
+                riskFacts == null ? null : riskFacts.userAgentHash(),
+                riskFacts == null ? null : riskFacts.userAgentSummary(),
+                risk.level(), writeJson(risk.flags()), risk.evaluatedAt());
+        NormalizedLocation location = normalized.location();
+        SubmissionWrite write = new SubmissionWrite(id, tenantId, request.clientSubmissionId(), keyHash,
+                city, salesperson.id(), salesperson.name(), store.id(), store.name(),
+                normalized.customerName(), normalized.customerPhone(), normalized.visitResult(),
+                location == null ? null : location.longitude(),
+                location == null ? null : location.latitude(),
+                location == null ? null : location.accuracyMeters(),
+                location == null ? null : location.capturedAt(),
+                location == null ? null : location.note(), verification.status(),
+                verification.failureReason(), verification.attemptId(), geocodeWrite,
+                normalized.privacyNoticeVersion(), identityWrite, now);
         try {
             repository.insertSubmission(write);
         } catch (DataIntegrityViolationException duplicate) {
@@ -823,6 +981,9 @@ public class TemporaryCheckinService {
         }
         Instant submittedAt = clock.instant();
         RiskSnapshot risk = salesIdentityService.evaluateRisk(identity);
+        if ("UNVERIFIED".equals(submission.locationVerificationStatus())) {
+            risk = withUnverifiedLocationRisk(risk);
+        }
         RequestRiskFacts facts = risk.requestFacts();
         CompletionRiskWrite completionRisk = new CompletionRiskWrite(
                 facts == null ? null : facts.ipHash(), facts == null ? null : facts.ipNetworkHash(),
@@ -936,7 +1097,8 @@ public class TemporaryCheckinService {
                 "salesperson_id", "salesperson_name", "store_id", "store_name",
                 "visit_ordinal", "visit_type", "revisit_number", "customer_name", "customer_phone", "visit_result",
                 "longitude", "latitude", "accuracy_meters",
-                "location_captured_at", "location_note", "location_address", "location_adcode",
+                "location_captured_at", "location_note", "location_verification_status",
+                "location_failure_reason", "location_attempt_id", "location_address", "location_adcode",
                 "identity_method", "submitted_ip_masked", "user_agent_summary", "risk_level", "risk_flags",
                 "storefront_photo", "wechat_screenshot", "audio", "transcription_status", "transcript",
                 "summary_status", "summary", "created_at", "submitted_at"));
@@ -948,7 +1110,9 @@ public class TemporaryCheckinService {
                     value(row.customerName()),
                     value(row.customerPhone()), value(row.visitResult()), value(row.longitude()),
                     value(row.latitude()), value(row.accuracyMeters()), value(row.locationCapturedAt()),
-                    value(row.locationNote()), value(row.locationAddress()), value(row.locationAdcode()),
+                    value(row.locationNote()), value(row.locationVerificationStatus()),
+                    value(row.locationFailureReason()), value(row.locationAttemptId()),
+                    value(row.locationAddress()), value(row.locationAdcode()),
                     value(row.identityMethod()), value(row.submittedIpMasked()), value(row.userAgentSummary()),
                     value(row.riskLevel()), value(String.join("|", safeRiskFlags(row.riskFlagsJson()))),
                     value(row.storefrontPhotoFilename()), value(row.wechatScreenshotFilename()),
@@ -1141,13 +1305,19 @@ public class TemporaryCheckinService {
         }
     }
 
+    private void requireEligibleUnverifiedCheckinStore(StoreRow store, String businessCity) {
+        if (!hasCompleteStoreProfile(store, activeCities()) || !Objects.equals(store.city(), businessCity)) {
+            throw TemporaryCheckinException.badRequest("门店基础资料不完整或不属于当前业务城市");
+        }
+    }
+
     /**
      * 已建档门店全程使用建档时采集的原始 WGS84 坐标。
      * 门店坐标不可用时，才候选首次符合精度要求的已提交拜访 WGS84 坐标作为固定锚点。
      * 该坐标是匿名自报数据，不静默回写门店档案，不能被解释为可信门店位置或考勤证据。
      */
     private CheckinAnchor checkinAnchor(StoreRow store, StoreCheckinAnchorRow fallback) {
-        if (hasUsableStoreCoordinates(store)) {
+        if (!"UNVERIFIED".equals(store.locationVerificationStatus()) && hasUsableStoreCoordinates(store)) {
             return new CheckinAnchor(store.longitude(), store.latitude(),
                     store.accuracyMeters(), "STORE_LOCATION");
         }
@@ -1425,7 +1595,7 @@ public class TemporaryCheckinService {
                 store.operatingStatus(), store.contactName(),
                 store.contactPhone(), store.areaRange(), store.facilityCount(), store.businessTypes(),
                 store.intendedBusinesses(), store.cooperationIntent(), store.storeGrade(), store.tags(),
-                store.location());
+                store.location(), store.verification());
     }
 
     private GeocodeResult verifyLocationProof(
@@ -1445,6 +1615,38 @@ public class TemporaryCheckinService {
                 geocode.errorCode(), verifiedAt);
     }
 
+    private static GeocodeWrite unverifiedGeocodeWrite(
+            NormalizedLocation location, LocationVerification verification, Instant observedAt) {
+        return new GeocodeWrite("SKIPPED", null, null, null, null, null, null, null,
+                null, null, "LOCATION_" + verification.failureReason(), observedAt);
+    }
+
+    private static void requireNoLocationException(String failureReason, UUID attemptId) {
+        if (hasText(failureReason) || attemptId != null) {
+            throw TemporaryCheckinException.badRequest("正常定位提交不能携带定位失败标记");
+        }
+    }
+
+    private static LocationVerification unverifiedLocation(String failureReason, UUID attemptId) {
+        String normalizedReason = required(failureReason, "locationFailureReason", 64);
+        if (!LOCATION_FAILURE_REASONS.contains(normalizedReason)) {
+            throw TemporaryCheckinException.badRequest("locationFailureReason无效");
+        }
+        if (attemptId == null) {
+            throw TemporaryCheckinException.badRequest("locationAttemptId不能为空");
+        }
+        return new LocationVerification("UNVERIFIED", normalizedReason, attemptId);
+    }
+
+    private static RiskSnapshot withUnverifiedLocationRisk(RiskSnapshot risk) {
+        Objects.requireNonNull(risk, "risk");
+        List<String> flags = new ArrayList<>();
+        if (risk.flags() != null) flags.addAll(risk.flags());
+        if (!flags.contains("LOCATION_UNVERIFIED")) flags.add("LOCATION_UNVERIFIED");
+        String level = "HIGH".equals(risk.level()) ? "HIGH" : "MEDIUM";
+        return new RiskSnapshot(level, List.copyOf(flags), risk.requestFacts(), risk.evaluatedAt());
+    }
+
     private static AdminScopeView scopeView(AdminScope scope) {
         return new AdminScopeView(scope.username(), scope.allCities(), scope.city());
     }
@@ -1455,7 +1657,8 @@ public class TemporaryCheckinService {
                 visitType(row.visitOrdinal()), revisitNumber(row.visitOrdinal()),
                 row.customerName(), row.customerPhone(),
                 row.visitResult(), row.longitude(), row.latitude(), row.accuracyMeters(),
-                row.locationCapturedAt(), row.locationNote(), row.locationAddress(), row.locationAdcode(),
+                row.locationCapturedAt(), row.locationNote(), row.locationVerificationStatus(),
+                row.locationFailureReason(), row.locationAttemptId(), row.locationAddress(), row.locationAdcode(),
                 row.identityMethod(), row.submittedIpMasked(), row.userAgentSummary(), row.riskLevel(),
                 safeRiskFlags(row.riskFlagsJson()),
                 row.storefrontPhotoAvailable(), row.wechatScreenshotAvailable(), row.audioAvailable(),
@@ -1554,9 +1757,14 @@ public class TemporaryCheckinService {
                 normalized.contactName(), normalized.contactPhone(), normalized.areaRange(),
                 normalized.facilityCount(), writeJson(normalized.businessTypes()),
                 writeJson(normalized.intendedBusinesses()), normalized.cooperationIntent(),
-                normalized.storeGrade(), writeJson(normalized.tags()), normalized.location().longitude(),
-                normalized.location().latitude(), normalized.location().accuracyMeters(),
-                normalized.location().capturedAt(), normalized.location().note(), normalized.sourcePoiId(),
+                normalized.storeGrade(), writeJson(normalized.tags()),
+                normalized.location() == null ? null : normalized.location().longitude(),
+                normalized.location() == null ? null : normalized.location().latitude(),
+                normalized.location() == null ? null : normalized.location().accuracyMeters(),
+                normalized.location() == null ? null : normalized.location().capturedAt(),
+                normalized.location() == null ? null : normalized.location().note(),
+                normalized.verification().status(), normalized.verification().failureReason(),
+                normalized.verification().attemptId(), normalized.sourcePoiId(),
                 normalized.sourcePoiName(), normalized.sourcePoiAddress(), normalized.sourcePoiLongitude(),
                 normalized.sourcePoiLatitude(), geocode, now);
     }
@@ -1594,12 +1802,30 @@ public class TemporaryCheckinService {
                 || !Objects.equals(row.cooperationIntent(), normalized.cooperationIntent())
                 || !Objects.equals(row.storeGrade(), normalized.storeGrade())
                 || !jsonListEquals(row.tagsJson(), normalized.tags())
-                || !decimalEquals(row.longitude(), normalized.location().longitude())
-                || !decimalEquals(row.latitude(), normalized.location().latitude())
-                || !decimalEquals(row.accuracyMeters(), normalized.location().accuracyMeters())
-                || !sameInstant(row.locationCapturedAt(), normalized.location().capturedAt())
-                || !Objects.equals(row.locationNote(), normalized.location().note())) {
+                || !sameStoredLocation(row, normalized.location())
+                || !sameLocationVerification(row.locationVerificationStatus(), row.locationFailureReason(),
+                        row.locationAttemptId(), normalized.verification())) {
             throw TemporaryCheckinException.conflict("clientStoreId已被不同门店数据使用");
+        }
+    }
+
+    private void assertSameStoreProfileForLocationUpgrade(StoreRow row, NormalizedStore normalized) {
+        if (!"UNVERIFIED".equals(row.locationVerificationStatus())
+                || !Objects.equals(row.city(), normalized.city())
+                || !Objects.equals(row.creatorSalespersonId(), normalized.salespersonId())
+                || !Objects.equals(row.attribute(), normalized.attribute())
+                || !Objects.equals(row.name(), normalized.name())
+                || !Objects.equals(row.operatingStatus(), normalized.operatingStatus())
+                || !Objects.equals(row.contactName(), normalized.contactName())
+                || !Objects.equals(row.contactPhone(), normalized.contactPhone())
+                || !Objects.equals(row.areaRange(), normalized.areaRange())
+                || !Objects.equals(row.facilityCount(), normalized.facilityCount())
+                || !jsonListEquals(row.businessTypesJson(), normalized.businessTypes())
+                || !jsonListEquals(row.intendedBusinessesJson(), normalized.intendedBusinesses())
+                || !Objects.equals(row.cooperationIntent(), normalized.cooperationIntent())
+                || !Objects.equals(row.storeGrade(), normalized.storeGrade())
+                || !jsonListEquals(row.tagsJson(), normalized.tags())) {
+            throw TemporaryCheckinException.conflict("待补定位门店资料已变化，请刷新后重试");
         }
     }
 
@@ -1611,18 +1837,54 @@ public class TemporaryCheckinService {
                 || !Objects.equals(row.customerName(), normalized.customerName())
                 || !Objects.equals(row.customerPhone(), normalized.customerPhone())
                 || !Objects.equals(row.visitResult(), normalized.visitResult())
-                || !decimalEquals(row.longitude(), location.longitude())
-                || !decimalEquals(row.latitude(), location.latitude())
-                || !decimalEquals(row.accuracyMeters(), location.accuracyMeters())
-                || !sameInstant(row.locationCapturedAt(), location.capturedAt())
-                || !Objects.equals(row.locationNote(), location.note())
+                || !sameStoredLocation(row, location)
+                || !sameLocationVerification(row.locationVerificationStatus(), row.locationFailureReason(),
+                        row.locationAttemptId(), normalized.verification())
                 || row.privacyAccepted() != normalized.privacyAccepted()
                 || !Objects.equals(row.privacyNoticeVersion(), normalized.privacyNoticeVersion())) {
             throw TemporaryCheckinException.conflict("clientSubmissionId已被不同打卡数据使用");
         }
     }
 
-    private NormalizedStore normalizeStore(CreateStoreRequest request) {
+    private static boolean sameStoredLocation(StoreRow row, NormalizedLocation location) {
+        return sameStoredLocation(row.longitude(), row.latitude(), row.accuracyMeters(),
+                row.locationCapturedAt(), row.locationNote(), location);
+    }
+
+    private static boolean sameStoredLocation(SubmissionRow row, NormalizedLocation location) {
+        return sameStoredLocation(row.longitude(), row.latitude(), row.accuracyMeters(),
+                row.locationCapturedAt(), row.locationNote(), location);
+    }
+
+    private static boolean sameStoredLocation(
+            BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
+            Instant capturedAt, String note, NormalizedLocation location) {
+        if (location == null) {
+            return longitude == null && latitude == null && accuracyMeters == null
+                    && capturedAt == null && note == null;
+        }
+        return nullableDecimalEquals(longitude, location.longitude())
+                && nullableDecimalEquals(latitude, location.latitude())
+                && nullableDecimalEquals(accuracyMeters, location.accuracyMeters())
+                && sameNullableInstant(capturedAt, location.capturedAt())
+                && Objects.equals(note, location.note());
+    }
+
+    private static boolean sameLocationVerification(
+            String storedStatus, String storedReason, UUID storedAttemptId,
+            LocationVerification expected) {
+        String normalizedStoredStatus = hasText(storedStatus) ? storedStatus : "LEGACY";
+        if ("VERIFIED".equals(expected.status())) {
+            return Set.of("LEGACY", "VERIFIED").contains(normalizedStoredStatus)
+                    && storedReason == null && storedAttemptId == null;
+        }
+        return Objects.equals(normalizedStoredStatus, expected.status())
+                && Objects.equals(storedReason, expected.failureReason())
+                && Objects.equals(storedAttemptId, expected.attemptId());
+    }
+
+    private NormalizedStore normalizeStore(
+            CreateStoreRequest request, LocationVerification verification) {
         String city = requiredEnum(request.city(), activeCities(), "city");
         String sourcePoiId = optional(request.sourcePoiId(), "sourcePoiId", 128);
         String sourcePoiName = optional(request.sourcePoiName(), "sourcePoiName", 256);
@@ -1656,7 +1918,9 @@ public class TemporaryCheckinService {
                 requiredEnum(request.cooperationIntent(), properties.getCooperationIntents(), "cooperationIntent"),
                 optionalEnum(request.storeGrade(), properties.getStoreGrades(), "storeGrade"),
                 normalizeList(request.tags(), properties.getStoreTags(), "tags", true),
-                normalizeLocation(request.location()));
+                "VERIFIED".equals(verification.status())
+                        ? normalizeLocation(request.location()) : normalizeOptionalUnverifiedLocation(request.location()),
+                verification);
     }
 
     private TemporaryCheckinRepository.SalespersonRow requireSalesperson(UUID id, String city) {
@@ -1751,6 +2015,16 @@ public class TemporaryCheckinService {
         }
         return new NormalizedLocation(location.longitude(), location.latitude(), location.accuracyMeters(),
                 location.capturedAt(), optional(location.note(), "location.note", 512));
+    }
+
+    private NormalizedLocation normalizeOptionalUnverifiedLocation(LocationCommand location) {
+        if (location == null) return null;
+        try {
+            return normalizeLocation(location);
+        } catch (TemporaryCheckinException ignored) {
+            // 例外路径中的坐标只作辅助留档，异常或极粗坐标不得反过来阻断业务记录。
+            return null;
+        }
     }
 
     private static DetectedMedia detectImage(byte[] bytes) {
@@ -2226,10 +2500,12 @@ public class TemporaryCheckinService {
     }
 
     private static StoreView storeView(StoreRow row) {
-        return new StoreView(row.id(), row.name(), row.city(), storeLocationSummary(row));
+        return new StoreView(row.id(), row.name(), row.city(), storeLocationSummary(row),
+                row.locationVerificationStatus(), row.locationFailureReason());
     }
 
     private static String storeLocationSummary(StoreRow row) {
+        if ("UNVERIFIED".equals(row.locationVerificationStatus())) return "定位未核验";
         if (row.sourcePoiAddress() != null && !row.sourcePoiAddress().isBlank()) return row.sourcePoiAddress();
         if (row.locationAddress() != null && !row.locationAddress().isBlank()) return row.locationAddress();
         if (row.locationNote() != null && !row.locationNote().isBlank()) return row.locationNote();
@@ -2272,6 +2548,10 @@ public class TemporaryCheckinService {
         return left != null && right != null
                 && left.truncatedTo(java.time.temporal.ChronoUnit.MICROS)
                 .equals(right.truncatedTo(java.time.temporal.ChronoUnit.MICROS));
+    }
+
+    private static boolean sameNullableInstant(Instant left, Instant right) {
+        return left == null ? right == null : right != null && sameInstant(left, right);
     }
 
     private static boolean ascii(byte[] bytes, int offset, String value) {
@@ -2397,7 +2677,8 @@ public class TemporaryCheckinService {
 
     private record NormalizedSubmission(
             String city, UUID salespersonId, UUID storeId, String customerName, String customerPhone,
-            String visitResult, NormalizedLocation location, boolean privacyAccepted,
+            String visitResult, NormalizedLocation location, LocationVerification verification,
+            boolean privacyAccepted,
             String privacyNoticeVersion) { }
 
     private record NormalizedStore(
@@ -2406,7 +2687,14 @@ public class TemporaryCheckinService {
             String attribute, String name, String operatingStatus,
             String contactName, String contactPhone, String areaRange, String facilityCount,
             List<String> businessTypes, List<String> intendedBusinesses, String cooperationIntent,
-            String storeGrade, List<String> tags, NormalizedLocation location) { }
+            String storeGrade, List<String> tags, NormalizedLocation location,
+            LocationVerification verification) { }
+
+    private record LocationVerification(String status, String failureReason, UUID attemptId) {
+        static LocationVerification verified() {
+            return new LocationVerification("VERIFIED", null, null);
+        }
+    }
 
     private record CheckinAnchor(
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters, String source) { }

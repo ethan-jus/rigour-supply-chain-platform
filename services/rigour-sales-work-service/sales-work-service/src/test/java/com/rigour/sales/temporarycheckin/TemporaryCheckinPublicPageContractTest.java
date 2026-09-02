@@ -107,7 +107,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("stopRecorderStream(stream)")
                 .contains("请先告知现场人员并勾选确认，再开始录音")
                 .contains("请先结束录音，再进入下一步或返回选店")
-                .contains("返回选择门店会清除本次已添加的录音、照片和截图")
+                .contains("更换本次拜访门店会清除已添加的录音、照片和截图")
                 .contains("activeRecording ? \"结束并保存录音\"")
                 .contains("recordingSlot.appendChild(recordingWorkspace)")
                 .contains("target === 2")
@@ -246,7 +246,8 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("capturedAt: new Date(capturedAtMs).toISOString()")
                 .contains("正在适配此手机定位，请稍候")
                 .contains("正在适配此手机定位，通常几秒内完成")
-                .contains("本次未采用该位置")
+                .contains("candidateLocation: locationEvidenceFromPosition(position, receivedAtMs)")
+                .contains("unverified ? \"坐标接收时间\" : \"采集时间\"")
                 .contains("geocodeStatus: \"CAPTURING\"")
                 .contains("function assessGeolocationTimestamp")
                 .contains("EPOCH_SECONDS", "EPOCH_MICROSECONDS", "EPOCH_NANOSECONDS")
@@ -260,7 +261,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("Number(receivedAtMs) >= Number(captureDeadlineMs)")
                 .contains("if (repaired === null)")
                 .contains("state[scope].location = null")
-                .contains("if (!state.visit.location || !state.visit.locationContext")
+                .contains("(!state.visit.location && !locationExceptionReady(state.visit.locationContext))")
                 .contains("invalidateUnlockedVisitLocationForFreshEntry();")
                 .contains("scheduleInitialVisitLocationCapture();")
                 .contains("window.requestAnimationFrame(() => captureLocation(\"visit\"))")
@@ -296,7 +297,7 @@ class TemporaryCheckinPublicPageContractTest {
     }
 
     @Test
-    void keepsRegisteredStoresLocalAndSearchesNewAmapStoresOnlyOnExplicitAction() throws IOException {
+    void keepsVerifiedStoresLocalAndUsesExplicitDirectorySearchOnlyForUnverifiedLocation() throws IOException {
         String html = resource("static/sales-checkin/index.html");
         String script = resource("static/sales-checkin/app.js");
         String styles = resource("static/sales-checkin/styles.css");
@@ -305,7 +306,7 @@ class TemporaryCheckinPublicPageContractTest {
                 script.indexOf("async function searchNewStoreOnce()"));
 
         assertThat(html)
-                .contains("附近已建档门店")
+                .contains("已建档门店")
                 .contains("id=\"nearby-stores-scope\"")
                 .contains("id=\"poi-search-button\"")
                 .contains("aria-label=\"搜索高德新门店\" disabled>搜索</button>")
@@ -315,7 +316,7 @@ class TemporaryCheckinPublicPageContractTest {
         assertThat(script)
                 .contains("function visitNearbyOptions()")
                 .contains("function storePoiLookupStatus()")
-                .contains("$(\"#store-search\").addEventListener(\"input\", showVisitStoreOptions);")
+                .contains("$(\"#store-search\").addEventListener(\"input\", handleVisitStoreSearchInput);")
                 .contains(".filter((store) => store?.source === \"REGISTERED\")")
                 .contains(".filter(isUsableNearbyStore)")
                 .contains("requestJson(\"/locations/search-new-store\"")
@@ -331,15 +332,18 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("$(\"#poi-search-button\").addEventListener(\"click\", searchNewStoreOnce);")
                 .contains("void searchNewStoreOnce();")
                 .contains("const selectionToken = cleanText(poi.selectionToken);")
-                .contains("sourcePoiToken: optionalText(state.store.sourcePoiToken)")
-                .contains("locationVerificationToken: optionalText(\n"
+                .contains("sourcePoiToken: unverified ? undefined : optionalText(state.store.sourcePoiToken)")
+                .contains("locationVerificationToken: unverified ? undefined : optionalText(\n"
                         + "                state.store.locationContext?.locationVerificationToken)")
-                .contains("locationVerificationToken: optionalText(\n"
+                .contains("locationVerificationToken: unverified ? undefined : optionalText(\n"
                         + "                state.visit.locationContext?.locationVerificationToken)")
                 .contains("button.addEventListener(\"click\", () => selectStore(store));")
                 .contains("function visitRadiusLabel(context = state.visit.locationContext)")
                 .contains("context?.maxCheckinDistanceMeters")
-                .doesNotContain("/stores?city=", "SEARCH_DELAY_MS", "scheduleStoreSearch",
+                .contains("async function searchVisitStoreDirectory()")
+                .contains("/stores?city=${encodeURIComponent(state.visit.city)}")
+                .contains("locationExceptionReady(state.visit.locationContext)")
+                .doesNotContain("SEARCH_DELAY_MS", "scheduleStoreSearch",
                         "schedulePoiSearch", "searchNearbyWithQuery", "poi-search-toggle",
                         "locationContextCityVerified", "context.cityMatched !== false");
         assertThat(inputHandler).doesNotContain("requestJson", "/locations/");
@@ -426,8 +430,8 @@ class TemporaryCheckinPublicPageContractTest {
         assertThat(html)
                 .contains("class=\"field__help action-feedback\"")
                 .contains("role=\"status\" aria-live=\"polite\"")
-                .contains("/sales-checkin/styles.css?v=20260901-recording-flow")
-                .contains("/sales-checkin/app.js?v=20260901-recording-flow")
+                .contains("/sales-checkin/styles.css?v=20260902-unverified-location")
+                .contains("/sales-checkin/app.js?v=20260902-unverified-location")
                 .contains("实际定位不受业务归属城市限制")
                 .contains("当前位置附近没找到对应门店")
                 .contains("id=\"visit-step-1-next\"")
@@ -577,7 +581,7 @@ class TemporaryCheckinPublicPageContractTest {
     }
 
     @Test
-    void requiresServerManualEntryTokenAndDoesNotAuthorizeManualEntryOnNetworkFailure() throws IOException {
+    void requiresServerManualEntryTokenUnlessLocationFailureIsExplicitlyRecorded() throws IOException {
         String script = resource("static/sales-checkin/app.js");
         int searchStart = script.indexOf("async function searchNewStoreOnce()");
         int catchStart = script.indexOf("        } catch (error) {", searchStart);
@@ -592,8 +596,11 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("state.store.poiSearchLookupStatus = poiLookupStatus;")
                 .contains("if (!state.store.manualEntryAllowed) return;")
                 .contains("state.store.sourceMode = \"MANUAL\";")
-                .contains("manualEntryToken: state.store.sourceMode === \"MANUAL\"")
-                .contains("if (state.store.sourceMode === \"MANUAL\" && !cleanText(state.store.manualEntryToken))")
+                .contains("manualEntryToken: !unverified && state.store.sourceMode === \"MANUAL\"")
+                .contains("&& !locationExceptionReady(state.store.locationContext)")
+                .contains("locationFailureReason: unverified")
+                .contains("locationAttemptId: unverified")
+                .contains("/stores/unverified-location")
                 .contains("本次高德搜索暂不可用，可点击下方手工录入继续")
                 .contains("保存时仍校验当前位置")
                 .doesNotContain("function manualStoreFallbackAvailable");
@@ -603,6 +610,44 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("state.store.manualEntryToken = \"\";")
                 .contains("未收到服务端搜索确认，请检查网络后重新点击搜索。")
                 .doesNotContain("manualEntryAllowed = true");
+    }
+
+    @Test
+    void letsFinalLocationFailureContinueButKeepsTheStorefrontPhotoEvidence() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+
+        assertThat(html)
+                .contains("id=\"visit-location-continue\"")
+                .contains("定位慢，先继续录入")
+                .contains("定位未核验，仍可继续打卡")
+                .contains("id=\"store-location-continue\"")
+                .contains("定位未核验，仍可新增门店")
+                .contains("id=\"storefront-photo\" type=\"file\"")
+                .contains("本次记录已成功提交；设备未返回可靠定位")
+                .contains("后台已标记为“定位未核验”");
+        assertThat(script)
+                .contains("const GEOLOCATION_CONTINUE_AFTER_MS = 6000")
+                .contains("const GEOLOCATION_REFRESH_TIMEOUT_MS = 30000")
+                .contains("const MAX_RECORDED_UNVERIFIED_ACCURACY_METERS = 10000")
+                .contains("function continueWithoutVerifiedLocation(scope)")
+                .contains("USER_CONTINUED_AFTER_WAIT")
+                .contains("function setUnverifiedLocation(")
+                .contains("locationVerificationStatus: \"UNVERIFIED\"")
+                .contains("/stores?city=${encodeURIComponent(state.visit.city)}&q=${encodeURIComponent(query)}&limit=20")
+                .contains("/submissions/unverified-location")
+                .contains("$(\"#success-location-note\").hidden = !locationExceptionReady(state.visit.locationContext)")
+                .contains("{ step: MEDIA.photo, file: state.files.photo, required: true }");
+
+        String prepareNewStore = script.substring(
+                script.indexOf("async function prepareNewStore()"),
+                script.indexOf("function clearSourcePoi", script.indexOf("async function prepareNewStore()")));
+        assertThat(prepareNewStore).doesNotContain("confirmVisitMediaResetForStoreChange");
+        assertThat(script)
+                .contains("const selectedStoreBeforeSave = state.visit.selectedStore?.id || null")
+                .contains("if (selectedStoreBeforeSave && !confirmVisitMediaResetForStoreChange())")
+                .contains("String(selectedStoreBeforeSave) !== String(createdStore.storeId)")
+                .contains("resetVisitMediaForStoreChange();");
     }
 
     @Test
@@ -617,7 +662,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("Object.values(state.locationControllers).forEach((controller) => controller?.abort());")
                 .contains("cancelLocationCapture(\"visit\");")
                 .contains("cancelLocationCapture(\"store\");")
-                .contains("!state.visit.location || !locationContextReady(state.visit.locationContext)")
+                .contains("!locationFlowReady(state.visit.locationContext)")
                 .contains("state.visit.locationContext = state.store.locationContext")
                 .contains("state.submitting = false;\n            setFormsDisabled(false);");
     }
@@ -631,12 +676,12 @@ class TemporaryCheckinPublicPageContractTest {
         String renderNearbyStores = script.substring(renderStart, renderEnd);
 
         assertThat(renderNearbyStores)
-                .contains("if (!locationContextReady(context)) {")
+                .contains("if (!flowReady) {")
                 .contains("const createUnavailable = state.submitting || isBusinessLocked();")
                 .contains("createButton.disabled = createUnavailable;")
                 .doesNotContain("manualFallback");
         assertThat(script).doesNotContain("manualFallback");
-        assertThat(html).contains("/sales-checkin/app.js?v=20260901-recording-flow");
+        assertThat(html).contains("/sales-checkin/app.js?v=20260902-unverified-location");
     }
 
     @Test

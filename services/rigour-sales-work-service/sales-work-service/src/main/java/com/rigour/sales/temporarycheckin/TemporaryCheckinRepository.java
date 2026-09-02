@@ -82,6 +82,7 @@ public class TemporaryCheckinRepository {
                        contact_name, contact_phone, area_range, facility_count, business_types_json,
                        intended_businesses_json, cooperation_intent, store_grade, tags_json,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       location_verification_status, location_failure_reason, location_attempt_id,
                        source_poi_id, source_poi_name, source_poi_address,
                        source_poi_longitude, source_poi_latitude,
                        location_address, location_formatted_address, location_adcode,
@@ -114,6 +115,7 @@ public class TemporaryCheckinRepository {
                                ) AS anchor_rank
                           FROM temp_sales_checkin_submission
                          WHERE tenant_id=? AND status='SUBMITTED'
+                           AND location_verification_status IN ('LEGACY', 'VERIFIED')
                            AND longitude IS NOT NULL AND latitude IS NOT NULL
                            AND longitude BETWEEN -180 AND 180
                            AND latitude BETWEEN -90 AND 90
@@ -132,6 +134,7 @@ public class TemporaryCheckinRepository {
                 SELECT store_id, longitude, latitude, accuracy_meters, location_captured_at
                   FROM temp_sales_checkin_submission
                  WHERE tenant_id=? AND store_id=? AND status='SUBMITTED'
+                   AND location_verification_status IN ('LEGACY', 'VERIFIED')
                    AND longitude IS NOT NULL AND latitude IS NOT NULL
                    AND longitude BETWEEN -180 AND 180
                    AND latitude BETWEEN -90 AND 90
@@ -184,18 +187,20 @@ public class TemporaryCheckinRepository {
                      operating_status, contact_name, contact_phone, area_range, facility_count,
                      business_types_json, intended_businesses_json, cooperation_intent, store_grade,
                      tags_json, longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                     location_verification_status, location_failure_reason, location_attempt_id,
                      location_address, location_formatted_address, location_adcode,
                      amap_longitude, amap_latitude, geocode_status, geocode_error_code, geocoded_at,
                      status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), ?, ?,
-                        CAST(? AS JSON), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+                        CAST(? AS JSON), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
                 """, bin(row.id()), bin(row.tenantId()), bin(row.clientStoreId()), row.sourcePoiId(),
                 row.sourcePoiName(), row.sourcePoiAddress(), row.sourcePoiLongitude(), row.sourcePoiLatitude(), row.city(),
                 bin(row.creatorSalespersonId()), row.attribute(), row.name(), row.operatingStatus(),
                 row.contactName(), row.contactPhone(), row.areaRange(), row.facilityCount(),
                 row.businessTypesJson(), row.intendedBusinessesJson(), row.cooperationIntent(),
                 row.storeGrade(), row.tagsJson(), row.longitude(), row.latitude(), row.accuracyMeters(),
-                timestamp(row.locationCapturedAt()), row.locationNote(), row.geocode().address(),
+                timestamp(row.locationCapturedAt()), row.locationNote(), row.locationVerificationStatus(),
+                row.locationFailureReason(), bin(row.locationAttemptId()), row.geocode().address(),
                 row.geocode().formattedAddress(), row.geocode().adcode(), row.geocode().amapLongitude(),
                 row.geocode().amapLatitude(), row.geocode().status(), row.geocode().errorCode(),
                 timestamp(row.geocode().geocodedAt()), timestamp(row.now()), timestamp(row.now()));
@@ -210,7 +215,8 @@ public class TemporaryCheckinRepository {
                        area_range=?, facility_count=?, business_types_json=CAST(? AS JSON),
                        intended_businesses_json=CAST(? AS JSON), cooperation_intent=?, store_grade=?,
                        tags_json=CAST(? AS JSON), longitude=?, latitude=?, accuracy_meters=?,
-                       location_captured_at=?, location_note=?, location_address=?,
+                       location_captured_at=?, location_note=?, location_verification_status=?,
+                       location_failure_reason=?, location_attempt_id=?, location_address=?,
                        location_formatted_address=?, location_adcode=?, amap_longitude=?, amap_latitude=?,
                        geocode_status=?, geocode_error_code=?, geocoded_at=?, updated_at=?
                  WHERE tenant_id=? AND id=? AND status='ACTIVE' AND source_poi_id=?
@@ -219,11 +225,40 @@ public class TemporaryCheckinRepository {
                 row.contactName(), row.contactPhone(), row.areaRange(), row.facilityCount(),
                 row.businessTypesJson(), row.intendedBusinessesJson(), row.cooperationIntent(),
                 row.storeGrade(), row.tagsJson(), row.longitude(), row.latitude(), row.accuracyMeters(),
-                timestamp(row.locationCapturedAt()), row.locationNote(), row.geocode().address(),
+                timestamp(row.locationCapturedAt()), row.locationNote(), row.locationVerificationStatus(),
+                row.locationFailureReason(), bin(row.locationAttemptId()), row.geocode().address(),
                 row.geocode().formattedAddress(), row.geocode().adcode(), row.geocode().amapLongitude(),
                 row.geocode().amapLatitude(), row.geocode().status(), row.geocode().errorCode(),
                 timestamp(row.geocode().geocodedAt()), timestamp(row.now()), bin(row.tenantId()),
                 bin(row.id()), row.sourcePoiId());
+    }
+
+    public int upgradeUnverifiedStoreLocation(StoreWrite row) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_store
+                   SET source_poi_id=?, source_poi_name=?, source_poi_address=?,
+                       source_poi_longitude=?, source_poi_latitude=?,
+                       attribute=?, name=?, operating_status=?, contact_name=?, contact_phone=?,
+                       area_range=?, facility_count=?, business_types_json=CAST(? AS JSON),
+                       intended_businesses_json=CAST(? AS JSON), cooperation_intent=?, store_grade=?,
+                       tags_json=CAST(? AS JSON), longitude=?, latitude=?, accuracy_meters=?,
+                       location_captured_at=?, location_note=?, location_verification_status=?,
+                       location_failure_reason=?, location_attempt_id=?, location_address=?,
+                       location_formatted_address=?, location_adcode=?, amap_longitude=?, amap_latitude=?,
+                       geocode_status=?, geocode_error_code=?, geocoded_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND client_store_id=? AND status='ACTIVE'
+                   AND location_verification_status='UNVERIFIED'
+                """, row.sourcePoiId(), row.sourcePoiName(), row.sourcePoiAddress(),
+                row.sourcePoiLongitude(), row.sourcePoiLatitude(), row.attribute(), row.name(),
+                row.operatingStatus(), row.contactName(), row.contactPhone(), row.areaRange(),
+                row.facilityCount(), row.businessTypesJson(), row.intendedBusinessesJson(),
+                row.cooperationIntent(), row.storeGrade(), row.tagsJson(), row.longitude(), row.latitude(),
+                row.accuracyMeters(), timestamp(row.locationCapturedAt()), row.locationNote(),
+                row.locationVerificationStatus(), row.locationFailureReason(), bin(row.locationAttemptId()),
+                row.geocode().address(), row.geocode().formattedAddress(), row.geocode().adcode(),
+                row.geocode().amapLongitude(), row.geocode().amapLatitude(), row.geocode().status(),
+                row.geocode().errorCode(), timestamp(row.geocode().geocodedAt()), timestamp(row.now()),
+                bin(row.tenantId()), bin(row.id()), bin(row.clientStoreId()));
     }
 
     public Optional<SubmissionRow> findSubmissionByClientId(UUID tenantId, UUID clientSubmissionId) {
@@ -296,7 +331,8 @@ public class TemporaryCheckinRepository {
                     (id, tenant_id, client_submission_id, submission_key_hash, status, city,
                      salesperson_id, salesperson_name_snapshot, store_id, store_name_snapshot,
                      customer_name, customer_phone, visit_result, longitude, latitude, accuracy_meters,
-                     location_captured_at, location_note,
+                     location_captured_at, location_note, location_verification_status,
+                     location_failure_reason, location_attempt_id,
                      location_address, location_formatted_address, location_adcode, location_province,
                      location_city, location_district, location_township, amap_longitude, amap_latitude,
                      geocode_status, geocode_error_code, geocoded_at,
@@ -305,13 +341,14 @@ public class TemporaryCheckinRepository {
                      draft_ip_hash, draft_ip_network_hash, draft_ip_masked,
                      user_agent_hash, user_agent_summary, risk_level, risk_flags_json, risk_evaluated_at,
                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?,
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?)
                 """, bin(row.id()), bin(row.tenantId()), bin(row.clientSubmissionId()), row.keyHash(), row.city(),
                 bin(row.salespersonId()), row.salespersonName(), bin(row.storeId()), row.storeName(),
                 row.customerName(), row.customerPhone(), row.visitResult(), row.longitude(), row.latitude(),
                 row.accuracyMeters(), timestamp(row.locationCapturedAt()), row.locationNote(),
+                row.locationVerificationStatus(), row.locationFailureReason(), bin(row.locationAttemptId()),
                 geocode.address(), geocode.formattedAddress(), geocode.adcode(), geocode.province(),
                 geocode.city(), geocode.district(), geocode.township(), geocode.amapLongitude(),
                 geocode.amapLatitude(), geocode.status(), geocode.errorCode(), timestamp(geocode.geocodedAt()),
@@ -438,6 +475,7 @@ public class TemporaryCheckinRepository {
                        r.visit_ordinal,
                        customer_name, customer_phone, visit_result,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       location_verification_status, location_failure_reason, location_attempt_id,
                        location_address, location_adcode,
                        identity_method, submitted_ip_masked, user_agent_summary,
                        risk_level, risk_flags_json,
@@ -505,6 +543,7 @@ public class TemporaryCheckinRepository {
                        s.store_id, s.store_name_snapshot, r.visit_ordinal,
                        customer_name, customer_phone, visit_result,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       location_verification_status, location_failure_reason, location_attempt_id,
                        location_address, location_adcode,
                        identity_method, submitted_ip_masked, user_agent_summary,
                        risk_level, risk_flags_json,
@@ -847,6 +886,7 @@ public class TemporaryCheckinRepository {
                        contact_name, contact_phone, area_range, facility_count, business_types_json,
                        intended_businesses_json, cooperation_intent, store_grade, tags_json,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       location_verification_status, location_failure_reason, location_attempt_id,
                        source_poi_id, source_poi_name, source_poi_address,
                        source_poi_longitude, source_poi_latitude,
                        location_address, location_formatted_address, location_adcode,
@@ -861,7 +901,8 @@ public class TemporaryCheckinRepository {
                 SELECT id, client_submission_id, submission_key_hash, status, city, salesperson_id,
                        salesperson_name_snapshot, store_id, store_name_snapshot, customer_name,
                        customer_phone, visit_result, longitude, latitude, accuracy_meters,
-                       location_captured_at, location_note, privacy_accepted, privacy_notice_version,
+                       location_captured_at, location_note, location_verification_status,
+                       location_failure_reason, location_attempt_id, privacy_accepted, privacy_notice_version,
                        identity_method, identity_verified_at, credential_version, device_token_hash,
                        draft_ip_hash, draft_ip_network_hash, draft_ip_masked,
                        submitted_ip_hash, submitted_ip_network_hash, submitted_ip_masked,
@@ -906,7 +947,9 @@ public class TemporaryCheckinRepository {
                 rs.getString("cooperation_intent"), rs.getString("store_grade"), rs.getString("tags_json"),
                 rs.getBigDecimal("longitude"), rs.getBigDecimal("latitude"),
                 rs.getBigDecimal("accuracy_meters"), instant(rs, "location_captured_at"),
-                rs.getString("location_note"), rs.getString("source_poi_id"), rs.getString("source_poi_name"),
+                rs.getString("location_note"), rs.getString("location_verification_status"),
+                rs.getString("location_failure_reason"), uuid(rs, "location_attempt_id"),
+                rs.getString("source_poi_id"), rs.getString("source_poi_name"),
                 rs.getString("source_poi_address"), rs.getBigDecimal("source_poi_longitude"),
                 rs.getBigDecimal("source_poi_latitude"), rs.getString("location_address"),
                 rs.getString("location_formatted_address"), rs.getString("location_adcode"),
@@ -930,6 +973,8 @@ public class TemporaryCheckinRepository {
                 rs.getString("customer_phone"), rs.getString("visit_result"), rs.getBigDecimal("longitude"),
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
+                rs.getString("location_verification_status"), rs.getString("location_failure_reason"),
+                uuid(rs, "location_attempt_id"),
                 rs.getBoolean("privacy_accepted"), rs.getString("privacy_notice_version"),
                 rs.getString("identity_method"), instant(rs, "identity_verified_at"),
                 nullableInt(rs, "credential_version"), rs.getString("device_token_hash"),
@@ -965,6 +1010,8 @@ public class TemporaryCheckinRepository {
                 rs.getString("customer_phone"), rs.getString("visit_result"), rs.getBigDecimal("longitude"),
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
+                rs.getString("location_verification_status"), rs.getString("location_failure_reason"),
+                uuid(rs, "location_attempt_id"),
                 rs.getString("location_address"), rs.getString("location_adcode"),
                 rs.getString("identity_method"), rs.getString("submitted_ip_masked"),
                 rs.getString("user_agent_summary"), rs.getString("risk_level"),
@@ -988,6 +1035,8 @@ public class TemporaryCheckinRepository {
                 rs.getString("customer_phone"), rs.getString("visit_result"), rs.getBigDecimal("longitude"),
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
+                rs.getString("location_verification_status"), rs.getString("location_failure_reason"),
+                uuid(rs, "location_attempt_id"),
                 rs.getString("location_address"), rs.getString("location_adcode"),
                 rs.getString("identity_method"), rs.getString("submitted_ip_masked"),
                 rs.getString("user_agent_summary"), rs.getString("risk_level"),
@@ -1052,7 +1101,8 @@ public class TemporaryCheckinRepository {
             String operatingStatus, String contactName, String contactPhone, String areaRange, String facilityCount,
             String businessTypesJson, String intendedBusinessesJson, String cooperationIntent, String storeGrade,
             String tagsJson, BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, String sourcePoiId, String sourcePoiName,
+            Instant locationCapturedAt, String locationNote, String locationVerificationStatus,
+            String locationFailureReason, UUID locationAttemptId, String sourcePoiId, String sourcePoiName,
             String sourcePoiAddress, BigDecimal sourcePoiLongitude, BigDecimal sourcePoiLatitude,
             String locationAddress, String locationFormattedAddress, String locationAdcode,
             BigDecimal amapLongitude, BigDecimal amapLatitude, String geocodeStatus, String geocodeErrorCode,
@@ -1064,6 +1114,7 @@ public class TemporaryCheckinRepository {
             String facilityCount, String businessTypesJson, String intendedBusinessesJson, String cooperationIntent,
             String storeGrade, String tagsJson, BigDecimal longitude, BigDecimal latitude,
             BigDecimal accuracyMeters, Instant locationCapturedAt, String locationNote,
+            String locationVerificationStatus, String locationFailureReason, UUID locationAttemptId,
             String sourcePoiId, String sourcePoiName, String sourcePoiAddress,
             BigDecimal sourcePoiLongitude, BigDecimal sourcePoiLatitude, GeocodeWrite geocode, Instant now) { }
 
@@ -1084,7 +1135,9 @@ public class TemporaryCheckinRepository {
             UUID salespersonId, String salespersonName, UUID storeId, String storeName,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, boolean privacyAccepted, String privacyNoticeVersion,
+            Instant locationCapturedAt, String locationNote, String locationVerificationStatus,
+            String locationFailureReason, UUID locationAttemptId,
+            boolean privacyAccepted, String privacyNoticeVersion,
             String identityMethod, Instant identityVerifiedAt, Integer credentialVersion,
             String deviceTokenHash, String draftIpHash, String draftIpNetworkHash, String draftIpMasked,
             String submittedIpHash, String submittedIpNetworkHash, String submittedIpMasked,
@@ -1103,7 +1156,8 @@ public class TemporaryCheckinRepository {
             UUID salespersonId, String salespersonName, UUID storeId, String storeName,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, GeocodeWrite geocode,
+            Instant locationCapturedAt, String locationNote, String locationVerificationStatus,
+            String locationFailureReason, UUID locationAttemptId, GeocodeWrite geocode,
             String privacyNoticeVersion, IdentityRiskWrite identityRisk, Instant now) {
 
         public SubmissionWrite(
@@ -1115,7 +1169,8 @@ public class TemporaryCheckinRepository {
                 String privacyNoticeVersion, Instant now) {
             this(id, tenantId, clientSubmissionId, keyHash, city, salespersonId, salespersonName,
                     storeId, storeName, customerName, customerPhone, visitResult, longitude, latitude,
-                    accuracyMeters, locationCapturedAt, locationNote, geocode, privacyNoticeVersion,
+                    accuracyMeters, locationCapturedAt, locationNote, "LEGACY", null, null,
+                    geocode, privacyNoticeVersion,
                     null, now);
         }
     }
@@ -1163,7 +1218,8 @@ public class TemporaryCheckinRepository {
             Long visitOrdinal,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, String locationAddress, String locationAdcode,
+            Instant locationCapturedAt, String locationNote, String locationVerificationStatus,
+            String locationFailureReason, UUID locationAttemptId, String locationAddress, String locationAdcode,
             String identityMethod, String submittedIpMasked, String userAgentSummary,
             String riskLevel, String riskFlagsJson,
             String storefrontPhotoFilename,
@@ -1178,7 +1234,8 @@ public class TemporaryCheckinRepository {
             UUID storeId, String storeName, Long visitOrdinal,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, String locationAddress, String locationAdcode,
+            Instant locationCapturedAt, String locationNote, String locationVerificationStatus,
+            String locationFailureReason, UUID locationAttemptId, String locationAddress, String locationAdcode,
             String identityMethod, String submittedIpMasked, String userAgentSummary,
             String riskLevel, String riskFlagsJson,
             boolean storefrontPhotoAvailable, boolean wechatScreenshotAvailable, boolean audioAvailable,

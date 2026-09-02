@@ -107,6 +107,14 @@ public class TemporaryCheckinController {
         return service.createStore(request, TemporaryCheckinRequestFacts.from(servletRequest));
     }
 
+    /** GPS 最终不可用时的显式例外入口；记录会标记为定位未核验。 */
+    @PostMapping("/stores/unverified-location")
+    public StoreView createStoreWithoutVerifiedLocation(
+            @RequestBody CreateStoreRequest request, HttpServletRequest servletRequest) {
+        return service.createStoreWithoutVerifiedLocation(
+                request, TemporaryCheckinRequestFacts.from(servletRequest));
+    }
+
     @PostMapping("/locations/resolve")
     public LocationContextView resolveLocation(
             @RequestBody ResolveLocationRequest request,
@@ -127,6 +135,14 @@ public class TemporaryCheckinController {
     public DraftSubmissionView createSubmission(
             @RequestBody CreateSubmissionRequest request, HttpServletRequest servletRequest) {
         return service.createDraft(request, TemporaryCheckinRequestFacts.from(servletRequest));
+    }
+
+    /** GPS 最终不可用时的显式例外入口；仍要求身份、门店、现场照片和完整业务记录。 */
+    @PostMapping("/submissions/unverified-location")
+    public DraftSubmissionView createSubmissionWithoutVerifiedLocation(
+            @RequestBody CreateSubmissionRequest request, HttpServletRequest servletRequest) {
+        return service.createDraftWithoutVerifiedLocation(
+                request, TemporaryCheckinRequestFacts.from(servletRequest));
     }
 
     @PutMapping(path = "/submissions/{id}/media/{kind}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

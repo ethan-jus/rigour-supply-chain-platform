@@ -7,7 +7,7 @@
     <meta name="description" content="销售拜访打卡与门店信息临时采集页面">
     <meta name="robots" content="noindex,nofollow,noarchive">
     <title>销售拜访打卡</title>
-    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260901-recording-flow">
+    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260902-unverified-location">
 </head>
 <body>
 <header class="hero">
@@ -121,6 +121,12 @@
                 </button>
             </nav>
 
+            <div id="visit-unverified-banner" class="location-unverified-banner" role="status"
+                 aria-live="polite" hidden>
+                <strong>定位未核验，仍可继续打卡</strong>
+                <span>系统会保存已取得的坐标和失败原因，后台结合门头照复核。</span>
+            </div>
+
             <section id="visit-recording-workspace" class="recording-workspace"
                      aria-labelledby="recording-workspace-title" hidden>
                 <div class="recording-workspace__heading">
@@ -227,13 +233,20 @@
                     <div class="section-heading section-heading--inline">
                         <div>
                             <p class="section-kicker">当前位置</p>
-                            <h3>打卡地点 <span class="required-mark">*</span></h3>
+                            <h3>打卡地点（优先获取）</h3>
                         </div>
                         <span id="visit-location-status" class="status-pill">未定位</span>
                     </div>
                     <button id="visit-location-button" class="secondary-button location-button" type="button">
                         <span id="visit-location-button-label">刷新当前位置</span>
                     </button>
+                    <button id="visit-location-continue" class="location-continue-button" type="button" hidden>
+                        定位慢，先继续录入
+                    </button>
+                    <div id="visit-location-exception" class="location-exception-note" role="status" hidden>
+                        <strong>定位未核验</strong>
+                        <span>可以继续选择门店并完成打卡；门头照仍需上传。</span>
+                    </div>
                     <div id="visit-location-detail" class="location-detail" hidden>
                         <div class="location-address-row">
                             <span>定位地址</span>
@@ -268,7 +281,7 @@
                         <span>定位后即可选择本次拜访门店</span>
                     </div>
                     <div class="field store-search-field nearby-combobox-field">
-                        <label for="store-search" class="field__label">附近已建档门店</label>
+                        <label for="store-search" class="field__label">已建档门店</label>
                         <div class="search-input-wrap">
                             <input id="store-search" type="search" inputmode="search" autocomplete="off"
                                    role="combobox" placeholder="点击选择，或输入名称筛选"
@@ -293,7 +306,7 @@
 
                     <button id="create-store-link" class="create-store-action" type="button">
                         <span class="create-store-action__copy">
-                            <strong>附近没有这家门店？</strong>
+                            <strong>没有找到这家门店？</strong>
                             <small>进入蓝色新增门店流程，保存后自动返回打卡</small>
                         </span>
                         <span class="create-store-action__button">去新增</span>
@@ -514,6 +527,12 @@
                 </button>
             </nav>
 
+            <div id="store-unverified-banner" class="location-unverified-banner" role="status"
+                 aria-live="polite" hidden>
+                <strong>定位未核验，仍可新增门店</strong>
+                <span>请手工录入真实门店资料；系统会保存已取得的坐标和失败原因。</span>
+            </div>
+
             <div id="store-step-1" class="flow-step-panel" data-flow-step-panel="store" data-step-value="1">
             <section class="form-card store-owner-card">
                 <div class="section-heading">
@@ -549,7 +568,7 @@
                 <div class="section-heading section-heading--inline">
                     <div>
                         <p class="section-kicker">第一步</p>
-                        <h2>本次门店现场定位 <span class="required-mark">*</span></h2>
+                        <h2>本次门店现场定位（优先获取）</h2>
                     </div>
                     <span id="store-location-status" class="status-pill">未定位</span>
                 </div>
@@ -557,6 +576,13 @@
                 <button id="store-location-button" class="secondary-button location-button" type="button">
                     <span id="store-location-button-label">刷新当前位置</span>
                 </button>
+                <button id="store-location-continue" class="location-continue-button" type="button" hidden>
+                    定位慢，先继续录入
+                </button>
+                <div id="store-location-exception" class="location-exception-note" role="status" hidden>
+                    <strong>定位未核验</strong>
+                    <span>可以手工录入门店，系统会把本次定位情况一并保存。</span>
+                </div>
                 <div id="store-location-detail" class="location-detail" hidden>
                     <div class="location-address-row">
                         <span>定位地址</span>
@@ -568,7 +594,7 @@
                     <div><span>定位精度</span><strong id="store-location-accuracy"></strong></div>
                     <div><span>采集时间</span><strong id="store-location-time"></strong></div>
                 </div>
-                <label class="field field--compact">
+                <label id="store-location-note-field" class="field field--compact">
                     <span class="field__label">位置备注</span>
                     <input id="store-location-note" type="text" maxlength="300" placeholder="如：商场二层、临街入口（选填）">
                 </label>
@@ -582,7 +608,7 @@
                         <h2>确认门店来源</h2>
                     </div>
                 </div>
-                <p class="section-description">输入门店名称后点击“搜索”，只返回当前位置300米内候选；输入本身不会调用高德。</p>
+                <p id="store-source-description" class="section-description">输入门店名称后点击“搜索”，只返回当前位置300米内候选；输入本身不会调用高德。</p>
                 <div class="field poi-search-field">
                     <label for="poi-search" class="field__label">搜索高德新门店</label>
                     <div class="search-input-wrap">
@@ -748,6 +774,9 @@
         <h2>本次拜访已保存</h2>
         <p>提交编号：<strong id="success-submission-id"></strong></p>
         <p id="success-submitted-at"></p>
+        <p id="success-location-note" class="success-location-note" hidden>
+            本次记录已成功提交；设备未返回可靠定位，后台已标记为“定位未核验”，管理员会结合现场照片等记录复核。
+        </p>
         <button id="new-submission-button" class="primary-button" type="button">继续录入下一次拜访</button>
     </section>
     </div>
@@ -757,6 +786,6 @@
     <p>临时过渡采集页面 · 如遇问题请保留页面中的错误信息并联系管理员</p>
 </footer>
 
-    <script src="/sales-checkin/app.js?v=20260901-recording-flow" defer></script>
+    <script src="/sales-checkin/app.js?v=20260902-unverified-location" defer></script>
 </body>
 </html>

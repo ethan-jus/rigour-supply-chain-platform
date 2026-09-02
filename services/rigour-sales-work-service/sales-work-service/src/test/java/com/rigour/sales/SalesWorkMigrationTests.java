@@ -131,6 +131,48 @@ class SalesWorkMigrationTests {
                        'amap_longitude','amap_latitude','geocode_status','geocode_error_code','geocoded_at'
                    )
                 """, Integer.class);
+        Integer temporaryLocationVerificationColumnCount = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema=DATABASE()
+                   AND table_name IN ('temp_sales_checkin_store', 'temp_sales_checkin_submission')
+                   AND (
+                       (column_name='location_verification_status' AND data_type='varchar'
+                            AND character_maximum_length=24 AND is_nullable='NO'
+                            AND column_default='LEGACY')
+                       OR (column_name='location_failure_reason' AND data_type='varchar'
+                            AND character_maximum_length=64 AND is_nullable='YES')
+                       OR (column_name='location_attempt_id' AND data_type='binary'
+                            AND character_maximum_length=16 AND is_nullable='YES')
+                   )
+                """, Integer.class);
+        Integer temporaryLocationVerificationIndexCount = jdbc.queryForObject("""
+                SELECT COUNT(DISTINCT table_name, index_name)
+                  FROM information_schema.statistics
+                 WHERE table_schema=DATABASE()
+                   AND index_name IN (
+                       'idx_temp_sales_checkin_store_location_verification',
+                       'idx_temp_sales_checkin_submission_location_verification'
+                   )
+                """, Integer.class);
+        Integer temporaryLocationVerificationConstraintCount = jdbc.queryForObject("""
+                SELECT COUNT(*)
+                  FROM information_schema.table_constraints
+                 WHERE constraint_schema=DATABASE() AND constraint_type='CHECK'
+                   AND constraint_name IN (
+                       'ck_temp_sales_checkin_store_location_verification',
+                       'ck_temp_sales_checkin_submission_location_verification'
+                   )
+                """, Integer.class);
+        Integer temporarySkippedGeocodeConstraintCount = jdbc.queryForObject("""
+                SELECT COUNT(*)
+                  FROM information_schema.check_constraints
+                 WHERE constraint_schema=DATABASE()
+                   AND constraint_name IN (
+                       'ck_temp_sales_checkin_store_geocode_status',
+                       'ck_temp_sales_checkin_submission_geocode_status'
+                   )
+                   AND check_clause LIKE '%SKIPPED%'
+                """, Integer.class);
         Integer temporarySalespersonImportColumnCount = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.columns
                  WHERE table_schema=DATABASE() AND table_name='temp_sales_checkin_salesperson'
@@ -358,7 +400,7 @@ class SalesWorkMigrationTests {
                    )
                 """, Integer.class);
 
-        assertThat(migrationCount).isEqualTo(19);
+        assertThat(migrationCount).isEqualTo(20);
         assertThat(tableCount).isEqualTo(39);
         assertThat(editableStoreTableCount).isZero();
         assertThat(storefrontEvidenceColumnCount).isEqualTo(10);
@@ -369,12 +411,16 @@ class SalesWorkMigrationTests {
         assertThat(temporaryTenantColumnCount).isEqualTo(7);
         assertThat(temporaryMediaColumnCount).isEqualTo(15);
         assertThat(temporaryReadableLocationColumnCount).isEqualTo(12);
+        assertThat(temporaryLocationVerificationColumnCount).isEqualTo(6);
+        assertThat(temporaryLocationVerificationIndexCount).isEqualTo(2);
+        assertThat(temporaryLocationVerificationConstraintCount).isEqualTo(2);
+        assertThat(temporarySkippedGeocodeConstraintCount).isEqualTo(2);
         assertThat(temporarySalespersonImportColumnCount).isEqualTo(3);
         assertThat(temporaryStoreImportColumnCount).isEqualTo(6);
         assertThat(temporaryUniqueConstraintCount).isEqualTo(9);
         assertThat(temporaryForeignKeyCount).isEqualTo(3);
         assertThat(temporarySubmissionStoreForeignKeyColumnCount).isEqualTo(2);
-        assertThat(temporaryCheckConstraintCount).isEqualTo(38);
+        assertThat(temporaryCheckConstraintCount).isEqualTo(40);
         assertThat(temporaryIdentitySalespersonColumnCount).isEqualTo(5);
         assertThat(temporaryIdentityRiskSubmissionColumnCount).isEqualTo(15);
         assertThat(temporaryIdentityRiskConstraintCount).isEqualTo(5);

@@ -536,8 +536,9 @@
             field("result").textContent = cleanText(item.visitResult) || "未填写拜访结果";
             field("result").title = cleanText(item.visitResult);
             const readableAddress = locationAddress(item);
-            field("address").textContent = readableAddress || "地址暂未解析";
-            field("address").classList.toggle("is-missing", !readableAddress);
+            const unverifiedLocation = isUnverifiedLocation(item);
+            field("address").textContent = unverifiedLocation ? "定位未核验" : (readableAddress || "地址暂未解析");
+            field("address").classList.toggle("is-missing", unverifiedLocation || !readableAddress);
             renderRiskChips(field("risks"), item);
             renderEvidenceChips(field("evidence"), item);
 
@@ -659,6 +660,27 @@
             || (item.location && item.location.address));
     }
 
+    function isUnverifiedLocation(item) {
+        return cleanText(item?.locationVerificationStatus).toUpperCase() === "UNVERIFIED";
+    }
+
+    function locationFailureLabel(rawReason) {
+        const labels = {
+            PERMISSION_DENIED: "用户拒绝定位权限",
+            POSITION_UNAVAILABLE: "设备暂时无法提供位置",
+            TIMEOUT: "定位等待超时",
+            UNSUPPORTED: "浏览器不支持定位",
+            INSECURE_CONTEXT: "当前浏览器环境无法安全定位",
+            INVALID_POSITION: "设备返回的坐标无效",
+            TIMESTAMP_UNUSABLE: "定位采集时间不可用",
+            ACCURACY_INSUFFICIENT: "定位精度不足",
+            RESOLVE_FAILED: "定位解析服务不可用",
+            USER_CONTINUED_AFTER_WAIT: "销售等待后选择先继续录入"
+        };
+        const reason = cleanText(rawReason).toUpperCase();
+        return labels[reason] || reason || "未记录失败原因";
+    }
+
     function renderRiskChips(root, item) {
         root.replaceChildren();
         const status = cleanText(item.status).toUpperCase();
@@ -667,19 +689,22 @@
             DEVICE_MULTIPLE_SALES: ["同设备切换销售", "danger"],
             SALESPERSON_MULTIPLE_DEVICES: ["销售多设备", "warning"],
             SALESPERSON_IP_CHURN: ["IP频繁切换", "warning"],
-            SHARED_IP_MULTIPLE_SALES: ["多人共享IP", "muted"]
+            SHARED_IP_MULTIPLE_SALES: ["多人共享IP", "muted"],
+            LOCATION_UNVERIFIED: ["定位未核验", "warning"]
         };
+        if (isUnverifiedLocation(item)) appendChip(root, "定位未核验·需结合照片复核", "warning");
         if (riskLevel === "HIGH") appendChip(root, "高风险·需复核", "danger");
         else if (riskLevel === "MEDIUM") appendChip(root, "中风险·需复核", "warning");
         else if (riskLevel === "LOW") appendChip(root, "低风险提示", "muted");
         const flags = Array.isArray(item.riskFlags) ? item.riskFlags : [];
         flags.forEach((rawFlag) => {
             const flag = cleanText(rawFlag).toUpperCase();
+            if (flag === "LOCATION_UNVERIFIED" && isUnverifiedLocation(item)) return;
             const mapped = riskLabels[flag];
             if (mapped) appendChip(root, mapped[0], mapped[1]);
         });
         if (status === "DRAFT") appendChip(root, "草稿未完成", "warning");
-        if (!locationAddress(item)) appendChip(root, "地址未解析", "warning");
+        if (!isUnverifiedLocation(item) && !locationAddress(item)) appendChip(root, "地址未解析", "warning");
         if (item.accuracyMeters === null || item.accuracyMeters === undefined || item.accuracyMeters === "") {
             appendChip(root, "精度未记录", "muted");
         }
@@ -808,10 +833,14 @@
         }
 
         const address = locationAddress(item);
-        $("#detail-address").textContent = address || "地址暂未解析";
-        $("#detail-address").classList.toggle("is-missing", !address);
+        const unverifiedLocation = isUnverifiedLocation(item);
+        $("#detail-address").textContent = unverifiedLocation ? "定位未核验" : (address || "地址暂未解析");
+        $("#detail-address").classList.toggle("is-missing", unverifiedLocation || !address);
         const locationNote = cleanText(item.locationNote);
         $("#detail-location-note").textContent = locationNote ? `位置备注：${locationNote}` : "";
+        $("#detail-location-verification").textContent = unverifiedLocation
+            ? `客户端报告：${locationFailureLabel(item.locationFailureReason)}；本记录未通过300米位置校验，需结合门头照和拜访内容复核。`
+            : "位置校验：已按当时规则完成或属于历史记录。";
         const longitude = decimalText(item.longitude);
         const latitude = decimalText(item.latitude);
         $("#detail-coordinates").textContent = longitude && latitude

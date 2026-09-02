@@ -747,6 +747,11 @@ input[readonly] {
     color: var(--warning);
 }
 
+.status-pill.is-unverified {
+    color: var(--warning);
+    font-weight: 700;
+}
+
 .status-pill.is-loading {
     color: var(--brand);
 }
@@ -765,6 +770,60 @@ input[readonly] {
     border-color: var(--line);
     color: var(--subtle);
     background: var(--surface-soft);
+}
+
+.location-continue-button {
+    width: 100%;
+    min-height: 44px;
+    margin-top: 10px;
+    border: 1px solid #dca843;
+    border-radius: var(--radius);
+    color: #765016;
+    background: var(--warning-soft);
+    font-weight: 650;
+}
+
+.location-card.is-unverified {
+    margin-right: calc(-1 * var(--page-gutter));
+    margin-left: calc(-1 * var(--page-gutter));
+    padding-right: var(--page-gutter);
+    padding-left: var(--page-gutter);
+    border-bottom-color: #efd394;
+    background: linear-gradient(180deg, rgba(255, 249, 237, .88), rgba(255, 255, 255, 0));
+}
+
+.location-exception-note,
+.location-unverified-banner {
+    border: 1px solid #efd394;
+    border-radius: var(--radius);
+    color: #704a12;
+    background: var(--warning-soft);
+}
+
+.location-exception-note {
+    margin-top: 12px;
+    padding: 11px 12px;
+    display: grid;
+    gap: 2px;
+}
+
+.location-exception-note strong,
+.location-unverified-banner strong {
+    color: #704a12;
+    font-weight: 700;
+}
+
+.location-exception-note span,
+.location-unverified-banner span {
+    color: #856329;
+    font-size: 12px;
+}
+
+.location-unverified-banner {
+    margin: 14px 0 20px;
+    padding: 11px 13px;
+    display: grid;
+    gap: 2px;
 }
 
 .location-detail {
@@ -1939,6 +1998,17 @@ input[readonly] {
 
 .success-panel p {
     color: var(--muted);
+}
+
+.success-panel .success-location-note {
+    margin: 18px 0 0;
+    padding: 12px 14px;
+    border: 1px solid #e6b65b;
+    border-radius: 12px;
+    background: #fff7e8;
+    color: #7a4a00;
+    text-align: left;
+    line-height: 1.65;
 }
 
 .success-panel .primary-button {

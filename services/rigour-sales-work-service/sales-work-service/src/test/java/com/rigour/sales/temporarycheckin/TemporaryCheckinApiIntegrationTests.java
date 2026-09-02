@@ -834,6 +834,336 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
+    void recordsUnverifiedStoreAndVisitWithoutCoordinatesAndStillRequiresStorefrontPhoto()
+            throws Exception {
+        UUID storeAttemptId = UUID.randomUUID();
+        UUID clientStoreId = UUID.randomUUID();
+        CreateStoreRequest storeRequest = unverifiedStore(
+                clientStoreId, "定位失败仍可录入门店", null, "POSITION_UNAVAILABLE", storeAttemptId);
+        MvcResult createdStore = mockMvc.perform(post("/sales-checkin/api/v1/stores/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(storeRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("定位失败仍可录入门店"))
+                .andReturn();
+        UUID storeId = UUID.fromString(objectMapper.readTree(
+                createdStore.getResponse().getContentAsByteArray()).path("id").asText());
+
+        var storedStore = jdbc.queryForMap("""
+                SELECT location_verification_status, location_failure_reason, location_attempt_id,
+                       longitude, latitude, accuracy_meters, location_captured_at,
+                       geocode_status, geocode_error_code
+                  FROM temp_sales_checkin_store WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(storeId));
+        assertThat(storedStore.get("location_verification_status")).isEqualTo("UNVERIFIED");
+        assertThat(storedStore.get("location_failure_reason")).isEqualTo("POSITION_UNAVAILABLE");
+        assertThat((byte[]) storedStore.get("location_attempt_id")).containsExactly(bin(storeAttemptId));
+        assertThat(storedStore.get("longitude")).isNull();
+        assertThat(storedStore.get("latitude")).isNull();
+        assertThat(storedStore.get("accuracy_meters")).isNull();
+        assertThat(storedStore.get("location_captured_at")).isNull();
+        assertThat(storedStore.get("geocode_status")).isEqualTo("SKIPPED");
+        assertThat(storedStore.get("geocode_error_code"))
+                .isEqualTo("LOCATION_POSITION_UNAVAILABLE");
+
+        mockMvc.perform(get("/sales-checkin/api/v1/stores")
+                        .param("city", "北京")
+                        .param("q", "定位失败仍可录入门店"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value(storeId.toString()))
+                .andExpect(jsonPath("$[0].locationSummary").value("定位未核验"))
+                .andExpect(jsonPath("$[0].locationVerificationStatus").value("UNVERIFIED"))
+                .andExpect(jsonPath("$[0].locationFailureReason").value("POSITION_UNAVAILABLE"));
+
+        UUID visitAttemptId = UUID.randomUUID();
+        UUID clientSubmissionId = UUID.randomUUID();
+        CreateSubmissionRequest visitRequest = unverifiedSubmission(
+                clientSubmissionId, storeId, "定位失败仍完成真实拜访记录", null,
+                "TIMEOUT", visitAttemptId);
+        MvcResult createdVisit = mockMvc.perform(post("/sales-checkin/api/v1/submissions/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(visitRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DRAFT"))
+                .andReturn();
+        UUID submissionId = UUID.fromString(objectMapper.readTree(
+                createdVisit.getResponse().getContentAsByteArray()).path("id").asText());
+
+        var storedVisit = jdbc.queryForMap("""
+                SELECT location_verification_status, location_failure_reason, location_attempt_id,
+                       longitude, latitude, accuracy_meters, location_captured_at,
+                       geocode_status, geocode_error_code, risk_level, risk_flags_json
+                  FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(submissionId));
+        assertThat(storedVisit.get("location_verification_status")).isEqualTo("UNVERIFIED");
+        assertThat(storedVisit.get("location_failure_reason")).isEqualTo("TIMEOUT");
+        assertThat((byte[]) storedVisit.get("location_attempt_id")).containsExactly(bin(visitAttemptId));
+        assertThat(storedVisit.get("longitude")).isNull();
+        assertThat(storedVisit.get("latitude")).isNull();
+        assertThat(storedVisit.get("accuracy_meters")).isNull();
+        assertThat(storedVisit.get("location_captured_at")).isNull();
+        assertThat(storedVisit.get("geocode_status")).isEqualTo("SKIPPED");
+        assertThat(storedVisit.get("geocode_error_code")).isEqualTo("LOCATION_TIMEOUT");
+        assertThat(storedVisit.get("risk_level")).isEqualTo("MEDIUM");
+        assertThat(storedVisit.get("risk_flags_json").toString()).contains("LOCATION_UNVERIFIED");
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete", submissionId)
+                        .header("X-Submission-Key", SUBMISSION_KEY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("请先上传门头照"));
+
+        upload(submissionId, "storefront-photo", new MockMultipartFile(
+                "file", "door.jpg", "image/jpeg",
+                new byte[] {(byte) 0xff, (byte) 0xd8, (byte) 0xff, 0x00}))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete", submissionId)
+                        .header("X-Submission-Key", SUBMISSION_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUBMITTED"));
+
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_submission
+                 WHERE tenant_id=? AND id=? AND status='SUBMITTED'
+                   AND location_verification_status='UNVERIFIED'
+                   AND location_failure_reason='TIMEOUT' AND location_attempt_id=?
+                   AND risk_level IN ('MEDIUM', 'HIGH')
+                   AND JSON_CONTAINS(risk_flags_json, JSON_QUOTE('LOCATION_UNVERIFIED'))
+                """, Integer.class, bin(TENANT_ID), bin(submissionId), bin(visitAttemptId))).isEqualTo(1);
+
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions")
+                        .with(admin(TemporaryCheckinAdminAccessPolicy.GLOBAL_ADMIN))
+                        .param("q", "定位失败仍完成真实拜访记录"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements").value(1))
+                .andExpect(jsonPath("$.items[0].locationVerificationStatus").value("UNVERIFIED"))
+                .andExpect(jsonPath("$.items[0].locationFailureReason").value("TIMEOUT"))
+                .andExpect(jsonPath("$.items[0].locationAttemptId").value(visitAttemptId.toString()))
+                .andExpect(jsonPath("$.items[0].riskLevel").value("MEDIUM"))
+                .andExpect(jsonPath("$.items[0].riskFlags",
+                        containsInAnyOrder("LOCATION_UNVERIFIED")));
+    }
+
+    @Test
+    void discardsUnusableLocationEvidenceInsteadOfBlockingTheUnverifiedFallback()
+            throws Exception {
+        LocationCommand unusableEvidence = new LocationCommand(
+                new BigDecimal("116.3971280"), new BigDecimal("39.9165270"),
+                new BigDecimal("25000.00"), Instant.now().minusSeconds(10), "网络粗略定位");
+
+        UUID storeAttemptId = UUID.randomUUID();
+        MvcResult storeResult = mockMvc.perform(post("/sales-checkin/api/v1/stores/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedStore(
+                                UUID.randomUUID(), "超粗定位仍可录入门店", unusableEvidence,
+                                "ACCURACY_INSUFFICIENT", storeAttemptId))))
+                .andExpect(status().isOk())
+                .andReturn();
+        UUID storeId = UUID.fromString(objectMapper.readTree(
+                storeResult.getResponse().getContentAsByteArray()).path("id").asText());
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_store
+                 WHERE tenant_id=? AND id=? AND location_verification_status='UNVERIFIED'
+                   AND location_failure_reason='ACCURACY_INSUFFICIENT'
+                   AND longitude IS NULL AND latitude IS NULL AND accuracy_meters IS NULL
+                   AND location_captured_at IS NULL
+                """, Integer.class, bin(TENANT_ID), bin(storeId))).isEqualTo(1);
+
+        UUID submissionAttemptId = UUID.randomUUID();
+        MvcResult submissionResult = mockMvc.perform(post(
+                        "/sales-checkin/api/v1/submissions/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedSubmission(
+                                UUID.randomUUID(), STORE_ID, "超粗定位仍可完成拜访留档",
+                                unusableEvidence, "ACCURACY_INSUFFICIENT", submissionAttemptId))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DRAFT"))
+                .andReturn();
+        UUID submissionId = UUID.fromString(objectMapper.readTree(
+                submissionResult.getResponse().getContentAsByteArray()).path("id").asText());
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_submission
+                 WHERE tenant_id=? AND id=? AND location_verification_status='UNVERIFIED'
+                   AND location_failure_reason='ACCURACY_INSUFFICIENT'
+                   AND longitude IS NULL AND latitude IS NULL AND accuracy_meters IS NULL
+                   AND location_captured_at IS NULL
+                """, Integer.class, bin(TENANT_ID), bin(submissionId))).isEqualTo(1);
+    }
+
+    @Test
+    void doesNotUseUnverifiedStoreCoordinatesAsStrictAnchorAndAllowsVerifiedUpgrade()
+            throws Exception {
+        UUID clientStoreId = UUID.randomUUID();
+        UUID attemptId = UUID.randomUUID();
+        LocationCommand impreciseEvidence = new LocationCommand(
+                new BigDecimal("116.3971280"), new BigDecimal("39.9165270"),
+                new BigDecimal("650.00"), Instant.now().minusSeconds(20), "仅记录到的粗略坐标");
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/stores/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedStore(
+                                clientStoreId, "待补定位门店", impreciseEvidence,
+                                "ACCURACY_INSUFFICIENT", attemptId))))
+                .andExpect(status().isOk())
+                .andReturn();
+        String storeId = objectMapper.readTree(created.getResponse().getContentAsByteArray())
+                .path("id").asText();
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_store
+                 WHERE tenant_id=? AND id=? AND location_verification_status='UNVERIFIED'
+                   AND location_failure_reason='ACCURACY_INSUFFICIENT' AND location_attempt_id=?
+                   AND longitude=116.3971280 AND latitude=39.9165270 AND accuracy_meters=650.00
+                """, Integer.class, bin(TENANT_ID), bin(UUID.fromString(storeId)), bin(attemptId))).isEqualTo(1);
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submissionForStore(
+                                UUID.randomUUID(), UUID.fromString(storeId),
+                                "不能把粗略坐标当严格锚点", location()))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("门店缺少有效定位，请先补录门店定位"));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(manualStore(
+                                clientStoreId, "待补定位门店", location()))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(storeId));
+
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_store
+                 WHERE tenant_id=? AND id=? AND location_verification_status='VERIFIED'
+                   AND location_failure_reason IS NULL AND location_attempt_id IS NULL
+                   AND longitude IS NOT NULL AND latitude IS NOT NULL
+                """, Integer.class, bin(TENANT_ID), bin(UUID.fromString(storeId)))).isEqualTo(1);
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submissionForStore(
+                                UUID.randomUUID(), UUID.fromString(storeId),
+                                "补全定位后正常严格打卡", location()))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DRAFT"));
+    }
+
+    @Test
+    void rejectsMixedStrictAndUnverifiedContractsAndConflictingSubmissionRetries()
+            throws Exception {
+        UUID attemptId = UUID.randomUUID();
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedSubmission(
+                                UUID.randomUUID(), STORE_ID, "缺少失败原因", null,
+                                null, attemptId))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("locationFailureReason不能为空"));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedSubmission(
+                                UUID.randomUUID(), STORE_ID, "无效失败原因", null,
+                                "NOT_A_REAL_REASON", attemptId))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("locationFailureReason无效"));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedSubmission(
+                                UUID.randomUUID(), STORE_ID, "缺少尝试编号", null,
+                                "TIMEOUT", null))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("locationAttemptId不能为空"));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/stores/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedStore(
+                                UUID.randomUUID(), "缺少尝试编号门店", null, "TIMEOUT", null))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("locationAttemptId不能为空"));
+
+        LocationCommand captured = location();
+        CreateSubmissionRequest unverifiedWithProof = new CreateSubmissionRequest(
+                UUID.randomUUID(), SUBMISSION_KEY, "北京", VISITOR_ID, STORE_ID,
+                "李经理", "13900000000", "未核验路径不得混入定位凭证", captured, true,
+                TemporaryCheckinService.PRIVACY_NOTICE_VERSION,
+                locationVerificationToken(VISITOR_ID, "北京", captured), "TIMEOUT", attemptId);
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedWithProof)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("定位未核验留档不能携带位置验证凭证"));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedSubmission(
+                                UUID.randomUUID(), STORE_ID, "严格路径不得带失败标记", captured,
+                                "TIMEOUT", attemptId))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("正常定位提交不能携带定位失败标记"));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submission(
+                                UUID.randomUUID(), SUBMISSION_KEY, "严格路径无定位", true, null))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("定位经纬度、精度和采集时间不能为空"));
+
+        CreateStoreRequest unverifiedWithToken = new CreateStoreRequest(
+                UUID.randomUUID(), "北京", VISITOR_ID,
+                null, null, null, null, null,
+                "台球", "错误混用凭证门店", "营业中", "提交店长", "13800000000",
+                "100-300平米", "10张球桌", List.of("竞技赛事"), List.of("高德业务"),
+                "高意向", "A类", List.of("单店"), null, null, "forged-proof", null,
+                "TIMEOUT", attemptId);
+        mockMvc.perform(post("/sales-checkin/api/v1/stores/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedWithToken)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("定位未核验时只能手工录入门店资料"));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedStore(
+                                UUID.randomUUID(), "严格建店无定位", null, null, null))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("定位经纬度、精度和采集时间不能为空"));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/stores")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverifiedStore(
+                                UUID.randomUUID(), "严格建店不得带失败标记", captured,
+                                "TIMEOUT", attemptId))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("正常定位提交不能携带定位失败标记"));
+
+        UUID clientSubmissionId = UUID.randomUUID();
+        UUID retryAttemptId = UUID.randomUUID();
+        CreateSubmissionRequest unverified = unverifiedSubmission(
+                clientSubmissionId, STORE_ID, "未核验幂等草稿", null,
+                "POSITION_UNAVAILABLE", retryAttemptId);
+        MvcResult first = mockMvc.perform(post("/sales-checkin/api/v1/submissions/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverified)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String submissionId = objectMapper.readTree(first.getResponse().getContentAsByteArray())
+                .path("id").asText();
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions/unverified-location")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(unverified)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(submissionId));
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(new CreateSubmissionRequest(
+                                clientSubmissionId, SUBMISSION_KEY, "北京", VISITOR_ID, STORE_ID,
+                                "李经理", "13900000000", "未核验幂等草稿", location(), true,
+                                TemporaryCheckinService.PRIVACY_NOTICE_VERSION,
+                                locationVerificationToken(VISITOR_ID, "北京", location())))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_CONFLICT"));
+    }
+
+    @Test
     void fallsBackToFirstAcceptableVisitWhenStoreCoordinatesHaveUnacceptableAccuracy()
             throws Exception {
         jdbc.update("""
@@ -3023,6 +3353,20 @@ class TemporaryCheckinApiIntegrationTests {
                 locationVerificationToken(VISITOR_ID, "北京", location));
     }
 
+    private static CreateSubmissionRequest unverifiedSubmission(
+            UUID clientSubmissionId,
+            UUID storeId,
+            String result,
+            LocationCommand location,
+            String failureReason,
+            UUID attemptId) {
+        return new CreateSubmissionRequest(
+                clientSubmissionId, SUBMISSION_KEY, "北京", VISITOR_ID, storeId,
+                "李经理", "13900000000", result, location, true,
+                TemporaryCheckinService.PRIVACY_NOTICE_VERSION,
+                null, failureReason, attemptId);
+    }
+
     private CreateStoreRequest poiStore(UUID clientStoreId, String name, String contactName) {
         return poiStoreAtLocation(clientStoreId, name, contactName, location());
     }
@@ -3071,6 +3415,19 @@ class TemporaryCheckinApiIntegrationTests {
                 "10张球桌", List.of("竞技赛事"), List.of("高德业务"), "高意向", "A类",
                 List.of("单店"), location, null,
                 locationVerificationToken, manualEntryToken);
+    }
+
+    private static CreateStoreRequest unverifiedStore(
+            UUID clientStoreId,
+            String name,
+            LocationCommand location,
+            String failureReason,
+            UUID attemptId) {
+        return new CreateStoreRequest(clientStoreId, "北京", VISITOR_ID,
+                null, null, null, null, null,
+                "台球", name, "营业中", "提交店长", "13800000000", "100-300平米",
+                "10张球桌", List.of("竞技赛事"), List.of("高德业务"), "高意向", "A类",
+                List.of("单店"), location, null, null, null, failureReason, attemptId);
     }
 
     private ResolveLocationRequest resolveRequest(

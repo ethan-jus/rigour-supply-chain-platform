@@ -76,7 +76,41 @@ public final class TemporaryCheckinModels {
             LocationCommand location,
             String sourcePoiToken,
             String locationVerificationToken,
-            String manualEntryToken) {
+            String manualEntryToken,
+            String locationFailureReason,
+            UUID locationAttemptId) {
+
+        public CreateStoreRequest(
+                UUID clientStoreId,
+                String city,
+                UUID salespersonId,
+                String sourcePoiId,
+                String sourcePoiName,
+                String sourcePoiAddress,
+                BigDecimal sourcePoiLongitude,
+                BigDecimal sourcePoiLatitude,
+                String attribute,
+                String name,
+                String operatingStatus,
+                String contactName,
+                String contactPhone,
+                String areaRange,
+                String facilityCount,
+                List<String> businessTypes,
+                List<String> intendedBusinesses,
+                String cooperationIntent,
+                String storeGrade,
+                List<String> tags,
+                LocationCommand location,
+                String sourcePoiToken,
+                String locationVerificationToken,
+                String manualEntryToken) {
+            this(clientStoreId, city, salespersonId, sourcePoiId, sourcePoiName, sourcePoiAddress,
+                    sourcePoiLongitude, sourcePoiLatitude, attribute, name, operatingStatus,
+                    contactName, contactPhone, areaRange, facilityCount, businessTypes,
+                    intendedBusinesses, cooperationIntent, storeGrade, tags, location,
+                    sourcePoiToken, locationVerificationToken, manualEntryToken, null, null);
+        }
 
         public CreateStoreRequest(
                 UUID clientStoreId,
@@ -105,7 +139,7 @@ public final class TemporaryCheckinModels {
                     sourcePoiLongitude, sourcePoiLatitude, attribute, name, operatingStatus,
                     contactName, contactPhone, areaRange, facilityCount, businessTypes,
                     intendedBusinesses, cooperationIntent, storeGrade, tags, location,
-                    sourcePoiToken, null, null);
+                    sourcePoiToken, null, null, null, null);
         }
 
         /** 仅保留旧 Java 调用方的构造兼容；真实请求缺少服务端凭证时仍会被拒绝。 */
@@ -135,11 +169,22 @@ public final class TemporaryCheckinModels {
                     sourcePoiLongitude, sourcePoiLatitude, attribute, name, operatingStatus,
                     contactName, contactPhone, areaRange, facilityCount, businessTypes,
                     intendedBusinesses, cooperationIntent, storeGrade, tags, location,
-                    null, null, null);
+                    null, null, null, null, null);
         }
     }
 
-    public record StoreView(UUID id, String name, String city, String locationSummary) { }
+    public record StoreView(
+            UUID id,
+            String name,
+            String city,
+            String locationSummary,
+            String locationVerificationStatus,
+            String locationFailureReason) {
+
+        public StoreView(UUID id, String name, String city, String locationSummary) {
+            this(id, name, city, locationSummary, "LEGACY", null);
+        }
+    }
 
     public record ResolveLocationRequest(
             String city,
@@ -258,7 +303,27 @@ public final class TemporaryCheckinModels {
             LocationCommand location,
             Boolean privacyAccepted,
             String privacyNoticeVersion,
-            String locationVerificationToken) {
+            String locationVerificationToken,
+            String locationFailureReason,
+            UUID locationAttemptId) {
+
+        public CreateSubmissionRequest(
+                UUID clientSubmissionId,
+                String submissionKey,
+                String city,
+                UUID salespersonId,
+                UUID storeId,
+                String customerName,
+                String customerPhone,
+                String visitResult,
+                LocationCommand location,
+                Boolean privacyAccepted,
+                String privacyNoticeVersion,
+                String locationVerificationToken) {
+            this(clientSubmissionId, submissionKey, city, salespersonId, storeId, customerName,
+                    customerPhone, visitResult, location, privacyAccepted, privacyNoticeVersion,
+                    locationVerificationToken, null, null);
+        }
 
         public CreateSubmissionRequest(
                 UUID clientSubmissionId,
@@ -273,7 +338,8 @@ public final class TemporaryCheckinModels {
                 Boolean privacyAccepted,
                 String privacyNoticeVersion) {
             this(clientSubmissionId, submissionKey, city, salespersonId, storeId, customerName,
-                    customerPhone, visitResult, location, privacyAccepted, privacyNoticeVersion, null);
+                    customerPhone, visitResult, location, privacyAccepted, privacyNoticeVersion,
+                    null, null, null);
         }
     }
 

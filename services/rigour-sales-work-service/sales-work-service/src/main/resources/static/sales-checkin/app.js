@@ -11,6 +11,8 @@
     const GEOLOCATION_FRESH_MAX_AGE_MS = 60 * 1000;
     const GEOLOCATION_REFRESH_TIMEOUT_MS = 30000;
     const GEOLOCATION_ATTEMPT_TIMEOUT_MS = 15000;
+    const GEOLOCATION_CONTINUE_AFTER_MS = 6000;
+    const MAX_RECORDED_UNVERIFIED_ACCURACY_METERS = 10000;
     const GEOLOCATION_CLOCK_PROGRESS_MIN_MS = 250;
     const GEOLOCATION_MAX_MONOTONIC_UPTIME_MS = 366 * 24 * 60 * 60 * 1000;
     const PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
@@ -23,6 +25,11 @@
         visit: Object.freeze(["", "选择门店", "进店沟通", "现场证明"]),
         store: Object.freeze(["", "搜索门店", "基础资料", "业务标签"])
     });
+    const LOCATION_FAILURE_REASONS = new Set([
+        "PERMISSION_DENIED", "POSITION_UNAVAILABLE", "TIMEOUT", "UNSUPPORTED",
+        "INSECURE_CONTEXT", "INVALID_POSITION", "TIMESTAMP_UNUSABLE",
+        "ACCURACY_INSUFFICIENT", "RESOLVE_FAILED", "USER_CONTINUED_AFTER_WAIT"
+    ]);
 
     const MEDIA = Object.freeze({
         photo: "storefront-photo",
@@ -32,6 +39,7 @@
 
     const LOCKED_BUSINESS_SELECTORS = Object.freeze([
         "#visit-city", "#visit-salesperson", "#visit-location-button", "#visit-location-retry",
+        "#visit-location-continue",
         "#visit-location-note", "#store-search", "#store-search-toggle", "#clear-store-button",
         "#create-store-link", "#customer-name", "#customer-phone", "#visit-result", "#privacy-accepted",
         "#store-tab"
@@ -48,6 +56,8 @@
         location: emptyLocation(),
         locationContext: null,
         nearbyStores: [],
+        directoryStores: [],
+        directoryQuery: "",
         privacyAccepted: false
     });
     const freshStore = () => ({
@@ -145,6 +155,7 @@
         },
         audioRetrySegmentId: null,
         poiSearchController: null,
+        storeDirectoryController: null,
         locationControllers: {
             visit: null,
             store: null
@@ -158,6 +169,10 @@
             store: null
         },
         geolocationTimeoutIds: {
+            visit: null,
+            store: null
+        },
+        geolocationContinueIds: {
             visit: null,
             store: null
         },
@@ -222,7 +237,7 @@
                 const context = state[scope].locationContext;
                 if (state[scope].city && state[scope].location
                     && !(scope === "visit" && isBusinessLocked())
-                    && !locationContextReady(context)) {
+                    && !locationFlowReady(context)) {
                     resolveLocationContext(scope);
                 }
             });
@@ -342,6 +357,7 @@
 
     function invalidateUnlockedVisitLocationForFreshEntry() {
         if (!hasRestoredDraft() || isBusinessLocked()) return;
+        if (locationExceptionReady(state.visit.locationContext)) return;
         state.visit.location = null;
         state.visit.locationContext = null;
         state.visit.nearbyStores = [];
@@ -353,7 +369,8 @@
         if (state.activeTab !== "visit"
                 || !state.identity?.authenticated
                 || !state.visit.city
-                || isBusinessLocked()) return;
+                || isBusinessLocked()
+                || locationFlowReady(state.visit.locationContext)) return;
         window.requestAnimationFrame(() => captureLocation("visit"));
     }
 
@@ -616,11 +633,11 @@
         $("#visit-salesperson").addEventListener("change", persistFromForm);
         $("#store-salesperson").addEventListener("change", persistFromForm);
 
-        $("#store-search").addEventListener("input", showVisitStoreOptions);
+        $("#store-search").addEventListener("input", handleVisitStoreSearchInput);
         $("#store-search").addEventListener("focus", () => showVisitStoreOptions());
         $("#store-search").addEventListener("keydown", handleStoreSearchKeydown);
         $("#store-search-toggle").addEventListener("click", toggleVisitStoreOptions);
-        $("#clear-store-button").addEventListener("click", clearSelectedStore);
+        $("#clear-store-button").addEventListener("click", () => clearSelectedStore(true, true, true));
         $("#create-store-link").addEventListener("click", () => prepareNewStore());
         $("#cancel-store-button").addEventListener("click", () => switchTab("visit"));
 
@@ -633,6 +650,8 @@
 
         $("#visit-location-button").addEventListener("click", () => captureLocation("visit"));
         $("#store-location-button").addEventListener("click", () => captureLocation("store"));
+        $("#visit-location-continue").addEventListener("click", () => continueWithoutVerifiedLocation("visit"));
+        $("#store-location-continue").addEventListener("click", () => continueWithoutVerifiedLocation("store"));
         $("#visit-location-retry").addEventListener("click", () => resolveLocationContext("visit"));
         $("#store-location-retry").addEventListener("click", () => resolveLocationContext("store"));
 
@@ -770,18 +789,27 @@
             return Boolean(cleanText(state.store.sourcePoiId) && cleanText(state.store.sourcePoiToken));
         }
         if (state.store.sourceMode === "MANUAL") {
-            return Boolean(state.store.manualEntryAllowed && cleanText(state.store.manualEntryToken));
+            return Boolean(state.store.manualEntryAllowed
+                && (locationExceptionReady(state.store.locationContext)
+                    || cleanText(state.store.manualEntryToken)));
         }
         return false;
+    }
+
+    function visitSelectedStoreReady() {
+        const selectedId = state.visit.selectedStore?.id;
+        if (!selectedId) return false;
+        if (isBusinessLocked() || locationExceptionReady(state.visit.locationContext)) return true;
+        return registeredNearbyStores().some((store) =>
+            String(store.storeId || store.id) === String(selectedId));
     }
 
     function isVisitStepReady(step) {
         if (step === 1) {
             return Boolean(state.visit.city
                 && state.visit.salespersonId
-                && state.visit.selectedStore?.id
-                && state.visit.location
-                && locationContextReady(state.visit.locationContext));
+                && visitSelectedStoreReady()
+                && locationFlowReady(state.visit.locationContext));
         }
         if (step === 2) {
             return Boolean(cleanText(state.visit.customerName) && cleanText(state.visit.visitResult));
@@ -794,8 +822,7 @@
         if (step === 1) {
             return Boolean(state.store.city
                 && state.store.salespersonId
-                && state.store.location
-                && locationContextReady(state.store.locationContext)
+                && locationFlowReady(state.store.locationContext)
                 && hasValidStoreSource());
         }
         if (step === 2) {
@@ -964,23 +991,25 @@
         if (flow === "visit" && step === 1) {
             valid = requireValue(state.visit.city, "visit-city", "请选择业务归属城市。") && valid;
             valid = requireValue(state.visit.salespersonId, "visit-salesperson", "请选择销售。") && valid;
-            valid = requireValue(state.visit.location, "visit-location", "请刷新并获取本次现场定位。") && valid;
-            if (state.visit.location && !locationContextReady(state.visit.locationContext)) {
+            if (!locationFlowReady(state.visit.locationContext)) {
                 setFieldError("visit-location", state.visit.locationContext?.errorMessage
-                    || "当前定位未通过精度或时效校验，请重新定位。");
+                    || "请刷新定位；如定位失败或等待较久，可按页面提示继续录入。");
                 valid = false;
             }
             valid = requireValue(state.visit.selectedStore?.id, "selected-store", "请选择本次拜访门店。") && valid;
+            if (state.visit.selectedStore?.id && !visitSelectedStoreReady()) {
+                setFieldError("selected-store", "当前已选门店不在本次定位允许范围，请重新选择；也可在定位失败后按名称核对。" );
+                valid = false;
+            }
         } else if (flow === "visit" && step === 2) {
             valid = requireValue(cleanText(state.visit.customerName), "customer-name", "请输入客户姓名。") && valid;
             valid = requireValue(cleanText(state.visit.visitResult), "visit-result", "请填写拜访结果。") && valid;
         } else if (flow === "store" && step === 1) {
             valid = requireValue(state.store.city, "store-city", "请选择业务归属城市。") && valid;
             valid = requireValue(state.store.salespersonId, "store-salesperson", "请选择销售。") && valid;
-            valid = requireValue(state.store.location, "store-location", "请刷新并获取本次现场定位。") && valid;
-            if (state.store.location && !locationContextReady(state.store.locationContext)) {
+            if (!locationFlowReady(state.store.locationContext)) {
                 setFieldError("store-location", state.store.locationContext?.errorMessage
-                    || "当前定位未通过精度或时效校验，请重新定位。");
+                    || "请刷新定位；如定位失败或等待较久，可按页面提示继续录入。");
                 valid = false;
             }
             if (!hasValidStoreSource()) {
@@ -1018,18 +1047,25 @@
         });
     }
 
-    function confirmVisitMediaResetForStoreChange() {
-        const hasVisitMedia = Boolean(
+    function hasVisitMediaForStoreChange() {
+        return Boolean(
             state.files.photo
             || state.files.wechat
             || state.submission.audioSegments.length
             || state.submission.uploadedMedia.length
             || state.submission.mediaUploadAttempts.length
         );
-        if (!hasVisitMedia) return true;
-        if (!window.confirm("返回选择门店会清除本次已添加的录音、照片和截图，确定继续吗？")) {
+    }
+
+    function confirmVisitMediaResetForStoreChange() {
+        if (!hasVisitMediaForStoreChange()) return true;
+        if (!window.confirm("更换本次拜访门店会清除已添加的录音、照片和截图，确定继续吗？")) {
             return false;
         }
+        return true;
+    }
+
+    function resetVisitMediaForStoreChange() {
         resetLocalFile("photo");
         resetLocalFile("wechat");
         resetLocalFile("audio");
@@ -1040,7 +1076,6 @@
         clearFieldError("storefront-photo");
         clearFieldError("wechat-screenshot");
         renderUploadedBadges();
-        return true;
     }
 
     function goToFlowStep(flow, requestedStep, options = {}) {
@@ -1054,10 +1089,6 @@
         }
         if (flow === "visit" && target !== current && recordingBusy()) {
             showRecordingNavigationError("请先结束录音，再进入下一步或返回选店。");
-            return false;
-        }
-        if (flow === "visit" && target === 1 && current > 1
-                && !confirmVisitMediaResetForStoreChange()) {
             return false;
         }
         if (options.validateForward !== false && target > current) {
@@ -1179,9 +1210,12 @@
         state.locationControllers[scope] = null;
         state[scope].locationContext = null;
         if (scope === "visit") {
+            abortStoreDirectorySearch();
             hideStoreResults();
             clearSelectedStore(false, false);
             state.visit.nearbyStores = [];
+            state.visit.directoryStores = [];
+            state.visit.directoryQuery = "";
             $("#store-search").value = "";
             renderNearbyStores();
         } else {
@@ -1297,6 +1331,23 @@
         return visitNearbyOptions();
     }
 
+    function visitDirectoryOptions() {
+        return (Array.isArray(state.visit.directoryStores) ? state.visit.directoryStores : [])
+            .filter((store) => store?.source === "REGISTERED")
+            .filter(isUsableNearbyStore);
+    }
+
+    function abortStoreDirectorySearch() {
+        state.storeDirectoryController?.abort();
+        state.storeDirectoryController = null;
+        const toggle = $("#store-search-toggle");
+        if (toggle) {
+            toggle.disabled = false;
+            toggle.textContent = locationExceptionReady(state.visit.locationContext)
+                ? "搜索门店" : "展开";
+        }
+    }
+
     function abortPoiSearch() {
         state.poiSearchController?.abort();
         state.poiSearchController = null;
@@ -1410,11 +1461,24 @@
         }
     }
 
+    function handleVisitStoreSearchInput() {
+        if (locationExceptionReady(state.visit.locationContext)) {
+            if (state.storeDirectoryController) abortStoreDirectorySearch();
+            const query = $("#store-search").value.trim();
+            if (query !== state.visit.directoryQuery) {
+                state.visit.directoryStores = [];
+                state.visit.directoryQuery = "";
+            }
+        }
+        showVisitStoreOptions();
+    }
+
     function showVisitStoreOptions() {
         const input = $("#store-search");
         if (input.disabled) return;
         const query = input.value.trim().toLocaleLowerCase("zh-CN");
-        const options = visitNearbyOptions();
+        const directoryMode = locationExceptionReady(state.visit.locationContext);
+        const options = directoryMode ? visitDirectoryOptions() : visitNearbyOptions();
         const stores = options.filter((store) => {
             if (!query) return true;
             return [store.name, store.address, store.locationSummary]
@@ -1422,19 +1486,82 @@
         });
         renderStoreResults(stores);
         $("#store-search-help").textContent = stores.length
-            ? `${visitRadiusLabel()}已加载 ${options.length} 家已建档门店；当前筛选显示 ${stores.length} 家`
+            ? directoryMode
+                ? `已按门店名称找到 ${stores.length} 家，请核对后选择。`
+                : `${visitRadiusLabel()}已加载 ${options.length} 家已建档门店；当前筛选显示 ${stores.length} 家`
             : options.length
                 ? "已加载的门店中没有匹配项，可换关键词或新增门店。"
-                : "附近没有已建档门店，可点击下方“新增门店”。";
+                : directoryMode
+                    ? "请输入至少 2 个字，再点击“搜索门店”；找不到可新增门店。"
+                    : "附近没有已建档门店，可点击下方“新增门店”。";
     }
 
     function toggleVisitStoreOptions() {
         if ($("#store-search").disabled) return;
+        if (locationExceptionReady(state.visit.locationContext)) {
+            void searchVisitStoreDirectory();
+            return;
+        }
         if ($("#store-search-results").hidden) {
             showVisitStoreOptions();
             $("#store-search").focus();
         } else {
             hideStoreResults();
+        }
+    }
+
+    async function searchVisitStoreDirectory() {
+        if (state.submitting || state.storeDirectoryController) return;
+        const input = $("#store-search");
+        const query = input.value.trim();
+        if (!locationExceptionReady(state.visit.locationContext)) {
+            showVisitStoreOptions();
+            return;
+        }
+        if (query.length < 2) {
+            $("#store-search-help").textContent = "请输入至少 2 个字，再点击“搜索门店”。";
+            input.focus();
+            return;
+        }
+        const controller = createRequestController();
+        state.storeDirectoryController = controller;
+        const toggle = $("#store-search-toggle");
+        toggle.disabled = true;
+        toggle.textContent = "搜索中…";
+        $("#store-search-help").textContent = `正在按“${query}”搜索${state.visit.city}已建档门店…`;
+        try {
+            const path = `/stores?city=${encodeURIComponent(state.visit.city)}&q=${encodeURIComponent(query)}&limit=20`;
+            const payload = normalizeResponse(await requestJson(path, {
+                signal: controller.signal,
+                timeout: 20000
+            }));
+            if (state.storeDirectoryController !== controller) return;
+            const stores = (Array.isArray(payload) ? payload : [])
+                .map((store) => ({
+                    ...store,
+                    source: "REGISTERED",
+                    storeId: store.storeId || store.id,
+                    checkinEligible: true,
+                    nextAction: "CHECK_IN",
+                    directoryMatch: true
+                }))
+                .filter(isUsableNearbyStore);
+            state.visit.directoryStores = stores;
+            state.visit.directoryQuery = query;
+            renderStoreResults(stores);
+            $("#store-search-help").textContent = stores.length
+                ? `找到 ${stores.length} 家已建档门店；定位未核验，请按门店名称核对后选择。`
+                : "没有找到同名已建档门店，可换关键词或新增门店。";
+            persistDraft();
+        } catch (error) {
+            if (state.storeDirectoryController !== controller || error.name === "AbortError") return;
+            $("#store-search-help").textContent = errorMessage(error, "门店搜索失败，请检查网络后重试。");
+        } finally {
+            if (state.storeDirectoryController === controller) {
+                state.storeDirectoryController = null;
+                toggle.disabled = false;
+                toggle.textContent = "搜索门店";
+            }
         }
     }
 
@@ -1467,10 +1594,18 @@
                 const meta = document.createElement("span");
                 meta.className = "visit-store-result__meta";
                 const status = document.createElement("strong");
-                status.textContent = "已建档 · 直接打卡";
+                const directoryMode = store.directoryMatch === true
+                    || locationExceptionReady(state.visit.locationContext);
+                status.textContent = directoryMode
+                    ? "定位未核验 · 按门店名称选择"
+                    : "已建档 · 直接打卡";
                 const distance = document.createElement("small");
-                distance.textContent = formatDistance(store.distanceMeters) || "附近";
-                meta.append(status, distance);
+                if (!directoryMode) {
+                    distance.textContent = formatDistance(store.distanceMeters) || "附近";
+                    meta.append(status, distance);
+                } else {
+                    meta.append(status);
+                }
 
                 button.append(detail, meta);
                 button.addEventListener("click", () => selectStore(store));
@@ -1487,9 +1622,15 @@
     }
 
     function handleStoreSearchKeydown(event) {
+        if (event.isComposing) return;
         if (event.key === "Escape") {
             hideStoreResults();
             event.currentTarget.blur();
+        }
+        if (event.key === "Enter" && locationExceptionReady(state.visit.locationContext)) {
+            event.preventDefault();
+            void searchVisitStoreDirectory();
+            return;
         }
         if (event.key === "ArrowDown" && $("#store-search-results").hidden) {
             event.preventDefault();
@@ -1501,12 +1642,19 @@
         if (isBusinessLocked()) return;
         const storeId = store.id || store.storeId;
         if (!storeId) return;
+        const previousStoreId = state.visit.selectedStore?.id;
+        if (previousStoreId && String(previousStoreId) !== String(storeId)
+                && !confirmVisitMediaResetForStoreChange()) return;
+        if (previousStoreId && String(previousStoreId) !== String(storeId)) {
+            resetVisitMediaForStoreChange();
+        }
         hideStoreSavedNotice();
         state.visit.selectedStore = {
             id: storeId,
             name: store.name || "未命名门店",
             city: store.city || state.visit.city,
-            locationSummary: store.locationSummary || store.address || ""
+            locationSummary: store.locationSummary || store.address || "",
+            locationVerificationStatus: cleanText(store.locationVerificationStatus)
         };
         $("#store-search").value = state.visit.selectedStore.name;
         hideStoreResults();
@@ -1516,8 +1664,11 @@
         persistDraft();
     }
 
-    function clearSelectedStore(persist = true, focusSearch = true) {
+    function clearSelectedStore(persist = true, focusSearch = true, clearVisitMedia = false) {
         if (isBusinessLocked()) return;
+        if (clearVisitMedia && state.visit.selectedStore
+                && !confirmVisitMediaResetForStoreChange()) return;
+        if (clearVisitMedia && state.visit.selectedStore) resetVisitMediaForStoreChange();
         hideStoreSavedNotice();
         state.visit.selectedStore = null;
         $("#store-search").value = "";
@@ -1563,6 +1714,23 @@
             && finiteNumberOrNull(context.maxLocationAgeMinutes) !== null);
     }
 
+    function locationExceptionReady(context) {
+        return Boolean(context
+            && cleanText(context.locationVerificationStatus) === "UNVERIFIED"
+            && LOCATION_FAILURE_REASONS.has(cleanText(context.locationFailureReason))
+            && isUuidValue(context.locationAttemptId));
+    }
+
+    function locationFlowReady(context) {
+        return locationContextReady(context) || locationExceptionReady(context);
+    }
+
+    function renderUnverifiedBanner(scope) {
+        const unverified = locationExceptionReady(state[scope].locationContext);
+        const banner = $(`#${scope}-unverified-banner`);
+        if (banner) banner.hidden = !unverified;
+    }
+
     function renderNearbyStores() {
         const panel = $("#nearby-stores-panel");
         const context = state.visit.locationContext;
@@ -1571,30 +1739,47 @@
         const toggle = $("#store-search-toggle");
         const createButton = $("#create-store-link");
         const createUnavailable = state.submitting || isBusinessLocked();
+        const unverified = locationExceptionReady(context);
+        const flowReady = locationFlowReady(context);
+        const resolving = context?.geocodeStatus === "RESOLVING";
         panel.hidden = false;
-        $("#nearby-stores-empty").hidden = Boolean(state.visit.location);
-        $(".store-search-field", panel).hidden = !state.visit.location;
+        $("#nearby-stores-empty").hidden = flowReady || resolving;
+        $(".store-search-field", panel).hidden = !flowReady;
         hideStoreResults();
-        $("#nearby-stores-scope").textContent = locationContextReady(context)
+        $("#nearby-stores-scope").textContent = unverified
+            ? "定位未核验：按业务城市和门店名称搜索，不按距离筛选"
+            : locationContextReady(context)
             ? `${visitRadiusLabel(context)}的已建档门店，不受业务归属城市限制`
             : "定位通过后，仅显示当前位置允许范围内的已建档门店";
-        if (!state.visit.location) {
+        if (!flowReady) {
             input.disabled = true;
             toggle.disabled = true;
+            toggle.textContent = "展开";
+            toggle.setAttribute("aria-label", "展开附近门店选项");
             createButton.disabled = createUnavailable;
-            $("#nearby-stores-summary").textContent = "等待定位";
+            $("#nearby-stores-summary").textContent = resolving
+                ? "正在解析地址并加载…" : "等待定位";
             renderFlowActions();
             return;
         }
 
-        if (context?.geocodeStatus === "RESOLVING") {
-            $("#nearby-stores-summary").textContent = "正在解析地址并加载…";
-            $("#store-search-help").textContent = "正在查找当前位置附近的已录入门店。";
-            input.disabled = true;
-            toggle.disabled = true;
+        if (unverified) {
             createButton.disabled = createUnavailable;
+            input.disabled = false;
+            input.placeholder = "输入门店名称（至少2个字）";
+            toggle.disabled = state.submitting;
+            toggle.textContent = state.storeDirectoryController ? "搜索中…" : "搜索门店";
+            toggle.setAttribute("aria-label", "按门店名称搜索已建档门店");
+            $("#nearby-stores-summary").textContent = state.visit.directoryStores.length
+                ? `已找到 ${state.visit.directoryStores.length} 家`
+                : "按名称搜索";
+            $("#store-search-help").textContent = state.visit.directoryStores.length
+                ? "定位未核验；请按门店名称核对后选择，不显示距离。"
+                : "输入至少 2 个字并点击“搜索门店”；找不到可新增门店。";
+            renderFlowActions();
             return;
         }
+
         if (!locationContextReady(context)) {
             $("#nearby-stores-summary").textContent = "需要处理定位问题";
             $("#store-search-help").textContent = context?.errorMessage
@@ -1614,6 +1799,8 @@
             return;
         }
         toggle.disabled = false;
+        toggle.textContent = "展开";
+        toggle.setAttribute("aria-label", "展开附近门店选项");
         input.placeholder = "点击选择，或输入名称筛选";
         $("#nearby-stores-summary").textContent = `${visitRadiusLabel(context)} ${options.length} 家`;
         $("#store-search-help").textContent = `已加载 ${options.length} 家已建档门店；输入文字只在本地筛选。`;
@@ -1814,6 +2001,7 @@
 
     function enableManualStoreEntry() {
         if (state.store.sourceMode === "MANUAL") {
+            if (locationExceptionReady(state.store.locationContext)) return;
             state.store.sourceMode = "";
             state.store.name = "";
             state.ui.storeStep = 1;
@@ -1845,16 +2033,24 @@
             && Boolean(state.store.sourcePoiToken);
         const manual = state.store.sourceMode === "MANUAL";
         const ready = locationContextReady(context);
+        const unverified = locationExceptionReady(context);
+        if (unverified && !selected) {
+            state.store.manualEntryAllowed = true;
+            state.store.poiSearchLookupStatus = "UNAVAILABLE";
+        }
         const lookupStatus = storePoiLookupStatus();
-        const canSearch = ready && !selected;
+        const canSearch = ready && !selected && !unverified;
         const searching = Boolean(state.poiSearchController);
         const searchQuery = input.value.trim();
+        $("#store-source-description").textContent = unverified
+            ? "本次定位未核验，不限制继续录入；请手工填写真实门店资料。"
+            : "输入门店名称后点击“搜索”，只返回当前位置300米内候选；输入本身不会调用高德。";
 
         input.disabled = !canSearch || searching;
         searchButton.hidden = selected;
         searchButton.disabled = !canSearch || searching || searchQuery.length < 2;
         searchButton.textContent = searching ? "搜索中…" : "搜索";
-        $(".poi-search-field").hidden = selected;
+        $(".poi-search-field").hidden = selected || unverified;
         $("#selected-poi-card").hidden = !selected;
         $("#store-profile-card").hidden = !selected && !manual;
         $(".button-row").hidden = !selected && !manual;
@@ -1877,17 +2073,23 @@
         manualButton.classList.toggle("is-active", manual);
         manualButton.classList.toggle("is-ready", !manual && state.store.manualEntryAllowed);
         manualButton.querySelector("strong").textContent = manual
-            ? "已选择手动录入"
+            ? unverified ? "定位未核验 · 手动录入门店" : "已选择手动录入"
             : state.store.manualEntryAllowed
-                ? "仍未找到，手动录入门店"
+                ? unverified ? "直接手动录入门店" : "仍未找到，手动录入门店"
                 : "高德附近搜索没找到？";
         manualButton.querySelector("span").textContent = manual
-            ? "点击可返回高德附近搜索结果"
+            ? unverified
+                ? "请填写真实门店名称和资料；本次定位情况会一并保存"
+                : "点击可返回高德附近搜索结果"
             : state.store.manualEntryAllowed
-                ? "以当前 GPS 作为门店位置，继续补全基础资料"
+                ? unverified
+                    ? "不等待定位和高德搜索，继续补全基础资料"
+                    : "以当前 GPS 作为门店位置，继续补全基础资料"
                 : "确认当前位置300米内搜索无结果后，再手动录入门店名称";
 
-        if (!state.store.location) {
+        if (unverified) {
+            $("#poi-search-help").textContent = "定位未核验，本次新增门店使用手工录入。";
+        } else if (!state.store.location) {
             input.placeholder = "先获取定位";
             $("#poi-search-help").textContent = "先完成上方现场定位，才能搜索高德新门店。";
         } else if (context?.geocodeStatus === "RESOLVING") {
@@ -1927,6 +2129,7 @@
             return;
         }
         if (isBusinessLocked()) return;
+        abortStoreDirectorySearch();
         hideStoreResults();
         $("#store-search").value = state.visit.selectedStore?.name || "";
         hideStoreSavedNotice();
@@ -1942,9 +2145,9 @@
             return;
         }
         clearFieldError("visit-location");
-        if (!state.visit.location || !locationContextReady(state.visit.locationContext)) {
+        if (!locationFlowReady(state.visit.locationContext)) {
             setFieldError("visit-location", state.visit.locationContext?.errorMessage
-                || "请先刷新并确认本次现场定位，再新增门店。");
+                || "请先刷新定位；若定位失败，可按页面提示继续新增门店。");
             $("#visit-location-button")?.scrollIntoView({ behavior: "smooth", block: "center" });
             $("#visit-location-button")?.focus();
             return;
@@ -1957,11 +2160,16 @@
         }
         state.store.city = state.visit.city || state.store.city;
         state.store.salespersonId = state.visit.salespersonId || state.store.salespersonId;
-        if (state.visit.location) {
-            state.store.location = { ...state.visit.location };
-            state.store.locationContext = state.visit.locationContext
-                ? { ...state.visit.locationContext }
-                : null;
+        state.store.location = state.visit.location ? { ...state.visit.location } : null;
+        state.store.locationContext = state.visit.locationContext
+            ? { ...state.visit.locationContext }
+            : null;
+        if (locationExceptionReady(state.store.locationContext)) {
+            state.store.sourceMode = "MANUAL";
+            state.store.manualEntryAllowed = true;
+            state.store.manualEntryToken = "";
+            state.store.poiSearchLookupStatus = "UNAVAILABLE";
+            clearSourcePoi(false, false);
         }
         state.store.nearbyPois = (Array.isArray(state.visit.nearbyStores) ? state.visit.nearbyStores : [])
             .filter((store) => store?.source === "REGISTERED")
@@ -2000,7 +2208,9 @@
         const message = $("#store-prefill-message");
         if (!state.store.sourcePoiToken) {
             message.textContent = state.store.sourceMode === "MANUAL"
-                ? "已明确选择手动录入；保存后会自动返回打卡并选中这家门店。"
+                ? locationExceptionReady(state.store.locationContext)
+                    ? "定位未核验，当前使用手动录入；保存后会自动返回打卡并选中这家门店。"
+                    : "已明确选择手动录入；保存后会自动返回打卡并选中这家门店。"
                 : "请输入门店名称并明确点击搜索；无结果或高德不可用时才可手工录入。";
             return;
         }
@@ -2019,6 +2229,107 @@
         $("#store-owner-city").textContent = city || "未选择";
         $("#store-owner-salesperson").textContent = person?.name
             || (selectedName && !selectedName.startsWith("请") ? selectedName : "未选择");
+    }
+
+    function locationFailureReason(error, staleOnly = false) {
+        if (staleOnly) return "TIMESTAMP_UNUSABLE";
+        if (error?.code === 1) return "PERMISSION_DENIED";
+        if (error?.code === 2) return "POSITION_UNAVAILABLE";
+        if (error?.code === 3) return "TIMEOUT";
+        return "POSITION_UNAVAILABLE";
+    }
+
+    function locationEvidenceFromPosition(position, receivedAtMs = Date.now()) {
+        // position.timestamp 无法解释时，不能把它伪装成可信采集时间；这里只把回调接收时刻
+        // 作为“未核验坐标”的留档时间，最终记录仍由 locationVerificationStatus 明确标记。
+        return normalizeUnverifiedLocationEvidence({
+            longitude: position?.coords?.longitude,
+            latitude: position?.coords?.latitude,
+            accuracyMeters: position?.coords?.accuracy,
+            capturedAt: new Date(receivedAtMs).toISOString()
+        });
+    }
+
+    function normalizeUnverifiedLocationEvidence(value) {
+        const longitude = finiteNumberOrNull(value?.longitude);
+        const latitude = finiteNumberOrNull(value?.latitude);
+        const accuracy = finiteNumberOrNull(value?.accuracyMeters);
+        const capturedAt = normalizeOptionalInstant(value?.capturedAt);
+        if (longitude === null || latitude === null || accuracy === null || !capturedAt
+                || longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90
+                || accuracy < 0 || accuracy > MAX_RECORDED_UNVERIFIED_ACCURACY_METERS) {
+            return null;
+        }
+        return {
+            longitude: roundCoordinate(longitude),
+            latitude: roundCoordinate(latitude),
+            accuracyMeters: roundAccuracy(accuracy),
+            capturedAt,
+            ...(cleanText(value?.note) ? { note: cleanText(value.note) } : {})
+        };
+    }
+
+    function setUnverifiedLocation(scope, reason, message, attemptId, evidence = null, extra = {}) {
+        const normalizedReason = LOCATION_FAILURE_REASONS.has(cleanText(reason))
+            ? cleanText(reason) : "POSITION_UNAVAILABLE";
+        const normalizedAttemptId = isUuidValue(attemptId) ? attemptId : secureUuid();
+        const note = $(`#${scope}-location-note`)?.value.trim();
+        const availableLocation = normalizeUnverifiedLocationEvidence(
+            evidence || state[scope].location || null);
+        state[scope].location = availableLocation
+            ? { ...availableLocation, ...(note ? { note } : {}) }
+            : null;
+        state[scope].locationContext = {
+            ...extra,
+            geocodeStatus: cleanText(extra.geocodeStatus) || "FAILED",
+            locationVerificationStatus: "UNVERIFIED",
+            locationFailureReason: normalizedReason,
+            locationAttemptId: normalizedAttemptId,
+            locationVerificationToken: "",
+            errorMessage: message,
+            locationMessage: message,
+            canContinueWithoutLocation: false
+        };
+        if (scope === "visit") {
+            abortStoreDirectorySearch();
+            state.visit.nearbyStores = [];
+            state.visit.directoryStores = [];
+            state.visit.directoryQuery = "";
+        } else {
+            abortPoiSearch();
+            state.store.nearbyPois = [];
+            state.store.poiSearchResults = null;
+            state.store.poiSearchQuery = "";
+            state.store.poiSearchLookupStatus = "UNAVAILABLE";
+            state.store.manualEntryAllowed = true;
+            state.store.manualEntryToken = "";
+            clearSourcePoi(true, false);
+        }
+        clearFieldError(`${scope}-location`);
+        const button = $(`#${scope}-location-button`);
+        if (button) button.disabled = false;
+        renderLocation(scope);
+        if (scope === "visit") renderNearbyStores();
+        else renderStoreSource();
+        renderBusinessLock();
+        persistDraft();
+    }
+
+    function continueWithoutVerifiedLocation(scope) {
+        if (state.submitting || (scope === "visit" && isBusinessLocked())) return;
+        const context = state[scope].locationContext;
+        if (context?.geocodeStatus !== "CAPTURING" || context.canContinueWithoutLocation !== true) return;
+        const attemptId = context.locationAttemptId;
+        const evidence = context.candidateLocation || null;
+        cancelLocationCapture(scope);
+        setUnverifiedLocation(
+            scope,
+            "USER_CONTINUED_AFTER_WAIT",
+            "手机定位仍在等待，已转为定位未核验；可以继续录入，后台会结合现场照片复核。",
+            attemptId,
+            evidence
+        );
+        emitClientDiagnostic("LOCATION_RESULT", "FALLBACK", {}, attemptId);
     }
 
     async function captureLocation(scope) {
@@ -2040,17 +2351,27 @@
         }
         state[scope].city = city;
         state[scope].salespersonId = salespersonId;
+        const diagnosticId = secureUuid();
+        emitClientDiagnostic("LOCATION_CLICK", "STARTED", {}, diagnosticId);
         if (!window.isSecureContext) {
-            setFieldError(`${scope}-location`, "浏览器要求通过 HTTPS 才能获取定位，请使用正式网页地址打开。" );
+            cancelLocationCapture(scope);
+            state.locationControllers[scope]?.abort();
+            state.locationControllers[scope] = null;
+            setUnverifiedLocation(scope, "INSECURE_CONTEXT",
+                "当前浏览器环境不能读取定位，已转为定位未核验；可以继续录入。", diagnosticId);
+            emitClientDiagnostic("LOCATION_RESULT", "FALLBACK", {}, diagnosticId);
             return;
         }
         if (!navigator.geolocation) {
-            setFieldError(`${scope}-location`, "当前浏览器不支持定位，请更换手机浏览器。" );
+            cancelLocationCapture(scope);
+            state.locationControllers[scope]?.abort();
+            state.locationControllers[scope] = null;
+            setUnverifiedLocation(scope, "UNSUPPORTED",
+                "当前浏览器不支持定位，已转为定位未核验；可以继续录入。", diagnosticId);
+            emitClientDiagnostic("LOCATION_RESULT", "FALLBACK", {}, diagnosticId);
             return;
         }
 
-        const diagnosticId = secureUuid();
-        emitClientDiagnostic("LOCATION_CLICK", "STARTED", {}, diagnosticId);
         const button = $(`#${scope}-location-button`);
         const captureSequence = ++state.locationCaptureSequence[scope];
         const captureDeadlineMs = Date.now() + GEOLOCATION_REFRESH_TIMEOUT_MS;
@@ -2063,11 +2384,15 @@
         state[scope].location = null;
         state[scope].locationContext = {
             geocodeStatus: "CAPTURING",
+            locationAttemptId: diagnosticId,
+            canContinueWithoutLocation: false,
             errorMessage: "正在刷新手机当前位置，请稍候。"
         };
         if (scope === "visit") {
-            clearSelectedStore(false, false);
+            abortStoreDirectorySearch();
             state.visit.nearbyStores = [];
+            state.visit.directoryStores = [];
+            state.visit.directoryQuery = "";
             renderNearbyStores();
         } else {
             abortPoiSearch();
@@ -2085,6 +2410,18 @@
         renderLocation(scope);
         if (scope === "store") renderStoreSource();
         persistDraft();
+
+        state.geolocationContinueIds[scope] = window.setTimeout(() => {
+            if (!captureIsActive()) return;
+            state[scope].locationContext = {
+                ...state[scope].locationContext,
+                geocodeStatus: "CAPTURING",
+                locationAttemptId: diagnosticId,
+                canContinueWithoutLocation: true
+            };
+            renderLocation(scope);
+            persistDraft();
+        }, GEOLOCATION_CONTINUE_AFTER_MS);
 
         let compatibleAttempted = false;
         let stalePositionReceived = false;
@@ -2113,7 +2450,6 @@
             state[scope].locationContext = { geocodeStatus: "RESOLVING" };
             if (scope === "visit") {
                 state.visit.nearbyStores = [];
-                clearSelectedStore(false, false);
             } else {
                 state.store.nearbyPois = [];
                 state.store.poiSearchResults = null;
@@ -2135,22 +2471,21 @@
             }, diagnosticId);
             resolveLocationContext(scope, diagnosticId);
         };
-        const failLocation = (error, staleOnly = stalePositionReceived) => {
+        const failLocation = (error, staleOnly = stalePositionReceived, explicitReason = "") => {
             if (!captureIsActive()) return;
             captureSettled = true;
             stopGeolocationRefresh(scope);
             const message = staleOnly
-                ? "手机定位没有刷新成功，本次未采用该位置。请打开系统定位、关闭省电模式并保持页面在前台后重试。"
-                : geolocationErrorMessage(error, compatibleAttempted);
-            state[scope].locationContext = {
-                geocodeStatus: "FAILED",
-                errorMessage: message
-            };
-            button.disabled = false;
-            renderLocation(scope);
-            setFieldError(`${scope}-location`, message);
-            persistDraft();
-            emitClientDiagnostic("LOCATION_RESULT", "FAILED", {
+                ? "手机未返回可核验的新定位，已转为定位未核验；可以继续录入。"
+                : `${geolocationErrorMessage(error, compatibleAttempted)} 已转为定位未核验，可以继续录入。`;
+            const previousContext = state[scope].locationContext || {};
+            const evidence = previousContext.candidateLocation || null;
+            setUnverifiedLocation(scope,
+                explicitReason || locationFailureReason(error, staleOnly),
+                message,
+                diagnosticId,
+                evidence);
+            emitClientDiagnostic("LOCATION_RESULT", "FALLBACK", {
                 itemCount: diagnosticCallbackCount()
             }, diagnosticId);
         };
@@ -2177,7 +2512,7 @@
             if (!Number.isFinite(Number(position?.coords?.longitude))
                     || !Number.isFinite(Number(position?.coords?.latitude))
                     || !Number.isFinite(Number(position?.coords?.accuracy))) {
-                failLocation({ code: 2 }, false);
+                failLocation({ code: 2 }, false, "INVALID_POSITION");
                 return true;
             }
             const receivedAtMs = Date.now();
@@ -2211,7 +2546,10 @@
                 stalePositionReceived = true;
                 rejectedTimestampSample = { value: position?.timestamp, receivedAtMs };
                 state[scope].locationContext = {
+                    ...state[scope].locationContext,
                     geocodeStatus: "CAPTURING",
+                    locationAttemptId: diagnosticId,
+                    candidateLocation: locationEvidenceFromPosition(position, receivedAtMs),
                     stalePosition: true,
                     compatibleAttempt: compatibleAttempted,
                     errorMessage: compatibleAttempted
@@ -2320,7 +2658,9 @@
                 state.geolocationWatchIds[scope] = null;
             }
             state[scope].locationContext = {
+                ...state[scope].locationContext,
                 geocodeStatus: "CAPTURING",
+                locationAttemptId: diagnosticId,
                 stalePosition: true,
                 compatibleAttempt: true,
                 errorMessage: "正在适配此手机定位，通常几秒内完成。"
@@ -2346,11 +2686,20 @@
         const city = state[scope].city;
         const location = state[scope].location;
         if (!city || !location) return;
+        const previousVerifiedContext = locationContextReady(state[scope].locationContext)
+            ? { ...state[scope].locationContext }
+            : null;
+        const previousRegisteredStores = previousVerifiedContext
+            ? [...(scope === "visit" ? state.visit.nearbyStores : state.store.nearbyPois)]
+            : [];
 
         state.locationControllers[scope]?.abort();
         const controller = createRequestController();
         state.locationControllers[scope] = controller;
-        state[scope].locationContext = { geocodeStatus: "RESOLVING" };
+        state[scope].locationContext = {
+            geocodeStatus: "RESOLVING",
+            locationAttemptId: clientEventId
+        };
         if (scope === "visit") {
             state.visit.nearbyStores = [];
         } else {
@@ -2384,7 +2733,7 @@
             const address = cleanText(payload.address);
             const formattedAddress = cleanText(payload.formattedAddress);
             const locationMessage = cleanText(payload.locationMessage);
-            state[scope].locationContext = {
+            const resolvedContext = {
                 geocodeStatus: cleanText(payload.geocodeStatus) || (address || formattedAddress ? "RESOLVED" : "FAILED"),
                 address,
                 formattedAddress,
@@ -2403,25 +2752,30 @@
                 locationMessage,
                 errorMessage: locationMessage
             };
-            const ready = locationContextReady(state[scope].locationContext);
-            if (ready) clearFieldError(`${scope}-location`);
-            else setFieldError(`${scope}-location`, locationMessage
-                || (payload.freshnessAccepted === false
-                    ? "定位已过期，请重新获取当前位置。"
-                    : "定位精度不足，请移到信号较好的位置后重新定位。"));
+            state[scope].locationContext = resolvedContext;
+            const ready = locationContextReady(resolvedContext);
+            if (ready) {
+                clearFieldError(`${scope}-location`);
+            } else {
+                const reason = payload.accuracyAccepted === false
+                    ? "ACCURACY_INSUFFICIENT"
+                    : payload.freshnessAccepted === false
+                        ? "TIMESTAMP_UNUSABLE"
+                        : "RESOLVE_FAILED";
+                const message = locationMessage
+                    || (reason === "ACCURACY_INSUFFICIENT"
+                        ? "定位精度不足，已转为定位未核验；可以继续录入。"
+                        : reason === "TIMESTAMP_UNUSABLE"
+                            ? "定位时间无法核验，已转为定位未核验；可以继续录入。"
+                            : "定位解析暂不可用，已转为定位未核验；可以继续录入。");
+                setUnverifiedLocation(scope, reason, message, clientEventId, location, resolvedContext);
+            }
             if (scope === "visit") {
                 state.visit.nearbyStores = ready && Array.isArray(payload.nearbyStores)
                     ? payload.nearbyStores
                         .filter((store) => store?.source === "REGISTERED")
                         .filter(isUsableNearbyStore)
                     : [];
-                const selectedId = state.visit.selectedStore?.id;
-                if (!isBusinessLocked() && selectedId && !registeredNearbyStores().some((store) =>
-                    String(store.storeId || store.id) === String(selectedId))) {
-                    state.visit.selectedStore = null;
-                    $("#store-search").value = "";
-                    renderSelectedStore();
-                }
             } else {
                 state.store.nearbyPois = ready && Array.isArray(payload.nearbyStores)
                     ? payload.nearbyStores
@@ -2433,10 +2787,18 @@
             if (state.locationControllers[scope] !== controller) return;
             if (error.name === "AbortError") return;
             const message = errorMessage(error, "暂时无法确认附近门店，请检查网络后重试。");
-            state[scope].locationContext = { geocodeStatus: "FAILED", errorMessage: message };
-            setFieldError(`${scope}-location`, message);
-            if (scope === "visit") state.visit.nearbyStores = [];
-            else state.store.nearbyPois = [];
+            if (previousVerifiedContext) {
+                state[scope].locationContext = {
+                    ...previousVerifiedContext,
+                    errorMessage: `${message} 原定位核验结果仍保留。`
+                };
+                if (scope === "visit") state.visit.nearbyStores = previousRegisteredStores;
+                else state.store.nearbyPois = previousRegisteredStores;
+                clearFieldError(`${scope}-location`);
+            } else {
+                setUnverifiedLocation(scope, "RESOLVE_FAILED",
+                    `${message} 已转为定位未核验，可以继续录入。`, clientEventId, location);
+            }
         } finally {
             if (state.locationControllers[scope] === controller) {
                 state.locationControllers[scope] = null;
@@ -2482,22 +2844,43 @@
         const detail = $(`#${scope}-location-detail`);
         const button = $(`#${scope}-location-button`);
         const retry = $(`#${scope}-location-retry`);
+        const continueButton = $(`#${scope}-location-continue`);
+        const exceptionNote = $(`#${scope}-location-exception`);
         const capturing = context?.geocodeStatus === "CAPTURING";
         const awaitingFreshPosition = capturing && context?.stalePosition === true;
         const compatibleAttempt = capturing && context?.compatibleAttempt === true;
         const failed = context?.geocodeStatus === "FAILED";
-        button.closest(".location-card")?.classList.toggle("is-located", Boolean(location));
+        const unverified = locationExceptionReady(context);
+        const locationCard = button.closest(".location-card");
+        locationCard?.classList.toggle("is-located", Boolean(location));
+        locationCard?.classList.toggle("is-unverified", unverified);
+        continueButton.hidden = !capturing || context?.canContinueWithoutLocation !== true;
+        exceptionNote.hidden = !unverified;
+        if (unverified) {
+            const explanation = exceptionNote.querySelector("span");
+            if (explanation) explanation.textContent = location
+                ? "已保存当前能取得的坐标，但不作为已核验定位；可以继续录入，门头照仍必需。"
+                : "本次没有取得可用坐标；可以继续录入，门头照仍必需。";
+        }
+        renderUnverifiedBanner(scope);
         if (scope === "store") {
-            button.closest(".location-card")?.classList.toggle("has-inherited-location", Boolean(location));
+            locationCard?.classList.toggle("has-inherited-location", Boolean(location));
+            $("#store-location-note-field").hidden = !location;
         }
         if (!location) {
-            status.textContent = compatibleAttempt
+            status.textContent = unverified
+                ? "定位未核验"
+                : compatibleAttempt
                 ? "定位适配中"
                 : awaitingFreshPosition ? "刷新定位中" : capturing ? "定位中" : failed ? "定位失败" : "未定位";
-            status.className = capturing ? "status-pill is-loading" : failed ? "status-pill is-warning" : "status-pill";
+            status.className = unverified
+                ? "status-pill is-unverified"
+                : capturing ? "status-pill is-loading" : failed ? "status-pill is-warning" : "status-pill";
             detail.hidden = true;
             retry.hidden = true;
-            $(`#${scope}-location-button-label`).textContent = compatibleAttempt
+            $(`#${scope}-location-button-label`).textContent = unverified
+                ? "重新尝试定位"
+                : compatibleAttempt
                 ? "正在适配此手机定位…"
                 : awaitingFreshPosition ? "正在等待手机刷新…"
                 : capturing ? "正在刷新当前位置…" : "刷新当前位置";
@@ -2511,7 +2894,9 @@
         const expired = context?.freshnessAccepted === false;
         const address = cleanText(context?.formattedAddress || context?.address);
         const addressUnavailable = ready && !address;
-        status.textContent = capturing
+        status.textContent = unverified
+            ? "定位未核验"
+            : capturing
             ? "定位中"
             : resolving
             ? "解析地址中"
@@ -2524,7 +2909,9 @@
                                 ? `已定位·${cleanText(context?.resolvedCity) || "跨城"}`
                                 : addressUnavailable ? "坐标已获取" : "已定位"
                             : "需重试";
-        status.className = capturing || resolving
+        status.className = unverified
+            ? "status-pill is-unverified"
+            : capturing || resolving
             ? "status-pill is-loading"
             : ready && (cityMismatch || addressUnavailable)
                 ? "status-pill is-info"
@@ -2534,14 +2921,19 @@
         addressElement.textContent = address
             || (capturing ? "正在重新获取当前位置…"
                 : resolving ? "正在解析定位地址…"
+                : unverified ? `${formatLocationCoordinates(location)} · 本次定位未核验`
                 : ready ? `${formatLocationCoordinates(location)} · 详细地址暂未取得`
                     : context?.errorMessage || "详细地址暂未取得，请重试");
         addressElement.classList.toggle("is-missing", !address && !capturing && !resolving);
-        retry.hidden = capturing || resolving || Boolean(address);
+        retry.hidden = unverified || capturing || resolving || Boolean(address);
         $(`#${scope}-location-accuracy`).textContent = `约 ${location.accuracyMeters} 米`;
+        const timeLabel = $(`#${scope}-location-time`)?.closest("div")?.querySelector("span");
+        if (timeLabel) timeLabel.textContent = unverified ? "坐标接收时间" : "采集时间";
         $(`#${scope}-location-time`).textContent = formatDateTime(location.capturedAt);
         $(`#${scope}-location-note`).value = location.note || "";
-        $(`#${scope}-location-button-label`).textContent = scope === "store"
+        $(`#${scope}-location-button-label`).textContent = unverified
+            ? "重新尝试定位"
+            : scope === "store"
             ? "定位不准？重新获取"
             : "重新定位";
         renderFlowActions();
@@ -3440,6 +3832,11 @@
         }
         emitClientDiagnostic("STORE_SAVE_CLICK", "STARTED", {}, diagnosticId);
         const payload = buildStorePayload();
+        const selectedStoreBeforeSave = state.visit.selectedStore?.id || null;
+        if (selectedStoreBeforeSave && !confirmVisitMediaResetForStoreChange()) {
+            emitClientDiagnostic("STORE_SAVE_CLICK", "BLOCKED", {}, diagnosticId);
+            return;
+        }
         const button = $("#submit-store-button");
         state.submitting = true;
         setFormsDisabled(true);
@@ -3453,7 +3850,9 @@
         button.textContent = "正在保存…";
         let savedStore = null;
         try {
-            const response = normalizeResponse(await requestJson("/stores", {
+            const unverified = locationExceptionReady(state.store.locationContext);
+            const response = normalizeResponse(await requestJson(
+                unverified ? "/stores/unverified-location" : "/stores", {
                 method: "POST",
                 headers: { "X-Sales-Checkin-Client-Event-Id": diagnosticId },
                 body: payload,
@@ -3463,7 +3862,8 @@
                 throw new Error("门店保存请求已完成，但服务端未返回门店编号。当前表单已保留，请勿重复填写并联系管理员。" );
             }
             const locationSummary = response.locationSummary || payload.sourcePoiAddress
-                || payload.location.note || state.visit.locationContext?.address || "位置已采集";
+                || payload.location?.note || state.store.locationContext?.address
+                || (unverified ? "定位未核验" : "位置已采集");
             const createdStore = {
                 source: "REGISTERED",
                 storeId: response.id,
@@ -3474,9 +3874,15 @@
                 distanceMeters: 0,
                 locationSource: payload.sourcePoiToken ? "AMAP_POI" : "STORE_LOCATION",
                 checkinEligible: true,
-                nextAction: "CHECK_IN"
+                nextAction: "CHECK_IN",
+                locationVerificationStatus: cleanText(response.locationVerificationStatus)
+                    || (unverified ? "UNVERIFIED" : "VERIFIED")
             };
             savedStore = createdStore;
+            if (selectedStoreBeforeSave
+                    && String(selectedStoreBeforeSave) !== String(createdStore.storeId)) {
+                resetVisitMediaForStoreChange();
+            }
             completeStoreSaveTransition(createdStore, payload);
             emitClientDiagnostic("STORE_SAVE_CLICK", "SUCCEEDED", {}, diagnosticId);
         } catch (error) {
@@ -3517,8 +3923,9 @@
         };
         if (!state.visit.customerName) state.visit.customerName = payload.contactName;
         if (!state.visit.customerPhone && payload.contactPhone) state.visit.customerPhone = payload.contactPhone;
-        if (!state.visit.location || !locationContextReady(state.visit.locationContext)) {
-            state.visit.location = { ...payload.location };
+        if (locationExceptionReady(state.store.locationContext)
+                || !locationFlowReady(state.visit.locationContext)) {
+            state.visit.location = payload.location ? { ...payload.location } : null;
             state.visit.locationContext = state.store.locationContext
                 ? { ...state.store.locationContext }
                 : null;
@@ -3561,8 +3968,9 @@
             city: createdStore.city,
             locationSummary: createdStore.locationSummary
         };
-        if (!state.visit.location || !locationContextReady(state.visit.locationContext)) {
-            state.visit.location = { ...payload.location };
+        if (locationExceptionReady(state.store.locationContext)
+                || !locationFlowReady(state.visit.locationContext)) {
+            state.visit.location = payload.location ? { ...payload.location } : null;
             state.visit.locationContext = state.store.locationContext
                 ? { ...state.store.locationContext }
                 : null;
@@ -3627,7 +4035,11 @@
                 persistDraft();
             }
             const previousServerId = state.submission.serverId;
-            const response = normalizeResponse(await requestJson("/submissions", {
+            const unverifiedEndpoint = Boolean(
+                cleanText(state.submission.attemptedPayload?.locationFailureReason)
+                && isUuidValue(state.submission.attemptedPayload?.locationAttemptId));
+            const response = normalizeResponse(await requestJson(
+                unverifiedEndpoint ? "/submissions/unverified-location" : "/submissions", {
                 method: "POST",
                 headers: { "X-Submission-Key": state.submission.submissionKey },
                 body: state.submission.attemptedPayload,
@@ -3838,6 +4250,7 @@
 
     function buildStorePayload() {
         const location = withCurrentLocationNote("store");
+        const unverified = locationExceptionReady(state.store.locationContext);
         return compactObject({
             clientStoreId: state.store.clientStoreId,
             city: state.store.city,
@@ -3854,21 +4267,26 @@
             cooperationIntent: state.store.cooperationIntent,
             storeGrade: optionalText(state.store.storeGrade),
             tags: [...state.store.tags],
-            sourcePoiToken: optionalText(state.store.sourcePoiToken),
-            manualEntryToken: state.store.sourceMode === "MANUAL"
+            sourcePoiToken: unverified ? undefined : optionalText(state.store.sourcePoiToken),
+            manualEntryToken: !unverified && state.store.sourceMode === "MANUAL"
                 ? optionalText(state.store.manualEntryToken) : undefined,
-            locationVerificationToken: optionalText(
+            locationVerificationToken: unverified ? undefined : optionalText(
                 state.store.locationContext?.locationVerificationToken),
-            sourcePoiId: optionalText(state.store.sourcePoiId),
-            sourcePoiName: optionalText(state.store.sourcePoiName),
-            sourcePoiAddress: optionalText(state.store.sourcePoiAddress),
-            sourcePoiLongitude: finiteNumberOrNull(state.store.sourcePoiLongitude),
-            sourcePoiLatitude: finiteNumberOrNull(state.store.sourcePoiLatitude),
+            sourcePoiId: unverified ? undefined : optionalText(state.store.sourcePoiId),
+            sourcePoiName: unverified ? undefined : optionalText(state.store.sourcePoiName),
+            sourcePoiAddress: unverified ? undefined : optionalText(state.store.sourcePoiAddress),
+            sourcePoiLongitude: unverified ? undefined : finiteNumberOrNull(state.store.sourcePoiLongitude),
+            sourcePoiLatitude: unverified ? undefined : finiteNumberOrNull(state.store.sourcePoiLatitude),
+            locationFailureReason: unverified
+                ? state.store.locationContext.locationFailureReason : undefined,
+            locationAttemptId: unverified
+                ? state.store.locationContext.locationAttemptId : undefined,
             location
         });
     }
 
     function buildSubmissionPayload() {
+        const unverified = locationExceptionReady(state.visit.locationContext);
         return compactObject({
             clientSubmissionId: state.submission.clientSubmissionId,
             submissionKey: state.submission.submissionKey,
@@ -3879,8 +4297,12 @@
             customerPhone: optionalText(state.visit.customerPhone),
             visitResult: state.visit.visitResult.trim(),
             location: withCurrentLocationNote("visit"),
-            locationVerificationToken: optionalText(
+            locationVerificationToken: unverified ? undefined : optionalText(
                 state.visit.locationContext?.locationVerificationToken),
+            locationFailureReason: unverified
+                ? state.visit.locationContext.locationFailureReason : undefined,
+            locationAttemptId: unverified
+                ? state.visit.locationContext.locationAttemptId : undefined,
             privacyAccepted: state.visit.privacyAccepted === true,
             privacyNoticeVersion: PRIVACY_NOTICE_VERSION
         });
@@ -3902,12 +4324,15 @@
         valid = requireValue(state.visit.city, "visit-city", "请选择业务归属城市。") && valid;
         valid = requireValue(state.visit.salespersonId, "visit-salesperson", "请选择销售。") && valid;
         valid = requireValue(state.visit.selectedStore?.id, "selected-store", "请搜索并选择拜访门店。") && valid;
+        if (state.visit.selectedStore?.id && !visitSelectedStoreReady()) {
+            setFieldError("selected-store", "当前已选门店不在本次定位允许范围，请重新选择。" );
+            valid = false;
+        }
         valid = requireValue(state.visit.customerName.trim(), "customer-name", "请输入客户姓名。") && valid;
         valid = requireValue(state.visit.visitResult.trim(), "visit-result", "请填写拜访结果。") && valid;
-        valid = requireValue(state.visit.location, "visit-location", "请在现场获取拜访定位。") && valid;
-        if (state.visit.location && !isBusinessLocked() && !locationContextReady(state.visit.locationContext)) {
+        if (!isBusinessLocked() && !locationFlowReady(state.visit.locationContext)) {
             setFieldError("visit-location", state.visit.locationContext?.errorMessage
-                || "当前定位未通过精度或时效校验，请重新定位。");
+                || "请先尝试定位；定位失败或等待较久时可按页面提示继续录入。");
             valid = false;
         }
         if (!state.files.photo && !state.submission.uploadedMedia.includes(MEDIA.photo)) {
@@ -3930,12 +4355,17 @@
         let valid = true;
         valid = requireValue(state.store.city, "store-city", "请选择业务归属城市。") && valid;
         valid = requireValue(state.store.salespersonId, "store-salesperson", "请选择销售。") && valid;
-        valid = requireValue(state.store.sourceMode, "store-source", "请先从当前位置300米内高德搜索结果选择；确认没有后再手动录入。") && valid;
+        valid = requireValue(state.store.sourceMode, "store-source",
+            locationExceptionReady(state.store.locationContext)
+                ? "定位未核验，请选择手动录入门店。"
+                : "请先从当前位置300米内高德搜索结果选择；确认没有后再手动录入。") && valid;
         if (state.store.sourceMode === "POI" && !cleanText(state.store.sourcePoiToken)) {
             setFieldError("store-source", "高德候选凭证已失效，请重新搜索并选择门店。");
             valid = false;
         }
-        if (state.store.sourceMode === "MANUAL" && !cleanText(state.store.manualEntryToken)) {
+        if (state.store.sourceMode === "MANUAL"
+                && !locationExceptionReady(state.store.locationContext)
+                && !cleanText(state.store.manualEntryToken)) {
             setFieldError("store-source", "人工建店凭证已失效，请重新搜索确认无结果。");
             valid = false;
         }
@@ -3958,10 +4388,9 @@
             setFieldError("store-tags", "请至少选择一个门店标签。" );
             valid = false;
         }
-        valid = requireValue(state.store.location, "store-location", "请在现场获取门店定位。") && valid;
-        if (state.store.location && !locationContextReady(state.store.locationContext)) {
+        if (!locationFlowReady(state.store.locationContext)) {
             setFieldError("store-location", state.store.locationContext?.errorMessage
-                || "当前定位未通过精度或时效校验，请重新定位。");
+                || "请先尝试定位；定位失败或等待较久时可按页面提示继续录入。");
             valid = false;
         }
         return valid;
@@ -4077,6 +4506,7 @@
         $("#success-submitted-at").textContent = completed.submittedAt
             ? `提交时间：${formatDateTime(completed.submittedAt)}`
             : "";
+        $("#success-location-note").hidden = !locationExceptionReady(state.visit.locationContext);
         $("#success-panel").hidden = false;
         removeStoredDraft();
         $("#success-panel").scrollIntoView({ behavior: "smooth", block: "center" });
@@ -4136,6 +4566,7 @@
         state.recorder.elapsedMs = 0;
         $("#recording-clock").textContent = "00:00";
         abortPoiSearch();
+        abortStoreDirectorySearch();
         Object.keys(state.files).forEach(resetLocalFile);
         Object.values(state.locationControllers).forEach((controller) => controller?.abort());
         state.locationControllers.visit = null;
@@ -4455,6 +4886,12 @@
                 .filter((store) => store?.source === "REGISTERED")
                 .filter(isUsableNearbyStore)
             : [];
+        state.visit.directoryStores = Array.isArray(state.visit.directoryStores)
+            ? state.visit.directoryStores
+                .filter((store) => store?.source === "REGISTERED")
+                .filter(isUsableNearbyStore)
+            : [];
+        state.visit.directoryQuery = cleanText(state.visit.directoryQuery);
         state.store.nearbyPois = Array.isArray(state.store.nearbyPois)
             ? state.store.nearbyPois
                 .filter((store) => store?.source === "REGISTERED")
@@ -4462,26 +4899,42 @@
             : [];
         state.store.poiSearchResults = null;
         state.store.poiSearchQuery = cleanText(state.store.poiSearchQuery);
-        if (!state.visit.location || !state.visit.locationContext || typeof state.visit.locationContext !== "object") {
+        if (!state.visit.locationContext || typeof state.visit.locationContext !== "object"
+                || (!state.visit.location && !locationExceptionReady(state.visit.locationContext))) {
             state.visit.locationContext = null;
         }
-        if (!state.store.location || !state.store.locationContext || typeof state.store.locationContext !== "object") {
+        if (!state.store.locationContext || typeof state.store.locationContext !== "object"
+                || (!state.store.location && !locationExceptionReady(state.store.locationContext))) {
             state.store.locationContext = null;
         }
         if (!isBusinessLocked()) {
             invalidateExpiredRestoredLocation("visit");
             invalidateExpiredRestoredLocation("store");
         }
-        if (!isBusinessLocked() && !locationContextReady(state.visit.locationContext)) {
+        if (!isBusinessLocked() && !locationFlowReady(state.visit.locationContext)) {
             state.visit.selectedStore = null;
             state.visit.nearbyStores = [];
+            state.visit.directoryStores = [];
         }
         state.store.sourcePoiToken = cleanText(state.store.sourcePoiToken);
         state.store.sourcePoiId = cleanText(state.store.sourcePoiId);
         state.store.sourcePoiLongitude = finiteNumberOrNull(state.store.sourcePoiLongitude);
         state.store.sourcePoiLatitude = finiteNumberOrNull(state.store.sourcePoiLatitude);
         const restoredLookupStatus = cleanText(state.store.poiSearchLookupStatus);
-        const manualAuthorized = restoredLookupStatus === "EMPTY" || restoredLookupStatus === "UNAVAILABLE";
+        const restoredUnverifiedLocation = locationExceptionReady(state.store.locationContext);
+        if (restoredUnverifiedLocation) {
+            state.store.sourceMode = "MANUAL";
+            state.store.nearbyPois = [];
+            state.store.sourcePoiToken = "";
+            state.store.sourcePoiId = "";
+            state.store.sourcePoiName = "";
+            state.store.sourcePoiAddress = "";
+            state.store.sourcePoiLongitude = null;
+            state.store.sourcePoiLatitude = null;
+            state.store.poiSearchLookupStatus = "UNAVAILABLE";
+        }
+        const manualAuthorized = restoredUnverifiedLocation
+            || restoredLookupStatus === "EMPTY" || restoredLookupStatus === "UNAVAILABLE";
         if (state.store.sourceMode === "POI"
             && (!state.store.sourcePoiId || !state.store.sourcePoiToken)) {
             state.store.sourceMode = "";
@@ -4497,7 +4950,9 @@
         }
         state.store.manualEntryToken = cleanText(state.store.manualEntryToken);
         state.store.manualEntryAllowed = state.store.sourceMode === "MANUAL"
-            && manualAuthorized && Boolean(state.store.manualEntryToken);
+            && manualAuthorized
+            && (restoredUnverifiedLocation
+                || Boolean(state.store.manualEntryToken));
         if (!state.store.manualEntryAllowed) {
             state.store.poiSearchLookupStatus = null;
             state.store.manualEntryToken = "";
@@ -4594,6 +5049,7 @@
     function invalidateExpiredRestoredLocation(scope) {
         const location = state[scope].location;
         const context = state[scope].locationContext;
+        if (locationExceptionReady(context)) return;
         const capturedAt = Date.parse(location?.capturedAt || "");
         const maxAgeMinutes = Number(context?.maxLocationAgeMinutes);
         if (!location || !context || !Number.isFinite(capturedAt) || !Number.isFinite(maxAgeMinutes)) return;
@@ -4986,6 +5442,7 @@
 
     function repairRestoredGeolocationTimestamp(scope, savedAtMs) {
         const location = state[scope].location;
+        if (locationExceptionReady(state[scope].locationContext)) return;
         if (!location) return;
         const raw = Date.parse(location.capturedAt || "");
         const repaired = location.capturedAt
@@ -5021,6 +5478,9 @@
         const timeoutId = state.geolocationTimeoutIds[scope];
         if (timeoutId !== null) window.clearTimeout(timeoutId);
         state.geolocationTimeoutIds[scope] = null;
+        const continueId = state.geolocationContinueIds[scope];
+        if (continueId !== null) window.clearTimeout(continueId);
+        state.geolocationContinueIds[scope] = null;
         const lifecycleCleanup = state.geolocationLifecycleCleanups[scope];
         if (typeof lifecycleCleanup === "function") lifecycleCleanup();
         state.geolocationLifecycleCleanups[scope] = null;
