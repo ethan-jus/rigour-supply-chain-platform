@@ -2194,6 +2194,19 @@
                     }, diagnosticId);
                 }
             }
+            const browserCapturedAtMs = capturedAtMs;
+            capturedAtMs = resolveCompatibleGeolocationCapturedAtMs({
+                capturedAtMs,
+                compatibleAttempted,
+                visibilityState: document.visibilityState,
+                receivedAtMs,
+                captureDeadlineMs
+            });
+            if (browserCapturedAtMs === null && capturedAtMs !== null) {
+                emitClientDiagnostic("LOCATION_TIMESTAMP", "FALLBACK", {
+                    itemCount: diagnosticCallbackCount()
+                }, diagnosticId);
+            }
             if (capturedAtMs === null) {
                 stalePositionReceived = true;
                 rejectedTimestampSample = { value: position?.timestamp, receivedAtMs };
@@ -2202,12 +2215,10 @@
                     stalePosition: true,
                     compatibleAttempt: compatibleAttempted,
                     errorMessage: compatibleAttempted
-                        ? "正在兼容获取本次现场定位，最多等待30秒。"
-                        : "手机返回的定位时间需要刷新，正在切换兼容定位。"
+                        ? "正在适配此手机定位，通常几秒内完成。"
+                        : "正在适配此手机定位，请稍候。"
                 };
-                setFieldError(`${scope}-location`, compatibleAttempted
-                    ? "正在兼容获取本次现场定位，最多等待30秒…"
-                    : "手机返回的定位时间需要刷新，正在切换兼容定位…");
+                clearFieldError(`${scope}-location`);
                 renderLocation(scope);
                 if (!timestampIssueReported) {
                     timestampIssueReported = true;
@@ -2312,9 +2323,9 @@
                 geocodeStatus: "CAPTURING",
                 stalePosition: true,
                 compatibleAttempt: true,
-                errorMessage: "正在兼容获取本次现场定位，最多等待30秒。"
+                errorMessage: "正在适配此手机定位，通常几秒内完成。"
             };
-            setFieldError(`${scope}-location`, "正在兼容获取本次现场定位，最多等待30秒…");
+            clearFieldError(`${scope}-location`);
             renderLocation(scope);
             if (usingWatch) startWatch(false);
             else startSinglePosition(false);
@@ -2481,13 +2492,13 @@
         }
         if (!location) {
             status.textContent = compatibleAttempt
-                ? "兼容定位中"
+                ? "定位适配中"
                 : awaitingFreshPosition ? "刷新定位中" : capturing ? "定位中" : failed ? "定位失败" : "未定位";
             status.className = capturing ? "status-pill is-loading" : failed ? "status-pill is-warning" : "status-pill";
             detail.hidden = true;
             retry.hidden = true;
             $(`#${scope}-location-button-label`).textContent = compatibleAttempt
-                ? "正在兼容获取当前位置…"
+                ? "正在适配此手机定位…"
                 : awaitingFreshPosition ? "正在等待手机刷新…"
                 : capturing ? "正在刷新当前位置…" : "刷新当前位置";
             renderFlowActions();
@@ -4948,6 +4959,29 @@
         });
         return clockAdvanced && Number.isFinite(Number(current.receivedAtMs))
             ? Number(current.receivedAtMs) : null;
+    }
+
+    function resolveCompatibleGeolocationCapturedAtMs({
+        capturedAtMs,
+        compatibleAttempted,
+        visibilityState,
+        receivedAtMs,
+        captureDeadlineMs
+    }) {
+        if (capturedAtMs !== null) {
+            return Number.isFinite(Number(capturedAtMs)) ? Number(capturedAtMs) : null;
+        }
+        // 部分手机 WebView 会返回持续不变的旧时间戳；仅在已进入兼容定位且页面仍在前台时，
+        // 使用当前回调的接收时间。精度、位置凭证和300米门店范围仍由服务端继续校验。
+        if (!compatibleAttempted || visibilityState === "hidden") {
+            return null;
+        }
+        if (!Number.isFinite(Number(receivedAtMs))
+                || !Number.isFinite(Number(captureDeadlineMs))
+                || Number(receivedAtMs) >= Number(captureDeadlineMs)) {
+            return null;
+        }
+        return Number(receivedAtMs);
     }
 
     function repairRestoredGeolocationTimestamp(scope, savedAtMs) {

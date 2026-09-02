@@ -123,7 +123,7 @@ class TemporaryCheckinApiIntegrationTests {
         registry.add("rigour.sales.temporary-checkin.trusted-proxy-marker",
                 () -> "integration-test-trusted-proxy-marker-0123456789abcdef0123456789abcdef");
         registry.add("rigour.sales.temporary-checkin.max-checkin-distance-meters", () -> 300);
-        registry.add("rigour.sales.temporary-checkin.max-checkin-accuracy-meters", () -> 200);
+        registry.add("rigour.sales.temporary-checkin.max-checkin-accuracy-meters", () -> 300);
         registry.add("rigour.sales.temporary-checkin.max-location-age-minutes", () -> 60);
     }
 
@@ -210,7 +210,7 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(jsonPath("$.resolvedCity").value("北京"))
                 .andExpect(jsonPath("$.locationVerificationToken").isNotEmpty())
                 .andExpect(jsonPath("$.maxCheckinDistanceMeters").value(300))
-                .andExpect(jsonPath("$.maxCheckinAccuracyMeters").value(200))
+                .andExpect(jsonPath("$.maxCheckinAccuracyMeters").value(300))
                 .andExpect(jsonPath("$.maxLocationAgeMinutes").value(60))
                 .andExpect(jsonPath("$.accuracyAccepted").value(true))
                 .andExpect(jsonPath("$.freshnessAccepted").value(true))
@@ -229,6 +229,23 @@ class TemporaryCheckinApiIntegrationTests {
         verify(reverseGeocoder, times(1)).resolve(
                 new BigDecimal("116.3971280"), new BigDecimal("39.9165270"));
         verifyNoInteractions(amapPoiClient, coordinateConverter);
+    }
+
+    @Test
+    void acceptsCommonIndoorNetworkAccuracyAtTwoHundredFiftyMeters() throws Exception {
+        LocationCommand indoorNetworkLocation = new LocationCommand(
+                new BigDecimal("116.3971280"), new BigDecimal("39.9165270"),
+                new BigDecimal("250.00"), Instant.now().minusSeconds(10), "室内网络定位");
+
+        mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(
+                                resolveRequest("北京", VISITOR_ID, indoorNetworkLocation))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.geocodeStatus").value("RESOLVED"))
+                .andExpect(jsonPath("$.accuracyAccepted").value(true))
+                .andExpect(jsonPath("$.maxCheckinAccuracyMeters").value(300))
+                .andExpect(jsonPath("$.locationVerificationToken").isNotEmpty());
     }
 
     @Test
@@ -711,7 +728,7 @@ class TemporaryCheckinApiIntegrationTests {
                 "北京", VISITOR_ID, STORE_ID, "已导入门店", "最早客户", "最早低精度拜访");
         jdbc.update("""
                 UPDATE temp_sales_checkin_submission
-                   SET accuracy_meters=250.01
+                   SET accuracy_meters=350.01
                  WHERE tenant_id=? AND id=?
                 """, bin(TENANT_ID), bin(inaccurateFirstVisit));
         Instant inaccurateSubmittedAt = Instant.now().minusSeconds(240);
@@ -788,7 +805,7 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(jsonPath("$.message").value("门店缺少有效定位，请先补录门店定位"));
 
         LocationCommand inaccurate = new LocationCommand(new BigDecimal("116.3971280"),
-                new BigDecimal("39.9165270"), new BigDecimal("250.01"),
+                new BigDecimal("39.9165270"), new BigDecimal("350.01"),
                 Instant.now().minusSeconds(30), "定位漂移");
         mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -798,7 +815,7 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(jsonPath("$.address").doesNotExist())
                 .andExpect(jsonPath("$.accuracyAccepted").value(false))
                 .andExpect(jsonPath("$.locationMessage")
-                        .value("当前定位精度约251米，超过允许的200米，请到室外或开阔处重新定位"))
+                        .value("当前定位精度约351米，超过允许的300米，请到室外或开阔处重新定位"))
                 .andExpect(jsonPath("$.nearbyStores", hasSize(0)));
         mockMvc.perform(post("/sales-checkin/api/v1/submissions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -806,14 +823,14 @@ class TemporaryCheckinApiIntegrationTests {
                                 UUID.randomUUID(), SUBMISSION_KEY, "低精度打卡", true, inaccurate))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message")
-                        .value("当前定位精度约251米，超过允许的200米，请到室外或开阔处重新定位"));
+                        .value("当前定位精度约351米，超过允许的300米，请到室外或开阔处重新定位"));
         mockMvc.perform(post("/sales-checkin/api/v1/stores")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(poiStoreAtLocation(
                                 UUID.randomUUID(), "低精度新店", "赵店长", inaccurate))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message")
-                        .value("当前定位精度约251米，超过允许的200米，请到室外或开阔处重新定位"));
+                        .value("当前定位精度约351米，超过允许的300米，请到室外或开阔处重新定位"));
     }
 
     @Test
@@ -821,7 +838,7 @@ class TemporaryCheckinApiIntegrationTests {
             throws Exception {
         jdbc.update("""
                 UPDATE temp_sales_checkin_store
-                   SET accuracy_meters=250.01
+                   SET accuracy_meters=350.01
                  WHERE tenant_id=? AND id=?
                 """, bin(TENANT_ID), bin(STORE_ID));
         UUID firstAcceptable = insertAdminSubmission(

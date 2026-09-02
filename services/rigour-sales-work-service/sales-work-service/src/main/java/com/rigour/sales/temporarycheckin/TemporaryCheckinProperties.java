@@ -22,7 +22,7 @@ public class TemporaryCheckinProperties {
     private int maxAudioSegmentsPerSubmission = 20;
     private long maxAudioTotalBytesPerSubmission = 1024L * 1024 * 1024;
     private int maxCheckinDistanceMeters = 300;
-    private int maxCheckinAccuracyMeters = 200;
+    private int maxCheckinAccuracyMeters = 300;
     private int maxLocationAgeMinutes = 60;
     private boolean identityEnforcementEnabled = true;
     private String identitySigningKeyBase64;

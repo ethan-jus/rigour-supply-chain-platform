@@ -131,7 +131,7 @@ public class TemporaryCheckinService {
     private static final Set<String> CLIENT_DIAGNOSTIC_RESULTS = Set.of(
             "STARTED", "SUCCEEDED", "FAILED", "BLOCKED", "AVAILABLE", "EMPTY",
             "UNAVAILABLE", "ACCEPTED", "TOO_LARGE", "UNSUPPORTED", "CANCELLED",
-            "STALE", "NORMALIZED", "ADVANCING");
+            "STALE", "NORMALIZED", "ADVANCING", "FALLBACK");
     private static final TypeReference<List<String>> STRING_LIST_TYPE = new TypeReference<>() { };
     private static final TypeReference<List<AudioSegment>> AUDIO_SEGMENT_LIST_TYPE = new TypeReference<>() { };
 

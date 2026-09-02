@@ -53,7 +53,8 @@ rigour:
       max-audio-total-bytes-per-submission: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_TOTAL_BYTES_PER_SUBMISSION:1073741824}
       # 公开页面不是身份认证；距离门禁仅降低远程误打卡风险。
       max-checkin-distance-meters: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_DISTANCE_METERS:300}
-      max-checkin-accuracy-meters: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_ACCURACY_METERS:200}
+      # 室内 WebView 常退化为约250米网络定位；放宽精度门槛，但门店距离仍单独限制在300米。
+      max-checkin-accuracy-meters: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_ACCURACY_METERS:300}
       # 定位新鲜度窗口；超过窗口时要求重新定位，避免复用长时间前的位置。
       max-location-age-minutes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_LOCATION_AGE_MINUTES:60}
       # 姓名下拉不是身份；默认强制销售用个人码首次绑定当前浏览器。

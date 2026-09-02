@@ -10,7 +10,8 @@ let source = fs.readFileSync(scriptPath, "utf8");
 source = source.replace(/\n\}\)\(\);\s*$/, `
     window.__geolocationTestApi = {
         resolveGeolocationCapturedAtMs,
-        resolveAdvancingGeolocationClockCapturedAtMs
+        resolveAdvancingGeolocationClockCapturedAtMs,
+        resolveCompatibleGeolocationCapturedAtMs
     };
 })();`);
 
@@ -40,7 +41,8 @@ vm.runInNewContext(source, {
 
 const {
     resolveGeolocationCapturedAtMs,
-    resolveAdvancingGeolocationClockCapturedAtMs
+    resolveAdvancingGeolocationClockCapturedAtMs,
+    resolveCompatibleGeolocationCapturedAtMs
 } = window.__geolocationTestApi;
 const now = Date.UTC(2026, 8, 1, 8, 0, 0);
 const appleEpochOffsetMs = 978307200000;
@@ -60,6 +62,11 @@ function expectNullCapturedAt(value, label) {
 
 function expectAdvancing(previous, current, expected, label) {
     assert.equal(resolveAdvancingGeolocationClockCapturedAtMs(previous, current), expected, label);
+    checks += 1;
+}
+
+function expectCompatibleFallback(options, expected, label) {
+    assert.equal(resolveCompatibleGeolocationCapturedAtMs(options), expected, label);
     checks += 1;
 }
 
@@ -121,5 +128,41 @@ expectAdvancing(
     { value: 400 * 24 * 60 * 60 * 1_000_000_000 + 1_000_000_000,
         receivedAtMs: now }, null,
     "implausibly long boot-relative nanoseconds");
+
+expectCompatibleFallback({
+    capturedAtMs: now - 1_000,
+    compatibleAttempted: true,
+    visibilityState: "visible",
+    receivedAtMs: now,
+    captureDeadlineMs: now + 1_000
+}, now - 1_000, "valid browser timestamp is preserved");
+expectCompatibleFallback({
+    capturedAtMs: null,
+    compatibleAttempted: false,
+    visibilityState: "visible",
+    receivedAtMs: now,
+    captureDeadlineMs: now + 1_000
+}, null, "first high-accuracy stage cannot use receipt fallback");
+expectCompatibleFallback({
+    capturedAtMs: null,
+    compatibleAttempted: true,
+    visibilityState: "hidden",
+    receivedAtMs: now,
+    captureDeadlineMs: now + 1_000
+}, null, "hidden page cannot use receipt fallback");
+expectCompatibleFallback({
+    capturedAtMs: null,
+    compatibleAttempted: true,
+    visibilityState: "visible",
+    receivedAtMs: now + 1_000,
+    captureDeadlineMs: now + 1_000
+}, null, "expired capture cannot use receipt fallback");
+expectCompatibleFallback({
+    capturedAtMs: null,
+    compatibleAttempted: true,
+    visibilityState: "visible",
+    receivedAtMs: now,
+    captureDeadlineMs: now + 1_000
+}, now, "first compatible callback uses receipt fallback");
 
 console.log(`sales-checkin geolocation timestamp tests: ${checks}/${checks} passed`);

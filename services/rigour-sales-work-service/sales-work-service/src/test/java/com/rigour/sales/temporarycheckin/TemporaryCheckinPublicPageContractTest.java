@@ -13,6 +13,24 @@ import org.springframework.core.io.ClassPathResource;
 class TemporaryCheckinPublicPageContractTest {
 
     @Test
+    void acceptsCommonIndoorNetworkAccuracyWithoutExpandingTheStoreRadius() throws IOException {
+        String configuration = Files.readString(Path.of("src/main/resources/application.yml"),
+                StandardCharsets.UTF_8);
+        String properties = Files.readString(Path.of(
+                "src/main/java/com/rigour/sales/temporarycheckin/TemporaryCheckinProperties.java"),
+                StandardCharsets.UTF_8);
+
+        assertThat(configuration)
+                .contains("max-checkin-distance-meters: "
+                        + "${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_DISTANCE_METERS:300}")
+                .contains("max-checkin-accuracy-meters: "
+                        + "${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_ACCURACY_METERS:300}");
+        assertThat(properties)
+                .contains("private int maxCheckinDistanceMeters = 300;")
+                .contains("private int maxCheckinAccuracyMeters = 300;");
+    }
+
+    @Test
     void letsMobileFilePickersShowAudioWithoutUnreliableAcceptFiltering() throws IOException {
         String html = resource("static/sales-checkin/index.html");
 
@@ -221,13 +239,13 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("window.addEventListener(\"pageshow\", handleCapturePageShow)")
                 .contains("compatibleSingleTimestampRetries < 1")
                 .contains("rejectedTimestampSample = null")
-                .contains("? \"兼容定位中\"")
-                .contains("? \"正在兼容获取当前位置…\"")
+                .contains("? \"定位适配中\"")
+                .contains("? \"正在适配此手机定位…\"")
                 .contains("maximumAge: 0")
                 .contains("state[scope].location = null")
                 .contains("capturedAt: new Date(capturedAtMs).toISOString()")
-                .contains("手机返回的定位时间需要刷新，正在切换兼容定位")
-                .contains("正在兼容获取本次现场定位，最多等待30秒")
+                .contains("正在适配此手机定位，请稍候")
+                .contains("正在适配此手机定位，通常几秒内完成")
                 .contains("本次未采用该位置")
                 .contains("geocodeStatus: \"CAPTURING\"")
                 .contains("function assessGeolocationTimestamp")
@@ -235,7 +253,11 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("APPLE_SECONDS", "APPLE_MICROSECONDS", "APPLE_NANOSECONDS")
                 .contains("MONOTONIC_MILLISECONDS", "MONOTONIC_MICROSECONDS", "MONOTONIC_NANOSECONDS")
                 .contains("function resolveAdvancingGeolocationClockCapturedAtMs")
-                .contains("LOCATION_TIMESTAMP", "NORMALIZED", "ADVANCING")
+                .contains("LOCATION_TIMESTAMP", "NORMALIZED", "ADVANCING", "FALLBACK")
+                .contains("function resolveCompatibleGeolocationCapturedAtMs")
+                .contains("visibilityState: document.visibilityState")
+                .contains("visibilityState === \"hidden\"")
+                .contains("Number(receivedAtMs) >= Number(captureDeadlineMs)")
                 .contains("if (repaired === null)")
                 .contains("state[scope].location = null")
                 .contains("if (!state.visit.location || !state.visit.locationContext")
@@ -247,7 +269,8 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("function cancelLocationCapture(scope)")
                 .doesNotContain("repaired ?? savedAtMs")
                 .doesNotContain("GEOLOCATION_FALLBACK_MAX_AGE_MS")
-                .doesNotContain("resolved ?? reference");
+                .doesNotContain("resolved ?? reference")
+                .doesNotContain("正在兼容获取本次现场定位，最多等待30秒");
     }
 
     @Test
@@ -526,6 +549,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("operatorId={}", "operatorName={}", "clientEventId={}")
                 .contains("queryLength={}", "sourceItems={}", "visibleItems={}")
                 .contains("fileSizeBytes={}", "client={}")
+                .contains("\"FALLBACK\"")
                 .doesNotContain("personalCode={}", "longitude={}", "latitude={}", "filename={}");
     }
 
