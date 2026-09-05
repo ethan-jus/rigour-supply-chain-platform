@@ -15,6 +15,8 @@
     const MAX_RECORDED_UNVERIFIED_ACCURACY_METERS = 10000;
     const GEOLOCATION_CLOCK_PROGRESS_MIN_MS = 250;
     const GEOLOCATION_MAX_MONOTONIC_UPTIME_MS = 366 * 24 * 60 * 60 * 1000;
+    const MICROPHONE_PERMISSION_TIMEOUT_MS = 12 * 1000;
+    const OPTIONAL_MEDIA_UPLOAD_BUDGET_MS = 30 * 1000;
     const PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
     const HEADQUARTERS_CITY = "总部";
     const FLOW_STEPS = Object.freeze({ visit: 3, store: 3 });
@@ -154,6 +156,7 @@
             audio: new Map()
         },
         audioRetrySegmentId: null,
+        audioFileSelectionSequence: 0,
         poiSearchController: null,
         storeDirectoryController: null,
         locationControllers: {
@@ -914,7 +917,7 @@
             ? "第 3 步 · 核对" : "第 2 步 · 录音";
         $("#recording-workspace-copy").textContent = visitStep === 3
             ? isBusinessLocked()
-                ? "草稿已锁定，可在此回放、重选原文件或补录"
+                ? "草稿已保留；可重试或跳过失败录音，继续提交"
                 : "在此回放确认；需要补录时请先返回第2步"
             : "开始后可继续填写客户信息；请结束录音后再进入现场证明";
         if (!recordingBusy()) {
@@ -955,7 +958,10 @@
             if (input) input.disabled = state.submitting || recorderBusy;
         });
         $("#audio-file-label").setAttribute("aria-disabled", String(state.submitting || recorderBusy));
-        $("#submit-visit-button").disabled = state.submitting || recorderBusy;
+        // 麦克风授权可能在部分手机 WebView 中一直 pending；此时提交按钮必须可达，
+        // submitVisit 会主动取消这次授权等待并继续。真正录制或生成文件时仍禁止提交。
+        $("#submit-visit-button").disabled = state.submitting
+            || (recorderBusy && !state.recorder.starting);
         $("#store-tab").disabled = state.submitting || recorderBusy || isBusinessLocked();
         $("#identity-switch").disabled = state.submitting || recorderBusy || isBusinessLocked();
         $("#discard-draft-button").disabled = state.submitting || recorderBusy;
@@ -3013,7 +3019,7 @@
         $(`#${prefix}-preview-card`).hidden = false;
     }
 
-    function handleAudioFileSelection(event) {
+    async function handleAudioFileSelection(event) {
         const files = Array.from(event.target.files || []);
         event.target.value = "";
         if (!files.length) {
@@ -3029,11 +3035,25 @@
 
         const retryId = state.audioRetrySegmentId;
         state.audioRetrySegmentId = null;
-        let validFiles = files.filter((file) => Number.isFinite(file.size) && file.size > 0);
-        if (validFiles.length !== files.length) {
-            setFieldError("audio-file", "已忽略无法读取的空音频文件。" );
+        const selectionSequence = ++state.audioFileSelectionSequence;
+        const readableFiles = files.filter((file) => Number.isFinite(file.size) && file.size > 0);
+        const emptyCount = files.length - readableFiles.length;
+        const imageFlags = await Promise.all(readableFiles.map(isImageSelectedAsAudio));
+        if (selectionSequence !== state.audioFileSelectionSequence) return;
+        const imageCount = imageFlags.filter(Boolean).length;
+        let validFiles = readableFiles.filter((_, index) => !imageFlags[index]);
+        if (imageCount || emptyCount) {
+            const ignored = [];
+            if (imageCount) ignored.push(`${imageCount} 张图片`);
+            if (emptyCount) ignored.push(`${emptyCount} 个空文件`);
+            showAudioSelectionNotice(`选到的是${ignored.join("和")}，已忽略；录音为选填，不影响打卡。`);
+        } else {
+            hideAudioSelectionNotice();
         }
-        if (!validFiles.length) return;
+        if (!validFiles.length) {
+            state.audioRetrySegmentId = retryId;
+            return;
+        }
 
         const metadataTasks = [];
         if (retryId) {
@@ -3055,6 +3075,83 @@
         metadataTasks.forEach(({ segmentId, file }) => {
             beginAudioFileMetadataRead(segmentId, file);
         });
+    }
+
+    async function isImageSelectedAsAudio(file) {
+        const mimeType = cleanText(file?.type).toLowerCase().split(";", 1)[0];
+        if (mimeType.startsWith("image/")) return true;
+        if (/\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(file?.name || "")) return true;
+        const prefix = await readFilePrefix(file, 32);
+        return hasImageSignature(prefix);
+    }
+
+    function readFilePrefix(file, byteLength) {
+        return new Promise((resolve) => {
+            if (!file || typeof window.FileReader !== "function" || typeof file.slice !== "function") {
+                resolve(null);
+                return;
+            }
+            const reader = new FileReader();
+            let settled = false;
+            const finish = (value = null) => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve(value);
+            };
+            const timeoutId = window.setTimeout(() => {
+                try {
+                    reader.abort();
+                } catch (_) {
+                    // 某些旧 WebView 在文件提供器已退出时不允许再次 abort。
+                }
+                finish();
+            }, 1500);
+            reader.addEventListener("load", () => {
+                try {
+                    finish(new Uint8Array(reader.result));
+                } catch (_) {
+                    finish();
+                }
+            }, { once: true });
+            reader.addEventListener("error", () => finish(), { once: true });
+            reader.addEventListener("abort", () => finish(), { once: true });
+            try {
+                reader.readAsArrayBuffer(file.slice(0, byteLength));
+            } catch (_) {
+                finish();
+            }
+        });
+    }
+
+    function hasImageSignature(bytes) {
+        if (!bytes || bytes.length < 2) return false;
+        const asciiAt = (offset, value) => value.split("").every((character, index) =>
+            bytes[offset + index] === character.charCodeAt(0));
+        if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true;
+        if (bytes.length >= 8 && bytes[0] === 0x89 && asciiAt(1, "PNG\r\n\u001a\n")) return true;
+        if (bytes.length >= 6 && (asciiAt(0, "GIF87a") || asciiAt(0, "GIF89a"))) return true;
+        if (bytes.length >= 12 && asciiAt(0, "RIFF") && asciiAt(8, "WEBP")) return true;
+        if (bytes.length >= 2 && asciiAt(0, "BM")) return true;
+        if (bytes.length >= 4 && (asciiAt(0, "II*\u0000") || asciiAt(0, "MM\u0000*"))) return true;
+        if (bytes.length >= 12 && asciiAt(4, "ftyp")) {
+            const brand = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]).toLowerCase();
+            return ["avif", "avis", "heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"]
+                .includes(brand);
+        }
+        return false;
+    }
+
+    function showAudioSelectionNotice(message) {
+        const note = $("#audio-selection-note");
+        note.textContent = message;
+        note.hidden = false;
+    }
+
+    function hideAudioSelectionNotice() {
+        const note = $("#audio-selection-note");
+        note.textContent = "";
+        note.hidden = true;
     }
 
     function appendAudioFile(file, evidence = {}) {
@@ -3214,8 +3311,8 @@
     }
 
     function updateRecorderHelp(mimeType) {
-        const format = (mimeType || "").toLowerCase().includes("webm") ? "WebM" : "音频";
-        $("#recorder-help").textContent = `本机将录制 ${format}；中断后可继续添加下一段，也可多选已有音频。自动转文字与摘要当前已暂停。`;
+        const format = recorderFormatLabel(mimeType);
+        $("#recorder-help").textContent = `本机将录制 ${format}；也可选择 M4A、MP3、WAV、AAC、AMR、OGG/Opus、WebM、3GP、FLAC、CAF、AIFF、SILK 等已有录音。无法识别时自动跳过，不影响打卡。自动转文字与摘要当前已暂停。`;
     }
 
     async function toggleRecording() {
@@ -3253,9 +3350,9 @@
         let stream = null;
         let session = null;
         try {
-            stream = await navigator.mediaDevices.getUserMedia({
+            stream = await requestMicrophoneStream({
                 audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-            });
+            }, requestSequence);
             const requestInvalidated = requestSequence !== state.recorder.startSequence;
             if (requestInvalidated
                     || state.submitting
@@ -3329,10 +3426,56 @@
         }
     }
 
+    function requestMicrophoneStream(constraints, requestSequence) {
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const finish = (callback, value) => {
+                if (settled) return false;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                callback(value);
+                return true;
+            };
+            const timeoutId = window.setTimeout(() => {
+                const error = new Error("麦克风授权等待超过12秒，已取消等待；录音为选填，可直接提交打卡。");
+                error.code = "MICROPHONE_PERMISSION_TIMEOUT";
+                finish(reject, error);
+            }, MICROPHONE_PERMISSION_TIMEOUT_MS);
+            let permissionRequest;
+            try {
+                permissionRequest = navigator.mediaDevices.getUserMedia(constraints);
+            } catch (error) {
+                finish(reject, error);
+                return;
+            }
+            Promise.resolve(permissionRequest).then((stream) => {
+                if (settled || requestSequence !== state.recorder.startSequence) {
+                    // 部分 WebView 在前端超时后仍会迟到返回麦克风流，必须立即释放。
+                    stopRecorderStream(stream);
+                    return;
+                }
+                finish(resolve, stream);
+            }, (error) => finish(reject, error));
+        });
+    }
+
     function preferredRecorderOptions() {
-        const candidates = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
+        const candidates = [
+            "audio/mp4;codecs=mp4a.40.2", "audio/mp4",
+            "audio/webm;codecs=opus", "audio/ogg;codecs=opus",
+            "audio/webm", "audio/ogg", "audio/aac"
+        ];
         const mimeType = candidates.find((value) => MediaRecorder.isTypeSupported?.(value));
         return mimeType ? { mimeType, audioBitsPerSecond: 64000 } : undefined;
+    }
+
+    function recorderFormatLabel(mimeType) {
+        const normalized = cleanText(mimeType).toLowerCase();
+        if (normalized.includes("mp4") || normalized.includes("m4a")) return "M4A";
+        if (normalized.includes("webm")) return "WebM";
+        if (normalized.includes("ogg") || normalized.includes("opus")) return "OGG/Opus";
+        if (normalized.includes("aac")) return "AAC";
+        return "浏览器支持的音频格式";
     }
 
     function stopRecording() {
@@ -3419,6 +3562,7 @@
             ? new File([blob], filename, { type: mimeType, lastModified: Date.now() })
             : Object.assign(blob, { name: filename, lastModified: Date.now() });
         $("#audio-file").value = "";
+        hideAudioSelectionNotice();
         appendAudioFile(file, {
             captureSource: "BROWSER_RECORDER",
             clientStartedAt: session.clientStartedAt,
@@ -3495,18 +3639,24 @@
             note.textContent = "正在生成录音文件，请稍候，不要切换步骤或关闭页面。";
             return;
         }
-        const audioCount = state.submission.audioSegments.length;
+        const audioCount = state.submission.audioSegments
+            .filter((segment) => segment.uploadState !== "SKIPPED").length;
+        const skippedAudioCount = state.submission.audioSegments.length - audioCount;
         if (audioCount) {
             note.textContent = `已添加 ${audioCount} 段录音，可回放确认、继续补录或选择已有音频；刷新页面前请先完成提交。`;
             return;
         }
+        if (skippedAudioCount) {
+            note.textContent = `已跳过 ${skippedAudioCount} 段选填录音；可重新选择，也可直接提交现场照片完成打卡。`;
+            return;
+        }
         if (!recorderSupported()) {
-            note.textContent = "当前浏览器不支持网页录音；请展开“已有音频”并选择文件。";
+            note.textContent = "当前浏览器不支持网页录音；可选择已有文件，也可不录音继续打卡。";
             return;
         }
         note.textContent = normalizeFlowStep(state.ui.visitStep) === 3
-            ? "本次未添加录音（选填）；需要补录时可返回第2步。"
-            : "录音只暂存在当前页面；请保持页面前台，停止录音后再进入现场证明。";
+            ? "本次未添加录音（选填）；可直接提交现场照片完成打卡。"
+            : "录音为选填，只暂存在当前页面；请先停止录音再进入现场证明，上传失败会自动跳过。";
     }
 
     function updateRecordingClock() {
@@ -3548,6 +3698,9 @@
             retry.hidden = !audioSegmentNeedsRetry(segment);
             retry.textContent = local && state.submission.serverId ? "重试上传" : "重新选择";
             retry.addEventListener("click", () => retryAudioSegment(segment.segmentId));
+            const skip = card.querySelector("[data-audio-skip]");
+            skip.hidden = !audioSegmentCanSkip(segment);
+            skip.addEventListener("click", () => skipAudioSegment(segment.segmentId));
             const remove = card.querySelector("[data-audio-remove]");
             remove.textContent = segment.uploadState === "DELETING" ? "删除中…" : "移除";
             remove.disabled = segment.uploadState === "UPLOADING" || segment.uploadState === "DELETING";
@@ -3583,6 +3736,9 @@
         if (segment.uploadState === "UPLOADED") return "草稿已上传";
         if (segment.uploadState === "UPLOADING") return "正在上传…";
         if (segment.uploadState === "DELETING") return "正在删除…";
+        if (segment.uploadState === "SKIPPED") {
+            return segment.errorMessage || "已跳过此段，不影响本次打卡";
+        }
         if (segment.uploadState === "UNKNOWN") return "上次上传结果待确认，可重选原文件重试或移除";
         if (segment.uploadState === "NEEDS_FILE") return "刷新后需重新选择原文件";
         if (segment.uploadState === "ERROR") return segment.errorMessage || "上传失败，可重试";
@@ -3590,6 +3746,10 @@
     }
 
     function audioSegmentNeedsRetry(segment) {
+        return ["UNKNOWN", "NEEDS_FILE", "ERROR", "SKIPPED"].includes(segment.uploadState);
+    }
+
+    function audioSegmentCanSkip(segment) {
         return ["UNKNOWN", "NEEDS_FILE", "ERROR"].includes(segment.uploadState);
     }
 
@@ -3616,21 +3776,38 @@
         if (local && state.submission.serverId) {
             clearFieldError("audio-file");
             try {
-                await uploadAudioSegment(segment, local.file, 1, 1);
+                await uploadAudioSegment(segment, local.file, 1, 1,
+                    Date.now() + OPTIONAL_MEDIA_UPLOAD_BUDGET_MS);
                 renderAudioSegments();
                 renderUploadedBadges();
             } catch (error) {
-                const message = errorMessage(error, "录音上传失败，可继续重试。");
                 segment.uploadState = segment.mayExistRemotely ? "UNKNOWN" : "ERROR";
-                segment.errorMessage = message;
+                segment.errorMessage = optionalUploadFailureMessage(
+                    error, "录音", segment.mayExistRemotely);
                 renderAudioSegments();
-                setFieldError("audio-file", message);
+                setFieldError("audio-file", segment.errorMessage);
             }
             persistDraft();
             return;
         }
         state.audioRetrySegmentId = segmentId;
         $("#audio-file").click();
+    }
+
+    function skipAudioSegment(segmentId) {
+        if (state.submitting) return;
+        const segment = findAudioSegment(segmentId);
+        if (!segment || ["UPLOADED", "UPLOADING", "DELETING"].includes(segment.uploadState)) return;
+        markAudioSegmentSkipped(segment, segment.errorMessage || "已手动跳过此段录音，不影响打卡");
+        clearFieldError("audio-file");
+        renderAudioSegments();
+        renderUploadedBadges();
+        persistDraft();
+    }
+
+    function markAudioSegmentSkipped(segment, reason) {
+        segment.uploadState = "SKIPPED";
+        segment.errorMessage = cleanText(reason) || "录音未能上传，已自动跳过，不影响打卡";
     }
 
     async function removeAudioSegment(segmentId) {
@@ -3743,10 +3920,13 @@
             $("#wechat-screenshot").value = "";
             $("#wechat-preview-card").hidden = true;
         } else {
+            state.audioFileSelectionSequence += 1;
+            state.audioRetrySegmentId = null;
             releaseAllAudioPreviews();
             state.files.audio = [];
             state.submission.audioSegments = [];
             $("#audio-file").value = "";
+            hideAudioSelectionNotice();
             renderAudioSegments();
         }
     }
@@ -3999,10 +4179,12 @@
         event.preventDefault();
         hideError();
         syncStateFromForm();
+        if (state.recorder.starting) {
+            cleanupRecorder();
+            showAudioSelectionNotice("已停止等待麦克风授权；录音为选填，继续提交本次打卡。");
+        }
         if (recordingBusy()) {
-            setFieldError("audio-file", state.recorder.starting
-                ? "请先完成麦克风授权并结束录音，再提交。"
-                : "请先结束录音，确认音频已生成后再提交。" );
+            setFieldError("audio-file", "请先结束录音，确认音频已生成后再提交。" );
             scrollToFirstError();
             return;
         }
@@ -4017,6 +4199,8 @@
             return;
         }
 
+        // 音频为选填：若手机文件提供器仍在异步识别文件，提交优先继续，丢弃迟到结果。
+        state.audioFileSelectionSequence += 1;
         state.submitting = true;
         setFormsDisabled(true);
         prepareProgress();
@@ -4024,6 +4208,10 @@
         $("#upload-panel").scrollIntoView({ behavior: "smooth", block: "start" });
 
         let activeStep = "draft";
+        let skippedAudioCount = 0;
+        let uncertainAudioCount = 0;
+        let skippedWechatOutcome = null;
+        let optionalMediaDeadlineMs = null;
         try {
             setProgressStep("draft", "active", state.submission.serverId
                 ? "正在校验并恢复打卡草稿"
@@ -4071,8 +4259,14 @@
                     if (state.submission.mediaUploadAttempts.includes(upload.step)) {
                         const label = upload.step === MEDIA.photo ? "现场照片"
                             : upload.step === MEDIA.wechat ? "企微截图" : "拜访录音";
-                        setProgressStep(upload.step, "error", `${label}上传结果待确认`);
-                        throw new Error(`${label}上次上传结果未确认。请重新选择原文件继续重试，或点击删除明确放弃。`);
+                        if (upload.required) {
+                            setProgressStep(upload.step, "error", `${label}上传结果待确认`);
+                            throw new Error(`${label}上次上传结果未确认。请重新选择原文件继续重试，或点击删除明确放弃。`);
+                        }
+                        skippedWechatOutcome = "UNKNOWN";
+                        setProgressStep(upload.step, "skipped",
+                            `${label}上传结果未确认，服务端可能已收到；已继续打卡`);
+                        continue;
                     }
                     setProgressStep(upload.step, upload.required ? "error" : "skipped");
                     if (upload.required) throw new Error("刷新后需要重新选择现场照片，再继续提交。" );
@@ -4083,7 +4277,25 @@
                     state.submission.mediaUploadAttempts.push(upload.step);
                     persistDraft();
                 }
-                await uploadMedia(upload.step, upload.file);
+                try {
+                    if (!upload.required && !Number.isFinite(optionalMediaDeadlineMs)) {
+                        optionalMediaDeadlineMs = Date.now() + OPTIONAL_MEDIA_UPLOAD_BUDGET_MS;
+                    }
+                    await uploadMedia(upload.step, upload.file, undefined, {}, upload.required
+                        ? {} : { optionalDeadlineMs: optionalMediaDeadlineMs });
+                } catch (error) {
+                    if (upload.required) throw error;
+                    skippedWechatOutcome = optionalUploadOutcome(error);
+                    if (skippedWechatOutcome !== "UNKNOWN") {
+                        state.submission.mediaUploadAttempts = state.submission.mediaUploadAttempts
+                            .filter((item) => item !== upload.step);
+                    }
+                    persistDraft();
+                    renderUploadedBadges();
+                    setProgressStep(upload.step, "skipped", optionalUploadFailureMessage(
+                        error, "企微截图", skippedWechatOutcome === "UNKNOWN"));
+                    continue;
+                }
                 state.submission.mediaUploadAttempts = state.submission.mediaUploadAttempts
                     .filter((item) => item !== upload.step);
                 if (!state.submission.uploadedMedia.includes(upload.step)) {
@@ -4099,21 +4311,60 @@
             if (!audioSegments.length) {
                 setProgressStep(MEDIA.audio, "skipped");
             } else {
+                let uploadedAudioCount = 0;
                 for (let index = 0; index < audioSegments.length; index += 1) {
                     const segment = audioSegments[index];
-                    if (segment.uploadState === "UPLOADED") continue;
+                    if (segment.uploadState === "UPLOADED") {
+                        uploadedAudioCount += 1;
+                        continue;
+                    }
+                    if (segment.uploadState === "SKIPPED") {
+                        skippedAudioCount += 1;
+                        if (segment.mayExistRemotely) uncertainAudioCount += 1;
+                        continue;
+                    }
                     const local = localAudioFile(segment.segmentId);
                     if (!local) {
-                        segment.uploadState = segment.uploadState === "UNKNOWN" ? "UNKNOWN" : "NEEDS_FILE";
+                        const uploadMayExist = segment.mayExistRemotely === true
+                            || segment.uploadState === "UNKNOWN";
+                        segment.mayExistRemotely = uploadMayExist;
+                        markAudioSegmentSkipped(segment, uploadMayExist
+                            ? "录音上传结果未确认，服务端可能已收到；已继续打卡"
+                            : "刷新后未能恢复原录音文件，已自动跳过，不影响打卡");
+                        skippedAudioCount += 1;
+                        if (uploadMayExist) uncertainAudioCount += 1;
                         renderAudioSegments();
                         persistDraft();
-                        setProgressStep(MEDIA.audio, "error", `第 ${index + 1}/${audioSegments.length} 段录音需重新选择`);
-                        throw new Error(`第${index + 1}段录音需重新选择原文件后重试，或移除该段后继续。`);
+                        continue;
                     }
-                    await uploadAudioSegment(segment, local.file, index + 1, audioSegments.length);
+                    try {
+                        if (!Number.isFinite(optionalMediaDeadlineMs)) {
+                            optionalMediaDeadlineMs = Date.now() + OPTIONAL_MEDIA_UPLOAD_BUDGET_MS;
+                        }
+                        await uploadAudioSegment(segment, local.file, index + 1,
+                            audioSegments.length, optionalMediaDeadlineMs);
+                        uploadedAudioCount += 1;
+                    } catch (error) {
+                        const uploadMayExist = segment.mayExistRemotely === true;
+                        markAudioSegmentSkipped(segment, optionalUploadFailureMessage(
+                            error, "录音", uploadMayExist));
+                        skippedAudioCount += 1;
+                        if (uploadMayExist) uncertainAudioCount += 1;
+                        renderAudioSegments();
+                        renderUploadedBadges();
+                        persistDraft();
+                    }
                 }
                 renderUploadedBadges();
-                setProgressStep(MEDIA.audio, "done", `已上传 ${audioSegments.length} 段现场录音`);
+                if (uploadedAudioCount) {
+                    setProgressStep(MEDIA.audio, "done", skippedAudioCount
+                        ? `已上传 ${uploadedAudioCount} 段录音，${skippedAudioCount} 段未影响打卡`
+                        : `已上传 ${uploadedAudioCount} 段现场录音`);
+                } else {
+                    setProgressStep(MEDIA.audio, "skipped", skippedAudioCount
+                        ? `${skippedAudioCount} 段选填录音未影响打卡，继续完成提交`
+                        : undefined);
+                }
             }
 
             activeStep = "complete";
@@ -4127,7 +4378,11 @@
                 }
             )) || {};
             setProgressStep("complete", "done", "提交完成");
-            showSuccess(completed);
+            showSuccess(completed, {
+                skippedAudioCount,
+                uncertainAudioCount,
+                skippedWechatOutcome
+            });
         } catch (error) {
             setProgressStep(activeStep, "error", "提交中断，可修正后继续");
             $("#progress-detail").textContent = errorMessage(error, "提交失败，请稍后重试。" );
@@ -4138,7 +4393,7 @@
         }
     }
 
-    async function uploadAudioSegment(segment, file, index, total) {
+    async function uploadAudioSegment(segment, file, index, total, optionalMediaDeadlineMs) {
         const metadataPromise = localAudioFile(segment.segmentId)?.metadataPromise;
         if (metadataPromise) {
             try {
@@ -4147,6 +4402,7 @@
                 // 可选证据读取失败不阻断录音上传。
             }
         }
+        const mayExistBeforeUpload = segment.mayExistRemotely === true;
         segment.uploadState = "UPLOADING";
         segment.mayExistRemotely = true;
         segment.errorMessage = "";
@@ -4162,7 +4418,7 @@
                     clientDurationMs: normalizePositiveDurationMs(
                         segment.clientDurationMs ?? segment.durationMs),
                     fileLastModifiedAt: normalizeOptionalInstant(segment.fileLastModifiedAt)
-                })) || {};
+                }, { optionalDeadlineMs: optionalMediaDeadlineMs })) || {};
             if (response.segmentId && String(response.segmentId) !== String(segment.segmentId)) {
                 throw new Error("服务端返回的录音分段编号不一致，已停止提交。");
             }
@@ -4184,9 +4440,11 @@
             persistDraft();
             return response;
         } catch (error) {
-            segment.uploadState = Number.isFinite(error.status) && error.status >= 400 && error.status < 500
-                ? "ERROR" : "UNKNOWN";
-            segment.errorMessage = errorMessage(error, "录音上传中断，可复用原文件重试。");
+            const outcome = optionalUploadOutcome(error);
+            segment.mayExistRemotely = mayExistBeforeUpload || outcome === "UNKNOWN";
+            segment.uploadState = segment.mayExistRemotely ? "UNKNOWN" : "ERROR";
+            segment.errorMessage = optionalUploadFailureMessage(
+                error, "录音", segment.mayExistRemotely);
             renderAudioSegments();
             renderUploadedBadges();
             persistDraft();
@@ -4194,10 +4452,34 @@
         }
     }
 
-    function uploadMedia(kind, file, progressTitle, optionalFormFields = {}) {
+    function uploadMedia(kind, file, progressTitle, optionalFormFields = {}, uploadOptions = {}) {
         return new Promise((resolve, reject) => {
+            const optionalDeadlineMs = Number(uploadOptions.optionalDeadlineMs);
+            const hasOptionalDeadline = Number.isFinite(optionalDeadlineMs);
+            const remainingOptionalMs = hasOptionalDeadline
+                ? optionalDeadlineMs - Date.now() : null;
+            if (hasOptionalDeadline && remainingOptionalMs <= 0) {
+                const error = new Error("选填材料上传等待已达30秒，本文件未再上传，已继续打卡。");
+                error.code = "OPTIONAL_MEDIA_BUDGET_EXHAUSTED";
+                error.uploadOutcome = "NOT_ATTEMPTED";
+                reject(error);
+                return;
+            }
             const xhr = new XMLHttpRequest();
             const formData = new FormData();
+            let settled = false;
+            let optionalTimeoutId = null;
+            const settle = (callback, value) => {
+                if (settled) return false;
+                settled = true;
+                window.clearTimeout(optionalTimeoutId);
+                callback(value);
+                return true;
+            };
+            const rejectUpload = (error, outcome = "UNKNOWN") => {
+                if (!error.uploadOutcome) error.uploadOutcome = outcome;
+                settle(reject, error);
+            };
             formData.append("file", file, file.name || kind);
             Object.entries(optionalFormFields).forEach(([name, value]) => {
                 if (value !== null && value !== undefined && value !== "") {
@@ -4208,8 +4490,7 @@
                 `${API_BASE}/submissions/${encodeURIComponent(state.submission.serverId)}/media/${kind}`,
                 true);
             xhr.withCredentials = true;
-            // 不设置总时长截止，避免 QQ/X5 在慢网大文件上传时被前端计时器主动中断。
-            // 连接失活仍由 Nginx/服务端超时和浏览器网络错误处理。
+            // 必填门头照仍不设前端总时长；选填媒体由共享软预算主动结束等待，避免 QQ/X5 半开连接卡死提交。
             xhr.timeout = 0;
             xhr.setRequestHeader("Accept", "application/json");
             xhr.setRequestHeader("X-Submission-Key", state.submission.submissionKey);
@@ -4224,19 +4505,65 @@
             xhr.addEventListener("load", () => {
                 const payload = parseResponsePayload(xhr.responseText);
                 if (xhr.status >= 200 && xhr.status < 300) {
-                    resolve(payload);
+                    settle(resolve, payload);
                     return;
                 }
                 const error = new Error(extractApiMessage(payload) || `上传失败（HTTP ${xhr.status}）`);
                 error.status = xhr.status;
                 error.payload = payload;
-                reject(error);
+                rejectUpload(error, xhr.status >= 400 && xhr.status < 500
+                    ? "REJECTED" : "UNKNOWN");
             });
-            xhr.addEventListener("timeout", () => reject(new Error("上传连接超时，文件仍保留在本页，可直接重试。")));
-            xhr.addEventListener("error", () => reject(new Error("上传网络中断，文件仍保留在本页，可直接重新提交。")));
-            xhr.addEventListener("abort", () => reject(new Error("上传已中断，文件仍保留在本页，可直接重新提交。")));
-            xhr.send(formData);
+            xhr.addEventListener("timeout", () => rejectUpload(
+                new Error("上传连接超时，文件仍保留在本页，可直接重试。")));
+            xhr.addEventListener("error", () => rejectUpload(
+                new Error("上传网络中断，文件仍保留在本页，可直接重新提交。")));
+            xhr.addEventListener("abort", () => rejectUpload(
+                new Error("上传已中断，文件仍保留在本页，可直接重新提交。")));
+            if (hasOptionalDeadline) {
+                optionalTimeoutId = window.setTimeout(() => {
+                    if (settled) return;
+                    const error = new Error("选填材料上传等待超过30秒，已停止等待并继续打卡。");
+                    error.code = "OPTIONAL_MEDIA_SOFT_TIMEOUT";
+                    error.uploadOutcome = "UNKNOWN";
+                    settled = true;
+                    window.clearTimeout(optionalTimeoutId);
+                    try {
+                        xhr.abort();
+                    } catch (_) {
+                        // 某些旧 WebView 在连接已由系统回收时再次 abort 会抛错。
+                    }
+                    reject(error);
+                }, Math.max(1, remainingOptionalMs));
+            }
+            try {
+                xhr.send(formData);
+            } catch (error) {
+                rejectUpload(error, "NOT_ATTEMPTED");
+            }
         });
+    }
+
+    function optionalUploadOutcome(error) {
+        if (["REJECTED", "NOT_ATTEMPTED", "UNKNOWN"].includes(error?.uploadOutcome)) {
+            return error.uploadOutcome;
+        }
+        if (Number.isFinite(error?.status) && error.status >= 400 && error.status < 500) {
+            return "REJECTED";
+        }
+        return "UNKNOWN";
+    }
+
+    function optionalUploadFailureMessage(error, label, mayExistRemotely = false) {
+        const detail = errorMessage(error, `${label}上传失败`);
+        const outcome = optionalUploadOutcome(error);
+        if (mayExistRemotely || outcome === "UNKNOWN") {
+            return `${detail}；上传结果未确认，服务端可能已收到，已继续打卡`;
+        }
+        if (outcome === "NOT_ATTEMPTED") {
+            return `${detail}；本文件未上传，已跳过，不影响打卡`;
+        }
+        return `${detail}；服务端未接收，已跳过，不影响打卡`;
     }
 
     function parseResponsePayload(text) {
@@ -4494,7 +4821,12 @@
         return "正在上传现场录音";
     }
 
-    function showSuccess(completed) {
+    function showSuccess(completed, optionalMedia = {}) {
+        const skippedAudioCount = Number(optionalMedia.skippedAudioCount) || 0;
+        const uncertainAudioCount = Math.min(skippedAudioCount,
+            Number(optionalMedia.uncertainAudioCount) || 0);
+        const definiteAudioCount = Math.max(0, skippedAudioCount - uncertainAudioCount);
+        const skippedWechatOutcome = cleanText(optionalMedia.skippedWechatOutcome).toUpperCase();
         state.submitting = false;
         state.completed = true;
         $("#upload-panel").hidden = true;
@@ -4507,6 +4839,26 @@
             ? `提交时间：${formatDateTime(completed.submittedAt)}`
             : "";
         $("#success-location-note").hidden = !locationExceptionReady(state.visit.locationContext);
+        const mediaNote = $("#success-media-note");
+        const definiteItems = [];
+        const uncertainItems = [];
+        if (["REJECTED", "NOT_ATTEMPTED"].includes(skippedWechatOutcome)) {
+            definiteItems.push("企微截图");
+        } else if (skippedWechatOutcome === "UNKNOWN") {
+            uncertainItems.push("企微截图");
+        }
+        if (definiteAudioCount) definiteItems.push(`${definiteAudioCount} 段录音`);
+        if (uncertainAudioCount) uncertainItems.push(`${uncertainAudioCount} 段录音`);
+        const mediaMessages = ["打卡记录和现场照片已正常保存。"];
+        if (definiteItems.length) {
+            mediaMessages.push(`选填的${definiteItems.join("和")}未上传，已跳过。`);
+        }
+        if (uncertainItems.length) {
+            mediaMessages.push(`选填的${uncertainItems.join("和")}上传结果未确认，服务端可能已收到。`);
+        }
+        mediaNote.textContent = definiteItems.length || uncertainItems.length
+            ? mediaMessages.join("") : "";
+        mediaNote.hidden = definiteItems.length === 0 && uncertainItems.length === 0;
         $("#success-panel").hidden = false;
         removeStoredDraft();
         $("#success-panel").scrollIntoView({ behavior: "smooth", block: "center" });
@@ -4831,7 +5183,11 @@
             let uploadState = cleanText(rawSegment.uploadState).toUpperCase();
             if (["UPLOADING", "DELETING"].includes(uploadState)) uploadState = "UNKNOWN";
             if (["LOCAL", "ERROR"].includes(uploadState)) uploadState = "NEEDS_FILE";
-            if (!["UPLOADED", "UNKNOWN", "NEEDS_FILE"].includes(uploadState)) uploadState = "NEEDS_FILE";
+            if (!["UPLOADED", "UNKNOWN", "NEEDS_FILE", "SKIPPED"].includes(uploadState)) {
+                uploadState = "NEEDS_FILE";
+            }
+            const mayExistRemotely = rawSegment.mayExistRemotely === true
+                || ["UPLOADED", "UNKNOWN"].includes(uploadState);
             audioSegmentsById.set(segmentId, {
                 segmentId,
                 originalFilename: cleanText(rawSegment.originalFilename) || "现场录音",
@@ -4842,9 +5198,12 @@
                     rawSegment.clientDurationMs ?? rawSegment.durationMs),
                 fileLastModifiedAt: normalizeOptionalInstant(rawSegment.fileLastModifiedAt),
                 uploadState,
-                mayExistRemotely: rawSegment.mayExistRemotely === true
-                    || ["UPLOADED", "UNKNOWN"].includes(uploadState),
-                errorMessage: ""
+                mayExistRemotely,
+                errorMessage: uploadState === "SKIPPED"
+                    ? mayExistRemotely
+                        ? "上传结果未确认，服务端可能已收到；不影响本次打卡"
+                        : "已跳过此段，不影响本次打卡"
+                    : ""
             });
         });
         const legacySegmentId = cleanText(state.submission.serverId);
@@ -4977,7 +5336,8 @@
     function showRestoreNotice() {
         const uploadedAudio = state.submission.audioSegments
             .filter((segment) => segment.uploadState === "UPLOADED").length;
-        const pendingAudio = state.submission.audioSegments.length - uploadedAudio;
+        const pendingAudio = state.submission.audioSegments
+            .filter((segment) => !["UPLOADED", "SKIPPED"].includes(segment.uploadState)).length;
         const uploaded = new Set(state.submission.uploadedMedia).size + uploadedAudio;
         const pending = state.submission.mediaUploadAttempts
             .filter((item) => !state.submission.uploadedMedia.includes(item)).length + pendingAudio;
@@ -5002,11 +5362,23 @@
         const audioCount = state.submission.audioSegments.length;
         const uploadedAudioCount = state.submission.audioSegments
             .filter((segment) => segment.uploadState === "UPLOADED").length;
+        const skippedAudioCount = state.submission.audioSegments
+            .filter((segment) => segment.uploadState === "SKIPPED").length;
+        const uncertainSkippedAudioCount = state.submission.audioSegments
+            .filter((segment) => segment.uploadState === "SKIPPED" && segment.mayExistRemotely).length;
         const pendingPhoto = state.submission.mediaUploadAttempts.includes(MEDIA.photo) && !uploadedPhoto;
         const pendingWechat = state.submission.mediaUploadAttempts.includes(MEDIA.wechat) && !uploadedWechat;
         $("#photo-uploaded-badge").textContent = uploadedPhoto ? "草稿已上传" : "可重新选择并重试";
         $("#wechat-uploaded-badge").textContent = uploadedWechat ? "草稿已上传" : "可重新选择并重试";
-        $("#audio-uploaded-badge").textContent = uploadedAudioCount === audioCount
+        $("#audio-uploaded-badge").textContent = skippedAudioCount
+            ? uncertainSkippedAudioCount
+                ? uploadedAudioCount
+                    ? `已上传 ${uploadedAudioCount} 段 · ${uncertainSkippedAudioCount} 段结果待确认`
+                    : `${uncertainSkippedAudioCount} 段上传结果待确认`
+                : uploadedAudioCount
+                    ? `已上传 ${uploadedAudioCount} 段 · 跳过 ${skippedAudioCount} 段`
+                    : `已跳过 ${skippedAudioCount} 段`
+            : uploadedAudioCount === audioCount
             ? `已上传 ${audioCount} 段`
             : uploadedAudioCount === 0
                 ? `已添加 ${audioCount} 段`
@@ -5530,13 +5902,27 @@
     }
 
     function audioExtension(mimeType) {
-        if (mimeType.includes("mp4") || mimeType.includes("m4a")) return "m4a";
-        if (mimeType.includes("mpeg")) return "mp3";
-        if (mimeType.includes("wav")) return "wav";
+        const normalized = cleanText(mimeType).toLowerCase();
+        if (normalized.includes("mp4") || normalized.includes("m4a")) return "m4a";
+        if (normalized.includes("mpeg") || normalized.includes("mp3")) return "mp3";
+        if (normalized.includes("wav")) return "wav";
+        if (normalized.includes("ogg")) return "ogg";
+        if (normalized.includes("opus")) return "opus";
+        if (normalized.includes("aac")) return "aac";
+        if (normalized.includes("amr")) return "amr";
+        if (normalized.includes("3gpp2")) return "3g2";
+        if (normalized.includes("3gpp")) return "3gp";
+        if (normalized.includes("flac")) return "flac";
+        if (normalized.includes("caf")) return "caf";
+        if (normalized.includes("aiff") || normalized.includes("aifc")) return "aiff";
+        if (normalized.includes("silk")) return "silk";
         return "webm";
     }
 
     function microphoneErrorMessage(error) {
+        if (error?.code === "MICROPHONE_PERMISSION_TIMEOUT") {
+            return "麦克风授权等待超过12秒，已取消本次录音等待；录音为选填，可直接提交打卡。";
+        }
         if (error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError") {
             return "麦克风权限被拒绝，请在浏览器设置中允许后重试，或选择已有音频文件。";
         }

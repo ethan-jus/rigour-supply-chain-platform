@@ -83,6 +83,7 @@ import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
@@ -150,6 +151,7 @@ public class TemporaryCheckinService {
     private final TemporaryCheckinLocationVerificationTokenService locationVerificationTokenService;
     private final ObjectMapper objectMapper;
     private final TemporaryCheckinSalesIdentityService salesIdentityService;
+    private final TransactionTemplate transactions;
     private final Clock clock;
     private final UUID tenantId;
     private final boolean aiEnabled;
@@ -166,6 +168,7 @@ public class TemporaryCheckinService {
             TemporaryCheckinLocationVerificationTokenService locationVerificationTokenService,
             ObjectMapper objectMapper,
             TemporaryCheckinSalesIdentityService salesIdentityService,
+            TransactionTemplate transactions,
             Clock clock,
             ObjectProvider<TemporaryCheckinAiClient> aiClientProvider) {
         this.repository = repository;
@@ -179,6 +182,7 @@ public class TemporaryCheckinService {
         this.locationVerificationTokenService = locationVerificationTokenService;
         this.objectMapper = objectMapper;
         this.salesIdentityService = salesIdentityService;
+        this.transactions = transactions;
         this.clock = clock;
         this.tenantId = properties.requireTenantId();
         this.aiEnabled = aiClientProvider.getIfAvailable() != null;
@@ -692,17 +696,29 @@ public class TemporaryCheckinService {
         return new DraftSubmissionView(id, "DRAFT", now);
     }
 
-    @Transactional
     public MediaUploadView uploadMedia(
             UUID submissionId, String rawKind, String submissionKey, MultipartFile file,
             TemporaryCheckinRequestFacts requestFacts) {
         if (submissionId == null) throw TemporaryCheckinException.badRequest("submissionId不能为空");
         MediaKind kind = MediaKind.parse(rawKind);
         if (kind == MediaKind.AUDIO) {
-            return uploadAudioSegmentLocked(
+            return uploadAudioSegmentOutsideLock(
                     submissionId, submissionId, submissionKey, file,
                     AudioCaptureMetadata.missing(), requestFacts);
         }
+        if (kind == MediaKind.WECHAT_SCREENSHOT) {
+            return uploadOptionalMediaOutsideLock(
+                    submissionId, submissionKey, file, requestFacts, kind);
+        }
+        MediaUploadView uploaded = transactions.execute(status -> uploadRequiredMediaLocked(
+                submissionId, submissionKey, file, requestFacts, kind));
+        if (uploaded == null) throw TemporaryCheckinException.conflict("媒体上传事务未完成，请重试");
+        return uploaded;
+    }
+
+    private MediaUploadView uploadRequiredMediaLocked(
+            UUID submissionId, String submissionKey, MultipartFile file,
+            TemporaryCheckinRequestFacts requestFacts, MediaKind kind) {
         SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
                 .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
         AuthorizedRequest identity = salesIdentityService.requireSubmission(
@@ -752,47 +768,151 @@ public class TemporaryCheckinService {
                         validated.sizeBytes()));
     }
 
-    @Transactional
-    public MediaUploadView uploadAudioSegment(
-            UUID submissionId, UUID segmentId, String submissionKey, MultipartFile file,
-            TemporaryCheckinRequestFacts requestFacts) {
-        return uploadAudioSegmentLocked(submissionId, segmentId, submissionKey, file,
-                AudioCaptureMetadata.missing(), requestFacts);
+    private MediaUploadView uploadOptionalMediaOutsideLock(
+            UUID submissionId, String submissionKey, MultipartFile file,
+            TemporaryCheckinRequestFacts requestFacts, MediaKind kind) {
+        UploadPreflight preflight = transactions.execute(status -> mediaUploadPreflight(
+                submissionId, submissionKey, requestFacts, "已提交的打卡不允许替换媒体"));
+        if (preflight == null) throw TemporaryCheckinException.conflict("媒体上传预检未完成，请重试");
+
+        ValidatedMedia validated = validateMedia(kind, file);
+        MediaReference snapshot = media(preflight.submission(), kind);
+        if (hasMedia(snapshot) && validated.sha256().equals(snapshot.sha256())) {
+            OptionalMediaFinalized confirmed = transactions.execute(status -> confirmOptionalMediaLocked(
+                    submissionId, submissionKey, requestFacts, kind, validated));
+            if (confirmed == null) {
+                throw TemporaryCheckinException.conflict("媒体上传幂等确认未完成，请重试");
+            }
+            return loggedMediaUpload(confirmed.identity(), requestFacts, submissionId, kind,
+                    confirmed.outcome(), confirmed.view());
+        }
+
+        String objectKey = optionalMediaObjectKey(submissionId, kind, validated, null);
+        try {
+            putValidatedMedia(validated, objectKey, "媒体文件读取失败，请重新选择后上传",
+                    "媒体文件存储失败，请稍后重试");
+        } catch (RuntimeException exception) {
+            cleanupUnreferencedObject(objectKey, submissionId, kind, "媒体写入未完成");
+            throw exception;
+        }
+
+        OptionalMediaFinalized finalized;
+        try {
+            finalized = transactions.execute(status -> finalizeOptionalMediaLocked(
+                    submissionId, submissionKey, requestFacts, kind, validated, objectKey,
+                    preflight.revision()));
+            if (finalized == null) {
+                throw TemporaryCheckinException.conflict("媒体上传事务未完成，请重试");
+            }
+        } catch (RuntimeException exception) {
+            cleanupStagedObjectIfConfirmedUnreferenced(
+                    objectKey, submissionId, kind, "媒体登记失败");
+            throw exception;
+        }
+        if (!finalized.newObjectReferenced()) {
+            cleanupUnreferencedObject(objectKey, submissionId, kind, "并发幂等上传未被引用");
+        }
+        if (finalized.previousObjectKey() != null
+                && !finalized.previousObjectKey().equals(objectKey)) {
+            cleanupUnreferencedObject(finalized.previousObjectKey(), submissionId, kind, "旧媒体替换完成");
+        }
+        return loggedMediaUpload(finalized.identity(), requestFacts, submissionId, kind,
+                finalized.outcome(), finalized.view());
     }
 
-    @Transactional
-    public MediaUploadView uploadAudioSegment(
-            UUID submissionId, UUID segmentId, String submissionKey, MultipartFile file,
-            String rawCaptureSource, String rawClientStartedAt, String rawClientDurationMs,
-            String rawFileLastModifiedAt, TemporaryCheckinRequestFacts requestFacts) {
-        AudioCaptureMetadata capture = normalizeAudioCaptureMetadata(
-                rawCaptureSource, rawClientStartedAt, rawClientDurationMs, rawFileLastModifiedAt);
-        return uploadAudioSegmentLocked(
-                submissionId, segmentId, submissionKey, file, capture, requestFacts);
-    }
-
-    private MediaUploadView uploadAudioSegmentLocked(
-            UUID submissionId, UUID segmentId, String submissionKey, MultipartFile file,
-            AudioCaptureMetadata capture, TemporaryCheckinRequestFacts requestFacts) {
-        if (submissionId == null) throw TemporaryCheckinException.badRequest("submissionId不能为空");
-        if (segmentId == null) throw TemporaryCheckinException.badRequest("segmentId不能为空");
+    private OptionalMediaFinalized finalizeOptionalMediaLocked(
+            UUID submissionId, String submissionKey, TemporaryCheckinRequestFacts requestFacts,
+            MediaKind kind, ValidatedMedia validated, String objectKey, Instant expectedRevision) {
         SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
                 .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
         AuthorizedRequest identity = salesIdentityService.requireSubmission(
                 submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
         requireMatchingKey(submission, submissionKey);
         if (!"DRAFT".equals(submission.status())) {
-            throw TemporaryCheckinException.conflict("已提交的打卡不允许增加录音");
+            throw TemporaryCheckinException.conflict("已提交的打卡不允许替换媒体");
         }
+        MediaReference previous = media(submission, kind);
+        if (!Objects.equals(submission.updatedAt(), expectedRevision)) {
+            if (hasMedia(previous) && validated.sha256().equals(previous.sha256())) {
+                return new OptionalMediaFinalized(identity, "IDEMPOTENT",
+                        new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
+                                validated.sizeBytes()), false, null);
+            }
+            throw TemporaryCheckinException.conflict("草稿媒体已变化，请刷新后重试");
+        }
+        Instant now = clock.instant();
+        int updated = repository.updateMediaIfRevision(tenantId, submissionId, kind.columnPrefix,
+                new MediaWrite(objectKey, validated.contentType(), validated.sizeBytes(),
+                        validated.sha256(), validated.originalFilename()), expectedRevision, now);
+        if (updated != 1) {
+            throw TemporaryCheckinException.conflict("草稿状态已变化，请刷新后重试");
+        }
+        return new OptionalMediaFinalized(identity, "STORED",
+                new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
+                        validated.sizeBytes()), true,
+                previous == null ? null : previous.objectKey());
+    }
+
+    private OptionalMediaFinalized confirmOptionalMediaLocked(
+            UUID submissionId, String submissionKey, TemporaryCheckinRequestFacts requestFacts,
+            MediaKind kind, ValidatedMedia validated) {
+        SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
+                .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
+        AuthorizedRequest identity = salesIdentityService.requireSubmission(
+                submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
+        requireMatchingKey(submission, submissionKey);
+        if (!"DRAFT".equals(submission.status())) {
+            throw TemporaryCheckinException.conflict("已提交的打卡不允许替换媒体");
+        }
+        MediaReference current = media(submission, kind);
+        if (!hasMedia(current) || !validated.sha256().equals(current.sha256())) {
+            throw TemporaryCheckinException.conflict("草稿媒体已变化，请刷新后重试");
+        }
+        return new OptionalMediaFinalized(identity, "IDEMPOTENT",
+                new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
+                        validated.sizeBytes()), false, null);
+    }
+
+    public MediaUploadView uploadAudioSegment(
+            UUID submissionId, UUID segmentId, String submissionKey, MultipartFile file,
+            TemporaryCheckinRequestFacts requestFacts) {
+        return uploadAudioSegmentOutsideLock(submissionId, segmentId, submissionKey, file,
+                AudioCaptureMetadata.missing(), requestFacts);
+    }
+
+    public MediaUploadView uploadAudioSegment(
+            UUID submissionId, UUID segmentId, String submissionKey, MultipartFile file,
+            String rawCaptureSource, String rawClientStartedAt, String rawClientDurationMs,
+            String rawFileLastModifiedAt, TemporaryCheckinRequestFacts requestFacts) {
+        AudioCaptureMetadata capture = normalizeAudioCaptureMetadata(
+                rawCaptureSource, rawClientStartedAt, rawClientDurationMs, rawFileLastModifiedAt);
+        return uploadAudioSegmentOutsideLock(
+                submissionId, segmentId, submissionKey, file, capture, requestFacts);
+    }
+
+    private MediaUploadView uploadAudioSegmentOutsideLock(
+            UUID submissionId, UUID segmentId, String submissionKey, MultipartFile file,
+            AudioCaptureMetadata capture, TemporaryCheckinRequestFacts requestFacts) {
+        if (submissionId == null) throw TemporaryCheckinException.badRequest("submissionId不能为空");
+        if (segmentId == null) throw TemporaryCheckinException.badRequest("segmentId不能为空");
+        UploadPreflight preflight = transactions.execute(status -> mediaUploadPreflight(
+                submissionId, submissionKey, requestFacts, "已提交的打卡不允许增加录音"));
+        if (preflight == null) throw TemporaryCheckinException.conflict("录音上传预检未完成，请重试");
+
         ValidatedMedia validated = validateMedia(MediaKind.AUDIO, file);
-        List<AudioSegment> segments = new ArrayList<>(audioSegments(submission));
+        List<AudioSegment> segments = new ArrayList<>(audioSegments(preflight.submission()));
         AudioSegment sameId = segments.stream()
                 .filter(item -> segmentId.equals(item.segmentId()))
                 .findFirst().orElse(null);
         if (sameId != null) {
             if (sameId.deletedAt() == null && validated.sha256().equals(sameId.sha256())) {
-                return loggedMediaUpload(identity, requestFacts, submissionId, MediaKind.AUDIO,
-                        "IDEMPOTENT", audioUploadView(submissionId, sameId));
+                AudioMediaFinalized confirmed = transactions.execute(status -> confirmAudioMediaLocked(
+                        submissionId, segmentId, submissionKey, requestFacts, validated));
+                if (confirmed == null) {
+                    throw TemporaryCheckinException.conflict("录音上传幂等确认未完成，请重试");
+                }
+                return loggedMediaUpload(confirmed.identity(), requestFacts, submissionId, MediaKind.AUDIO,
+                        confirmed.outcome(), audioUploadView(submissionId, confirmed.segment()));
             }
             throw TemporaryCheckinException.conflict("同一录音编号对应的文件不一致，请重新选择录音");
         }
@@ -812,42 +932,152 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.badRequest("本次拜访录音总量过大，请删除无效片段后重试");
         }
 
-        String objectKey = tenantId + "/temporary-sales-checkin/" + submissionId
-                + "/recordings/visit/segments/" + segmentId + "/"
-                + validated.sha256() + validated.extension();
-        Instant now = clock.instant();
-        try (InputStream content = validated.file().getInputStream()) {
-            fileStorage.put(new FileMetadata(tenantId.toString(), objectKey, validated.originalFilename(),
-                    validated.contentType(), validated.sizeBytes(), validated.sha256(),
-                    OffsetDateTime.ofInstant(now, java.time.ZoneOffset.UTC)), content);
-        } catch (IOException exception) {
-            throw TemporaryCheckinException.storage("录音文件读取失败，请重新选择后上传");
+        String objectKey = optionalMediaObjectKey(submissionId, MediaKind.AUDIO, validated, segmentId);
+        try {
+            putValidatedMedia(validated, objectKey, "录音文件读取失败，请重新选择后上传",
+                    "录音文件存储失败，请稍后重试");
         } catch (RuntimeException exception) {
-            throw TemporaryCheckinException.storage("录音文件存储失败，请稍后重试");
+            cleanupUnreferencedObject(objectKey, submissionId, MediaKind.AUDIO, "录音写入未完成");
+            throw exception;
         }
+
+        AudioMediaFinalized finalized;
+        try {
+            finalized = transactions.execute(status -> finalizeAudioMediaLocked(
+                    submissionId, segmentId, submissionKey, requestFacts,
+                    capture, validated, objectKey, preflight.revision()));
+            if (finalized == null) {
+                throw TemporaryCheckinException.conflict("录音上传事务未完成，请重试");
+            }
+        } catch (RuntimeException exception) {
+            cleanupStagedObjectIfConfirmedUnreferenced(
+                    objectKey, submissionId, MediaKind.AUDIO, "录音登记失败");
+            throw exception;
+        }
+        if (!finalized.newObjectReferenced()) {
+            cleanupUnreferencedObject(objectKey, submissionId, MediaKind.AUDIO, "并发幂等上传未被引用");
+        }
+        return loggedMediaUpload(finalized.identity(), requestFacts, submissionId, MediaKind.AUDIO,
+                finalized.outcome(), audioUploadView(submissionId, finalized.segment()));
+    }
+
+    private AudioMediaFinalized finalizeAudioMediaLocked(
+            UUID submissionId, UUID segmentId, String submissionKey,
+            TemporaryCheckinRequestFacts requestFacts, AudioCaptureMetadata capture,
+            ValidatedMedia validated, String objectKey, Instant expectedRevision) {
+        SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
+                .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
+        AuthorizedRequest identity = salesIdentityService.requireSubmission(
+                submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
+        requireMatchingKey(submission, submissionKey);
+        if (!"DRAFT".equals(submission.status())) {
+            throw TemporaryCheckinException.conflict("已提交的打卡不允许增加录音");
+        }
+        List<AudioSegment> segments = new ArrayList<>(audioSegments(submission));
+        AudioSegment sameId = segments.stream()
+                .filter(item -> segmentId.equals(item.segmentId()))
+                .findFirst().orElse(null);
+        if (!Objects.equals(submission.updatedAt(), expectedRevision)) {
+            if (sameId != null && sameId.deletedAt() == null
+                    && validated.sha256().equals(sameId.sha256())) {
+                return new AudioMediaFinalized(identity, "IDEMPOTENT", sameId, false);
+            }
+            throw TemporaryCheckinException.conflict("草稿媒体已变化，请刷新后重试");
+        }
+        if (sameId != null) {
+            if (sameId.deletedAt() == null && validated.sha256().equals(sameId.sha256())) {
+                return new AudioMediaFinalized(identity, "IDEMPOTENT", sameId, false);
+            }
+            throw TemporaryCheckinException.conflict("同一录音编号对应的文件不一致，请重新选择录音");
+        }
+        AudioSegment sameContent = segments.stream()
+                .filter(item -> item.deletedAt() == null && validated.sha256().equals(item.sha256()))
+                .findFirst().orElse(null);
+        if (sameContent != null) {
+            throw TemporaryCheckinException.conflict("相同录音已经添加，请勿重复选择");
+        }
+        long activeCount = segments.stream().filter(AudioSegment::available).count();
+        if (activeCount >= properties.getMaxAudioSegmentsPerSubmission()) {
+            throw TemporaryCheckinException.badRequest("本次拜访录音分段过多，请删除无效片段后重试");
+        }
+        long activeBytes = segments.stream().filter(AudioSegment::available)
+                .mapToLong(AudioSegment::sizeBytes).sum();
+        if (validated.sizeBytes() > properties.getMaxAudioTotalBytesPerSubmission() - activeBytes) {
+            throw TemporaryCheckinException.badRequest("本次拜访录音总量过大，请删除无效片段后重试");
+        }
+        Instant now = clock.instant();
         AudioSegment added = new AudioSegment(segmentId, objectKey, validated.contentType(),
                 validated.sizeBytes(), validated.sha256(), validated.originalFilename(), now,
                 capture.captureSource(), capture.clientStartedAt(), capture.clientDurationMs(),
                 capture.fileLastModifiedAt(), audioTimingStatus(capture, submission.locationCapturedAt(), now),
                 null, null, null);
         segments.add(added);
-        int updated;
-        try {
-            updated = repository.updateDraftAudioManifest(
-                    tenantId, submissionId, writeAudioSegments(segments),
-                    activeAudioCount(segments), activeAudioBytes(segments),
-                    audioProjection(segments), now);
-        } catch (RuntimeException exception) {
-            cleanupUnreferencedObject(objectKey, submissionId, MediaKind.AUDIO, "数据库更新异常");
-            throw exception;
-        }
+        int updated = repository.updateDraftAudioManifestIfRevision(
+                tenantId, submissionId, writeAudioSegments(segments),
+                activeAudioCount(segments), activeAudioBytes(segments),
+                audioProjection(segments), expectedRevision, now);
         if (updated != 1) {
-            cleanupUnreferencedObject(objectKey, submissionId, MediaKind.AUDIO, "数据库未接受更新");
             throw TemporaryCheckinException.conflict("草稿状态已变化，请刷新后重试");
         }
-        registerMediaObjectLifecycle(submissionId, MediaKind.AUDIO, objectKey, null);
-        return loggedMediaUpload(identity, requestFacts, submissionId, MediaKind.AUDIO,
-                "STORED", audioUploadView(submissionId, added));
+        return new AudioMediaFinalized(identity, "STORED", added, true);
+    }
+
+    private AudioMediaFinalized confirmAudioMediaLocked(
+            UUID submissionId, UUID segmentId, String submissionKey,
+            TemporaryCheckinRequestFacts requestFacts, ValidatedMedia validated) {
+        SubmissionRow submission = repository.findSubmissionForUpdate(tenantId, submissionId)
+                .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
+        AuthorizedRequest identity = salesIdentityService.requireSubmission(
+                submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
+        requireMatchingKey(submission, submissionKey);
+        if (!"DRAFT".equals(submission.status())) {
+            throw TemporaryCheckinException.conflict("已提交的打卡不允许增加录音");
+        }
+        AudioSegment sameId = audioSegments(submission).stream()
+                .filter(item -> segmentId.equals(item.segmentId()))
+                .findFirst().orElse(null);
+        if (sameId == null || sameId.deletedAt() != null
+                || !validated.sha256().equals(sameId.sha256())) {
+            throw TemporaryCheckinException.conflict("草稿媒体已变化，请刷新后重试");
+        }
+        return new AudioMediaFinalized(identity, "IDEMPOTENT", sameId, false);
+    }
+
+    private UploadPreflight mediaUploadPreflight(
+            UUID submissionId, String submissionKey, TemporaryCheckinRequestFacts requestFacts,
+            String submittedMessage) {
+        SubmissionRow submission = repository.findSubmission(tenantId, submissionId)
+                .orElseThrow(() -> TemporaryCheckinException.notFound("打卡草稿不存在"));
+        AuthorizedRequest identity = salesIdentityService.requireSubmission(
+                submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
+        requireMatchingKey(submission, submissionKey);
+        if (!"DRAFT".equals(submission.status())) {
+            throw TemporaryCheckinException.conflict(submittedMessage);
+        }
+        return new UploadPreflight(submission, identity, submission.updatedAt());
+    }
+
+    private String optionalMediaObjectKey(
+            UUID submissionId, MediaKind kind, ValidatedMedia validated, UUID segmentId) {
+        String segmentDirectory = segmentId == null ? ""
+                : "/segments/" + segmentId;
+        return tenantId + "/temporary-sales-checkin/" + submissionId + "/"
+                + kind.objectDirectory + segmentDirectory + "/"
+                + validated.sha256() + "-" + UUID.randomUUID() + validated.extension();
+    }
+
+    private void putValidatedMedia(
+            ValidatedMedia validated, String objectKey, String readFailure, String storageFailure) {
+        Instant now = clock.instant();
+        try (InputStream content = validated.file().getInputStream()) {
+            fileStorage.put(new FileMetadata(tenantId.toString(), objectKey, validated.originalFilename(),
+                    validated.contentType(), validated.sizeBytes(), validated.sha256(),
+                    OffsetDateTime.ofInstant(now, java.time.ZoneOffset.UTC)), content);
+        } catch (IOException exception) {
+            throw TemporaryCheckinException.storage(readFailure);
+        } catch (RuntimeException exception) {
+            throw TemporaryCheckinException.storage(storageFailure);
+        }
     }
 
     private void registerMediaObjectLifecycle(
@@ -885,6 +1115,33 @@ public class TemporaryCheckinService {
         }
     }
 
+    private void cleanupStagedObjectIfConfirmedUnreferenced(
+            String objectKey, UUID submissionId, MediaKind kind, String reason) {
+        final boolean referenced;
+        try {
+            SubmissionRow current = repository.findSubmission(tenantId, submissionId).orElse(null);
+            referenced = current != null && switch (kind) {
+                case STOREFRONT_PHOTO -> referencesObject(current.storefrontPhoto(), objectKey);
+                case WECHAT_SCREENSHOT -> referencesObject(current.wechatScreenshot(), objectKey);
+                case AUDIO -> referencesObject(current.audio(), objectKey)
+                        || audioSegments(current).stream()
+                        .anyMatch(segment -> objectKey.equals(segment.objectKey()));
+            };
+        } catch (RuntimeException exception) {
+            // 提交结果不确定且无法复核时，宁可暂留唯一staged对象供治理任务清理，也不能误删已提交引用。
+            log.warn("临时打卡暂存媒体引用复核失败，跳过清理 submissionId={} kind={} reason={} error={}",
+                    submissionId, kind.pathValue, reason, exception.getClass().getSimpleName());
+            return;
+        }
+        if (!referenced) {
+            cleanupUnreferencedObject(objectKey, submissionId, kind, reason);
+        }
+    }
+
+    private static boolean referencesObject(MediaReference media, String objectKey) {
+        return media != null && objectKey.equals(media.objectKey());
+    }
+
     @Transactional
     public MediaDeleteView deleteDraftMedia(
             UUID submissionId, String rawKind, String submissionKey,
@@ -905,6 +1162,9 @@ public class TemporaryCheckinService {
         }
         MediaReference current = media(submission, kind);
         if (current == null || current.objectKey() == null) {
+            if (repository.touchDraftMediaMutation(tenantId, submissionId) != 1) {
+                throw TemporaryCheckinException.conflict("媒体删除状态已变化，请刷新后重试");
+            }
             return new MediaDeleteView(submissionId, kind.pathValue, "DELETED");
         }
         try {
@@ -945,6 +1205,9 @@ public class TemporaryCheckinService {
                 .filter(item -> segmentId.equals(item.segmentId()) && item.deletedAt() == null)
                 .findFirst().orElse(null);
         if (current == null) {
+            if (repository.touchDraftMediaMutation(tenantId, submissionId) != 1) {
+                throw TemporaryCheckinException.conflict("录音删除状态已变化，请刷新后重试");
+            }
             return new MediaDeleteView(submissionId, MediaKind.AUDIO.pathValue, "DELETED", segmentId);
         }
         try {
@@ -2053,20 +2316,39 @@ public class TemporaryCheckinService {
         throw TemporaryCheckinException.badRequest("照片格式不支持或文件内容损坏");
     }
 
-    private static DetectedMedia detectAudio(MediaSignatureProbe probe) {
+    static DetectedMedia detectAudio(MediaSignatureProbe probe) {
         byte[] bytes = probe.prefix();
+        if (isKnownImage(bytes)) {
+            throw TemporaryCheckinException.badRequest(
+                    "所选文件是图片，不是录音；录音为选填，可删除后继续提交");
+        }
         if (bytes.length >= 4 && ascii(bytes, 0, "OggS")
                 && probe.oggAudio && !probe.oggVideo) {
             return new DetectedMedia("audio/ogg", ".ogg");
         }
-        if (bytes.length >= 7 && unsigned(bytes[0]) == 0xff && (unsigned(bytes[1]) & 0xf6) == 0xf0) {
+        if ((bytes.length >= 7 && unsigned(bytes[0]) == 0xff
+                && (unsigned(bytes[1]) & 0xf6) == 0xf0)
+                || (bytes.length >= 4 && ascii(bytes, 0, "ADIF"))
+                || (bytes.length >= 3 && unsigned(bytes[0]) == 0x56
+                && (unsigned(bytes[1]) & 0xe0) == 0xe0)) {
             return new DetectedMedia("audio/aac", ".aac");
         }
         if (bytes.length >= 12 && ascii(bytes, 4, "ftyp")
-                && probe.mp4Audio && !probe.mp4Video) {
+                && probe.mp4Audio
+                && !probe.mp4Video) {
+            String brand = new String(bytes, 8, 4, StandardCharsets.US_ASCII)
+                    .toLowerCase(Locale.ROOT);
+            if (brand.startsWith("3g2")) {
+                return new DetectedMedia("audio/3gpp2", ".3g2");
+            }
+            if (brand.startsWith("3gp") || brand.startsWith("3ge") || brand.startsWith("3gg")) {
+                return new DetectedMedia("audio/3gpp", ".3gp");
+            }
             return new DetectedMedia("audio/mp4", ".m4a");
         }
-        if (bytes.length >= 12 && ascii(bytes, 0, "RIFF") && ascii(bytes, 8, "WAVE")) {
+        if (bytes.length >= 12
+                && (ascii(bytes, 0, "RIFF") || ascii(bytes, 0, "RIFX") || ascii(bytes, 0, "RF64"))
+                && ascii(bytes, 8, "WAVE")) {
             return new DetectedMedia("audio/wav", ".wav");
         }
         if ((bytes.length >= 6 && ascii(bytes, 0, "#!AMR\n"))
@@ -2082,7 +2364,41 @@ public class TemporaryCheckinService {
                 || (bytes.length >= 2 && unsigned(bytes[0]) == 0xff && (unsigned(bytes[1]) & 0xe0) == 0xe0)) {
             return new DetectedMedia("audio/mpeg", ".mp3");
         }
+        if (bytes.length >= 4 && ascii(bytes, 0, "fLaC")) {
+            return new DetectedMedia("audio/flac", ".flac");
+        }
+        if (bytes.length >= 4 && ascii(bytes, 0, "caff")) {
+            return new DetectedMedia("audio/x-caf", ".caf");
+        }
+        if (bytes.length >= 12 && ascii(bytes, 0, "FORM")
+                && (ascii(bytes, 8, "AIFF") || ascii(bytes, 8, "AIFC"))) {
+            return new DetectedMedia("audio/aiff", ".aiff");
+        }
+        if ((bytes.length >= 9 && ascii(bytes, 0, "#!SILK_V3"))
+                || (bytes.length >= 10 && unsigned(bytes[0]) == 0x02
+                && ascii(bytes, 1, "#!SILK_V3"))) {
+            return new DetectedMedia("audio/silk", ".silk");
+        }
         throw TemporaryCheckinException.badRequest("录音格式不支持或文件内容损坏");
+    }
+
+    private static boolean isKnownImage(byte[] bytes) {
+        if (bytes.length >= 3 && unsigned(bytes[0]) == 0xff && unsigned(bytes[1]) == 0xd8
+                && unsigned(bytes[2]) == 0xff) {
+            return true;
+        }
+        if (bytes.length >= 8 && unsigned(bytes[0]) == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4e
+                && bytes[3] == 0x47 && bytes[4] == 0x0d && bytes[5] == 0x0a
+                && bytes[6] == 0x1a && bytes[7] == 0x0a) {
+            return true;
+        }
+        if (bytes.length >= 12 && ascii(bytes, 0, "RIFF") && ascii(bytes, 8, "WEBP")) {
+            return true;
+        }
+        if (bytes.length < 12 || !ascii(bytes, 4, "ftyp")) return false;
+        String brand = new String(bytes, 8, 4, StandardCharsets.US_ASCII).toLowerCase(Locale.ROOT);
+        return Set.of("heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1",
+                "avif", "avis").contains(brand);
     }
 
     private static String safeFilename(String value, String fallback) {
@@ -2111,11 +2427,41 @@ public class TemporaryCheckinService {
         return base + extension;
     }
 
-    private static boolean containsMp4Handler(byte[] bytes, String handler) {
-        for (int offset = 0; offset + 16 <= bytes.length; offset++) {
-            if (ascii(bytes, offset, "hdlr") && ascii(bytes, offset + 12, handler)) return true;
+    private static int scanIsoMediaHandlers(
+            byte[] bytes, boolean needAudioHandler, boolean needVideoHandler) {
+        int detected = 0;
+        for (int offset = 0; offset + 4 <= bytes.length; offset++) {
+            int type = fourCc(bytes, offset);
+            if ((needAudioHandler || needVideoHandler) && type == 0x68646c72 // hdlr
+                    && offset + 16 <= bytes.length && isPlausibleIsoBoxAt(bytes, offset)) {
+                int handler = fourCc(bytes, offset + 12);
+                if (needAudioHandler && handler == 0x736f756e) detected |= 1; // soun
+                if (needVideoHandler && handler == 0x76696465) detected |= 2; // vide
+            }
+            if ((!needAudioHandler || (detected & 1) != 0)
+                    && (!needVideoHandler || (detected & 2) != 0)) {
+                break;
+            }
         }
-        return false;
+        return detected;
+    }
+
+    private static boolean isPlausibleIsoBoxAt(byte[] bytes, int typeOffset) {
+        if (typeOffset < 4) return false;
+        long boxSize = ((long) unsigned(bytes[typeOffset - 4]) << 24)
+                | ((long) unsigned(bytes[typeOffset - 3]) << 16)
+                | ((long) unsigned(bytes[typeOffset - 2]) << 8)
+                | unsigned(bytes[typeOffset - 1]);
+        // 普通hdlr至少包含8字节box头、version/flags、pre_defined和handler_type，共20字节。
+        // size=1还需要解析额外的64位box头，不能按普通布局读取，故不在此宽松扫描中接受。
+        return boxSize == 0 || boxSize >= 20;
+    }
+
+    private static int fourCc(byte[] bytes, int offset) {
+        return (unsigned(bytes[offset]) << 24)
+                | (unsigned(bytes[offset + 1]) << 16)
+                | (unsigned(bytes[offset + 2]) << 8)
+                | unsigned(bytes[offset + 3]);
     }
 
     private static boolean containsAnyAscii(byte[] bytes, String... values) {
@@ -2128,6 +2474,46 @@ public class TemporaryCheckinService {
     private static boolean containsAscii(byte[] bytes, String value) {
         for (int offset = 0; offset + value.length() <= bytes.length; offset++) {
             if (ascii(bytes, offset, value)) return true;
+        }
+        return false;
+    }
+
+    private static boolean containsEbmlVideoCodecId(byte[] bytes) {
+        for (int offset = 0; offset + 4 <= bytes.length; offset++) {
+            if (unsigned(bytes[offset]) != 0x86) continue; // Matroska CodecID element
+            int sizeOffset = offset + 1;
+            int firstSizeByte = unsigned(bytes[sizeOffset]);
+            int sizeWidth = 1;
+            int marker = 0x80;
+            while (sizeWidth <= 8 && (firstSizeByte & marker) == 0) {
+                sizeWidth++;
+                marker >>>= 1;
+            }
+            if (sizeWidth > 8 || sizeOffset + sizeWidth > bytes.length) continue;
+            long valueLength = firstSizeByte & (marker - 1);
+            for (int index = 1; index < sizeWidth; index++) {
+                valueLength = (valueLength << 8) | unsigned(bytes[sizeOffset + index]);
+            }
+            long unknownLength = (1L << (7 * sizeWidth)) - 1;
+            if (valueLength == unknownLength) continue;
+            // CodecID是短ASCII值；限制长度并校验完整值，避免在压缩音频载荷里随机命中“V_”。
+            if (valueLength < 4 || valueLength > 128) continue;
+            int valueOffset = sizeOffset + sizeWidth;
+            long valueEnd = valueOffset + valueLength;
+            if (valueEnd > bytes.length
+                    || unsigned(bytes[valueOffset]) != 'V'
+                    || unsigned(bytes[valueOffset + 1]) != '_') {
+                continue;
+            }
+            boolean printable = true;
+            for (int index = valueOffset; index < valueEnd; index++) {
+                int value = unsigned(bytes[index]);
+                if (value < 0x21 || value > 0x7e) {
+                    printable = false;
+                    break;
+                }
+            }
+            if (printable) return true;
         }
         return false;
     }
@@ -2703,16 +3089,24 @@ public class TemporaryCheckinService {
     private record PoiDistance(AmapPoiClient.NearbyPoi poi, double distanceMeters) { }
     private record OptionalStore(boolean present, StoreRow row) { }
     private record CityMatch(Boolean matched, String resolvedCity) { }
+    private record UploadPreflight(
+            SubmissionRow submission, AuthorizedRequest identity, Instant revision) { }
+    private record OptionalMediaFinalized(
+            AuthorizedRequest identity, String outcome, MediaUploadView view,
+            boolean newObjectReferenced, String previousObjectKey) { }
+    private record AudioMediaFinalized(
+            AuthorizedRequest identity, String outcome, AudioSegment segment,
+            boolean newObjectReferenced) { }
 
-    private record DetectedMedia(String contentType, String extension) { }
+    record DetectedMedia(String contentType, String extension) { }
 
     /**
      * 以固定小窗口扫描常见媒体特征，避免把最大100MB的录音整体放入JVM堆。
      * 该探测用于兼容手机选择器元数据，不替代完整编解码校验。
      */
-    private static final class MediaSignatureProbe {
+    static final class MediaSignatureProbe {
         private static final int PREFIX_BYTES = 32;
-        private static final int OVERLAP_BYTES = 15;
+        private static final int OVERLAP_BYTES = 64;
 
         private final byte[] prefix = new byte[PREFIX_BYTES];
         private final byte[] tail = new byte[OVERLAP_BYTES];
@@ -2726,7 +3120,7 @@ public class TemporaryCheckinService {
         private boolean webmAudio;
         private boolean webmVideo;
 
-        private MediaSignatureProbe(boolean scanAudioContainer) {
+        MediaSignatureProbe(boolean scanAudioContainer) {
             this.scanAudioContainer = scanAudioContainer;
         }
 
@@ -2745,12 +3139,17 @@ public class TemporaryCheckinService {
                 oggAudio |= containsAnyAscii(scan, "OpusHead", "vorbis", "Speex", "fLaC");
                 oggVideo |= containsAscii(scan, "theora");
             } else if (prefixLength >= 12 && ascii(prefix, 4, "ftyp")) {
-                mp4Audio |= containsMp4Handler(scan, "soun");
-                mp4Video |= containsMp4Handler(scan, "vide");
+                if (!mp4Audio || !mp4Video) {
+                    int mediaSignals = scanIsoMediaHandlers(scan, !mp4Audio, !mp4Video);
+                    mp4Audio |= (mediaSignals & 1) != 0;
+                    mp4Video |= (mediaSignals & 2) != 0;
+                }
             } else if (prefixLength >= 4 && unsigned(prefix[0]) == 0x1a && unsigned(prefix[1]) == 0x45
                     && unsigned(prefix[2]) == 0xdf && unsigned(prefix[3]) == 0xa3) {
                 webmAudio |= containsAnyAscii(scan, "A_OPUS", "A_VORBIS", "A_AAC", "A_FLAC", "A_MPEG/L3");
-                webmVideo |= containsAnyAscii(scan, "V_VP8", "V_VP9", "V_AV1");
+                // Matroska/WebM共用EBML头，视频CodecID不只VP8/VP9/AV1；例如手机MKV常见
+                // V_MPEG4/ISO/AVC、V_MPEGH/ISO/HEVC。解析CodecID元素，避免裸搜短字符串误伤音频载荷。
+                webmVideo |= containsEbmlVideoCodecId(scan);
             }
 
             tailLength = Math.min(OVERLAP_BYTES, scan.length);

@@ -7,7 +7,7 @@
     <meta name="description" content="销售拜访打卡与门店信息临时采集页面">
     <meta name="robots" content="noindex,nofollow,noarchive">
     <title>销售拜访打卡</title>
-    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260902-unverified-location">
+    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260905-media-compat">
 </head>
 <body>
 <header class="hero">
@@ -99,7 +99,7 @@
             <div id="draft-lock-notice" class="notice notice--plain draft-lock-notice" role="status" hidden>
                 <div>
                     <strong>打卡草稿已锁定</strong>
-                    <p>业务归属、销售、门店和拜访内容不再变更；网络中断后刷新页面可恢复，并继续上传或删除媒体。</p>
+                    <p>业务归属、销售、门店和拜访内容已保留；可继续上传现场照片，选填截图或录音失败时可跳过。</p>
                 </div>
             </div>
             <div id="store-saved-notice" class="notice notice--info" role="status" hidden>
@@ -178,6 +178,7 @@
                             </div>
                             <div class="audio-preview__actions">
                                 <button class="text-button audio-retry-button" data-audio-retry type="button" hidden>重试</button>
+                                <button class="text-button audio-skip-button" data-audio-skip type="button" hidden>跳过此段</button>
                                 <button class="text-button file-remove-button" data-audio-remove type="button">移除</button>
                             </div>
                         </div>
@@ -189,12 +190,13 @@
                                 <label id="audio-file-label" for="audio-file">选择已有音频文件（可多选）</label>
                                 <input id="audio-file" type="file" multiple>
                             </div>
-                            <p id="recorder-help" class="field__help">可选择 M4A、MP3、WAV、AAC、AMR、OGG 或 WebM；服务端会核验常见文件特征。</p>
+                            <p id="recorder-help" class="field__help">可选择 M4A、MP3、WAV、AAC、AMR、OGG/Opus、WebM、3GP、FLAC、CAF、AIFF、SILK 等常见录音；手机返回空 MIME 或临时文件名也会尝试识别。</p>
                             <p class="field__help">页面录制会记录开始时间和时长；选择已有音频的时间仅供参考、不可核验。</p>
                         </div>
                     </details>
+                    <p id="audio-selection-note" class="audio-selection-note" role="status" aria-live="polite" hidden></p>
                     <p id="recording-status-note" class="recording-status-note" role="status" aria-live="polite">
-                        录音只暂存在当前页面；请保持页面前台，停止录音后再进入现场证明。
+                        录音为选填；无法识别或上传失败时会自动跳过，现场照片仍可正常提交。
                     </p>
                     <span class="field__error" data-error-for="audio-file"></span>
                 </div>
@@ -762,8 +764,8 @@
         <ol id="progress-steps" class="progress-steps">
             <li data-progress-step="draft"><span></span>创建草稿</li>
             <li data-progress-step="storefront-photo"><span></span>上传现场照片</li>
-            <li data-progress-step="wechat-screenshot"><span></span>上传企微截图</li>
-            <li data-progress-step="audio"><span></span>上传现场录音</li>
+            <li data-progress-step="wechat-screenshot"><span></span>上传企微截图（选填）</li>
+            <li data-progress-step="audio"><span></span>上传现场录音（选填）</li>
             <li data-progress-step="complete"><span></span>完成提交</li>
         </ol>
         <p id="progress-detail">请勿关闭页面。</p>
@@ -777,6 +779,7 @@
         <p id="success-location-note" class="success-location-note" hidden>
             本次记录已成功提交；设备未返回可靠定位，后台已标记为“定位未核验”，管理员会结合现场照片等记录复核。
         </p>
+        <p id="success-media-note" class="success-media-note" hidden></p>
         <button id="new-submission-button" class="primary-button" type="button">继续录入下一次拜访</button>
     </section>
     </div>
@@ -786,6 +789,6 @@
     <p>临时过渡采集页面 · 如遇问题请保留页面中的错误信息并联系管理员</p>
 </footer>
 
-    <script src="/sales-checkin/app.js?v=20260902-unverified-location" defer></script>
+    <script src="/sales-checkin/app.js?v=20260905-media-compat" defer></script>
 </body>
 </html>

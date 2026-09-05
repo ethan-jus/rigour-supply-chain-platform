@@ -365,10 +365,27 @@ public class TemporaryCheckinRepository {
                 + prefix + "object_key=?, " + prefix + "content_type=?, " + prefix + "size_bytes=?, "
                 + prefix + "sha256=?, " + prefix + "original_filename=?, "
                 + prefix + "deleted_at=NULL, " + prefix + "deleted_by=NULL, "
-                + prefix + "deletion_reason=NULL, updated_at=? "
+                + prefix + "deletion_reason=NULL, "
+                + "updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at)) "
                 + "WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE'";
         return jdbc.update(sql, media.objectKey(), media.contentType(), media.sizeBytes(), media.sha256(),
                 media.originalFilename(), timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public int updateMediaIfRevision(
+            UUID tenantId, UUID submissionId, String prefix, MediaWrite media,
+            Instant expectedUpdatedAt, Instant now) {
+        String sql = "UPDATE temp_sales_checkin_submission SET "
+                + prefix + "object_key=?, " + prefix + "content_type=?, " + prefix + "size_bytes=?, "
+                + prefix + "sha256=?, " + prefix + "original_filename=?, "
+                + prefix + "deleted_at=NULL, " + prefix + "deleted_by=NULL, "
+                + prefix + "deletion_reason=NULL, "
+                + "updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at)) "
+                + "WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE' "
+                + "AND updated_at=?";
+        return jdbc.update(sql, media.objectKey(), media.contentType(), media.sizeBytes(), media.sha256(),
+                media.originalFilename(), timestamp(now), bin(tenantId), bin(submissionId),
+                timestamp(expectedUpdatedAt));
     }
 
     public int clearDraftMedia(
@@ -376,10 +393,20 @@ public class TemporaryCheckinRepository {
         String sql = "UPDATE temp_sales_checkin_submission SET "
                 + prefix + "object_key=NULL, " + prefix + "content_type=NULL, "
                 + prefix + "size_bytes=NULL, " + prefix + "sha256=NULL, "
-                + prefix + "original_filename=NULL, updated_at=? "
+                + prefix + "original_filename=NULL, "
+                + "updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at)) "
                 + "WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE' AND "
                 + prefix + "object_key=?";
         return jdbc.update(sql, timestamp(now), bin(tenantId), bin(submissionId), expectedObjectKey);
+    }
+
+    public int touchDraftMediaMutation(UUID tenantId, UUID submissionId) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET updated_at=GREATEST(
+                       UTC_TIMESTAMP(6), TIMESTAMPADD(MICROSECOND,1,updated_at))
+                 WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE'
+                """, bin(tenantId), bin(submissionId));
     }
 
     public int updateDraftAudioManifest(
@@ -391,7 +418,8 @@ public class TemporaryCheckinRepository {
                        audio_active_segment_count=?, audio_active_size_bytes=?,
                        audio_object_key=?, audio_content_type=?, audio_size_bytes=?, audio_sha256=?,
                        audio_original_filename=?, audio_deleted_at=NULL, audio_deleted_by=NULL,
-                       audio_deletion_reason=NULL, updated_at=?
+                       audio_deletion_reason=NULL,
+                       updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at))
                  WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE'
                 """, manifestJson, activeCount, activeBytes,
                 projection == null ? null : projection.objectKey(),
@@ -400,6 +428,28 @@ public class TemporaryCheckinRepository {
                 projection == null ? null : projection.sha256(),
                 projection == null ? null : projection.originalFilename(),
                 timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public int updateDraftAudioManifestIfRevision(
+            UUID tenantId, UUID submissionId, String manifestJson, int activeCount, long activeBytes,
+            MediaWrite projection, Instant expectedUpdatedAt, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET audio_segments_json=CAST(? AS JSON),
+                       audio_active_segment_count=?, audio_active_size_bytes=?,
+                       audio_object_key=?, audio_content_type=?, audio_size_bytes=?, audio_sha256=?,
+                       audio_original_filename=?, audio_deleted_at=NULL, audio_deleted_by=NULL,
+                       audio_deletion_reason=NULL,
+                       updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at))
+                 WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE'
+                   AND updated_at=?
+                """, manifestJson, activeCount, activeBytes,
+                projection == null ? null : projection.objectKey(),
+                projection == null ? null : projection.contentType(),
+                projection == null ? null : projection.sizeBytes(),
+                projection == null ? null : projection.sha256(),
+                projection == null ? null : projection.originalFilename(),
+                timestamp(now), bin(tenantId), bin(submissionId), timestamp(expectedUpdatedAt));
     }
 
     public int updateAdminAudioManifest(
@@ -411,7 +461,8 @@ public class TemporaryCheckinRepository {
                        audio_active_segment_count=?, audio_active_size_bytes=?,
                        audio_object_key=?, audio_content_type=?, audio_size_bytes=?, audio_sha256=?,
                        audio_original_filename=?,
-                       audio_deleted_at=?, audio_deleted_by=?, audio_deletion_reason=?, updated_at=?
+                       audio_deleted_at=?, audio_deleted_by=?, audio_deletion_reason=?,
+                       updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at))
                  WHERE tenant_id=? AND id=? AND deletion_state='NONE'
                 """, manifestJson, activeCount, activeBytes,
                 projection == null ? null : projection.objectKey(),
@@ -645,7 +696,8 @@ public class TemporaryCheckinRepository {
                 + "summary_error_code=NULL, summary_updated_at=?"
                 : "";
         String sql = "UPDATE temp_sales_checkin_submission SET " + prefix + "deleted_at=?, "
-                + prefix + "deleted_by=?, " + prefix + "deletion_reason=?, updated_at=?" + extra
+                + prefix + "deleted_by=?, " + prefix + "deletion_reason=?, "
+                + "updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at))" + extra
                 + " WHERE tenant_id=? AND id=? AND " + prefix + "object_key=? AND "
                 + prefix + "deleted_at IS NULL AND deletion_state='NONE'";
         if ("audio_".equals(prefix)) {

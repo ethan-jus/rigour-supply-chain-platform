@@ -71,6 +71,32 @@ class TemporaryCheckinPublicPageContractTest {
     }
 
     @Test
+    void keepsOptionalMediaBestEffortAndLetsTheRequiredPhotoCompleteCheckin() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        String script = resource("static/sales-checkin/app.js");
+
+        assertThat(html)
+                .contains("id=\"audio-selection-note\"")
+                .contains("id=\"success-media-note\"")
+                .contains("录音为选填")
+                .contains("现场照片仍可正常提交");
+        assertThat(script)
+                .contains("async function isImageSelectedAsAudio(file)")
+                .contains("function hasImageSignature(bytes)")
+                .contains("function markAudioSegmentSkipped(segment, reason)")
+                .contains("segment.uploadState = \"SKIPPED\";")
+                .contains("{ step: MEDIA.photo, file: state.files.photo, required: true }")
+                .contains("{ step: MEDIA.wechat, file: state.files.wechat, required: false }")
+                .contains("if (upload.required) throw error;")
+                .contains("markAudioSegmentSkipped(segment,")
+                .contains("skippedWechatOutcome = optionalUploadOutcome(error);")
+                .contains("uncertainAudioCount")
+                .contains("打卡记录和现场照片已正常保存")
+                .contains("上传结果未确认，服务端可能已收到")
+                .contains("服务端未接收，已跳过，不影响打卡");
+    }
+
+    @Test
     void startsRecordingDuringConversationAndKeepsOneRecoveryWorkspace() throws IOException {
         String html = resource("static/sales-checkin/index.html");
         String script = resource("static/sales-checkin/app.js");
@@ -97,6 +123,15 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("visitStep === 1")
                 .contains("state.recorder.starting")
                 .contains("const requestSequence = ++state.recorder.startSequence")
+                .contains("const MICROPHONE_PERMISSION_TIMEOUT_MS = 12 * 1000;")
+                .contains("function requestMicrophoneStream(constraints, requestSequence)")
+                .contains("error.code = \"MICROPHONE_PERMISSION_TIMEOUT\";")
+                .contains("if (settled || requestSequence !== state.recorder.startSequence)")
+                .contains("stopRecorderStream(stream);")
+                .contains("if (state.recorder.starting) {")
+                .contains("已停止等待麦克风授权；录音为选填，继续提交本次打卡")
+                .contains("(recorderBusy && !state.recorder.starting)")
+                .contains("录音为选填，可直接提交打卡")
                 .contains("state.recorder.sessionId !== session.id")
                 .contains("state.recorder.activeSession = session")
                 .contains("const pendingSession = Boolean(")
@@ -127,10 +162,19 @@ class TemporaryCheckinPublicPageContractTest {
 
         assertThat(script)
                 .doesNotContain("function isSupportedAudioFile")
-                .contains("function uploadMedia(kind, file, progressTitle, optionalFormFields = {})")
-                .contains("function uploadAudioSegment(segment, file, index, total)")
+                .contains("const OPTIONAL_MEDIA_UPLOAD_BUDGET_MS = 30 * 1000;")
+                .contains("function uploadMedia(kind, file, progressTitle, optionalFormFields = {}, uploadOptions = {})")
+                .contains("function uploadAudioSegment(segment, file, index, total, optionalMediaDeadlineMs)")
                 .contains("audio/${encodeURIComponent(segment.segmentId)}")
                 .contains("const xhr = new XMLHttpRequest()")
+                .contains("xhr.timeout = 0;")
+                .contains("error.code = \"OPTIONAL_MEDIA_SOFT_TIMEOUT\";")
+                .contains("error.uploadOutcome = \"UNKNOWN\";")
+                .contains("error.uploadOutcome = \"NOT_ATTEMPTED\";")
+                .contains("function optionalUploadOutcome(error)")
+                .contains("xhr.status >= 400 && xhr.status < 500")
+                .contains("? \"REJECTED\" : \"UNKNOWN\"")
+                .contains("Date.now() + OPTIONAL_MEDIA_UPLOAD_BUDGET_MS")
                 .contains("return state.submission.uploadedMedia.includes(mediaKind);")
                 .contains("function mayHaveRemoteMediaState(mediaKind)")
                 .contains("上次上传结果未确认。请重新选择原文件继续重试")
@@ -430,8 +474,8 @@ class TemporaryCheckinPublicPageContractTest {
         assertThat(html)
                 .contains("class=\"field__help action-feedback\"")
                 .contains("role=\"status\" aria-live=\"polite\"")
-                .contains("/sales-checkin/styles.css?v=20260902-unverified-location")
-                .contains("/sales-checkin/app.js?v=20260902-unverified-location")
+                .contains("/sales-checkin/styles.css?v=20260905-media-compat")
+                .contains("/sales-checkin/app.js?v=20260905-media-compat")
                 .contains("实际定位不受业务归属城市限制")
                 .contains("当前位置附近没找到对应门店")
                 .contains("id=\"visit-step-1-next\"")
@@ -681,7 +725,7 @@ class TemporaryCheckinPublicPageContractTest {
                 .contains("createButton.disabled = createUnavailable;")
                 .doesNotContain("manualFallback");
         assertThat(script).doesNotContain("manualFallback");
-        assertThat(html).contains("/sales-checkin/app.js?v=20260902-unverified-location");
+        assertThat(html).contains("/sales-checkin/app.js?v=20260905-media-compat");
     }
 
     @Test

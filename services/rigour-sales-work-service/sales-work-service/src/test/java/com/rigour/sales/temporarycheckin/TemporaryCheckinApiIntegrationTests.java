@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -2255,7 +2256,79 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void serializesConcurrentUploadAndDeleteSoLateDatabaseWriteCannotReviveMedia() throws Exception {
+    void optionalUploadDoesNotHoldDraftLockAndLateArrivalCannotAttachAfterCompletion() throws Exception {
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submission(
+                                UUID.randomUUID(), SUBMISSION_KEY, "选填上传不阻塞提交", true, location()))))
+                .andExpect(status().isOk())
+                .andReturn();
+        UUID submissionId = UUID.fromString(objectMapper.readTree(
+                created.getResponse().getContentAsByteArray()).path("id").asText());
+        upload(submissionId, "storefront-photo", new MockMultipartFile(
+                "file", "door.jpg", "image/jpeg",
+                new byte[] {(byte) 0xff, (byte) 0xd8, (byte) 0xff, 0}))
+                .andExpect(status().isOk());
+        clearInvocations(fileStorage);
+
+        byte[] wav = new byte[] {'R', 'I', 'F', 'F', 4, 0, 0, 0, 'W', 'A', 'V', 'E'};
+        CountDownLatch uploadEnteredStorage = new CountDownLatch(1);
+        CountDownLatch allowUploadToFinish = new CountDownLatch(1);
+        AtomicReference<FileMetadata> uploadedMetadata = new AtomicReference<>();
+        when(fileStorage.put(any(FileMetadata.class), any(InputStream.class)))
+                .thenAnswer(invocation -> {
+                    FileMetadata metadata = invocation.getArgument(0);
+                    uploadedMetadata.set(metadata);
+                    uploadEnteredStorage.countDown();
+                    if (!allowUploadToFinish.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("并发提交未在超时前完成");
+                    }
+                    return metadata;
+                });
+
+        CompletableFuture<MvcResult> uploadFuture = CompletableFuture.supplyAsync(() -> {
+            try {
+                return upload(submissionId, "audio",
+                        new MockMultipartFile("file", "visit.wav", "audio/wav", wav)).andReturn();
+            } catch (Exception exception) {
+                throw new CompletionException(exception);
+            }
+        });
+        if (!uploadEnteredStorage.await(5, TimeUnit.SECONDS)) {
+            allowUploadToFinish.countDown();
+            throw new AssertionError("选填录音PUT未进入阻塞的COS写入阶段");
+        }
+        CompletableFuture<MvcResult> completeFuture = CompletableFuture.supplyAsync(() -> {
+            try {
+                return mockMvc.perform(post(
+                                "/sales-checkin/api/v1/submissions/{id}/complete", submissionId)
+                                .header("X-Submission-Key", SUBMISSION_KEY))
+                        .andReturn();
+            } catch (Exception exception) {
+                throw new CompletionException(exception);
+            }
+        });
+        try {
+            assertThat(completeFuture.get(2, TimeUnit.SECONDS).getResponse().getStatus())
+                    .as("阻塞的选填COS PUT不得占用草稿行锁或拖住打卡提交")
+                    .isEqualTo(200);
+        } finally {
+            allowUploadToFinish.countDown();
+        }
+
+        assertThat(uploadFuture.get(10, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(409);
+        assertThat(uploadedMetadata.get()).isNotNull();
+        verify(fileStorage).delete(TENANT_ID.toString(), uploadedMetadata.get().objectKey());
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM temp_sales_checkin_submission
+                 WHERE tenant_id=? AND id=? AND status='SUBMITTED' AND audio_object_key IS NULL
+                   AND audio_content_type IS NULL AND audio_size_bytes IS NULL
+                   AND audio_sha256 IS NULL AND audio_original_filename IS NULL
+                """, Integer.class, bin(TENANT_ID), bin(submissionId))).isEqualTo(1);
+    }
+
+    @Test
+    void deletingAbsentAudioAdvancesRevisionSoInFlightUploadCannotReviveIt() throws Exception {
         MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(submission(
@@ -2264,6 +2337,7 @@ class TemporaryCheckinApiIntegrationTests {
                 .andReturn();
         UUID submissionId = UUID.fromString(objectMapper.readTree(
                 created.getResponse().getContentAsByteArray()).path("id").asText());
+        UUID segmentId = UUID.randomUUID();
         byte[] wav = new byte[] {'R', 'I', 'F', 'F', 4, 0, 0, 0, 'W', 'A', 'V', 'E'};
         CountDownLatch uploadEnteredStorage = new CountDownLatch(1);
         CountDownLatch allowUploadToFinish = new CountDownLatch(1);
@@ -2281,7 +2355,7 @@ class TemporaryCheckinApiIntegrationTests {
 
         CompletableFuture<MvcResult> uploadFuture = CompletableFuture.supplyAsync(() -> {
             try {
-                return upload(submissionId, "audio",
+                return uploadAudioSegment(submissionId, segmentId,
                         new MockMultipartFile("file", "visit.wav", "audio/wav", wav)).andReturn();
             } catch (Exception exception) {
                 throw new CompletionException(exception);
@@ -2289,37 +2363,91 @@ class TemporaryCheckinApiIntegrationTests {
         });
         if (!uploadEnteredStorage.await(5, TimeUnit.SECONDS)) {
             allowUploadToFinish.countDown();
-            throw new AssertionError("PUT未进入受行锁保护的COS写入阶段");
+            throw new AssertionError("选填录音PUT未进入阻塞的COS写入阶段");
         }
-        CompletableFuture<MvcResult> deleteFuture = CompletableFuture.supplyAsync(() -> {
-            try {
-                return mockMvc.perform(delete(
-                                "/sales-checkin/api/v1/submissions/{id}/media/audio", submissionId)
-                                .header("X-Submission-Key", SUBMISSION_KEY))
-                        .andReturn();
-            } catch (Exception exception) {
-                throw new CompletionException(exception);
-            }
-        });
         try {
-            Thread.sleep(150);
-            assertThat(deleteFuture.isDone())
-                    .as("DELETE必须等待持有同一草稿行锁的PUT完成")
-                    .isFalse();
+            mockMvc.perform(delete(
+                            "/sales-checkin/api/v1/submissions/{id}/media/audio/{segmentId}",
+                            submissionId, segmentId)
+                            .header("X-Submission-Key", SUBMISSION_KEY))
+                    .andExpect(status().isOk());
         } finally {
             allowUploadToFinish.countDown();
         }
 
-        assertThat(uploadFuture.get(10, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
-        assertThat(deleteFuture.get(10, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
+        assertThat(uploadFuture.get(10, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(409);
         assertThat(uploadedMetadata.get()).isNotNull();
         verify(fileStorage).delete(TENANT_ID.toString(), uploadedMetadata.get().objectKey());
         assertThat(jdbc.queryForObject("""
                 SELECT COUNT(*) FROM temp_sales_checkin_submission
-                 WHERE tenant_id=? AND id=? AND audio_object_key IS NULL
-                   AND audio_content_type IS NULL AND audio_size_bytes IS NULL
-                   AND audio_sha256 IS NULL AND audio_original_filename IS NULL
+                 WHERE tenant_id=? AND id=? AND status='DRAFT'
+                   AND audio_object_key IS NULL AND audio_active_segment_count=0
+                   AND JSON_LENGTH(audio_segments_json)=0
                 """, Integer.class, bin(TENANT_ID), bin(submissionId))).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentIdenticalAudioUploadsRegisterOneObjectAndCleanTheOther() throws Exception {
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submission(
+                                UUID.randomUUID(), SUBMISSION_KEY, "并发录音幂等", true, location()))))
+                .andExpect(status().isOk())
+                .andReturn();
+        UUID submissionId = UUID.fromString(objectMapper.readTree(
+                created.getResponse().getContentAsByteArray()).path("id").asText());
+        UUID segmentId = UUID.randomUUID();
+        byte[] wav = new byte[] {'R', 'I', 'F', 'F', 4, 0, 0, 0, 'W', 'A', 'V', 'E'};
+        CountDownLatch bothUploadsEnteredStorage = new CountDownLatch(2);
+        CountDownLatch allowUploadsToFinish = new CountDownLatch(1);
+        List<FileMetadata> staged = new CopyOnWriteArrayList<>();
+        when(fileStorage.put(any(FileMetadata.class), any(InputStream.class)))
+                .thenAnswer(invocation -> {
+                    FileMetadata metadata = invocation.getArgument(0);
+                    staged.add(metadata);
+                    bothUploadsEnteredStorage.countDown();
+                    if (!allowUploadsToFinish.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("两个并发PUT未在超时前到达");
+                    }
+                    return metadata;
+                });
+
+        CompletableFuture<MvcResult> first = CompletableFuture.supplyAsync(() -> {
+            try {
+                return uploadAudioSegment(submissionId, segmentId,
+                        new MockMultipartFile("file", "visit.wav", "audio/wav", wav)).andReturn();
+            } catch (Exception exception) {
+                throw new CompletionException(exception);
+            }
+        });
+        CompletableFuture<MvcResult> second = CompletableFuture.supplyAsync(() -> {
+            try {
+                return uploadAudioSegment(submissionId, segmentId,
+                        new MockMultipartFile("file", "visit.wav", "audio/wav", wav)).andReturn();
+            } catch (Exception exception) {
+                throw new CompletionException(exception);
+            }
+        });
+        if (!bothUploadsEnteredStorage.await(5, TimeUnit.SECONDS)) {
+            allowUploadsToFinish.countDown();
+            throw new AssertionError("两个录音请求未同时进入锁外COS写入");
+        }
+        allowUploadsToFinish.countDown();
+
+        assertThat(first.get(10, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
+        assertThat(second.get(10, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
+        assertThat(staged).hasSize(2);
+        var stored = jdbc.queryForMap("""
+                SELECT audio_object_key, audio_active_segment_count, audio_segments_json
+                  FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=?
+                """, bin(TENANT_ID), bin(submissionId));
+        String referencedKey = String.valueOf(stored.get("audio_object_key"));
+        assertThat(((Number) stored.get("audio_active_segment_count")).intValue()).isEqualTo(1);
+        assertThat(objectMapper.readTree(String.valueOf(stored.get("audio_segments_json")))).hasSize(1);
+        assertThat(staged.stream().map(FileMetadata::objectKey)).contains(referencedKey);
+        ArgumentCaptor<String> deletedKey = ArgumentCaptor.forClass(String.class);
+        verify(fileStorage, times(1)).delete(any(String.class), deletedKey.capture());
+        assertThat(deletedKey.getValue()).isNotEqualTo(referencedKey);
     }
 
     @Test
@@ -2542,7 +2670,29 @@ class TemporaryCheckinApiIntegrationTests {
                         new byte[] {0x1a, 0x45, (byte) 0xdf, (byte) 0xa3,
                                 'A', '_', 'O', 'P', 'U', 'S'}),
                 new MockMultipartFile("file", "voice.bin", "application/octet-stream",
-                        new byte[] {'#', '!', 'A', 'M', 'R', '-', 'W', 'B', '\n'}));
+                        new byte[] {'#', '!', 'A', 'M', 'R', '-', 'W', 'B', '\n'}),
+                new MockMultipartFile("file", "voice.adif", "application/octet-stream",
+                        new byte[] {'A', 'D', 'I', 'F', 0, 0, 0, 0}),
+                new MockMultipartFile("file", "voice.latm", "application/octet-stream",
+                        new byte[] {0x56, (byte) 0xe0, 0x01, 0, 0, 0}),
+                new MockMultipartFile("file", "voice.rf64", "application/octet-stream",
+                        new byte[] {'R', 'F', '6', '4', 4, 0, 0, 0, 'W', 'A', 'V', 'E'}),
+                new MockMultipartFile("file", "voice.flac", "application/octet-stream",
+                        new byte[] {'f', 'L', 'a', 'C', 0, 0, 0, 0}),
+                new MockMultipartFile("file", "voice.caf", "application/octet-stream",
+                        new byte[] {'c', 'a', 'f', 'f', 0, 1, 0, 0}),
+                new MockMultipartFile("file", "voice.aifc", "application/octet-stream",
+                        new byte[] {'F', 'O', 'R', 'M', 0, 0, 0, 4, 'A', 'I', 'F', 'C'}),
+                new MockMultipartFile("file", "voice.silk", "application/octet-stream",
+                        new byte[] {0x02, '#', '!', 'S', 'I', 'L', 'K', '_', 'V', '3'}),
+                new MockMultipartFile("file", "voice.3gp", "video/3gpp",
+                        new byte[] {0, 0, 0, 12, 'f', 't', 'y', 'p', '3', 'g', 'p', '6',
+                                0, 0, 0, 20, 'h', 'd', 'l', 'r', 0, 0, 0, 0,
+                                0, 0, 0, 0, 's', 'o', 'u', 'n'}),
+                new MockMultipartFile("file", "voice.mp4", "video/mp4",
+                        new byte[] {0, 0, 0, 12, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm',
+                                0, 0, 0, 20, 'h', 'd', 'l', 'r', 0, 0, 0, 0,
+                                0, 0, 0, 0, 's', 'o', 'u', 'n'}));
 
         for (MockMultipartFile file : files) {
             MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
@@ -2566,6 +2716,9 @@ class TemporaryCheckinApiIntegrationTests {
         assertThat(metadata.getAllValues().get(4).originalName()).isEqualTo("voice.m4a");
         assertThat(metadata.getAllValues().get(5).originalName()).isEqualTo("voice.m4a");
         assertThat(metadata.getAllValues().get(3).objectKey()).endsWith(".m4a");
+        assertThat(metadata.getAllValues().get(15).contentType()).isEqualTo("audio/3gpp");
+        assertThat(metadata.getAllValues().get(15).objectKey()).endsWith(".3gp");
+        assertThat(metadata.getAllValues().get(16).contentType()).isEqualTo("audio/mp4");
     }
 
     @Test
@@ -2779,11 +2932,17 @@ class TemporaryCheckinApiIntegrationTests {
         UUID submissionId = UUID.fromString(objectMapper.readTree(
                 created.getResponse().getContentAsByteArray()).path("id").asText());
 
+        byte[] selectedPhoto = new byte[] {(byte) 0xff, (byte) 0xd8, (byte) 0xff, 0x00};
+        upload(submissionId, "storefront-photo", new MockMultipartFile(
+                "file", "store.jpg", "image/jpeg", selectedPhoto))
+                .andExpect(status().isOk());
+
         upload(submissionId, "audio", new MockMultipartFile(
                 "file", "voice.m4a", "audio/mp4",
-                new byte[] {(byte) 0xff, (byte) 0xd8, (byte) 0xff, 0x00}))
+                selectedPhoto))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("录音格式不支持或文件内容损坏"));
+                .andExpect(jsonPath("$.message")
+                        .value("所选文件是图片，不是录音；录音为选填，可删除后继续提交"));
 
         upload(submissionId, "audio", new MockMultipartFile(
                 "file", "voice.m4a", "audio/mp4", realVideoMp4()))
@@ -2793,6 +2952,11 @@ class TemporaryCheckinApiIntegrationTests {
         upload(submissionId, "audio", new MockMultipartFile(
                 "file", "voice.m4a", "audio/mp4", new byte[0]))
                 .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete", submissionId)
+                        .header("X-Submission-Key", SUBMISSION_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUBMITTED"));
     }
 
     @Test
@@ -2828,11 +2992,11 @@ class TemporaryCheckinApiIntegrationTests {
                 .matches(objectPrefix + "photos/storefront/[0-9a-f]{64}\\.jpg");
         assertThat(storedMedia.get(1).originalName()).isEqualTo("customer.png");
         assertThat(storedMedia.get(1).objectKey())
-                .matches(objectPrefix + "screenshots/wechat/[0-9a-f]{64}\\.png");
+                .matches(objectPrefix + "screenshots/wechat/[0-9a-f]{64}-[0-9a-f-]{36}\\.png");
         assertThat(storedMedia.get(2).originalName()).isEqualTo("visit.wav");
         assertThat(storedMedia.get(2).objectKey())
                 .matches(objectPrefix + "recordings/visit/segments/" + submissionId
-                        + "/[0-9a-f]{64}\\.wav");
+                        + "/[0-9a-f]{64}-[0-9a-f-]{36}\\.wav");
         verify(fileStorage, never()).delete(any(String.class), any(String.class));
 
         mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete", submissionId)

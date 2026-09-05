@@ -1787,6 +1787,7 @@ input[readonly] {
 
 .audio-preview__actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
 }
@@ -1797,8 +1798,13 @@ input[readonly] {
     color: var(--danger);
 }
 
-.audio-segment-status.is-uploaded {
+.audio-segment-status.is-uploaded,
+.audio-segment-status.is-skipped {
     color: var(--success);
+}
+
+.audio-skip-button {
+    color: var(--brand);
 }
 
 .fallback-picker {
@@ -1851,6 +1857,17 @@ input[readonly] {
 .recording-status-note {
     margin: 8px 0 0;
     color: var(--muted);
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.audio-selection-note {
+    margin: 8px 0 0;
+    padding: 9px 11px;
+    border: 1px solid #e6b65b;
+    border-radius: 10px;
+    background: #fff7e8;
+    color: #7a4a00;
     font-size: 12px;
     line-height: 1.55;
 }
@@ -2000,7 +2017,8 @@ input[readonly] {
     color: var(--muted);
 }
 
-.success-panel .success-location-note {
+.success-panel .success-location-note,
+.success-panel .success-media-note {
     margin: 18px 0 0;
     padding: 12px 14px;
     border: 1px solid #e6b65b;
