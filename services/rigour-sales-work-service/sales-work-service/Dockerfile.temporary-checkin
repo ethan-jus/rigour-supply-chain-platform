@@ -5,7 +5,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 10001 rigour \
-    && useradd --uid 10001 --gid rigour --no-create-home --shell /usr/sbin/nologin rigour
+    && useradd --uid 10001 --gid rigour --create-home --shell /usr/sbin/nologin rigour
 
 WORKDIR /app
 
