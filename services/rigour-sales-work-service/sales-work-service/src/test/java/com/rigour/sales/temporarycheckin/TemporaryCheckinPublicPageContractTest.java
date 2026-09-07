@@ -43,22 +43,21 @@ class TemporaryCheckinPublicPageContractTest {
     void keepsCameraAndAlbumSeparateAndOnlyPreviewsHeaderVerifiedSmallImages() throws IOException {
         String html = resource("static/sales-checkin/index.html");
         assertThat(element(html, "storefront-photo")).contains("type=\"file\"", "accept=\"image/*\"", "capture=\"environment\"");
-        assertThat(element(html, "photo-album-input")).contains("type=\"file\"", "accept=\"image/*\"").doesNotContain("capture=");
-        assertThat(html).contains("id=\"quick-photo-button\"", "id=\"photo-preview-card\"")
+        assertThat(element(html, "photo-album-input")).contains("type=\"file\"", "accept=\"image/*\"", "multiple").doesNotContain("capture=");
+        assertThat(html).contains("id=\"photo-camera-button\"", "id=\"photo-grid\"", "data-photo-remove", "至少 1 张，最多 9 张")
                 .doesNotContain("id=\"photo-preview\"", "id=\"wechat-preview\"");
         String script = resource("static/sales-checkin/app.js");
         int previewStart = script.indexOf("function renderImagePreview(");
-        int safePreviewStart = script.indexOf("async function prepareSafePhotoPreview(", previewStart);
-        String preview = script.substring(previewStart, safePreviewStart);
+        String preview = script.substring(previewStart, script.indexOf("function imageHeaderDimensions(",previewStart));
         assertThat(preview).doesNotContain("URL.createObjectURL", ".src =", "createImageBitmap", "readAsDataURL");
-        String safePreview = script.substring(safePreviewStart, script.indexOf("function imageHeaderDimensions(", safePreviewStart));
-        assertThat(safePreview).contains("readFilePrefix(file, 256 * 1024)", "imageHeaderDimensions(prefix)",
-                "!dimensions || state.files.photo !== file || dimensions.width * dimensions.height > 4 * 1024 * 1024) return")
-                .doesNotContain("createImageBitmap", "readAsDataURL");
+        String safePreview = resource("static/sales-checkin/photos.js");
+        assertThat(safePreview).contains("readPrefix(file, 256 * 1024)","dimensions(bytes)",
+                "dimensions.width * dimensions.height > MAX_PREVIEW_PIXELS", "bitmap.close()", "revokeObjectURL")
+                .doesNotContain("readAsDataURL");
         assertThat(safePreview.indexOf("dimensions.width * dimensions.height >"))
-                .isLessThan(safePreview.indexOf("URL.createObjectURL(file)"));
+                .isLessThan(safePreview.indexOf("env.createImageBitmap(file"));
         String dimensions = script.substring(script.indexOf("function imageHeaderDimensions("),
-                script.indexOf("function handleAudioFileSelection", safePreviewStart));
+                script.indexOf("function handleAudioFileSelection", previewStart));
         assertThat(dimensions).contains("if (type === 0x6163544c) return null;",
                 "if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;");
     }
@@ -71,22 +70,22 @@ class TemporaryCheckinPublicPageContractTest {
                 assertThat(html).contains("data-flow-step-panel=\"" + flow + "\" data-step-value=\"" + step + "\"");
             }
         }
-        assertThat(element(html, "visit-location-continue")).contains("type=\"button\"").doesNotContain("hidden", "disabled");
-        assertThat(html.indexOf("id=\"nearby-stores-panel\"")).isLessThan(html.indexOf("id=\"visit-location-button\""));
+        assertThat(element(html, "visit-location-button")).contains("type=\"button\"").doesNotContain("disabled");
+        assertThat(element(html, "create-store-link")).contains("type=\"button\"").doesNotContain("disabled");
+        assertThat(element(html, "visit-city")).doesNotContain("disabled");
         assertThat(element(html, "submit-visit-button")).contains("type=\"submit\"");
     }
 
     @Test
-    void browserRecordingHasAnUncollapsedWorkspaceAndStillRequiresConsent() throws IOException {
+    void browserRecordingHasAnUncollapsedWorkspaceAndExplicitUserStart() throws IOException {
         String html = resource("static/sales-checkin/index.html");
         assertThat(html).containsOnlyOnce("id=\"visit-recording-workspace\"")
-                .contains("id=\"recording-consent\"", "id=\"visit-recording-step-2-slot\"", "id=\"visit-recording-step-3-slot\"");
+                .contains("id=\"visit-recording-step-2-slot\"", "id=\"visit-recording-step-3-slot\"");
         assertThat(element(html, "visit-recording-workspace")).startsWith("<section ")
                 .contains("aria-labelledby=\"recording-workspace-title\"");
         assertThat(element(html, "record-audio-button")).startsWith("<button ").contains("type=\"button\"");
         assertThat(html).contains("现场录音", "直接在浏览器录制", "上传已有录音");
         assertThat(element(html, "audio-file")).contains("type=\"file\"", "multiple").doesNotContain("accept=", "required");
-        assertThat(element(html, "recording-consent")).contains("type=\"checkbox\"");
         assertThat(html).doesNotContain("autoplay", "最长 20 分钟");
     }
 
@@ -109,10 +108,10 @@ class TemporaryCheckinPublicPageContractTest {
     }
 
     @Test
-    void keepsIdentityAndPrivacyControlsAlongsideRecovery() throws IOException {
+    void keepsIdentityAndRecoveryWithoutForcedPrivacyAcceptance() throws IOException {
         String html = resource("static/sales-checkin/index.html");
         assertThat(element(html, "identity-code")).contains("type=\"password\"", "autocomplete=\"current-password\"", "required");
-        assertThat(element(html, "privacy-accepted")).contains("type=\"checkbox\"", "required");
+        assertThat(html).doesNotContain("id=\"privacy-accepted\"", "id=\"recording-consent\"");
         assertThat(html).contains("id=\"identity-switch\"", "id=\"my-records-button\"", "id=\"success-location-note\"");
     }
 

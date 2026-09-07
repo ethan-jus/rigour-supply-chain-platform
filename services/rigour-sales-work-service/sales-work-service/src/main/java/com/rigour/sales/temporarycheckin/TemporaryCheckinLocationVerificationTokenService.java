@@ -18,7 +18,7 @@ import tools.jackson.databind.ObjectMapper;
 
 /**
  * 为一次已完成逆地理编码的现场定位签发短期凭证。后续搜索、建店和打卡复用该凭证，
- * 不再重复调用高德，同时防止客户端伪造城市核验结果。
+ * 不再重复调用高德。业务归属城市不参与位置真实性绑定；租户、本人、坐标和采集事实仍全部校验。
  */
 @Component
 @ConditionalOnProperty(prefix = "rigour.sales.temporary-checkin", name = "enabled", havingValue = "true")
@@ -86,7 +86,6 @@ class TemporaryCheckinLocationVerificationTokenService {
         Instant now = clock.instant();
         boolean bindingMatches = tenantId.equals(payload.tenantId())
                 && salespersonId.equals(payload.salespersonId())
-                && city.equals(payload.city())
                 && sameNumber(longitude, payload.longitude())
                 && sameNumber(latitude, payload.latitude())
                 && sameNumber(accuracyMeters, payload.accuracyMeters())

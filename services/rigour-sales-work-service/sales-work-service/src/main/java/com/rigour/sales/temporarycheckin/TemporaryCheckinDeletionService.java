@@ -119,6 +119,7 @@ final class TemporaryCheckinDeletionService {
     private void deleteCandidate(DeletionCandidateRow candidate) {
         LinkedHashSet<String> objectKeys = new LinkedHashSet<>(candidate.projectedObjectKeys());
         objectKeys.addAll(activeAudioObjectKeys(candidate.audioSegmentsJson()));
+        objectKeys.addAll(repository.photoObjectKeys(tenantId,candidate.id()));
         objectKeys.addAll(repository.derivedObjectKeys(tenantId, candidate.id()));
         for (String objectKey : objectKeys) {
             requireOwnedObjectKey(candidate.id(), objectKey);
@@ -157,7 +158,8 @@ final class TemporaryCheckinDeletionService {
         String relative = objectKey.substring(root.length());
         if (!(relative.startsWith("photos/storefront/")
                 || relative.startsWith("screenshots/wechat/")
-                || relative.startsWith("recordings/visit/"))) {
+                || relative.startsWith("recordings/visit/")
+                || relative.startsWith("derived/"))) {
             throw new IllegalStateException("unexpected temporary check-in object directory");
         }
     }

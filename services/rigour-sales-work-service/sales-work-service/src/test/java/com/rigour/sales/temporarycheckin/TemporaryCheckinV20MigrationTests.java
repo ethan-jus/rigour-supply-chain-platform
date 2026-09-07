@@ -266,7 +266,7 @@ class TemporaryCheckinV20MigrationTests {
                 .hasMessageContaining("Check constraint");
     }
 
-    private static void seedV19Catalog(JdbcTemplate jdbc) {
+    static void seedV19Catalog(JdbcTemplate jdbc) {
         jdbc.update("""
                 INSERT INTO temp_sales_checkin_salesperson
                     (id, tenant_id, name, city, position, employment_status, status,
@@ -300,7 +300,7 @@ class TemporaryCheckinV20MigrationTests {
                 Timestamp.from(NOW), Timestamp.from(NOW));
     }
 
-    private static void insertLegacySubmission(JdbcTemplate jdbc) {
+    static void insertLegacySubmission(JdbcTemplate jdbc) {
         jdbc.update("""
                 INSERT INTO temp_sales_checkin_submission
                     (id, tenant_id, client_submission_id, submission_key_hash, status, city,

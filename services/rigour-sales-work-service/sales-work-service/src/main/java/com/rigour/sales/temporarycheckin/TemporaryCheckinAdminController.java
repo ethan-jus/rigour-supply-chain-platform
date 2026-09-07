@@ -144,6 +144,22 @@ public class TemporaryCheckinAdminController {
         return TemporaryCheckinMediaResponses.respond(content, rangeHeader, download);
     }
 
+    @GetMapping("/api/v1/submissions/{id}/media/photos/{photoId}")
+    public ResponseEntity<?> photo(HttpServletRequest request,@PathVariable("id") UUID id,
+            @PathVariable("photoId") UUID photoId,
+            @RequestParam(name="thumbnail",defaultValue="false") boolean thumbnail,
+            @RequestParam(name="download",defaultValue="false") boolean download,
+            @org.springframework.web.bind.annotation.RequestHeader(name=HttpHeaders.RANGE,required=false) String range) {
+        return TemporaryCheckinMediaResponses.respond(service.openAdminPhoto(accessPolicy.requireScope(request),
+                id,photoId,thumbnail&&!download),range,download);
+    }
+
+    @DeleteMapping("/api/v1/submissions/{id}/media/photos/{photoId}")
+    public DeleteMediaView deletePhoto(HttpServletRequest request,@PathVariable("id") UUID id,
+            @PathVariable("photoId") UUID photoId,@RequestBody(required=false) DeleteMediaRequest body) {
+        return service.deleteAdminPhoto(accessPolicy.requireScope(request),id,photoId,body==null?null:body.reason());
+    }
+
     @DeleteMapping("/api/v1/submissions/{id}/media/{kind}")
     public DeleteMediaView deleteMedia(
             HttpServletRequest servletRequest,

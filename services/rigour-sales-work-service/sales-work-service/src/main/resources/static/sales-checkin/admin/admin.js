@@ -658,31 +658,47 @@
     function renderRowPhoto(root, item) {
         root.replaceChildren();
         const id = submissionId(item);
-        if (!item.storefrontPhotoAvailable || !isUuid(id)) {
+        const actualPhotos = Array.isArray(item.photos) ? item.photos.filter(photo => isUuid(photo.photoId)) : [];
+        if (!isUuid(id) || (!actualPhotos.length && !item.storefrontPhotoAvailable)) {
             root.textContent = item.storefrontPhotoDeletedAt ? "照片已删除" : "暂无照片";
             return;
         }
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "row-thumbnail-button";
-        button.setAttribute("aria-label", `放大${cleanText(item.storeName) || "门店"}现场照片`);
-        const image = document.createElement("img");
-        image.src = mediaUrl(id, "storefront-photo", { thumbnail: true });
-        image.alt = "现场照片缩略图";
-        image.width = 72;
-        image.height = 72;
-        image.loading = "lazy";
-        image.decoding = "async";
-        bindThumbnailFallback(image, () => {
-            image.hidden = true;
-            const notice = document.createElement("span");
-            notice.textContent = "预览不可用\n点击看原图";
-            button.replaceChildren(notice);
+        const photos = actualPhotos.length ? actualPhotos : [{photoId: null}];
+        const grid = document.createElement("div");
+        grid.className = "row-photo-gallery";
+        grid.setAttribute("role", "group");
+        grid.setAttribute("aria-label", `现场照片，共 ${photos.length} 张`);
+        photos.forEach((photo, index) => {
+            const kind = photo.photoId ? `photos/${photo.photoId}` : "storefront-photo";
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "row-thumbnail-button";
+            button.setAttribute("aria-label", `查看${cleanText(item.storeName) || "门店"}第 ${index + 1} 张现场照片`);
+            const image = document.createElement("img");
+            image.src = mediaUrl(id, kind, { thumbnail: true });
+            image.alt = `第 ${index + 1} 张现场照片缩略图`;
+            image.width = 72;
+            image.height = 72;
+            image.loading = "lazy";
+            image.decoding = "async";
+            bindThumbnailFallback(image, () => {
+                image.hidden = true;
+                const notice = document.createElement("span");
+                notice.textContent = "预览不可用\n点击看原图";
+                button.replaceChildren(notice);
+            });
+            button.appendChild(image);
+            button.addEventListener("click", () => openImagePreview(mediaUrl(id, kind),
+                mediaUrl(id, kind, { download: true }), `现场照片 ${index + 1}`, button, { id, kind }));
+            grid.appendChild(button);
         });
-        button.appendChild(image);
-        button.addEventListener("click", () => openImagePreview(mediaUrl(id, "storefront-photo"),
-            mediaUrl(id, "storefront-photo", { download: true }), "现场照片", button, { id, kind: "storefront-photo" }));
-        root.appendChild(button);
+        root.appendChild(grid);
+        if (photos.length > 1) {
+            const count = document.createElement("span");
+            count.className = "row-photo-count";
+            count.textContent = `${photos.length} 张照片 · 可横向浏览`;
+            root.appendChild(count);
+        }
     }
 
     function bindThumbnailFallback(image, onUnavailable) {
@@ -1436,7 +1452,10 @@
         root.replaceChildren();
         const id = cleanText(item.id || item.submissionId);
         if (!isUuid(id)) return renderEmptyMedia(root);
-        if (item.storefrontPhotoAvailable === true) {
+        if (Array.isArray(item.photos) && item.photos.some(photo => isUuid(photo.photoId))) {
+            item.photos.filter(photo => isUuid(photo.photoId)).forEach((photo, index) =>
+                root.appendChild(createImageMedia(id, `photos/${photo.photoId}`, `门店打卡照 ${index + 1}`)));
+        } else if (item.storefrontPhotoAvailable === true) {
             root.appendChild(createImageMedia(id, "storefront-photo", "门店打卡照"));
         } else if (item.storefrontPhotoDeletedAt) {
             root.appendChild(createDeletedMediaCard("storefront-photo", "门店打卡照", item.storefrontPhotoDeletedAt));
@@ -1723,7 +1742,7 @@
         const actions = document.createElement("div");
         actions.className = "media-actions";
         actions.appendChild(createDownloadLink(downloadUrl, `下载${label}`));
-        if (state.scope.allCities) {
+        if (state.scope.allCities && !kind.startsWith("photos/")) {
             const remove = document.createElement("button");
             remove.className = "media-delete";
             remove.type = "button";
@@ -1899,8 +1918,9 @@
     function mediaUrl(id, kind, options = {}) {
         const segmentPath = kind === "audio" && options.segmentId
             ? `/${encodeURIComponent(options.segmentId)}` : "";
-        const base = `${MEDIA_PATH}/${encodeURIComponent(id)}/media/${kind}${segmentPath}`;
-        if (options.thumbnail) return `${base}/thumbnail`;
+        const mediaRoot = kind.startsWith("photos/") ? `${API_BASE}/submissions` : MEDIA_PATH;
+        const base = `${mediaRoot}/${encodeURIComponent(id)}/media/${kind}${segmentPath}`;
+        if (options.thumbnail) return kind.startsWith("photos/") ? `${base}?thumbnail=true` : `${base}/thumbnail`;
         return options.download ? `${base}?download=true` : base;
     }
 

@@ -158,6 +158,7 @@ async function runCase(browser, width) {
     try {
         const initial = await page.goto(origin + "/sales-checkin/", {waitUntil: "networkidle"});
         check("fixture marker", initial.headers()["x-preview-fixture"] === "local-example-only");
+        await page.locator("#store-search").fill("示例");
         await page.locator("#store-search-results button").first().waitFor({state: "visible"});
         result.capabilities = await page.evaluate(() => ({maxTouchPoints: navigator.maxTouchPoints,
             touchStartAvailable: "ontouchstart" in window, coarsePointer: matchMedia("(pointer: coarse)").matches}));
@@ -168,8 +169,8 @@ async function runCase(browser, width) {
         const selectedStore = await page.locator("#selected-store-name").textContent();
         check("store tap selects a real row", selectedStore.includes("示例"), selectedStore);
         if (width === 320) {
-            await page.locator("#visit-location-continue").tap();
-            result.locationScenario = "user-reported inaccurate location: actual visible button";
+            result.locationScenario = "geolocation permission unavailable; selected store still advances";
+            check("missing GPS does not disable the selected store", await page.locator("#visit-step-1-next").isEnabled());
         } else result.locationScenario = "browser emulated geolocation, not real GPS";
         await page.locator("#visit-step-1-next").tap();
         await page.locator("#customer-name").waitFor({state: "visible"});
@@ -181,7 +182,7 @@ async function runCase(browser, width) {
         check("first tap after text input enters photo step", true);
         await page.locator("#storefront-photo").waitFor({state: "attached"});
         await page.locator("#photo-album-input").setInputFiles(photoPath);
-        await page.locator("#photo-preview-card").waitFor({state: "visible"});
+        await page.locator("[data-photo-item]").first().waitFor({state: "visible"});
         const readLocalEvidence = async () => page.evaluate(async text => {
             const request = indexedDB.open("rigour.sales-checkin.v2", 1);
             const db = await new Promise((resolve, reject) => {request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);});
@@ -190,7 +191,7 @@ async function runCase(browser, width) {
                 const read = name => new Promise((resolve, reject) => {const request = tx.objectStore(name).getAll(); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);});
                 const [drafts, media] = await Promise.all([read("drafts"), read("media")]);
                 const record = drafts.find(row => row.snapshot.visit.visitResult === text);
-                const photo = media.find(row => row.draft === record?.key && row.mediaId === "photo");
+                const photo = media.find(row => row.draft === record?.key && row.mediaId.startsWith("photo:"));
                 try {return {form: Boolean(record), photo: Boolean(photo), photoBytes: photo ? (await photo.file.arrayBuffer()).byteLength : 0};}
                 catch (error) {return {form: Boolean(record), photo: Boolean(photo), photoBytes: 0, photoReadError: String(error)};}
             } finally {db.close();}
@@ -210,18 +211,18 @@ async function runCase(browser, width) {
         check("reload restores customer", await page.locator("#customer-name").inputValue() === `WebKit ${width} 示例店长`);
         check("reload restores selected store", await page.locator("#selected-store-name").textContent() === selectedStore);
         result.localAfterReload = await readLocalEvidence().catch(error => ({error: error.message}));
-        if (await page.locator("#photo-preview-card").isVisible()) {
-            check("reload restores actual photo preview state", (await page.locator("#photo-file-name").textContent()).includes("demo-storefront.jpg"));
+        if (result.localAfterReload.photoBytes && await page.locator("[data-photo-item]").first().isVisible()) {
+            check("reload restores actual photo preview state", (await page.locator("[data-photo-name]").first().textContent()).includes("demo-storefront.jpg"));
         } else {
             if (!storageLimitation) throw new Error("Photo not restored despite native storage probe passing");
             if (!result.blockedChecks.length) result.blockedChecks.push("Photo reload restoration blocked by native WebKit Blob/File storage limitation");
             // A visible, actual file-input action restores the user's retained original for the separate current-page upload check.
             await page.locator("#photo-album-input").setInputFiles(photoPath);
-            await page.locator("#photo-preview-card").waitFor({state: "visible"});
+            await page.locator("[data-photo-item]").first().waitFor({state: "visible"});
             result.reselectedRetainedOriginalAfterReload = true;
         }
         await shot("03-restored");
-        await page.locator("#privacy-accepted").check();
+        check("obsolete consent checkbox is absent", await page.locator("#privacy-accepted, #recording-consent").count() === 0);
         await page.locator("#submit-visit-button").tap();
         await page.locator("#success-panel").waitFor({state: "visible", timeout: 30000});
         await Promise.all(pendingResponses);
@@ -240,7 +241,7 @@ async function runCase(browser, width) {
         check("own exact submitted record detail", true);
         await page.locator(".history-detail-photo img").waitFor({state: "visible"});
         await page.waitForFunction(() => [...document.querySelectorAll(".history-detail-photo img")].some(image => image.complete && image.naturalWidth > 0));
-        check("same-origin owner-media route loads photo thumbnail", await page.locator(".history-detail-photo img").first().getAttribute("src").then(src => src.includes(`/submissions/${complete.body.id}/mine/media/storefront-photo`)));
+        check("same-origin owner-media route loads photo thumbnail", await page.locator(".history-detail-photo img").first().getAttribute("src").then(src => src.includes(`/submissions/${complete.body.id}/mine/media/photo-`)));
         await shot("06-detail");
         await page.locator(".history-detail-photo").first().tap();
         await page.locator("#history-photo-dialog").waitFor({state: "visible"});

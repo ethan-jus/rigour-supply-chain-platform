@@ -28,6 +28,7 @@ public class AmapTemporaryCheckinReverseGeocoder implements TemporaryCheckinReve
     private final AmapProperties properties;
     private final ObjectMapper objectMapper;
     private final Wgs84Gcj02Converter coordinateConverter;
+    private final java.util.concurrent.ConcurrentHashMap<String,CachedGeocode> cache = new java.util.concurrent.ConcurrentHashMap<>();
 
     @Autowired
     public AmapTemporaryCheckinReverseGeocoder(
@@ -68,6 +69,24 @@ public class AmapTemporaryCheckinReverseGeocoder implements TemporaryCheckinReve
         if (!StringUtils.hasText(properties.getWebKey())) {
             return GeocodeResult.keyMissing();
         }
+        String key=longitude.stripTrailingZeros().toPlainString()+","+latitude.stripTrailingZeros().toPlainString();
+        CachedGeocode cached=cache.compute(key,(ignored, previous) -> {
+            long now=System.nanoTime();
+            if(previous!=null && now-previous.expiresAtNanos()<0) return previous;
+            GeocodeResult result=resolveUncached(longitude,latitude);
+            long ttl="RESOLVED".equals(result.status())?300_000_000_000L:15_000_000_000L;
+            return new CachedGeocode(result,System.nanoTime()+ttl);
+        });
+        if(cache.size()>256) cache.entrySet().stream().filter(entry -> !entry.getKey().equals(key))
+                .min(java.util.Comparator.comparingLong(entry -> entry.getValue().expiresAtNanos()))
+                .ifPresent(entry -> cache.remove(entry.getKey(),entry.getValue()));
+        return cached.result();
+    }
+
+    /** 同坐标并发请求合并，缓存仅保留有限个真实坐标地址，不套用其他门店地址。 */
+    private record CachedGeocode(GeocodeResult result,long expiresAtNanos) { }
+
+    private GeocodeResult resolveUncached(BigDecimal longitude, BigDecimal latitude) {
         long startedAt = System.nanoTime();
         try {
             Wgs84Gcj02Converter.Coordinates amap = coordinateConverter.convert(longitude, latitude);

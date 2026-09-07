@@ -107,6 +107,11 @@ public class TemporaryCheckinDeletionRepository {
                 (rs,n)->rs.getString(1),bin(tenantId),bin(id));
     }
 
+    List<String> photoObjectKeys(UUID tenantId,UUID id) {
+        return jdbc.query("SELECT object_key FROM temp_sales_checkin_photo WHERE tenant_id=? AND submission_id=? AND deleted_at IS NULL",
+                (rs,n)->rs.getString(1),bin(tenantId),bin(id));
+    }
+
     int hardDelete(UUID tenantId, UUID id) {
         return jdbc.update("""
                 DELETE FROM temp_sales_checkin_submission

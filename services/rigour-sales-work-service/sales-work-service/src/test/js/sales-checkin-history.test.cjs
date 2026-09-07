@@ -215,11 +215,11 @@ test('a confirmed missing receipt allows resuming the existing local request ide
 test('supplement entry requires server device permission, deadline and original local key', async () => {
     const h = harness({records: [local({status: 'SUBMITTED', serverId: 'record1', submissionKey: ''})]});
     await h.controller.open(); await h.controller.showDetail('record1');
-    assert.doesNotMatch(h.text('history-detail-content'), /补充录音或截图/); assert.match(h.text('history-detail-content'), /仅供查看/);
+    assert.doesNotMatch(h.text('history-detail-content'), /补充照片、录音或截图/); assert.match(h.text('history-detail-content'), /仅供查看/);
     h.setRecords([local({status: 'SUBMITTED', serverId: 'record1'})]); await h.controller.refresh();
-    assert.match(h.text('history-detail-content'), /补充录音或截图/);
+    assert.match(h.text('history-detail-content'), /补充照片、录音或截图/);
     h.setRequest(async (url) => url.includes('/mine?') ? page([receipt()]) : detail('record1', {canSupplement: false}));
-    h.click('.primary-button', '补充录音或截图', 'history-detail-content'); await tick();
+    h.click('.primary-button', '补充照片、录音或截图', 'history-detail-content'); await tick();
     assert.equal(h.supplements.length, 0); assert.match(h.text('history-detail-content'), /已不满足补传条件/);
 });
 
@@ -228,7 +228,7 @@ test('an uncertain supplement reconciles server detail and does not claim succes
     const h = harness({records: [local({status: 'SUBMITTED', serverId: 'record1'})], onSupplement: async () => { throw new Error('network result unknown'); },
         request: async (url) => { if (url.includes('/mine?')) return page([receipt()]); detailCalls += 1; return detail(); }});
     await h.controller.open(); await h.controller.showDetail('record1');
-    h.click('.primary-button', '补充录音或截图', 'history-detail-content'); await tick();
+    h.click('.primary-button', '补充照片、录音或截图', 'history-detail-content'); await tick();
     assert.ok(detailCalls >= 3); assert.match(h.text('history-detail-content'), /结果暂未确认/);
     assert.doesNotMatch(h.text('history-detail-content'), /补传成功/);
 });

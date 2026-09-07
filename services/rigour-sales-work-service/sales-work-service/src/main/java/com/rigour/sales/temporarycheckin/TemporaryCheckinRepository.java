@@ -90,11 +90,14 @@ public class TemporaryCheckinRepository {
                        status, created_at, updated_at
                   FROM temp_sales_checkin_store
                  WHERE tenant_id=? AND (? IS NULL OR city=?) AND status='ACTIVE'
-                   AND (name LIKE ? ESCAPE '=' OR contact_name LIKE ? ESCAPE '=')
+                   AND (name LIKE ? ESCAPE '=' OR contact_name LIKE ? ESCAPE '='
+                        OR source_poi_address LIKE ? ESCAPE '=' OR location_address LIKE ? ESCAPE '='
+                        OR location_formatted_address LIKE ? ESCAPE '=' OR location_note LIKE ? ESCAPE '=')
                  ORDER BY updated_at DESC, name, id
                  LIMIT ?
                 """, (rs, row) -> store(rs), bin(tenantId), city, city,
-                "%" + escapedQuery + "%", "%" + escapedQuery + "%", limit);
+                "%" + escapedQuery + "%", "%" + escapedQuery + "%", "%" + escapedQuery + "%",
+                "%" + escapedQuery + "%", "%" + escapedQuery + "%", "%" + escapedQuery + "%", limit);
     }
 
     public List<StoreRow> findActiveStores(UUID tenantId) {
@@ -323,6 +326,11 @@ public class TemporaryCheckinRepository {
     }
 
     public void insertSubmission(SubmissionWrite row) {
+        insertSubmission(row, true);
+    }
+
+    /** 新公开请求按实际布尔值持久化；旧内部导入调用继续保留其既有明确同意记录。 */
+    public void insertSubmission(SubmissionWrite row, boolean privacyAccepted) {
         GeocodeWrite geocode = row.geocode();
         IdentityRiskWrite identity = row.identityRisk() == null
                 ? IdentityRiskWrite.legacy(row.now()) : row.identityRisk();
@@ -342,7 +350,7 @@ public class TemporaryCheckinRepository {
                      user_agent_hash, user_agent_summary, risk_level, risk_flags_json, risk_evaluated_at,
                      created_at, updated_at)
                 VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?)
                 """, bin(row.id()), bin(row.tenantId()), bin(row.clientSubmissionId()), row.keyHash(), row.city(),
                 bin(row.salespersonId()), row.salespersonName(), bin(row.storeId()), row.storeName(),
@@ -352,7 +360,7 @@ public class TemporaryCheckinRepository {
                 geocode.address(), geocode.formattedAddress(), geocode.adcode(), geocode.province(),
                 geocode.city(), geocode.district(), geocode.township(), geocode.amapLongitude(),
                 geocode.amapLatitude(), geocode.status(), geocode.errorCode(), timestamp(geocode.geocodedAt()),
-                row.privacyNoticeVersion(), identity.identityMethod(), timestamp(identity.identityVerifiedAt()),
+                privacyAccepted, row.privacyNoticeVersion(), identity.identityMethod(), timestamp(identity.identityVerifiedAt()),
                 identity.credentialVersion(), identity.deviceTokenHash(), identity.ipHash(),
                 identity.ipNetworkHash(), identity.ipMasked(), identity.userAgentHash(),
                 identity.userAgentSummary(), identity.riskLevel(), identity.riskFlagsJson(),
@@ -370,6 +378,105 @@ public class TemporaryCheckinRepository {
                 + "WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE'";
         return jdbc.update(sql, media.objectKey(), media.contentType(), media.sizeBytes(), media.sha256(),
                 media.originalFilename(), timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    /** 调用方先锁提交行；照片行和旧单图投影始终在同一事务中更新。 */
+    public List<PhotoRow> photos(UUID tenant, UUID submission) {
+        List<PhotoRow> rows=jdbc.query("""
+                SELECT * FROM temp_sales_checkin_photo WHERE tenant_id=? AND submission_id=?
+                ORDER BY (photo_id=submission_id) DESC, uploaded_at, photo_id
+                """, (rs,n) -> photo(rs), bin(tenant), bin(submission));
+        if(!rows.isEmpty()) return rows;
+        return jdbc.query(legacyPhotoSelect()+" AND s.tenant_id=? AND s.id=?",(rs,n)->photo(rs),bin(tenant),bin(submission));
+    }
+
+    public java.util.Map<UUID,List<PhotoRow>> photosBatch(UUID tenant, List<UUID> submissions) {
+        if (submissions.isEmpty()) return java.util.Map.of();
+        List<Object> args = new ArrayList<>(); args.add(bin(tenant));
+        submissions.forEach(id -> args.add(bin(id)));
+        List<PhotoRow> rows=new ArrayList<>(jdbc.query("SELECT p.* FROM temp_sales_checkin_photo p JOIN temp_sales_checkin_submission s "
+                + "ON s.tenant_id=p.tenant_id AND s.id=p.submission_id WHERE p.tenant_id=? "
+                + "AND s.deletion_state='NONE' AND p.deleted_at IS NULL AND p.submission_id IN ("
+                + String.join(",", java.util.Collections.nCopies(submissions.size(), "?"))
+                + ") ORDER BY (p.photo_id=p.submission_id) DESC, p.uploaded_at, p.photo_id",
+                (rs,n) -> photo(rs), args.toArray()));
+        rows.addAll(jdbc.query(legacyPhotoSelect()+" AND s.tenant_id=? AND s.deletion_state='NONE' "
+                +"AND s.storefront_photo_deleted_at IS NULL AND s.id IN ("
+                +String.join(",",java.util.Collections.nCopies(submissions.size(),"?"))+")",(rs,n)->photo(rs),args.toArray()));
+        return rows.stream().collect(java.util.stream.Collectors.groupingBy(PhotoRow::submissionId));
+    }
+
+    /** 兼容旧容器在迁移后写入的单图，不把缺失的来源或上传时间猜成拍摄事实。 */
+    private static String legacyPhotoSelect() {
+        return """
+                SELECT s.id AS submission_id,s.id AS photo_id,s.storefront_photo_object_key AS object_key,
+                    s.storefront_photo_content_type AS content_type,s.storefront_photo_size_bytes AS size_bytes,
+                    s.storefront_photo_sha256 AS sha256,s.storefront_photo_original_filename AS original_filename,
+                    NULL AS uploaded_at,NULL AS capture_source,s.storefront_photo_deleted_at AS deleted_at,
+                    s.storefront_photo_deleted_by AS deleted_by,s.storefront_photo_deletion_reason AS deletion_reason
+                FROM temp_sales_checkin_submission s WHERE s.storefront_photo_object_key IS NOT NULL
+                    AND NOT EXISTS (SELECT 1 FROM temp_sales_checkin_photo p WHERE p.tenant_id=s.tenant_id AND p.submission_id=s.id)
+                """;
+    }
+
+    private void materializeLegacyPhoto(UUID tenant,UUID submission) {
+        jdbc.update("""
+                INSERT INTO temp_sales_checkin_photo
+                (tenant_id,submission_id,photo_id,object_key,content_type,size_bytes,sha256,original_filename,
+                    deleted_at,deleted_by,deletion_reason)
+                SELECT tenant_id,id,id,storefront_photo_object_key,storefront_photo_content_type,
+                    storefront_photo_size_bytes,storefront_photo_sha256,storefront_photo_original_filename,
+                    storefront_photo_deleted_at,storefront_photo_deleted_by,storefront_photo_deletion_reason
+                FROM temp_sales_checkin_submission s WHERE tenant_id=? AND id=? AND storefront_photo_object_key IS NOT NULL
+                AND NOT EXISTS(SELECT 1 FROM temp_sales_checkin_photo p WHERE p.tenant_id=s.tenant_id AND p.submission_id=s.id)
+                """,bin(tenant),bin(submission));
+    }
+
+    public void savePhoto(UUID tenant, UUID submission, UUID photoId, MediaWrite media,
+            String captureSource, Instant uploadedAt) {
+        materializeLegacyPhoto(tenant,submission);
+        jdbc.update("""
+                INSERT INTO temp_sales_checkin_photo
+                (tenant_id,submission_id,photo_id,object_key,content_type,size_bytes,sha256,
+                 original_filename,uploaded_at,capture_source)
+                VALUES (?,?,?,?,?,?,?,?,?,?) AS incoming
+                ON DUPLICATE KEY UPDATE object_key=incoming.object_key,content_type=incoming.content_type,
+                    size_bytes=incoming.size_bytes,sha256=incoming.sha256,original_filename=incoming.original_filename,
+                    uploaded_at=incoming.uploaded_at,capture_source=incoming.capture_source,
+                    deleted_at=NULL,deleted_by=NULL,deletion_reason=NULL
+                """,bin(tenant),bin(submission),bin(photoId),media.objectKey(),media.contentType(),media.sizeBytes(),
+                media.sha256(),media.originalFilename(),timestamp(uploadedAt),captureSource);
+        syncPhotoProjection(tenant,submission,uploadedAt);
+    }
+
+    public void markPhotoDeleted(UUID tenant, UUID submission, UUID photoId, String actor, String reason, Instant now) {
+        materializeLegacyPhoto(tenant,submission);
+        jdbc.update("""
+                UPDATE temp_sales_checkin_photo SET deleted_at=?,deleted_by=?,deletion_reason=?
+                WHERE tenant_id=? AND submission_id=? AND photo_id=? AND deleted_at IS NULL
+                """,timestamp(now),actor,reason,bin(tenant),bin(submission),bin(photoId));
+        syncPhotoProjection(tenant,submission,now);
+    }
+
+    private void syncPhotoProjection(UUID tenant, UUID submission, Instant now) {
+        List<PhotoRow> rows=photos(tenant,submission);
+        PhotoRow first=rows.stream().filter(PhotoRow::available).findFirst().orElse(rows.isEmpty()?null:rows.getFirst());
+        if(first==null) return;
+        jdbc.update("""
+                UPDATE temp_sales_checkin_submission SET storefront_photo_object_key=?,storefront_photo_content_type=?,
+                    storefront_photo_size_bytes=?,storefront_photo_sha256=?,storefront_photo_original_filename=?,
+                    storefront_photo_deleted_at=?,storefront_photo_deleted_by=?,storefront_photo_deletion_reason=?,
+                    updated_at=GREATEST(?,TIMESTAMPADD(MICROSECOND,1,updated_at))
+                WHERE tenant_id=? AND id=? AND deletion_state='NONE'
+                """,first.objectKey(),first.contentType(),first.sizeBytes(),first.sha256(),first.originalFilename(),
+                timestamp(first.deletedAt()),first.deletedBy(),first.deletionReason(),timestamp(now),bin(tenant),bin(submission));
+    }
+
+    private static PhotoRow photo(ResultSet rs) throws SQLException {
+        return new PhotoRow(uuid(rs,"submission_id"),uuid(rs,"photo_id"),rs.getString("object_key"),
+                rs.getString("content_type"),rs.getLong("size_bytes"),rs.getString("sha256"),
+                rs.getString("original_filename"),instant(rs,"uploaded_at"),rs.getString("capture_source"),
+                instant(rs,"deleted_at"),rs.getString("deleted_by"),rs.getString("deletion_reason"));
     }
 
     public int updateMediaIfRevision(
@@ -666,7 +773,7 @@ public class TemporaryCheckinRepository {
         String cityClause = city == null ? "" : " AND city=?";
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId)));
         if (city != null) arguments.add(city);
-        return jdbc.query("""
+        MediaStorageStatsRow primary=jdbc.query("""
                 SELECT
                   COALESCE(SUM(
                     (storefront_photo_object_key IS NOT NULL AND storefront_photo_deleted_at IS NULL)
@@ -702,11 +809,21 @@ public class TemporaryCheckinRepository {
                     created_at, NULL
                   )) AS oldest_created_at
                 FROM temp_sales_checkin_submission
-                WHERE tenant_id=?
+                WHERE tenant_id=? AND deletion_state='NONE'
                 """ + cityClause, (rs, row) -> new MediaStorageStatsRow(
                         rs.getLong("active_files"), rs.getLong("total_bytes"), rs.getLong("image_bytes"),
                         rs.getLong("audio_bytes"), instant(rs, "oldest_created_at")), arguments.toArray())
                 .stream().findFirst().orElse(new MediaStorageStatsRow(0, 0, 0, 0, null));
+        long[] additional=jdbc.query("""
+                SELECT COUNT(*) AS files,COALESCE(SUM(p.size_bytes),0) AS bytes
+                FROM temp_sales_checkin_photo p JOIN temp_sales_checkin_submission s
+                    ON s.tenant_id=p.tenant_id AND s.id=p.submission_id
+                WHERE s.tenant_id=? AND s.deletion_state='NONE' AND p.deleted_at IS NULL
+                    AND p.object_key<>COALESCE(s.storefront_photo_object_key,'')
+                """+(city==null?"":" AND s.city=?"),(rs,n)->new long[]{rs.getLong("files"),rs.getLong("bytes")},
+                arguments.toArray()).getFirst();
+        return new MediaStorageStatsRow(primary.activeFiles()+additional[0],primary.totalBytes()+additional[1],
+                primary.imageBytes()+additional[1],primary.audioBytes(),primary.oldestCreatedAt());
     }
 
     public int markMediaDeleted(
@@ -1215,6 +1332,16 @@ public class TemporaryCheckinRepository {
     public record MediaReference(
             String objectKey, String contentType, Long sizeBytes, String sha256, String originalFilename,
             Instant deletedAt, String deletedBy, String deletionReason) { }
+
+    /** 独立照片事实，来源和上传时间在历史导入记录中可以未知。 */
+    public record PhotoRow(UUID submissionId, UUID photoId, String objectKey, String contentType,
+            long sizeBytes, String sha256, String originalFilename, Instant uploadedAt, String captureSource,
+            Instant deletedAt, String deletedBy, String deletionReason) {
+        public boolean available() { return objectKey != null && deletedAt == null; }
+        public MediaReference media() { return new MediaReference(objectKey,contentType,sizeBytes,sha256,
+                originalFilename,deletedAt,deletedBy,deletionReason); }
+        public String mediaId() { return "photo-" + photoId; }
+    }
 
     public record SubmissionRow(
             UUID id, UUID clientSubmissionId, String keyHash, String status, String city,

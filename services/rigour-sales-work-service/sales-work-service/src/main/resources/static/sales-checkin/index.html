@@ -7,7 +7,7 @@
     <meta name="description" content="销售拜访、现场证据与进度记录">
     <meta name="robots" content="noindex,nofollow,noarchive">
     <title>销售拜访打卡</title>
-    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260907-blue-workspace">
+    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260907-multi-photo">
 </head>
 <body data-screen="identity">
 <header class="hero">
@@ -130,9 +130,6 @@
                     <div class="recording-copy"><h2 id="recording-workspace-title">现场录音 <small>选填</small></h2><span id="recording-workspace-copy">直接在浏览器录制</span></div>
                     <button id="record-audio-button" class="record-button" type="button"><span id="record-button-label">开始录音</span></button>
                 </div>
-                <div id="recording-consent-panel" class="recording-consent-panel" hidden>
-                    <label class="recording-consent" for="recording-consent"><input id="recording-consent" type="checkbox"><span><strong>已告知现场人员并获得允许</strong><small>确认后，再点击开始录音。</small></span></label>
-                </div>
                 <div class="audio-recorder media-step">
                     <div class="recording-live-status"><span id="recording-stage-badge" class="recording-stage-badge" role="status" hidden></span><div id="recording-clock" class="recording-clock" aria-live="polite">00:00</div><span id="audio-uploaded-badge" class="mini-badge" hidden></span></div>
                     <div id="recording-meter" class="recording-meter" hidden></div>
@@ -155,6 +152,7 @@
                     <div class="recording-options"><div class="fallback-picker"><label id="audio-file-label" for="audio-file"><span class="app-icon icon-upload" aria-hidden="true"></span>上传已有录音</label><input id="audio-file" type="file" multiple></div><p id="recorder-help" class="field__help">支持常见手机录音格式。</p></div>
                     <p id="audio-selection-note" class="audio-selection-note" role="status" aria-live="polite" hidden></p>
                     <p id="recording-status-note" class="recording-status-note" role="status" aria-live="polite" hidden></p>
+                    <div id="recording-recovery-list" class="recording-recovery-list" aria-live="polite"></div>
                     <span class="field__error" data-error-for="audio-file"></span>
                 </div>
             </section>
@@ -163,43 +161,31 @@
                 <section class="form-card visit-main-card">
                     <div class="section-heading form-intro"><div><h2>选择拜访门店</h2><p class="flow-intro-copy">找到门店，开始本次拜访</p></div></div>
                     <label class="identity-field-hidden"><span>销售</span><select id="visit-salesperson" name="salespersonId" required disabled><option value="">请先选择城市</option></select><span class="field__error" data-error-for="visit-salesperson"></span></label>
+                    <div class="visit-city-row">
+                        <label for="visit-city">业务城市</label>
+                        <select id="visit-city" name="city" required><option value="">请选择城市</option></select>
+                        <span class="field__error" data-error-for="visit-city"></span>
+                    </div>
+                    <section class="location-card quick-location visit-location-card" aria-label="当前位置">
+                        <div class="visit-location-copy">
+                            <div class="visit-location-heading"><span class="app-icon icon-map-pin" aria-hidden="true"></span><strong>当前位置</strong><span id="visit-location-status" class="status-pill">正在定位</span></div>
+                            <p id="visit-location-address" class="visit-location-address" aria-live="polite">正在获取当前位置…</p>
+                        </div>
+                        <button id="visit-location-button" class="outline-button location-button" type="button"><span class="app-icon icon-refresh" aria-hidden="true"></span><span id="visit-location-button-label">重新定位</span></button>
+                    </section>
                     <section id="nearby-stores-panel" class="nearby-panel" aria-labelledby="nearby-stores-title" hidden>
                         <div class="field store-search-field">
-                            <div class="home-search-row">
-                                <div class="search-input-wrap"><label for="store-search" class="visually-hidden">搜索门店名称或地址</label><span class="app-icon icon-search" aria-hidden="true"></span><input id="store-search" type="search" inputmode="search" autocomplete="off" placeholder="搜索门店名称或地址" aria-describedby="store-search-help" aria-controls="store-search-results" disabled><button id="store-search-toggle" class="combobox-toggle" type="button" aria-label="搜索门店" disabled>搜索</button></div>
-                                <label class="home-city-field"><span class="visually-hidden">业务归属城市</span><select id="visit-city" name="city" required><option value="">城市</option></select><span class="field__error" data-error-for="visit-city"></span></label>
+                            <div class="store-search-controls">
+                                <div class="search-input-wrap"><label for="store-search" class="visually-hidden">搜索门店名称或地址</label><input id="store-search" type="search" inputmode="search" autocomplete="off" placeholder="输入门店名称或地址" aria-describedby="store-search-help" aria-controls="store-search-results" disabled></div>
+                                <button id="store-search-toggle" class="primary-button store-search-button" type="button" aria-label="搜索门店" disabled><span class="app-icon icon-search" aria-hidden="true"></span><span id="store-search-button-label">搜索</span></button>
                             </div>
-                <div class="location-card quick-location">
-                    <div class="location-compact-row">
-                        <div><span class="app-icon icon-map-pin" aria-hidden="true"></span><span id="visit-location-status" class="status-pill">正在获取</span><span class="location-inline-help">，仍可选店</span></div>
-                        <button id="visit-location-button" class="text-button location-button" type="button"><span id="visit-location-button-label">刷新</span></button>
-                    </div>
-                    <div class="location-support-row"><button id="visit-location-continue" class="text-button location-continue-button" type="button">位置不准确</button></div>
-                    <details class="location-evidence-disclosure"><summary>查看定位详情</summary>
-            <div id="visit-unverified-banner" class="location-unverified-banner" role="status"
-                 aria-live="polite" hidden>
-                <strong>位置待核对</strong>
-                <span>可以继续完成拜访。</span>
-            </div>
-
-                        <div id="visit-location-exception" class="location-exception-note" role="status" hidden><strong>位置待核对</strong><span>已保留定位情况，可以继续。</span></div>
-                        <div id="visit-location-detail" class="location-detail" hidden>
-                            <div class="location-address-row"><span>设备报告地址</span><strong id="visit-location-address">正在获取…</strong><button id="visit-location-retry" class="location-retry-button" type="button" hidden>重试地址解析</button></div>
-                            <div><span>精度</span><strong id="visit-location-accuracy"></strong></div>
-                            <div><span>采集时间</span><strong id="visit-location-time"></strong></div>
-                        </div>
-                        <label class="field field--compact"><span class="field__label">位置备注（选填）</span><input id="visit-location-note" type="text" maxlength="300" placeholder="如：商场二层"></label>
-                        <span class="field__error" data-error-for="visit-location"></span>
-                    </details>
-                </div>
-                            <div class="nearby-panel__heading"><div><strong id="nearby-stores-title">本市门店</strong><small id="nearby-stores-scope">已建档门店</small></div><span id="nearby-stores-summary" class="visually-hidden">正在查找…</span><button id="create-store-link" class="text-button create-store-action" type="button">新增门店</button></div>
+                            <div class="nearby-panel__heading"><div><strong id="nearby-stores-title">选择门店</strong><small id="nearby-stores-scope">已建档门店</small></div><span id="nearby-stores-summary" class="visually-hidden">正在查找…</span><button id="create-store-link" class="text-button create-store-action" type="button">新增门店</button></div>
                             <div id="nearby-stores-empty" class="empty-state"><strong>搜索本次拜访的门店</strong><span>找不到门店时，可以直接新增。</span></div>
                             <div id="store-search-results" class="search-results" role="region" aria-label="门店搜索结果" hidden></div>
                             <div id="selected-store-card" class="selected-card" hidden><div><span class="selected-card__eyebrow">本次拜访门店</span><strong id="selected-store-name"></strong><span id="selected-store-location"></span></div><button id="clear-store-button" class="text-button" type="button">重新选择</button></div>
                             <p id="store-search-help" class="field__help">输入门店名称，选择本次拜访门店</p><span class="field__error" data-error-for="selected-store"></span>
                         </div>
                     </section>
-                    <button id="quick-photo-button" class="quick-photo-button text-button" type="button"><span class="app-icon icon-camera" aria-hidden="true"></span>先拍门头照</button>
                 </section>
                 <div class="step-actions step-actions--single"><button id="visit-step-1-next" class="primary-button" type="button" disabled>开始拜访</button></div>
             </div>
@@ -260,52 +246,30 @@
                 <div><strong id="review-store-name">--</strong><span id="review-store-address">--</span></div>
 
             </div>
-            <section class="form-card evidence-card">
-                <div class="section-heading">
-                    <div>
-                        <p class="section-kicker">现场材料</p>
-                        <h2>现场照片</h2>
-                    </div>
-                    <span class="section-step-hint">必填 · 1 张</span>
+            <section class="form-card visit-photo-section" aria-labelledby="visit-photo-title">
+                <div class="visit-photo-heading"><h2 id="visit-photo-title">拜访照片 <span class="required-mark">*</span></h2><span id="photo-count" class="photo-count" aria-live="polite">0 / 9 张</span></div>
+                <p class="visit-photo-help">拍清门头，可补充店内或陈列照片。至少 1 张，最多 9 张。</p>
+                <input id="storefront-photo" type="file" accept="image/*" capture="environment" hidden>
+                <input id="photo-album-input" type="file" accept="image/*" multiple hidden>
+                <div id="photo-grid" class="visit-photo-grid" role="list" aria-label="本次拜访照片"></div>
+                <template id="photo-item-template">
+                    <article class="visit-photo-item" role="listitem" data-photo-item>
+                        <button class="visit-photo-open" type="button" data-photo-open aria-label="查看照片">
+                            <img class="visit-photo-thumbnail" data-photo-thumbnail alt="拜访现场照片" hidden>
+                            <span class="visit-photo-fallback"><span class="app-icon icon-photo" aria-hidden="true"></span><span data-photo-preview-note>原图已选择</span></span>
+                        </button>
+                        <span class="visit-photo-number" data-photo-number aria-hidden="true">1</span>
+                        <button class="visit-photo-remove" type="button" data-photo-remove aria-label="删除照片"><img src="/sales-checkin/icons/x.svg" alt="" aria-hidden="true" width="16" height="16"></button>
+                        <span class="visit-photo-state" data-photo-status role="status">待提交</span>
+                        <span class="visually-hidden" data-photo-name></span>
+                    </article>
+                </template>
+                <div class="visit-photo-actions">
+                    <button id="photo-camera-button" class="primary-button" type="button"><span class="app-icon icon-camera" aria-hidden="true"></span><span id="photo-camera-button-label">拍照添加</span></button>
+                    <button id="photo-album-button" class="secondary-button" type="button"><span class="app-icon icon-photo" aria-hidden="true"></span>从相册添加</button>
                 </div>
-
-                <div class="upload-grid evidence-grid">
-                    <div class="upload-item media-step media-step--required">
-                        <div class="upload-item__heading">
-                            <span class="media-step__index" aria-hidden="true">1</span>
-                            <div class="media-step__copy">
-                                <strong>门头照片 <span class="required-mark">*</span></strong>
-                                <span>拍清门头或拜访现场</span>
-                            </div>
-                            <span id="photo-uploaded-badge" class="mini-badge" hidden>草稿已上传</span>
-                            <button id="delete-uploaded-photo-button" class="text-button uploaded-media-delete" type="button" hidden>
-                                删除已上传照片
-                            </button>
-                        </div>
-                        <label class="file-picker" for="storefront-photo">
-                            <input id="storefront-photo" type="file" accept="image/*"
-                                   capture="environment">
-                            <span>
-                                <strong>打开相机拍照</strong>
-                                <small>支持常见照片格式，最大 10MB</small>
-                            </span>
-                        </label>
-
-                        <div id="photo-preview-card" class="file-preview photo-preview-card" hidden>
-                            <div class="photo-preview-stage"><button id="photo-open-button" class="photo-open-button" type="button" aria-label="查看已选择的现场照片"><img id="photo-thumbnail" alt="本次拜访现场照片" hidden><span class="photo-ready-fallback"><span class="app-icon icon-photo" aria-hidden="true"></span>照片已选择，原图提交后可查看</span></button><button id="photo-retake-button" class="photo-retake-button" type="button"><span class="app-icon icon-camera" aria-hidden="true"></span>重拍</button></div>
-                            <span class="file-preview__icon app-icon icon-check-circle" aria-hidden="true"></span>
-                            <div>
-                                <strong id="photo-file-name"></strong>
-                                <span id="photo-file-size"></span>
-                            </div>
-                            <button id="remove-photo-button" class="text-button file-remove-button" type="button">移除</button>
-                        </div>
-                        <div class="photo-album-fallback"><button id="photo-album-button" class="text-button" type="button">从相册重新选择</button><input id="photo-album-input" type="file" accept="image/*" hidden></div>
-                        <span class="field__error" data-error-for="storefront-photo"></span>
-                    </div>
-                </div>
-
-
+                <p id="photo-selection-note" class="photo-selection-note" role="status" aria-live="polite" hidden></p>
+                <span class="field__error" data-error-for="storefront-photo"></span>
             </section>
 
                 <details class="visit-review-details"><summary>核对拜访内容</summary><dl><dt>客户</dt><dd id="review-customer">--</dd><dt>拜访结果</dt><dd id="review-visit-result">--</dd><dt>设备定位</dt><dd id="review-location-quality">--</dd></dl></details>
@@ -353,27 +317,10 @@
                     </div>
                 </details>
 
-            <section class="consent-card confirmation-card">
-                <div class="confirmation-card__heading">
-                    <span class="confirmation-card__index" aria-hidden="true">2</span>
-                    <div>
-                        <strong>确认并提交</strong>
-                        <small>最后检查门店、照片和录音是否正确</small>
-                    </div>
-                </div>
-                <label class="check-row" for="privacy-accepted">
-                    <input id="privacy-accepted" type="checkbox" required>
-
-                    <span>
-                        <strong>已阅读并同意隐私告知 <span class="required-mark">*</span></strong>
-                    </span>
-                </label>
-                <details class="privacy-details">
-                    <summary>查看完整采集说明</summary>
-                    <p>系统采集定位、照片及选填录音；如提交录音，可能用于转写和 AI 摘要。系统会对客户端 IP 和浏览器设备标识做加密摘要，仅用于提示频繁切换等异常。个人码、IP、浏览器定位、照片和录音仍可能被共享或伪造，记录仅作临时采集，不得单独作为考勤、KPI、奖惩或纪律证据。</p>
-                </details>
-                <span class="field__error" data-error-for="privacy-accepted"></span>
-            </section>
+            <details class="privacy-details visit-privacy-notice">
+                <summary>隐私说明</summary>
+                <p>系统采集定位、照片及选填录音；如提交录音，可能用于转写和 AI 摘要。系统会对客户端 IP 和浏览器设备标识做加密摘要，仅用于提示频繁切换等异常。个人码、IP、浏览器定位、照片和录音仍可能被共享或伪造，记录仅作临时采集，不得单独作为考勤、KPI、奖惩或纪律证据。</p>
+            </details>
 
             <section class="submit-card">
                 <div class="step-actions">
@@ -664,7 +611,7 @@
         <div class="success-heading"><span class="app-icon icon-check-circle" aria-hidden="true"></span><h2>拜访已提交</h2><p>照片已收到，本次打卡已完成</p></div>
         <div class="success-store"><h3 id="success-store-name"></h3><p id="success-identity"></p></div>
         <div class="success-time"><span>打卡时间</span><time id="success-submitted-at"></time></div>
-        <section class="success-evidence"><h3>附件状态</h3><div class="success-evidence-row"><span class="app-icon icon-photo" aria-hidden="true"></span><strong>门头照片</strong><span id="success-photo-status" class="success-status"></span></div><div id="success-audio-list"></div><div id="success-wechat-row" class="success-evidence-row" hidden><span class="app-icon icon-photo" aria-hidden="true"></span><strong>企微截图</strong><span id="success-wechat-status"></span></div><button id="success-retry-button" class="outline-button" type="button" hidden>重试上传</button></section>
+        <section class="success-evidence"><h3>附件状态</h3><div class="success-evidence-row"><span class="app-icon icon-photo" aria-hidden="true"></span><strong>拜访照片</strong><span id="success-photo-status" class="success-status"></span></div><div id="success-audio-list"></div><div id="success-wechat-row" class="success-evidence-row" hidden><span class="app-icon icon-photo" aria-hidden="true"></span><strong>企微截图</strong><span id="success-wechat-status"></span></div><button id="success-retry-button" class="outline-button" type="button" hidden>重试上传</button></section>
         <p id="success-location-note" class="success-location-note" hidden>定位情况已留存，后台可结合照片核对。</p><p id="success-media-note" class="success-media-note" hidden></p>
         <div class="success-actions"><p id="success-supplement-until"></p><button id="new-submission-button" class="primary-button" type="button">继续拜访下一家</button><button id="success-view-record-button" class="text-button" type="button">查看本次记录</button></div>
         <details class="submission-reference"><summary>提交凭证</summary><p>提交编号：<strong id="success-submission-id"></strong></p></details>
@@ -684,8 +631,10 @@
 
 <dialog id="local-photo-dialog" class="history-photo-dialog" aria-label="已选择的现场照片"><button id="local-photo-close" class="icon-button photo-dialog-close" type="button" aria-label="关闭照片"><img class="dialog-close-icon" src="/sales-checkin/icons/x.svg" alt="" aria-hidden="true" width="22" height="22"></button><div class="photo-dialog-content"><img id="local-photo-full" alt="本次拜访现场照片"></div></dialog>
 
-    <script src="/sales-checkin/storage.js?v=20260907-blue-workspace" defer></script>
-    <script src="/sales-checkin/personal-history.js?v=20260907-blue-workspace" defer></script>
-    <script src="/sales-checkin/app.js?v=20260907-blue-workspace" defer></script>
+    <script src="/sales-checkin/storage.js?v=20260907-multi-photo" defer></script>
+    <script src="/sales-checkin/recording-journal.js?v=20260907-multi-photo" defer></script>
+    <script src="/sales-checkin/personal-history.js?v=20260907-multi-photo" defer></script>
+    <script src="/sales-checkin/photos.js?v=20260907-multi-photo" defer></script>
+    <script src="/sales-checkin/app.js?v=20260907-multi-photo" defer></script>
 </body>
 </html>

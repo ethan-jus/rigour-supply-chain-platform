@@ -88,8 +88,7 @@ async function runWidth(browser, width) {
         await page.locator('#visit-result').fill('本地示例：验证首次从提交成功查看明细，再返回本人历史。');
         await page.locator('#visit-step-2-next').click();
         await page.locator('#storefront-photo').setInputFiles(path.join(__dirname, 'fixtures/demo-storefront.jpg'));
-        await page.locator('#photo-thumbnail').waitFor({state: 'visible'});
-        await page.locator('#privacy-accepted').check();
+        await page.locator('#photo-grid [data-photo-thumbnail]').first().waitFor({state: 'visible'});
         await page.locator('#submit-visit-button').click();
         await page.locator('#success-view-record-button').waitFor({state: 'visible'});
         check(calls.length === 0, 'first successful visit has never opened a history list');

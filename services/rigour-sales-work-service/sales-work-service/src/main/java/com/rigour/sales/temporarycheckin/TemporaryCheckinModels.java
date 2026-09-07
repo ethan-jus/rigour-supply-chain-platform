@@ -69,7 +69,7 @@ public final class TemporaryCheckinModels {
     public record SubmissionReceipt(UUID id, UUID clientSubmissionId, String status,
             String storeName, String city, Instant createdAt, Instant submittedAt,
             List<String> uploadedMedia, List<UUID> audioSegmentIds, Instant supplementUntil,
-            String visitResult, Long audioDurationMs) { }
+            String visitResult, Long audioDurationMs, List<UUID> photoIds, List<PhotoView> photos) { }
 
     public record SubmissionReceiptPage(List<SubmissionReceipt> items, int page, int size,
             long totalElements, int totalPages) { }
@@ -81,7 +81,12 @@ public final class TemporaryCheckinModels {
             Instant supplementUntil, boolean canSupplement, String locationQuality, Instant locationCapturedAt,
             String locationRawTimestamp, Instant locationReceivedAt, String locationSource, String locationAddress,
             String locationNote, BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            BigDecimal storeLongitude, BigDecimal storeLatitude, BigDecimal distanceMeters, List<OwnMediaView> media) { }
+            BigDecimal storeLongitude, BigDecimal storeLatitude, BigDecimal distanceMeters, List<OwnMediaView> media,
+            List<PhotoView> photos) { }
+
+    /** 来源是客户端明确上报的选择方式，不证明照片拍摄时间；历史未知值保持空值。 */
+    public record PhotoView(UUID photoId, String mediaId, String contentType, String originalFilename,
+            long sizeBytes, Instant uploadedAt, String captureSource, String thumbnailUrl, String originalUrl) { }
 
     public record OwnMediaView(String mediaId, String kind, String originalFilename, String contentType,
             long sizeBytes, Instant uploadedAt, Long parsedDurationMs, String playbackStatus,
@@ -214,7 +219,12 @@ public final class TemporaryCheckinModels {
             String city,
             String locationSummary,
             String locationVerificationStatus,
-            String locationFailureReason) {
+            String locationFailureReason,
+            BigDecimal distanceMeters) {
+
+        public StoreView(UUID id,String name,String city,String locationSummary,String locationVerificationStatus,String locationFailureReason) {
+            this(id,name,city,locationSummary,locationVerificationStatus,locationFailureReason,null);
+        }
 
         public StoreView(UUID id, String name, String city, String locationSummary) {
             this(id, name, city, locationSummary, "LEGACY", null);
@@ -387,14 +397,24 @@ public final class TemporaryCheckinModels {
             String sha256,
             long sizeBytes,
             UUID segmentId,
-            String originalFilename) {
+            String originalFilename,
+            UUID photoId) {
+
+        public MediaUploadView(UUID id, String kind, String status, String sha256, long sizeBytes,
+                UUID segmentId, String originalFilename) {
+            this(id, kind, status, sha256, sizeBytes, segmentId, originalFilename, null);
+        }
 
         public MediaUploadView(UUID id, String kind, String status, String sha256, long sizeBytes) {
             this(id, kind, status, sha256, sizeBytes, null, null);
         }
     }
 
-    public record MediaDeleteView(UUID id, String kind, String status, UUID segmentId) {
+    public record MediaDeleteView(UUID id, String kind, String status, UUID segmentId, UUID photoId) {
+
+        public MediaDeleteView(UUID id, String kind, String status, UUID segmentId) {
+            this(id, kind, status, segmentId, null);
+        }
 
         public MediaDeleteView(UUID id, String kind, String status) {
             this(id, kind, status, null);

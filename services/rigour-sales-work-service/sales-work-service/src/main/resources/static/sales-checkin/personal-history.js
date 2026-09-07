@@ -57,7 +57,8 @@
     }
     function pendingEvidence(snapshot) {
         const submission = snapshot?.submission || {};
-        return submission.pendingWechat === true || (submission.audioSegments || [])
+        return (submission.photos || []).some(photo => photo.uploadState !== "UPLOADED")
+            || submission.pendingWechat === true || (submission.audioSegments || [])
             .some((segment) => !TERMINAL_MEDIA.has(segment.uploadState));
     }
     function ownLocalRecords(records, identity) {
@@ -264,12 +265,12 @@
             if (tab === "submitted" && !state.loaded && !state.loading) void loadPage(0);
             if (tab === "pending") void loadLocals();
         }
-        function recordThumbnail(id, label, available) {
+        function recordThumbnail(id, label, available, mediaId = "storefront-photo") {
             const box = element("span", "history-record-image");
             box.append(icon("photo"));
             if (available) {
                 const image = element("img"); image.alt = label; image.loading = "lazy"; image.decoding = "async";
-                image.src = mediaUrl(id, "storefront-photo", "thumbnail");
+                image.src = mediaUrl(id, mediaId, "thumbnail");
                 image.addEventListener("error", () => { image.hidden = true; box.setAttribute("aria-label", "照片缩略图暂不可用"); });
                 box.append(image);
             }
@@ -277,7 +278,7 @@
         }
         function submittedCard(item) {
             const card = button("", "history-record-card", () => { void showDetail(item.id); });
-            card.append(recordThumbnail(item.id, "门店现场照片", item.uploadedMedia?.includes("storefront-photo")));
+            card.append(recordThumbnail(item.id, "门店现场照片", item.uploadedMedia?.includes("storefront-photo"), item.photos?.[0]?.mediaId || "storefront-photo"));
             const body = element("span", "history-record-body");
             body.append(element("span", "history-record-time", timestamp(item.submittedAt)),
                 element("strong", "history-record-name", item.storeName || "未命名门店"),
@@ -484,7 +485,10 @@
                 fact(fields, "定位来源", detail.locationSource); if (detail.locationNote) fact(fields, "补充说明", detail.locationNote);
                 evidence.append(fields); location.append(evidence); body.append(location);
                 const media = Array.isArray(detail.media) ? detail.media : [];
-                const photos = media.filter((item) => ["storefront-photo", "wechat-screenshot"].includes(item.kind));
+                const storefront = Array.isArray(detail.photos) && detail.photos.length
+                    ? detail.photos.map(photo => ({...photo, kind: "storefront-photo"}))
+                    : media.filter(item => item.kind === "storefront-photo");
+                const photos = [...storefront, ...media.filter(item => item.kind === "wechat-screenshot")];
                 const photoSection = section(`现场照片与截图 · ${photos.length} 张`); const gallery = element("div", "history-detail-photos");
                 for (const photo of photos) gallery.append(photoThumbnail(detail, photo));
                 if (!photos.length) photoSection.append(element("p", "", "当前没有可查看的图片。"));
@@ -495,8 +499,8 @@
                 if (!audios.length) audioSection.append(element("p", "", "本次未上传录音。")); body.append(audioSection);
                 const supplement = section("补充证据", "history-detail-supplement"); const local = matchingLocal(detail);
                 if (supplementAllowed(detail, local) && typeof adapters.onSupplement === "function") {
-                    supplement.append(element("p", "", `可补充录音或截图，截止 ${timestamp(detail.supplementUntil)}。原始拜访内容保持不变。`));
-                    const action = button(state.actionBusy ? "正在核对回执…" : "补充录音或截图", "primary-button", () => { void startSupplement(); }, "upload");
+                    supplement.append(element("p", "", `可补充照片、录音或截图，截止 ${timestamp(detail.supplementUntil)}。原始拜访内容保持不变。`));
+                    const action = button(state.actionBusy ? "正在核对回执…" : "补充照片、录音或截图", "primary-button", () => { void startSupplement(); }, "upload");
                     action.disabled = state.actionBusy; supplement.append(action);
                 } else if (detail.status !== "SUBMITTED") supplement.append(element("p", "", "该记录尚未完成提交，可从本机待处理继续。"));
                 else if (!detail.supplementUntil || Date.parse(detail.supplementUntil) <= now()) supplement.append(element("p", "", "补传期限已结束，原始记录仍可查看。"));

@@ -40,40 +40,48 @@ function harness() {
         createElement: (tag) => makeElement("created:" + tag, tag), get activeElement() {return activeElement;}, body:makeElement("body")};
     let rawDraft;
     const context = {window, document, navigator: {}, crypto: webcrypto, Blob, Headers, URL,
+        HTMLTextAreaElement:class {},HTMLSelectElement:class {},HTMLInputElement:class {},
         sessionStorage: {setItem(key, value) {rawDraft = value;}, getItem() {return rawDraft;}, removeItem() {rawDraft = null;}},
         localStorage: {removeItem() {}},
         btoa: (value) => Buffer.from(value, "binary").toString("base64")};
     const injected = original.replace(/\n\}\)\(\);\s*$/, `
         // Tests replace transport and visual rendering boundaries; state/validation/recovery remain production code.
         syncStateFromForm = () => {};
-        renderRestoredValues = renderSelectedStore = renderLocation = renderAudioSegments = renderUploadedBadges
+        renderPhotos = renderRestoredValues = renderSelectedStore = renderLocation = renderAudioSegments = renderUploadedBadges
             = renderBusinessLock = renderTab = renderFlowActions = setFormsDisabled = prepareProgress
             = setProgressStep = scrollToFirstError = () => {};
         const actualUploadMedia = uploadMedia;
         window.__test = { state, submitVisit, persistDraft, saveLocalMedia, currentStorageOwner,
-            preparePhotoPicker, restoreDraft, openSavedDraft, captureLocation, renderNearbyStores,
+            preparePhotoPicker, restoreDraft, openSavedDraft, captureLocation, resolveLocationContext, renderNearbyStores,
             supplementCurrentEvidence, snapshotDraft, hasPendingEvidence, hasRestoredDraft,
             parseResponsePayload, extractApiMessage, friendlyHttpError, validMediaReceipt, selectStore,
-            renderStoreResults, handleStoreSearchKeydown, handleStoreResultKeydown,
+            renderStoreResults, handleStoreSearchKeydown, handleStoreResultKeydown, handleCityChange,
             renderRecordingDisclosure, recoverInterruptedSubmission, restoreOwnedDraft, imageHeaderDimensions, readAudioDurationMs, readPcmWaveDurationMs, formatDateTime,
             handleAudioFileSelection, audioFileSizeAllowed, retryAudioSegment, optionalUploadOutcome,
             optionalUploadFailureMessage, uploadWithXHR: actualUploadMedia,
             setRequest(fn) { requestJson = fn; }, setUpload(fn) {uploadMedia = fn;} };
     })();`);
+    vm.runInNewContext(fs.readFileSync(path.join(path.dirname(sourcePath), "photos.js"), "utf8"), context);
     vm.runInNewContext(injected, context, {filename:sourcePath});
     const api = window.__test;
     api.state.identity = {authenticated:true, tenantId:"t1", salespersonId:"sales1", city:"杭州"};
     Object.assign(api.state.visit, {city:"杭州", salespersonId:"sales1",selectedStore:{id:"store1",name:"门店"},
         customerName:"客户",visitResult:"拜访完成",privacyAccepted:true});
-    api.state.files.photo = Object.assign(new Blob(["test-photo"], {type:"image/jpeg"}), {name:"photo.jpg"});
+    const photoId=webcrypto.randomUUID();
+    const photo=Object.assign(new Blob(["test-photo"], {type:"image/jpeg"}), {name:"photo.jpg"});
+    api.state.files.photos=[{photoId,file:photo}];
+    api.state.submission.photos=[window.SalesCheckinPhotos.record(photo,photoId,"CAMERA")];
     api.setRequest(async (url, options) => { requests.push({url,options});
         if (url === "/submissions") return {id:"server1",status:"DRAFT",uploadedMedia:[],audioSegmentIds:[]};
         if (url.endsWith("/complete")) return {id:"server1",status:"SUBMITTED",submittedAt:new Date().toISOString()};
         if (url.startsWith("/submissions/by-client/")) throw Object.assign(new Error("absent"), {status:404});
         return {};
     });
-    api.setUpload(async (...args) => {uploaded.push(args); return {};});
-    return {api, window, elements, element, saved, uploaded, requests, timers, timerDelays, context};
+    api.setUpload(async (...args) => {uploaded.push(args); return {id:api.state.submission.serverId,
+        kind:args[0].startsWith("photos/")?"storefront-photo":args[0].startsWith("audio/")?"audio":args[0],
+        photoId:args[0].startsWith("photos/")?args[0].slice(7):undefined,
+        segmentId:args[0].startsWith("audio/")?args[0].slice(6):undefined};});
+    return {api, window, elements, element, saved, uploaded, requests, timers, timerDelays, context, photoId};
 }
 function xhrFixture(h) {
     let instance;
@@ -86,6 +94,8 @@ function xhrFixture(h) {
     return () => instance;
 }
 let checks = 0;
+let completed = false;
+process.on("beforeExit",()=>{if(!completed){console.error("Recovery checks ended with an unresolved asynchronous operation");process.exitCode=1;}});
 async function check(name, run) {await run(); checks++; console.log(`ok - ${name}`);}
 (async () => {
     await check("190 MB audio is allowed and oversized files are rejected before metadata or storage", async () => {
@@ -141,7 +151,7 @@ async function check(name, run) {await run(); checks++; console.log(`ok - ${name
         h.api.state.completed=true;h.api.state.submission.serverId="server1";h.api.state.submission.status="SUBMITTED";
         h.api.state.submission.audioSegments=[{segmentId,uploadState:"LOCAL"}];
         h.api.state.files.audio=[{segmentId,file:new Blob(["audio"])}];
-        h.api.setRequest(async()=>({id:"server1",status:"SUBMITTED",uploadedMedia:["storefront-photo"],audioSegmentIds:[]}));
+        h.api.setRequest(async()=>({id:"server1",status:"SUBMITTED",uploadedMedia:["storefront-photo"],photoIds:[h.photoId],audioSegmentIds:[]}));
         let uploads=0;h.api.setUpload(async()=>{uploads++;throw Object.assign(new Error("large"),{status:413});});
         await h.api.supplementCurrentEvidence();
         assert.equal(h.api.state.completed,true);assert.equal(h.api.state.submission.audioSegments[0].uploadState,"TOO_LARGE");
@@ -212,13 +222,13 @@ async function check(name, run) {await run(); checks++; console.log(`ok - ${name
     await check("submission without any GPS completes with required photo and server receipt", async () => {
         const h = harness(); await h.api.submitVisit({preventDefault(){}});
         assert.equal(h.api.state.completed,true);
-        assert.equal(h.uploaded[0][0], "storefront-photo");
+        assert.equal(h.uploaded[0][0], `photos/${h.photoId}`);
         assert.equal(h.requests[0].url,"/submissions");
         assert.equal(h.requests[0].options.body.location ?? null,null);
         assert.equal(h.api.state.submission.status,"SUBMITTED");
     });
     await check("missing required photo never creates a submission or reports success", async () => {
-        const h=harness();h.api.state.files.photo=null;
+        const h=harness();h.api.state.files.photos=[];h.api.state.submission.photos=[];
         await h.api.submitVisit({preventDefault(){}});
         assert.equal(h.requests.length,0);assert.equal(h.api.state.completed,false);
     });
@@ -239,9 +249,9 @@ async function check(name, run) {await run(); checks++; console.log(`ok - ${name
     });
     await check("receipt confirms already uploaded photo after local file loss", async () => {
         const h=harness();h.api.state.submission.attemptedPayload={clientSubmissionId:h.api.state.submission.clientSubmissionId};
-        h.api.state.files.photo=null;
+        h.api.state.files.photos=[];
         h.api.setRequest(async(url)=>url.includes("by-client")
-            ? {id:"server1",status:"DRAFT",uploadedMedia:["storefront-photo"],audioSegmentIds:[]}
+            ? {id:"server1",status:"DRAFT",uploadedMedia:["storefront-photo"],photoIds:[h.photoId],audioSegmentIds:[]}
             : {id:"server1",status:"SUBMITTED",submittedAt:new Date().toISOString()});
         await h.api.submitVisit({preventDefault(){}});
         assert.equal(h.uploaded.length,0);assert.equal(h.api.state.completed,true);
@@ -302,37 +312,110 @@ async function check(name, run) {await run(); checks++; console.log(`ok - ${name
     await check("saved photo and audio Blob recover after page memory was cleared", async () => {
         const h=harness();const segmentId=webcrypto.randomUUID();
         h.api.state.submission.audioSegments=[{segmentId,originalFilename:"voice.webm",uploadState:"LOCAL"}];
-        const snapshot=h.api.snapshotDraft();const photo=h.api.state.files.photo;
+        const snapshot=h.api.snapshotDraft();const photo=h.api.state.files.photos[0].file;
         const audio=Object.assign(new Blob(["audio"]),{name:"voice.webm"});
         h.window.SalesCheckinDraftStore.mediaFor=async()=>[
-            {mediaId:"photo",file:photo,filename:"photo.jpg"},
+            {mediaId:`photo:${h.photoId}`,file:photo,filename:"photo.jpg"},
             {mediaId:`audio:${segmentId}`,file:audio,filename:"voice.webm"}];
-        h.api.state.files.photo=null;
+        h.api.state.files.photos=[];
         await h.api.openSavedDraft({owner:"t1:sales1",snapshot},false);
-        assert.equal(h.api.state.files.photo.size,photo.size);
+        assert.equal(h.api.state.files.photos[0].file.size,photo.size);
+        assert.equal(h.api.state.files.photos[0].photoId,h.photoId);
         assert.equal(h.api.state.files.audio[0].segmentId,segmentId);
         assert.equal(h.api.state.submission.audioSegments[0].uploadState,"LOCAL");
         assert.equal(h.api.state.visit.selectedStore.id,"store1");
     });
     await check("identity and GPS-only cache does not show an unfinished visit notice",async()=>{
         const h=harness();Object.assign(h.api.state.visit,{selectedStore:null,customerName:"",visitResult:""});
-        h.api.state.files.photo=null;h.api.state.restoredAt=new Date().toISOString();
+        h.api.state.files.photos=[];h.api.state.submission.photos=[];h.api.state.restoredAt=new Date().toISOString();
         assert.equal(h.api.hasRestoredDraft(),false);
         h.api.state.visit.selectedStore={id:"store1"};assert.equal(h.api.hasRestoredDraft(),true);
     });
     await check("GPS capture retains selected store and improves beyond first callback", async () => {
         const h=harness();let callback;let cleared=0;h.window.isSecureContext=true;
         h.context.navigator.geolocation={watchPosition(fn){callback=fn;return 7;},clearWatch(){cleared++;}};
-        await h.api.captureLocation("visit");
+        const capture=h.api.captureLocation("visit");
         callback({timestamp:Date.now(),coords:{longitude:120,latitude:30,accuracy:200}});
+        assert.equal(cleared,0,"a coarse first sample should leave the bounded watch running");
         callback({timestamp:Date.now()+1,coords:{longitude:120.1,latitude:30.1,accuracy:20}});
+        await capture;
         assert.equal(h.api.state.visit.location.accuracyMeters,20);
-        assert.equal(h.api.state.visit.selectedStore.id,"store1");assert.equal(cleared,0);
+        assert.equal(h.api.state.visit.selectedStore.id,"store1");assert.equal(cleared,1);
+        assert.equal(h.requests.filter(item=>item.url==="/locations/resolve").length,1);
+    });
+    await check("GPS with no callbacks settles at its deadline without clearing the selected store",async()=>{
+        const h=harness();let cleared=0;h.window.isSecureContext=true;
+        h.context.navigator.geolocation={watchPosition(){return 9;},clearWatch(){cleared++;}};
+        const capture=h.api.captureLocation("visit",{maxWaitMs:1800});
+        const deadline=[...h.timerDelays].find(([,delay])=>delay===1800)[0];
+        h.timers.get(deadline)();await capture;
+        assert.equal(cleared,1);assert.equal(h.api.state.visit.selectedStore.id,"store1");
+        assert.equal(h.api.state.visit.locationContext.locationFailureReason,"TIMEOUT");
+        assert.equal(h.requests.length,0);
+    });
+    await check("submission GPS wait blocks double-click and city changes, then creates only the original visit",async()=>{
+        const h=harness();h.window.isSecureContext=true;
+        h.context.navigator.geolocation={watchPosition(){return 10;},clearWatch(){}};
+        const first=h.api.submitVisit({preventDefault(){}});
+        assert.equal(h.api.state.submitting,true);
+        await h.api.submitVisit({preventDefault(){}});
+        h.element("#visit-city").value="苏州";await h.api.handleCityChange("visit");
+        assert.equal(h.api.state.visit.city,"杭州");assert.equal(h.requests.length,0);
+        const deadline=[...h.timerDelays].find(([,delay])=>delay===5000)[0];h.timers.get(deadline)();
+        await first;assert.equal(h.api.state.completed,true);
+        const created=h.requests.filter(item=>item.url==="/submissions");assert.equal(created.length,1);
+        assert.equal(created[0].options.body.city,"杭州");assert.equal(created[0].options.body.storeId,"store1");
+    });
+    await check("a changed owner, draft or store cancels the pending GPS submission instead of submitting new content",async()=>{
+        for(const change of ["owner","draft","store"]) {
+            const h=harness();h.window.isSecureContext=true;let locationCallback;
+            h.context.navigator.geolocation={watchPosition(callback){locationCallback=callback;return 10;},clearWatch(){}};
+            const submitting=h.api.submitVisit({preventDefault(){}});
+            if(change==="owner") h.api.state.identity={authenticated:true,tenantId:"t1",salespersonId:"other"};
+            if(change==="draft") h.api.state.submission={...h.api.state.submission,clientSubmissionId:"next-draft"};
+            if(change==="store") h.api.state.visit.selectedStore={id:"next-store",name:"新店"};
+            const deadline=[...h.timerDelays].find(([,delay])=>delay===5000)[0];h.timers.get(deadline)();await submitting;
+            assert.equal(h.requests.length,0);assert.equal(h.api.state.completed,false);assert.equal(h.api.state.submitting,false);
+            if(change!=="store") {
+                locationCallback({timestamp:Date.now(),coords:{longitude:121,latitude:31,accuracy:10}});
+                assert.equal(h.api.state.visit.location,null,"a stale capture must not write coordinates into another identity/draft");
+            }
+            if(change==="draft") assert.equal(h.api.state.submission.clientSubmissionId,"next-draft");
+            if(change==="store") assert.equal(h.api.state.visit.selectedStore.id,"next-store");
+        }
+    });
+    await check("a late location resolve success or failure cannot overwrite a newly opened draft",async()=>{
+        for(const failed of [false,true]) {
+            const h=harness();const capturedAt=new Date().toISOString();
+            h.api.state.visit.location={longitude:120,latitude:30,accuracyMeters:20,capturedAt};
+            const next=h.api.snapshotDraft();next.submission.clientSubmissionId=webcrypto.randomUUID();
+            next.visit.selectedStore={id:"next-store",name:"新草稿门店"};
+            next.visit.location={longitude:121,latitude:31,accuracyMeters:10,capturedAt};
+            next.visit.locationContext={geocodeStatus:"RESOLVED",address:"新草稿地址",accuracyAccepted:true,freshnessAccepted:true};
+            let resolveOld,rejectOld;
+            h.api.setRequest(()=>new Promise((resolve,reject)=>{resolveOld=resolve;rejectOld=reject;}));
+            const oldRequest=h.api.resolveLocationContext("visit");
+            assert.equal(h.api.state.visit.locationContext.geocodeStatus,"RESOLVING");
+            assert.equal(await h.api.openSavedDraft({owner:"t1:sales1",snapshot:next},false),true);
+            const currentContext=h.api.state.visit.locationContext;
+            const writesBefore=h.saved.length;
+            if(failed) rejectOld(new Error("old network error"));
+            else resolveOld({geocodeStatus:"RESOLVED",address:"旧地址不得串单",accuracyAccepted:true,freshnessAccepted:true,
+                nearbyStores:[{source:"REGISTERED",storeId:"old-store",name:"旧附近店"}]});
+            await oldRequest;
+            assert.equal(h.api.state.submission.clientSubmissionId,next.submission.clientSubmissionId);
+            assert.equal(h.api.state.visit.selectedStore.id,"next-store");
+            assert.equal(h.api.state.visit.location.longitude,121);
+            assert.equal(h.api.state.visit.locationContext,currentContext);
+            assert.equal(h.api.state.visit.locationContext.address,"新草稿地址");
+            assert.equal(h.api.state.visit.nearbyStores.some(store=>store.storeId==="old-store"),false);
+            assert.equal(h.saved.length,writesBefore,"the stale finally handler must not persist over the new draft");
+        }
     });
     await check("photo taken before store selection survives choosing the first store",async()=>{
-        const h=harness();const photo=h.api.state.files.photo;h.api.state.visit.selectedStore=null;
+        const h=harness();const photo=h.api.state.files.photos[0].file;h.api.state.visit.selectedStore=null;
         h.api.selectStore({id:"first-store",name:"首家门店",city:"杭州"});
-        assert.equal(h.api.state.files.photo,photo);assert.equal(h.api.state.visit.selectedStore.id,"first-store");
+        assert.equal(h.api.state.files.photos[0].file,photo);assert.equal(h.api.state.visit.selectedStore.id,"first-store");
     });
     await check("initial directory remains enabled while GPS is capturing or denied",async()=>{
         const h=harness();for(const context of [null,{geocodeStatus:"CAPTURING"},{locationFailureReason:"PERMISSION_DENIED"}]){
@@ -357,9 +440,9 @@ async function check(name, run) {await run(); checks++; console.log(`ok - ${name
     await check("page re-entry confirms the original submitted receipt without a second POST", async () => {
         const h=harness(); h.api.state.submission.serverId="server1";
         h.api.state.submission.attemptedPayload={clientSubmissionId:h.api.state.submission.clientSubmissionId};
-        h.api.state.submission.syncRequested=true; h.api.state.files.photo=null;
+        h.api.state.submission.syncRequested=true; h.api.state.files.photos=[];
         let reads=0;h.api.setRequest(async url=>{assert.match(url,/by-client/);reads++;
-            return {id:"server1",status:"SUBMITTED",submittedAt:"2026-09-07T07:15:32Z",uploadedMedia:["storefront-photo"]};});
+            return {id:"server1",status:"SUBMITTED",submittedAt:"2026-09-07T07:15:32Z",uploadedMedia:["storefront-photo"],photoIds:[h.photoId]};});
         await h.api.recoverInterruptedSubmission();
         assert.equal(reads,1);assert.equal(h.api.state.completed,true);assert.equal(h.uploaded.length,0);
         assert.equal(h.element("#success-submitted-at").textContent,"2026-09-07 15:15:32");
@@ -381,7 +464,7 @@ async function check(name, run) {await run(); checks++; console.log(`ok - ${name
         h.api.setRequest(async url=>{
             if(url==="/submissions"){writes++;return{id:"server1",status:"DRAFT",uploadedMedia:[]};}
             if(url.endsWith("/complete")){writes++;throw Object.assign(new Error("connection lost"),{uploadOutcome:"UNKNOWN"});}
-            return{id:"server1",status:"SUBMITTED",uploadedMedia:["storefront-photo"],submittedAt:new Date().toISOString()};
+            return{id:"server1",status:"SUBMITTED",uploadedMedia:["storefront-photo"],photoIds:[h.photoId],submittedAt:new Date().toISOString()};
         });
         await h.api.submitVisit({preventDefault(){}});
         assert.equal(h.api.state.completed,true);assert.equal(writes,2);assert.equal(h.uploaded.length,1);
@@ -390,7 +473,7 @@ async function check(name, run) {await run(); checks++; console.log(`ok - ${name
         const h=harness();const segmentId=webcrypto.randomUUID();
         Object.assign(h.api.state.submission,{serverId:"server1",status:"SUBMITTED",audioSegments:[{segmentId,uploadState:"LOCAL"}]});
         h.api.state.completed=true;h.api.state.files.audio=[{segmentId,file:new Blob(["audio"])}];
-        let reads=0,writes=0;h.api.setRequest(async()=>({id:"server1",status:"SUBMITTED",uploadedMedia:["storefront-photo"],audioSegmentIds:++reads>1?[segmentId]:[]}));
+        let reads=0,writes=0;h.api.setRequest(async()=>({id:"server1",status:"SUBMITTED",uploadedMedia:["storefront-photo"],photoIds:[h.photoId],audioSegmentIds:++reads>1?[segmentId]:[]}));
         h.api.setUpload(async()=>{writes++;throw Object.assign(new Error("lost upload reply"),{uploadOutcome:"UNKNOWN"});});
         await h.api.supplementCurrentEvidence();assert.equal(writes,1);assert.equal(reads,2);
         assert.equal(h.api.state.submission.audioSegments[0].uploadState,"UPLOADED");assert.equal(h.api.hasPendingEvidence(),false);
@@ -400,7 +483,7 @@ async function check(name, run) {await run(); checks++; console.log(`ok - ${name
         const h=harness();const segmentId=webcrypto.randomUUID();
         Object.assign(h.api.state.submission,{serverId:"server1",status:"SUBMITTED",audioSegments:[{segmentId,uploadState:"UNKNOWN"}]});
         h.api.state.completed=true;
-        h.api.setRequest(async()=>({id:"server1",status:"SUBMITTED",supplementUntil:"2000-01-01T00:00:00Z",audioSegmentIds:[segmentId],uploadedMedia:["storefront-photo"]}));
+        h.api.setRequest(async()=>({id:"server1",status:"SUBMITTED",supplementUntil:"2000-01-01T00:00:00Z",audioSegmentIds:[segmentId],uploadedMedia:["storefront-photo"],photoIds:[h.photoId]}));
         await h.api.supplementCurrentEvidence();assert.equal(h.api.state.submission.audioSegments[0].uploadState,"UPLOADED");assert.equal(h.uploaded.length,0);
     });
     await check("restoring local drafts keeps the current session visit instead of an older pending one",async()=>{
@@ -450,4 +533,5 @@ async function check(name, run) {await run(); checks++; console.log(`ok - ${name
         assert.equal(await restore,false);assert.equal(h.api.state.visit.customerName,"刚输入的新客户");
     });
     console.log(`${checks} recovery behavior checks passed`);
-})().catch(error=>{console.error(error);process.exitCode=1;});
+    completed=true;
+})().catch(error=>{completed=true;console.error(error);process.exitCode=1;});

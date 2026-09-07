@@ -1948,7 +1948,7 @@ body.preview-open {
 .records-col--city { width: 72px; }
 .records-col--salesperson { width: 88px; }
 .records-col--store { width: 170px; }
-.records-col--photo { width: 92px; }
+.records-col--photo { width: 158px; }
 .records-col--audio { width: 154px; }
 .records-col--visit { width: 160px; }
 .records-col--location { width: 210px; }
@@ -2790,3 +2790,11 @@ body.can-delete-submissions .records-table td.selection-cell {
         min-height: 44px;
     }
 }
+
+.row-photo-gallery { display: flex; gap: 6px; max-width: 240px; overflow-x: auto; padding-bottom: 4px; }
+.row-photo-gallery .row-thumbnail-button { flex: 0 0 60px; width: 60px; height: 60px; }
+.row-photo-gallery img { width: 60px; height: 60px; object-fit: cover; }
+
+.row-photo-gallery { overscroll-behavior-x: contain; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
+.row-photo-gallery .row-thumbnail-button { scroll-snap-align: start; }
+.row-photo-count { display: block; margin-top: 3px; color: var(--ink-soft); font-size: 10px; line-height: 1.5; white-space: nowrap; }

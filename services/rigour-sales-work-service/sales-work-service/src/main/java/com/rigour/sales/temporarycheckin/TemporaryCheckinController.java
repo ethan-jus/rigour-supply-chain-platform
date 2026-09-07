@@ -97,12 +97,14 @@ public class TemporaryCheckinController {
 
     @GetMapping("/stores")
     public List<StoreView> stores(
-            @RequestParam(name = "city") String city,
-            @RequestParam(name = "q") String query,
+            @RequestParam(name = "city", required = false) String city,
+            @RequestParam(name = "q", defaultValue = "") String query,
             @RequestParam(name = "limit", required = false) Integer limit,
             @RequestParam(name = "salespersonId", required = false) UUID salespersonId,
+            @RequestParam(name = "longitude", required = false) java.math.BigDecimal longitude,
+            @RequestParam(name = "latitude", required = false) java.math.BigDecimal latitude,
             HttpServletRequest servletRequest) {
-        return service.searchAuthorizedStores(city, query, limit, salespersonId,
+        return service.searchAuthorizedStores(city, query, limit, salespersonId,longitude,latitude,
                 TemporaryCheckinRequestFacts.from(servletRequest));
     }
 
@@ -174,6 +176,20 @@ public class TemporaryCheckinController {
         return service.uploadAudioSegment(submissionId, segmentId, submissionKey, file,
                 captureSource, clientStartedAt, clientDurationMs, fileLastModifiedAt,
                 TemporaryCheckinRequestFacts.from(servletRequest));
+    }
+
+    @PutMapping(path = "/submissions/{id}/media/photos/{photoId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public MediaUploadView uploadPhoto(@PathVariable("id") UUID id,@PathVariable("photoId") UUID photoId,
+            @RequestHeader(name="X-Submission-Key",required=false) String key,
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(name="captureSource",required=false) String captureSource,HttpServletRequest request) {
+        return service.uploadPhoto(id,photoId,key,file,captureSource,TemporaryCheckinRequestFacts.from(request));
+    }
+
+    @DeleteMapping("/submissions/{id}/media/photos/{photoId}")
+    public MediaDeleteView deletePhoto(@PathVariable("id") UUID id,@PathVariable("photoId") UUID photoId,
+            @RequestHeader(name="X-Submission-Key",required=false) String key,HttpServletRequest request) {
+        return service.deleteDraftPhoto(id,photoId,key,TemporaryCheckinRequestFacts.from(request));
     }
 
     @DeleteMapping("/submissions/{id}/media/{kind}")

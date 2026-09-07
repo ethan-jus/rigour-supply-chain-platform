@@ -680,7 +680,7 @@ class TemporaryCheckinApiIntegrationTests {
         mockMvc.perform(get("/sales-checkin/api/v1/stores").param("salespersonId",VISITOR_ID.toString()).param("city","北京").param("q","新门店").param("salespersonId",VISITOR_ID.toString()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$[0].id").value(id));
         mockMvc.perform(get("/sales-checkin/api/v1/stores").param("salespersonId",VISITOR_ID.toString()).param("city","深圳").param("q","新门店").param("salespersonId",VISITOR_ID.toString()))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isOk()).andExpect(jsonPath("$[0].id").value(id));
     }
 
     @Test
@@ -849,7 +849,7 @@ class TemporaryCheckinApiIntegrationTests {
         mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete", submissionId)
                         .header("X-Submission-Key", SUBMISSION_KEY))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("请先上传门头照"));
+                .andExpect(jsonPath("$.message").value("请先上传至少1张现场照片"));
 
         upload(submissionId, "storefront-photo", new MockMultipartFile(
                 "file", "door.jpg", "image/jpeg",
@@ -1038,7 +1038,7 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void rejectsStaleLocationForStoreAndSubmissionWritesWithoutCallingAmap()
+    void preservesStaleLocationAndStillSearchesAndSavesUnverifiedStore()
             throws Exception {
         LocationCommand stale = new LocationCommand(new BigDecimal("116.3971280"),
                 new BigDecimal("39.9165270"), new BigDecimal("8.50"),
@@ -1048,13 +1048,13 @@ class TemporaryCheckinApiIntegrationTests {
                         .content(objectMapper.writeValueAsBytes(
                                 resolveRequest("北京", VISITOR_ID, stale))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.address").doesNotExist())
+                .andExpect(jsonPath("$.address").isNotEmpty())
                 .andExpect(jsonPath("$.maxLocationAgeMinutes").value(60))
                 .andExpect(jsonPath("$.accuracyAccepted").value(true))
                 .andExpect(jsonPath("$.freshnessAccepted").value(false))
                 .andExpect(jsonPath("$.locationMessage")
                         .value("定位采集时间已超过60分钟，请重新定位后提交"))
-                .andExpect(jsonPath("$.nearbyStores", hasSize(0)));
+                .andExpect(jsonPath("$.nearbyStores", hasSize(1)));
         mockMvc.perform(post("/sales-checkin/api/v1/submissions")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(submission(
@@ -1064,9 +1064,7 @@ class TemporaryCheckinApiIntegrationTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(poiStoreAtLocation(
                                 UUID.randomUUID(), "过期定位新店", "赵店长", stale))))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message")
-                        .value("定位采集时间已超过60分钟，请重新定位后提交"));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.locationVerificationStatus").value("UNVERIFIED"));
     }
 
     @Test
@@ -1134,7 +1132,7 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void rejectsNewLocationsOverTwoMinutesInFutureButAllowsSmallClockSkewAndExistingRetry()
+    void marksFutureLocationUnverifiedButAllowsSearchWritesAndExistingRetry()
             throws Exception {
         LocationCommand tooFarFuture = new LocationCommand(new BigDecimal("116.3971280"),
                 new BigDecimal("39.9165270"), new BigDecimal("8.50"),
@@ -1147,7 +1145,7 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(jsonPath("$.freshnessAccepted").value(false))
                 .andExpect(jsonPath("$.locationMessage")
                         .value("定位采集时间晚于服务器时间超过2分钟，请校准手机时间并重新定位"))
-                .andExpect(jsonPath("$.nearbyStores", hasSize(0)));
+                .andExpect(jsonPath("$.nearbyStores", hasSize(1)));
         mockMvc.perform(post("/sales-checkin/api/v1/submissions")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(submission(
@@ -1158,9 +1156,7 @@ class TemporaryCheckinApiIntegrationTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(manualStore(
                                 UUID.randomUUID(), "未来时间新门店", tooFarFuture))))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message")
-                        .value("定位采集时间晚于服务器时间超过2分钟，请校准手机时间并重新定位"));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.locationVerificationStatus").value("UNVERIFIED"));
 
         Instant acceptedFuture = Instant.now().plusSeconds(90)
                 .truncatedTo(java.time.temporal.ChronoUnit.MICROS);
@@ -1916,8 +1912,8 @@ class TemporaryCheckinApiIntegrationTests {
         mockMvc.perform(post("/sales-checkin/api/v1/stores")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(wrongStoreRetry)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("销售与选择城市不一致"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("clientStoreId已被不同门店数据使用"));
 
         UUID clientSubmissionId = UUID.randomUUID();
         CreateSubmissionRequest first = submission(
@@ -1933,8 +1929,8 @@ class TemporaryCheckinApiIntegrationTests {
         mockMvc.perform(post("/sales-checkin/api/v1/submissions")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(wrongSubmissionRetry)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("销售与选择城市不一致"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("clientSubmissionId已被不同打卡数据使用"));
     }
 
     @Test
@@ -1979,13 +1975,12 @@ class TemporaryCheckinApiIntegrationTests {
 
         CreateSubmissionRequest invalidHeadquartersCity = new CreateSubmissionRequest(
                 UUID.randomUUID(), SUBMISSION_KEY, "总部", HEADQUARTERS_SALESPERSON_ID, STORE_ID,
-                "总部客户", null, "总部不是实际打卡城市", location(), true,
+                "总部客户", null, "总部也是报表归属选项", location(), true,
                 TemporaryCheckinService.PRIVACY_NOTICE_VERSION);
         mockMvc.perform(post("/sales-checkin/api/v1/submissions")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(invalidHeadquartersCity)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("销售与选择城市不一致"));
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -2046,11 +2041,11 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void rejectsMissingConsentLocationAndValuesOutsideCurrentDropdowns() throws Exception {
+    void acceptsMissingConsentAndLocationButRejectsInvalidLimitsAndDropdownValues() throws Exception {
         mockMvc.perform(get("/sales-checkin/api/v1/stores").param("salespersonId",VISITOR_ID.toString())
                         .param("city", "北京")
                         .param("q", "已导入")
-                        .param("limit", "21"))
+                        .param("limit", "51"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_BAD_REQUEST"));
 
@@ -2058,8 +2053,7 @@ class TemporaryCheckinApiIntegrationTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(submission(
                                 UUID.randomUUID(), SUBMISSION_KEY, "拜访结果", false, location()))))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_BAD_REQUEST"));
+                .andExpect(status().isOk());
 
         mockMvc.perform(post("/sales-checkin/api/v1/submissions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -2358,7 +2352,7 @@ class TemporaryCheckinApiIntegrationTests {
         mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete", submissionId)
                         .header("X-Submission-Key", SUBMISSION_KEY))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("请先上传门头照"));
+                .andExpect(jsonPath("$.message").value("请先上传至少1张现场照片"));
 
         upload(submissionId, "storefront-photo",
                 new MockMultipartFile("file", "door.jpg", "image/jpeg", jpeg))
@@ -2370,7 +2364,7 @@ class TemporaryCheckinApiIntegrationTests {
                         "/sales-checkin/api/v1/submissions/{id}/media/storefront-photo", submissionId)
                         .header("X-Submission-Key", SUBMISSION_KEY))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value("已提交的打卡不允许删除媒体"));
+                .andExpect(jsonPath("$.message").value("已提交照片不允许删除或替换"));
         verify(fileStorage, times(1)).delete(TENANT_ID.toString(), photoKey);
     }
 
@@ -2397,7 +2391,7 @@ class TemporaryCheckinApiIntegrationTests {
         mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete", submissionId)
                         .header("X-Submission-Key", SUBMISSION_KEY))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("请先上传门头照"));
+                .andExpect(jsonPath("$.message").value("请先上传至少1张现场照片"));
 
         upload(submissionId, "storefront-photo",
                 new MockMultipartFile("file", "door.jpg", "image/jpeg", jpeg))
@@ -2456,7 +2450,7 @@ class TemporaryCheckinApiIntegrationTests {
         assertThat(metadata.getValue().tenantId()).isEqualTo(TENANT_ID.toString());
         assertThat(metadata.getValue().originalName()).isEqualTo("blob.jpg");
         assertThat(metadata.getValue().objectKey())
-                .matches(objectPrefix + "photos/storefront/[0-9a-f]{64}\\.jpg");
+                .matches(objectPrefix + "photos/storefront/segments/"+submissionId+"/[0-9a-f]{64}-[0-9a-f-]{36}\\.jpg");
 
         MvcResult completed = mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete", submissionId)
                         .header("X-Submission-Key", SUBMISSION_KEY))
@@ -2824,7 +2818,7 @@ class TemporaryCheckinApiIntegrationTests {
         String objectPrefix = TENANT_ID + "/temporary-sales-checkin/" + submissionId + "/";
         assertThat(storedMedia.get(0).originalName()).isEqualTo("store.jpg");
         assertThat(storedMedia.get(0).objectKey())
-                .matches(objectPrefix + "photos/storefront/[0-9a-f]{64}\\.jpg");
+                .matches(objectPrefix + "photos/storefront/segments/"+submissionId+"/[0-9a-f]{64}-[0-9a-f-]{36}\\.jpg");
         assertThat(storedMedia.get(1).originalName()).isEqualTo("customer.png");
         assertThat(storedMedia.get(1).objectKey())
                 .matches(objectPrefix + "screenshots/wechat/[0-9a-f]{64}-[0-9a-f-]{36}\\.png");
@@ -3692,7 +3686,7 @@ class TemporaryCheckinApiIntegrationTests {
                     .andExpect(jsonPath("$.locationQuality").value("MISSING"))
                     .andExpect(jsonPath("$.canSupplement").value(false)).andExpect(jsonPath("$.supplementUntil").exists())
                     .andExpect(jsonPath("$.media", hasSize(2)))
-                    .andExpect(jsonPath("$.media[0].thumbnailUrl").value("/sales-checkin/api/v1/submissions/"+id+"/mine/media/storefront-photo?variant=thumbnail"))
+                    .andExpect(jsonPath("$.media[0].thumbnailUrl").value("/sales-checkin/api/v1/submissions/"+id+"/mine/media/photo-"+id+"?variant=thumbnail"))
                     .andExpect(jsonPath("$.media[1].mediaId").value(id.toString()))
                     .andExpect(jsonPath("$.media[1].parsedDurationMs").doesNotExist())
                     .andExpect(jsonPath("$.media[1].playbackStatus").value("PENDING")).andReturn();
@@ -3784,18 +3778,18 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
-    void initialStoreDirectoryAllowsEmptyQueryWithinAuthorizedCity() throws Exception {
+    void initialStoreDirectoryAndSingleCharacterSearchAllowCrossCityButPreserveOwnerScope() throws Exception {
         checkinProperties.setIdentityEnforcementEnabled(true);
         try {
             var owner = historyIdentity(VISITOR_ID, "北京");
             mockMvc.perform(get("/sales-checkin/api/v1/stores").with(ownerCookies(owner))
                             .param("city", "北京").param("q", "").param("limit", "20"))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$", hasSize(1)))
-                    .andExpect(jsonPath("$[0].id").value(STORE_ID.toString()));
+                    .andExpect(status().isOk()).andExpect(jsonPath("$", hasSize(2)))
+                    .andExpect(jsonPath("$[*].id",containsInAnyOrder(STORE_ID.toString(),SHENZHEN_STORE_ID.toString())));
             mockMvc.perform(get("/sales-checkin/api/v1/stores").with(ownerCookies(owner))
-                    .param("city", "深圳").param("q", "")).andExpect(status().isBadRequest());
+                    .param("city", "深圳").param("q", "")).andExpect(status().isOk()).andExpect(jsonPath("$",hasSize(2)));
             mockMvc.perform(get("/sales-checkin/api/v1/stores").with(ownerCookies(owner))
-                    .param("city", "北京").param("q", "门")).andExpect(status().isBadRequest());
+                    .param("city", "北京").param("q", "门")).andExpect(status().isOk());
             mockMvc.perform(get("/sales-checkin/api/v1/stores").with(ownerCookies(owner))
                     .param("city", "北京").param("q", "").param("salespersonId", CREATOR_ID.toString()))
                     .andExpect(status().isForbidden());
@@ -3806,6 +3800,237 @@ class TemporaryCheckinApiIntegrationTests {
         UUID id = insertAdminSubmission("北京", VISITOR_ID, STORE_ID, "本人门店", "测试客户", result);
         markSubmitted(id, submittedAt.minusSeconds(86400), submittedAt);
         return id;
+    }
+
+    @Test
+    void businessCityIsEditableWithoutChangingIdentityAndPrivacyIsNotInvented() throws Exception {
+        checkinProperties.setIdentityEnforcementEnabled(true);
+        try {
+            var owner=historyIdentity(VISITOR_ID,"北京");
+            for(String city:List.of("深圳","总部")) {
+                UUID client=UUID.randomUUID();
+                var body=new CreateSubmissionRequest(client,SUBMISSION_KEY,city,VISITOR_ID,STORE_ID,
+                        "测试客户",null,"跨城市真实拜访",location(),false,null);
+                var result=mockMvc.perform(post("/sales-checkin/api/v1/submissions").with(ownerCookies(owner))
+                                .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsBytes(body)))
+                        .andExpect(status().isOk()).andReturn();
+                UUID id=UUID.fromString(objectMapper.readTree(result.getResponse().getContentAsByteArray()).path("id").asText());
+                var row=jdbc.queryForMap("SELECT city,privacy_accepted,privacy_notice_version,BIN_TO_UUID(salesperson_id) AS salesperson,longitude FROM temp_sales_checkin_submission WHERE id=?",bin(id));
+                assertThat(row.get("city")).isEqualTo(city);
+                assertThat(((Number)row.get("privacy_accepted")).intValue()).isZero();
+                assertThat(row.get("privacy_notice_version")).isNull();
+                assertThat(row.get("salesperson")).isEqualTo(VISITOR_ID.toString());
+                assertThat((BigDecimal)row.get("longitude")).isEqualByComparingTo(location().longitude());
+            }
+            var missing=objectMapper.valueToTree(submission(UUID.randomUUID(),SUBMISSION_KEY,"缺省同意字段",false,null));
+            ((tools.jackson.databind.node.ObjectNode)missing).remove("privacyAccepted");
+            mockMvc.perform(post("/sales-checkin/api/v1/submissions").with(ownerCookies(owner))
+                            .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsBytes(missing)))
+                    .andExpect(status().isOk());
+            UUID legacyClient = UUID.randomUUID();
+            var legacy = submission(legacyClient, SUBMISSION_KEY, "旧草稿保留原同意事实", true, null);
+            var saved = mockMvc.perform(post("/sales-checkin/api/v1/submissions").with(ownerCookies(owner))
+                            .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsBytes(legacy)))
+                    .andExpect(status().isOk()).andReturn();
+            String legacyId = objectMapper.readTree(saved.getResponse().getContentAsByteArray()).path("id").asText();
+            var recovered = (tools.jackson.databind.node.ObjectNode)objectMapper.valueToTree(legacy);
+            recovered.remove("privacyAccepted");
+            recovered.remove("privacyNoticeVersion");
+            mockMvc.perform(post("/sales-checkin/api/v1/submissions").with(ownerCookies(owner))
+                            .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsBytes(recovered)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(legacyId));
+            assertThat(jdbc.queryForObject("SELECT privacy_accepted FROM temp_sales_checkin_submission WHERE id=?",
+                    Integer.class,bin(UUID.fromString(legacyId)))).isEqualTo(1);
+            var forged=new CreateSubmissionRequest(UUID.randomUUID(),SUBMISSION_KEY,"深圳",CREATOR_ID,STORE_ID,"测试",null,"越权",null,false,null);
+            mockMvc.perform(post("/sales-checkin/api/v1/submissions").with(ownerCookies(owner))
+                            .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsBytes(forged)))
+                    .andExpect(status().isForbidden());
+        } finally { checkinProperties.setIdentityEnforcementEnabled(false); }
+    }
+
+    @Test
+    void searchesLocalAddressAndGpsAcrossBusinessCitiesWithoutPoiCalls() throws Exception {
+        jdbc.update("UPDATE temp_sales_checkin_store SET location_note='春路77号' WHERE id=?",bin(SHENZHEN_STORE_ID));
+        mockMvc.perform(get("/sales-checkin/api/v1/stores").param("salespersonId",VISITOR_ID.toString())
+                        .param("city","北京").param("q","春").param("limit","50"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$[0].id").value(SHENZHEN_STORE_ID.toString()));
+        mockMvc.perform(get("/sales-checkin/api/v1/stores").param("salespersonId",VISITOR_ID.toString())
+                        .param("city","总部").param("q","").param("limit","50")
+                        .param("longitude",location().longitude().toString()).param("latitude",location().latitude().toString()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$",hasSize(2)))
+                .andExpect(jsonPath("$[0].id").value(STORE_ID.toString())).andExpect(jsonPath("$[0].distanceMeters").isNumber());
+        LocationCommand uncertain=new LocationCommand(location().longitude(),location().latitude(),null,null,"时间精度未知");
+        mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve").contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(resolveRequest("总部",VISITOR_ID,uncertain))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.accuracyAccepted").value(false))
+                .andExpect(jsonPath("$.freshnessAccepted").value(false))
+                .andExpect(jsonPath("$.nearbyStores[0].storeId").value(STORE_ID.toString()))
+                .andExpect(jsonPath("$.address").value("东城区龙潭路与夕照寺街交叉口东南60米"));
+        verifyNoInteractions(amapPoiClient);
+    }
+
+    @Test
+    void explicitPoiSearchAcceptsEmptyOrSingleCharacterAndUnverifiedCoordinates() throws Exception {
+        LocationCommand uncertain=new LocationCommand(location().longitude(),location().latitude(),null,null,"未核验");
+        for(String query:List.of("","店")) mockMvc.perform(post("/sales-checkin/api/v1/locations/search-new-store")
+                        .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsBytes(
+                                new SearchNewStoreRequest(UUID.randomUUID(),"总部",VISITOR_ID,uncertain,query,null))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.accuracyAccepted").value(false))
+                .andExpect(jsonPath("$.freshnessAccepted").value(false)).andExpect(jsonPath("$.poiLookupStatus").value("EMPTY"));
+        verify(amapPoiClient).searchAround(org.mockito.ArgumentMatchers.eq(""),any(BigDecimal.class),any(BigDecimal.class),anyInt(),anyInt(),anyInt());
+        verify(amapPoiClient).searchAround(org.mockito.ArgumentMatchers.eq("店"),any(BigDecimal.class),any(BigDecimal.class),anyInt(),anyInt(),anyInt());
+        verifyNoInteractions(reverseGeocoder);
+    }
+
+    @Test
+    void signedPoiWithUnknownAccuracyAndTimeCreatesAnUnverifiedCanonicalStore() throws Exception {
+        UUID client = UUID.randomUUID();
+        LocationCommand uncertain = new LocationCommand(location().longitude(), location().latitude(), null, null, "原始精度时间未知");
+        var searched = mockMvc.perform(post("/sales-checkin/api/v1/locations/search-new-store")
+                        .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsBytes(
+                                new SearchNewStoreRequest(client,"总部",VISITOR_ID,uncertain,"高德候选门店",null))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.freshnessAccepted").value(false)).andReturn();
+        String token = objectMapper.readTree(searched.getResponse().getContentAsByteArray())
+                .path("nearbyStores").get(0).path("selectionToken").asText();
+        CreateStoreRequest body = new CreateStoreRequest(client,"总部",VISITOR_ID,
+                "B0FFTESTPOI","高德候选门店","客户端地址",BigDecimal.ZERO,BigDecimal.ZERO,
+                "台球","客户端名称","营业中","测试店长",null,"100-300平米","10张球桌",
+                List.of("竞技赛事"),List.of("高德业务"),"高意向","A类",List.of("单店"),uncertain,token,null,null);
+        var created = mockMvc.perform(post("/sales-checkin/api/v1/stores").contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(body)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.name").value("高德候选门店"))
+                .andExpect(jsonPath("$.locationVerificationStatus").value("UNVERIFIED")).andReturn();
+        String id = objectMapper.readTree(created.getResponse().getContentAsByteArray()).path("id").asText();
+        var row = jdbc.queryForMap("SELECT city,accuracy_meters,location_captured_at,source_poi_address FROM temp_sales_checkin_store WHERE id=?",bin(UUID.fromString(id)));
+        assertThat(row.get("city")).isEqualTo("总部");
+        assertThat(row.get("accuracy_meters")).isNull();
+        assertThat(row.get("location_captured_at")).isNull();
+        assertThat(row.get("source_poi_address")).isEqualTo("北京市东城区服务端地址");
+        mockMvc.perform(post("/sales-checkin/api/v1/stores").contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(body)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(id));
+        var lostReceiptRetry = (tools.jackson.databind.node.ObjectNode)objectMapper.valueToTree(body);
+        lostReceiptRetry.put("sourcePoiToken","expired-candidate-token");
+        mockMvc.perform(post("/sales-checkin/api/v1/stores").contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(lostReceiptRetry)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(id));
+        lostReceiptRetry.put("contactName","另一位联系人");
+        mockMvc.perform(post("/sales-checkin/api/v1/stores").contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(lostReceiptRetry)))
+                .andExpect(status().isConflict());
+        jdbc.update("UPDATE temp_sales_checkin_store SET tags_json=JSON_ARRAY('待补全旧标签') WHERE id=?",bin(UUID.fromString(id)));
+        var completion = (tools.jackson.databind.node.ObjectNode)objectMapper.valueToTree(body);
+        completion.put("clientStoreId",UUID.randomUUID().toString());
+        completion.put("contactName","补全联系人");
+        mockMvc.perform(post("/sales-checkin/api/v1/stores").contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(completion)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(id))
+                .andExpect(jsonPath("$.locationVerificationStatus").value("UNVERIFIED"));
+        assertThat(jdbc.queryForObject("SELECT contact_name FROM temp_sales_checkin_store WHERE id=?",String.class,bin(UUID.fromString(id))))
+                .isEqualTo("补全联系人");
+        verifyNoInteractions(reverseGeocoder);
+    }
+
+    @Test
+    void multiplePhotosKeepNineLimitIndependentIdsReadScopesAndAppendOnlyEvidence() throws Exception {
+        checkinProperties.setIdentityEnforcementEnabled(true);
+        try {
+            var owner=historyIdentity(VISITOR_ID,"北京");
+            var stranger=historyIdentity(CREATOR_ID,"北京");
+            UUID client=UUID.randomUUID();
+            var created=mockMvc.perform(post("/sales-checkin/api/v1/submissions").with(ownerCookies(owner))
+                            .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsBytes(submission(client,SUBMISSION_KEY,"多照片拜访",false,null))))
+                    .andExpect(status().isOk()).andReturn();
+            UUID id=UUID.fromString(objectMapper.readTree(created.getResponse().getContentAsByteArray()).path("id").asText());
+            byte[] jpeg=jpeg(32,24);
+            MockMultipartFile file=new MockMultipartFile("file","现场.jpg","image/jpeg",jpeg);
+            mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete",id).with(ownerCookies(owner))
+                    .header("X-Submission-Key",SUBMISSION_KEY)).andExpect(status().isBadRequest());
+            java.util.ArrayList<UUID> ids=new java.util.ArrayList<>();
+            for(int i=0;i<9;i++) { UUID photo=UUID.randomUUID(); ids.add(photo);
+                uploadPhoto(id,photo,file,owner).andExpect(status().isOk()).andExpect(jsonPath("$.photoId").value(photo.toString())); }
+            uploadPhoto(id,ids.getFirst(),file,owner).andExpect(status().isOk());
+            uploadPhoto(id,UUID.randomUUID(),file,owner).andExpect(status().isBadRequest());
+            verify(fileStorage,times(9)).put(any(FileMetadata.class),any(InputStream.class));
+            mockMvc.perform(get("/sales-checkin/api/v1/submissions/by-client/{id}",client).with(ownerCookies(owner)).header("X-Submission-Key",SUBMISSION_KEY))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.photoIds",hasSize(9))).andExpect(jsonPath("$.photos",hasSize(9)));
+            mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions").with(admin("city-beijing")))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].photos",hasSize(9)));
+            when(fileStorage.open(any(String.class),any(String.class))).thenAnswer(invocation -> new ByteArrayInputStream(jpeg));
+            String path="/sales-checkin/api/v1/submissions/"+id+"/mine/media/photo-"+ids.getFirst();
+            mockMvc.perform(get(path).with(ownerCookies(owner)).header("Range","bytes=0-2"))
+                    .andExpect(status().isPartialContent()).andExpect(content().bytes(java.util.Arrays.copyOf(jpeg,3)));
+            mockMvc.perform(get(path).with(ownerCookies(stranger))).andExpect(status().isNotFound());
+            mockMvc.perform(get(path).with(trustedHistoryRequest())).andExpect(status().isUnauthorized());
+            mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions/{id}/media/photos/{photo}",id,ids.getFirst()).with(admin("city-shenzhen")))
+                    .andExpect(status().isNotFound());
+            UUID removed=ids.getFirst();
+            mockMvc.perform(delete("/sales-checkin/api/v1/submissions/{id}/media/photos/{photo}",id,removed)
+                            .with(ownerCookies(owner)).header("X-Submission-Key",SUBMISSION_KEY)).andExpect(status().isOk());
+            uploadPhoto(id,removed,file,owner).andExpect(status().isConflict());
+            mockMvc.perform(get(path).with(ownerCookies(owner))).andExpect(status().isNotFound());
+            String sha=jdbc.queryForObject("SELECT sha256 FROM temp_sales_checkin_photo WHERE photo_id=?",String.class,bin(removed));
+            var derivative=derivativeRepository.find(TENANT_ID,id,"photo-"+removed,sha);
+            UUID lease=UUID.randomUUID();
+            assertThat(derivativeRepository.claim(TENANT_ID,derivative.id(),lease,Instant.now())).isTrue();
+            assertThat(derivativeRepository.success(TENANT_ID,derivative.id(),lease,null,jpeg,null,null,Instant.now())).isFalse();
+            var done=mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete",id).with(ownerCookies(owner))
+                    .header("X-Submission-Key",SUBMISSION_KEY)).andExpect(status().isOk()).andReturn();
+            String submittedAt=objectMapper.readTree(done.getResponse().getContentAsByteArray()).path("submittedAt").asText();
+            uploadPhoto(id,UUID.randomUUID(),file,owner).andExpect(status().isOk());
+            mockMvc.perform(delete("/sales-checkin/api/v1/submissions/{id}/media/photos/{photo}",id,ids.get(1))
+                    .with(ownerCookies(owner)).header("X-Submission-Key",SUBMISSION_KEY)).andExpect(status().isConflict());
+            mockMvc.perform(get("/sales-checkin/api/v1/submissions/{id}/mine",id).with(ownerCookies(owner)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.photos",hasSize(9))).andExpect(jsonPath("$.media",hasSize(9)))
+                    .andExpect(jsonPath("$.submittedAt").value(submittedAt)).andExpect(jsonPath("$.submissionKey").doesNotExist());
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM temp_sales_checkin_evidence_event WHERE submission_id=? AND event_type='SUPPLEMENT'",Integer.class,bin(id))).isEqualTo(1);
+            jdbc.update("UPDATE temp_sales_checkin_submission SET submitted_at=? WHERE id=?",
+                    Timestamp.from(Instant.now().minusSeconds(24*3600+1)),bin(id));
+            uploadPhoto(id,UUID.randomUUID(),file,owner).andExpect(status().isConflict());
+        } finally { checkinProperties.setIdentityEnforcementEnabled(false); }
+    }
+
+    @Test
+    void deletingAnInFlightPhotoDoesNotReviveItAndDeletesOnlyTheStagedObject() throws Exception {
+        var created = mockMvc.perform(post("/sales-checkin/api/v1/submissions").contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submission(UUID.randomUUID(),SUBMISSION_KEY,"照片并发删除",false,null))))
+                .andExpect(status().isOk()).andReturn();
+        UUID id = UUID.fromString(objectMapper.readTree(created.getResponse().getContentAsByteArray()).path("id").asText());
+        UUID photo = UUID.randomUUID();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch resume = new CountDownLatch(1);
+        AtomicReference<FileMetadata> staged = new AtomicReference<>();
+        when(fileStorage.put(any(FileMetadata.class),any(InputStream.class))).thenAnswer(invocation -> {
+            staged.set(invocation.getArgument(0));
+            entered.countDown();
+            if (!resume.await(5,TimeUnit.SECONDS)) throw new IllegalStateException("测试上传超时");
+            return staged.get();
+        });
+        CompletableFuture<MvcResult> upload = CompletableFuture.supplyAsync(() -> {
+            try {
+                return mockMvc.perform(multipart("/sales-checkin/api/v1/submissions/{id}/media/photos/{photo}",id,photo)
+                        .file(new MockMultipartFile("file","现场.jpg","image/jpeg",jpeg(32,24)))
+                        .header("X-Submission-Key",SUBMISSION_KEY)
+                        .with(request -> { request.setMethod("PUT"); return request; })).andReturn();
+            } catch (Exception exception) { throw new CompletionException(exception); }
+        });
+        try {
+            assertThat(entered.await(5,TimeUnit.SECONDS)).isTrue();
+            mockMvc.perform(delete("/sales-checkin/api/v1/submissions/{id}/media/photos/{photo}",id,photo)
+                            .header("X-Submission-Key",SUBMISSION_KEY)).andExpect(status().isOk());
+        } finally { resume.countDown(); }
+        assertThat(upload.get(10,TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(409);
+        verify(fileStorage).delete(TENANT_ID.toString(),staged.get().objectKey());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM temp_sales_checkin_photo WHERE submission_id=? AND deleted_at IS NULL",Integer.class,bin(id))).isZero();
+        mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete",id)
+                .header("X-Submission-Key",SUBMISSION_KEY)).andExpect(status().isBadRequest());
+    }
+
+    private ResultActions uploadPhoto(UUID id,UUID photo,MockMultipartFile file,
+            TemporaryCheckinSalesIdentityService.IdentityVerification identity) throws Exception {
+        return mockMvc.perform(multipart("/sales-checkin/api/v1/submissions/{id}/media/photos/{photo}",id,photo)
+                .file(file).param("captureSource","CAMERA").header("X-Submission-Key",SUBMISSION_KEY)
+                .with(ownerCookies(identity)).with(request -> {request.setMethod("PUT");return request;}));
     }
 
     private UUID insertForeignHistorySubmission(Instant submittedAt) {

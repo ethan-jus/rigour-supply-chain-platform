@@ -419,8 +419,8 @@ class SalesWorkMigrationTests {
                 """, Integer.class);
         assertThat(evidenceColumns).isEqualTo(12);
         assertThat(evidenceUniqueColumns).isEqualTo(7);
-        assertThat(migrationCount).isEqualTo(22);
-        assertThat(tableCount).isEqualTo(41);
+        assertThat(migrationCount).isEqualTo(23);
+        assertThat(tableCount).isEqualTo(42);
         assertThat(editableStoreTableCount).isZero();
         assertThat(storefrontEvidenceColumnCount).isEqualTo(10);
         assertThat(visitPlanExecutionConstraintCount).isEqualTo(3);
@@ -439,7 +439,7 @@ class SalesWorkMigrationTests {
         assertThat(temporaryUniqueConstraintCount).isEqualTo(9);
         assertThat(temporaryForeignKeyCount).isEqualTo(3);
         assertThat(temporarySubmissionStoreForeignKeyColumnCount).isEqualTo(2);
-        assertThat(temporaryCheckConstraintCount).isEqualTo(44);
+        assertThat(temporaryCheckConstraintCount).isEqualTo(46);
         assertThat(temporaryIdentitySalespersonColumnCount).isEqualTo(5);
         assertThat(temporaryIdentityRiskSubmissionColumnCount).isEqualTo(15);
         assertThat(temporaryIdentityRiskConstraintCount).isEqualTo(5);

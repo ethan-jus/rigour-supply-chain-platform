@@ -99,7 +99,8 @@ public final class TemporaryCheckinAdminModels {
             BigDecimal distanceMeters,
             String reviewStatus,
             Instant reviewedAt,
-            String reviewedBy) { }
+            String reviewedBy,
+            List<TemporaryCheckinModels.PhotoView> photos) { }
 
     public record AdminSubmissionPage(
             AdminScopeView scope,

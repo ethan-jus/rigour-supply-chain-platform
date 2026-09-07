@@ -16,10 +16,15 @@ class TemporaryCheckinDerivativeRepository {
     private static final String SOURCE_ACTIVE = """
             EXISTS (SELECT 1 FROM temp_sales_checkin_submission s
             WHERE s.tenant_id=d.tenant_id AND s.id=d.submission_id AND s.deletion_state='NONE' AND (
-            (d.media_id='storefront-photo' AND s.storefront_photo_object_key=d.source_object_key
+            ((d.media_id='storefront-photo' OR (d.media_id=CONCAT('photo-',LOWER(BIN_TO_UUID(s.id)))
+                AND NOT EXISTS(SELECT 1 FROM temp_sales_checkin_photo oldp WHERE oldp.tenant_id=s.tenant_id AND oldp.submission_id=s.id)))
+                AND s.storefront_photo_object_key=d.source_object_key
                 AND s.storefront_photo_sha256=d.source_sha256 AND s.storefront_photo_deleted_at IS NULL)
             OR (d.media_id='wechat-screenshot' AND s.wechat_screenshot_object_key=d.source_object_key
                 AND s.wechat_screenshot_sha256=d.source_sha256 AND s.wechat_screenshot_deleted_at IS NULL)
+            OR EXISTS (SELECT 1 FROM temp_sales_checkin_photo p WHERE p.tenant_id=s.tenant_id
+                AND p.submission_id=s.id AND d.media_id=CONCAT('photo-',LOWER(BIN_TO_UUID(p.photo_id)))
+                AND p.object_key=d.source_object_key AND p.sha256=d.source_sha256 AND p.deleted_at IS NULL)
             OR (d.kind='AUDIO' AND ((s.audio_segments_json IS NULL OR JSON_LENGTH(s.audio_segments_json)=0)
                 AND s.audio_object_key=d.source_object_key AND s.audio_sha256=d.source_sha256
                 AND s.audio_deleted_at IS NULL OR EXISTS (
@@ -62,6 +67,19 @@ class TemporaryCheckinDerivativeRepository {
 
     /** 逐批发现历史媒体和未排队上传，避免在后台只读列表事务中写任务。 */
     void discover(UUID tenant,Instant now) {
+        var photos=jdbc.query("""
+                SELECT p.submission_id,CONCAT('photo-',LOWER(BIN_TO_UUID(p.photo_id))),p.object_key,
+                       p.sha256,p.content_type,p.original_filename,p.size_bytes
+                FROM temp_sales_checkin_photo p JOIN temp_sales_checkin_submission s
+                    ON s.tenant_id=p.tenant_id AND s.id=p.submission_id
+                WHERE p.tenant_id=? AND s.deletion_state='NONE' AND p.deleted_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM temp_sales_checkin_media_derivative d WHERE d.tenant_id=p.tenant_id
+                    AND d.submission_id=p.submission_id AND d.media_id=CONCAT('photo-',LOWER(BIN_TO_UUID(p.photo_id)))
+                    AND d.source_sha256=p.sha256) LIMIT 5
+                """,(rs,n)->new Source(SalesUuidCodec.decode(rs.getBytes(1)),rs.getString(2),rs.getString(3),
+                    rs.getString(4),rs.getString(5),rs.getString(6),rs.getLong(7)),bin(tenant));
+        for(var photo:photos) enqueue(tenant,photo.submissionId(),photo.mediaId(),"IMAGE",photo.key(),photo.sha(),
+                photo.type(),photo.filename(),photo.bytes(),now);
         for (String prefix:List.of("storefront_photo_","wechat_screenshot_","audio_")) {
             String mediaId="audio_".equals(prefix)?null:("storefront_photo_".equals(prefix)?"storefront-photo":"wechat-screenshot");
             String legacy="audio_".equals(prefix)?" AND (s.audio_segments_json IS NULL OR JSON_LENGTH(s.audio_segments_json)=0)":"";

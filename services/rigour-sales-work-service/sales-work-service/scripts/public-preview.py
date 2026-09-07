@@ -37,7 +37,7 @@ STORES = [
 for store in STORES:
     store.update(storeId=store['id'], locationSummary=store['address'], source='REGISTERED', checkinEligible=True,
                  nextAction='CHECK_IN', locationVerificationStatus='VERIFIED')
-OPTIONS = {'cities': ['杭州', '苏州', '上海'], 'salespersons': [{'id': PERSON, 'name': '陈明 · 示例', 'city': '杭州'}],
+OPTIONS = {'cities': ['杭州', '苏州', '上海', '总部'], 'salespersons': [{'id': PERSON, 'name': '陈明 · 示例', 'city': '杭州'}],
     'maxAudioBytes': 268435456, 'storeAttributes': ['便利店', '超市'], 'operatingStatuses': ['营业中', '停业'],
     'areaRanges': ['50㎡以下', '50—100㎡'], 'businessTypes': ['食品零售'], 'intendedBusinesses': ['休闲零食'],
     'cooperationIntents': ['意向合作', '持续跟进'], 'storeGrades': ['A', 'B'], 'storeTags': ['社区店']}
@@ -87,7 +87,7 @@ def create_item(client_id, store, data=None, submitted=None, record_id=None):
     created = submitted or instant()
     location = data.get('location') or {}
     return {'id': record_id or str(uuid.uuid4()), 'clientSubmissionId': client_id, 'status': 'SUBMITTED' if submitted else 'DRAFT',
-        'city': store['city'], 'salespersonId': PERSON, 'salespersonName': '陈明 · 示例', 'storeId': store['id'], 'storeName': store['name'],
+        'city': data.get('city') or store['city'], 'salespersonId': PERSON, 'salespersonName': '陈明 · 示例', 'storeId': store['id'], 'storeName': store['name'],
         'customerName': data.get('customerName') or '李店长（示例）', 'customerPhone': data.get('customerPhone') or '',
         'visitResult': data.get('visitResult') or '示例：沟通新品陈列和补货计划，客户希望周五前安排下一次送货。',
         'createdAt': created, 'submittedAt': submitted, 'uploadedMedia': [], 'audioSegmentIds': [], 'media': [],
@@ -120,14 +120,28 @@ def seed():
             SUBMISSIONS[item['clientSubmissionId']] = item
 seed()
 
+def photos(item):
+    result = []
+    for media in item['media']:
+        if media['kind'] != 'storefront-photo': continue
+        photo_id = media['mediaId'].removeprefix('photo-') if media['mediaId'].startswith('photo-') else item['id']
+        media_id = 'photo-' + photo_id
+        base = f"{API}/submissions/{item['id']}/mine/media/{media_id}"
+        result.append(dict(media, photoId=photo_id, mediaId=media_id, captureSource=media.get('captureSource'),
+            thumbnailUrl=base + '?variant=thumbnail', originalUrl=base + '?variant=original'))
+    return result
+
 def receipt(item):
     result = {key: value for key, value in item.items() if key != 'media'}
     audios = [media for media in item['media'] if media['kind'] == 'audio']
+    result['photos'] = photos(item)
+    result['photoIds'] = [photo['photoId'] for photo in result['photos']]
     result['audioDurationMs'] = sum(media['parsedDurationMs'] for media in audios) if audios and all(media['parsedDurationMs'] is not None for media in audios) else None
     return result
 
 def detail(item):
     result = dict(item)
+    result['photos'] = photos(item)
     result['canSupplement'] = item['status'] == 'SUBMITTED' and bool(item.get('supplementUntil')) and parse_instant(item['supplementUntil']) > dt.datetime.now(dt.timezone.utc)
     return result
 
@@ -168,11 +182,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlsplit(self.path); route = parsed.path; query = urllib.parse.parse_qs(parsed.query)
         first = lambda key, default='': query.get(key, [default])[0]
         with LOCK:
+            # Synthetic admin fixture only: these fixed IDs never touch a database or production media.
+            if re.fullmatch(r'/sales-checkin/admin/api/v1/submissions/20000000-0000-4000-8000-000000000001/media/photos/20000000-0000-4000-8000-00000000002[0-8]', route):
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/jpeg')
+                self.send_header('Content-Length', str(len(PHOTO)))
+                if first('download') == 'true': self.send_header('Content-Disposition', 'attachment; filename="fixture-storefront.jpg"')
+                self.end_headers()
+                if self.command != 'HEAD': self.wfile.write(PHOTO)
+                return
             if route == API + '/identity/me': return self.payload(identity())
             if route == API + '/options': return self.payload(OPTIONS)
             if route == API + '/stores':
-                rows = [store for store in STORES if store['city'] == first('city', '杭州') and first('q').lower() in (store['name'] + store['address']).lower()]
-                return self.payload(rows[:20])
+                rows = [store for store in STORES if first('q').lower() in (store['name'] + store['address']).lower()]
+                return self.payload(sorted(rows, key=lambda item: item.get('distanceMeters', math.inf))[:50])
             if route.startswith(API + '/submissions/by-client/'):
                 item = SUBMISSIONS.get(route.rsplit('/', 1)[-1])
                 return self.payload(receipt(item), 200) if item else self.payload({'message': '示例记录未创建'}, 404)
@@ -203,6 +226,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             match = re.fullmatch(API + r'/submissions/([^/]+)/(?:mine/)?media/(.+)', route)
             if match:
                 media_id = match[2].removeprefix('audio/')
+                if media_id == 'photo-' + match[1]: media_id = 'storefront-photo'
                 media = MEDIA.get((match[1], media_id))
                 return self.binary(*media) if media else self.payload({'message': '示例媒体不存在'}, 404)
             if route.startswith(API): return self.payload({'message': '该 API 尚未加入本地示例'}, 404)
@@ -225,8 +249,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if route.endswith('/identity/logout'): return self.payload({})
             if route.endswith('/client-events'): return self.payload({'accepted': True})
             if route.endswith('/locations/resolve'):
-                return self.payload({'locationVerificationStatus': 'VERIFIED', 'address': '示例：杭州 · 西湖区', 'city': '杭州',
-                    'nearbyStores': STORES, 'nearbyPois': [], 'verificationToken': 'preview-token', 'capturedAt': (data.get('location') or {}).get('capturedAt')})
+                return self.payload({'locationVerificationStatus': 'VERIFIED', 'address': '示例：杭州市西湖区文二路186号',
+                    'formattedAddress': '示例：杭州市西湖区文二路186号', 'city': '杭州', 'resolvedCity': '杭州',
+                    'geocodeStatus': 'RESOLVED', 'accuracyAccepted': True, 'freshnessAccepted': True,
+                    'nearbyStores': STORES, 'nearbyPois': [], 'locationVerificationToken': 'preview-token',
+                    'maxCheckinDistanceMeters': 300, 'maxCheckinAccuracyMeters': 100, 'maxLocationAgeMinutes': 5,
+                    'capturedAt': (data.get('location') or {}).get('capturedAt')})
+            if route.endswith('/locations/search-new-store'):
+                candidates = [dict(source='AMAP_POI', poiId='B-PREVIEW-1', name='悦邻便利店（地图示例）',
+                    address='西湖区示例路1号', distanceMeters=180, longitude=120.1383, latitude=30.2858,
+                    checkinEligible=False, nextAction='COMPLETE_STORE_PROFILE', selectionToken='local-preview-token')]
+                return self.payload({'nearbyStores': candidates, 'poiLookupStatus': 'AVAILABLE'})
             if route.endswith('/stores/new-location-candidates'): return self.payload({'items': []})
             if route in (API + '/stores', API + '/stores/unverified-location'):
                 store = {'id': data.get('clientStoreId') or str(uuid.uuid4()), 'name': data.get('name') or '新增示例门店',
@@ -241,7 +274,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     store = next((store for store in STORES if store['id'] == data.get('storeId')), STORES[0])
                     SUBMISSIONS[client_id] = create_item(client_id, store, data)
                 return self.payload(receipt(SUBMISSIONS[client_id]))
-            match = re.fullmatch(API + r'/submissions/([^/]+)/media/(storefront-photo|wechat-screenshot|audio/([^/]+))', route)
+            match = re.fullmatch(API + r'/submissions/([^/]+)/media/(storefront-photo|wechat-screenshot|audio/([^/]+)|photos/([^/]+))', route)
             if match:
                 item = self.find_item(match[1])
                 if not item: return self.payload({'message': '示例记录不存在'}, 404)
@@ -250,14 +283,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 part = next((part for part in message.iter_parts() if part.get_param('name', header='content-disposition') == 'file'), None) if message.is_multipart() else None
                 if not part: return self.payload({'message': '示例上传缺少文件'}, 400)
                 content = part.get_payload(decode=True); mime = part.get_content_type(); filename = part.get_filename() or '示例附件'
-                kind = 'audio' if match[3] else match[2]; media_id = match[3] or kind; duration = None
+                kind = 'audio' if match[3] else 'storefront-photo' if match[4] else match[2]
+                media_id = 'photo-' + match[4] if match[4] else match[3] or kind
+                duration = None
+                if match[4] and len(photos(item)) >= 9 and not any(p['photoId'] == match[4] for p in photos(item)):
+                    return self.payload({'message': '最多9张照片'}, 400)
                 if kind == 'audio':
                     try:
                         with wave.open(io.BytesIO(content)) as audio: duration = round(audio.getnframes() / audio.getframerate() * 1000)
                     except (wave.Error, EOFError): pass
                 media = put_media(item, media_id, kind, content, mime, filename, duration)
+                if match[4]: media['captureSource'] = next((part.get_content() for part in message.iter_parts() if part.get_param('name', header='content-disposition') == 'captureSource'), None)
                 return self.payload({'id': item['id'], 'kind': kind, 'status': item['status'], 'segmentId': media_id if kind == 'audio' else None,
-                    'originalFilename': filename, 'sizeBytes': len(content), 'parsedDurationMs': duration, 'contentType': mime})
+                    'photoId': match[4], 'originalFilename': filename, 'sizeBytes': len(content), 'parsedDurationMs': duration, 'contentType': mime})
             match = re.fullmatch(API + r'/submissions/([^/]+)/complete', route)
             if match:
                 item = self.find_item(match[1])
@@ -270,16 +308,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_DELETE(self):
         route = urllib.parse.urlsplit(self.path).path
         with LOCK:
-            match = re.fullmatch(API + r'/submissions/([^/]+)/media/(storefront-photo|wechat-screenshot|audio/([^/]+))', route)
+            match = re.fullmatch(API + r'/submissions/([^/]+)/media/(storefront-photo|wechat-screenshot|audio/([^/]+)|photos/([^/]+))', route)
             if not match: return self.payload({'message': '该 API 尚未加入本地示例'}, 404)
             item = self.find_item(match[1])
             if not item: return self.payload({'message': '示例记录不存在'}, 404)
-            media_id = match[3] or match[2]
+            if item['status'] == 'SUBMITTED' and match[4]: return self.payload({'message': '已提交原件不可删除'}, 409)
+            media_id = 'photo-' + match[4] if match[4] else match[3] or match[2]
+            if media_id == 'photo-' + item['id']: media_id = 'storefront-photo'
             item['media'] = [media for media in item['media'] if media['mediaId'] != media_id]
             item['audioSegmentIds'] = [value for value in item['audioSegmentIds'] if value != media_id]
             item['uploadedMedia'] = list(dict.fromkeys(media['kind'] for media in item['media']))
             MEDIA.pop((item['id'], media_id), None)
-            return self.payload({'id': item['id'], 'status': item['status']})
+            return self.payload({'id': item['id'], 'status': item['status'], 'photoId': match[4]})
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)

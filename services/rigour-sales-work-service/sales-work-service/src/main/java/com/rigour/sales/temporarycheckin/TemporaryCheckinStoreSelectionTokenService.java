@@ -88,8 +88,6 @@ class TemporaryCheckinStoreSelectionTokenService {
                 && !payload.expiresAt().isAfter(payload.issuedAt().plus(tokenTtl))
                 && payload.searchLongitude() != null
                 && payload.searchLatitude() != null
-                && payload.searchAccuracyMeters() != null
-                && payload.searchCapturedAt() != null
                 && payload.candidate() != null;
         if (!bindingMatches || distanceMeters(currentLatitude, currentLongitude,
                 payload.searchLatitude(), payload.searchLongitude()) > locationToleranceMeters) {
