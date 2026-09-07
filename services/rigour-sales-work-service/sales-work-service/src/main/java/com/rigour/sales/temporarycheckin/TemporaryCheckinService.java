@@ -60,6 +60,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -100,6 +101,8 @@ public class TemporaryCheckinService {
 
     private static final Logger log = LoggerFactory.getLogger(TemporaryCheckinService.class);
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final DateTimeFormatter CSV_TIME_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ROOT).withZone(BUSINESS_ZONE);
     private static final int MAX_EXPORT_ROWS = 20_000;
     private static final long MAX_CLIENT_AUDIO_DURATION_MS = Duration.ofDays(7).toMillis();
     public static final String PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
@@ -125,10 +128,7 @@ public class TemporaryCheckinService {
             Map.entry("广州", "4401"));
     private static final Set<String> SUBMISSION_STATUSES = Set.of("DRAFT", "SUBMITTED");
     private static final Set<String> ADMIN_VISIT_TYPES = Set.of("FIRST_VISIT", "REVISIT");
-    private static final Set<String> LOCATION_FAILURE_REASONS = Set.of(
-            "PERMISSION_DENIED", "POSITION_UNAVAILABLE", "TIMEOUT", "UNSUPPORTED",
-            "INSECURE_CONTEXT", "INVALID_POSITION", "TIMESTAMP_UNUSABLE",
-            "ACCURACY_INSUFFICIENT", "RESOLVE_FAILED", "USER_CONTINUED_AFTER_WAIT");
+
     private static final Set<String> CLIENT_DIAGNOSTIC_EVENTS = Set.of(
             "LOCATION_CLICK", "LOCATION_RESULT", "LOCATION_TIMESTAMP", "SEARCH_CLICK", "SEARCH_RESULT",
             "PHOTO_PICKER_OPEN", "PHOTO_SELECTED", "PHOTO_REJECTED", "PHOTO_READY",
@@ -141,6 +141,8 @@ public class TemporaryCheckinService {
     private static final TypeReference<List<AudioSegment>> AUDIO_SEGMENT_LIST_TYPE = new TypeReference<>() { };
 
     private final TemporaryCheckinRepository repository;
+    private final TemporaryCheckinEvidenceRepository evidenceRepository;
+    private final TemporaryCheckinDerivativeRepository derivativeRepository;
     private final TemporaryCheckinAdminAuthRepository adminAuthRepository;
     private final TemporaryCheckinProperties properties;
     private final FileStorage fileStorage;
@@ -155,9 +157,12 @@ public class TemporaryCheckinService {
     private final Clock clock;
     private final UUID tenantId;
     private final boolean aiEnabled;
+    private final ObjectProvider<org.springframework.boot.servlet.autoconfigure.MultipartProperties> multipartProperties;
 
     public TemporaryCheckinService(
             TemporaryCheckinRepository repository,
+            TemporaryCheckinEvidenceRepository evidenceRepository,
+            TemporaryCheckinDerivativeRepository derivativeRepository,
             TemporaryCheckinAdminAuthRepository adminAuthRepository,
             TemporaryCheckinProperties properties,
             FileStorage fileStorage,
@@ -170,8 +175,11 @@ public class TemporaryCheckinService {
             TemporaryCheckinSalesIdentityService salesIdentityService,
             TransactionTemplate transactions,
             Clock clock,
-            ObjectProvider<TemporaryCheckinAiClient> aiClientProvider) {
+            ObjectProvider<TemporaryCheckinAiClient> aiClientProvider,
+            ObjectProvider<org.springframework.boot.servlet.autoconfigure.MultipartProperties> multipartProperties) {
         this.repository = repository;
+        this.evidenceRepository = evidenceRepository;
+        this.derivativeRepository = derivativeRepository;
         this.adminAuthRepository = adminAuthRepository;
         this.properties = properties;
         this.fileStorage = fileStorage;
@@ -186,6 +194,7 @@ public class TemporaryCheckinService {
         this.clock = clock;
         this.tenantId = properties.requireTenantId();
         this.aiEnabled = aiClientProvider.getIfAvailable() != null;
+        this.multipartProperties = multipartProperties;
         validateConfiguration(properties);
     }
 
@@ -205,7 +214,19 @@ public class TemporaryCheckinService {
         return new OptionsResponse(configuredCities, salespersons, properties.getStoreAttributes(),
                 properties.getOperatingStatuses(), properties.getAreaRanges(), properties.getBusinessTypes(),
                 properties.getIntendedBusinesses(), properties.getCooperationIntents(),
-                properties.getStoreGrades(), properties.getStoreTags());
+                properties.getStoreGrades(), properties.getStoreTags(), effectiveAudioLimit());
+    }
+
+    /** 返回业务与Servlet的有效上限；请求体还须为表单头部和诊断字段预留1MiB。 */
+    private long effectiveAudioLimit() {
+        long limit=properties.getMaxAudioBytes();
+        var multipart=multipartProperties.getIfAvailable();
+        if (multipart==null) return limit;
+        long fileLimit=multipart.getMaxFileSize().toBytes();
+        long requestLimit=multipart.getMaxRequestSize().toBytes();
+        if (fileLimit>=0) limit=Math.min(limit,fileLimit);
+        if (requestLimit>=0) limit=Math.min(limit,Math.max(0,requestLimit-1024L*1024));
+        return limit;
     }
 
     public void recordClientDiagnosticEvent(
@@ -235,18 +256,156 @@ public class TemporaryCheckinService {
                 event, result, itemCount, fileSizeBytes, clientSummary(identity));
     }
 
-    public List<StoreView> searchStores(String city, String query, Integer requestedLimit) {
-        List<String> configuredCities = activeCities();
-        String normalizedCity = requiredEnum(city, configuredCities, "city");
-        String normalizedQuery = required(query, "q", 128);
-        if (normalizedQuery.length() < 2) throw TemporaryCheckinException.badRequest("q至少输入2个字符");
-        int limit = requestedLimit == null ? 20 : requestedLimit;
-        if (limit < 1 || limit > 20) throw TemporaryCheckinException.badRequest("limit必须在1到20之间");
-        String escaped = normalizedQuery.replace("=", "==").replace("%", "=%").replace("_", "=_");
-        return repository.searchStores(tenantId, normalizedCity, escaped, limit).stream()
-                .filter(store -> hasCompleteStoreProfile(store, configuredCities))
-                .map(TemporaryCheckinService::storeView)
-                .toList();
+    public List<StoreView> searchAuthorizedStores(String city, String query, Integer limit,
+            UUID salespersonId, TemporaryCheckinRequestFacts facts) {
+        UUID operator = salespersonId;
+        if (operator == null) operator = salesIdentityService.current(facts).salespersonId();
+        AuthorizedRequest identity = salesIdentityService.requireSalesperson(operator, facts);
+        String authorizedCity = requiredEnum(city, activeCities(), "city");
+        requireSalespersonCanWorkInCity(identity.salesperson(), authorizedCity);
+        String q = query == null || query.isBlank() ? "" : required(query, "q", 128);
+        if (!q.isEmpty() && q.length() < 2) throw TemporaryCheckinException.badRequest("q至少输入2个字符");
+        int size = limit == null ? 20 : limit;
+        if (size < 1 || size > 20) throw TemporaryCheckinException.badRequest("limit必须在1到20之间");
+        String escaped = q.replace("=", "==").replace("%", "=%").replace("_", "=_");
+        // 与既有定位正常路径一致：租户内有效目录跨城市可选，业务归属仍由身份约束。
+        return repository.searchStores(tenantId, q.isEmpty() ? authorizedCity : null, escaped, size).stream()
+                .map(TemporaryCheckinService::storeView).toList();
+    }
+
+    public TemporaryCheckinModels.SubmissionReceipt receiptByClient(
+            UUID clientId, String key, TemporaryCheckinRequestFacts facts) {
+        SubmissionRow row = repository.findSubmissionByClientId(tenantId, clientId)
+                .orElseThrow(() -> TemporaryCheckinException.notFound("尚未收到该打卡记录"));
+        salesIdentityService.requireSubmission(row.salespersonId(), row.deviceTokenHash(), facts);
+        requireMatchingKey(row, key);
+        return receipt(row);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public TemporaryCheckinModels.SubmissionReceiptPage ownReceipts(UUID salespersonId,
+            LocalDate dateFrom, LocalDate dateTo, String rawStatus, String rawSortDirection,
+            Integer requestedPage, Integer requestedSize, TemporaryCheckinRequestFacts facts) {
+        UUID owner = salesIdentityService.requireHistoryIdentity(salespersonId, facts).salesperson().id();
+        int page = requestedPage == null ? 0 : requestedPage;
+        int size = requestedSize == null ? 20 : requestedSize;
+        if (page < 0 || size < 1 || size > 100 || (long)page * size > Integer.MAX_VALUE)
+            throw TemporaryCheckinException.badRequest("分页参数无效");
+        if (dateFrom != null && dateTo != null && dateFrom.isAfter(dateTo))
+            throw TemporaryCheckinException.badRequest("开始日期不能晚于结束日期");
+        String status = optionalEnum(rawStatus, List.of("SUBMITTED", "DRAFT"), "status");
+        String direction = rawSortDirection == null || rawSortDirection.isBlank() ? "desc"
+                : requiredEnum(rawSortDirection, List.of("asc", "desc"), "sortDir");
+        if ("DRAFT".equals(status) && (dateFrom != null || dateTo != null))
+            throw TemporaryCheckinException.badRequest("草稿没有打卡提交日期，请清除日期筛选");
+        if ((dateFrom != null && (dateFrom.getYear() < 1970 || dateFrom.getYear() > 9998))
+                || (dateTo != null && (dateTo.getYear() < 1970 || dateTo.getYear() > 9998)))
+            throw TemporaryCheckinException.badRequest("日期超出支持范围");
+        Instant from = dateFrom == null ? null : dateFrom.atStartOfDay(BUSINESS_ZONE).toInstant();
+        Instant until = dateTo == null ? null : dateTo.plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant();
+        long total = evidenceRepository.ownSubmissionCount(tenantId, owner, from, until, status);
+        List<UUID> ids = evidenceRepository.ownSubmissionIds(tenantId, owner, from, until, status, direction,
+                page * size, size);
+        var derivatives = derivativeRepository.forSubmissions(tenantId, ids);
+        List<TemporaryCheckinModels.SubmissionReceipt> items = ids.stream().map(this::requireSubmission)
+                .map(row -> receipt(row, derivatives)).toList();
+        return new TemporaryCheckinModels.SubmissionReceiptPage(items, page, size, total,
+                (int)Math.min(Integer.MAX_VALUE, total == 0 ? 0 : (total - 1) / size + 1));
+    }
+
+    private TemporaryCheckinModels.SubmissionReceipt receipt(SubmissionRow row) {
+        return receipt(row, derivativeRepository.forSubmissions(tenantId, List.of(row.id())));
+    }
+
+    private TemporaryCheckinModels.SubmissionReceipt receipt(SubmissionRow row,
+            Map<String,TemporaryCheckinDerivativeRepository.Derivative> derivatives) {
+        List<String> media = new ArrayList<>();
+        if (hasMedia(row.storefrontPhoto())) media.add("storefront-photo");
+        if (hasMedia(row.wechatScreenshot())) media.add("wechat-screenshot");
+        List<AudioSegment> segments = audioSegments(row).stream().filter(AudioSegment::available).toList();
+        List<UUID> segmentIds = segments.stream().map(AudioSegment::segmentId).toList();
+        if (!segmentIds.isEmpty()) media.add("audio");
+        Long duration = segments.isEmpty() ? null : 0L;
+        for (AudioSegment segment : segments) {
+            var derived = derivatives.get(row.id()+"/"+segment.segmentId()+"/"+segment.sha256());
+            if (derived == null || derived.durationMs() == null || derived.durationMs() <= 0) { duration = null; break; }
+            duration += derived.durationMs();
+        }
+        return new TemporaryCheckinModels.SubmissionReceipt(row.id(), row.clientSubmissionId(), row.status(),
+                row.storeName(), row.city(), row.createdAt(), row.submittedAt(), List.copyOf(media), segmentIds,
+                row.submittedAt() == null ? null : row.submittedAt().plus(Duration.ofHours(properties.getSupplementalEvidenceHours())),
+                row.visitResult(), duration);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public TemporaryCheckinModels.OwnSubmissionDetail ownSubmission(UUID id, TemporaryCheckinRequestFacts facts) {
+        AuthorizedRequest identity = salesIdentityService.requireHistoryIdentity(null, facts);
+        SubmissionRow row = requireOwnSubmission(id, identity.salesperson().id());
+        var evidence = evidenceRepository.evidence(tenantId, id);
+        var derivatives = derivativeRepository.forSubmissions(tenantId, List.of(id));
+        List<TemporaryCheckinModels.OwnMediaView> media = new ArrayList<>();
+        for (MediaKind kind : List.of(MediaKind.STOREFRONT_PHOTO, MediaKind.WECHAT_SCREENSHOT)) {
+            MediaReference original = media(row, kind);
+            if (hasMedia(original)) media.add(new TemporaryCheckinModels.OwnMediaView(kind.pathValue,
+                    kind.pathValue, original.originalFilename(), original.contentType(), original.sizeBytes(), null,
+                    null, null, ownMediaUrl(id, kind.pathValue, "thumbnail"), null, ownMediaUrl(id, kind.pathValue, "original")));
+        }
+        for (AudioSegment segment : audioSegments(row)) {
+            if (!segment.available()) continue;
+            String mediaId = segment.segmentId().toString();
+            var derived = derivatives.get(id+"/"+mediaId+"/"+segment.sha256());
+            String playbackStatus = derived == null || "PROCESSING".equals(derived.status()) ? "PENDING" : derived.status();
+            media.add(new TemporaryCheckinModels.OwnMediaView(mediaId, "audio", segment.originalFilename(),
+                    segment.contentType(), segment.sizeBytes(), segment.uploadedAt(), derived == null ? null : derived.durationMs(),
+                    playbackStatus, null, "READY".equals(playbackStatus) ? ownMediaUrl(id,mediaId,"playback") : null,
+                    ownMediaUrl(id,mediaId,"original")));
+        }
+        Instant supplementUntil = row.submittedAt() == null ? null
+                : row.submittedAt().plus(Duration.ofHours(properties.getSupplementalEvidenceHours()));
+        boolean canSupplement = "SUBMITTED".equals(row.status()) && supplementUntil != null
+                && clock.instant().isBefore(supplementUntil)
+                && (row.deviceTokenHash() == null || Objects.equals(row.deviceTokenHash(), identity.deviceTokenHash()));
+        return new TemporaryCheckinModels.OwnSubmissionDetail(id, row.clientSubmissionId(), row.status(), row.city(),
+                row.salespersonId(), row.salespersonName(), row.storeId(), row.storeName(), row.customerName(),
+                row.customerPhone(), row.visitResult(), row.createdAt(), row.submittedAt(), supplementUntil, canSupplement,
+                evidence.locationQuality(), row.locationCapturedAt(), evidence.locationRawTimestamp(), evidence.locationReceivedAt(),
+                evidence.locationSource(), evidence.locationAddress(), row.locationNote(), row.longitude(), row.latitude(), row.accuracyMeters(),
+                evidence.storeLongitude(), evidence.storeLatitude(), evidence.distanceMeters(), List.copyOf(media));
+    }
+
+    private SubmissionRow requireOwnSubmission(UUID id, UUID salesperson) {
+        SubmissionRow row = requireSubmission(id);
+        if (!salesperson.equals(row.salespersonId())) throw TemporaryCheckinException.notFound("拜访记录不存在");
+        return row;
+    }
+
+    private static String ownMediaUrl(UUID id, String mediaId, String variant) {
+        return "/sales-checkin/api/v1/submissions/"+id+"/mine/media/"+mediaId+"?variant="+variant;
+    }
+
+    public AdminMedia ownMedia(UUID id, String mediaId, String rawVariant, TemporaryCheckinRequestFacts facts) {
+        AuthorizedRequest identity = salesIdentityService.requireHistoryIdentity(null, facts);
+        SubmissionRow row = requireOwnSubmission(id, identity.salesperson().id());
+        String variant = requiredEnum(rawVariant, List.of("original", "thumbnail", "playback"), "variant");
+        if ("storefront-photo".equals(mediaId) || "wechat-screenshot".equals(mediaId)) {
+            MediaKind kind = MediaKind.parse(mediaId);
+            if ("playback".equals(variant)) throw TemporaryCheckinException.badRequest("图片不支持录音播放版本");
+            MediaReference original = media(row, kind);
+            if (!hasMedia(original)) throw TemporaryCheckinException.notFound("媒体文件不存在");
+            if ("thumbnail".equals(variant)) {
+                byte[] bytes = submissionThumbnail(row, kind);
+                return new AdminMedia(() -> new java.io.ByteArrayInputStream(bytes), bytes.length, "image/jpeg", "thumbnail.jpg");
+            }
+            return new AdminMedia(() -> fileStorage.open(tenantId.toString(), original.objectKey()),
+                    original.sizeBytes(), original.contentType(), original.originalFilename());
+        }
+        UUID segmentId;
+        try { segmentId = UUID.fromString(mediaId); }
+        catch (IllegalArgumentException invalid) { throw TemporaryCheckinException.notFound("媒体文件不存在"); }
+        if ("thumbnail".equals(variant)) throw TemporaryCheckinException.badRequest("录音不支持图片缩略图");
+        AudioSegment segment = audioSegments(row).stream().filter(item -> segmentId.equals(item.segmentId()) && item.available())
+                .findFirst().orElseThrow(() -> TemporaryCheckinException.notFound("媒体文件不存在"));
+        return "playback".equals(variant) ? submissionAudioPlayback(row, segmentId) : openAudioSegment(segment);
     }
 
     public LocationContextView resolveLocation(
@@ -407,6 +566,10 @@ public class TemporaryCheckinService {
         if (request == null || request.clientStoreId() == null || request.salespersonId() == null) {
             throw TemporaryCheckinException.badRequest("clientStoreId和salespersonId不能为空");
         }
+        if (!hasText(request.sourcePoiToken()) && !hasText(request.manualEntryToken())
+                && !hasText(request.sourcePoiId())) {
+            return createStoreWithoutVerifiedLocation(request, requestFacts);
+        }
         requireNoLocationException(request.locationFailureReason(), request.locationAttemptId());
         AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
         NormalizedStore normalized = normalizeStore(request, LocationVerification.verified());
@@ -495,15 +658,17 @@ public class TemporaryCheckinService {
         if (request == null || request.clientStoreId() == null || request.salespersonId() == null) {
             throw TemporaryCheckinException.badRequest("clientStoreId和salespersonId不能为空");
         }
-        LocationVerification verification = unverifiedLocation(
-                request.locationFailureReason(), request.locationAttemptId());
-        if (hasText(request.locationVerificationToken()) || hasText(request.sourcePoiToken())
-                || hasText(request.manualEntryToken()) || hasText(request.sourcePoiId())
+        AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
+        requireSalespersonCanWorkInCity(identity.salesperson(),requiredEnum(request.city(),activeCities(),"city"));
+        LocationVerification verification = new LocationVerification("UNVERIFIED",
+                hasText(request.locationFailureReason()) ? optional(request.locationFailureReason(), "locationFailureReason", 64)
+                        : "MANUAL_STORE",
+                request.locationAttemptId() == null ? request.clientStoreId() : request.locationAttemptId());
+        if (hasText(request.sourcePoiToken()) || hasText(request.sourcePoiId())
                 || hasText(request.sourcePoiName()) || hasText(request.sourcePoiAddress())
                 || request.sourcePoiLongitude() != null || request.sourcePoiLatitude() != null) {
             throw TemporaryCheckinException.badRequest("定位未核验时只能手工录入门店资料");
         }
-        AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
         NormalizedStore normalized = normalizeStore(request, verification);
         var salesperson = identity.salesperson();
         requireSalespersonCanWorkInCity(salesperson, normalized.city());
@@ -532,18 +697,16 @@ public class TemporaryCheckinService {
                 eligibleStoreView(created));
     }
 
+    /** 定位留痕与业务提交解耦；设备自报位置仅生成质量和复核提示，不能阻断正常拜访。 */
     @Transactional
     public DraftSubmissionView createDraft(
             CreateSubmissionRequest request, TemporaryCheckinRequestFacts requestFacts) {
         if (request == null || request.clientSubmissionId() == null || request.salespersonId() == null
                 || request.storeId() == null) {
-            throw TemporaryCheckinException.badRequest(
-                    "clientSubmissionId、salespersonId和storeId不能为空");
+            throw TemporaryCheckinException.badRequest("clientSubmissionId、salespersonId和storeId不能为空");
         }
-        requireNoLocationException(request.locationFailureReason(), request.locationAttemptId());
         String key = validateSubmissionKey(request.submissionKey());
         AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
-        String keyHash = sha256Hex(key.getBytes(StandardCharsets.UTF_8));
         if (!Boolean.TRUE.equals(request.privacyAccepted())) {
             throw TemporaryCheckinException.badRequest("必须明确同意定位、照片、录音及转写说明");
         }
@@ -551,149 +714,103 @@ public class TemporaryCheckinService {
             throw TemporaryCheckinException.badRequest("隐私提示版本已更新，请刷新页面后重新确认");
         }
         String city = requiredEnum(request.city(), activeCities(), "city");
+        requireSalespersonCanWorkInCity(identity.salesperson(), city);
+        StoreRow store = repository.findStore(tenantId, request.storeId())
+                .orElseThrow(() -> TemporaryCheckinException.notFound("门店不存在或已停用"));
+        if (!"ACTIVE".equals(store.status())) throw TemporaryCheckinException.notFound("门店不存在或已停用");
+        NormalizedLocation location = normalizeOptionalUnverifiedLocation(request.location());
+        CheckinAnchor anchor = checkinAnchor(store, null);
+        Double distance = location == null || anchor == null ? null : distanceToAnchor(location, anchor);
+        String quality = assessLocationQuality(request.location(), location, anchor, distance);
+        LocationVerification verification = "GOOD".equals(quality) ? LocationVerification.verified()
+                : new LocationVerification("UNVERIFIED", hasText(request.locationFailureReason())
+                        ? optional(request.locationFailureReason(), "locationFailureReason", 64) : quality,
+                    request.locationAttemptId() == null ? request.clientSubmissionId() : request.locationAttemptId());
         NormalizedSubmission normalized = new NormalizedSubmission(city, request.salespersonId(), request.storeId(),
                 required(request.customerName(), "customerName", 128),
                 optionalPhone(request.customerPhone(), "customerPhone"),
-                requiredMultiline(request.visitResult(), "visitResult", 2000),
-                normalizeLocation(request.location()), LocationVerification.verified(),
+                requiredMultiline(request.visitResult(), "visitResult", 2000), location, verification,
                 true, request.privacyNoticeVersion());
-        var salesperson = identity.salesperson();
-        requireSalespersonCanWorkInCity(salesperson, city);
-        SubmissionRow existing = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId())
-                .orElse(null);
+        SubmissionRow existing = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId()).orElse(null);
         if (existing != null) {
-            salesIdentityService.requireSubmission(
-                    existing.salespersonId(), existing.deviceTokenHash(), requestFacts);
+            salesIdentityService.requireSubmission(existing.salespersonId(), existing.deviceTokenHash(), requestFacts);
             requireMatchingKey(existing, key);
             assertSameSubmission(existing, normalized);
             return new DraftSubmissionView(existing.id(), existing.status(), existing.createdAt());
         }
-        requireAcceptableCurrentLocation(normalized.location());
-        GeocodeResult verifiedGeocode = verifyLocationProof(
-                request.locationVerificationToken(), salesperson.id(), city,
-                normalized.location());
-        StoreRow store = repository.findStore(tenantId, request.storeId())
-                .orElseThrow(() -> TemporaryCheckinException.notFound("门店不存在或已停用"));
-        requireEligibleCheckinStore(store, normalized.location());
         UUID id = UUID.randomUUID();
         Instant now = clock.instant();
-        GeocodeWrite geocodeWrite = geocodeWrite(verifiedGeocode, now);
         RiskSnapshot risk = salesIdentityService.evaluateRisk(identity);
-        RequestRiskFacts riskFacts = risk.requestFacts();
+        if (!"GOOD".equals(quality)) {
+            risk = withUnverifiedLocationRisk(risk);
+            List<String> flags = new ArrayList<>(risk.flags());
+            flags.add("LOCATION_" + quality);
+            risk = new RiskSnapshot(risk.level(), List.copyOf(flags), risk.requestFacts(), risk.evaluatedAt());
+        }
+        RequestRiskFacts facts = risk.requestFacts();
+        var salesperson = identity.salesperson();
         IdentityRiskWrite identityWrite = new IdentityRiskWrite(identity.identityMethod(), identity.verifiedAt(),
-                salesperson.credentialVersion(), identity.deviceTokenHash(),
-                riskFacts == null ? null : riskFacts.ipHash(),
-                riskFacts == null ? null : riskFacts.ipNetworkHash(),
-                riskFacts == null ? null : riskFacts.ipMasked(),
-                riskFacts == null ? null : riskFacts.userAgentHash(),
-                riskFacts == null ? null : riskFacts.userAgentSummary(),
+                salesperson.credentialVersion(), identity.deviceTokenHash(), facts == null ? null : facts.ipHash(),
+                facts == null ? null : facts.ipNetworkHash(), facts == null ? null : facts.ipMasked(),
+                facts == null ? null : facts.userAgentHash(), facts == null ? null : facts.userAgentSummary(),
                 risk.level(), writeJson(risk.flags()), risk.evaluatedAt());
-        SubmissionWrite write = new SubmissionWrite(id, tenantId, request.clientSubmissionId(), keyHash,
-                city, salesperson.id(), salesperson.name(), store.id(), store.name(),
-                normalized.customerName(), normalized.customerPhone(), normalized.visitResult(),
-                normalized.location().longitude(), normalized.location().latitude(),
-                normalized.location().accuracyMeters(), normalized.location().capturedAt(),
-                normalized.location().note(), normalized.verification().status(),
-                normalized.verification().failureReason(), normalized.verification().attemptId(),
-                geocodeWrite, normalized.privacyNoticeVersion(), identityWrite, now);
+        GeocodeWrite geocode = unverifiedGeocodeWrite(location, verification, now);
+        if (location != null && location.capturedAt() != null && location.accuracyMeters() != null
+                && hasText(request.locationVerificationToken())) {
+            try {
+                geocode = geocodeWrite(verifyLocationProof(request.locationVerificationToken(),
+                        salesperson.id(),city,location),now);
+            } catch (TemporaryCheckinException ignored) {
+                // 地址凭证过期只影响地址来源，不阻断业务留档。
+            }
+        }
+        SubmissionWrite write = new SubmissionWrite(id, tenantId, request.clientSubmissionId(),
+                sha256Hex(key.getBytes(StandardCharsets.UTF_8)), city, salesperson.id(), salesperson.name(),
+                store.id(), store.name(), normalized.customerName(), normalized.customerPhone(), normalized.visitResult(),
+                location == null ? null : location.longitude(), location == null ? null : location.latitude(),
+                location == null ? null : location.accuracyMeters(), location == null ? null : location.capturedAt(),
+                location == null ? null : location.note(), verification.status(), verification.failureReason(),
+                verification.attemptId(), geocode, normalized.privacyNoticeVersion(), identityWrite, now);
         try {
             repository.insertSubmission(write);
+
         } catch (DataIntegrityViolationException duplicate) {
             SubmissionRow concurrent = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId())
                     .orElseThrow(() -> TemporaryCheckinException.conflict("草稿创建冲突，请重试"));
-            salesIdentityService.requireSubmission(
-                    concurrent.salespersonId(), concurrent.deviceTokenHash(), requestFacts);
+            salesIdentityService.requireSubmission(concurrent.salespersonId(), concurrent.deviceTokenHash(), requestFacts);
             requireMatchingKey(concurrent, key);
             assertSameSubmission(concurrent, normalized);
             return new DraftSubmissionView(concurrent.id(), concurrent.status(), concurrent.createdAt());
         }
+        evidenceRepository.recordLocation(tenantId, id, quality,
+                    request.location() == null ? null : optional(request.location().rawTimestamp(), "rawTimestamp", 128),
+                    request.location() == null ? null : request.location().receivedAt(),
+                    request.location() == null ? null : optional(request.location().source(), "location.source", 64),
+                    objectMapper.writeValueAsString(request.location()), anchor == null ? null : anchor.longitude(),
+                    anchor == null ? null : anchor.latitude(), distance == null ? null : BigDecimal.valueOf(distance), now);
         return new DraftSubmissionView(id, "DRAFT", now);
     }
 
-    /**
-     * GPS 最终不可用时仍保存拜访事实。记录会明确标记 UNVERIFIED，跳过位置凭证和距离门禁，
-     * 但身份、门店资料、隐私确认、幂等密钥及后续门头照要求均与正常路径相同。
-     */
+    /** 旧页面仍可能携带例外路由，发布过渡期复用统一提交实现，不保留独立业务规则。 */
     @Transactional
     public DraftSubmissionView createDraftWithoutVerifiedLocation(
             CreateSubmissionRequest request, TemporaryCheckinRequestFacts requestFacts) {
-        if (request == null || request.clientSubmissionId() == null || request.salespersonId() == null
-                || request.storeId() == null) {
-            throw TemporaryCheckinException.badRequest(
-                    "clientSubmissionId、salespersonId和storeId不能为空");
-        }
-        if (hasText(request.locationVerificationToken())) {
-            throw TemporaryCheckinException.badRequest("定位未核验留档不能携带位置验证凭证");
-        }
-        LocationVerification verification = unverifiedLocation(
-                request.locationFailureReason(), request.locationAttemptId());
-        String key = validateSubmissionKey(request.submissionKey());
-        AuthorizedRequest identity = salesIdentityService.requireSalesperson(request.salespersonId(), requestFacts);
-        String keyHash = sha256Hex(key.getBytes(StandardCharsets.UTF_8));
-        if (!Boolean.TRUE.equals(request.privacyAccepted())) {
-            throw TemporaryCheckinException.badRequest("必须明确同意定位、照片、录音及转写说明");
-        }
-        if (!PRIVACY_NOTICE_VERSION.equals(request.privacyNoticeVersion())) {
-            throw TemporaryCheckinException.badRequest("隐私提示版本已更新，请刷新页面后重新确认");
-        }
-        String city = requiredEnum(request.city(), activeCities(), "city");
-        NormalizedSubmission normalized = new NormalizedSubmission(
-                city, request.salespersonId(), request.storeId(),
-                required(request.customerName(), "customerName", 128),
-                optionalPhone(request.customerPhone(), "customerPhone"),
-                requiredMultiline(request.visitResult(), "visitResult", 2000),
-                normalizeOptionalUnverifiedLocation(request.location()), verification,
-                true, request.privacyNoticeVersion());
-        var salesperson = identity.salesperson();
-        requireSalespersonCanWorkInCity(salesperson, city);
-        SubmissionRow existing = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId())
-                .orElse(null);
-        if (existing != null) {
-            salesIdentityService.requireSubmission(
-                    existing.salespersonId(), existing.deviceTokenHash(), requestFacts);
-            requireMatchingKey(existing, key);
-            assertSameSubmission(existing, normalized);
-            return new DraftSubmissionView(existing.id(), existing.status(), existing.createdAt());
-        }
-        StoreRow store = repository.findStore(tenantId, request.storeId())
-                .orElseThrow(() -> TemporaryCheckinException.notFound("门店不存在或已停用"));
-        requireEligibleUnverifiedCheckinStore(store, city);
-        UUID id = UUID.randomUUID();
-        Instant now = clock.instant();
-        GeocodeWrite geocodeWrite = unverifiedGeocodeWrite(normalized.location(), verification, now);
-        RiskSnapshot risk = withUnverifiedLocationRisk(salesIdentityService.evaluateRisk(identity));
-        RequestRiskFacts riskFacts = risk.requestFacts();
-        IdentityRiskWrite identityWrite = new IdentityRiskWrite(identity.identityMethod(), identity.verifiedAt(),
-                salesperson.credentialVersion(), identity.deviceTokenHash(),
-                riskFacts == null ? null : riskFacts.ipHash(),
-                riskFacts == null ? null : riskFacts.ipNetworkHash(),
-                riskFacts == null ? null : riskFacts.ipMasked(),
-                riskFacts == null ? null : riskFacts.userAgentHash(),
-                riskFacts == null ? null : riskFacts.userAgentSummary(),
-                risk.level(), writeJson(risk.flags()), risk.evaluatedAt());
-        NormalizedLocation location = normalized.location();
-        SubmissionWrite write = new SubmissionWrite(id, tenantId, request.clientSubmissionId(), keyHash,
-                city, salesperson.id(), salesperson.name(), store.id(), store.name(),
-                normalized.customerName(), normalized.customerPhone(), normalized.visitResult(),
-                location == null ? null : location.longitude(),
-                location == null ? null : location.latitude(),
-                location == null ? null : location.accuracyMeters(),
-                location == null ? null : location.capturedAt(),
-                location == null ? null : location.note(), verification.status(),
-                verification.failureReason(), verification.attemptId(), geocodeWrite,
-                normalized.privacyNoticeVersion(), identityWrite, now);
-        try {
-            repository.insertSubmission(write);
-        } catch (DataIntegrityViolationException duplicate) {
-            SubmissionRow concurrent = repository.findSubmissionByClientId(tenantId, request.clientSubmissionId())
-                    .orElseThrow(() -> TemporaryCheckinException.conflict("草稿创建冲突，请重试"));
-            salesIdentityService.requireSubmission(
-                    concurrent.salespersonId(), concurrent.deviceTokenHash(), requestFacts);
-            requireMatchingKey(concurrent, key);
-            assertSameSubmission(concurrent, normalized);
-            return new DraftSubmissionView(concurrent.id(), concurrent.status(), concurrent.createdAt());
-        }
-        return new DraftSubmissionView(id, "DRAFT", now);
+        return createDraft(request, requestFacts);
+    }
+
+    private String assessLocationQuality(LocationCommand command, NormalizedLocation location,
+            CheckinAnchor anchor, Double distance) {
+        if (location == null) return "MISSING";
+        if (Boolean.TRUE.equals(command.userReportedInaccurate())) return "USER_REPORTED";
+        if (location.capturedAt() == null || "UNKNOWN".equals(command.timeStatus())
+                || location.capturedAt().isAfter(clock.instant().plusSeconds(120))) return "TIME_UNKNOWN";
+        if ("STALE".equals(command.timeStatus())
+                || location.capturedAt().isBefore(clock.instant().minusSeconds(120))) return "STALE";
+        if (location.accuracyMeters() == null || location.accuracyMeters().compareTo(BigDecimal.valueOf(100)) > 0)
+            return "LOW_ACCURACY";
+        if (anchor == null) return "STORE_UNLOCATED";
+        if (distance != null && distance > properties.getMaxCheckinDistanceMeters()) return "OUT_OF_RANGE";
+        return "GOOD";
     }
 
     public MediaUploadView uploadMedia(
@@ -732,7 +849,7 @@ public class TemporaryCheckinService {
         if (previous.objectKey() != null && previous.deletedAt() == null
                 && validated.sha256().equals(previous.sha256())) {
             return loggedMediaUpload(identity, requestFacts, submissionId, kind, "IDEMPOTENT",
-                    new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
+                    new MediaUploadView(submissionId, kind.pathValue, submission.status(), validated.sha256(),
                             validated.sizeBytes()));
         }
 
@@ -764,7 +881,7 @@ public class TemporaryCheckinService {
         }
         registerMediaObjectLifecycle(submissionId, kind, objectKey, previous.objectKey());
         return loggedMediaUpload(identity, requestFacts, submissionId, kind, "STORED",
-                new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
+                new MediaUploadView(submissionId, kind.pathValue, submission.status(), validated.sha256(),
                         validated.sizeBytes()));
     }
 
@@ -787,6 +904,9 @@ public class TemporaryCheckinService {
                     confirmed.outcome(), confirmed.view());
         }
 
+        if ("SUBMITTED".equals(preflight.submission().status()) && snapshot.objectKey() != null) {
+            throw TemporaryCheckinException.conflict("已提交记录只允许补充缺失截图，不允许替换已有证据");
+        }
         String objectKey = optionalMediaObjectKey(submissionId, kind, validated, null);
         try {
             putValidatedMedia(validated, objectKey, "媒体文件读取失败，请重新选择后上传",
@@ -828,17 +948,18 @@ public class TemporaryCheckinService {
         AuthorizedRequest identity = salesIdentityService.requireSubmission(
                 submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
         requireMatchingKey(submission, submissionKey);
-        if (!"DRAFT".equals(submission.status())) {
-            throw TemporaryCheckinException.conflict("已提交的打卡不允许替换媒体");
-        }
+        requireOptionalEvidenceWindow(submission);
         MediaReference previous = media(submission, kind);
         if (!Objects.equals(submission.updatedAt(), expectedRevision)) {
             if (hasMedia(previous) && validated.sha256().equals(previous.sha256())) {
                 return new OptionalMediaFinalized(identity, "IDEMPOTENT",
-                        new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
+                        new MediaUploadView(submissionId, kind.pathValue, submission.status(), validated.sha256(),
                                 validated.sizeBytes()), false, null);
             }
             throw TemporaryCheckinException.conflict("草稿媒体已变化，请刷新后重试");
+        }
+        if ("SUBMITTED".equals(submission.status()) && previous.objectKey() != null) {
+            throw TemporaryCheckinException.conflict("已提交记录不允许替换或恢复已删除证据");
         }
         Instant now = clock.instant();
         int updated = repository.updateMediaIfRevision(tenantId, submissionId, kind.columnPrefix,
@@ -847,8 +968,13 @@ public class TemporaryCheckinService {
         if (updated != 1) {
             throw TemporaryCheckinException.conflict("草稿状态已变化，请刷新后重试");
         }
+        if ("SUBMITTED".equals(submission.status())) {
+            evidenceRepository.supplement(tenantId,submissionId,
+                    UUID.nameUUIDFromBytes((kind.pathValue+validated.sha256()).getBytes(StandardCharsets.UTF_8)),
+                    identity.salesperson().name(),objectKey,validated.sha256(),now);
+        }
         return new OptionalMediaFinalized(identity, "STORED",
-                new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
+                new MediaUploadView(submissionId, kind.pathValue, submission.status(), validated.sha256(),
                         validated.sizeBytes()), true,
                 previous == null ? null : previous.objectKey());
     }
@@ -861,15 +987,13 @@ public class TemporaryCheckinService {
         AuthorizedRequest identity = salesIdentityService.requireSubmission(
                 submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
         requireMatchingKey(submission, submissionKey);
-        if (!"DRAFT".equals(submission.status())) {
-            throw TemporaryCheckinException.conflict("已提交的打卡不允许替换媒体");
-        }
+        requireOptionalEvidenceWindow(submission);
         MediaReference current = media(submission, kind);
         if (!hasMedia(current) || !validated.sha256().equals(current.sha256())) {
             throw TemporaryCheckinException.conflict("草稿媒体已变化，请刷新后重试");
         }
         return new OptionalMediaFinalized(identity, "IDEMPOTENT",
-                new MediaUploadView(submissionId, kind.pathValue, "DRAFT", validated.sha256(),
+                new MediaUploadView(submissionId, kind.pathValue, submission.status(), validated.sha256(),
                         validated.sizeBytes()), false, null);
     }
 
@@ -912,7 +1036,7 @@ public class TemporaryCheckinService {
                     throw TemporaryCheckinException.conflict("录音上传幂等确认未完成，请重试");
                 }
                 return loggedMediaUpload(confirmed.identity(), requestFacts, submissionId, MediaKind.AUDIO,
-                        confirmed.outcome(), audioUploadView(submissionId, confirmed.segment()));
+                        confirmed.outcome(), audioUploadView(submissionId, confirmed.segment(), confirmed.status()));
             }
             throw TemporaryCheckinException.conflict("同一录音编号对应的文件不一致，请重新选择录音");
         }
@@ -958,7 +1082,7 @@ public class TemporaryCheckinService {
             cleanupUnreferencedObject(objectKey, submissionId, MediaKind.AUDIO, "并发幂等上传未被引用");
         }
         return loggedMediaUpload(finalized.identity(), requestFacts, submissionId, MediaKind.AUDIO,
-                finalized.outcome(), audioUploadView(submissionId, finalized.segment()));
+                finalized.outcome(), audioUploadView(submissionId, finalized.segment(), finalized.status()));
     }
 
     private AudioMediaFinalized finalizeAudioMediaLocked(
@@ -970,9 +1094,7 @@ public class TemporaryCheckinService {
         AuthorizedRequest identity = salesIdentityService.requireSubmission(
                 submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
         requireMatchingKey(submission, submissionKey);
-        if (!"DRAFT".equals(submission.status())) {
-            throw TemporaryCheckinException.conflict("已提交的打卡不允许增加录音");
-        }
+        requireOptionalEvidenceWindow(submission);
         List<AudioSegment> segments = new ArrayList<>(audioSegments(submission));
         AudioSegment sameId = segments.stream()
                 .filter(item -> segmentId.equals(item.segmentId()))
@@ -980,13 +1102,13 @@ public class TemporaryCheckinService {
         if (!Objects.equals(submission.updatedAt(), expectedRevision)) {
             if (sameId != null && sameId.deletedAt() == null
                     && validated.sha256().equals(sameId.sha256())) {
-                return new AudioMediaFinalized(identity, "IDEMPOTENT", sameId, false);
+                return new AudioMediaFinalized(identity, "IDEMPOTENT", sameId, false, submission.status());
             }
             throw TemporaryCheckinException.conflict("草稿媒体已变化，请刷新后重试");
         }
         if (sameId != null) {
             if (sameId.deletedAt() == null && validated.sha256().equals(sameId.sha256())) {
-                return new AudioMediaFinalized(identity, "IDEMPOTENT", sameId, false);
+                return new AudioMediaFinalized(identity, "IDEMPOTENT", sameId, false, submission.status());
             }
             throw TemporaryCheckinException.conflict("同一录音编号对应的文件不一致，请重新选择录音");
         }
@@ -1019,7 +1141,12 @@ public class TemporaryCheckinService {
         if (updated != 1) {
             throw TemporaryCheckinException.conflict("草稿状态已变化，请刷新后重试");
         }
-        return new AudioMediaFinalized(identity, "STORED", added, true);
+        if ("SUBMITTED".equals(submission.status())) {
+            evidenceRepository.supplement(tenantId,submissionId,segmentId,
+                    identity.salesperson().name(),objectKey,validated.sha256(),now);
+            queueTranscriptionIfEligible(requireSubmission(submissionId));
+        }
+        return new AudioMediaFinalized(identity, "STORED", added, true, submission.status());
     }
 
     private AudioMediaFinalized confirmAudioMediaLocked(
@@ -1030,9 +1157,7 @@ public class TemporaryCheckinService {
         AuthorizedRequest identity = salesIdentityService.requireSubmission(
                 submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
         requireMatchingKey(submission, submissionKey);
-        if (!"DRAFT".equals(submission.status())) {
-            throw TemporaryCheckinException.conflict("已提交的打卡不允许增加录音");
-        }
+        requireOptionalEvidenceWindow(submission);
         AudioSegment sameId = audioSegments(submission).stream()
                 .filter(item -> segmentId.equals(item.segmentId()))
                 .findFirst().orElse(null);
@@ -1040,7 +1165,7 @@ public class TemporaryCheckinService {
                 || !validated.sha256().equals(sameId.sha256())) {
             throw TemporaryCheckinException.conflict("草稿媒体已变化，请刷新后重试");
         }
-        return new AudioMediaFinalized(identity, "IDEMPOTENT", sameId, false);
+        return new AudioMediaFinalized(identity, "IDEMPOTENT", sameId, false, submission.status());
     }
 
     private UploadPreflight mediaUploadPreflight(
@@ -1051,10 +1176,17 @@ public class TemporaryCheckinService {
         AuthorizedRequest identity = salesIdentityService.requireSubmission(
                 submission.salespersonId(), submission.deviceTokenHash(), requestFacts);
         requireMatchingKey(submission, submissionKey);
-        if (!"DRAFT".equals(submission.status())) {
-            throw TemporaryCheckinException.conflict(submittedMessage);
-        }
+        requireOptionalEvidenceWindow(submission);
         return new UploadPreflight(submission, identity, submission.updatedAt());
+    }
+
+    /** 补证窗口由服务器提交时间决定；原照片、原记录和已存在媒体不可替换。 */
+    private void requireOptionalEvidenceWindow(SubmissionRow submission) {
+        if ("DRAFT".equals(submission.status())) return;
+        if (!"SUBMITTED".equals(submission.status()) || submission.submittedAt() == null
+                || !clock.instant().isBefore(submission.submittedAt().plus(Duration.ofHours(properties.getSupplementalEvidenceHours())))) {
+            throw TemporaryCheckinException.conflict("已超过提交后" + properties.getSupplementalEvidenceHours() + "小时补证窗口，请联系管理员");
+        }
     }
 
     private String optionalMediaObjectKey(
@@ -1246,6 +1378,10 @@ public class TemporaryCheckinService {
         RiskSnapshot risk = salesIdentityService.evaluateRisk(identity);
         if ("UNVERIFIED".equals(submission.locationVerificationStatus())) {
             risk = withUnverifiedLocationRisk(risk);
+            var flags = new ArrayList<>(risk.flags());
+            String quality = evidenceRepository.evidence(tenantId,submissionId).locationQuality();
+            if (!"LEGACY".equals(quality)) flags.add("LOCATION_"+quality);
+            risk = new RiskSnapshot(risk.level(),List.copyOf(flags),risk.requestFacts(),risk.evaluatedAt());
         }
         RequestRiskFacts facts = risk.requestFacts();
         CompletionRiskWrite completionRisk = new CompletionRiskWrite(
@@ -1317,6 +1453,14 @@ public class TemporaryCheckinService {
     public AdminSubmissionPage findAdminSubmissions(
             AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId,
             String status, String visitType, String query, Integer requestedPage, Integer requestedSize) {
+        return findAdminSubmissions(scope,from,to,city,salespersonId,status,visitType,query,requestedPage,
+                requestedSize,TemporaryCheckinRepository.AdminReadOptions.defaults());
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public AdminSubmissionPage findAdminSubmissions(
+            AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId,
+            String status, String visitType, String query, Integer requestedPage, Integer requestedSize, TemporaryCheckinRepository.AdminReadOptions readOptions) {
         AdminQuery filters = normalizeAdminQuery(
                 scope, from, to, city, salespersonId, status, visitType, query);
         int page = requestedPage == null ? 0 : requestedPage;
@@ -1331,30 +1475,43 @@ public class TemporaryCheckinService {
         }
         AdminSubmissionStats stats = repository.adminSubmissionStats(
                 tenantId, filters.from(), filters.toExclusive(), filters.city(), filters.salespersonId(),
-                filters.status(), filters.visitType(), filters.escapedQuery());
-        List<AdminSubmissionView> items = repository.findAdminSubmissions(
+                filters.status(), filters.visitType(), filters.escapedQuery(), readOptions);
+        List<AdminSubmissionRow> rows = repository.findAdminSubmissions(
                         tenantId, filters.from(), filters.toExclusive(), filters.city(), filters.salespersonId(),
-                        filters.status(), filters.visitType(), filters.escapedQuery(), (int) longOffset, size).stream()
-                .map(this::adminSubmissionView)
-                .toList();
+                        filters.status(), filters.visitType(), filters.escapedQuery(), (int) longOffset, size, readOptions);
+        List<UUID> ids=rows.stream().map(AdminSubmissionRow::id).toList();
+        var evidence=evidenceRepository.evidenceBatch(tenantId,ids);
+        var derivatives=derivativeRepository.forSubmissions(tenantId,ids);
+        List<AdminSubmissionView> items=rows.stream().map(row->adminSubmissionView(row,evidence.get(row.id()),derivatives)).toList();
         long total = stats.total();
         long pageCount = total == 0 ? 0 : ((total - 1) / size) + 1;
         int totalPages = (int) Math.min(Integer.MAX_VALUE, pageCount);
         return new AdminSubmissionPage(scopeView(scope), items, total, total,
-                stats.firstVisitTotal(), stats.revisitTotal(), page, size, totalPages);
+                stats.firstVisitTotal(), stats.revisitTotal(), page, size, totalPages,
+                stats.locationAttentionTotal(),stats.reviewPendingTotal(),stats.missingAudioTotal());
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public String exportCsv(
             AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId,
             String status, String visitType, String query) {
+        return exportCsv(scope,from,to,city,salespersonId,status,visitType,query,
+                TemporaryCheckinRepository.AdminReadOptions.defaults());
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public String exportCsv(
+            AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId,
+            String status, String visitType, String query, TemporaryCheckinRepository.AdminReadOptions readOptions) {
         AdminQuery filters = normalizeAdminQuery(
                 scope, from, to, city, salespersonId, status, visitType, query);
         List<ExportRow> rows = repository.export(tenantId, filters.from(), filters.toExclusive(), filters.city(),
                 filters.salespersonId(), filters.status(), filters.visitType(), filters.escapedQuery(),
-                MAX_EXPORT_ROWS + 1);
+                MAX_EXPORT_ROWS + 1, readOptions);
         if (rows.size() > MAX_EXPORT_ROWS) {
             throw TemporaryCheckinException.badRequest("导出超过20000条，请缩小日期或城市范围");
         }
+        var evidence=evidenceRepository.evidenceBatch(tenantId,rows.stream().map(ExportRow::id).toList());
         StringBuilder csv = new StringBuilder("\uFEFF");
         appendCsv(csv, List.of("submission_id", "client_submission_id", "status", "city",
                 "salesperson_id", "salesperson_name", "store_id", "store_name",
@@ -1364,15 +1521,18 @@ public class TemporaryCheckinService {
                 "location_failure_reason", "location_attempt_id", "location_address", "location_adcode",
                 "identity_method", "submitted_ip_masked", "user_agent_summary", "risk_level", "risk_flags",
                 "storefront_photo", "wechat_screenshot", "audio", "transcription_status", "transcript",
-                "summary_status", "summary", "created_at", "submitted_at"));
+                "summary_status", "summary", "created_at", "submitted_at", "location_quality", "location_received_at",
+                "location_raw_timestamp", "location_source", "store_longitude", "store_latitude", "distance_meters",
+                "review_status", "reviewed_by", "reviewed_at"));
         for (ExportRow row : rows) {
+            var detail=evidence.get(row.id());
             appendCsv(csv, List.of(value(row.id()), value(row.clientSubmissionId()), value(row.status()),
                     value(row.city()), value(row.salespersonId()), value(row.salespersonName()),
                     value(row.storeId()), value(row.storeName()), value(row.visitOrdinal()),
                     value(visitType(row.visitOrdinal())), value(revisitNumber(row.visitOrdinal())),
                     value(row.customerName()),
                     value(row.customerPhone()), value(row.visitResult()), value(row.longitude()),
-                    value(row.latitude()), value(row.accuracyMeters()), value(row.locationCapturedAt()),
+                    value(row.latitude()), value(row.accuracyMeters()), csvTime(row.locationCapturedAt()),
                     value(row.locationNote()), value(row.locationVerificationStatus()),
                     value(row.locationFailureReason()), value(row.locationAttemptId()),
                     value(row.locationAddress()), value(row.locationAdcode()),
@@ -1380,10 +1540,38 @@ public class TemporaryCheckinService {
                     value(row.riskLevel()), value(String.join("|", safeRiskFlags(row.riskFlagsJson()))),
                     value(row.storefrontPhotoFilename()), value(row.wechatScreenshotFilename()),
                     value(activeAudioFilenameForExport(row)), value(row.transcriptionStatus()), value(row.transcript()),
-                    value(row.summaryStatus()), value(row.summaryText()), value(row.createdAt()),
-                    value(row.submittedAt())));
+                    value(row.summaryStatus()), value(row.summaryText()), csvTime(row.createdAt()),
+                    csvTime(row.submittedAt()),value(detail.locationQuality()),csvTime(detail.locationReceivedAt()),
+                    value(detail.locationRawTimestamp()),value(detail.locationSource()),value(detail.storeLongitude()),
+                    value(detail.storeLatitude()),value(detail.distanceMeters()),value(detail.reviewStatus()),
+                    value(detail.reviewedBy()),csvTime(detail.reviewedAt())));
         }
         return csv.toString();
+    }
+
+    @Transactional
+    public TemporaryCheckinEvidenceRepository.ReviewEvent review(AdminScope scope, UUID id,
+            TemporaryCheckinAdminModels.ReviewRequest request) {
+        String scopedCity = requireConfiguredScope(scope);
+        SubmissionRow target = requireAdminSubmission(id, scopedCity, true);
+        if (!"SUBMITTED".equals(target.status())) throw TemporaryCheckinException.conflict("仅已提交拜访可以复核");
+        if (request == null || request.clientEventId() == null)
+            throw TemporaryCheckinException.badRequest("clientEventId不能为空");
+        String status = requiredEnum(request.status(),List.of("APPROVED","FOLLOW_UP","FLAGGED"),"status");
+        String note = requiredMultiline(request.note(),"note",2000);
+        var previous = evidenceRepository.findReview(tenantId,id,request.clientEventId());
+        if (previous != null) {
+            if (!Objects.equals(previous.status(),status) || !Objects.equals(previous.note(),note)
+                    || !Objects.equals(previous.reviewedBy(),scope.username()))
+                throw TemporaryCheckinException.conflict("复核事件编号已被其他内容使用");
+            return previous;
+        }
+        return evidenceRepository.review(tenantId,id,request.clientEventId(),status,note,scope.username(),clock.instant());
+    }
+
+    public List<TemporaryCheckinEvidenceRepository.ReviewEvent> reviews(AdminScope scope, UUID id) {
+        requireAdminSubmission(id,requireConfiguredScope(scope),false);
+        return evidenceRepository.reviews(tenantId,id);
     }
 
     public AdminMedia openAdminMedia(AdminScope scope, UUID submissionId, String rawKind) {
@@ -1416,6 +1604,48 @@ public class TemporaryCheckinService {
                 .filter(item -> segmentId.equals(item.segmentId()) && item.available())
                 .findFirst().orElseThrow(() -> TemporaryCheckinException.notFound("录音文件不存在"));
         return openAudioSegment(segment);
+    }
+
+    private void enqueueDerivative(UUID submissionId,String mediaId,String kind,MediaReference media) {
+        if (!hasMedia(media)) return;
+        derivativeRepository.enqueue(tenantId,submissionId,mediaId,kind,media.objectKey(),media.sha256(),
+                media.contentType(),media.originalFilename(),media.sizeBytes()==null?0:media.sizeBytes(),clock.instant());
+    }
+
+    public byte[] adminThumbnail(AdminScope scope,UUID submissionId,String rawKind) {
+        SubmissionRow submission=requireAdminSubmission(submissionId,requireConfiguredScope(scope),false);
+        MediaKind kind=MediaKind.parse(rawKind);
+        if(kind==MediaKind.AUDIO) throw TemporaryCheckinException.badRequest("仅图片支持缩略图");
+        return submissionThumbnail(submission, kind);
+    }
+
+    private byte[] submissionThumbnail(SubmissionRow submission, MediaKind kind) {
+        UUID submissionId = submission.id();
+        MediaReference original=media(submission,kind);
+        if(!hasMedia(original)) throw TemporaryCheckinException.notFound("媒体文件不存在");
+        enqueueDerivative(submissionId,kind.pathValue,"IMAGE",original);
+        var derived=derivativeRepository.find(tenantId,submissionId,kind.pathValue,original.sha256());
+        if(derived==null || !"READY".equals(derived.status()) || derived.thumbnail()==null)
+            throw TemporaryCheckinException.conflict(derived!=null && "FAILED".equals(derived.status())
+                    ? "缩略图生成失败，可查看原图" : "缩略图正在生成，请稍后重试");
+        return derived.thumbnail();
+    }
+
+    public AdminMedia openAdminAudioPlayback(AdminScope scope,UUID submissionId,UUID segmentId) {
+        SubmissionRow submission=requireAdminSubmission(submissionId,requireConfiguredScope(scope),false);
+        return submissionAudioPlayback(submission, segmentId);
+    }
+
+    private AdminMedia submissionAudioPlayback(SubmissionRow submission, UUID segmentId) {
+        UUID submissionId = submission.id();
+        AudioSegment segment=audioSegments(submission).stream().filter(item->segmentId.equals(item.segmentId())
+                && item.available()).findFirst().orElseThrow(()->TemporaryCheckinException.notFound("录音文件不存在"));
+        enqueueDerivative(submissionId,segmentId.toString(),"AUDIO",segment.media());
+        var derived=derivativeRepository.find(tenantId,submissionId,segmentId.toString(),segment.sha256());
+        if(derived==null || !"READY".equals(derived.status()) || derived.derivedKey()==null)
+            throw TemporaryCheckinException.conflict("兼容录音尚未就绪，请查看原件或稍后重试");
+        return new AdminMedia(()->fileStorage.open(tenantId.toString(),derived.derivedKey()),
+                derived.derivedBytes(),"audio/mpeg","playback.mp3");
     }
 
     private AdminMedia openAudioSegment(AudioSegment segment) {
@@ -1540,37 +1770,6 @@ public class TemporaryCheckinService {
                 && PRIVACY_NOTICE_VERSION.equals(submission.privacyNoticeVersion())) {
             repository.requestTranscription(
                     tenantId, submission.id(), PRIVACY_NOTICE_VERSION, clock.instant());
-        }
-    }
-
-    private void requireEligibleCheckinStore(
-            StoreRow store, NormalizedLocation checkinLocation) {
-        if (!hasCompleteStoreProfile(store, activeCities())) {
-            throw TemporaryCheckinException.badRequest("门店基础资料不完整，请先补全门店信息");
-        }
-        CheckinAnchor anchor = checkinAnchor(store, null);
-        if (anchor == null) {
-            StoreCheckinAnchorRow fallback = repository.findFirstAcceptableSubmittedStoreAnchor(
-                    tenantId, store.id(), properties.getMaxCheckinAccuracyMeters()).orElse(null);
-            anchor = checkinAnchor(store, fallback);
-        }
-        if (anchor == null) {
-            throw TemporaryCheckinException.badRequest("门店缺少有效定位，请先补录门店定位");
-        }
-        Double distance = distanceToAnchor(checkinLocation, anchor);
-        if (distance == null) {
-            throw TemporaryCheckinException.badRequest("当前定位无法完成门店距离校验，请重新定位后再试");
-        }
-        int maximum = properties.getMaxCheckinDistanceMeters();
-        if (distance > maximum) {
-            throw TemporaryCheckinException.badRequest("当前定位距离门店约"
-                    + (long) Math.ceil(distance) + "米，超过允许的" + maximum + "米，请到店后重新定位");
-        }
-    }
-
-    private void requireEligibleUnverifiedCheckinStore(StoreRow store, String businessCity) {
-        if (!hasCompleteStoreProfile(store, activeCities()) || !Objects.equals(store.city(), businessCity)) {
-            throw TemporaryCheckinException.badRequest("门店基础资料不完整或不属于当前业务城市");
         }
     }
 
@@ -1834,11 +2033,6 @@ public class TemporaryCheckinService {
         double candidateDistance = distanceMeters(
                 current.latitude(), current.longitude(), candidate.latitude(), candidate.longitude());
         int maximum = properties.getMaxCheckinDistanceMeters();
-        if (candidateDistance > maximum) {
-            throw TemporaryCheckinException.badRequest("当前定位距离所选高德门店约"
-                    + (long) Math.ceil(candidateDistance) + "米，超过允许的" + maximum
-                    + "米，请到店后重新定位并搜索");
-        }
         if (store.sourcePoiId() != null && !store.sourcePoiId().equals(candidate.poiId())) {
             throw TemporaryCheckinException.badRequest(
                     "高德门店候选与保存内容不一致，请重新选择");
@@ -1881,24 +2075,14 @@ public class TemporaryCheckinService {
     private static GeocodeWrite unverifiedGeocodeWrite(
             NormalizedLocation location, LocationVerification verification, Instant observedAt) {
         return new GeocodeWrite("SKIPPED", null, null, null, null, null, null, null,
-                null, null, "LOCATION_" + verification.failureReason(), observedAt);
+                null, null, verification.failureReason() == null ? "ADDRESS_UNRESOLVED"
+                        : "LOCATION_" + verification.failureReason(), observedAt);
     }
 
     private static void requireNoLocationException(String failureReason, UUID attemptId) {
         if (hasText(failureReason) || attemptId != null) {
             throw TemporaryCheckinException.badRequest("正常定位提交不能携带定位失败标记");
         }
-    }
-
-    private static LocationVerification unverifiedLocation(String failureReason, UUID attemptId) {
-        String normalizedReason = required(failureReason, "locationFailureReason", 64);
-        if (!LOCATION_FAILURE_REASONS.contains(normalizedReason)) {
-            throw TemporaryCheckinException.badRequest("locationFailureReason无效");
-        }
-        if (attemptId == null) {
-            throw TemporaryCheckinException.badRequest("locationAttemptId不能为空");
-        }
-        return new LocationVerification("UNVERIFIED", normalizedReason, attemptId);
     }
 
     private static RiskSnapshot withUnverifiedLocationRisk(RiskSnapshot risk) {
@@ -1914,7 +2098,9 @@ public class TemporaryCheckinService {
         return new AdminScopeView(scope.username(), scope.allCities(), scope.city());
     }
 
-    private AdminSubmissionView adminSubmissionView(AdminSubmissionRow row) {
+    private AdminSubmissionView adminSubmissionView(AdminSubmissionRow row,
+            TemporaryCheckinEvidenceRepository.EvidenceView evidence,
+            Map<String,TemporaryCheckinDerivativeRepository.Derivative> derivatives) {
         return new AdminSubmissionView(row.id(), row.status(), row.city(), row.salespersonId(),
                 row.salespersonName(), row.storeId(), row.storeName(), row.visitOrdinal(),
                 visitType(row.visitOrdinal()), revisitNumber(row.visitOrdinal()),
@@ -1925,11 +2111,14 @@ public class TemporaryCheckinService {
                 row.identityMethod(), row.submittedIpMasked(), row.userAgentSummary(), row.riskLevel(),
                 safeRiskFlags(row.riskFlagsJson()),
                 row.storefrontPhotoAvailable(), row.wechatScreenshotAvailable(), row.audioAvailable(),
-                adminAudioSegments(row),
+                adminAudioSegments(row,derivatives),
                 row.storefrontPhotoDeletedAt(), row.wechatScreenshotDeletedAt(), row.audioDeletedAt(),
                 row.transcriptionStatus(), row.transcript(), row.transcriptionErrorCode(),
                 row.summaryStatus(), row.summaryText(), row.summaryErrorCode(),
-                row.createdAt(), row.submittedAt());
+                row.createdAt(), row.submittedAt(), row.submittedAt(), row.city(),
+                evidence.locationQuality(),evidence.locationReceivedAt(),evidence.locationRawTimestamp(),
+                evidence.locationSource(),evidence.storeLongitude(),evidence.storeLatitude(),evidence.distanceMeters(),
+                evidence.reviewStatus(),evidence.reviewedAt(),evidence.reviewedBy());
     }
 
     private String activeAudioFilenameForExport(ExportRow row) {
@@ -2101,8 +2290,6 @@ public class TemporaryCheckinService {
                 || !Objects.equals(row.customerPhone(), normalized.customerPhone())
                 || !Objects.equals(row.visitResult(), normalized.visitResult())
                 || !sameStoredLocation(row, location)
-                || !sameLocationVerification(row.locationVerificationStatus(), row.locationFailureReason(),
-                        row.locationAttemptId(), normalized.verification())
                 || row.privacyAccepted() != normalized.privacyAccepted()
                 || !Objects.equals(row.privacyNoticeVersion(), normalized.privacyNoticeVersion())) {
             throw TemporaryCheckinException.conflict("clientSubmissionId已被不同打卡数据使用");
@@ -2281,13 +2468,13 @@ public class TemporaryCheckinService {
     }
 
     private NormalizedLocation normalizeOptionalUnverifiedLocation(LocationCommand location) {
-        if (location == null) return null;
-        try {
-            return normalizeLocation(location);
-        } catch (TemporaryCheckinException ignored) {
-            // 例外路径中的坐标只作辅助留档，异常或极粗坐标不得反过来阻断业务记录。
-            return null;
+        if (location == null || !hasValidCoordinates(location.longitude(), location.latitude())) return null;
+        BigDecimal accuracy = location.accuracyMeters();
+        if (accuracy != null && (accuracy.signum() < 0 || accuracy.compareTo(BigDecimal.valueOf(10_000_000)) > 0)) {
+            accuracy = null;
         }
+        return new NormalizedLocation(location.longitude(), location.latitude(), accuracy,
+                location.capturedAt(), optional(location.note(), "location.note", 512));
     }
 
     private static DetectedMedia detectImage(byte[] bytes) {
@@ -2630,19 +2817,24 @@ public class TemporaryCheckinService {
                 .orElse(null);
     }
 
-    private static MediaUploadView audioUploadView(UUID submissionId, AudioSegment segment) {
-        return new MediaUploadView(submissionId, MediaKind.AUDIO.pathValue, "DRAFT",
+    private static MediaUploadView audioUploadView(UUID submissionId, AudioSegment segment, String status) {
+        return new MediaUploadView(submissionId, MediaKind.AUDIO.pathValue, status,
                 segment.sha256(), segment.sizeBytes(), segment.segmentId(), segment.originalFilename());
     }
 
-    private static List<AdminAudioSegmentView> adminAudioSegments(List<AudioSegment> segments) {
-        return segments.stream()
-                .map(item -> new AdminAudioSegmentView(item.segmentId(), item.originalFilename(),
-                        item.sizeBytes(), item.contentType(), item.uploadedAt(),
-                        normalizedAudioCaptureSource(item.captureSource()), item.clientStartedAt(),
-                        item.clientDurationMs(), item.fileLastModifiedAt(),
-                        normalizedAudioTimingStatus(item.timingStatus()), item.available(), item.deletedAt()))
-                .toList();
+    private List<AdminAudioSegmentView> adminAudioSegments(UUID submissionId,List<AudioSegment> segments,
+            Map<String,TemporaryCheckinDerivativeRepository.Derivative> derivatives) {
+        return segments.stream().map(item -> {
+            var derived=derivatives.get(submissionId+"/"+item.segmentId()+"/"+item.sha256());
+            String status=derived==null || "PROCESSING".equals(derived.status()) ? "PENDING" : derived.status();
+            String playbackUrl=item.available() && "READY".equals(status)
+                    ? "/sales-checkin/admin/submissions/"+submissionId+"/media/audio/"+item.segmentId()+"?playback=true" : null;
+            return new AdminAudioSegmentView(item.segmentId(),item.originalFilename(),item.sizeBytes(),
+                    item.contentType(),item.uploadedAt(),normalizedAudioCaptureSource(item.captureSource()),
+                    item.clientStartedAt(),item.clientDurationMs(),item.fileLastModifiedAt(),
+                    normalizedAudioTimingStatus(item.timingStatus()),item.available(),item.deletedAt(),
+                    derived==null?null:derived.durationMs(),status,playbackUrl);
+        }).toList();
     }
 
     private static String normalizedAudioCaptureSource(String value) {
@@ -2699,13 +2891,23 @@ public class TemporaryCheckinService {
         return view;
     }
 
-    private static MediaUploadView loggedMediaUpload(
+    private MediaUploadView loggedMediaUpload(
             AuthorizedRequest identity,
             TemporaryCheckinRequestFacts requestFacts,
             UUID submissionId,
             MediaKind kind,
             String result,
             MediaUploadView view) {
+        // 派生排队失败不反向拒绝已收媒体；详情读取时会按原文件版本补排。
+        try {
+            SubmissionRow submission=requireSubmission(submissionId);
+            if (kind==MediaKind.AUDIO) {
+                for (AudioSegment segment:audioSegments(submission)) if(segment.available())
+                    enqueueDerivative(submissionId,segment.segmentId().toString(),"AUDIO",segment.media());
+            } else enqueueDerivative(submissionId,kind.pathValue,"IMAGE",media(submission,kind));
+        } catch(RuntimeException ignored) {
+            log.warn("临时打卡媒体派生排队失败 submissionId={}",submissionId);
+        }
         log.info("临时打卡媒体操作 requestId={} clientEventId={} operatorId={} operatorName={} city={} "
                         + "action=UPLOAD_MEDIA result={} submissionId={} kind={} sizeBytes={} client={}",
                 RequestContext.getRequestId(), safeClientEventId(requestFacts), identity.salesperson().id(),
@@ -2739,17 +2941,18 @@ public class TemporaryCheckinService {
         return safe.length() <= 96 ? safe : safe.substring(0, 96);
     }
 
-    private List<AdminAudioSegmentView> adminAudioSegments(AdminSubmissionRow row) {
+    private List<AdminAudioSegmentView> adminAudioSegments(AdminSubmissionRow row,
+            Map<String,TemporaryCheckinDerivativeRepository.Derivative> derivatives) {
         List<AudioSegment> segments = readAudioSegments(row.audioSegmentsJson());
         if (!segments.isEmpty() || row.audio() == null || row.audio().objectKey() == null) {
-            return adminAudioSegments(segments);
+            return adminAudioSegments(row.id(),segments,derivatives);
         }
         MediaReference legacy = row.audio();
         AudioSegment fallback = new AudioSegment(row.id(), legacy.objectKey(), legacy.contentType(),
                 legacy.sizeBytes() == null ? 0 : legacy.sizeBytes(), legacy.sha256(),
                 legacy.originalFilename(), null, "UNKNOWN", null, null, null, "MISSING",
                 legacy.deletedAt(), legacy.deletedBy(), legacy.deletionReason());
-        return adminAudioSegments(List.of(fallback));
+        return adminAudioSegments(row.id(),List.of(fallback),derivatives);
     }
 
     private static String activeAudioFilenames(List<AudioSegment> segments) {
@@ -2953,6 +3156,11 @@ public class TemporaryCheckinService {
 
     private static String value(Object value) { return value == null ? "" : String.valueOf(value); }
 
+    /** CSV 展示统一为中国业务时间；空值不补造时间，原始设备时间戳另列保留。 */
+    private static String csvTime(Instant instant) {
+        return instant == null ? "" : CSV_TIME_FORMAT.format(instant);
+    }
+
     private static void appendCsv(StringBuilder target, List<String> values) {
         for (int index = 0; index < values.size(); index++) {
             if (index > 0) target.append(',');
@@ -3047,6 +3255,11 @@ public class TemporaryCheckinService {
             return deletedAt == null && objectKey != null && !objectKey.isBlank() && sizeBytes > 0;
         }
 
+        MediaReference media() {
+            return new MediaReference(objectKey,contentType,sizeBytes,sha256,originalFilename,
+                    deletedAt,deletedBy,deletionReason);
+        }
+
         AudioSegment deleted(Instant at, String by, String reason) {
             return new AudioSegment(segmentId, objectKey, contentType, sizeBytes, sha256,
                     originalFilename, uploadedAt, captureSource, clientStartedAt, clientDurationMs,
@@ -3096,12 +3309,12 @@ public class TemporaryCheckinService {
             boolean newObjectReferenced, String previousObjectKey) { }
     private record AudioMediaFinalized(
             AuthorizedRequest identity, String outcome, AudioSegment segment,
-            boolean newObjectReferenced) { }
+            boolean newObjectReferenced, String status) { }
 
     record DetectedMedia(String contentType, String extension) { }
 
     /**
-     * 以固定小窗口扫描常见媒体特征，避免把最大100MB的录音整体放入JVM堆。
+     * 以固定小窗口扫描常见媒体特征，避免把最大256MiB的录音整体放入JVM堆。
      * 该探测用于兼容手机选择器元数据，不替代完整编解码校验。
      */
     static final class MediaSignatureProbe {

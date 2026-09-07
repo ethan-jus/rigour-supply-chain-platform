@@ -39,7 +39,10 @@ public final class TemporaryCheckinAdminModels {
             Instant fileLastModifiedAt,
             String timingStatus,
             boolean available,
-            Instant deletedAt) { }
+            Instant deletedAt,
+            Long parsedDurationMs,
+            String playbackStatus,
+            String playbackUrl) { }
 
     public record AdminSubmissionView(
             UUID id,
@@ -84,7 +87,19 @@ public final class TemporaryCheckinAdminModels {
             String summary,
             String summaryErrorCode,
             Instant createdAt,
-            Instant submittedAt) { }
+            Instant submittedAt,
+            Instant completedAt,
+            String cityName,
+            String locationQuality,
+            Instant locationReceivedAt,
+            String locationRawTimestamp,
+            String locationSource,
+            BigDecimal storeLongitude,
+            BigDecimal storeLatitude,
+            BigDecimal distanceMeters,
+            String reviewStatus,
+            Instant reviewedAt,
+            String reviewedBy) { }
 
     public record AdminSubmissionPage(
             AdminScopeView scope,
@@ -95,7 +110,12 @@ public final class TemporaryCheckinAdminModels {
             long revisitTotal,
             int page,
             int size,
-            int totalPages) { }
+            int totalPages,
+            long locationAttentionTotal,
+            long reviewPendingTotal,
+            long missingAudioTotal) { }
+
+    public record ReviewRequest(UUID clientEventId, String status, String note) { }
 
     public record DeleteMediaRequest(String reason) { }
 

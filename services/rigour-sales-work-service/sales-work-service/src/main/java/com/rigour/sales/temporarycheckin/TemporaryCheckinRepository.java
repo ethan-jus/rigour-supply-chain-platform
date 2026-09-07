@@ -89,11 +89,11 @@ public class TemporaryCheckinRepository {
                        amap_longitude, amap_latitude, geocode_status, geocode_error_code, geocoded_at,
                        status, created_at, updated_at
                   FROM temp_sales_checkin_store
-                 WHERE tenant_id=? AND city=? AND status='ACTIVE'
+                 WHERE tenant_id=? AND (? IS NULL OR city=?) AND status='ACTIVE'
                    AND (name LIKE ? ESCAPE '=' OR contact_name LIKE ? ESCAPE '=')
                  ORDER BY updated_at DESC, name, id
                  LIMIT ?
-                """, (rs, row) -> store(rs), bin(tenantId), city,
+                """, (rs, row) -> store(rs), bin(tenantId), city, city,
                 "%" + escapedQuery + "%", "%" + escapedQuery + "%", limit);
     }
 
@@ -262,7 +262,7 @@ public class TemporaryCheckinRepository {
     }
 
     public Optional<SubmissionRow> findSubmissionByClientId(UUID tenantId, UUID clientSubmissionId) {
-        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND client_submission_id=? LIMIT 1",
+        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND client_submission_id=? AND deletion_state='NONE' LIMIT 1",
                 (rs, row) -> submission(rs), bin(tenantId), bin(clientSubmissionId)).stream().findFirst();
     }
 
@@ -313,12 +313,12 @@ public class TemporaryCheckinRepository {
     }
 
     public Optional<SubmissionRow> findSubmission(UUID tenantId, UUID id) {
-        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND id=? LIMIT 1",
+        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND id=? AND deletion_state='NONE' LIMIT 1",
                 (rs, row) -> submission(rs), bin(tenantId), bin(id)).stream().findFirst();
     }
 
     public Optional<SubmissionRow> findSubmissionForUpdate(UUID tenantId, UUID id) {
-        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND id=? LIMIT 1 FOR UPDATE",
+        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND id=? AND deletion_state='NONE' LIMIT 1 FOR UPDATE",
                 (rs, row) -> submission(rs), bin(tenantId), bin(id)).stream().findFirst();
     }
 
@@ -381,7 +381,7 @@ public class TemporaryCheckinRepository {
                 + prefix + "deleted_at=NULL, " + prefix + "deleted_by=NULL, "
                 + prefix + "deletion_reason=NULL, "
                 + "updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at)) "
-                + "WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE' "
+                + "WHERE tenant_id=? AND id=? AND status IN ('DRAFT','SUBMITTED') AND deletion_state='NONE' "
                 + "AND updated_at=?";
         return jdbc.update(sql, media.objectKey(), media.contentType(), media.sizeBytes(), media.sha256(),
                 media.originalFilename(), timestamp(now), bin(tenantId), bin(submissionId),
@@ -441,7 +441,7 @@ public class TemporaryCheckinRepository {
                        audio_original_filename=?, audio_deleted_at=NULL, audio_deleted_by=NULL,
                        audio_deletion_reason=NULL,
                        updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at))
-                 WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE'
+                 WHERE tenant_id=? AND id=? AND status IN ('DRAFT','SUBMITTED') AND deletion_state='NONE'
                    AND updated_at=?
                 """, manifestJson, activeCount, activeBytes,
                 projection == null ? null : projection.objectKey(),
@@ -511,6 +511,12 @@ public class TemporaryCheckinRepository {
     public List<ExportRow> export(UUID tenantId, Instant from, Instant toExclusive, String city,
                                   UUID salespersonId, String status, String visitType,
                                   String escapedQuery, int limit) {
+        return export(tenantId, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, limit, AdminReadOptions.defaults());
+    }
+
+    public List<ExportRow> export(UUID tenantId, Instant from, Instant toExclusive, String city,
+                                  UUID salespersonId, String status, String visitType,
+                                  String escapedQuery, int limit, AdminReadOptions options) {
         StringBuilder sql = new StringBuilder("""
                 WITH visit_ranks AS (
                     SELECT id,
@@ -541,8 +547,8 @@ public class TemporaryCheckinRepository {
                 """);
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
         appendAdminFilters(
-                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery);
-        sql.append(" ORDER BY COALESCE(s.submitted_at, s.created_at) DESC, s.id DESC LIMIT ?");
+                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, options);
+        sql.append(options.orderBy()).append(" LIMIT ?");
         arguments.add(limit);
         return jdbc.query(sql.toString(), (rs, row) -> exportRow(rs), arguments.toArray());
     }
@@ -550,6 +556,12 @@ public class TemporaryCheckinRepository {
     public AdminSubmissionStats adminSubmissionStats(
             UUID tenantId, Instant from, Instant toExclusive, String city,
             UUID salespersonId, String status, String visitType, String escapedQuery) {
+        return adminSubmissionStats(tenantId, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, AdminReadOptions.defaults());
+    }
+
+    public AdminSubmissionStats adminSubmissionStats(
+            UUID tenantId, Instant from, Instant toExclusive, String city,
+            UUID salespersonId, String status, String visitType, String escapedQuery, AdminReadOptions options) {
         StringBuilder sql = new StringBuilder("""
                 WITH visit_ranks AS (
                     SELECT id,
@@ -564,22 +576,32 @@ public class TemporaryCheckinRepository {
                        COALESCE(SUM(CASE WHEN r.visit_ordinal=1 THEN 1 ELSE 0 END), 0)
                            AS first_visit_total,
                        COALESCE(SUM(CASE WHEN r.visit_ordinal>1 THEN 1 ELSE 0 END), 0)
-                           AS revisit_total
+                           AS revisit_total,
+                       COALESCE(SUM(s.location_quality<>'GOOD'),0) AS location_attention_total,
+                       COALESCE(SUM(s.review_status='PENDING'),0) AS review_pending_total,
+                       COALESCE(SUM(s.audio_active_segment_count=0 AND (s.audio_object_key IS NULL OR s.audio_deleted_at IS NOT NULL)),0) AS missing_audio_total
                   FROM temp_sales_checkin_submission s
                   LEFT JOIN visit_ranks r ON r.id=s.id
                  WHERE s.tenant_id=?
                 """);
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
         appendAdminFilters(
-                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery);
+                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, options);
         return jdbc.queryForObject(sql.toString(), (rs, row) -> new AdminSubmissionStats(
-                rs.getLong("total"), rs.getLong("first_visit_total"), rs.getLong("revisit_total")),
+                rs.getLong("total"), rs.getLong("first_visit_total"), rs.getLong("revisit_total"),
+                rs.getLong("location_attention_total"),rs.getLong("review_pending_total"),rs.getLong("missing_audio_total")),
                 arguments.toArray());
     }
 
     public List<AdminSubmissionRow> findAdminSubmissions(
             UUID tenantId, Instant from, Instant toExclusive, String city, UUID salespersonId,
             String status, String visitType, String escapedQuery, int offset, int limit) {
+        return findAdminSubmissions(tenantId, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, offset, limit, AdminReadOptions.defaults());
+    }
+
+    public List<AdminSubmissionRow> findAdminSubmissions(
+            UUID tenantId, Instant from, Instant toExclusive, String city, UUID salespersonId,
+            String status, String visitType, String escapedQuery, int offset, int limit, AdminReadOptions options) {
         StringBuilder sql = new StringBuilder("""
                 WITH visit_ranks AS (
                     SELECT id,
@@ -612,8 +634,8 @@ public class TemporaryCheckinRepository {
                 """);
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
         appendAdminFilters(
-                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery);
-        sql.append(" ORDER BY COALESCE(s.submitted_at, s.created_at) DESC, s.id DESC LIMIT ? OFFSET ?");
+                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, options);
+        sql.append(options.orderBy()).append(" LIMIT ? OFFSET ?");
         arguments.add(limit);
         arguments.add(offset);
         return jdbc.query(sql.toString(), (rs, row) -> adminSubmission(rs), arguments.toArray());
@@ -627,7 +649,7 @@ public class TemporaryCheckinRepository {
                 + prefix + "original_filename AS original_filename, "
                 + prefix + "deleted_at AS deleted_at, " + prefix + "deleted_by AS deleted_by, "
                 + prefix + "deletion_reason AS deletion_reason "
-                + "FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=?"
+                + "FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=? AND deletion_state='NONE'"
                 + " AND " + prefix + "deleted_at IS NULL"
                 + (city == null ? "" : " AND city=?") + " LIMIT 1";
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(submissionId)));
@@ -874,7 +896,19 @@ public class TemporaryCheckinRepository {
 
     private static void appendAdminFilters(
             StringBuilder sql, List<Object> arguments, Instant from, Instant toExclusive, String city,
-            UUID salespersonId, String status, String visitType, String escapedQuery) {
+            UUID salespersonId, String status, String visitType, String escapedQuery, AdminReadOptions options) {
+        if (options.locationStatus() != null) {
+            sql.append(" AND s.location_quality=?"); arguments.add(options.locationStatus());
+        }
+        if (options.reviewStatus() != null) {
+            sql.append(" AND s.review_status=?"); arguments.add(options.reviewStatus());
+        }
+        if ("MISSING_AUDIO".equals(options.mediaStatus()))
+            sql.append(" AND s.audio_active_segment_count=0 AND (s.audio_object_key IS NULL OR s.audio_deleted_at IS NOT NULL)");
+        if ("HAS_AUDIO".equals(options.mediaStatus()))
+            sql.append(" AND (s.audio_active_segment_count>0 OR (s.audio_object_key IS NOT NULL AND s.audio_deleted_at IS NULL))");
+        if ("MISSING_PHOTO".equals(options.mediaStatus()))
+            sql.append(" AND (s.storefront_photo_object_key IS NULL OR s.storefront_photo_deleted_at IS NOT NULL)");
         // 已提交记录按真正的拜访提交时间归属日期；草稿尚无 submitted_at，才回退创建时间。
         if (from != null) {
             sql.append(" AND COALESCE(s.submitted_at, s.created_at)>=?");
@@ -1279,7 +1313,39 @@ public class TemporaryCheckinRepository {
             String transcriptionStatus, String transcript, String summaryStatus, String summaryText,
             Instant createdAt, Instant submittedAt) { }
 
-    public record AdminSubmissionStats(long total, long firstVisitTotal, long revisitTotal) { }
+    public record AdminSubmissionStats(long total, long firstVisitTotal, long revisitTotal,
+            long locationAttentionTotal, long reviewPendingTotal, long missingAudioTotal) { }
+
+    /** 固定列映射杜绝客户端排序字符串进入 SQL，列表、统计、CSV 使用同一过滤模型。 */
+    public record AdminReadOptions(String locationStatus, String reviewStatus, String mediaStatus,
+            String sortBy, String sortDirection) {
+        public AdminReadOptions {
+            locationStatus = choice(locationStatus, java.util.Set.of("GOOD","LOW_ACCURACY","STALE",
+                    "TIME_UNKNOWN","MISSING","USER_REPORTED","OUT_OF_RANGE","STORE_UNLOCATED","LEGACY"), "locationStatus");
+            reviewStatus = choice(reviewStatus,java.util.Set.of("PENDING","APPROVED","FOLLOW_UP","FLAGGED"),"reviewStatus");
+            mediaStatus = choice(mediaStatus,java.util.Set.of("MISSING_AUDIO","HAS_AUDIO","MISSING_PHOTO"),"mediaStatus");
+            sortBy = sortBy == null || sortBy.isBlank() ? "completedAt" : sortBy;
+            sortDirection = sortDirection == null || sortDirection.isBlank() ? "desc" : sortDirection;
+            choice(sortBy,java.util.Set.of("completedAt","cityName","salespersonName","storeName"),"sortBy");
+            choice(sortDirection,java.util.Set.of("asc","desc"),"sortDirection");
+        }
+        static AdminReadOptions defaults() { return new AdminReadOptions(null,null,null,null,null); }
+        private static String choice(String value,java.util.Set<String> choices,String name) {
+            if (value == null || value.isBlank()) return null;
+            if (!choices.contains(value)) throw TemporaryCheckinException.badRequest(name+"无效");
+            return value;
+        }
+        String orderBy() {
+            String column = switch(sortBy) {
+                case "cityName" -> "s.city";
+                case "salespersonName" -> "s.salesperson_name_snapshot";
+                case "storeName" -> "s.store_name_snapshot";
+                default -> "s.submitted_at";
+            };
+            String direction = "asc".equals(sortDirection) ? " ASC" : " DESC";
+            return " ORDER BY " + column + " IS NULL ASC, " + column + direction + ", s.id" + direction;
+        }
+    }
 
     public record AdminSubmissionRow(
             UUID id, String status, String city, UUID salespersonId, String salespersonName,

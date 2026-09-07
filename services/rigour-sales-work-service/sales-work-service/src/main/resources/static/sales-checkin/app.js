@@ -6,27 +6,19 @@
     const STORAGE_VERSION = 1;
     const DRAFT_TTL_MS = 8 * 60 * 60 * 1000;
     const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-    const APPLE_REFERENCE_EPOCH_OFFSET_MS = 978307200000;
+    const DEFAULT_MAX_AUDIO_BYTES = 256 * 1024 * 1024;
     const LOCATION_CAPTURE_FUTURE_SKEW_MS = 2 * 60 * 1000;
-    const GEOLOCATION_FRESH_MAX_AGE_MS = 60 * 1000;
-    const GEOLOCATION_REFRESH_TIMEOUT_MS = 30000;
-    const GEOLOCATION_ATTEMPT_TIMEOUT_MS = 15000;
-    const GEOLOCATION_CONTINUE_AFTER_MS = 6000;
-    const MAX_RECORDED_UNVERIFIED_ACCURACY_METERS = 10000;
-    const GEOLOCATION_CLOCK_PROGRESS_MIN_MS = 250;
-    const GEOLOCATION_MAX_MONOTONIC_UPTIME_MS = 366 * 24 * 60 * 60 * 1000;
+    const GEOLOCATION_FRESH_MAX_AGE_MS = 2 * 60 * 1000;
+    const GEOLOCATION_REFRESH_TIMEOUT_MS = 20000;
     const MICROPHONE_PERMISSION_TIMEOUT_MS = 12 * 1000;
-    const OPTIONAL_MEDIA_UPLOAD_BUDGET_MS = 30 * 1000;
+    const OPTIONAL_MEDIA_UPLOAD_MAX_MS = 20 * 60 * 1000;
+    const OPTIONAL_MEDIA_IDLE_TIMEOUT_MS = 90 * 1000;
     const PRIVACY_NOTICE_VERSION = "2026-08-25-identity-v2";
     const HEADQUARTERS_CITY = "总部";
     const FLOW_STEPS = Object.freeze({ visit: 3, store: 3 });
     const MOBILE_INPUT_SETTLE_MS = 320;
     const MOBILE_INPUT_FOCUS_GRACE_MS = 650;
     const MOBILE_KEYBOARD_MIN_DELTA = 120;
-    const FLOW_STEP_LABELS = Object.freeze({
-        visit: Object.freeze(["", "选择门店", "进店沟通", "现场证明"]),
-        store: Object.freeze(["", "搜索门店", "基础资料", "业务标签"])
-    });
     const LOCATION_FAILURE_REASONS = new Set([
         "PERMISSION_DENIED", "POSITION_UNAVAILABLE", "TIMEOUT", "UNSUPPORTED",
         "INSECURE_CONTEXT", "INVALID_POSITION", "TIMESTAMP_UNUSABLE",
@@ -119,6 +111,7 @@
         store: freshStore(),
         submission: freshSubmission(),
         options: {
+            maxAudioBytes: DEFAULT_MAX_AUDIO_BYTES,
             cities: [],
             storeAttributes: [],
             operatingStatuses: [],
@@ -175,18 +168,24 @@
             visit: null,
             store: null
         },
-        geolocationContinueIds: {
-            visit: null,
-            store: null
-        },
-        geolocationLifecycleCleanups: {
-            visit: null,
-            store: null
-        },
         submitting: false,
         completed: false,
-        storageUnavailableShown: false
+        storageOwner: null,
+        persistence: Promise.resolve(true),
+        pendingMedia: new Set(),
+        unsavedMedia: new Set(),
+        resumeTimer: null,
+        recordsBusy: false,
+        recordsPendingOnly: false,
+        evidenceSyncIds: new Set(),
+        lastSavedFingerprint: "",
+        pickerUnsavedFingerprint: ""
     };
+    let historyView = null;
+    let historyScreen = "closed";
+    let initialized = false;
+    let recoveryInFlight = null;
+    let draftRestoreSequence = 0;
 
     const $ = (selector, root = document) => root.querySelector(selector);
     const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -240,7 +239,7 @@
                 const context = state[scope].locationContext;
                 if (state[scope].city && state[scope].location
                     && !(scope === "visit" && isBusinessLocked())
-                    && !locationFlowReady(context)) {
+                    && !context && state[scope].location?.capturedAt) {
                     resolveLocationContext(scope);
                 }
             });
@@ -254,6 +253,14 @@
         if (hasRestoredDraft()) {
             showRestoreNotice();
             emitClientDiagnostic("PAGE_RESTORED", "SUCCEEDED");
+        }
+        initPersonalHistory();
+        initialized = true;
+        // pageshow 可能早于身份和 IndexedDB 恢复。初始化完成后主动核对上次提交，
+        // 不依赖移动系统一定会发出 unload/visibilitychange。
+        await recoverInterruptedSubmission();
+        if (state.identity?.authenticated && !isBusinessLocked() && state.ui.visitStep === 1) {
+            void searchVisitStoreDirectory();
         }
     }
 
@@ -359,21 +366,14 @@
     }
 
     function invalidateUnlockedVisitLocationForFreshEntry() {
+        // 恢复后保留门店、字段和原始定位证据；新的前台采集不得抹掉已经录入的内容。
         if (!hasRestoredDraft() || isBusinessLocked()) return;
-        if (locationExceptionReady(state.visit.locationContext)) return;
-        state.visit.location = null;
-        state.visit.locationContext = null;
-        state.visit.nearbyStores = [];
-        state.visit.selectedStore = null;
-        state.ui.visitStep = 1;
+        invalidateExpiredRestoredLocation("visit");
     }
 
     function scheduleInitialVisitLocationCapture() {
-        if (state.activeTab !== "visit"
-                || !state.identity?.authenticated
-                || !state.visit.city
-                || isBusinessLocked()
-                || locationFlowReady(state.visit.locationContext)) return;
+        if (state.activeTab !== "visit" || !state.identity?.authenticated
+                || !state.visit.city || isBusinessLocked() || state.completed) return;
         window.requestAnimationFrame(() => captureLocation("visit"));
     }
 
@@ -479,7 +479,7 @@
                 && state.store.salespersonId !== String(identity.salespersonId));
         const workCityMismatch = (state.visit.city && !identityAllowsWorkCity(identity, state.visit.city))
             || (state.store.city && !identityAllowsWorkCity(identity, state.store.city));
-        const restoredMismatch = salespersonMismatch || workCityMismatch;
+        const restoredMismatch = salespersonMismatch;
         if (restoredMismatch) {
             const hadServerDraft = Boolean(state.submission.serverId
                 || state.submission.attemptedPayload
@@ -487,7 +487,7 @@
                 || state.submission.mediaUploadAttempts.length
                 || state.submission.audioSegments.length);
             state.identity = identity;
-            startNewSubmission();
+            startNewSubmission({ preserveCurrent: false });
             showIdentityDraftResetNotice(hadServerDraft);
         }
         state.identity = identity;
@@ -507,6 +507,12 @@
         renderRestoredValues();
         renderStoreOwnerSummary();
         lockIdentitySelectors();
+        await restoreOwnedDraft();
+        renderNearbyStores();
+        renderSelectedStore();
+        if (workCityMismatch && !salespersonMismatch && isBusinessLocked()) {
+            showError("业务归属已变化，原提交记录仍保留；请先确认原提交结果。");
+        }
     }
 
     function showIdentityDraftResetNotice(hadServerDraft) {
@@ -548,6 +554,7 @@
                 : "--";
         }
         $("#identity-switch").disabled = state.submitting || isBusinessLocked();
+        if ($("#my-records-button")) $("#my-records-button").hidden = !state.identity?.authenticated;
         lockIdentitySelectors();
         renderFlowSteps();
     }
@@ -567,6 +574,7 @@
 
     async function switchIdentity() {
         if (state.submitting) return;
+        if (state.evidenceSyncIds.size) { showError("证据正在同步，请稍后切换身份"); return; }
         if (recordingBusy()) {
             showRecordingNavigationError("请先结束录音，再切换销售身份。");
             return;
@@ -577,7 +585,12 @@
         }
         if (!window.confirm("切换身份会清空当前未提交表单，确定继续吗？")) return;
         try {
+            const owner = currentStorageOwner();
+            await state.persistence;
             await requestJson("/identity/logout", { method: "POST" });
+            if (owner && window.SalesCheckinDraftStore) await window.SalesCheckinDraftStore.clearOwner(owner);
+            state.storageOwner = null;
+            historyView?.resetIdentity();
             state.identity = null;
             startNewSubmission();
             renderIdentityState();
@@ -616,7 +629,7 @@
         $("#visit-step-2-edit-store").addEventListener("click", () => goToFlowStep("visit", 1));
         $("#visit-step-2-next").addEventListener("click", () => {
             if (recordingBusy()) {
-                stopRecording();
+                showRecordingNavigationError("请先点击录音区的停止按钮保存录音");
                 return;
             }
             goToFlowStep("visit", 3);
@@ -629,7 +642,7 @@
 
         $("#dismiss-error-button").addEventListener("click", hideError);
         $("#discard-draft-button").addEventListener("click", async () => discardDraft());
-        $("#new-submission-button").addEventListener("click", startNewSubmission);
+        $("#new-submission-button").addEventListener("click", () => { if (!state.submitting) startNewSubmission(); });
 
         $("#visit-city").addEventListener("change", () => handleCityChange("visit"));
         $("#store-city").addEventListener("change", () => handleCityChange("store"));
@@ -637,7 +650,6 @@
         $("#store-salesperson").addEventListener("change", persistFromForm);
 
         $("#store-search").addEventListener("input", handleVisitStoreSearchInput);
-        $("#store-search").addEventListener("focus", () => showVisitStoreOptions());
         $("#store-search").addEventListener("keydown", handleStoreSearchKeydown);
         $("#store-search-toggle").addEventListener("click", toggleVisitStoreOptions);
         $("#clear-store-button").addEventListener("click", () => clearSelectedStore(true, true, true));
@@ -660,9 +672,43 @@
 
         $("#storefront-photo").addEventListener("change", (event) => handleImageSelection("photo", event));
         $("#wechat-screenshot").addEventListener("change", (event) => handleImageSelection("wechat", event));
-        $("#storefront-photo").addEventListener("click", () => {
-            emitClientDiagnostic("PHOTO_PICKER_OPEN", "STARTED");
+        $("#storefront-photo").addEventListener("click", preparePhotoPicker);
+        $("#storefront-photo").addEventListener("cancel", resumeActiveVisit);
+        ["#quick-photo-button", "#photo-retake-button"].forEach(selector =>
+            $(selector)?.addEventListener("click", () => $("#storefront-photo").click()));
+        $("#photo-album-button")?.addEventListener("click", () => $("#photo-album-input").click());
+        $("#photo-album-input")?.addEventListener("click", preparePhotoPicker);
+        $("#photo-album-input")?.addEventListener("cancel", resumeActiveVisit);
+        $("#photo-album-input")?.addEventListener("change", (event) => handleImageSelection("photo", event));
+        $("#my-records-button")?.addEventListener("click", () => showMyRecords(false));
+        $("#pending-records-button")?.addEventListener("click", () => showMyRecords(true));
+        $("#nav-records-button")?.addEventListener("click", () => showMyRecords(false));
+        $("#nav-visit-button")?.addEventListener("click", () => historyView?.close());
+        $("#app-back-button")?.addEventListener("click", () => {
+            if (historyScreen === "detail") { historyView?.backToList(); return; }
+            if (historyScreen !== "closed") { historyView?.close(); return; }
+            if (state.submitting) return;
+            if (state.completed) { void showMyRecords(false); return; }
+            if (state.activeTab === "store" && state.ui.storeStep === 1) switchTab("visit");
+            else goToFlowStep(state.activeTab, state.ui[flowStateKey(state.activeTab)] - 1);
         });
+        $("#success-view-record-button")?.addEventListener("click", () => {
+            if (state.submission.serverId) void historyView?.showDetail(state.submission.serverId);
+        });
+        $("#success-retry-button")?.addEventListener("click", () => {
+            if (state.submission.wechatUploadErrorStatus === 413 || state.submission.audioSegments.some(segment =>
+                    ["TOO_LARGE", "NEEDS_FILE"].includes(segment.uploadState))) openEvidenceEditor();
+            else void supplementCurrentEvidence();
+        });
+        $("#photo-open-button")?.addEventListener("click", () => {
+            if (!state.objectUrls.photo) {
+                renderDraftSaveStatus("照片已保留原件，提交后可在打卡明细查看"); return;
+            }
+            $("#local-photo-full").src = state.objectUrls.photo;
+            $("#local-photo-dialog").showModal();
+        });
+        $("#local-photo-close")?.addEventListener("click", () => $("#local-photo-dialog").close());
+        $("#local-photo-dialog")?.addEventListener("close", () => $("#local-photo-full").removeAttribute("src"));
         $("#remove-photo-button").addEventListener("click", async () => clearFile("photo"));
         $("#remove-wechat-button").addEventListener("click", async () => clearFile("wechat"));
         $("#delete-uploaded-photo-button").addEventListener("click", async () => clearFile("photo"));
@@ -687,7 +733,6 @@
         $("#store-form").addEventListener("submit", submitStore);
 
         document.addEventListener("click", (event) => {
-            if (!event.target.closest(".store-search-field")) hideStoreResults();
             if (!event.target.closest(".poi-search-field")) hidePoiResults();
         });
         document.addEventListener("focusin", handleMobileFocusIn);
@@ -695,6 +740,22 @@
         window.addEventListener("resize", handleMobileViewportResize);
         window.visualViewport?.addEventListener("resize", handleMobileViewportResize);
 
+        window.addEventListener("pageshow", resumeActiveVisit);
+        window.addEventListener("online", resumeActiveVisit);
+        window.addEventListener("pagehide", () => {
+            if (currentStorageOwner()) { syncStateFromForm(); void persistDraft(); }
+            pauseAllAudioPreviews();
+        });
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "hidden") {
+                if (!state.completed) { syncStateFromForm(); void persistDraft(); }
+                if (isRecording()) {
+                    showAudioSelectionNotice("离开页面前已结束录音，请返回后回放确认");
+                    stopRecording();
+                }
+                cancelLocationCapture("visit"); cancelLocationCapture("store");
+            } else resumeActiveVisit();
+        });
         window.addEventListener("beforeunload", (event) => {
             if (!state.completed) {
                 syncStateFromForm();
@@ -761,21 +822,34 @@
     }
 
     function renderFlowHeader() {
-        const flow = state.activeTab === "store" ? "store" : "visit";
-        const storeActive = flow === "store";
-        const title = storeActive ? "新增门店" : "拜访打卡";
-        const current = normalizeFlowStep(state.ui?.[flowStateKey(flow)]);
-        const stepLabel = FLOW_STEP_LABELS[flow][current];
-        const description = state.identity?.authenticated
-            ? `第 ${current}/${FLOW_STEPS[flow]} 步 · ${stepLabel}`
-            : "现场拜访记录";
-        const titleElement = $("#hero-title");
-        const descriptionElement = $("#hero-description");
-        if (titleElement.textContent !== title) titleElement.textContent = title;
-        if (descriptionElement.textContent !== description) descriptionElement.textContent = description;
-        document.title = storeActive ? "新增门店" : "销售拜访打卡";
-        $("meta[name=\"theme-color\"]")?.setAttribute(
-            "content", storeActive ? "#1f4e6b" : "#133c3f");
+        syncAppScreen();
+    }
+
+    function syncAppScreen() {
+        const screen = !state.identity?.authenticated ? "identity"
+            : historyScreen === "detail" ? "history-detail" : historyScreen === "list" ? "history"
+                : state.completed && !state.editingEvidence ? "result" : state.activeTab === "store" ? "store"
+                    : state.ui.visitStep === 1 ? "visit-home" : state.ui.visitStep === 2 ? "visit-form" : "visit-photo";
+        document.body.dataset.screen = screen;
+        const titles = { identity: "拜访打卡", "visit-home": "拜访打卡", "visit-form": "记录拜访",
+            "visit-photo": "拍照提交", store: "新增门店", result: "提交结果", history: "我的打卡记录", "history-detail": "打卡明细" };
+        $("#hero-title").textContent = titles[screen];
+        $("#hero-description").textContent = "销售拜访记录";
+        document.title = titles[screen];
+        $("meta[name=\"theme-color\"]")?.setAttribute("content", "#ffffff");
+        const navigation = $("#app-bottom-nav");
+        if (navigation) navigation.hidden = !["visit-home", "history"].includes(screen);
+        const back = $("#app-back-button");
+        if (back) back.hidden = ["identity", "visit-home", "history"].includes(screen);
+        $("#nav-visit-button")?.classList.toggle("is-active", screen === "visit-home");
+        $("#nav-records-button")?.classList.toggle("is-active", screen === "history");
+        const historyOpen = historyScreen !== "closed";
+        const result = screen === "result";
+        $("#visit-panel").hidden = historyOpen || result || state.activeTab === "store";
+        $("#store-panel").hidden = historyOpen || result || state.activeTab !== "store";
+        $("#success-panel").hidden = !result;
+        $("#nav-visit-button")?.setAttribute("aria-current", screen === "visit-home" ? "page" : "false");
+        $("#nav-records-button")?.setAttribute("aria-current", historyOpen ? "page" : "false");
     }
 
     function flowStateKey(flow) {
@@ -792,27 +866,21 @@
             return Boolean(cleanText(state.store.sourcePoiId) && cleanText(state.store.sourcePoiToken));
         }
         if (state.store.sourceMode === "MANUAL") {
-            return Boolean(state.store.manualEntryAllowed
-                && (locationExceptionReady(state.store.locationContext)
-                    || cleanText(state.store.manualEntryToken)));
+            return true;
         }
         return false;
     }
 
     function visitSelectedStoreReady() {
-        const selectedId = state.visit.selectedStore?.id;
-        if (!selectedId) return false;
-        if (isBusinessLocked() || locationExceptionReady(state.visit.locationContext)) return true;
-        return registeredNearbyStores().some((store) =>
-            String(store.storeId || store.id) === String(selectedId));
+        // 目录由服务端按身份过滤；设备距离只是复核证据，不决定能否拜访。
+        return Boolean(state.visit.selectedStore?.id);
     }
 
     function isVisitStepReady(step) {
         if (step === 1) {
             return Boolean(state.visit.city
                 && state.visit.salespersonId
-                && visitSelectedStoreReady()
-                && locationFlowReady(state.visit.locationContext));
+                && visitSelectedStoreReady());
         }
         if (step === 2) {
             return Boolean(cleanText(state.visit.customerName) && cleanText(state.visit.visitResult));
@@ -825,7 +893,6 @@
         if (step === 1) {
             return Boolean(state.store.city
                 && state.store.salespersonId
-                && locationFlowReady(state.store.locationContext)
                 && hasValidStoreSource());
         }
         if (step === 2) {
@@ -881,6 +948,7 @@
     }
 
     function renderFlowSteps() {
+        renderVisitReview();
         if (!state.ui) state.ui = freshUiState();
         ["visit", "store"].forEach((flow) => {
             const key = flowStateKey(flow);
@@ -910,22 +978,26 @@
         if (recordingWorkspace.parentElement !== recordingSlot) {
             recordingSlot.appendChild(recordingWorkspace);
         }
-        recordingWorkspace.hidden = state.activeTab !== "visit" || visitStep === 1;
+        recordingWorkspace.hidden = state.activeTab !== "visit" || visitStep === 1
+            || (visitStep === 3 && !state.completed && !state.submission.audioSegments.length && !recordingBusy());
         recordingWorkspace.classList.toggle("is-review-mode", visitStep === 3);
         recordingWorkspace.classList.toggle("is-locked-recovery", visitStep === 3 && isBusinessLocked());
-        $("#recording-stage-badge").textContent = visitStep === 3
-            ? "第 3 步 · 核对" : "第 2 步 · 录音";
+        renderRecordingDisclosure();
         $("#recording-workspace-copy").textContent = visitStep === 3
             ? isBusinessLocked()
                 ? "草稿已保留；可重试或跳过失败录音，继续提交"
                 : "在此回放确认；需要补录时请先返回第2步"
-            : "开始后可继续填写客户信息；请结束录音后再进入现场证明";
+            : "录音时可继续填写";
         if (!recordingBusy()) {
-            $("#record-button-label").textContent = visitStep === 3 && !isBusinessLocked()
-                ? "返回第2步补录" : "开始现场录音";
+            setStableText($("#record-button-label"), visitStep === 3 && !isBusinessLocked()
+                ? "返回第2步补录" : "开始录音");
         }
         renderFlowHeader();
         renderFlowActions();
+    }
+
+    function setStableText(element, value) {
+        if (element.textContent !== value) element.textContent = value;
     }
 
     function renderFlowActions() {
@@ -938,17 +1010,10 @@
         setFlowNextState(storeNextOne, isStoreStepReady(1));
         setFlowNextState(storeNextTwo, isStoreStepReady(2));
         const recorderBusy = recordingBusy();
-        const activeRecording = isRecording();
-        visitNextTwo.classList.toggle("is-recording-action", activeRecording);
-        visitNextTwo.disabled = state.submitting
-            || state.recorder.starting
-            || state.recorder.stopping
-            || (!activeRecording && (recorderBusy || !isVisitStepReady(2)));
-        visitNextTwo.textContent = state.recorder.starting
-            ? "正在等待麦克风"
-            : state.recorder.stopping ? "正在生成录音"
-                : activeRecording ? "结束并保存录音"
-                    : recorderBusy ? "正在保留录音" : "下一步：现场证明";
+        visitNextTwo.disabled = state.submitting || recorderBusy || !isVisitStepReady(2);
+        // Replacing an unchanged text node during input blur cancels the pending
+        // native tap in WebKit. Keep action labels stable until their value changes.
+        setStableText(visitNextTwo, "下一步 · 拍照提交");
         ["#visit-step-2-back", "#visit-step-2-edit-store", "#visit-step-3-back"].forEach((selector) => {
             const button = $(selector);
             if (button) button.disabled = state.submitting || recorderBusy || isBusinessLocked();
@@ -994,42 +1059,26 @@
         syncStateFromForm();
         clearFlowStepErrors(flow, step);
         let valid = true;
+        const required = (value, key, message) => { valid = requireValue(value, key, message) && valid; };
         if (flow === "visit" && step === 1) {
-            valid = requireValue(state.visit.city, "visit-city", "请选择业务归属城市。") && valid;
-            valid = requireValue(state.visit.salespersonId, "visit-salesperson", "请选择销售。") && valid;
-            if (!locationFlowReady(state.visit.locationContext)) {
-                setFieldError("visit-location", state.visit.locationContext?.errorMessage
-                    || "请刷新定位；如定位失败或等待较久，可按页面提示继续录入。");
-                valid = false;
-            }
-            valid = requireValue(state.visit.selectedStore?.id, "selected-store", "请选择本次拜访门店。") && valid;
-            if (state.visit.selectedStore?.id && !visitSelectedStoreReady()) {
-                setFieldError("selected-store", "当前已选门店不在本次定位允许范围，请重新选择；也可在定位失败后按名称核对。" );
-                valid = false;
-            }
+            required(state.visit.city, "visit-city", "请选择业务归属城市。");
+            required(state.visit.salespersonId, "visit-salesperson", "请选择销售。");
+            required(state.visit.selectedStore?.id, "selected-store", "请选择本次拜访门店。");
         } else if (flow === "visit" && step === 2) {
-            valid = requireValue(cleanText(state.visit.customerName), "customer-name", "请输入客户姓名。") && valid;
-            valid = requireValue(cleanText(state.visit.visitResult), "visit-result", "请填写拜访结果。") && valid;
+            required(cleanText(state.visit.customerName), "customer-name", "请输入客户姓名。");
+            required(cleanText(state.visit.visitResult), "visit-result", "请填写拜访结果。");
         } else if (flow === "store" && step === 1) {
-            valid = requireValue(state.store.city, "store-city", "请选择业务归属城市。") && valid;
-            valid = requireValue(state.store.salespersonId, "store-salesperson", "请选择销售。") && valid;
-            if (!locationFlowReady(state.store.locationContext)) {
-                setFieldError("store-location", state.store.locationContext?.errorMessage
-                    || "请刷新定位；如定位失败或等待较久，可按页面提示继续录入。");
-                valid = false;
-            }
-            if (!hasValidStoreSource()) {
-                setFieldError("store-source", "请从高德搜索结果选择门店；无结果后可使用人工录入。");
-                valid = false;
-            }
+            required(state.store.city, "store-city", "请选择业务归属城市。");
+            required(state.store.salespersonId, "store-salesperson", "请选择销售。");
+            required(hasValidStoreSource() ? "selected" : "", "store-source", "请选择地图门店或手动录入。");
         } else if (flow === "store" && step === 2) {
-            valid = requireValue(cleanText(state.store.name), "store-name", "请输入门店名称。") && valid;
-            valid = requireValue(state.store.attribute, "store-attribute", "请选择门店属性。") && valid;
-            valid = requireValue(state.store.operatingStatus, "operating-status", "请选择营业状态。") && valid;
-            valid = requireValue(cleanText(state.store.contactName), "contact-name", "请输入联系人。") && valid;
-            valid = requireValue(state.store.areaRange, "area-range", "请选择面积范围。") && valid;
-            valid = requireValue(cleanText(state.store.facilityCount), "facility-count", "请输入设施数量。") && valid;
-            valid = requireValue(state.store.cooperationIntent, "cooperation-intent", "请选择合作意向。") && valid;
+            required(cleanText(state.store.name), "store-name", "请输入门店名称。");
+            required(state.store.attribute, "store-attribute", "请选择门店属性。");
+            required(state.store.operatingStatus, "operating-status", "请选择营业状态。");
+            required(cleanText(state.store.contactName), "contact-name", "请输入联系人。");
+            required(state.store.areaRange, "area-range", "请选择面积范围。");
+            required(cleanText(state.store.facilityCount), "facility-count", "请输入设施数量。");
+            required(state.store.cooperationIntent, "cooperation-intent", "请选择合作意向。");
         }
         return valid;
     }
@@ -1072,6 +1121,8 @@
     }
 
     function resetVisitMediaForStoreChange() {
+        deleteLocalMedia("photo"); deleteLocalMedia("wechat");
+        state.submission.audioSegments.forEach((segment) => deleteLocalMedia(`audio:${segment.segmentId}`));
         resetLocalFile("photo");
         resetLocalFile("wechat");
         resetLocalFile("audio");
@@ -1140,6 +1191,9 @@
         mergeArrayOption("cooperationIntents", normalized.cooperationIntents);
         mergeArrayOption("storeGrades", normalized.storeGrades);
         mergeArrayOption("storeTags", normalized.storeTags);
+        if (Number.isFinite(normalized.maxAudioBytes) && normalized.maxAudioBytes >= 0) {
+            state.options.maxAudioBytes = normalized.maxAudioBytes;
+        }
 
         if (city && Array.isArray(normalized.salespersons)) {
             state.salespersonsByCity.set(city, normalized.salespersons);
@@ -1327,16 +1381,6 @@
             .filter(isUsableNearbyStore);
     }
 
-    function storePoiLookupStatus() {
-        return Array.isArray(state.store.poiSearchResults)
-            ? cleanText(state.store.poiSearchLookupStatus) || "UNAVAILABLE"
-            : "";
-    }
-
-    function registeredNearbyStores() {
-        return visitNearbyOptions();
-    }
-
     function visitDirectoryOptions() {
         return (Array.isArray(state.visit.directoryStores) ? state.visit.directoryStores : [])
             .filter((store) => store?.source === "REGISTERED")
@@ -1349,8 +1393,7 @@
         const toggle = $("#store-search-toggle");
         if (toggle) {
             toggle.disabled = false;
-            toggle.textContent = locationExceptionReady(state.visit.locationContext)
-                ? "搜索门店" : "展开";
+            toggle.textContent = "搜索";
         }
     }
 
@@ -1468,63 +1511,46 @@
     }
 
     function handleVisitStoreSearchInput() {
-        if (locationExceptionReady(state.visit.locationContext)) {
-            if (state.storeDirectoryController) abortStoreDirectorySearch();
-            const query = $("#store-search").value.trim();
-            if (query !== state.visit.directoryQuery) {
-                state.visit.directoryStores = [];
-                state.visit.directoryQuery = "";
-            }
+        if (state.storeDirectoryController) abortStoreDirectorySearch();
+        const query = $("#store-search").value.trim();
+        if (query !== state.visit.directoryQuery) {
+            state.visit.directoryStores = [];
+            state.visit.directoryQuery = "";
         }
         showVisitStoreOptions();
+        window.clearTimeout(state.directorySearchTimer);
+        if (query.length === 0 || query.length >= 2) state.directorySearchTimer = window.setTimeout(searchVisitStoreDirectory, 350);
     }
 
     function showVisitStoreOptions() {
         const input = $("#store-search");
         if (input.disabled) return;
         const query = input.value.trim().toLocaleLowerCase("zh-CN");
-        const directoryMode = locationExceptionReady(state.visit.locationContext);
-        const options = directoryMode ? visitDirectoryOptions() : visitNearbyOptions();
-        const stores = options.filter((store) => {
-            if (!query) return true;
-            return [store.name, store.address, store.locationSummary]
-                .some((value) => cleanText(value).toLocaleLowerCase("zh-CN").includes(query));
+        const candidates = [...visitDirectoryOptions(), ...visitNearbyOptions()];
+        const seen = new Set();
+        const stores = candidates.filter((store) => {
+            const id = String(store.id || store.storeId);
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return !query || [store.name, store.address, store.locationSummary].some((value) =>
+                cleanText(value).toLocaleLowerCase("zh-CN").includes(query));
         });
         renderStoreResults(stores);
         $("#store-search-help").textContent = stores.length
-            ? directoryMode
-                ? `已按门店名称找到 ${stores.length} 家，请核对后选择。`
-                : `${visitRadiusLabel()}已加载 ${options.length} 家已建档门店；当前筛选显示 ${stores.length} 家`
-            : options.length
-                ? "已加载的门店中没有匹配项，可换关键词或新增门店。"
-                : directoryMode
-                    ? "请输入至少 2 个字，再点击“搜索门店”；找不到可新增门店。"
-                    : "附近没有已建档门店，可点击下方“新增门店”。";
+            ? `找到 ${stores.length} 家，请核对门店地址` : "输入门店名称搜索；找不到可新增门店";
     }
 
     function toggleVisitStoreOptions() {
         if ($("#store-search").disabled) return;
-        if (locationExceptionReady(state.visit.locationContext)) {
-            void searchVisitStoreDirectory();
-            return;
-        }
-        if ($("#store-search-results").hidden) {
-            showVisitStoreOptions();
-            $("#store-search").focus();
-        } else {
-            hideStoreResults();
-        }
+        if ($("#store-search").value.trim().length >= 2) void searchVisitStoreDirectory();
+        else showVisitStoreOptions();
     }
 
     async function searchVisitStoreDirectory() {
         if (state.submitting || state.storeDirectoryController) return;
         const input = $("#store-search");
         const query = input.value.trim();
-        if (!locationExceptionReady(state.visit.locationContext)) {
-            showVisitStoreOptions();
-            return;
-        }
-        if (query.length < 2) {
+        if (query.length === 1) {
             $("#store-search-help").textContent = "请输入至少 2 个字，再点击“搜索门店”。";
             input.focus();
             return;
@@ -1536,7 +1562,7 @@
         toggle.textContent = "搜索中…";
         $("#store-search-help").textContent = `正在按“${query}”搜索${state.visit.city}已建档门店…`;
         try {
-            const path = `/stores?city=${encodeURIComponent(state.visit.city)}&q=${encodeURIComponent(query)}&limit=20`;
+            const path = `/stores?city=${encodeURIComponent(state.visit.city)}&salespersonId=${encodeURIComponent(state.visit.salespersonId)}&q=${encodeURIComponent(query)}&limit=20`;
             const payload = normalizeResponse(await requestJson(path, {
                 signal: controller.signal,
                 timeout: 20000
@@ -1556,7 +1582,7 @@
             state.visit.directoryQuery = query;
             renderStoreResults(stores);
             $("#store-search-help").textContent = stores.length
-                ? `找到 ${stores.length} 家已建档门店；定位未核验，请按门店名称核对后选择。`
+                ? `找到 ${stores.length} 家，请核对门店地址。`
                 : "没有找到同名已建档门店，可换关键词或新增门店。";
             persistDraft();
         } catch (error) {
@@ -1583,8 +1609,9 @@
             stores.forEach((store) => {
                 const button = document.createElement("button");
                 button.type = "button";
-                button.className = "search-result visit-store-result is-registered";
-                button.setAttribute("role", "option");
+                const selected = String(state.visit.selectedStore?.id) === String(store.id || store.storeId);
+                button.className = "search-result visit-store-result is-registered" + (selected ? " is-selected" : "");
+                button.setAttribute("aria-pressed", String(selected));
 
                 const detail = document.createElement("span");
                 const name = document.createElement("strong");
@@ -1603,7 +1630,7 @@
                 const directoryMode = store.directoryMatch === true
                     || locationExceptionReady(state.visit.locationContext);
                 status.textContent = directoryMode
-                    ? "定位未核验 · 按门店名称选择"
+                    ? "已建档"
                     : "已建档 · 直接打卡";
                 const distance = document.createElement("small");
                 if (!directoryMode) {
@@ -1614,34 +1641,66 @@
                 }
 
                 button.append(detail, meta);
-                button.addEventListener("click", () => selectStore(store));
+                button.addEventListener("click", () => {
+                    selectStore(store);
+                    if (String(state.visit.selectedStore?.id) === String(store.id || store.storeId)) {
+                        $("#store-search").focus({preventScroll: true});
+                    }
+                });
+                button.addEventListener("keydown", handleStoreResultKeydown);
                 root.appendChild(button);
             });
         }
         root.hidden = false;
-        $("#store-search").setAttribute("aria-expanded", "true");
+        $("#store-search-toggle").setAttribute("aria-controls", "store-search-results");
+        $("#store-search-toggle").setAttribute("aria-expanded", "true");
     }
 
     function hideStoreResults() {
         $("#store-search-results").hidden = true;
-        $("#store-search").setAttribute("aria-expanded", "false");
+        $("#store-search-toggle").setAttribute("aria-expanded", "false");
     }
 
     function handleStoreSearchKeydown(event) {
         if (event.isComposing) return;
         if (event.key === "Escape") {
+            event.preventDefault();
             hideStoreResults();
-            event.currentTarget.blur();
+            return;
         }
-        if (event.key === "Enter" && locationExceptionReady(state.visit.locationContext)) {
+        if (event.key === "Enter") {
             event.preventDefault();
             void searchVisitStoreDirectory();
             return;
         }
-        if (event.key === "ArrowDown" && $("#store-search-results").hidden) {
+        if (event.key === "ArrowDown") {
             event.preventDefault();
-            showVisitStoreOptions();
+            if ($("#store-search-results").hidden) showVisitStoreOptions();
+            $("#store-search-results").querySelector("button.visit-store-result")?.focus();
         }
+    }
+
+    function handleStoreResultKeydown(event) {
+        if (event.isComposing) return;
+        if (event.key === "Escape") {
+            event.preventDefault();
+            hideStoreResults();
+            $("#store-search").focus({preventScroll: true});
+            return;
+        }
+        const buttons = [...$("#store-search-results").querySelectorAll("button.visit-store-result")];
+        const current = buttons.indexOf(event.currentTarget);
+        if (current < 0) return;
+        let target;
+        if (event.key === "ArrowDown") target = buttons[Math.min(current + 1, buttons.length - 1)];
+        else if (event.key === "ArrowUp") target = current === 0 ? $("#store-search") : buttons[current - 1];
+        else if (event.key === "Home") target = buttons[0];
+        else if (event.key === "End") target = buttons[buttons.length - 1];
+        if (target) {
+            event.preventDefault();
+            target.focus();
+        }
+        // Enter and Space retain the browser's native button activation.
     }
 
     function selectStore(store) {
@@ -1662,12 +1721,12 @@
             locationSummary: store.locationSummary || store.address || "",
             locationVerificationStatus: cleanText(store.locationVerificationStatus)
         };
-        $("#store-search").value = state.visit.selectedStore.name;
-        hideStoreResults();
+        $("#store-search").value = state.visit.directoryQuery || "";
         renderSelectedStore();
         renderNearbyStores();
         clearFieldError("selected-store");
         persistDraft();
+        showVisitStoreOptions();
     }
 
     function clearSelectedStore(persist = true, focusSearch = true, clearVisitMedia = false) {
@@ -1687,11 +1746,34 @@
         }
     }
 
+    function renderVisitReview() {
+        if ($("#review-customer")) $("#review-customer").textContent = state.visit.customerName
+            ? `${state.visit.customerName}${state.visit.customerPhone ? " · " + state.visit.customerPhone : ""}` : "尚未填写";
+        if ($("#review-visit-result")) $("#review-visit-result").textContent = state.visit.visitResult || "尚未填写";
+        const element = $("#review-location-quality");
+        if (!element) return;
+        const location = state.visit.location;
+        if (!location) { element.textContent = "未取得设备位置 · 待核验"; return; }
+        if (location.userReportedInaccurate) { element.textContent = "已声明位置不准确 · 待核验"; return; }
+        if (!location.capturedAt || location.timeStatus === "UNKNOWN") {
+            element.textContent = "已保留设备坐标，采集时间未知 · 待核验"; return;
+        }
+        if (location.timeStatus === "STALE" || Date.now() - Date.parse(location.capturedAt) > GEOLOCATION_FRESH_MAX_AGE_MS) {
+            element.textContent = "已保留较早的设备定位 · 待核验"; return;
+        }
+        element.textContent = location.accuracyMeters === null ? "设备定位精度未知 · 待核验"
+            : location.accuracyMeters > 100 ? `设备定位精度约 ${Math.round(location.accuracyMeters)} 米 · 待核验`
+                : `设备上报位置 · 精度约 ${Math.round(location.accuracyMeters)} 米`;
+    }
+
     function renderSelectedStore() {
         const selected = state.visit.selectedStore;
         const businessCityHint = cleanText(selected?.city)
             && cleanText(selected?.city) !== cleanText(state.visit.city)
             ? ` · 门店归属${cleanText(selected.city)}` : "";
+        if ($("#review-store-name")) $("#review-store-name").textContent = selected?.name || "尚未选择门店";
+        if ($("#review-store-address")) $("#review-store-address").textContent = selected
+            ? `${selected.locationSummary || selected.address || selected.city || "地址未完善"}${businessCityHint}` : "";
         $("#selected-store-card").hidden = !selected;
         $("#visit-step-store-name").textContent = selected?.name || "尚未选择门店";
         $("#visit-step-store-address").textContent = selected
@@ -1706,7 +1788,7 @@
         $("#selected-store-name").textContent = selected.name || "未命名门店";
         $("#selected-store-location").textContent = `${selected.locationSummary
             || selected.city || ""}${businessCityHint}`;
-        $("#store-search").value = selected.name || "";
+        $("#store-search").value = state.visit.directoryQuery || "";
         renderFlowActions();
     }
 
@@ -1727,9 +1809,7 @@
             && isUuidValue(context.locationAttemptId));
     }
 
-    function locationFlowReady(context) {
-        return locationContextReady(context) || locationExceptionReady(context);
-    }
+
 
     function renderUnverifiedBanner(scope) {
         const unverified = locationExceptionReady(state[scope].locationContext);
@@ -1739,77 +1819,20 @@
 
     function renderNearbyStores() {
         const panel = $("#nearby-stores-panel");
-        const context = state.visit.locationContext;
-        const options = visitNearbyOptions();
-        const input = $("#store-search");
-        const toggle = $("#store-search-toggle");
-        const createButton = $("#create-store-link");
-        const createUnavailable = state.submitting || isBusinessLocked();
-        const unverified = locationExceptionReady(context);
-        const flowReady = locationFlowReady(context);
-        const resolving = context?.geocodeStatus === "RESOLVING";
+        const locked = state.submitting || isBusinessLocked();
         panel.hidden = false;
-        $("#nearby-stores-empty").hidden = flowReady || resolving;
-        $(".store-search-field", panel).hidden = !flowReady;
-        hideStoreResults();
-        $("#nearby-stores-scope").textContent = unverified
-            ? "定位未核验：按业务城市和门店名称搜索，不按距离筛选"
-            : locationContextReady(context)
-            ? `${visitRadiusLabel(context)}的已建档门店，不受业务归属城市限制`
-            : "定位通过后，仅显示当前位置允许范围内的已建档门店";
-        if (!flowReady) {
-            input.disabled = true;
-            toggle.disabled = true;
-            toggle.textContent = "展开";
-            toggle.setAttribute("aria-label", "展开附近门店选项");
-            createButton.disabled = createUnavailable;
-            $("#nearby-stores-summary").textContent = resolving
-                ? "正在解析地址并加载…" : "等待定位";
-            renderFlowActions();
-            return;
-        }
-
-        if (unverified) {
-            createButton.disabled = createUnavailable;
-            input.disabled = false;
-            input.placeholder = "输入门店名称（至少2个字）";
-            toggle.disabled = state.submitting;
-            toggle.textContent = state.storeDirectoryController ? "搜索中…" : "搜索门店";
-            toggle.setAttribute("aria-label", "按门店名称搜索已建档门店");
-            $("#nearby-stores-summary").textContent = state.visit.directoryStores.length
-                ? `已找到 ${state.visit.directoryStores.length} 家`
-                : "按名称搜索";
-            $("#store-search-help").textContent = state.visit.directoryStores.length
-                ? "定位未核验；请按门店名称核对后选择，不显示距离。"
-                : "输入至少 2 个字并点击“搜索门店”；找不到可新增门店。";
-            renderFlowActions();
-            return;
-        }
-
-        if (!locationContextReady(context)) {
-            $("#nearby-stores-summary").textContent = "需要处理定位问题";
-            $("#store-search-help").textContent = context?.errorMessage
-                || "请使用上方重试按钮重新解析定位。";
-            input.disabled = true;
-            toggle.disabled = true;
-            createButton.disabled = createUnavailable;
-            return;
-        }
-        createButton.disabled = createUnavailable;
-        input.disabled = false;
-        if (!options.length) {
-            $("#nearby-stores-summary").textContent = "附近暂无已建档门店";
-            $("#store-search-help").textContent = "可点击下方“新增门店”，再明确搜索高德新门店。";
-            input.placeholder = "附近暂无已建档门店";
-            toggle.disabled = true;
-            return;
-        }
-        toggle.disabled = false;
-        toggle.textContent = "展开";
-        toggle.setAttribute("aria-label", "展开附近门店选项");
-        input.placeholder = "点击选择，或输入名称筛选";
-        $("#nearby-stores-summary").textContent = `${visitRadiusLabel(context)} ${options.length} 家`;
-        $("#store-search-help").textContent = `已加载 ${options.length} 家已建档门店；输入文字只在本地筛选。`;
+        $("#nearby-stores-empty").hidden = true;
+        $(".store-search-field", panel).hidden = false;
+        $("#store-search").disabled = locked || !state.identity?.authenticated;
+        $("#store-search").placeholder = "搜索门店名称";
+        $("#store-search-toggle").disabled = locked || Boolean(state.storeDirectoryController);
+        $("#store-search-toggle").textContent = state.storeDirectoryController ? "搜索中…" : "搜索";
+        $("#create-store-link").disabled = locked;
+        $("#nearby-stores-scope").textContent = "按名称搜索可拜访门店";
+        $("#nearby-stores-summary").textContent = visitNearbyOptions().length
+            ? `${visitNearbyOptions().length} 家附近推荐` : "全部门店可搜索";
+        $("#store-search-help").textContent = "输入至少2个字，搜索已建档门店";
+        renderFlowActions();
     }
 
     function formatDistance(value) {
@@ -1817,11 +1840,6 @@
         if (!Number.isFinite(meters) || meters < 0) return "";
         if (meters < 1000) return `${Math.max(1, Math.round(meters))} 米`;
         return `${(meters / 1000).toFixed(meters < 10000 ? 1 : 0)} 公里`;
-    }
-
-    function visitRadiusLabel(context = state.visit.locationContext) {
-        const radius = finiteNumberOrNull(context?.maxCheckinDistanceMeters);
-        return radius === null ? "当前定位附近" : `${formatDistance(radius)}内`;
     }
 
     function nearbyPoiStores() {
@@ -1888,7 +1906,7 @@
                 badge.textContent = registered
                     ? "已录入 · 直接打卡"
                     : outOfRange
-                        ? "未录入 · 距离超限"
+                        ? "未录入 · 位置待复核"
                         : "未录入 · 可建档";
                 const distance = document.createElement("small");
                 distance.textContent = formatDistance(poi.distanceMeters) || "附近";
@@ -1907,16 +1925,9 @@
         }
         const registeredCount = pois.filter((poi) => poi.source === "REGISTERED").length;
         const amapCount = pois.length - registeredCount;
-        const selectableCount = pois.filter((poi) => poi.source === "REGISTERED"
-            || poi.nextAction !== "OUT_OF_RANGE").length;
-        const maximumDistance = finiteNumberOrNull(state.store.locationContext?.maxCheckinDistanceMeters);
-        $("#poi-search-help").textContent = pois.length && selectableCount > 0
-            ? `本次返回：${registeredCount} 家已建档门店、${amapCount} 个300米内高德候选；请选择一项继续。`
-            : pois.length
-                ? `本次返回 ${amapCount} 个高德候选，但均超过${formatDistance(maximumDistance) || "允许距离"}，已展示供核对，暂不可选择；请到店后重新定位。`
-            : state.store.manualEntryAllowed
-                ? "搜索完成：没有找到可用候选，请点击下方“手动录入门店”继续。"
-                : "建议输入或粘贴高德完整店名，也可用名称关键字；只有点击搜索才会请求一次高德。";
+        $("#poi-search-help").textContent = pois.length
+            ? `找到 ${registeredCount} 家已建档门店、${amapCount} 个地图候选`
+            : "未找到候选，可直接手动录入";
     }
 
     function hidePoiResults() {
@@ -1943,15 +1954,6 @@
     }
 
     function selectSourcePoi(poi) {
-        const distance = finiteNumberOrNull(poi.distanceMeters);
-        const maximum = finiteNumberOrNull(state.store.locationContext?.maxCheckinDistanceMeters);
-        if (poi.nextAction === "OUT_OF_RANGE"
-                || (distance !== null && maximum !== null && distance > maximum)) {
-            const message = `该门店距当前位置约${formatDistance(distance) || "较远"}，超过${formatDistance(maximum) || "允许距离"}，无法选择；请到店后重新定位。`;
-            setFieldError("store-source", message);
-            $("#poi-search-help").textContent = message;
-            return;
-        }
         const selectionToken = cleanText(poi.selectionToken);
         if (!selectionToken) {
             showError("该高德候选已失效，请重新点击搜索后再选择。");
@@ -2006,125 +2008,49 @@
     }
 
     function enableManualStoreEntry() {
-        if (state.store.sourceMode === "MANUAL") {
-            if (locationExceptionReady(state.store.locationContext)) return;
-            state.store.sourceMode = "";
-            state.store.name = "";
-            state.ui.storeStep = 1;
-            $("#store-name").value = "";
-            renderStoreSource();
-            persistDraft();
-            return;
-        }
-        if (!state.store.manualEntryAllowed) return;
-        const suggestedName = $("#poi-search").value.trim();
+        const suggestedName = state.store.name || $("#poi-search").value.trim();
         clearSourcePoi(false, false);
         state.store.sourceMode = "MANUAL";
+        state.store.manualEntryAllowed = true;
         state.store.name = suggestedName;
         $("#store-name").value = suggestedName;
-        hidePoiResults();
-        clearFieldError("store-source");
-        renderStoreSource();
-        renderStorePrefillMessage();
+        hidePoiResults(); clearFieldError("store-source");
+        renderStoreSource(); renderStorePrefillMessage();
         goToFlowStep("store", 2, { validateForward: false });
     }
 
     function renderStoreSource() {
-        const context = state.store.locationContext;
-        const pois = nearbyPoiStores();
-        const input = $("#poi-search");
-        const searchButton = $("#poi-search-button");
-        const selected = state.store.sourceMode === "POI"
-            && Boolean(state.store.sourcePoiId)
-            && Boolean(state.store.sourcePoiToken);
+        const selected = state.store.sourceMode === "POI" && Boolean(state.store.sourcePoiToken);
         const manual = state.store.sourceMode === "MANUAL";
-        const ready = locationContextReady(context);
-        const unverified = locationExceptionReady(context);
-        if (unverified && !selected) {
-            state.store.manualEntryAllowed = true;
-            state.store.poiSearchLookupStatus = "UNAVAILABLE";
-        }
-        const lookupStatus = storePoiLookupStatus();
-        const canSearch = ready && !selected && !unverified;
         const searching = Boolean(state.poiSearchController);
-        const searchQuery = input.value.trim();
-        $("#store-source-description").textContent = unverified
-            ? "本次定位未核验，不限制继续录入；请手工填写真实门店资料。"
-            : "输入门店名称后点击“搜索”，只返回当前位置300米内候选；输入本身不会调用高德。";
-
+        const canSearch = Boolean(state.store.location?.capturedAt) && !selected;
+        state.store.manualEntryAllowed = true;
+        const input = $("#poi-search");
         input.disabled = !canSearch || searching;
-        searchButton.hidden = selected;
-        searchButton.disabled = !canSearch || searching || searchQuery.length < 2;
-        searchButton.textContent = searching ? "搜索中…" : "搜索";
-        $(".poi-search-field").hidden = selected || unverified;
+        input.placeholder = "输入名称搜索地图门店（选用）";
+        $("#poi-search-button").disabled = !canSearch || searching || input.value.trim().length < 2;
+        $("#poi-search-button").textContent = searching ? "搜索中…" : "搜索";
+        $("#poi-search-button").hidden = selected;
+        $(".poi-search-field").hidden = selected;
         $("#selected-poi-card").hidden = !selected;
         $("#store-profile-card").hidden = !selected && !manual;
         $(".button-row").hidden = !selected && !manual;
         $("#submit-store-button").disabled = !selected && !manual;
         $("#store-name").readOnly = selected;
         $("#store-name-field").classList.toggle("is-readonly", selected);
-
+        $("#store-source-description").textContent = "直接填写门店资料，也可选择地图门店";
+        $("#store-name-help").textContent = selected ? "名称来自地图，请核对" : "请填写门店完整名称";
+        $("#poi-search-help").textContent = searching ? "正在搜索…"
+            : canSearch ? "地图搜索为选用，手动录入可随时继续" : "未取得设备位置，可直接手动录入";
         if (selected) {
             $("#selected-poi-name").textContent = state.store.sourcePoiName || state.store.name;
-            $("#selected-poi-address").textContent = state.store.sourcePoiAddress || "高德暂无详细地址";
-            $("#store-name-help").textContent = "门店名称来自高德；如果选错，请返回上一步重选。";
-        } else if (manual) {
-            $("#store-name-help").textContent = "当前为手动录入，请使用门店完整名称。";
-        } else {
-            $("#store-name-help").textContent = "";
+            $("#selected-poi-address").textContent = state.store.sourcePoiAddress || "暂无地址";
         }
-
-        const manualButton = $("#manual-store-button");
-        manualButton.disabled = searching || (!manual && !state.store.manualEntryAllowed);
-        manualButton.classList.toggle("is-active", manual);
-        manualButton.classList.toggle("is-ready", !manual && state.store.manualEntryAllowed);
-        manualButton.querySelector("strong").textContent = manual
-            ? unverified ? "定位未核验 · 手动录入门店" : "已选择手动录入"
-            : state.store.manualEntryAllowed
-                ? unverified ? "直接手动录入门店" : "仍未找到，手动录入门店"
-                : "高德附近搜索没找到？";
-        manualButton.querySelector("span").textContent = manual
-            ? unverified
-                ? "请填写真实门店名称和资料；本次定位情况会一并保存"
-                : "点击可返回高德附近搜索结果"
-            : state.store.manualEntryAllowed
-                ? unverified
-                    ? "不等待定位和高德搜索，继续补全基础资料"
-                    : "以当前 GPS 作为门店位置，继续补全基础资料"
-                : "确认当前位置300米内搜索无结果后，再手动录入门店名称";
-
-        if (unverified) {
-            $("#poi-search-help").textContent = "定位未核验，本次新增门店使用手工录入。";
-        } else if (!state.store.location) {
-            input.placeholder = "先获取定位";
-            $("#poi-search-help").textContent = "先完成上方现场定位，才能搜索高德新门店。";
-        } else if (context?.geocodeStatus === "RESOLVING") {
-            input.placeholder = "正在解析定位";
-            $("#poi-search-help").textContent = "正在解析定位并加载已建档门店…";
-        } else if (!locationContextReady(context)) {
-            input.placeholder = "定位暂不可用";
-            $("#poi-search-help").textContent = context?.errorMessage
-                || "请重新获取符合精度和时效要求的定位。";
-        } else if (searching) {
-            input.placeholder = "正在搜索高德新门店";
-            $("#poi-search-help").textContent = `正在按“${state.store.poiSearchQuery}”搜索，本次操作只发起一次请求…`;
-        } else if (lookupStatus === "UNAVAILABLE") {
-            input.placeholder = "可换关键词后再次搜索";
-            $("#poi-search-help").textContent = "本次高德搜索暂不可用，可点击下方手工录入继续；保存时仍校验当前位置。";
-        } else if (lookupStatus === "EMPTY") {
-            input.placeholder = "可换关键词后再次搜索";
-            $("#poi-search-help").textContent = "本次高德搜索无结果，可点击下方手工录入。";
-        } else if (Array.isArray(state.store.poiSearchResults)) {
-            const amapCount = state.store.poiSearchResults.length;
-            input.placeholder = "可换关键词后再次搜索";
-            $("#poi-search-help").textContent = `本次高德搜索返回 ${amapCount} 个候选；输入新关键词不会自动请求。`;
-        } else if (!selected) {
-            const registeredCount = pois.filter((poi) => poi.source === "REGISTERED").length;
-            input.placeholder = "输入至少 2 个字，再点击搜索";
-            $("#poi-search-help").textContent = registeredCount
-                ? `已加载 ${registeredCount} 家300米内已建档门店；搜索附近高德门店需点击“搜索”。`
-                : "输入至少 2 个字并点击“搜索”当前位置300米内门店；输入本身不会请求高德。";
-        }
+        const button = $("#manual-store-button");
+        button.disabled = state.submitting;
+        button.classList.toggle("is-active", manual);
+        button.querySelector("strong").textContent = manual ? "继续填写门店" : "手动录入门店";
+        button.querySelector("span").textContent = "定位不准也可保存";
         renderFlowSteps();
     }
 
@@ -2151,17 +2077,7 @@
             return;
         }
         clearFieldError("visit-location");
-        if (!locationFlowReady(state.visit.locationContext)) {
-            setFieldError("visit-location", state.visit.locationContext?.errorMessage
-                || "请先刷新定位；若定位失败，可按页面提示继续新增门店。");
-            $("#visit-location-button")?.scrollIntoView({ behavior: "smooth", block: "center" });
-            $("#visit-location-button")?.focus();
-            return;
-        }
-        const locationChanged = state.store.location?.capturedAt
-            && state.visit.location?.capturedAt
-            && state.store.location.capturedAt !== state.visit.location.capturedAt;
-        if (state.store.city && (state.store.city !== state.visit.city || locationChanged)) {
+        if (state.store.city && state.store.city !== state.visit.city) {
             state.store = freshStore();
         }
         state.store.city = state.visit.city || state.store.city;
@@ -2170,7 +2086,7 @@
         state.store.locationContext = state.visit.locationContext
             ? { ...state.visit.locationContext }
             : null;
-        if (locationExceptionReady(state.store.locationContext)) {
+        if (!state.store.sourceMode) {
             state.store.sourceMode = "MANUAL";
             state.store.manualEntryAllowed = true;
             state.store.manualEntryToken = "";
@@ -2217,7 +2133,7 @@
                 ? locationExceptionReady(state.store.locationContext)
                     ? "定位未核验，当前使用手动录入；保存后会自动返回打卡并选中这家门店。"
                     : "已明确选择手动录入；保存后会自动返回打卡并选中这家门店。"
-                : "请输入门店名称并明确点击搜索；无结果或高德不可用时才可手工录入。";
+                : "可搜索地图门店，也可直接手工录入。";
             return;
         }
         const name = state.store.sourcePoiName || state.store.name || "附近地点";
@@ -2246,13 +2162,21 @@
     }
 
     function locationEvidenceFromPosition(position, receivedAtMs = Date.now()) {
-        // position.timestamp 无法解释时，不能把它伪装成可信采集时间；这里只把回调接收时刻
-        // 作为“未核验坐标”的留档时间，最终记录仍由 locationVerificationStatus 明确标记。
+        const rawTimestamp = position?.timestamp;
+        // 标准 H5 使用 epoch 毫秒。非标准时钟保留原值，不推测偏移或用接收时间造新定位。
+        const numeric = typeof rawTimestamp === "number" ? rawTimestamp : NaN;
+        const known = Number.isFinite(numeric) && numeric >= Date.UTC(2000, 0, 1)
+            && numeric <= receivedAtMs + LOCATION_CAPTURE_FUTURE_SKEW_MS;
         return normalizeUnverifiedLocationEvidence({
             longitude: position?.coords?.longitude,
             latitude: position?.coords?.latitude,
             accuracyMeters: position?.coords?.accuracy,
-            capturedAt: new Date(receivedAtMs).toISOString()
+            capturedAt: known ? new Date(numeric).toISOString() : null,
+            receivedAt: new Date(receivedAtMs).toISOString(),
+            rawTimestamp: rawTimestamp == null ? null : String(rawTimestamp).slice(0, 120),
+            source: "BROWSER_GEOLOCATION",
+            timeStatus: !known ? "UNKNOWN" : receivedAtMs - numeric > GEOLOCATION_FRESH_MAX_AGE_MS
+                ? "STALE" : "KNOWN"
         });
     }
 
@@ -2260,17 +2184,17 @@
         const longitude = finiteNumberOrNull(value?.longitude);
         const latitude = finiteNumberOrNull(value?.latitude);
         const accuracy = finiteNumberOrNull(value?.accuracyMeters);
-        const capturedAt = normalizeOptionalInstant(value?.capturedAt);
-        if (longitude === null || latitude === null || accuracy === null || !capturedAt
-                || longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90
-                || accuracy < 0 || accuracy > MAX_RECORDED_UNVERIFIED_ACCURACY_METERS) {
-            return null;
-        }
+        if (longitude === null || latitude === null || longitude < -180 || longitude > 180
+                || latitude < -90 || latitude > 90) return null;
         return {
-            longitude: roundCoordinate(longitude),
-            latitude: roundCoordinate(latitude),
-            accuracyMeters: roundAccuracy(accuracy),
-            capturedAt,
+            longitude, latitude,
+            accuracyMeters: accuracy !== null && accuracy >= 0 ? accuracy : null,
+            capturedAt: normalizeOptionalInstant(value?.capturedAt),
+            receivedAt: normalizeOptionalInstant(value?.receivedAt),
+            rawTimestamp: value?.rawTimestamp == null ? null : String(value.rawTimestamp).slice(0, 120),
+            source: cleanText(value?.source) || "BROWSER_GEOLOCATION",
+            timeStatus: ["KNOWN", "UNKNOWN", "STALE"].includes(value?.timeStatus) ? value.timeStatus : "UNKNOWN",
+            userReportedInaccurate: value?.userReportedInaccurate === true,
             ...(cleanText(value?.note) ? { note: cleanText(value.note) } : {})
         };
     }
@@ -2297,10 +2221,6 @@
             canContinueWithoutLocation: false
         };
         if (scope === "visit") {
-            abortStoreDirectorySearch();
-            state.visit.nearbyStores = [];
-            state.visit.directoryStores = [];
-            state.visit.directoryQuery = "";
         } else {
             abortPoiSearch();
             state.store.nearbyPois = [];
@@ -2309,7 +2229,6 @@
             state.store.poiSearchLookupStatus = "UNAVAILABLE";
             state.store.manualEntryAllowed = true;
             state.store.manualEntryToken = "";
-            clearSourcePoi(true, false);
         }
         clearFieldError(`${scope}-location`);
         const button = $(`#${scope}-location-button`);
@@ -2323,369 +2242,83 @@
 
     function continueWithoutVerifiedLocation(scope) {
         if (state.submitting || (scope === "visit" && isBusinessLocked())) return;
-        const context = state[scope].locationContext;
-        if (context?.geocodeStatus !== "CAPTURING" || context.canContinueWithoutLocation !== true) return;
-        const attemptId = context.locationAttemptId;
-        const evidence = context.candidateLocation || null;
-        cancelLocationCapture(scope);
-        setUnverifiedLocation(
-            scope,
-            "USER_CONTINUED_AFTER_WAIT",
-            "手机定位仍在等待，已转为定位未核验；可以继续录入，后台会结合现场照片复核。",
-            attemptId,
-            evidence
-        );
-        emitClientDiagnostic("LOCATION_RESULT", "FALLBACK", {}, attemptId);
+        if (state[scope].location) state[scope].location.userReportedInaccurate = true;
+        state[scope].locationContext = { ...state[scope].locationContext,
+            userReportedInaccurate: true, locationVerificationStatus: "UNVERIFIED",
+            locationFailureReason: "USER_CONTINUED_AFTER_WAIT",
+            locationAttemptId: state[scope].locationContext?.locationAttemptId || secureUuid(),
+            locationMessage: "已标记位置不准确，可继续打卡" };
+        renderLocation(scope);
+        persistDraft();
     }
 
     async function captureLocation(scope) {
-        if (state.submitting) return;
-        if (scope === "visit" && isBusinessLocked()) return;
-        hideError();
-        clearFieldError(`${scope}-location`);
-        const city = $(`#${scope}-city`).value;
-        if (!city) {
-            setFieldError(`${scope}-city`, "请先选择城市，再获取定位。");
-            $(`#${scope}-city`).focus();
-            return;
-        }
-        const salespersonId = state[scope].salespersonId || $(`#${scope}-salesperson`).value;
-        if (!salespersonId) {
-            setFieldError(`${scope}-salesperson`, "请先确认销售身份，再获取定位。");
-            $(`#${scope}-salesperson`).focus();
-            return;
-        }
-        state[scope].city = city;
-        state[scope].salespersonId = salespersonId;
-        const diagnosticId = secureUuid();
-        emitClientDiagnostic("LOCATION_CLICK", "STARTED", {}, diagnosticId);
-        if (!window.isSecureContext) {
-            cancelLocationCapture(scope);
-            state.locationControllers[scope]?.abort();
-            state.locationControllers[scope] = null;
-            setUnverifiedLocation(scope, "INSECURE_CONTEXT",
-                "当前浏览器环境不能读取定位，已转为定位未核验；可以继续录入。", diagnosticId);
-            emitClientDiagnostic("LOCATION_RESULT", "FALLBACK", {}, diagnosticId);
-            return;
-        }
-        if (!navigator.geolocation) {
-            cancelLocationCapture(scope);
-            state.locationControllers[scope]?.abort();
-            state.locationControllers[scope] = null;
-            setUnverifiedLocation(scope, "UNSUPPORTED",
-                "当前浏览器不支持定位，已转为定位未核验；可以继续录入。", diagnosticId);
-            emitClientDiagnostic("LOCATION_RESULT", "FALLBACK", {}, diagnosticId);
-            return;
-        }
-
-        const button = $(`#${scope}-location-button`);
-        const captureSequence = ++state.locationCaptureSequence[scope];
-        const captureDeadlineMs = Date.now() + GEOLOCATION_REFRESH_TIMEOUT_MS;
-        let captureSettled = false;
-        const captureIsActive = () => !captureSettled
-            && state.locationCaptureSequence[scope] === captureSequence;
-        stopGeolocationRefresh(scope);
-        state.locationControllers[scope]?.abort();
-        state.locationControllers[scope] = null;
-        state[scope].location = null;
-        state[scope].locationContext = {
-            geocodeStatus: "CAPTURING",
-            locationAttemptId: diagnosticId,
-            canContinueWithoutLocation: false,
-            errorMessage: "正在刷新手机当前位置，请稍候。"
-        };
-        if (scope === "visit") {
-            abortStoreDirectorySearch();
-            state.visit.nearbyStores = [];
-            state.visit.directoryStores = [];
-            state.visit.directoryQuery = "";
-            renderNearbyStores();
-        } else {
-            abortPoiSearch();
-            state.store.nearbyPois = [];
-            state.store.poiSearchResults = null;
-            state.store.poiSearchLookupStatus = null;
-            state.store.poiSearchQuery = "";
-            state.store.manualEntryAllowed = false;
-            state.store.manualEntryToken = "";
-            clearSourcePoi(true, false);
-            $("#poi-search").value = "";
-            hidePoiResults();
-        }
-        button.disabled = true;
+        if (state.submitting || state.completed || (scope === "visit" && isBusinessLocked())
+                || !state.identity?.authenticated || !state[scope].city || document.visibilityState === "hidden") return;
+        cancelLocationCapture(scope);
+        const sequence = ++state.locationCaptureSequence[scope];
+        const attemptId = secureUuid();
+        let best = null;
+        let finished = false;
+        const active = () => !finished && sequence === state.locationCaptureSequence[scope]
+            && !state.submitting && !state.completed;
+        state[scope].locationContext = { ...state[scope].locationContext, geocodeStatus: "CAPTURING",
+            locationAttemptId: attemptId, canContinueWithoutLocation: true };
         renderLocation(scope);
-        if (scope === "store") renderStoreSource();
-        persistDraft();
-
-        state.geolocationContinueIds[scope] = window.setTimeout(() => {
-            if (!captureIsActive()) return;
-            state[scope].locationContext = {
-                ...state[scope].locationContext,
-                geocodeStatus: "CAPTURING",
-                locationAttemptId: diagnosticId,
-                canContinueWithoutLocation: true
-            };
+        const finish = (error) => {
+            if (!active()) return;
+            finished = true;
+            stopGeolocationRefresh(scope);
+            const context = state[scope].locationContext || {};
+            state[scope].locationContext = { ...context, geocodeStatus: "FAILED",
+                locationVerificationStatus: "UNVERIFIED", locationAttemptId: attemptId,
+                locationFailureReason: best ? best.timeStatus !== "KNOWN" ? "TIMESTAMP_UNUSABLE"
+                    : best.accuracyMeters > 100 ? "ACCURACY_INSUFFICIENT" : "RESOLVE_FAILED"
+                    : locationFailureReason(error),
+                errorMessage: best ? "设备位置已记录" : "未取得设备位置，可继续打卡" };
             renderLocation(scope);
             persistDraft();
-        }, GEOLOCATION_CONTINUE_AFTER_MS);
-
-        let compatibleAttempted = false;
-        let stalePositionReceived = false;
-        let geolocationAttemptSequence = 0;
-        let geolocationCallbackCount = 0;
-        let rejectedTimestampSample = null;
-        let timestampIssueReported = false;
-        let compatibleSingleTimestampRetries = 0;
-        let usingWatch = typeof navigator.geolocation.watchPosition === "function"
-            && typeof navigator.geolocation.clearWatch === "function";
-
-        const diagnosticCallbackCount = () => Math.min(25, geolocationCallbackCount);
-
-        const acceptPosition = (position, capturedAtMs) => {
-            if (!captureIsActive() || state.submitting || (scope === "visit" && isBusinessLocked())) return;
-            captureSettled = true;
-            stopGeolocationRefresh(scope);
-            const note = $(`#${scope}-location-note`).value.trim();
-            state[scope].location = {
-                longitude: roundCoordinate(position.coords.longitude),
-                latitude: roundCoordinate(position.coords.latitude),
-                accuracyMeters: roundAccuracy(position.coords.accuracy),
-                capturedAt: new Date(capturedAtMs).toISOString(),
-                ...(note ? { note } : {})
-            };
-            state[scope].locationContext = { geocodeStatus: "RESOLVING" };
-            if (scope === "visit") {
-                state.visit.nearbyStores = [];
+            if (best?.capturedAt && best.accuracyMeters !== null) void resolveLocationContext(scope, attemptId);
+        };
+        const receive = (position) => {
+            if (!active()) return;
+            const candidate = locationEvidenceFromPosition(position);
+            if (!candidate) return;
+            if (!shouldReplaceLocationSample(best, candidate)) return;
+            best = candidate;
+            const note = $(`#${scope}-location-note`)?.value.trim();
+            state[scope].location = { ...candidate, ...(note ? { note } : {}),
+                userReportedInaccurate: state[scope].locationContext?.userReportedInaccurate === true };
+            renderLocation(scope);
+            persistDraft();
+            // 留出后续 watch 样本改善精度；不在第一个回调就清掉 watch。
+        };
+        if (!window.isSecureContext || !navigator.geolocation) {
+            finish({ code: 2 }); return;
+        }
+        state.geolocationTimeoutIds[scope] = window.setTimeout(() => finish({ code: 3 }),
+            GEOLOCATION_REFRESH_TIMEOUT_MS);
+        const options = { enableHighAccuracy: true, maximumAge: 0, timeout: 12000 };
+        try {
+            if (typeof navigator.geolocation.watchPosition === "function") {
+                state.geolocationWatchIds[scope] = navigator.geolocation.watchPosition(receive,
+                    (error) => { if (error?.code === 1) finish(error); }, options);
             } else {
-                state.store.nearbyPois = [];
-                state.store.poiSearchResults = null;
-                state.store.poiSearchLookupStatus = null;
-                state.store.poiSearchQuery = "";
-                state.store.manualEntryAllowed = false;
-                state.store.manualEntryToken = "";
-                $("#poi-search").value = "";
-                clearSourcePoi(true, false);
+                navigator.geolocation.getCurrentPosition(receive, finish, options);
             }
-            button.disabled = false;
-            renderLocation(scope);
-            if (scope === "visit") renderNearbyStores();
-            else renderStoreSource();
-            renderBusinessLock();
-            persistDraft();
-            emitClientDiagnostic("LOCATION_RESULT", "SUCCEEDED", {
-                itemCount: diagnosticCallbackCount()
-            }, diagnosticId);
-            resolveLocationContext(scope, diagnosticId);
-        };
-        const failLocation = (error, staleOnly = stalePositionReceived, explicitReason = "") => {
-            if (!captureIsActive()) return;
-            captureSettled = true;
-            stopGeolocationRefresh(scope);
-            const message = staleOnly
-                ? "手机未返回可核验的新定位，已转为定位未核验；可以继续录入。"
-                : `${geolocationErrorMessage(error, compatibleAttempted)} 已转为定位未核验，可以继续录入。`;
-            const previousContext = state[scope].locationContext || {};
-            const evidence = previousContext.candidateLocation || null;
-            setUnverifiedLocation(scope,
-                explicitReason || locationFailureReason(error, staleOnly),
-                message,
-                diagnosticId,
-                evidence);
-            emitClientDiagnostic("LOCATION_RESULT", "FALLBACK", {
-                itemCount: diagnosticCallbackCount()
-            }, diagnosticId);
-        };
-        const captureDeadlineExceeded = () => {
-            if (!captureIsActive()) return true;
-            if (Date.now() < captureDeadlineMs) return false;
-            failLocation({ code: 3 });
-            return true;
-        };
-        const handleCaptureVisibility = () => {
-            if (document.visibilityState === "visible") captureDeadlineExceeded();
-        };
-        const handleCapturePageShow = () => captureDeadlineExceeded();
-        document.addEventListener("visibilitychange", handleCaptureVisibility);
-        window.addEventListener("pageshow", handleCapturePageShow);
-        state.geolocationLifecycleCleanups[scope] = () => {
-            document.removeEventListener("visibilitychange", handleCaptureVisibility);
-            window.removeEventListener("pageshow", handleCapturePageShow);
-        };
+        } catch (_) { finish({ code: 2 }); }
+    }
 
-        const handlePosition = (position) => {
-            if (captureDeadlineExceeded()) return true;
-            geolocationCallbackCount += 1;
-            if (!Number.isFinite(Number(position?.coords?.longitude))
-                    || !Number.isFinite(Number(position?.coords?.latitude))
-                    || !Number.isFinite(Number(position?.coords?.accuracy))) {
-                failLocation({ code: 2 }, false, "INVALID_POSITION");
-                return true;
-            }
-            const receivedAtMs = Date.now();
-            const timestamp = assessGeolocationTimestamp(
-                position?.timestamp, receivedAtMs, GEOLOCATION_FRESH_MAX_AGE_MS);
-            let capturedAtMs = timestamp.capturedAtMs;
-            if (capturedAtMs === null && rejectedTimestampSample) {
-                capturedAtMs = resolveAdvancingGeolocationClockCapturedAtMs(
-                    rejectedTimestampSample,
-                    { value: position?.timestamp, receivedAtMs });
-                if (capturedAtMs !== null) {
-                    emitClientDiagnostic("LOCATION_TIMESTAMP", "ADVANCING", {
-                        itemCount: diagnosticCallbackCount()
-                    }, diagnosticId);
-                }
-            }
-            const browserCapturedAtMs = capturedAtMs;
-            capturedAtMs = resolveCompatibleGeolocationCapturedAtMs({
-                capturedAtMs,
-                compatibleAttempted,
-                visibilityState: document.visibilityState,
-                receivedAtMs,
-                captureDeadlineMs
-            });
-            if (browserCapturedAtMs === null && capturedAtMs !== null) {
-                emitClientDiagnostic("LOCATION_TIMESTAMP", "FALLBACK", {
-                    itemCount: diagnosticCallbackCount()
-                }, diagnosticId);
-            }
-            if (capturedAtMs === null) {
-                stalePositionReceived = true;
-                rejectedTimestampSample = { value: position?.timestamp, receivedAtMs };
-                state[scope].locationContext = {
-                    ...state[scope].locationContext,
-                    geocodeStatus: "CAPTURING",
-                    locationAttemptId: diagnosticId,
-                    candidateLocation: locationEvidenceFromPosition(position, receivedAtMs),
-                    stalePosition: true,
-                    compatibleAttempt: compatibleAttempted,
-                    errorMessage: compatibleAttempted
-                        ? "正在适配此手机定位，通常几秒内完成。"
-                        : "正在适配此手机定位，请稍候。"
-                };
-                clearFieldError(`${scope}-location`);
-                renderLocation(scope);
-                if (!timestampIssueReported) {
-                    timestampIssueReported = true;
-                    emitClientDiagnostic("LOCATION_TIMESTAMP", timestamp.kind, {
-                        itemCount: diagnosticCallbackCount()
-                    }, diagnosticId);
-                }
-                return false;
-            }
-            if (timestamp.kind === "NORMALIZED") {
-                emitClientDiagnostic("LOCATION_TIMESTAMP", "NORMALIZED", {
-                    itemCount: diagnosticCallbackCount()
-                }, diagnosticId);
-            }
-            clearFieldError(`${scope}-location`);
-            acceptPosition(position, capturedAtMs);
-            return true;
-        };
-
-        const startSinglePosition = (enableHighAccuracy) => {
-            const attemptSequence = ++geolocationAttemptSequence;
-            const attemptIsActive = () => captureIsActive()
-                && attemptSequence === geolocationAttemptSequence;
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    if (!attemptIsActive()) return;
-                    if (handlePosition(position)) return;
-                    if (!compatibleAttempted) startCompatibleAttempt();
-                    else if (compatibleSingleTimestampRetries < 1) {
-                        compatibleSingleTimestampRetries += 1;
-                        startSinglePosition(false);
-                    } else {
-                        failLocation({ code: 3 }, true);
-                    }
-                },
-                (error) => {
-                    if (attemptIsActive() && !captureDeadlineExceeded()) {
-                        retryCompatibleLocation(error);
-                    }
-                },
-                {
-                    enableHighAccuracy,
-                    timeout: GEOLOCATION_ATTEMPT_TIMEOUT_MS,
-                    maximumAge: 0
-                }
-            );
-        };
-
-        const startWatch = (enableHighAccuracy) => {
-            const attemptSequence = ++geolocationAttemptSequence;
-            const attemptIsActive = () => captureIsActive()
-                && attemptSequence === geolocationAttemptSequence;
-            try {
-                const watchId = navigator.geolocation.watchPosition(
-                    (position) => {
-                        if (!attemptIsActive()) return;
-                        if (!handlePosition(position) && !compatibleAttempted) {
-                            startCompatibleAttempt();
-                        }
-                    },
-                    (error) => {
-                        if (attemptIsActive() && !captureDeadlineExceeded()) {
-                            retryCompatibleLocation(error);
-                        }
-                    },
-                    {
-                        enableHighAccuracy,
-                        timeout: GEOLOCATION_ATTEMPT_TIMEOUT_MS,
-                        maximumAge: 0
-                    }
-                );
-                state.geolocationWatchIds[scope] = watchId;
-            } catch (_) {
-                usingWatch = false;
-                state.geolocationWatchIds[scope] = null;
-                startSinglePosition(enableHighAccuracy);
-            }
-        };
-
-        const retryCompatibleLocation = (error) => {
-            if (!captureIsActive()) return;
-            if (error?.code === 1) {
-                failLocation(error, false);
-                return;
-            }
-            if (compatibleAttempted) {
-                failLocation(error);
-                return;
-            }
-            startCompatibleAttempt();
-        };
-
-        const startCompatibleAttempt = () => {
-            if (!captureIsActive() || compatibleAttempted) return;
-            compatibleAttempted = true;
-            rejectedTimestampSample = null;
-            if (usingWatch && state.geolocationWatchIds[scope] !== null) {
-                navigator.geolocation.clearWatch(state.geolocationWatchIds[scope]);
-                state.geolocationWatchIds[scope] = null;
-            }
-            state[scope].locationContext = {
-                ...state[scope].locationContext,
-                geocodeStatus: "CAPTURING",
-                locationAttemptId: diagnosticId,
-                stalePosition: true,
-                compatibleAttempt: true,
-                errorMessage: "正在适配此手机定位，通常几秒内完成。"
-            };
-            clearFieldError(`${scope}-location`);
-            renderLocation(scope);
-            if (usingWatch) startWatch(false);
-            else startSinglePosition(false);
-        };
-
-        const enforceCaptureDeadline = () => {
-            if (captureDeadlineExceeded()) return;
-            state.geolocationTimeoutIds[scope] = window.setTimeout(
-                enforceCaptureDeadline, Math.max(0, captureDeadlineMs - Date.now()));
-        };
-        state.geolocationTimeoutIds[scope] = window.setTimeout(
-            enforceCaptureDeadline, GEOLOCATION_REFRESH_TIMEOUT_MS);
-        if (usingWatch) startWatch(true);
-        else startSinglePosition(true);
+    function shouldReplaceLocationSample(previous, candidate) {
+        if (!candidate) return false;
+        if (!previous) return true;
+        const rank = (sample) => sample.timeStatus === "KNOWN" ? 2 : sample.timeStatus === "STALE" ? 1 : 0;
+        if (rank(candidate) !== rank(previous)) return rank(candidate) > rank(previous);
+        const previousTime = Date.parse(previous.capturedAt || "");
+        const candidateTime = Date.parse(candidate.capturedAt || "");
+        if (Number.isFinite(previousTime) && Number.isFinite(candidateTime) && candidateTime < previousTime) return false;
+        return (candidate.accuracyMeters ?? Infinity) <= (previous.accuracyMeters ?? Infinity)
+            || (Number.isFinite(candidateTime) && candidateTime - previousTime > 30000);
     }
 
     async function resolveLocationContext(scope, clientEventId = secureUuid()) {
@@ -2818,15 +2451,7 @@
     }
 
     function locationRequestValue(scope) {
-        const location = state[scope].location;
-        const note = $(`#${scope}-location-note`).value.trim();
-        return compactObject({
-            longitude: location.longitude,
-            latitude: location.latitude,
-            accuracyMeters: location.accuracyMeters,
-            capturedAt: location.capturedAt,
-            note: note || undefined
-        });
+        return withCurrentLocationNote(scope);
     }
 
     function isUsableNearbyStore(store) {
@@ -2860,7 +2485,8 @@
         const locationCard = button.closest(".location-card");
         locationCard?.classList.toggle("is-located", Boolean(location));
         locationCard?.classList.toggle("is-unverified", unverified);
-        continueButton.hidden = !capturing || context?.canContinueWithoutLocation !== true;
+        continueButton.hidden = scope !== "visit" || isBusinessLocked();
+        continueButton.textContent = "位置不准确";
         exceptionNote.hidden = !unverified;
         if (unverified) {
             const explanation = exceptionNote.querySelector("span");
@@ -2887,9 +2513,9 @@
             $(`#${scope}-location-button-label`).textContent = unverified
                 ? "重新尝试定位"
                 : compatibleAttempt
-                ? "正在适配此手机定位…"
-                : awaitingFreshPosition ? "正在等待手机刷新…"
-                : capturing ? "正在刷新当前位置…" : "刷新当前位置";
+                ? "定位中…"
+                : awaitingFreshPosition ? "定位中…"
+                : capturing ? "定位中…" : "刷新当前位置";
             renderFlowActions();
             return;
         }
@@ -2932,10 +2558,12 @@
                     : context?.errorMessage || "详细地址暂未取得，请重试");
         addressElement.classList.toggle("is-missing", !address && !capturing && !resolving);
         retry.hidden = unverified || capturing || resolving || Boolean(address);
-        $(`#${scope}-location-accuracy`).textContent = `约 ${location.accuracyMeters} 米`;
+        $(`#${scope}-location-accuracy`).textContent = location.accuracyMeters === null ? "未知" : `约 ${location.accuracyMeters} 米`;
         const timeLabel = $(`#${scope}-location-time`)?.closest("div")?.querySelector("span");
-        if (timeLabel) timeLabel.textContent = unverified ? "坐标接收时间" : "采集时间";
-        $(`#${scope}-location-time`).textContent = formatDateTime(location.capturedAt);
+        if (timeLabel) timeLabel.textContent = "采集时间";
+        $(`#${scope}-location-time`).textContent = location.capturedAt
+            ? `${formatDateTime(location.capturedAt)}${location.timeStatus === "STALE" ? " · 较早" : ""}`
+            : "设备未提供";
         $(`#${scope}-location-note`).value = location.note || "";
         $(`#${scope}-location-button-label`).textContent = unverified
             ? "重新尝试定位"
@@ -2952,18 +2580,7 @@
         return `GPS ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
     }
 
-    function geolocationErrorMessage(error, fallbackAttempted = false) {
-        if (error && error.code === 1) return "定位权限被拒绝。请在浏览器设置中允许位置访问后重试。";
-        if (error && error.code === 2) return fallbackAttempted
-            ? "已自动尝试两种定位方式，仍无法获取位置。请打开系统定位后重试。"
-            : "暂时无法获取当前位置，请移动到信号较好的位置后重试。";
-        if (error && error.code === 3) return fallbackAttempted
-            ? "两种定位方式均未返回结果，请保持页面在前台并重新获取。"
-            : "定位超时，请重试并保持页面在前台。";
-        return "获取定位失败，请检查系统定位服务后重试。";
-    }
-
-    function handleImageSelection(kind, event) {
+    async function handleImageSelection(kind, event) {
         const file = event.target.files && event.target.files[0];
         if (!file) {
             if (kind === "photo") emitClientDiagnostic("PHOTO_REJECTED", "CANCELLED");
@@ -2999,12 +2616,20 @@
             }, diagnosticId);
         }
         state.files[kind] = file;
+        if (kind === "wechat") state.submission.wechatUploadErrorStatus = null;
+        // 持久化原文件先于预览/其他处理，不做 base64 或 canvas 扩容复制。
+        await saveLocalMedia(kind, file);
+        if (state.files[kind] !== file) return;
         renderImagePreview(kind, file);
+        event.target.value = "";
+        resumeActiveVisit();
         if (diagnosticId) {
             emitClientDiagnostic("PHOTO_READY", "SUCCEEDED", {
                 fileSizeBytes: file.size
             }, diagnosticId);
         }
+        state.submission.pendingWechat = Boolean(state.files.wechat
+            && !state.submission.uploadedMedia.includes(MEDIA.wechat));
         persistDraft();
     }
 
@@ -3017,6 +2642,61 @@
         // 这里只展示选择状态与文件信息，提交时仍上传未经二次处理的原文件。
         $(`#${prefix}-file-size`).textContent = `${formatBytes(file.size)} · 已选择，提交时上传原图`;
         $(`#${prefix}-preview-card`).hidden = false;
+        if (kind === "photo") {
+            const image = $("#photo-thumbnail");
+            if (image) { image.hidden = true; image.removeAttribute("src"); }
+            void prepareSafePhotoPreview(file);
+        }
+    }
+
+    async function prepareSafePhotoPreview(file) {
+        // 只解析文件头取得真实尺寸；未知格式/大像素原图不自动解码。
+        const prefix = await readFilePrefix(file, 256 * 1024);
+        const dimensions = imageHeaderDimensions(prefix);
+        if (!dimensions || state.files.photo !== file || dimensions.width * dimensions.height > 4 * 1024 * 1024) return;
+        const image = $("#photo-thumbnail");
+        if (!image) return;
+        revokeObjectUrl("photo");
+        const url = URL.createObjectURL(file);
+        state.objectUrls.photo = url;
+        image.onload = () => { if (state.files.photo === file) image.hidden = false; };
+        image.onerror = () => { image.hidden = true; image.removeAttribute("src"); revokeObjectUrl("photo"); };
+        image.src = url;
+    }
+
+    function imageHeaderDimensions(bytes) {
+        if (!bytes || bytes.length < 24) return null;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const valid = (width, height) => width > 0 && height > 0 ? {width, height} : null;
+        if (view.getUint32(0) === 0x89504e47 && view.getUint32(4) === 0x0d0a1a0a
+                && view.getUint32(8) === 13 && view.getUint32(12) === 0x49484452) {
+            // 动画 PNG 不作自动本地预览，避免累积解码多帧。
+            let offset = 8;
+            while (offset + 12 <= bytes.length) {
+                const size = view.getUint32(offset), type = view.getUint32(offset + 4);
+                if (type === 0x6163544c) return null;
+                if (type === 0x49444154) return valid(view.getUint32(16), view.getUint32(20));
+                offset += size + 12;
+            }
+            return null;
+        }
+        if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+        let offset = 2;
+        while (offset + 4 <= bytes.length) {
+            if (bytes[offset] !== 0xff) return null;
+            while (bytes[offset] === 0xff) offset++;
+            const marker = bytes[offset++];
+            if (marker === 0xda || marker === 0xd9) return null;
+            if (marker === 0x01 || marker >= 0xd0 && marker <= 0xd7) continue;
+            if (offset + 2 > bytes.length) return null;
+            const size = view.getUint16(offset);
+            if (size < 2 || offset + size > bytes.length) return null;
+            if ([0xc0, 0xc1, 0xc2].includes(marker) && size >= 8) {
+                return valid(view.getUint16(offset + 5), view.getUint16(offset + 3));
+            }
+            offset += size;
+        }
+        return null;
     }
 
     async function handleAudioFileSelection(event) {
@@ -3036,17 +2716,20 @@
         const retryId = state.audioRetrySegmentId;
         state.audioRetrySegmentId = null;
         const selectionSequence = ++state.audioFileSelectionSequence;
-        const readableFiles = files.filter((file) => Number.isFinite(file.size) && file.size > 0);
-        const emptyCount = files.length - readableFiles.length;
+        const nonemptyFiles = files.filter((file) => Number.isFinite(file.size) && file.size > 0);
+        const readableFiles = nonemptyFiles.filter(audioFileSizeAllowed);
+        const emptyCount = files.length - nonemptyFiles.length;
+        const oversizedCount = nonemptyFiles.length - readableFiles.length;
         const imageFlags = await Promise.all(readableFiles.map(isImageSelectedAsAudio));
         if (selectionSequence !== state.audioFileSelectionSequence) return;
         const imageCount = imageFlags.filter(Boolean).length;
         let validFiles = readableFiles.filter((_, index) => !imageFlags[index]);
-        if (imageCount || emptyCount) {
+        if (imageCount || emptyCount || oversizedCount) {
             const ignored = [];
             if (imageCount) ignored.push(`${imageCount} 张图片`);
             if (emptyCount) ignored.push(`${emptyCount} 个空文件`);
-            showAudioSelectionNotice(`选到的是${ignored.join("和")}，已忽略；录音为选填，不影响打卡。`);
+            if (oversizedCount) ignored.push(`${oversizedCount} 段超过 ${formatBytes(audioSizeLimit())} 的录音`);
+            showAudioSelectionNotice(`${ignored.join("和")}未添加；请选择较小录音，不影响打卡。`);
         } else {
             hideAudioSelectionNotice();
         }
@@ -3083,6 +2766,15 @@
         if (/\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(file?.name || "")) return true;
         const prefix = await readFilePrefix(file, 32);
         return hasImageSignature(prefix);
+    }
+
+    function audioSizeLimit() {
+        return Number.isFinite(state.options.maxAudioBytes) && state.options.maxAudioBytes >= 0
+            ? state.options.maxAudioBytes : DEFAULT_MAX_AUDIO_BYTES;
+    }
+
+    function audioFileSizeAllowed(file) {
+        return Number.isFinite(file?.size) && file.size > 0 && file.size <= audioSizeLimit();
     }
 
     function readFilePrefix(file, byteLength) {
@@ -3169,6 +2861,7 @@
         });
         state.files.audio.push({ segmentId, file });
         ensureAudioObjectUrl(segmentId, file);
+        void saveLocalMedia(`audio:${segmentId}`, file);
         return segmentId;
     }
 
@@ -3200,9 +2893,11 @@
         segment.clientDurationMs = null;
         segment.fileLastModifiedAt = audioFileLastModifiedAt(file);
         segment.uploadState = "LOCAL";
+        segment.uploadErrorStatus = null;
         segment.errorMessage = "";
         state.files.audio.push({ segmentId, file });
         ensureAudioObjectUrl(segmentId, file);
+        void saveLocalMedia(`audio:${segmentId}`, file);
         return segmentId;
     }
 
@@ -3221,7 +2916,12 @@
         persistDraft();
     }
 
-    function readAudioDurationMs(file) {
+    async function readAudioDurationMs(file) {
+        // 高码率 WAV 可能只有十几分钟却接近200MB；先用固定长度文件头计算PCM时长。
+        // 大文件不为“时长”启动浏览器媒体解码器，未知时长由服务端派生任务补全。
+        const wavDuration = await readPcmWaveDurationMs(file);
+        if (wavDuration) return wavDuration;
+        if (file.size > 16 * 1024 * 1024) return null;
         return new Promise((resolve) => {
             const audio = document.createElement("audio");
             const objectUrl = URL.createObjectURL(file);
@@ -3257,6 +2957,30 @@
                 finish();
             }
         });
+    }
+
+    async function readPcmWaveDurationMs(file) {
+        try {
+            const prefix = await readFilePrefix(file, 64 * 1024);
+            if (!prefix || prefix.byteLength < 44) return null;
+            const view = new DataView(prefix.buffer, prefix.byteOffset, prefix.byteLength);
+            const ascii = (start, value) => [...value].every((char, i) => view.getUint8(start + i) === char.charCodeAt(0));
+            if (!ascii(0, "RIFF") || !ascii(8, "WAVE")) return null;
+            let byteRate = 0;
+            for (let offset = 12; offset + 8 <= view.byteLength;) {
+                const size = view.getUint32(offset + 4, true);
+                if (ascii(offset, "fmt ") && size >= 16 && offset + 24 <= view.byteLength) {
+                    const encoding = view.getUint16(offset + 8, true);
+                    if (encoding !== 1 && encoding !== 3) return null;
+                    byteRate = view.getUint32(offset + 16, true);
+                }
+                if (ascii(offset, "data") && byteRate > 0 && size > 0 && offset + 8 + size <= file.size) {
+                    return normalizePositiveDurationMs(size * 1000 / byteRate);
+                }
+                offset += 8 + size + (size % 2);
+            }
+        } catch (_) { /* 无法读取头部不影响上传，保留未知时长。 */ }
+        return null;
     }
 
     function audioFileLastModifiedAt(file) {
@@ -3300,6 +3024,7 @@
 
     function checkRecorderSupport() {
         const supported = recorderSupported();
+        $("#recorder-help").hidden = supported;
         if (!supported) {
             $("#recorder-help").textContent = window.isSecureContext
                 ? "当前浏览器不支持网页录音，可直接从手机文件中多选录音上传。"
@@ -3312,7 +3037,7 @@
 
     function updateRecorderHelp(mimeType) {
         const format = recorderFormatLabel(mimeType);
-        $("#recorder-help").textContent = `本机将录制 ${format}；也可选择 M4A、MP3、WAV、AAC、AMR、OGG/Opus、WebM、3GP、FLAC、CAF、AIFF、SILK 等已有录音。无法识别时自动跳过，不影响打卡。自动转文字与摘要当前已暂停。`;
+        $("#recorder-help").textContent = `本机录制 ${format}；支持常见手机录音格式，单文件上限 ${formatBytes(audioSizeLimit())}。`;
     }
 
     async function toggleRecording() {
@@ -3327,7 +3052,7 @@
         clearFieldError("audio-file");
         const visitStep = normalizeFlowStep(state.ui.visitStep);
         if (state.activeTab !== "visit" || visitStep === 1) {
-            setFieldError("audio-file", "请先完成现场定位和门店选择，再开始录音。");
+            setFieldError("audio-file", "请先选择本次拜访的门店，再开始录音。");
             return;
         }
         if (visitStep === 3 && !isBusinessLocked()) {
@@ -3335,6 +3060,7 @@
             return;
         }
         if (!$("#recording-consent").checked) {
+            if ($("#recording-consent-panel")) $("#recording-consent-panel").hidden = false;
             setFieldError("audio-file", "请先告知现场人员并勾选确认，再开始录音。");
             $("#recording-consent").scrollIntoView({ behavior: "smooth", block: "center" });
             return;
@@ -3563,11 +3289,12 @@
             : Object.assign(blob, { name: filename, lastModified: Date.now() });
         $("#audio-file").value = "";
         hideAudioSelectionNotice();
-        appendAudioFile(file, {
+        const savedSegmentId = appendAudioFile(file, {
             captureSource: "BROWSER_RECORDER",
             clientStartedAt: session.clientStartedAt,
             clientDurationMs: duration
         });
+        beginAudioFileMetadataRead(savedSegmentId, file);
         renderAudioSegments();
         renderUploadedBadges();
         if (session.failed) {
@@ -3613,11 +3340,11 @@
         button.classList.toggle("is-starting", starting);
         button.disabled = state.submitting || starting || stopping || !recorderSupported();
         $("#record-button-label").textContent = recording
-            ? "结束并保存录音"
+            ? "结束并保存"
             : starting ? "等待麦克风权限"
                 : stopping ? "正在生成录音"
                     : normalizeFlowStep(state.ui.visitStep) === 3 && !isBusinessLocked()
-                        ? "返回第2步补录" : "开始现场录音";
+                        ? "返回第2步补录" : "开始录音";
         $("#recording-meter").hidden = !recording;
         $("#recording-consent").disabled = state.submitting || recording || starting || stopping;
         $("#visit-recording-workspace").classList.toggle("is-recording", recording || stopping);
@@ -3625,14 +3352,35 @@
         renderFlowSteps();
     }
 
+    function renderRecordingDisclosure() {
+        const workspace = $("#visit-recording-workspace");
+        const busy = recordingBusy();
+        const count = state.submission.audioSegments.length;
+        const step = normalizeFlowStep(state.ui.visitStep);
+        const context = `${state.submission.clientSubmissionId}:${step}:${count > 0}`;
+        workspace.open = true;
+        workspace.dataset.disclosureContext = context;
+        const badge = $("#recording-stage-badge");
+        const attentionCount = state.submission.audioSegments.filter(segment =>
+            ["UNKNOWN", "NEEDS_FILE", "ERROR", "TOO_LARGE"].includes(segment.uploadState)).length;
+        badge.hidden = !busy && count === 0;
+        badge.textContent = state.recorder.starting ? "等待权限"
+            : state.recorder.stopping ? "保存中"
+                : isRecording() ? "正在录音"
+                    : attentionCount ? `${attentionCount} 段待处理` : `已添加 ${count} 段`;
+        $("#recording-workspace-summary").removeAttribute("aria-disabled");
+    }
+
     function renderRecordingStatus() {
+        renderRecordingDisclosure();
         const note = $("#recording-status-note");
+        note.hidden = !recordingBusy() && !state.submission.audioSegments.length;
         if (state.recorder.starting) {
             note.textContent = "正在等待系统麦克风权限，请不要重复点击或切换页面。";
             return;
         }
         if (isRecording()) {
-            note.textContent = "正在录音，可继续填写本页客户信息；请保持页面前台，并先结束录音再进入现场证明。";
+            note.textContent = "正在录音，可继续填写；离开页面会结束并保存。";
             return;
         }
         if (state.recorder.stopping) {
@@ -3643,7 +3391,7 @@
             .filter((segment) => segment.uploadState !== "SKIPPED").length;
         const skippedAudioCount = state.submission.audioSegments.length - audioCount;
         if (audioCount) {
-            note.textContent = `已添加 ${audioCount} 段录音，可回放确认、继续补录或选择已有音频；刷新页面前请先完成提交。`;
+            note.textContent = `已添加 ${audioCount} 段录音，请回放确认。`;
             return;
         }
         if (skippedAudioCount) {
@@ -3656,7 +3404,7 @@
         }
         note.textContent = normalizeFlowStep(state.ui.visitStep) === 3
             ? "本次未添加录音（选填）；可直接提交现场照片完成打卡。"
-            : "录音为选填，只暂存在当前页面；请先停止录音再进入现场证明，上传失败会自动跳过。";
+            : "录音选填，停止后保存；失败可稍后补传。";
     }
 
     function updateRecordingClock() {
@@ -3669,6 +3417,7 @@
     }
 
     function renderAudioSegments() {
+        renderRecordingDisclosure();
         const root = $("#audio-preview-list");
         const template = $("#audio-preview-template");
         root.querySelectorAll("audio").forEach(releaseAudioElement);
@@ -3677,6 +3426,7 @@
             const card = template.content.firstElementChild.cloneNode(true);
             card.dataset.segmentId = segment.segmentId;
             const audio = card.querySelector("audio");
+            audio.preload = "none";
             const local = localAudioFile(segment.segmentId);
             const objectUrl = local ? ensureAudioObjectUrl(segment.segmentId, local.file) : null;
             if (objectUrl) {
@@ -3696,7 +3446,8 @@
 
             const retry = card.querySelector("[data-audio-retry]");
             retry.hidden = !audioSegmentNeedsRetry(segment);
-            retry.textContent = local && state.submission.serverId ? "重试上传" : "重新选择";
+            retry.textContent = segment.uploadErrorStatus === 413 || segment.uploadState === "TOO_LARGE" ? "换小文件"
+                : local && state.submission.serverId ? "重试上传" : "重新选择";
             retry.addEventListener("click", () => retryAudioSegment(segment.segmentId));
             const skip = card.querySelector("[data-audio-skip]");
             skip.hidden = !audioSegmentCanSkip(segment);
@@ -3733,6 +3484,7 @@
     }
 
     function audioSegmentStatusText(segment) {
+        if (segment.uploadState === "TOO_LARGE") return optionalUploadFailureMessage({status: 413}, "录音");
         if (segment.uploadState === "UPLOADED") return "草稿已上传";
         if (segment.uploadState === "UPLOADING") return "正在上传…";
         if (segment.uploadState === "DELETING") return "正在删除…";
@@ -3746,11 +3498,11 @@
     }
 
     function audioSegmentNeedsRetry(segment) {
-        return ["UNKNOWN", "NEEDS_FILE", "ERROR", "SKIPPED"].includes(segment.uploadState);
+        return ["UNKNOWN", "NEEDS_FILE", "ERROR", "SKIPPED", "TOO_LARGE"].includes(segment.uploadState);
     }
 
     function audioSegmentCanSkip(segment) {
-        return ["UNKNOWN", "NEEDS_FILE", "ERROR"].includes(segment.uploadState);
+        return ["UNKNOWN", "NEEDS_FILE", "ERROR", "TOO_LARGE"].includes(segment.uploadState);
     }
 
     function findAudioSegment(segmentId) {
@@ -3773,17 +3525,14 @@
         const segment = findAudioSegment(segmentId);
         if (!segment) return;
         const local = localAudioFile(segmentId);
-        if (local && state.submission.serverId) {
+        if (local && state.submission.serverId && segment.uploadState !== "TOO_LARGE" && segment.uploadErrorStatus !== 413) {
             clearFieldError("audio-file");
             try {
                 await uploadAudioSegment(segment, local.file, 1, 1,
-                    Date.now() + OPTIONAL_MEDIA_UPLOAD_BUDGET_MS);
+                    Date.now() + OPTIONAL_MEDIA_UPLOAD_MAX_MS);
                 renderAudioSegments();
                 renderUploadedBadges();
             } catch (error) {
-                segment.uploadState = segment.mayExistRemotely ? "UNKNOWN" : "ERROR";
-                segment.errorMessage = optionalUploadFailureMessage(
-                    error, "录音", segment.mayExistRemotely);
                 renderAudioSegments();
                 setFieldError("audio-file", segment.errorMessage);
             }
@@ -3834,6 +3583,7 @@
                 return;
             }
         }
+        deleteLocalMedia(`audio:${segmentId}`);
         removeLocalAudioFile(segmentId);
         state.submission.audioSegments = state.submission.audioSegments
             .filter((item) => item.segmentId !== segmentId);
@@ -3882,6 +3632,7 @@
             }
         }
 
+        deleteLocalMedia(kind);
         resetLocalFile(kind);
         state.submission.mediaUploadAttempts = state.submission.mediaUploadAttempts
             .filter((item) => item !== mediaKind);
@@ -3914,6 +3665,10 @@
             revokeObjectUrl(kind);
             $("#storefront-photo").value = "";
             $("#photo-preview-card").hidden = true;
+            const thumbnail = $("#photo-thumbnail");
+            if (thumbnail) { thumbnail.hidden = true; thumbnail.removeAttribute("src"); }
+            const dialog = $("#local-photo-dialog");
+            if (dialog?.open) dialog.close();
         } else if (kind === "wechat") {
             state.files[kind] = null;
             revokeObjectUrl(kind);
@@ -4104,7 +3859,7 @@
         if (!state.visit.customerName) state.visit.customerName = payload.contactName;
         if (!state.visit.customerPhone && payload.contactPhone) state.visit.customerPhone = payload.contactPhone;
         if (locationExceptionReady(state.store.locationContext)
-                || !locationFlowReady(state.visit.locationContext)) {
+) {
             state.visit.location = payload.location ? { ...payload.location } : null;
             state.visit.locationContext = state.store.locationContext
                 ? { ...state.store.locationContext }
@@ -4149,7 +3904,7 @@
             locationSummary: createdStore.locationSummary
         };
         if (locationExceptionReady(state.store.locationContext)
-                || !locationFlowReady(state.visit.locationContext)) {
+) {
             state.visit.location = payload.location ? { ...payload.location } : null;
             state.visit.locationContext = state.store.locationContext
                 ? { ...state.store.locationContext }
@@ -4177,219 +3932,129 @@
 
     async function submitVisit(event) {
         event.preventDefault();
-        hideError();
-        syncStateFromForm();
-        if (state.recorder.starting) {
-            cleanupRecorder();
-            showAudioSelectionNotice("已停止等待麦克风授权；录音为选填，继续提交本次打卡。");
-        }
+        if (state.submitting) return;
+        if (state.completed) { await supplementCurrentEvidence(); return; }
+        hideError(); syncStateFromForm();
+        if (state.recorder.starting) cleanupRecorder();
         if (recordingBusy()) {
-            setFieldError("audio-file", "请先结束录音，确认音频已生成后再提交。" );
-            scrollToFirstError();
-            return;
+            setFieldError("audio-file", "请先结束并保存录音"); return;
         }
-        if (state.submission.audioSegments.some((segment) =>
-            ["UPLOADING", "DELETING"].includes(segment.uploadState))) {
-            setFieldError("audio-file", "请等待当前录音上传或删除完成后再提交。" );
-            scrollToFirstError();
-            return;
-        }
-        if (!validateVisit()) {
-            scrollToFirstError();
-            return;
-        }
-
-        // 音频为选填：若手机文件提供器仍在异步识别文件，提交优先继续，丢弃迟到结果。
-        state.audioFileSelectionSequence += 1;
+        pauseAllAudioPreviews();
         state.submitting = true;
         setFormsDisabled(true);
-        prepareProgress();
-        $("#upload-panel").hidden = false;
-        $("#upload-panel").scrollIntoView({ behavior: "smooth", block: "start" });
-
         let activeStep = "draft";
-        let skippedAudioCount = 0;
-        let uncertainAudioCount = 0;
-        let skippedWechatOutcome = null;
-        let optionalMediaDeadlineMs = null;
         try {
-            setProgressStep("draft", "active", state.submission.serverId
-                ? "正在校验并恢复打卡草稿"
-                : "正在创建打卡草稿");
+            // 响应丢失时先查稳定ID；不先要求用户重选可能已经收到的照片。
+            let receipt = null;
+            if (state.submission.attemptedPayload || state.submission.serverId) {
+                renderDraftSaveStatus("正在查询提交结果…");
+                receipt = await lookupSubmissionReceipt();
+                if (receipt?.status === "SUBMITTED") {
+                    showSuccess(receipt);
+                    void supplementCurrentEvidence();
+                    return;
+                }
+            }
+            if (!validateVisit()) { scrollToFirstError(); return; }
+            state.submission.syncRequested = true;
+            state.submission.syncState = "PENDING";
+            await persistDraft();
+            await Promise.all([...state.pendingMedia]);
+            prepareProgress();
+            $("#upload-panel").hidden = false;
+            setProgressStep("draft", "active", "正在保存拜访");
             if (!state.submission.attemptedPayload) {
                 state.submission.attemptedPayload = buildSubmissionPayload();
-                state.submission.businessLocked = true;
-                renderBusinessLock();
-                persistDraft();
+                await persistDraft();
             }
-            const previousServerId = state.submission.serverId;
-            const unverifiedEndpoint = Boolean(
-                cleanText(state.submission.attemptedPayload?.locationFailureReason)
-                && isUuidValue(state.submission.attemptedPayload?.locationAttemptId));
-            const response = normalizeResponse(await requestJson(
-                unverifiedEndpoint ? "/submissions/unverified-location" : "/submissions", {
-                method: "POST",
-                headers: { "X-Submission-Key": state.submission.submissionKey },
-                body: state.submission.attemptedPayload,
-                timeout: 45000
-            })) || {};
-            if (!response.id) throw new Error("服务端未返回提交编号，请重试。" );
-            if (previousServerId && String(previousServerId) !== String(response.id)) {
-                throw new Error("幂等草稿编号不一致，已停止上传，请联系管理员。" );
+            if (!receipt) {
+                state.submission.syncState = "UNKNOWN";
+                await persistDraft();
+                receipt = normalizeResponse(await requestJson("/submissions", {
+                    method: "POST", headers: { "X-Submission-Key": state.submission.submissionKey },
+                    body: state.submission.attemptedPayload, timeout: 30000
+                }));
+                if (!receipt?.id) throw new Error("未取得服务器回执，请重试确认");
+                mergeSubmissionReceipt(receipt);
             }
-            state.submission.serverId = response.id;
-            state.submission.status = response.status || "DRAFT";
-            state.submission.createdAt = response.createdAt || state.submission.createdAt || new Date().toISOString();
-            state.submission.businessLocked = true;
+            state.submission.syncState = "PENDING";
+            await persistDraft();
             renderBusinessLock();
-            persistDraft();
             setProgressStep("draft", "done");
-
-            const uploads = [
-                { step: MEDIA.photo, file: state.files.photo, required: true },
-                { step: MEDIA.wechat, file: state.files.wechat, required: false }
-            ];
-            for (const upload of uploads) {
-                activeStep = upload.step;
-                if (state.submission.uploadedMedia.includes(upload.step)) {
-                    setProgressStep(upload.step, "done");
-                    continue;
-                }
-                if (!upload.file) {
-                    if (state.submission.mediaUploadAttempts.includes(upload.step)) {
-                        const label = upload.step === MEDIA.photo ? "现场照片"
-                            : upload.step === MEDIA.wechat ? "企微截图" : "拜访录音";
-                        if (upload.required) {
-                            setProgressStep(upload.step, "error", `${label}上传结果待确认`);
-                            throw new Error(`${label}上次上传结果未确认。请重新选择原文件继续重试，或点击删除明确放弃。`);
-                        }
-                        skippedWechatOutcome = "UNKNOWN";
-                        setProgressStep(upload.step, "skipped",
-                            `${label}上传结果未确认，服务端可能已收到；已继续打卡`);
-                        continue;
-                    }
-                    setProgressStep(upload.step, upload.required ? "error" : "skipped");
-                    if (upload.required) throw new Error("刷新后需要重新选择现场照片，再继续提交。" );
-                    continue;
-                }
-                setProgressStep(upload.step, "active", progressTitleForMedia(upload.step));
-                if (!state.submission.mediaUploadAttempts.includes(upload.step)) {
-                    state.submission.mediaUploadAttempts.push(upload.step);
-                    persistDraft();
-                }
-                try {
-                    if (!upload.required && !Number.isFinite(optionalMediaDeadlineMs)) {
-                        optionalMediaDeadlineMs = Date.now() + OPTIONAL_MEDIA_UPLOAD_BUDGET_MS;
-                    }
-                    await uploadMedia(upload.step, upload.file, undefined, {}, upload.required
-                        ? {} : { optionalDeadlineMs: optionalMediaDeadlineMs });
-                } catch (error) {
-                    if (upload.required) throw error;
-                    skippedWechatOutcome = optionalUploadOutcome(error);
-                    if (skippedWechatOutcome !== "UNKNOWN") {
-                        state.submission.mediaUploadAttempts = state.submission.mediaUploadAttempts
-                            .filter((item) => item !== upload.step);
-                    }
-                    persistDraft();
-                    renderUploadedBadges();
-                    setProgressStep(upload.step, "skipped", optionalUploadFailureMessage(
-                        error, "企微截图", skippedWechatOutcome === "UNKNOWN"));
-                    continue;
-                }
-                state.submission.mediaUploadAttempts = state.submission.mediaUploadAttempts
-                    .filter((item) => item !== upload.step);
-                if (!state.submission.uploadedMedia.includes(upload.step)) {
-                    state.submission.uploadedMedia.push(upload.step);
-                }
-                persistDraft();
-                renderUploadedBadges();
-                setProgressStep(upload.step, "done");
+            if (receipt.status === "SUBMITTED") {
+                showSuccess(receipt); void supplementCurrentEvidence(); return;
             }
-
-            activeStep = MEDIA.audio;
-            const audioSegments = [...state.submission.audioSegments];
-            if (!audioSegments.length) {
-                setProgressStep(MEDIA.audio, "skipped");
-            } else {
-                let uploadedAudioCount = 0;
-                for (let index = 0; index < audioSegments.length; index += 1) {
-                    const segment = audioSegments[index];
-                    if (segment.uploadState === "UPLOADED") {
-                        uploadedAudioCount += 1;
-                        continue;
-                    }
-                    if (segment.uploadState === "SKIPPED") {
-                        skippedAudioCount += 1;
-                        if (segment.mayExistRemotely) uncertainAudioCount += 1;
-                        continue;
-                    }
-                    const local = localAudioFile(segment.segmentId);
-                    if (!local) {
-                        const uploadMayExist = segment.mayExistRemotely === true
-                            || segment.uploadState === "UNKNOWN";
-                        segment.mayExistRemotely = uploadMayExist;
-                        markAudioSegmentSkipped(segment, uploadMayExist
-                            ? "录音上传结果未确认，服务端可能已收到；已继续打卡"
-                            : "刷新后未能恢复原录音文件，已自动跳过，不影响打卡");
-                        skippedAudioCount += 1;
-                        if (uploadMayExist) uncertainAudioCount += 1;
-                        renderAudioSegments();
-                        persistDraft();
-                        continue;
-                    }
-                    try {
-                        if (!Number.isFinite(optionalMediaDeadlineMs)) {
-                            optionalMediaDeadlineMs = Date.now() + OPTIONAL_MEDIA_UPLOAD_BUDGET_MS;
-                        }
-                        await uploadAudioSegment(segment, local.file, index + 1,
-                            audioSegments.length, optionalMediaDeadlineMs);
-                        uploadedAudioCount += 1;
-                    } catch (error) {
-                        const uploadMayExist = segment.mayExistRemotely === true;
-                        markAudioSegmentSkipped(segment, optionalUploadFailureMessage(
-                            error, "录音", uploadMayExist));
-                        skippedAudioCount += 1;
-                        if (uploadMayExist) uncertainAudioCount += 1;
-                        renderAudioSegments();
-                        renderUploadedBadges();
-                        persistDraft();
-                    }
-                }
-                renderUploadedBadges();
-                if (uploadedAudioCount) {
-                    setProgressStep(MEDIA.audio, "done", skippedAudioCount
-                        ? `已上传 ${uploadedAudioCount} 段录音，${skippedAudioCount} 段未影响打卡`
-                        : `已上传 ${uploadedAudioCount} 段现场录音`);
-                } else {
-                    setProgressStep(MEDIA.audio, "skipped", skippedAudioCount
-                        ? `${skippedAudioCount} 段选填录音未影响打卡，继续完成提交`
-                        : undefined);
-                }
+            activeStep = MEDIA.photo;
+            if (!state.submission.uploadedMedia.includes(MEDIA.photo)) {
+                if (!state.files.photo) throw new Error("现场照片尚未收到，请从相册重新选择");
+                state.submission.mediaUploadAttempts = [...new Set([
+                    ...state.submission.mediaUploadAttempts, MEDIA.photo])];
+                await persistDraft();
+                setProgressStep(MEDIA.photo, "active", "正在上传现场照片");
+                await uploadMedia(MEDIA.photo, state.files.photo);
+                state.submission.uploadedMedia.push(MEDIA.photo);
+                state.submission.mediaUploadAttempts = state.submission.mediaUploadAttempts.filter((kind) => kind !== MEDIA.photo);
+                await persistDraft();
             }
-
+            setProgressStep(MEDIA.photo, "done");
+            setProgressStep(MEDIA.wechat, "skipped", "选填证据独立同步");
+            setProgressStep(MEDIA.audio, "skipped", "选填证据独立同步");
             activeStep = "complete";
-            setProgressStep("complete", "active", "正在完成拜访打卡");
+            setProgressStep("complete", "active", "正在确认打卡");
+            state.submission.syncState = "UNKNOWN";
+            await persistDraft();
             const completed = normalizeResponse(await requestJson(
-                `/submissions/${encodeURIComponent(state.submission.serverId)}/complete`,
-                {
-                    method: "POST",
-                    headers: { "X-Submission-Key": state.submission.submissionKey },
-                    timeout: 45000
-                }
-            )) || {};
+                `/submissions/${encodeURIComponent(state.submission.serverId)}/complete`, {
+                    method: "POST", headers: { "X-Submission-Key": state.submission.submissionKey }, timeout: 30000
+                }));
+            if (!completed?.id || String(completed.id) !== String(state.submission.serverId)
+                    || completed.status !== "SUBMITTED"
+                    || (completed.clientSubmissionId && completed.clientSubmissionId !== state.submission.clientSubmissionId)) {
+                throw new Error("提交结果尚未确认，请点击重试查询");
+            }
+            mergeSubmissionReceipt(completed);
             setProgressStep("complete", "done", "提交完成");
-            showSuccess(completed, {
-                skippedAudioCount,
-                uncertainAudioCount,
-                skippedWechatOutcome
-            });
+            state.submission.pendingWechat = Boolean(state.files.wechat
+                && !state.submission.uploadedMedia.includes(MEDIA.wechat));
+            showSuccess(completed, { skippedAudioCount: state.submission.audioSegments
+                .filter((segment) => segment.uploadState !== "UPLOADED").length,
+                skippedWechatOutcome: state.submission.pendingWechat ? "NOT_ATTEMPTED" : null });
+            void supplementCurrentEvidence();
         } catch (error) {
-            setProgressStep(activeStep, "error", "提交中断，可修正后继续");
-            $("#progress-detail").textContent = errorMessage(error, "提交失败，请稍后重试。" );
-            showError(errorMessage(error, "提交失败，请稍后重试。"));
+            // 网络中断只表示客户端没有收到响应。先读原回执，避免已完成的打卡一直被标为失败。
+            if (optionalUploadOutcome(error) === "UNKNOWN"
+                    && (state.submission.attemptedPayload || state.submission.serverId)) {
+                try {
+                    const confirmed = await lookupSubmissionReceipt();
+                    if (confirmed?.status === "SUBMITTED") {
+                        showSuccess(confirmed);
+                        void supplementCurrentEvidence();
+                        return;
+                    }
+                } catch (_) { /* 保留同一提交ID和文件，等待网络恢复；不伪造成功。 */ }
+            }
+            if (!state.submission.serverId && [400, 422].includes(error.status)) {
+                state.submission.attemptedPayload = null;
+                state.submission.businessLocked = false;
+                state.submission.syncRequested = false;
+                state.submission.syncState = "NEEDS_ACTION";
+            } else if ([400, 401, 403, 409, 413, 415, 422].includes(error.status)) {
+                state.submission.syncRequested = false;
+                state.submission.syncState = "NEEDS_ACTION";
+                if (activeStep === MEDIA.photo && error.status === 413) {
+                    state.submission.mediaUploadAttempts = state.submission.mediaUploadAttempts.filter(kind => kind !== MEDIA.photo);
+                }
+            } else {
+                state.submission.syncRequested = true;
+                state.submission.syncState = "UNKNOWN";
+            }
+            setProgressStep(activeStep, "error", "已保留，可继续重试");
+            $("#progress-detail").textContent = errorMessage(error, "同步未完成");
+            showError(errorMessage(error, "同步未完成，可在待同步记录中重试"));
+            await persistDraft();
+        } finally {
             state.submitting = false;
             setFormsDisabled(false);
-            persistDraft();
         }
     }
 
@@ -4442,9 +4107,13 @@
         } catch (error) {
             const outcome = optionalUploadOutcome(error);
             segment.mayExistRemotely = mayExistBeforeUpload || outcome === "UNKNOWN";
-            segment.uploadState = segment.mayExistRemotely ? "UNKNOWN" : "ERROR";
+            segment.uploadState = error.status === 413 ? "TOO_LARGE"
+                : segment.mayExistRemotely ? "UNKNOWN" : "ERROR";
+            segment.uploadErrorStatus = error.status || null;
             segment.errorMessage = optionalUploadFailureMessage(
                 error, "录音", segment.mayExistRemotely);
+            setProgressStep(MEDIA.audio, "error", error.status === 413 ? "录音文件过大" : "录音待补传");
+            $("#progress-detail").textContent = segment.errorMessage;
             renderAudioSegments();
             renderUploadedBadges();
             persistDraft();
@@ -4453,13 +4122,22 @@
     }
 
     function uploadMedia(kind, file, progressTitle, optionalFormFields = {}, uploadOptions = {}) {
+        const targetSubmissionId = uploadOptions.submissionId || state.submission.serverId;
+        const targetSubmissionKey = uploadOptions.submissionKey || state.submission.submissionKey;
         return new Promise((resolve, reject) => {
+            if (kind.startsWith("audio/") && !audioFileSizeAllowed(file)) {
+                const error = new Error(friendlyHttpError(413));
+                error.status = 413;
+                error.uploadOutcome = "REJECTED";
+                reject(error);
+                return;
+            }
             const optionalDeadlineMs = Number(uploadOptions.optionalDeadlineMs);
             const hasOptionalDeadline = Number.isFinite(optionalDeadlineMs);
             const remainingOptionalMs = hasOptionalDeadline
-                ? optionalDeadlineMs - Date.now() : null;
+                ? Math.min(optionalDeadlineMs - Date.now(), OPTIONAL_MEDIA_UPLOAD_MAX_MS) : null;
             if (hasOptionalDeadline && remainingOptionalMs <= 0) {
-                const error = new Error("选填材料上传等待已达30秒，本文件未再上传，已继续打卡。");
+                const error = new Error("选填证据尚未上传，可稍后重试。");
                 error.code = "OPTIONAL_MEDIA_BUDGET_EXHAUSTED";
                 error.uploadOutcome = "NOT_ATTEMPTED";
                 reject(error);
@@ -4469,16 +4147,33 @@
             const formData = new FormData();
             let settled = false;
             let optionalTimeoutId = null;
+            let idleTimeoutId = null;
+            let uploadedBytes = 0;
             const settle = (callback, value) => {
                 if (settled) return false;
                 settled = true;
                 window.clearTimeout(optionalTimeoutId);
+                window.clearTimeout(idleTimeoutId);
                 callback(value);
                 return true;
             };
             const rejectUpload = (error, outcome = "UNKNOWN") => {
                 if (!error.uploadOutcome) error.uploadOutcome = outcome;
                 settle(reject, error);
+            };
+            const interruptOptionalUpload = (message, code) => {
+                if (settled) return;
+                const error = new Error(message);
+                error.code = code;
+                rejectUpload(error, "UNKNOWN");
+                try { xhr.abort(); } catch (_) { /* The connection may already have been reclaimed. */ }
+            };
+            const refreshIdleTimeout = () => {
+                if (!hasOptionalDeadline || settled) return;
+                window.clearTimeout(idleTimeoutId);
+                idleTimeoutId = window.setTimeout(() => interruptOptionalUpload(
+                    "选填证据上传长时间没有进展，已暂停；打卡已保留，可稍后查询重试",
+                    "OPTIONAL_MEDIA_IDLE_TIMEOUT"), OPTIONAL_MEDIA_IDLE_TIMEOUT_MS);
             };
             formData.append("file", file, file.name || kind);
             Object.entries(optionalFormFields).forEach(([name, value]) => {
@@ -4487,28 +4182,37 @@
                 }
             });
             xhr.open("PUT",
-                `${API_BASE}/submissions/${encodeURIComponent(state.submission.serverId)}/media/${kind}`,
+                `${API_BASE}/submissions/${encodeURIComponent(targetSubmissionId)}/media/${kind}`,
                 true);
             xhr.withCredentials = true;
-            // 必填门头照仍不设前端总时长；选填媒体由共享软预算主动结束等待，避免 QQ/X5 半开连接卡死提交。
-            xhr.timeout = 0;
+            // 必填照片超时后查回执恢复，避免移动端半开连接永远挂住。
+            xhr.timeout = hasOptionalDeadline ? Math.max(1, remainingOptionalMs) : 90000;
             xhr.setRequestHeader("Accept", "application/json");
-            xhr.setRequestHeader("X-Submission-Key", state.submission.submissionKey);
+            xhr.setRequestHeader("X-Submission-Key", targetSubmissionKey);
             if (xhr.upload) {
                 xhr.upload.addEventListener("progress", (event) => {
+                    if (Number.isFinite(event.loaded) && event.loaded > uploadedBytes) {
+                        uploadedBytes = event.loaded;
+                        refreshIdleTimeout();
+                    }
                     if (!event.lengthComputable || event.total <= 0) return;
                     const percent = Math.min(99, Math.round((event.loaded / event.total) * 100));
                     const title = progressTitle || progressTitleForMedia(kind);
-                    $("#progress-title").textContent = `${title} ${percent}%`;
+                    if (!uploadOptions.background) $("#progress-title").textContent = `${title} ${percent}%`;
                 });
             }
             xhr.addEventListener("load", () => {
                 const payload = parseResponsePayload(xhr.responseText);
                 if (xhr.status >= 200 && xhr.status < 300) {
+                    if (!validMediaReceipt(payload, kind, targetSubmissionId)) {
+                        rejectUpload(new Error("上传结果尚未确认，文件已保留，请重试查询"), "UNKNOWN");
+                        return;
+                    }
                     settle(resolve, payload);
                     return;
                 }
-                const error = new Error(extractApiMessage(payload) || `上传失败（HTTP ${xhr.status}）`);
+                const error = new Error(xhr.status === 413 ? friendlyHttpError(413)
+                    : extractApiMessage(payload) || friendlyHttpError(xhr.status));
                 error.status = xhr.status;
                 error.payload = payload;
                 rejectUpload(error, xhr.status >= 400 && xhr.status < 500
@@ -4521,20 +4225,10 @@
             xhr.addEventListener("abort", () => rejectUpload(
                 new Error("上传已中断，文件仍保留在本页，可直接重新提交。")));
             if (hasOptionalDeadline) {
-                optionalTimeoutId = window.setTimeout(() => {
-                    if (settled) return;
-                    const error = new Error("选填材料上传等待超过30秒，已停止等待并继续打卡。");
-                    error.code = "OPTIONAL_MEDIA_SOFT_TIMEOUT";
-                    error.uploadOutcome = "UNKNOWN";
-                    settled = true;
-                    window.clearTimeout(optionalTimeoutId);
-                    try {
-                        xhr.abort();
-                    } catch (_) {
-                        // 某些旧 WebView 在连接已由系统回收时再次 abort 会抛错。
-                    }
-                    reject(error);
-                }, Math.max(1, remainingOptionalMs));
+                optionalTimeoutId = window.setTimeout(() => interruptOptionalUpload(
+                    "选填证据上传已达到时限；打卡已保留，可稍后查询重试",
+                    "OPTIONAL_MEDIA_UPLOAD_TIMEOUT"), Math.max(1, remainingOptionalMs));
+                refreshIdleTimeout();
             }
             try {
                 xhr.send(formData);
@@ -4544,7 +4238,15 @@
         });
     }
 
+    function validMediaReceipt(payload, kind, submissionId) {
+        const receipt = normalizeResponse(payload);
+        const [mediaKind, segmentId] = kind.split("/");
+        return Boolean(receipt && String(receipt.id) === String(submissionId)
+            && receipt.kind === mediaKind && (!segmentId || String(receipt.segmentId) === decodeURIComponent(segmentId)));
+    }
+
     function optionalUploadOutcome(error) {
+        if (error?.status === 413) return "REJECTED";
         if (["REJECTED", "NOT_ATTEMPTED", "UNKNOWN"].includes(error?.uploadOutcome)) {
             return error.uploadOutcome;
         }
@@ -4555,6 +4257,7 @@
     }
 
     function optionalUploadFailureMessage(error, label, mayExistRemotely = false) {
+        if (error?.status === 413) return `${label}文件过大，请换较小文件；重试同一文件无效，不影响打卡`;
         const detail = errorMessage(error, `${label}上传失败`);
         const outcome = optionalUploadOutcome(error);
         if (mayExistRemotely || outcome === "UNKNOWN") {
@@ -4569,10 +4272,22 @@
     function parseResponsePayload(text) {
         if (!text) return null;
         try {
-            return JSON.parse(text);
+            const value = JSON.parse(text);
+            return value && typeof value === "object" ? value : null;
         } catch (_) {
-            return { message: String(text).slice(0, 300) };
+            // 网关 HTML / 纯文本错误不是业务提示，绝不能把服务器源码展示给销售。
+            return null;
         }
+    }
+
+    function friendlyHttpError(status) {
+        if (status === 401) return "身份已失效，请重新验证后重试";
+        if (status === 403) return "当前身份无法操作，请联系管理员";
+        if (status === 413) return "文件过大，请换较小文件；重试同一文件无效";
+        if (status === 415) return "文件格式无法处理，请重新选择";
+        if (status === 429) return "操作较多，请稍后重试";
+        if (status >= 500) return "服务暂时不可用，内容已保留，可重试";
+        return "本次操作未完成，内容已保留，请检查后重试";
     }
 
     function buildStorePayload() {
@@ -4651,17 +4366,8 @@
         valid = requireValue(state.visit.city, "visit-city", "请选择业务归属城市。") && valid;
         valid = requireValue(state.visit.salespersonId, "visit-salesperson", "请选择销售。") && valid;
         valid = requireValue(state.visit.selectedStore?.id, "selected-store", "请搜索并选择拜访门店。") && valid;
-        if (state.visit.selectedStore?.id && !visitSelectedStoreReady()) {
-            setFieldError("selected-store", "当前已选门店不在本次定位允许范围，请重新选择。" );
-            valid = false;
-        }
         valid = requireValue(state.visit.customerName.trim(), "customer-name", "请输入客户姓名。") && valid;
         valid = requireValue(state.visit.visitResult.trim(), "visit-result", "请填写拜访结果。") && valid;
-        if (!isBusinessLocked() && !locationFlowReady(state.visit.locationContext)) {
-            setFieldError("visit-location", state.visit.locationContext?.errorMessage
-                || "请先尝试定位；定位失败或等待较久时可按页面提示继续录入。");
-            valid = false;
-        }
         if (!state.files.photo && !state.submission.uploadedMedia.includes(MEDIA.photo)) {
             setFieldError("storefront-photo", state.submission.serverId
                 ? "请重新选择现场照片后继续上传。"
@@ -4673,7 +4379,6 @@
             valid = false;
         }
         if (state.files.photo && state.files.photo.size > MAX_IMAGE_BYTES) valid = false;
-        if (state.files.wechat && state.files.wechat.size > MAX_IMAGE_BYTES) valid = false;
         return valid;
     }
 
@@ -4685,15 +4390,9 @@
         valid = requireValue(state.store.sourceMode, "store-source",
             locationExceptionReady(state.store.locationContext)
                 ? "定位未核验，请选择手动录入门店。"
-                : "请先从当前位置300米内高德搜索结果选择；确认没有后再手动录入。") && valid;
+                : "请选择地图门店或手动录入。") && valid;
         if (state.store.sourceMode === "POI" && !cleanText(state.store.sourcePoiToken)) {
             setFieldError("store-source", "高德候选凭证已失效，请重新搜索并选择门店。");
-            valid = false;
-        }
-        if (state.store.sourceMode === "MANUAL"
-                && !locationExceptionReady(state.store.locationContext)
-                && !cleanText(state.store.manualEntryToken)) {
-            setFieldError("store-source", "人工建店凭证已失效，请重新搜索确认无结果。");
             valid = false;
         }
         valid = requireValue(state.store.name.trim(), "store-name", "请输入门店名称。") && valid;
@@ -4713,11 +4412,6 @@
         }
         if (!state.store.tags.length) {
             setFieldError("store-tags", "请至少选择一个门店标签。" );
-            valid = false;
-        }
-        if (!locationFlowReady(state.store.locationContext)) {
-            setFieldError("store-location", state.store.locationContext?.errorMessage
-                || "请先尝试定位；定位失败或等待较久时可按页面提示继续录入。");
             valid = false;
         }
         return valid;
@@ -4822,6 +4516,8 @@
     }
 
     function showSuccess(completed, optionalMedia = {}) {
+        historyView?.invalidateList();
+        state.editingEvidence = false;
         const skippedAudioCount = Number(optionalMedia.skippedAudioCount) || 0;
         const uncertainAudioCount = Math.min(skippedAudioCount,
             Number(optionalMedia.uncertainAudioCount) || 0);
@@ -4829,6 +4525,11 @@
         const skippedWechatOutcome = cleanText(optionalMedia.skippedWechatOutcome).toUpperCase();
         state.submitting = false;
         state.completed = true;
+        state.submission.status = completed.status || "SUBMITTED";
+        state.submission.submittedAt = completed.submittedAt || state.submission.submittedAt;
+        state.submission.supplementUntil = completed.supplementUntil || state.submission.supplementUntil;
+        state.submission.syncRequested = false;
+        state.submission.syncState = "CONFIRMED";
         $("#upload-panel").hidden = true;
         $("#visit-panel").hidden = true;
         $("#store-panel").hidden = true;
@@ -4836,7 +4537,7 @@
         $("#restore-notice").hidden = true;
         $("#success-submission-id").textContent = completed.id || state.submission.serverId;
         $("#success-submitted-at").textContent = completed.submittedAt
-            ? `提交时间：${formatDateTime(completed.submittedAt)}`
+            ? formatDateTime(completed.submittedAt)
             : "";
         $("#success-location-note").hidden = !locationExceptionReady(state.visit.locationContext);
         const mediaNote = $("#success-media-note");
@@ -4851,7 +4552,7 @@
         if (uncertainAudioCount) uncertainItems.push(`${uncertainAudioCount} 段录音`);
         const mediaMessages = ["打卡记录和现场照片已正常保存。"];
         if (definiteItems.length) {
-            mediaMessages.push(`选填的${definiteItems.join("和")}未上传，已跳过。`);
+            mediaMessages.push(`选填的${definiteItems.join("和")}待补传，可在“我的记录”重试。`);
         }
         if (uncertainItems.length) {
             mediaMessages.push(`选填的${uncertainItems.join("和")}上传结果未确认，服务端可能已收到。`);
@@ -4860,8 +4561,64 @@
             ? mediaMessages.join("") : "";
         mediaNote.hidden = definiteItems.length === 0 && uncertainItems.length === 0;
         $("#success-panel").hidden = false;
-        removeStoredDraft();
+        state.submission.pendingWechat = Boolean(state.files.wechat
+            && !state.submission.uploadedMedia.includes(MEDIA.wechat));
+        void persistDraft();
+        deleteLocalMedia("photo");
+        if (state.submission.uploadedMedia.includes(MEDIA.wechat)) deleteLocalMedia("wechat");
+        state.submission.audioSegments.filter((segment) => segment.uploadState === "UPLOADED")
+            .forEach((segment) => deleteLocalMedia(`audio:${segment.segmentId}`));
+        renderSuccessEvidence();
+        syncAppScreen();
         $("#success-panel").scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    function renderSuccessEvidence() {
+        const put = (selector, text) => { const element = $(selector); if (element) element.textContent = text; };
+        put("#success-store-name", state.visit.selectedStore?.name || "本次拜访");
+        put("#success-identity", [state.visit.city, state.identity?.salespersonName].filter(Boolean).join(" · "));
+        put("#success-photo-status", state.submission.uploadedMedia.includes(MEDIA.photo) ? "已收到" : "回执已确认");
+        put("#success-supplement-until", state.submission.supplementUntil
+            ? `补传截止 ${formatDateTime(state.submission.supplementUntil)}` : "");
+        const list = $("#success-audio-list");
+        if (list) {
+            list.replaceChildren();
+            state.submission.audioSegments.filter(segment => !["SKIPPED", "DISCARDED"].includes(segment.uploadState)).forEach((segment, index) => {
+                const row = document.createElement("div"); row.className = "receipt-media-row";
+                const title = document.createElement("span");
+                title.textContent = `现场录音${state.submission.audioSegments.length > 1 ? ` ${index + 1}` : ""}`
+                    + (segment.clientDurationMs ? ` · ${formatDuration(segment.clientDurationMs)}` : "");
+                const status = document.createElement("strong");
+                status.textContent = segment.uploadState === "UPLOADED" ? "已收到"
+                    : segment.uploadState === "UPLOADING" ? "上传中"
+                        : segment.uploadState === "UNKNOWN" ? "结果待核对"
+                            : segment.uploadState === "TOO_LARGE" ? "文件过大，请更换" : "待补传";
+                status.className = segment.uploadState === "UPLOADED" ? "is-success" : "is-warning";
+                row.append(title, status); list.appendChild(row);
+            });
+            list.hidden = !list.children.length;
+        }
+        const retry = $("#success-retry-button");
+        if (retry) {
+            retry.hidden = !hasPendingEvidence();
+            retry.disabled = state.evidenceSyncIds.has(state.submission.clientSubmissionId);
+            retry.textContent = retry.disabled ? "正在核对与同步…"
+                : state.submission.wechatUploadErrorStatus === 413 || state.submission.audioSegments.some(segment =>
+                    ["TOO_LARGE", "NEEDS_FILE"].includes(segment.uploadState)) ? "处理待补附件"
+                    : state.submission.audioSegments.some(segment => segment.uploadState === "UNKNOWN") ? "核对录音结果" : "重试附件";
+            if (state.submission.supplementUntil && Date.parse(state.submission.supplementUntil) <= Date.now()) {
+                retry.hidden = true;
+            }
+        }
+        const note = $("#success-media-note");
+        if (note && !hasPendingEvidence()) { note.hidden = true; note.textContent = ""; }
+        const wechat = $("#success-wechat-status");
+        if (wechat) {
+            wechat.hidden = !state.submission.pendingWechat && !state.submission.uploadedMedia.includes(MEDIA.wechat);
+            const row = $("#success-wechat-row");
+            if (row) row.hidden = wechat.hidden;
+            wechat.textContent = state.submission.pendingWechat ? "企微截图 · 待补传" : "企微截图 · 已收到";
+        }
     }
 
     function renderBusinessLock() {
@@ -4888,6 +4645,12 @@
             }
         });
         lockIdentitySelectors();
+        ["#storefront-photo", "#photo-album-input", "#photo-album-button", "#quick-photo-button", "#photo-retake-button",
+            "#remove-photo-button", "#delete-uploaded-photo-button"].forEach((selector) => {
+            const control = $(selector); if (control) control.disabled = state.completed;
+        });
+        $("#wechat-screenshot").disabled = state.completed && state.submission.uploadedMedia.includes(MEDIA.wechat);
+        setStableText($("#submit-visit-button"), state.completed ? "补传录音和截图" : "提交拜访");
         $("#identity-switch").disabled = state.submitting || locked;
         renderFlowSteps();
     }
@@ -4913,7 +4676,9 @@
         if (!disabled) renderBusinessLock();
     }
 
-    function startNewSubmission() {
+    function startNewSubmission({ preserveCurrent = true } = {}) {
+        // 保留前一条可恢复记录，“下一家”只切换当前表单。
+        if (preserveCurrent && currentStorageOwner() && state.visit.selectedStore) void persistDraft();
         cleanupRecorder();
         state.recorder.elapsedMs = 0;
         $("#recording-clock").textContent = "00:00";
@@ -4940,7 +4705,9 @@
         state.submission = freshSubmission();
         state.submitting = false;
         state.completed = false;
+        state.editingEvidence = false;
         state.restoredAt = null;
+        state.restoredLocalMediaIds = [];
         removeStoredDraft();
         setFormsDisabled(false);
         $("#visit-form").reset();
@@ -4966,6 +4733,8 @@
         hideError();
         checkRecorderSupport();
         renderIdentityState();
+        scheduleInitialVisitLocationCapture();
+        if (state.identity?.authenticated) void searchVisitStoreDirectory();
         window.scrollTo({ top: 0, behavior: "smooth" });
     }
 
@@ -5026,7 +4795,11 @@
             button.disabled = false;
             button.textContent = originalLabel;
         }
+        const owner = currentStorageOwner();
+        const draftId = state.submission.clientSubmissionId;
         startNewSubmission();
+        await state.persistence;
+        if (owner && window.SalesCheckinDraftStore) await window.SalesCheckinDraftStore.remove(owner, draftId);
         $("#restore-notice").hidden = true;
     }
 
@@ -5118,32 +4891,494 @@
         element.value = normalized;
     }
 
-    function persistDraft() {
-        try {
-            const payload = {
-                version: STORAGE_VERSION,
-                savedAt: new Date().toISOString(),
-                activeTab: state.activeTab,
-                ui: state.ui,
-                visit: state.visit,
-                store: state.store,
-                submission: state.submission
-            };
-            sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-        } catch (error) {
-            if (!state.storageUnavailableShown) {
-                state.storageUnavailableShown = true;
-                showError("浏览器未允许当前标签页临时保存，刷新后可能无法恢复草稿。请勿在提交完成前关闭页面。" );
-            }
+    function currentStorageOwner() {
+        if (!state.identity?.authenticated || !state.identity.salespersonId) return null;
+        return `${state.identity.tenantId || "same-origin"}:${state.identity.salespersonId}`;
+    }
+
+    function snapshotDraft() {
+        return JSON.parse(JSON.stringify({ version: STORAGE_VERSION,
+            savedAt: new Date().toISOString(), activeTab: state.activeTab, ui: state.ui,
+            visit: state.visit, store: state.store, submission: state.submission,
+            localMediaIds: [state.files.photo ? "photo" : null, state.files.wechat ? "wechat" : null,
+                ...state.files.audio.map((item) => `audio:${item.segmentId}`)].filter(Boolean) }));
+    }
+
+    function draftFingerprint(snapshot) {
+        // 定位回调和附近推荐会在后台变化，不应因此反复丢掉打开相机的用户手势。
+        const { location: visitLocation, locationContext: visitContext, nearbyStores,
+            directoryStores, directoryQuery, ...visit } = snapshot.visit;
+        const { location: storeLocation, locationContext: storeContext, nearbyPois,
+            poiSearchResults, poiSearchLookupStatus, ...store } = snapshot.store;
+        return JSON.stringify({ visit, store, ui: snapshot.ui, submission: snapshot.submission,
+            localMediaIds: snapshot.localMediaIds });
+    }
+
+    function renderDraftSaveStatus(text, failed = false) {
+        if (text === "本机已保存" && [...state.unsavedMedia].some(key => key.startsWith(localMediaStorageKey("")))) {
+            text = "附件未在本机保存 · 请保留手机原件";
+            failed = true;
+        }
+        const element = $("#draft-save-status");
+        if (element) {
+            element.textContent = text;
+            element.classList.toggle("is-warning", failed);
         }
     }
 
-    function restoreDraft() {
+    function localMediaStorageKey(mediaId, owner = currentStorageOwner(), draftId = state.submission.clientSubmissionId) {
+        return `${owner}/${draftId}/${mediaId}`;
+    }
+
+    function saveLocalMedia(mediaId, file) {
+        const owner = currentStorageOwner();
+        const draftId = state.submission.clientSubmissionId;
+        if (!owner || !window.SalesCheckinDraftStore) return Promise.resolve(false);
+        const snapshot = snapshotDraft();
+        const mediaKey = localMediaStorageKey(mediaId, owner, draftId);
+        const operation = state.persistence.then(async () => {
+            await window.SalesCheckinDraftStore.save(owner, snapshot);
+            await window.SalesCheckinDraftStore.saveMedia(owner, draftId, mediaId, file);
+            state.unsavedMedia.delete(mediaKey);
+            if (currentStorageOwner() === owner && state.submission.clientSubmissionId === draftId) {
+                renderDraftSaveStatus("本机已保存");
+            }
+            return true;
+        }).catch(() => {
+            state.unsavedMedia.add(mediaKey);
+            if (currentStorageOwner() === owner && state.submission.clientSubmissionId === draftId) {
+                renderDraftSaveStatus("附件未在本机保存 · 请保留手机原件", true);
+                const message = "本机空间不足或浏览器禁止保存。请保留手机原文件；当前页面仍可上传，不影响先提交拜访。";
+                if (mediaId.startsWith("audio:")) showAudioSelectionNotice(message);
+                else showError(message);
+            }
+            return false;
+        });
+        state.persistence = operation;
+        state.pendingMedia.add(operation);
+        void operation.finally(() => state.pendingMedia.delete(operation));
+        return operation;
+    }
+
+    function deleteLocalMedia(mediaId) {
+        const owner = currentStorageOwner();
+        const id = state.submission.clientSubmissionId;
+        state.unsavedMedia.delete(localMediaStorageKey(mediaId, owner, id));
+        if (!owner || !window.SalesCheckinDraftStore) return;
+        state.persistence = state.persistence.then(() =>
+            window.SalesCheckinDraftStore.removeMedia(owner, id, mediaId)).catch(() => false);
+    }
+
+    async function restoreOwnedDraft() {
+        const owner = currentStorageOwner();
+        if (!owner || owner === state.storageOwner || !window.SalesCheckinDraftStore) return;
+        state.storageOwner = owner;
+        try {
+            await window.SalesCheckinDraftStore.prune();
+            const records = await window.SalesCheckinDraftStore.list(owner);
+            if (owner !== currentStorageOwner()) return;
+            const current = hasRestoredDraft() && records.find(item =>
+                item.snapshot.submission.clientSubmissionId === state.submission.clientSubmissionId);
+            const record = current || (!hasRestoredDraft() && records.find((item) => !["SUBMITTED", "COMPLETED"].includes(item.snapshot.submission.status)
+                && (item.snapshot.visit?.selectedStore || item.snapshot.visit?.customerName || item.snapshot.store?.name || item.snapshot.localMediaIds?.length)));
+            if (record) await openSavedDraft(record, false);
+        } catch (_) {
+            renderDraftSaveStatus("本机保存不可用", true);
+        }
+    }
+
+    async function openSavedDraft(record, display = true) {
+        const owner = currentStorageOwner();
+        if (!owner || record.owner !== owner || state.submitting || recordingBusy()) return false;
+        const sequence = ++draftRestoreSequence;
+        const current = draftFingerprint(snapshotDraft());
+        const stillAllowed = () => sequence === draftRestoreSequence && owner === currentStorageOwner()
+            && !state.submitting && !recordingBusy() && current === draftFingerprint(snapshotDraft());
+        await state.persistence;
+        if (!stillAllowed()) return false;
+        const media = await window.SalesCheckinDraftStore.mediaFor(owner, record.snapshot.submission.clientSubmissionId);
+        if (!stillAllowed()) return false;
+        Object.keys(state.files).forEach(resetLocalFile);
+        restoreDraft(record.snapshot);
+        state.completed = ["SUBMITTED", "COMPLETED"].includes(state.submission.status);
+        for (const item of media) {
+            const file = typeof window.File === "function"
+                ? new File([item.file], item.filename, { type: item.file.type, lastModified: item.lastModified || 0 })
+                : Object.assign(item.file, { name: item.filename, lastModified: item.lastModified || 0 });
+            if (item.mediaId === "photo" || item.mediaId === "wechat") {
+                state.files[item.mediaId] = file;
+                renderImagePreview(item.mediaId, file);
+            } else if (item.mediaId.startsWith("audio:")) {
+                const segmentId = item.mediaId.slice(6);
+                const segment = findAudioSegment(segmentId);
+                if (!segment) continue;
+                state.files.audio.push({ segmentId, file });
+                if (["NEEDS_FILE", "ERROR"].includes(segment.uploadState)) segment.uploadState = "LOCAL";
+                ensureAudioObjectUrl(segmentId, file);
+            }
+        }
+        renderRestoredValues(); renderSelectedStore(); renderLocation("visit"); renderLocation("store");
+        renderAudioSegments(); renderUploadedBadges(); renderBusinessLock();
+        renderTab(state.activeTab);
+        renderDraftSaveStatus(state.completed ? "已提交" : "已恢复本机记录");
+        if (display) {
+            $("#records-panel").hidden = true;
+            $("#success-panel").hidden = true;
+            $(".tabs").hidden = false;
+            if (state.completed) showSuccess(state.submission);
+            else { setFormsDisabled(false); showRestoreNotice(); }
+        }
+        return true;
+    }
+
+    function hasPendingEvidence(snapshot = snapshotDraft()) {
+        const submission = snapshot.submission;
+        return submission.audioSegments.some((segment) => !['UPLOADED', 'SKIPPED', 'DISCARDED'].includes(segment.uploadState))
+            || submission.pendingWechat === true;
+    }
+
+    function mergeSubmissionReceipt(receipt) {
+        if (!receipt?.id) return;
+        if (receipt.clientSubmissionId && String(receipt.clientSubmissionId) !== String(state.submission.clientSubmissionId)) {
+            throw new Error("回执与本次拜访不一致，原记录已保留");
+        }
+        if (state.submission.serverId && String(state.submission.serverId) !== String(receipt.id)) {
+            throw new Error("回执编号不一致，请保留页面并联系管理员");
+        }
+        Object.assign(state.submission, { serverId: receipt.id,
+            status: receipt.status || state.submission.status,
+            createdAt: receipt.createdAt || state.submission.createdAt,
+            submittedAt: receipt.submittedAt || state.submission.submittedAt,
+            supplementUntil: receipt.supplementUntil || state.submission.supplementUntil });
+        if (Array.isArray(receipt.uploadedMedia)) state.submission.uploadedMedia = [...receipt.uploadedMedia];
+        for (const id of receipt.audioSegmentIds || []) {
+            const segment = findAudioSegment(id);
+            if (segment) { segment.uploadState = "UPLOADED"; segment.mayExistRemotely = true; }
+        }
+        state.submission.pendingWechat = Boolean(state.files.wechat
+            && !state.submission.uploadedMedia.includes(MEDIA.wechat));
+        state.submission.businessLocked = true;
+    }
+
+    async function lookupSubmissionReceipt() {
+        const id = state.submission.clientSubmissionId;
+        const owner = currentStorageOwner();
+        try {
+            const receipt = normalizeResponse(await requestJson(
+                `/submissions/by-client/${encodeURIComponent(id)}`, {
+                    headers: { "X-Submission-Key": state.submission.submissionKey }, timeout: 15000
+                }));
+            if (id !== state.submission.clientSubmissionId || owner !== currentStorageOwner()) return null;
+            if (!receipt?.id || !["DRAFT", "SUBMITTED"].includes(receipt.status)) {
+                throw new Error("未取得有效提交回执，原记录已保留");
+            }
+            mergeSubmissionReceipt(receipt);
+            return receipt;
+        } catch (error) {
+            if (error.status === 404) return null;
+            throw error;
+        }
+    }
+
+    function initPersonalHistory() {
+        if (!window.SalesCheckinHistory || historyView) return;
+        historyView = window.SalesCheckinHistory.init({
+            requestJson, getIdentity: () => state.identity,
+            getLocalRecords: async () => {
+                const owner = currentStorageOwner();
+                if (!owner || !window.SalesCheckinDraftStore) return [];
+                if (state.visit.selectedStore || state.store.name) await persistDraft();
+                const rows = await window.SalesCheckinDraftStore.list(owner);
+                return owner === currentStorageOwner() ? rows : [];
+            },
+            onResumeLocal: async (record, context = {}) => {
+                if (state.submitting || recordingBusy()) return false;
+                if (!await openSavedDraft(record)) return false;
+                if (context.receipt) mergeSubmissionReceipt(context.receipt);
+                historyView.close();
+                await recoverInterruptedSubmission();
+                return true;
+            },
+            onSupplement: async (detail, record) => {
+                if (state.submitting || recordingBusy() || !record) return false;
+                if (!await openSavedDraft(record)) return false;
+                mergeSubmissionReceipt({ ...detail,
+                    uploadedMedia: [...new Set((detail.media || []).map(item => item.kind))],
+                    audioSegmentIds: (detail.media || []).filter(item => item.kind === MEDIA.audio).map(item => item.mediaId) });
+                historyView.close();
+                openEvidenceEditor();
+                return true;
+            },
+            onBack: () => syncAppScreen(),
+            onViewChange: (view) => { if (view === "closed") draftRestoreSequence++; historyScreen = view; syncAppScreen(); },
+            onAuthRequired: () => { historyView?.resetIdentity(); state.identity = null; renderIdentityState(); }
+        });
+    }
+
+    async function showMyRecords(pendingOnly = false) {
+        if (!currentStorageOwner()) return;
+        if (state.submitting || recordingBusy()) {
+            showError(state.submitting ? "正在提交，请稍候" : "请先结束并保存录音");
+            return;
+        }
+        initPersonalHistory();
+        if (!historyView) { showError("记录页面暂未加载，请刷新后重试"); return; }
+        pauseAllAudioPreviews();
+        await historyView.open({ pendingOnly });
+    }
+
+    function openEvidenceEditor() {
+        if (!state.completed) return;
+        state.editingEvidence = true;
+        $("#success-panel").hidden = true;
+        state.activeTab = "visit";
+        state.ui.visitStep = 3;
+        renderTab("visit");
+        $(".tabs").hidden = true;
+        $("#restore-notice strong").textContent = "本次拜访已提交";
+        $("#restore-message").textContent = state.submission.supplementUntil
+            ? `可补充录音和截图，截止 ${formatDateTime(state.submission.supplementUntil)}` : "可补充录音和截图，以服务端补传期限为准";
+        $("#restore-notice").hidden = false;
+        $("#discard-draft-button").hidden = true;
+        setFormsDisabled(false);
+        renderBusinessLock();
+        syncAppScreen();
+    }
+
+    async function supplementCurrentEvidence() {
+        if (!state.completed || !state.submission.serverId) return;
+        const owner = currentStorageOwner();
+        const snapshot = snapshotDraft();
+        const id = snapshot.submission.clientSubmissionId;
+        if (!owner || state.evidenceSyncIds.has(id) || !hasPendingEvidence(snapshot)) return;
+        state.evidenceSyncIds.add(id);
+        pauseAllAudioPreviews();
+        renderSuccessEvidence();
+        const submission = snapshot.submission;
+        // 捕获原拜访的文件和凭据。销售点“下一家”后绝不能把补证写入新拜访。
+        const files = { wechat: state.files.wechat, audio: new Map(state.files.audio.map((item) => [item.segmentId, item.file])) };
+        const requestOptions = { headers: { "X-Submission-Key": submission.submissionKey }, timeout: 15000 };
+        const receiptPath = `/submissions/by-client/${encodeURIComponent(id)}`;
+        const sameOwner = () => currentStorageOwner() === owner;
+        const stillCurrent = () => sameOwner() && state.submission.clientSubmissionId === id;
+        const save = async () => {
+            snapshot.savedAt = new Date().toISOString();
+            let toSave = snapshot;
+            if (stillCurrent()) {
+                // 同步期间销售可以另加一段录音；只更新本次捕获的分段，不覆盖新附件。
+                const updated = new Map(submission.audioSegments.map(segment => [segment.segmentId, segment]));
+                state.submission.audioSegments = state.submission.audioSegments.map(segment => updated.get(segment.segmentId) || segment);
+                state.submission.uploadedMedia = submission.uploadedMedia;
+                state.submission.pendingWechat = submission.pendingWechat;
+                state.submission.wechatUploadErrorStatus = submission.wechatUploadErrorStatus;
+                renderAudioSegments(); renderUploadedBadges();
+                renderSuccessEvidence();
+                toSave = snapshotDraft();
+            }
+            if (window.SalesCheckinDraftStore) await window.SalesCheckinDraftStore.save(owner, toSave);
+        };
+        const confirmReceived = async (kind, segmentId = null) => {
+            if (!sameOwner() || navigator.onLine === false) return false;
+            try {
+                const received = normalizeResponse(await requestJson(receiptPath, requestOptions));
+                if (!sameOwner() || String(received?.id) !== String(submission.serverId)
+                        || received.status !== "SUBMITTED"
+                        || (received.clientSubmissionId && received.clientSubmissionId !== id)) return false;
+                return segmentId ? (received.audioSegmentIds || []).includes(segmentId)
+                    : (received.uploadedMedia || []).includes(kind);
+            } catch (_) { return false; }
+        };
+        try {
+            await state.persistence;
+            const receipt = normalizeResponse(await requestJson(receiptPath, requestOptions));
+            if (!sameOwner()) return;
+            if (String(receipt?.id) !== String(submission.serverId) || receipt.status !== "SUBMITTED"
+                    || (receipt.clientSubmissionId && receipt.clientSubmissionId !== id)) throw new Error("未查询到本次拜访的完成回执");
+            submission.uploadedMedia = Array.isArray(receipt.uploadedMedia) ? receipt.uploadedMedia : submission.uploadedMedia;
+            submission.audioSegments.forEach((segment) => {
+                if ((receipt.audioSegmentIds || []).includes(segment.segmentId)) {
+                    segment.uploadState = "UPLOADED"; segment.uploadErrorStatus = null; segment.errorMessage = "";
+                }
+            });
+            if (submission.uploadedMedia.includes(MEDIA.wechat)) submission.pendingWechat = false;
+            await save();
+            // 补传已到期仍允许只读核对已经收到的附件，绝不再次上传。
+            if (receipt.supplementUntil && Date.parse(receipt.supplementUntil) <= Date.now()) {
+                if (hasPendingEvidence(snapshot)) throw new Error("补传时间已结束，请联系管理员");
+                return;
+            }
+            const options = {
+                submissionId: submission.serverId, submissionKey: submission.submissionKey, background: true };
+            if (files.wechat && !submission.uploadedMedia.includes(MEDIA.wechat) && submission.wechatUploadErrorStatus !== 413) {
+                try {
+                    await uploadMedia(MEDIA.wechat, files.wechat, "补传截图", {},
+                        {...options, optionalDeadlineMs: Date.now() + OPTIONAL_MEDIA_UPLOAD_MAX_MS});
+                    submission.uploadedMedia.push(MEDIA.wechat);
+                    submission.pendingWechat = false;
+                    submission.wechatUploadErrorStatus = null;
+                    state.unsavedMedia.delete(localMediaStorageKey("wechat", owner, id));
+                    if (window.SalesCheckinDraftStore) await window.SalesCheckinDraftStore.removeMedia(owner, id, "wechat");
+                } catch (error) {
+                    if (optionalUploadOutcome(error) === "UNKNOWN" && await confirmReceived(MEDIA.wechat)) {
+                        submission.uploadedMedia.push(MEDIA.wechat);
+                        submission.pendingWechat = false;
+                        submission.wechatUploadErrorStatus = null;
+                    } else {
+                        submission.pendingWechat = true;
+                        submission.wechatUploadErrorStatus = error.status || null;
+                    }
+                }
+                await save();
+            }
+            for (const segment of submission.audioSegments) {
+                if (!sameOwner()) return;
+                if (["UPLOADED", "SKIPPED", "DISCARDED", "TOO_LARGE"].includes(segment.uploadState)) continue;
+                const file = files.audio.get(segment.segmentId);
+                if (!file) { segment.uploadState = "NEEDS_FILE"; continue; }
+                segment.uploadState = "UPLOADING";
+                segment.mayExistRemotely = true;
+                await save();
+                try {
+                    const response = normalizeResponse(await uploadMedia(`audio/${encodeURIComponent(segment.segmentId)}`,
+                        file, "补传录音", {
+                            captureSource: normalizeAudioCaptureSource(segment.captureSource),
+                            clientStartedAt: normalizeOptionalInstant(segment.clientStartedAt),
+                            clientDurationMs: normalizePositiveDurationMs(segment.clientDurationMs),
+                            fileLastModifiedAt: normalizeOptionalInstant(segment.fileLastModifiedAt)
+                        }, {...options, optionalDeadlineMs: Date.now() + OPTIONAL_MEDIA_UPLOAD_MAX_MS}));
+                    if (response?.segmentId && response.segmentId !== segment.segmentId) throw new Error("录音回执不一致");
+                    segment.uploadState = "UPLOADED"; segment.mayExistRemotely = true; segment.errorMessage = "";
+                    state.unsavedMedia.delete(localMediaStorageKey(`audio:${segment.segmentId}`, owner, id));
+                    if (window.SalesCheckinDraftStore) await window.SalesCheckinDraftStore.removeMedia(owner, id, `audio:${segment.segmentId}`);
+                } catch (error) {
+                    if (optionalUploadOutcome(error) === "UNKNOWN" && await confirmReceived(MEDIA.audio, segment.segmentId)) {
+                        segment.uploadState = "UPLOADED";
+                        segment.uploadErrorStatus = null;
+                        segment.errorMessage = "";
+                        if (window.SalesCheckinDraftStore) await window.SalesCheckinDraftStore.removeMedia(owner, id, `audio:${segment.segmentId}`);
+                    } else {
+                        segment.uploadState = error.status === 413 ? "TOO_LARGE"
+                            : optionalUploadOutcome(error) === "UNKNOWN" ? "UNKNOWN" : "ERROR";
+                        segment.uploadErrorStatus = error.status || null;
+                        if (error.status === 413) segment.mayExistRemotely = false;
+                        segment.errorMessage = segment.uploadState === "UNKNOWN"
+                            ? "尚未核实录音结果，原文件已保留；点击核对结果" : optionalUploadFailureMessage(error, "录音");
+                    }
+                }
+                await save();
+            }
+            await save();
+            if (stillCurrent()) {
+                renderDraftSaveStatus(hasPendingEvidence(snapshot) ? "已提交 · 证据待补传" : "已提交 · 证据已保存");
+                const note = $("#success-media-note");
+                if (note) {
+                    note.hidden = !hasPendingEvidence(snapshot);
+                    note.textContent = submission.wechatUploadErrorStatus === 413
+                        || submission.audioSegments.some(segment => segment.uploadState === "TOO_LARGE")
+                        ? "打卡已完成；选填文件过大，请在我的记录中换小文件，同一文件无需重试"
+                        : "打卡已完成，选填证据可在我的记录中继续补传";
+                }
+            }
+        } catch (error) {
+            if (stillCurrent()) renderDraftSaveStatus(errorMessage(error, "已提交 · 证据待补传"), true);
+        } finally {
+            state.evidenceSyncIds.delete(id);
+            historyView?.invalidateList();
+            if (stillCurrent()) renderSuccessEvidence();
+        }
+    }
+
+    async function preparePhotoPicker(event) {
+        if (state.submitting || state.completed || !currentStorageOwner()) { event.preventDefault(); return; }
+        syncStateFromForm();
+        const fingerprint = draftFingerprint(snapshotDraft());
+        // 常规路径直接保留本次原生点击/用户手势；避免异步 input.click 在鸿蒙等浏览器失效。
+        if ((state.lastSavedFingerprint === fingerprint && !state.pendingMedia.size)
+                || state.pickerUnsavedFingerprint === fingerprint) {
+            state.pickerUnsavedFingerprint = "";
+            emitClientDiagnostic("PHOTO_PICKER_OPEN", "STARTED");
+            return;
+        }
+        event.preventDefault();
+        const saved = await persistDraft();
+        await Promise.all([...state.pendingMedia]);
+        if (state.submitting || state.completed || !currentStorageOwner()) return;
+        if (!saved) {
+            state.pickerUnsavedFingerprint = draftFingerprint(snapshotDraft());
+            renderDraftSaveStatus("本机未保存 · 再点拍照继续，请保留页面", true);
+            return;
+        }
+        if (navigator.userActivation?.isActive === true) event.target.click();
+        else renderDraftSaveStatus("表单已保存，请再点一次拍照");
+    }
+
+    function resumeActiveVisit() {
+        if (document.visibilityState === "hidden") return;
+        window.clearTimeout(state.resumeTimer);
+        state.resumeTimer = window.setTimeout(async () => {
+            if (!initialized || state.submitting || recordingBusy() || !currentStorageOwner()) return;
+            await recoverInterruptedSubmission();
+            if (!isBusinessLocked() && !state.completed) {
+                void captureLocation(state.activeTab === "store" ? "store" : "visit");
+            }
+        }, 500);
+    }
+
+    async function recoverInterruptedSubmission() {
+        if (!currentStorageOwner() || state.submitting || recordingBusy() || navigator.onLine === false) return;
+        if (!state.submission.attemptedPayload && !state.submission.serverId) return;
+        if (recoveryInFlight) return recoveryInFlight;
+        const owner = currentStorageOwner();
+        const id = state.submission.clientSubmissionId;
+        recoveryInFlight = (async () => {
+            renderDraftSaveStatus("正在核对上次提交结果…");
+            try {
+                const receipt = await lookupSubmissionReceipt();
+                if (owner !== currentStorageOwner() || id !== state.submission.clientSubmissionId) return;
+                if (receipt?.status === "SUBMITTED") {
+                    showSuccess(receipt);
+                    if (hasPendingEvidence()) void supplementCurrentEvidence();
+                } else if (state.submission.syncRequested && !state.completed) {
+                    // 仅续传用户已经明确点过提交的记录，不自动提交普通草稿。
+                    await submitVisit({ preventDefault() {} });
+                } else {
+                    showRestoreNotice();
+                    renderDraftSaveStatus("上次记录已恢复，可继续完成提交");
+                }
+            } catch (error) {
+                if (owner !== currentStorageOwner() || id !== state.submission.clientSubmissionId) return;
+                renderDraftSaveStatus("提交结果暂未核实 · 原记录已保留", true);
+                showError(errorMessage(error, "网络未恢复，请稍后核对提交结果"));
+            }
+        })();
+        try { await recoveryInFlight; } finally { recoveryInFlight = null; }
+    }
+
+    function persistDraft() {
+        const payload = snapshotDraft();
+        try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload)); } catch (_) {}
+        const owner = currentStorageOwner();
+        if (!owner || !window.SalesCheckinDraftStore) return Promise.resolve(false);
+        renderDraftSaveStatus("正在保存…");
+        state.persistence = state.persistence.then(async () => {
+            await window.SalesCheckinDraftStore.save(owner, payload);
+            if (owner === currentStorageOwner() && state.submission.clientSubmissionId === payload.submission.clientSubmissionId) {
+                state.lastSavedFingerprint = draftFingerprint(payload);
+                renderDraftSaveStatus(["SUBMITTED", "COMPLETED"].includes(payload.submission.status)
+                    ? hasPendingEvidence(payload) ? "已提交 · 证据待补传" : "已提交"
+                    : payload.submission.syncRequested ? "本机已保存 · 待同步" : "本机已保存");
+            }
+            return true;
+        }).catch(() => { renderDraftSaveStatus("本机未保存 · 请保留页面并提交", true); return false; });
+        return state.persistence;
+    }
+
+    function restoreDraft(snapshot = null) {
         let raw;
         try {
             // 清理旧版本曾写入的长期敏感草稿；新版本只在当前标签页保存并设置有效期。
             localStorage.removeItem(STORAGE_KEY);
-            raw = sessionStorage.getItem(STORAGE_KEY);
+            raw = snapshot ? JSON.stringify(snapshot) : sessionStorage.getItem(STORAGE_KEY);
         } catch (_) {
             return;
         }
@@ -5158,7 +5393,7 @@
         const savedAt = Date.parse(saved?.savedAt || "");
         const age = Date.now() - savedAt;
         if (!saved || saved.version !== STORAGE_VERSION || !Number.isFinite(savedAt)
-            || age < -5 * 60 * 1000 || age > DRAFT_TTL_MS) {
+            || age < -5 * 60 * 1000 || age > (snapshot ? 7 * 24 * 60 * 60 * 1000 : DRAFT_TTL_MS)) {
             removeStoredDraft();
             return;
         }
@@ -5183,7 +5418,7 @@
             let uploadState = cleanText(rawSegment.uploadState).toUpperCase();
             if (["UPLOADING", "DELETING"].includes(uploadState)) uploadState = "UNKNOWN";
             if (["LOCAL", "ERROR"].includes(uploadState)) uploadState = "NEEDS_FILE";
-            if (!["UPLOADED", "UNKNOWN", "NEEDS_FILE", "SKIPPED"].includes(uploadState)) {
+            if (!["UPLOADED", "UNKNOWN", "NEEDS_FILE", "SKIPPED", "TOO_LARGE"].includes(uploadState)) {
                 uploadState = "NEEDS_FILE";
             }
             const mayExistRemotely = rawSegment.mayExistRemotely === true
@@ -5198,8 +5433,10 @@
                     rawSegment.clientDurationMs ?? rawSegment.durationMs),
                 fileLastModifiedAt: normalizeOptionalInstant(rawSegment.fileLastModifiedAt),
                 uploadState,
+                uploadErrorStatus: rawSegment.uploadErrorStatus === 413 ? 413 : null,
                 mayExistRemotely,
-                errorMessage: uploadState === "SKIPPED"
+                errorMessage: uploadState === "TOO_LARGE" ? optionalUploadFailureMessage({status: 413}, "录音")
+                    : uploadState === "SKIPPED"
                     ? mayExistRemotely
                         ? "上传结果未确认，服务端可能已收到；不影响本次打卡"
                         : "已跳过此段，不影响本次打卡"
@@ -5270,52 +5507,14 @@
             invalidateExpiredRestoredLocation("visit");
             invalidateExpiredRestoredLocation("store");
         }
-        if (!isBusinessLocked() && !locationFlowReady(state.visit.locationContext)) {
-            state.visit.selectedStore = null;
-            state.visit.nearbyStores = [];
-            state.visit.directoryStores = [];
-        }
         state.store.sourcePoiToken = cleanText(state.store.sourcePoiToken);
         state.store.sourcePoiId = cleanText(state.store.sourcePoiId);
         state.store.sourcePoiLongitude = finiteNumberOrNull(state.store.sourcePoiLongitude);
         state.store.sourcePoiLatitude = finiteNumberOrNull(state.store.sourcePoiLatitude);
-        const restoredLookupStatus = cleanText(state.store.poiSearchLookupStatus);
-        const restoredUnverifiedLocation = locationExceptionReady(state.store.locationContext);
-        if (restoredUnverifiedLocation) {
+        if (state.store.sourceMode === "POI" && (!state.store.sourcePoiId || !state.store.sourcePoiToken)) {
             state.store.sourceMode = "MANUAL";
-            state.store.nearbyPois = [];
-            state.store.sourcePoiToken = "";
-            state.store.sourcePoiId = "";
-            state.store.sourcePoiName = "";
-            state.store.sourcePoiAddress = "";
-            state.store.sourcePoiLongitude = null;
-            state.store.sourcePoiLatitude = null;
-            state.store.poiSearchLookupStatus = "UNAVAILABLE";
         }
-        const manualAuthorized = restoredUnverifiedLocation
-            || restoredLookupStatus === "EMPTY" || restoredLookupStatus === "UNAVAILABLE";
-        if (state.store.sourceMode === "POI"
-            && (!state.store.sourcePoiId || !state.store.sourcePoiToken)) {
-            state.store.sourceMode = "";
-            state.store.sourcePoiToken = "";
-            state.store.sourcePoiId = "";
-            state.store.sourcePoiName = "";
-            state.store.sourcePoiAddress = "";
-            state.store.sourcePoiLongitude = null;
-            state.store.sourcePoiLatitude = null;
-        }
-        if (state.store.sourceMode === "MANUAL" && !manualAuthorized) {
-            state.store.sourceMode = "";
-        }
-        state.store.manualEntryToken = cleanText(state.store.manualEntryToken);
-        state.store.manualEntryAllowed = state.store.sourceMode === "MANUAL"
-            && manualAuthorized
-            && (restoredUnverifiedLocation
-                || Boolean(state.store.manualEntryToken));
-        if (!state.store.manualEntryAllowed) {
-            state.store.poiSearchLookupStatus = null;
-            state.store.manualEntryToken = "";
-        }
+        state.store.manualEntryAllowed = true;
         if (!state.store.clientStoreId) state.store.clientStoreId = secureUuid();
         if (!state.submission.clientSubmissionId) state.submission.clientSubmissionId = secureUuid();
         if (!state.submission.submissionKey || state.submission.submissionKey.length < 32) {
@@ -5327,30 +5526,23 @@
             state.ui.visitStep = 3;
         }
         state.restoredAt = saved.savedAt || null;
+        state.restoredLocalMediaIds = saved.localMediaIds || [];
     }
 
     function hasRestoredDraft() {
-        return Boolean(state.restoredAt);
+        return Boolean(state.restoredAt && (state.visit.selectedStore || state.visit.customerName
+            || state.visit.visitResult || state.store.name || state.files.photo || state.files.wechat
+            || state.submission.serverId || state.submission.audioSegments.length || state.restoredLocalMediaIds?.length));
     }
 
     function showRestoreNotice() {
-        const uploadedAudio = state.submission.audioSegments
-            .filter((segment) => segment.uploadState === "UPLOADED").length;
-        const pendingAudio = state.submission.audioSegments
-            .filter((segment) => !["UPLOADED", "SKIPPED"].includes(segment.uploadState)).length;
-        const uploaded = new Set(state.submission.uploadedMedia).size + uploadedAudio;
-        const pending = state.submission.mediaUploadAttempts
-            .filter((item) => !state.submission.uploadedMedia.includes(item)).length + pendingAudio;
-        let message = `已恢复 ${formatDateTime(state.restoredAt)} 保存的表单。`;
-        if (isBusinessLocked()) {
-            message += uploaded
-                ? ` 业务信息已锁定，服务端草稿和 ${uploaded} 个已上传文件会继续复用。刷新前未上传的文件需重新选择。`
-                : state.submission.serverId
-                    ? " 业务信息已锁定，服务端草稿会继续复用；照片、截图和录音需重新选择后上传。"
-                    : " 首次草稿响应未确认，业务信息已锁定；重试会使用完全相同的内容恢复服务端草稿。";
-            if (pending) message += ` ${pending} 个文件的上次上传结果未确认，可重新选择后重试。`;
-        }
-        $("#restore-notice strong").textContent = "已恢复未完成草稿";
+        if (!hasRestoredDraft()) { $("#restore-notice").hidden = true; return; }
+        const files = Number(Boolean(state.files.photo)) + Number(Boolean(state.files.wechat)) + state.files.audio.length;
+        const message = state.submission.syncState === "UNKNOWN"
+            ? "上次提交结果待确认，重试会先查询回执"
+            : files ? `表单和 ${files} 个本机文件已恢复，可继续填写`
+                : "表单已恢复，可继续填写";
+        $("#restore-notice strong").textContent = "已恢复未完成记录";
         $("#restore-message").textContent = message;
         $("#discard-draft-button").hidden = false;
         $("#restore-notice").hidden = false;
@@ -5420,19 +5612,10 @@
 
     function invalidateExpiredRestoredLocation(scope) {
         const location = state[scope].location;
-        const context = state[scope].locationContext;
-        if (locationExceptionReady(context)) return;
-        const capturedAt = Date.parse(location?.capturedAt || "");
-        const maxAgeMinutes = Number(context?.maxLocationAgeMinutes);
-        if (!location || !context || !Number.isFinite(capturedAt) || !Number.isFinite(maxAgeMinutes)) return;
-        if (Date.now() - capturedAt <= maxAgeMinutes * 60 * 1000) return;
-        const message = "定位已过期，请重新获取当前位置。";
-        state[scope].locationContext = {
-            ...context,
-            freshnessAccepted: false,
-            locationMessage: message,
-            errorMessage: message
-        };
+        if (!location) return;
+        const time = Date.parse(location.capturedAt || "");
+        if (!Number.isFinite(time)) location.timeStatus = "UNKNOWN";
+        else if (Date.now() - time > GEOLOCATION_FRESH_MAX_AGE_MS) location.timeStatus = "STALE";
     }
 
     function removeStoredDraft() {
@@ -5523,16 +5706,9 @@
             });
             const response = await Promise.race([request, timeoutPromise]);
             const text = await response.text();
-            let payload = null;
-            if (text) {
-                try {
-                    payload = JSON.parse(text);
-                } catch (_) {
-                    payload = { message: text.slice(0, 300) };
-                }
-            }
+            const payload = parseResponsePayload(text);
             if (!response.ok) {
-                const error = new Error(extractApiMessage(payload) || `请求失败（HTTP ${response.status}）`);
+                const error = new Error(extractApiMessage(payload) || friendlyHttpError(response.status));
                 error.status = response.status;
                 error.payload = payload;
                 throw error;
@@ -5573,7 +5749,7 @@
                     resolve(payload);
                     return;
                 }
-                const error = new Error(extractApiMessage(payload) || `请求失败（HTTP ${xhr.status}）`);
+                const error = new Error(extractApiMessage(payload) || friendlyHttpError(xhr.status));
                 error.status = xhr.status;
                 error.payload = payload;
                 reject(error);
@@ -5596,12 +5772,13 @@
     }
 
     function extractApiMessage(payload) {
-        if (!payload) return "";
-        if (typeof payload === "string") return payload;
-        if (typeof payload.message === "string" && payload.message.trim()) return payload.message.trim();
-        if (typeof payload.error?.message === "string") return payload.error.message;
-        if (Array.isArray(payload.details) && payload.details[0]?.message) return payload.details[0].message;
-        return "";
+        if (!payload || typeof payload !== "object") return "";
+        const candidate = typeof payload.message === "string" ? payload.message
+            : typeof payload.error?.message === "string" ? payload.error.message
+                : Array.isArray(payload.details) && typeof payload.details[0]?.message === "string"
+                    ? payload.details[0].message : "";
+        if (/<(?:!doctype|html|head|body|script|style|title|pre)\b/i.test(candidate)) return "";
+        return candidate.trim().slice(0, 240);
     }
 
     function showError(message) {
@@ -5663,182 +5840,10 @@
         return Number.isFinite(number) ? number : null;
     }
 
-    function roundCoordinate(value) {
-        return Number(Number(value).toFixed(7));
-    }
-
-    function roundAccuracy(value) {
-        return Number(Number(value).toFixed(2));
-    }
-
-    function numericGeolocationTimestamp(value) {
-        if (typeof value === "number") return Number.isFinite(value) && value !== 0 ? value : null;
-        if (typeof value !== "string" || !value.trim()) return null;
-        const numeric = Number(value.trim());
-        return Number.isFinite(numeric) && numeric !== 0 ? numeric : null;
-    }
-
-    function uniqueTimestampCandidates(candidates) {
-        const seen = new Set();
-        return candidates.filter((candidate) => {
-            if (!Number.isFinite(candidate.value)) return false;
-            const key = Math.round(candidate.value * 1000) / 1000;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
-    }
-
-    function epochTimestampCandidates(value) {
-        const numeric = numericGeolocationTimestamp(value);
-        if (numeric !== null) {
-            return uniqueTimestampCandidates([
-                { value: numeric, source: "EPOCH_MILLISECONDS", clockScale: 1 },
-                { value: numeric * 1000, source: "EPOCH_SECONDS", clockScale: 1000 },
-                { value: numeric / 1000, source: "EPOCH_MICROSECONDS", clockScale: 0.001 },
-                { value: numeric / 1000000, source: "EPOCH_NANOSECONDS", clockScale: 0.000001 },
-                { value: numeric + APPLE_REFERENCE_EPOCH_OFFSET_MS,
-                    source: "APPLE_MILLISECONDS", clockScale: 1 },
-                { value: numeric * 1000 + APPLE_REFERENCE_EPOCH_OFFSET_MS,
-                    source: "APPLE_SECONDS", clockScale: 1000 },
-                { value: numeric / 1000 + APPLE_REFERENCE_EPOCH_OFFSET_MS,
-                    source: "APPLE_MICROSECONDS", clockScale: 0.001 },
-                { value: numeric / 1000000 + APPLE_REFERENCE_EPOCH_OFFSET_MS,
-                    source: "APPLE_NANOSECONDS", clockScale: 0.000001 }
-            ]);
-        }
-        const parsed = typeof value === "string" ? Date.parse(value) : NaN;
-        return Number.isFinite(parsed)
-            ? [{ value: parsed, source: "DATE_STRING", clockScale: 1 }] : [];
-    }
-
-    function monotonicTimestampCandidates(value) {
-        const numeric = numericGeolocationTimestamp(value);
-        if (numeric === null) return [];
-        return uniqueTimestampCandidates([
-            { value: numeric, source: "MONOTONIC_MILLISECONDS", clockScale: 1 },
-            { value: numeric * 1000, source: "MONOTONIC_SECONDS", clockScale: 1000 },
-            { value: numeric / 1000, source: "MONOTONIC_MICROSECONDS", clockScale: 0.001 },
-            { value: numeric / 1000000, source: "MONOTONIC_NANOSECONDS", clockScale: 0.000001 }
-        ]);
-    }
-
-    function plausibleMonotonicClockScales(value) {
-        return monotonicTimestampCandidates(value)
-            .filter((candidate) => candidate.value >= 0
-                && candidate.value <= GEOLOCATION_MAX_MONOTONIC_UPTIME_MS)
-            .map((candidate) => candidate.clockScale);
-    }
-
-    function assessGeolocationTimestamp(value, referenceMs, pastWindowMs) {
-        if (!Number.isFinite(referenceMs) || !Number.isFinite(pastWindowMs) || pastWindowMs < 0) {
-            return { capturedAtMs: null, kind: "UNSUPPORTED" };
-        }
-        const minimum = referenceMs - pastWindowMs;
-        const maximum = referenceMs + LOCATION_CAPTURE_FUTURE_SKEW_MS;
-        const epochCandidates = epochTimestampCandidates(value);
-        const freshEpoch = epochCandidates
-            .filter((candidate) => candidate.value >= minimum && candidate.value <= maximum)
-            .sort((left, right) => Math.abs(referenceMs - left.value)
-                - Math.abs(referenceMs - right.value));
-        if (freshEpoch.length) {
-            return {
-                capturedAtMs: freshEpoch[0].value,
-                kind: freshEpoch[0].source === "EPOCH_MILLISECONDS" ? "FRESH" : "NORMALIZED"
-            };
-        }
-
-        const plausibleEpochMinimum = Date.UTC(2000, 0, 1);
-        const hasPlausibleEpoch = epochCandidates.some((candidate) =>
-            candidate.value >= plausibleEpochMinimum
-                && candidate.value <= referenceMs + 10 * 365.25 * 24 * 60 * 60 * 1000);
-        return {
-            capturedAtMs: null,
-            kind: hasPlausibleEpoch ? "STALE" : "UNSUPPORTED"
-        };
-    }
-
-    function resolveGeolocationCapturedAtMs(value, referenceMs, pastWindowMs) {
-        return assessGeolocationTimestamp(value, referenceMs, pastWindowMs).capturedAtMs;
-    }
-
-    function resolveAdvancingGeolocationClockCapturedAtMs(previous, current) {
-        const receiptElapsedMs = Number(current?.receivedAtMs) - Number(previous?.receivedAtMs);
-        if (!Number.isFinite(receiptElapsedMs)
-                || receiptElapsedMs < GEOLOCATION_CLOCK_PROGRESS_MIN_MS
-                || receiptElapsedMs > GEOLOCATION_REFRESH_TIMEOUT_MS + GEOLOCATION_ATTEMPT_TIMEOUT_MS) {
-            return null;
-        }
-        const previousRaw = numericGeolocationTimestamp(previous?.value)
-            ?? (typeof previous?.value === "string" ? Date.parse(previous.value) : NaN);
-        const currentRaw = numericGeolocationTimestamp(current?.value)
-            ?? (typeof current?.value === "string" ? Date.parse(current.value) : NaN);
-        if (!Number.isFinite(previousRaw) || !Number.isFinite(currentRaw)) return null;
-        const currentScales = new Set(plausibleMonotonicClockScales(current?.value));
-        const clockScales = plausibleMonotonicClockScales(previous?.value)
-            .filter((clockScale) => currentScales.has(clockScale));
-        const minimumSourceProgressMs = Math.max(
-            GEOLOCATION_CLOCK_PROGRESS_MIN_MS, receiptElapsedMs * 0.5);
-        const maximumSourceProgressMs = Math.max(1000, receiptElapsedMs * 2);
-        const clockAdvanced = clockScales.some((clockScale) => {
-            const sourceElapsedMs = (currentRaw - previousRaw) * clockScale;
-            return sourceElapsedMs >= minimumSourceProgressMs
-                && sourceElapsedMs <= maximumSourceProgressMs;
-        });
-        return clockAdvanced && Number.isFinite(Number(current.receivedAtMs))
-            ? Number(current.receivedAtMs) : null;
-    }
-
-    function resolveCompatibleGeolocationCapturedAtMs({
-        capturedAtMs,
-        compatibleAttempted,
-        visibilityState,
-        receivedAtMs,
-        captureDeadlineMs
-    }) {
-        if (capturedAtMs !== null) {
-            return Number.isFinite(Number(capturedAtMs)) ? Number(capturedAtMs) : null;
-        }
-        // 部分手机 WebView 会返回持续不变的旧时间戳；仅在已进入兼容定位且页面仍在前台时，
-        // 使用当前回调的接收时间。精度、位置凭证和300米门店范围仍由服务端继续校验。
-        if (!compatibleAttempted || visibilityState === "hidden") {
-            return null;
-        }
-        if (!Number.isFinite(Number(receivedAtMs))
-                || !Number.isFinite(Number(captureDeadlineMs))
-                || Number(receivedAtMs) >= Number(captureDeadlineMs)) {
-            return null;
-        }
-        return Number(receivedAtMs);
-    }
-
-    function repairRestoredGeolocationTimestamp(scope, savedAtMs) {
+    function repairRestoredGeolocationTimestamp(scope) {
         const location = state[scope].location;
-        if (locationExceptionReady(state[scope].locationContext)) return;
         if (!location) return;
-        const raw = Date.parse(location.capturedAt || "");
-        const repaired = location.capturedAt
-            ? resolveGeolocationCapturedAtMs(location.capturedAt, savedAtMs, DRAFT_TTL_MS)
-            : null;
-        if (repaired === null) {
-            state[scope].location = null;
-            state[scope].locationContext = null;
-        } else if (!Number.isFinite(raw) || repaired !== raw) {
-            location.capturedAt = new Date(repaired).toISOString();
-            state[scope].locationContext = null;
-        } else {
-            return;
-        }
-        if (scope === "visit") {
-            state.visit.nearbyStores = [];
-        } else {
-            state.store.nearbyPois = [];
-            state.store.poiSearchResults = null;
-            state.store.poiSearchLookupStatus = null;
-            state.store.poiSearchQuery = "";
-            state.store.manualEntryAllowed = false;
-            state.store.manualEntryToken = "";
-        }
+        if (!location.rawTimestamp) location.timeStatus = "UNKNOWN";
     }
 
     function stopGeolocationRefresh(scope) {
@@ -5850,19 +5855,13 @@
         const timeoutId = state.geolocationTimeoutIds[scope];
         if (timeoutId !== null) window.clearTimeout(timeoutId);
         state.geolocationTimeoutIds[scope] = null;
-        const continueId = state.geolocationContinueIds[scope];
-        if (continueId !== null) window.clearTimeout(continueId);
-        state.geolocationContinueIds[scope] = null;
-        const lifecycleCleanup = state.geolocationLifecycleCleanups[scope];
-        if (typeof lifecycleCleanup === "function") lifecycleCleanup();
-        state.geolocationLifecycleCleanups[scope] = null;
     }
 
     function cancelLocationCapture(scope) {
         state.locationCaptureSequence[scope] += 1;
         stopGeolocationRefresh(scope);
         if (state[scope].locationContext?.geocodeStatus === "CAPTURING") {
-            state[scope].locationContext = null;
+            state[scope].locationContext = { ...state[scope].locationContext, geocodeStatus: "IDLE" };
         }
         const button = $(`#${scope}-location-button`);
         if (button) {
@@ -5889,11 +5888,11 @@
         if (!value) return "";
         const date = new Date(value);
         if (Number.isNaN(date.getTime())) return String(value);
-        return new Intl.DateTimeFormat("zh-CN", {
-            year: "numeric", month: "2-digit", day: "2-digit",
-            hour: "2-digit", minute: "2-digit", second: "2-digit",
-            hour12: false
-        }).format(date);
+        const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+            timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+            hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+        }).formatToParts(date).map(part => [part.type, part.value]));
+        return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
     }
 
     function formatFilenameTime(date) {

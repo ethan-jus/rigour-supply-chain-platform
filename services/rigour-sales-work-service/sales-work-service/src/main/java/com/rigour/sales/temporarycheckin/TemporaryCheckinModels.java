@@ -20,7 +20,8 @@ public final class TemporaryCheckinModels {
             String salespersonName,
             String city,
             Instant expiresAt,
-            boolean enforcementEnabled) { }
+            boolean enforcementEnabled,
+            UUID tenantId) { }
 
     /**
      * 客户端关键阶段诊断事件。只接收枚举化状态和计数，不接收查询词、文件名、坐标或媒体内容。
@@ -43,14 +44,48 @@ public final class TemporaryCheckinModels {
             List<String> intendedBusinesses,
             List<String> cooperationIntents,
             List<String> storeGrades,
-            List<String> storeTags) { }
+            List<String> storeTags,
+            long maxAudioBytes) { }
 
     public record LocationCommand(
             BigDecimal longitude,
             BigDecimal latitude,
             BigDecimal accuracyMeters,
             Instant capturedAt,
-            String note) { }
+            String note,
+            String rawTimestamp,
+            Instant receivedAt,
+            String source,
+            String timeStatus,
+            Boolean userReportedInaccurate) {
+        public LocationCommand(BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
+                Instant capturedAt, String note) {
+            this(longitude, latitude, accuracyMeters, capturedAt, note, null, null,
+                    "BROWSER_GEOLOCATION", capturedAt == null ? "UNKNOWN" : "KNOWN", false);
+        }
+    }
+
+    /** 服务器回执与可追加证据期限；不包含提交密钥或对象存储地址。 */
+    public record SubmissionReceipt(UUID id, UUID clientSubmissionId, String status,
+            String storeName, String city, Instant createdAt, Instant submittedAt,
+            List<String> uploadedMedia, List<UUID> audioSegmentIds, Instant supplementUntil,
+            String visitResult, Long audioDurationMs) { }
+
+    public record SubmissionReceiptPage(List<SubmissionReceipt> items, int page, int size,
+            long totalElements, int totalPages) { }
+
+    /** 本人历史详情仅返回业务事实与受鉴权媒体路径，不包含后台风险信息或写入凭据。 */
+    public record OwnSubmissionDetail(UUID id, UUID clientSubmissionId, String status, String city,
+            UUID salespersonId, String salespersonName, UUID storeId, String storeName,
+            String customerName, String customerPhone, String visitResult, Instant createdAt, Instant submittedAt,
+            Instant supplementUntil, boolean canSupplement, String locationQuality, Instant locationCapturedAt,
+            String locationRawTimestamp, Instant locationReceivedAt, String locationSource, String locationAddress,
+            String locationNote, BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
+            BigDecimal storeLongitude, BigDecimal storeLatitude, BigDecimal distanceMeters, List<OwnMediaView> media) { }
+
+    public record OwnMediaView(String mediaId, String kind, String originalFilename, String contentType,
+            long sizeBytes, Instant uploadedAt, Long parsedDurationMs, String playbackStatus,
+            String thumbnailUrl, String playbackUrl, String originalUrl) { }
 
     public record CreateStoreRequest(
             UUID clientStoreId,

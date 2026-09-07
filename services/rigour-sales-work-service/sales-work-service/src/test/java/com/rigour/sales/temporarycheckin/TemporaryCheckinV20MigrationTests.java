@@ -10,7 +10,7 @@ import java.util.UUID;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.Test;
-import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.junit.jupiter.Container;
@@ -97,13 +97,15 @@ class TemporaryCheckinV20MigrationTests {
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, STORE_WITHOUT_LOCATION_ID.toString(), TENANT_ID.toString(),
                 STORE_WITHOUT_LOCATION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
         assertThatThrownBy(() -> jdbc.update("""
                 UPDATE temp_sales_checkin_store
                    SET location_verification_status='VERIFIED'
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, TENANT_ID.toString(), STORE_WITHOUT_LOCATION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
 
         jdbc.update("""
                 UPDATE temp_sales_checkin_store
@@ -126,13 +128,15 @@ class TemporaryCheckinV20MigrationTests {
                    SET location_failure_reason=NULL
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, TENANT_ID.toString(), STORE_WITHOUT_LOCATION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
         assertThatThrownBy(() -> jdbc.update("""
                 UPDATE temp_sales_checkin_store
                    SET location_attempt_id=NULL
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, TENANT_ID.toString(), STORE_WITHOUT_LOCATION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
 
         jdbc.update("""
                 UPDATE temp_sales_checkin_store
@@ -145,7 +149,8 @@ class TemporaryCheckinV20MigrationTests {
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, STORE_WITH_LOCATION_ID.toString(), TENANT_ID.toString(),
                 STORE_WITH_LOCATION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
 
         jdbc.update("""
                 UPDATE temp_sales_checkin_store
@@ -161,7 +166,8 @@ class TemporaryCheckinV20MigrationTests {
                    SET location_failure_reason='UNKNOWN_FAILURE'
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, TENANT_ID.toString(), STORE_WITH_LOCATION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
     }
 
     private static void assertSubmissionVerificationContract(JdbcTemplate jdbc) {
@@ -170,13 +176,15 @@ class TemporaryCheckinV20MigrationTests {
                    SET location_failure_reason='TIMEOUT', location_attempt_id=UUID_TO_BIN(?)
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, SUBMISSION_ID.toString(), TENANT_ID.toString(), SUBMISSION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
         assertThatThrownBy(() -> jdbc.update("""
                 UPDATE temp_sales_checkin_submission
                    SET longitude=NULL, latitude=NULL, accuracy_meters=NULL, location_captured_at=NULL
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, TENANT_ID.toString(), SUBMISSION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
 
         jdbc.update("""
                 UPDATE temp_sales_checkin_submission
@@ -220,19 +228,22 @@ class TemporaryCheckinV20MigrationTests {
                    SET longitude=116.3971280
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, TENANT_ID.toString(), SUBMISSION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
         assertThatThrownBy(() -> jdbc.update("""
                 UPDATE temp_sales_checkin_submission
                    SET location_failure_reason='UNKNOWN_FAILURE'
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, TENANT_ID.toString(), SUBMISSION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
         assertThatThrownBy(() -> jdbc.update("""
                 UPDATE temp_sales_checkin_submission
                    SET location_attempt_id=NULL
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, TENANT_ID.toString(), SUBMISSION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
 
         jdbc.update("""
                 UPDATE temp_sales_checkin_submission
@@ -251,7 +262,8 @@ class TemporaryCheckinV20MigrationTests {
                    SET location_failure_reason='TIMEOUT', location_attempt_id=UUID_TO_BIN(?)
                  WHERE tenant_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
                 """, SUBMISSION_ID.toString(), TENANT_ID.toString(), SUBMISSION_ID.toString()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("Check constraint");
     }
 
     private static void seedV19Catalog(JdbcTemplate jdbc) {

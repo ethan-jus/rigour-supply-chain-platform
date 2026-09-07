@@ -16,6 +16,7 @@ import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.SearchNewStoreRe
 import com.rigour.sales.temporarycheckin.TemporaryCheckinModels.StoreView;
 import java.util.List;
 import java.util.UUID;
+import java.time.LocalDate;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
@@ -98,8 +99,11 @@ public class TemporaryCheckinController {
     public List<StoreView> stores(
             @RequestParam(name = "city") String city,
             @RequestParam(name = "q") String query,
-            @RequestParam(name = "limit", required = false) Integer limit) {
-        return service.searchStores(city, query, limit);
+            @RequestParam(name = "limit", required = false) Integer limit,
+            @RequestParam(name = "salespersonId", required = false) UUID salespersonId,
+            HttpServletRequest servletRequest) {
+        return service.searchAuthorizedStores(city, query, limit, salespersonId,
+                TemporaryCheckinRequestFacts.from(servletRequest));
     }
 
     @PostMapping("/stores")
@@ -190,6 +194,57 @@ public class TemporaryCheckinController {
             HttpServletRequest servletRequest) {
         return service.deleteDraftAudioSegment(submissionId, segmentId, submissionKey,
                 TemporaryCheckinRequestFacts.from(servletRequest));
+    }
+
+    @GetMapping("/submissions/by-client/{clientSubmissionId}")
+    public TemporaryCheckinModels.SubmissionReceipt receipt(
+            @PathVariable("clientSubmissionId") UUID clientId,
+            @RequestHeader(name = "X-Submission-Key", required = false) String key,
+            HttpServletRequest request) {
+        return service.receiptByClient(clientId, key, TemporaryCheckinRequestFacts.from(request));
+    }
+
+    @GetMapping("/submissions/mine")
+    public ResponseEntity<TemporaryCheckinModels.SubmissionReceiptPage> ownReceipts(
+            @RequestParam(name = "salespersonId", required = false) UUID salespersonId,
+            @RequestParam(name = "dateFrom", required = false) LocalDate dateFrom,
+            @RequestParam(name = "dateTo", required = false) LocalDate dateTo,
+            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "sortDir", required = false) String sortDir,
+            @RequestParam(name = "page", required = false) Integer page,
+            @RequestParam(name = "size", required = false) Integer size,
+            HttpServletRequest request) {
+        return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "private, no-store")
+                .body(service.ownReceipts(salespersonId, dateFrom, dateTo, status, sortDir, page, size,
+                        TemporaryCheckinRequestFacts.from(request)));
+    }
+
+    @GetMapping("/submissions/{id}/mine")
+    public ResponseEntity<TemporaryCheckinModels.OwnSubmissionDetail> ownSubmission(
+            @PathVariable("id") UUID submissionId, HttpServletRequest request) {
+        return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "private, no-store")
+                .body(service.ownSubmission(submissionId, TemporaryCheckinRequestFacts.from(request)));
+    }
+
+    @GetMapping("/submissions/{id}/mine/media/{mediaId}")
+    public ResponseEntity<?> ownMedia(
+            @PathVariable("id") UUID submissionId,
+            @PathVariable("mediaId") String mediaId,
+            @RequestParam(name = "variant", defaultValue = "original") String variant,
+            @RequestParam(name = "download", defaultValue = "false") boolean download,
+            @RequestHeader(name = HttpHeaders.RANGE, required = false) String rangeHeader,
+            HttpServletRequest request) {
+        return TemporaryCheckinMediaResponses.respond(service.ownMedia(submissionId, mediaId, variant,
+                TemporaryCheckinRequestFacts.from(request)), rangeHeader, download);
+    }
+
+    /** Route conversion failures are caller errors, not the platform's generic 500 response. */
+    @org.springframework.web.bind.annotation.ExceptionHandler(
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    ResponseEntity<TemporaryCheckinModels.ErrorResponse> invalidParameter() {
+        return ResponseEntity.badRequest().header(HttpHeaders.CACHE_CONTROL, "private, no-store")
+                .body(new TemporaryCheckinModels.ErrorResponse("TEMP_CHECKIN_BAD_REQUEST",
+                        "参数格式无效，请检查日期、编号和分页"));
     }
 
     @PostMapping("/submissions/{id}/complete")

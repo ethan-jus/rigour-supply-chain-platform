@@ -6,8 +6,9 @@ spring:
     name: rigour-sales-work-service
   servlet:
     multipart:
-      max-file-size: 100MB
-      max-request-size: 105MB
+      file-size-threshold: 0B
+      max-file-size: 256MB
+      max-request-size: 260MB
 
 management:
   endpoints:
@@ -48,14 +49,14 @@ rigour:
       tenant-id: ${RIGOUR_SALES_TEMPORARY_CHECKIN_TENANT_ID:}
       max-storefront-photo-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_STOREFRONT_PHOTO_BYTES:10485760}
       max-wechat-screenshot-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_WECHAT_SCREENSHOT_BYTES:10485760}
-      max-audio-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_BYTES:104857600}
+      max-audio-bytes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_BYTES:268435456}
       max-audio-segments-per-submission: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_SEGMENTS_PER_SUBMISSION:20}
       max-audio-total-bytes-per-submission: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_TOTAL_BYTES_PER_SUBMISSION:1073741824}
-      # 公开页面不是身份认证；距离门禁仅降低远程误打卡风险。
+      # 设备位置不构成身份认证；300米仅作为后台复核阈值。
       max-checkin-distance-meters: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_DISTANCE_METERS:300}
-      # 室内 WebView 常退化为约250米网络定位；放宽精度门槛，但门店距离仍单独限制在300米。
+      # 以下精度/新鲜度保留给地图候选凭证；拜访留档本身不受定位阻断。
       max-checkin-accuracy-meters: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_ACCURACY_METERS:300}
-      # 定位新鲜度窗口；超过窗口时要求重新定位，避免复用长时间前的位置。
+      # 地图候选凭证的新鲜度窗口；原始拜访位置仍保真记录。
       max-location-age-minutes: ${RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_LOCATION_AGE_MINUTES:60}
       # 姓名下拉不是身份；默认强制销售用个人码首次绑定当前浏览器。
       identity-enforcement-enabled: ${RIGOUR_SALES_TEMPORARY_CHECKIN_IDENTITY_ENFORCEMENT_ENABLED:true}

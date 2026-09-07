@@ -119,6 +119,7 @@ final class TemporaryCheckinDeletionService {
     private void deleteCandidate(DeletionCandidateRow candidate) {
         LinkedHashSet<String> objectKeys = new LinkedHashSet<>(candidate.projectedObjectKeys());
         objectKeys.addAll(activeAudioObjectKeys(candidate.audioSegmentsJson()));
+        objectKeys.addAll(repository.derivedObjectKeys(tenantId, candidate.id()));
         for (String objectKey : objectKeys) {
             requireOwnedObjectKey(candidate.id(), objectKey);
             fileStorage.delete(tenantId.toString(), objectKey);

@@ -5,6 +5,9 @@
     const EXPORT_PATH = "/sales-checkin/admin/export.csv";
     const MEDIA_PATH = "/sales-checkin/admin/submissions";
     const PAGE_SIZE = 20;
+    const SORT_LABELS = { completedAt: "打卡时间", cityName: "城市", salespersonName: "销售", storeName: "门店" };
+    const LOCATION_LABELS = { GOOD: "定位新鲜", LOW_ACCURACY: "低精度", STALE: "位置过期", TIME_UNKNOWN: "采样时间未知", MISSING: "未取得位置", USER_REPORTED: "销售报告异常", OUT_OF_RANGE: "超出门店范围", STORE_UNLOCATED: "门店未定位", LEGACY: "历史位置" };
+    const REVIEW_LABELS = { PENDING: "待复核", APPROVED: "已核实拜访", FOLLOW_UP: "需补充说明", FLAGGED: "异常已确认" };
 
     const state = {
         scope: {
@@ -20,7 +23,8 @@
         salespersons: [],
         mediaStats: null,
         audioIntelligenceEnabled: false,
-        filters: { q: "", from: "", to: "", city: "", salespersonId: "", status: "", visitType: "" },
+        filters: { q: "", from: "", to: "", city: "", salespersonId: "", status: "", visitType: "",
+            locationStatus: "", reviewStatus: "", mediaStatus: "", sortBy: "completedAt", sortDirection: "desc" },
         page: 0,
         total: 0,
         firstVisitTotal: 0,
@@ -34,6 +38,11 @@
         activeView: "records",
         detailId: null,
         detailTrigger: null,
+        detailScroll: null,
+        reviewBusy: false,
+        reviewRequest: null,
+        reviewController: null,
+        activeAudio: null,
         previewTrigger: null,
         previewIdentity: null,
         pendingDelete: null,
@@ -124,6 +133,19 @@
             const currentSalesperson = $("#filter-salesperson").value;
             renderSalespersonOptions($("#filter-city").value, currentSalesperson);
         });
+        document.querySelectorAll("[data-sort-by]").forEach((button) => {
+            button.addEventListener("click", () => changeSort(button.dataset.sortBy));
+        });
+        $("#review-form").addEventListener("submit", saveReview);
+        $("#shared-audio-close").addEventListener("click", stopSharedAudio);
+        $("#shared-audio-segment").addEventListener("change", (event) => {
+            if (state.activeAudio) playAudioSegment(state.activeAudio.item, event.target.value);
+        });
+        $("#shared-audio").addEventListener("loadedmetadata", updatePlayingDuration);
+        $("#shared-audio").addEventListener("error", () => {
+            if (!state.activeAudio) return;
+            $("#shared-audio-status").textContent = "暂时无法播放：会话可能失效、文件不可用或浏览器不支持此格式。可重试播放或下载原录音。";
+        });
         $("#reset-button").addEventListener("click", resetFilters);
         $("#retry-button").addEventListener("click", loadSubmissions);
         $("#success-close-button").addEventListener("click", hideSuccess);
@@ -135,7 +157,9 @@
         $("#submission-detail-dialog").addEventListener("click", (event) => {
             if (event.target === event.currentTarget) closeSubmissionDetail();
         });
-        $("#submission-detail-dialog").addEventListener("close", cleanupSubmissionDetail);
+        $("#submission-detail-dialog").addEventListener("close", () => {
+            if (!$("#submission-detail-dialog").hasAttribute("open")) cleanupSubmissionDetail();
+        });
         $("#detail-close").addEventListener("click", closeSubmissionDetail);
         $("#image-preview-close").addEventListener("click", closeImagePreview);
         $("#image-preview-dialog").addEventListener("click", (event) => {
@@ -319,6 +343,7 @@
     }
 
     async function logoutAdmin() {
+        stopSharedAudio();
         $("#logout-button").disabled = true;
         try {
             await requestAction(`${API_BASE}/auth/logout`, { method: "POST" });
@@ -456,7 +481,8 @@
 
     async function loadSubmissions() {
         if (state.controller) state.controller.abort();
-        state.controller = new AbortController();
+        const controller = new AbortController();
+        state.controller = controller;
         clearSelection();
         hideError();
         renderLoading(true);
@@ -464,7 +490,8 @@
             const params = buildFilterParams();
             params.set("page", String(state.page));
             params.set("size", String(PAGE_SIZE));
-            const response = await requestJson(`${API_BASE}/submissions?${params.toString()}`, state.controller.signal);
+            const response = await requestJson(`${API_BASE}/submissions?${params.toString()}`, controller.signal);
+            if (state.controller !== controller) return;
             const payload = unwrap(response);
             applyResponseScope(payload.scope);
             const items = Array.isArray(payload.items) ? payload.items : [];
@@ -475,6 +502,11 @@
             state.revisitTotal = numberValue(payload.revisitTotal, 0);
             state.totalPages = Math.max(1, numberValue(payload.totalPages, Math.ceil(state.total / PAGE_SIZE)));
             state.page = Math.max(0, numberValue(payload.page, state.page));
+            if (!items.length && state.total > 0 && state.page >= state.totalPages) {
+                state.page = state.totalPages - 1;
+                updateBrowserUrl();
+                return loadSubmissions();
+            }
             renderRows(items);
             if (state.detailId) {
                 const current = state.itemsById.get(state.detailId);
@@ -486,10 +518,17 @@
             $("#result-total").textContent = formatCount(state.total);
             $("#result-first-visit-total").textContent = formatCount(state.firstVisitTotal);
             $("#result-revisit-total").textContent = formatCount(state.revisitTotal);
+            $("#result-location-attention").textContent = optionalCount(payload.locationAttentionTotal);
+            $("#result-review-pending").textContent = optionalCount(payload.reviewPendingTotal);
+            $("#result-missing-audio").textContent = optionalCount(payload.missingAudioTotal);
+            renderSort();
             renderLoading(false, items.length === 0);
         } catch (error) {
-            if (error.name === "AbortError") return;
+            if (error.name === "AbortError" || state.controller !== controller) return;
             renderLoading(false);
+            $("#table-wrap").hidden = true;
+            $("#pagination").hidden = true;
+            $("#result-summary").textContent = "读取失败，当前条件的结果尚未确认";
             showError(errorMessage(error, "读取拜访记录失败，请稍后重试。"));
         }
     }
@@ -520,15 +559,15 @@
             const row = template.content.firstElementChild.cloneNode(true);
             const field = (name) => row.querySelector(`[data-field="${name}"]`);
             const id = submissionId(item);
-            const submittedAt = item.submittedAt || item.createdAt;
-            field("time").textContent = formatDateTime(submittedAt);
+            const submittedAt = item.completedAt || item.submittedAt;
+            field("time").textContent = submittedAt ? formatDateTime(submittedAt) : "尚未提交";
 
             const status = cleanText(item.status).toUpperCase();
             field("status").textContent = status === "SUBMITTED" ? "已提交" : (status === "DRAFT" ? "草稿" : status || "未知状态");
             field("status").classList.toggle("is-draft", status !== "SUBMITTED");
             renderVisitFrequency(row, item);
 
-            field("city").textContent = cleanText(item.city) || "未记录城市";
+            field("city").textContent = cleanText(item.cityName || item.city) || "未记录城市";
             field("salesperson").textContent = cleanText(item.salespersonName) || "未记录销售";
             field("store").textContent = cleanText(item.storeName) || "未记录门店";
             field("customer").textContent = `客户：${cleanText(item.customerName) || "未记录"}`;
@@ -537,10 +576,16 @@
             field("result").title = cleanText(item.visitResult);
             const readableAddress = locationAddress(item);
             const unverifiedLocation = isUnverifiedLocation(item);
-            field("address").textContent = unverifiedLocation ? "定位未核验" : (readableAddress || "地址暂未解析");
+            field("address").textContent = locationQualityLabel(item);
+            field("address").title = readableAddress;
             field("address").classList.toggle("is-missing", unverifiedLocation || !readableAddress);
-            renderRiskChips(field("risks"), item);
+            renderRiskChips(field("risks"), item, { compact: true });
             renderEvidenceChips(field("evidence"), item);
+            field("location-facts").textContent = locationFacts(item, { compact: true });
+            renderRowPhoto(field("photo"), item);
+            renderRowAudio(field("audio"), item);
+            field("review").textContent = reviewStatusLabel(item.reviewStatus);
+            field("review").classList.toggle("is-reviewed", item.reviewStatus === "APPROVED");
 
             const checkbox = field("select");
             checkbox.value = id;
@@ -554,6 +599,189 @@
             root.appendChild(row);
         });
         updateSelectionUI();
+    }
+
+    function optionalCount(value) {
+        return value === null || value === undefined ? "--" : formatCount(numberValue(value));
+    }
+
+    async function changeSort(sortBy) {
+        if (state.loading || !Object.hasOwn(SORT_LABELS, sortBy)) return;
+        if (!readFiltersFromForm()) return;
+        state.filters.sortDirection = state.filters.sortBy === sortBy && state.filters.sortDirection === "asc"
+            ? "desc" : "asc";
+        state.filters.sortBy = sortBy;
+        state.page = 0;
+        renderSort();
+        updateBrowserUrl();
+        updateExportLink();
+        await loadSubmissions();
+    }
+
+    function renderSort() {
+        document.querySelectorAll("[data-sort-by]").forEach((button) => {
+            const active = button.dataset.sortBy === state.filters.sortBy;
+            const ascending = state.filters.sortDirection === "asc";
+            button.closest("th").setAttribute("aria-sort", active ? (ascending ? "ascending" : "descending") : "none");
+            $("[data-sort-indicator]", button).textContent = active ? (ascending ? "↑" : "↓") : "↕";
+            button.setAttribute("aria-label", `${SORT_LABELS[button.dataset.sortBy]}，点击按${active && ascending ? "降序" : "升序"}排列全部结果`);
+        });
+        $("#sort-summary").textContent = `按${SORT_LABELS[state.filters.sortBy]}${state.filters.sortDirection === "asc" ? "升序" : "降序"}排列；排序作用于全部筛选结果，CSV 使用相同顺序。`;
+    }
+
+    function locationQualityLabel(item) {
+        return LOCATION_LABELS[cleanText(item.locationQuality).toUpperCase()]
+            || (isUnverifiedLocation(item) ? "定位未核验" : "历史位置");
+    }
+
+    function locationFacts(item, options = {}) {
+        const parts = options.compact ? [] : [locationQualityLabel(item)];
+        const accuracy = optionalNonNegativeNumber(item.accuracyMeters);
+        if (accuracy !== null) parts.push(`精度 ±${Math.round(accuracy)} 米`);
+        const quality = cleanText(item.locationQuality).toUpperCase();
+        const distance = optionalNonNegativeNumber(item.distanceMeters);
+        if (!options.compact && (quality === "STALE" || quality === "TIME_UNKNOWN")) parts.push("不作为当前到店距离");
+        else if (distance !== null && (!options.compact || quality === "OUT_OF_RANGE")) parts.push(`距店约 ${Math.round(distance)} 米`);
+        const captured = Date.parse(item.locationCapturedAt || "");
+        const completed = Date.parse(item.completedAt || item.submittedAt || item.createdAt || "");
+        if (quality !== "TIME_UNKNOWN" && Number.isFinite(captured) && Number.isFinite(completed)) {
+            const seconds = Math.round((completed - captured) / 1000);
+            parts.push(seconds >= 0 ? `采样距提交 ${seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分钟`}` : "采样时间晚于提交，待核对");
+        }
+        return parts.join(" · ");
+    }
+
+    function reviewStatusLabel(status) {
+        return REVIEW_LABELS[cleanText(status).toUpperCase()] || "复核状态未记录";
+    }
+
+    function renderRowPhoto(root, item) {
+        root.replaceChildren();
+        const id = submissionId(item);
+        if (!item.storefrontPhotoAvailable || !isUuid(id)) {
+            root.textContent = item.storefrontPhotoDeletedAt ? "照片已删除" : "暂无照片";
+            return;
+        }
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "row-thumbnail-button";
+        button.setAttribute("aria-label", `放大${cleanText(item.storeName) || "门店"}现场照片`);
+        const image = document.createElement("img");
+        image.src = mediaUrl(id, "storefront-photo", { thumbnail: true });
+        image.alt = "现场照片缩略图";
+        image.width = 72;
+        image.height = 72;
+        image.loading = "lazy";
+        image.decoding = "async";
+        bindThumbnailFallback(image, () => {
+            image.hidden = true;
+            const notice = document.createElement("span");
+            notice.textContent = "预览不可用\n点击看原图";
+            button.replaceChildren(notice);
+        });
+        button.appendChild(image);
+        button.addEventListener("click", () => openImagePreview(mediaUrl(id, "storefront-photo"),
+            mediaUrl(id, "storefront-photo", { download: true }), "现场照片", button, { id, kind: "storefront-photo" }));
+        root.appendChild(button);
+    }
+
+    function bindThumbnailFallback(image, onUnavailable) {
+        const initialUrl = image.getAttribute("src");
+        let failures = 0;
+        image.addEventListener("error", () => {
+            if (failures > 2) return;
+            failures += 1;
+            if (failures <= 2) {
+                window.setTimeout(() => {
+                    if (image.isConnected && !image.hidden && failures <= 2) {
+                        image.src = `${initialUrl}${initialUrl.includes("?") ? "&" : "?"}retry=${failures}`;
+                    }
+                }, failures === 1 ? 1500 : 4000);
+            } else onUnavailable();
+        });
+    }
+
+    function audioDurationLabel(segments) {
+        if (!segments.length) return "未附录音";
+        if (segments.some((segment) => segment.parsedDurationMs === null)) return "时长待解析";
+        return formatAudioDurationMs(segments.reduce((sum, segment) => sum + segment.parsedDurationMs, 0));
+    }
+
+    function renderRowAudio(root, item) {
+        root.replaceChildren();
+        const segments = normalizeAudioSegments(item).filter((segment) => segment.available);
+        if (!segments.length) { root.textContent = "未附录音"; return; }
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "row-audio-play";
+        button.textContent = `播放 · ${audioDurationLabel(segments)}`;
+        button.setAttribute("aria-label", `播放${cleanText(item.storeName)}录音，${audioDurationLabel(segments)}，共 ${segments.length} 段`);
+        button.addEventListener("click", () => playAudioSegment(item, segments[0].segmentId));
+        const caption = document.createElement("span");
+        caption.textContent = `${segments.length} 段${segments.some((segment) => segment.playbackStatus === "PENDING") ? " · 播放副本处理中" : ""}`;
+        root.append(button, caption);
+    }
+
+    function safePlaybackUrl(value) {
+        if (!value) return null;
+        try {
+            const url = new URL(value, window.location.origin);
+            return url.origin === window.location.origin && url.pathname.startsWith(`${MEDIA_PATH}/`)
+                ? `${url.pathname}${url.search}` : null;
+        } catch (_) { return null; }
+    }
+
+    function moveAudioDock(toDetail) {
+        $(toDetail ? "#detail-audio-dock" : "#record-audio-dock").appendChild($("#shared-audio-panel"));
+    }
+
+    function playAudioSegment(item, segmentId) {
+        const tracks = normalizeAudioSegments(item).filter((segment) => segment.available);
+        const segment = tracks.find((track) => track.segmentId === segmentId);
+        if (!segment) return;
+        const id = submissionId(item);
+        const audio = $("#shared-audio");
+        audio.pause();
+        state.activeAudio = { item, id, segmentId, tracks };
+        moveAudioDock($("#submission-detail-dialog").hasAttribute("open"));
+        const select = $("#shared-audio-segment");
+        select.replaceChildren();
+        tracks.forEach((track, index) => select.appendChild(option(track.segmentId,
+            `第 ${index + 1} 段 · ${audioDurationLabel([track])}`)));
+        select.value = segmentId;
+        $("#shared-audio-title").textContent = `${cleanText(item.storeName) || "门店"} · 拜访录音`;
+        $("#shared-audio-download").href = mediaUrl(id, "audio", { segmentId, download: true });
+        $("#shared-audio-panel").hidden = false;
+        const playback = segment.playbackStatus === "READY" ? safePlaybackUrl(segment.playbackUrl) : null;
+        $("#shared-audio-status").textContent = playback ? "正在加载播放副本…"
+            : "正在尝试播放原录音；格式不兼容时可下载原文件。";
+        audio.preload = "none";
+        audio.src = playback || mediaUrl(id, "audio", { segmentId });
+        const request = state.activeAudio;
+        audio.play().catch(() => {
+            if (state.activeAudio !== request) return;
+            $("#shared-audio-status").textContent = "播放尚未开始，请点击播放器播放键；文件不兼容或会话失效时可重新登录后重试。";
+        });
+    }
+
+    function updatePlayingDuration() {
+        const audio = $("#shared-audio");
+        if (!state.activeAudio) return;
+        const parsed = Number.isFinite(audio.duration) && audio.duration >= 0
+            ? formatAudioDurationMs(audio.duration * 1000) : "暂时无法解析";
+        $("#shared-audio-status").textContent = `当前播放器解析时长：${parsed}。录制时间以证据说明为准。`;
+        document.querySelectorAll("[data-audio-media-duration]").forEach((field) => {
+            if (field.dataset.segmentId === state.activeAudio.segmentId && field.dataset.durationSource !== "SERVER") field.textContent = parsed;
+        });
+    }
+
+    function stopSharedAudio() {
+        const audio = $("#shared-audio");
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+        state.activeAudio = null;
+        $("#shared-audio-panel").hidden = true;
     }
 
     function renderVisitFrequency(row, item) {
@@ -614,6 +842,9 @@
                     captureSource: normalizeAudioCaptureSource(segment.captureSource),
                     clientStartedAt: segment.clientStartedAt || null,
                     clientDurationMs: optionalNonNegativeNumber(segment.clientDurationMs),
+                    parsedDurationMs: optionalNonNegativeNumber(segment.parsedDurationMs),
+                    playbackStatus: cleanText(segment.playbackStatus).toUpperCase(),
+                    playbackUrl: cleanText(segment.playbackUrl),
                     fileLastModifiedAt: segment.fileLastModifiedAt || null,
                     timingStatus: normalizeAudioTimingStatus(segment.timingStatus),
                     available: segment.available === true,
@@ -631,6 +862,9 @@
             captureSource: "UNKNOWN",
             clientStartedAt: null,
             clientDurationMs: null,
+            parsedDurationMs: null,
+            playbackStatus: "",
+            playbackUrl: "",
             fileLastModifiedAt: null,
             timingStatus: "MISSING",
             available: item.audioAvailable === true,
@@ -681,7 +915,7 @@
         return labels[reason] || reason || "未记录失败原因";
     }
 
-    function renderRiskChips(root, item) {
+    function renderRiskChips(root, item, options = {}) {
         root.replaceChildren();
         const status = cleanText(item.status).toUpperCase();
         const riskLevel = cleanText(item.riskLevel).toUpperCase();
@@ -692,11 +926,23 @@
             SHARED_IP_MULTIPLE_SALES: ["多人共享IP", "muted"],
             LOCATION_UNVERIFIED: ["定位未核验", "warning"]
         };
+        const flags = Array.isArray(item.riskFlags) ? item.riskFlags : [];
+        if (options.compact) {
+            flags.forEach((rawFlag) => {
+                const flag = cleanText(rawFlag).toUpperCase();
+                const mapped = riskLabels[flag];
+                if (mapped && flag !== "LOCATION_UNVERIFIED") appendChip(root, mapped[0], mapped[1]);
+            });
+            if (riskLevel === "HIGH" && !root.hasChildNodes()) appendChip(root, "高风险·需复核", "danger");
+            return;
+        }
         if (isUnverifiedLocation(item)) appendChip(root, "定位未核验·需结合照片复核", "warning");
+        if (item.locationQuality && !["GOOD", "LEGACY"].includes(item.locationQuality)) {
+            appendChip(root, locationQualityLabel(item), "warning");
+        }
         if (riskLevel === "HIGH") appendChip(root, "高风险·需复核", "danger");
         else if (riskLevel === "MEDIUM") appendChip(root, "中风险·需复核", "warning");
         else if (riskLevel === "LOW") appendChip(root, "低风险提示", "muted");
-        const flags = Array.isArray(item.riskFlags) ? item.riskFlags : [];
         flags.forEach((rawFlag) => {
             const flag = cleanText(rawFlag).toUpperCase();
             if (flag === "LOCATION_UNVERIFIED" && isUnverifiedLocation(item)) return;
@@ -797,12 +1043,16 @@
         }
         state.detailId = id;
         state.detailTrigger = trigger;
+        state.detailScroll = { x: window.scrollX, y: window.scrollY, table: $("#table-wrap").scrollLeft };
         renderSubmissionDetail(item);
         const dialog = $("#submission-detail-dialog");
         if (typeof dialog.showModal === "function") dialog.showModal();
         else dialog.setAttribute("open", "");
         syncDialogState();
-        $("#detail-close").focus();
+        if (state.activeAudio) moveAudioDock(true);
+        $("#detail-close").focus({ preventScroll: true });
+        $("#detail-body").scrollTop = 0;
+        loadReviewHistory(id);
     }
 
     function renderSubmissionDetail(item) {
@@ -817,8 +1067,9 @@
         if (visitLabel) appendChip(headingBadges, visitLabel, "muted");
 
         $("#detail-submitted-at").textContent = formatFullDateTime(item.submittedAt || item.createdAt);
-        $("#detail-captured-at").textContent = item.locationCapturedAt
-            ? formatFullDateTime(item.locationCapturedAt) : "未记录";
+        $("#detail-captured-at").textContent = item.locationQuality === "TIME_UNKNOWN"
+            ? "采样时间未核验，请查看原始值"
+            : (item.locationCapturedAt ? formatFullDateTime(item.locationCapturedAt) : "未记录");
         $("#detail-person").textContent = `${cleanText(item.city) || "城市未记录"} / ${cleanText(item.salespersonName) || "销售未记录"}`;
         const customer = $("#detail-customer");
         customer.replaceChildren(document.createTextNode(cleanText(item.customerName) || "客户未记录"));
@@ -834,25 +1085,213 @@
 
         const address = locationAddress(item);
         const unverifiedLocation = isUnverifiedLocation(item);
-        $("#detail-address").textContent = unverifiedLocation ? "定位未核验" : (address || "地址暂未解析");
+        $("#detail-address").textContent = address || "设备位置地址未取得";
         $("#detail-address").classList.toggle("is-missing", unverifiedLocation || !address);
         const locationNote = cleanText(item.locationNote);
         $("#detail-location-note").textContent = locationNote ? `位置备注：${locationNote}` : "";
-        $("#detail-location-verification").textContent = unverifiedLocation
-            ? `客户端报告：${locationFailureLabel(item.locationFailureReason)}；本记录未通过300米位置校验，需结合门头照和拜访内容复核。`
-            : "位置校验：已按当时规则完成或属于历史记录。";
+        $("#detail-location-verification").textContent = `${locationFacts(item)}。${unverifiedLocation
+            ? `客户端报告：${locationFailureLabel(item.locationFailureReason)}。` : ""}设备报告点与门店登记点分别保存；位置偏差不能单独认定虚假拜访。`;
         const longitude = decimalText(item.longitude);
         const latitude = decimalText(item.latitude);
         $("#detail-coordinates").textContent = longitude && latitude
             ? `${longitude}, ${latitude}` : "经纬度未记录";
         const accuracy = decimalText(item.accuracyMeters);
         $("#detail-accuracy").textContent = accuracy ? `定位精度：±${accuracy} 米` : "定位精度未记录";
+        $("#detail-device-point").textContent = longitude && latitude ? `${longitude}, ${latitude}` : "未取得，不用门店坐标代填";
+        const storeLongitude = decimalText(item.storeLongitude);
+        const storeLatitude = decimalText(item.storeLatitude);
+        $("#detail-store-point").textContent = storeLongitude && storeLatitude ? `${storeLongitude}, ${storeLatitude}` : "门店未登记坐标";
+        $("#detail-raw-timestamp").textContent = rawLocationTime(item.locationRawTimestamp, item.locationQuality);
+        $("#detail-location-received-at").textContent = item.locationReceivedAt ? formatFullDateTime(item.locationReceivedAt) : "未记录";
+        const distance = optionalNonNegativeNumber(item.distanceMeters);
+        $("#detail-distance").textContent = ["STALE", "TIME_UNKNOWN"].includes(item.locationQuality)
+            ? "采样不能代表当前到店位置，距离不作为当前判断"
+            : (distance === null ? "无法计算" : `约 ${Math.round(distance)} 米，需结合精度判断`);
+        $("#detail-location-source").textContent = `${locationSourceLabel(item.locationSource)} / ${locationQualityLabel(item)}`;
+        renderLocationComparison(item);
         renderRiskChips($("#detail-risk-chips"), item);
         $("#detail-identity-method").textContent = identityMethodLabel(item.identityMethod);
         $("#detail-ip-masked").textContent = cleanText(item.submittedIpMasked) || "未记录";
         $("#detail-user-agent").textContent = cleanText(item.userAgentSummary) || "未记录";
         $("#detail-result").textContent = cleanText(item.visitResult) || "未填写拜访结果";
         renderMedia($("#detail-media"), item);
+        renderReviewForm(item);
+    }
+
+    function rawLocationTime(value, quality) {
+        if (value === null || value === undefined || value === "") return "未记录";
+        return `${cleanText(String(value))}（设备原始值${quality === "TIME_UNKNOWN" ? "，时间未核验" : ""}）`;
+    }
+
+    // Pure geometry: use the device-centred spherical azimuthal equidistant projection.
+    function locationComparisonGeometry(item) {
+        const number = value => !["number", "string"].includes(typeof value) || String(value).trim() === ""
+            ? null : (Number.isFinite(Number(value)) ? Number(value) : null);
+        const point = (longitude, latitude) => {
+            const lon = number(longitude), lat = number(latitude);
+            return lon !== null && lat !== null && Math.abs(lon) <= 180 && Math.abs(lat) <= 90 ? { lon, lat } : null;
+        };
+        const device = point(item.longitude, item.latitude);
+        const store = point(item.storeLongitude, item.storeLatitude);
+        if (!device || !store) return { reason: !device ? "MISSING_DEVICE" : "MISSING_STORE" };
+        if (!["BROWSER", "BROWSER_GEOLOCATION"].includes(item.locationSource)) return { reason: "UNCONFIRMED_CRS" };
+        const radians = Math.PI / 180;
+        const first = device.lat * radians, second = store.lat * radians;
+        const deltaLatitude = second - first;
+        const deltaLongitude = ((store.lon - device.lon + 540) % 360 - 180) * radians;
+        const haversine = Math.min(1, Math.max(0, Math.sin(deltaLatitude / 2) ** 2
+            + Math.cos(first) * Math.cos(second) * Math.sin(deltaLongitude / 2) ** 2));
+        const angle = 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+        if (angle > Math.PI * 179 / 180) return { reason: "AMBIGUOUS_DIRECTION" };
+        const bearing = Math.atan2(Math.sin(deltaLongitude) * Math.cos(second),
+            Math.cos(first) * Math.sin(second) - Math.sin(first) * Math.cos(second) * Math.cos(deltaLongitude));
+        const computedMeters = 6371000 * angle;
+        const x = computedMeters * Math.sin(bearing), y = -computedMeters * Math.cos(bearing);
+        const candidateAccuracy = number(item.accuracyMeters);
+        const accuracy = candidateAccuracy !== null && candidateAccuracy >= 0 && candidateAccuracy <= 10000000
+            ? candidateAccuracy : null;
+        const radius = accuracy || 0;
+        const minX = Math.min(-radius, x), maxX = Math.max(radius, x);
+        const minY = Math.min(-radius, y), maxY = Math.max(radius, y);
+        const scale = Math.min(330 / Math.max(20, maxX - minX), 150 / Math.max(20, maxY - minY));
+        const centreX = (minX + maxX) / 2, centreY = (minY + maxY) / 2;
+        return { deviceX: 200 - centreX * scale, deviceY: 110 - centreY * scale,
+            storeX: 200 + (x - centreX) * scale, storeY: 110 + (y - centreY) * scale,
+            radius: radius * scale, accuracy, computedMeters, reason: null };
+    }
+
+    function renderLocationComparison(item) {
+        const container = $("#location-comparison-chart");
+        container.replaceChildren();
+        const geometry = locationComparisonGeometry(item);
+        const note = $("#location-comparison-note");
+        if (geometry.reason) {
+            const reasons = { MISSING_DEVICE: "未取得设备点，保留门店坐标文字，不补造设备点或距离。",
+                MISSING_STORE: "门店未登记坐标，保留设备坐标文字，暂不作双点对照。",
+                UNCONFIRMED_CRS: "该来源的坐标系尚未确认，保留原始坐标文字，暂不绘制相对位置。",
+                AMBIGUOUS_DIRECTION: "两点跨度过大，相对方向不稳定，请依据原始坐标复核。" };
+            note.textContent = reasons[geometry.reason];
+            return;
+        }
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        const append = (name, attributes, text) => {
+            const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+            Object.entries(attributes || {}).forEach(([key, value]) => node.setAttribute(key, String(value)));
+            if (text) node.textContent = text;
+            svg.appendChild(node);
+            return node;
+        };
+        svg.setAttribute("viewBox", "0 0 400 220");
+        svg.setAttribute("role", "img");
+        svg.setAttribute("aria-label", "设备报告点、门店登记点与设备报告精度半径的相对位置；北向上");
+        append("title", {}, "设备与门店相对位置，北向上，视窗随两点与设备精度缩放");
+        if (geometry.radius > 0) append("circle", { cx: geometry.deviceX, cy: geometry.deviceY, r: geometry.radius, class: "comparison-accuracy" });
+        append("line", { x1: geometry.deviceX, y1: geometry.deviceY, x2: geometry.storeX, y2: geometry.storeY, class: "comparison-connection" });
+        append("circle", { cx: geometry.deviceX, cy: geometry.deviceY, r: 6, class: "comparison-device" });
+        append("rect", { x: geometry.storeX - 5, y: geometry.storeY - 5, width: 10, height: 10, class: "comparison-store" });
+        append("text", { x: 374, y: 21, "text-anchor": "middle", class: "comparison-north" }, "北 ↑");
+        container.appendChild(svg);
+        const legend = document.createElement("p");
+        legend.className = "comparison-legend";
+        legend.textContent = "● 设备报告点　■ 门店登记点　浅色圆：设备精度半径";
+        container.appendChild(legend);
+        const distance = optionalNonNegativeNumber(item.distanceMeters);
+        const precision = geometry.accuracy === null ? "设备精度未记录，未绘制精度圈"
+            : `设备报告精度 ±${Math.round(geometry.accuracy).toLocaleString("zh-CN")} 米`;
+        const historical = ["STALE", "TIME_UNKNOWN", "LEGACY"].includes(item.locationQuality);
+        note.textContent = `${precision}；${distance === null ? "后台未记录距离" : `后台记录两点间距约 ${Math.round(distance).toLocaleString("zh-CN")} 米`}。${historical
+            ? "这是历史或未核验采样，不代表当前到店距离。" : "请结合照片与位置采样时间复核。"}精度圈是设备报告范围，门店点精度尚未记录。`;
+    }
+
+    function locationSourceLabel(source) {
+        const labels = { BROWSER: "浏览器定位", BROWSER_GEOLOCATION: "浏览器定位", WECHAT: "微信定位", WECOM: "企业微信定位", MANUAL: "人工报告", UNKNOWN: "来源未记录" };
+        return labels[source] || cleanText(source) || "来源未记录";
+    }
+
+    function renderReviewForm(item) {
+        $("#detail-review-status").textContent = `${reviewStatusLabel(item.reviewStatus)}${item.reviewedBy ? ` · ${cleanText(item.reviewedBy)}` : ""}${item.reviewedAt ? ` · ${formatFullDateTime(item.reviewedAt)}` : ""}`;
+        $("#review-form").hidden = item.status !== "SUBMITTED";
+        if (state.reviewBusy) return;
+        $("#review-status").value = ["APPROVED", "FOLLOW_UP", "FLAGGED"].includes(item.reviewStatus) ? item.reviewStatus : "APPROVED";
+        $("#review-note").value = "";
+        $("#review-error").hidden = true;
+        state.reviewRequest = null;
+    }
+
+    async function loadReviewHistory(id) {
+        if (state.reviewController) state.reviewController.abort();
+        const controller = new AbortController();
+        state.reviewController = controller;
+        const root = $("#review-history");
+        root.textContent = "正在读取复核记录…";
+        try {
+            const payload = unwrap(await requestJson(`${API_BASE}/submissions/${encodeURIComponent(id)}/reviews`, controller.signal));
+            if (state.detailId !== id) return;
+            const events = Array.isArray(payload) ? payload : (Array.isArray(payload.items) ? payload.items : []);
+            root.replaceChildren();
+            if (!events.length) { root.textContent = "暂无人工复核记录"; return; }
+            events.forEach((event) => {
+                const entry = document.createElement("article");
+                const heading = document.createElement("strong");
+                heading.textContent = `${reviewStatusLabel(event.status)} · ${cleanText(event.reviewedBy) || "处理人未记录"}`;
+                const time = document.createElement("time");
+                time.textContent = event.reviewedAt ? formatFullDateTime(event.reviewedAt) : "时间未记录";
+                const note = document.createElement("p");
+                note.textContent = cleanText(event.note);
+                entry.append(heading, time, note);
+                root.appendChild(entry);
+            });
+        } catch (error) {
+            if (error.name === "AbortError" || state.detailId !== id) return;
+            root.textContent = errorMessage(error, "复核记录读取失败。");
+            const retry = document.createElement("button");
+            retry.type = "button";
+            retry.className = "text-button";
+            retry.textContent = "重试读取复核记录";
+            retry.addEventListener("click", () => loadReviewHistory(id));
+            root.appendChild(retry);
+        }
+    }
+
+    async function saveReview(event) {
+        event.preventDefault();
+        if (state.reviewBusy || !state.detailId) return;
+        const id = state.detailId;
+        const note = cleanText($("#review-note").value);
+        const status = $("#review-status").value;
+        const errorPanel = $("#review-error");
+        errorPanel.hidden = true;
+        if (note.length < 2 || note.length > 1000 || !["APPROVED", "FOLLOW_UP", "FLAGGED"].includes(status)) {
+            errorPanel.textContent = "请选择复核结果并填写 2–1000 字的原因。";
+            errorPanel.hidden = false;
+            return;
+        }
+        if (!state.reviewRequest || state.reviewRequest.id !== id || state.reviewRequest.note !== note || state.reviewRequest.status !== status) {
+            state.reviewRequest = { id, note, status, clientEventId: createRequestId() };
+        }
+        const request = state.reviewRequest;
+        state.reviewBusy = true;
+        $("#review-submit").disabled = true;
+        $("#review-submit").textContent = "正在保存…";
+        try {
+            await requestAction(`${API_BASE}/submissions/${encodeURIComponent(id)}/review`, {
+                body: { clientEventId: request.clientEventId, status, note }
+            });
+            state.reviewRequest = null;
+            $("#review-note").value = "";
+            showSuccess("复核记录已保存，处理人与原因已留痕。");
+            await loadSubmissions();
+            if (state.detailId === id) await loadReviewHistory(id);
+        } catch (error) {
+            if (state.detailId === id) {
+                errorPanel.textContent = errorMessage(error, "复核保存结果未确认，请重试，重复请求不会重复登记。");
+                errorPanel.hidden = false;
+            }
+        } finally {
+            state.reviewBusy = false;
+            $("#review-submit").disabled = false;
+            $("#review-submit").textContent = "保存复核记录";
+        }
     }
 
     function identityMethodLabel(rawMethod) {
@@ -866,24 +1305,23 @@
         const dialog = $("#submission-detail-dialog");
         if (!dialog.hasAttribute("open")) return;
         if (typeof dialog.close === "function") dialog.close();
-        else {
-            dialog.removeAttribute("open");
-            cleanupSubmissionDetail();
-        }
+        else dialog.removeAttribute("open");
+        cleanupSubmissionDetail();
     }
 
     function cleanupSubmissionDetail() {
-        $("#detail-media").querySelectorAll("audio").forEach((audio) => {
-            audio.pause();
-            audio.removeAttribute("src");
-            audio.load();
-        });
+        if (!state.detailId && !state.detailScroll) return;
         $("#detail-media").replaceChildren();
         const trigger = state.detailTrigger;
+        const scroll = state.detailScroll;
+        if (state.reviewController) state.reviewController.abort();
+        moveAudioDock(false);
         state.detailId = null;
         state.detailTrigger = null;
+        state.detailScroll = null;
         syncDialogState();
-        if (trigger && document.contains(trigger)) trigger.focus();
+        if (trigger && document.contains(trigger)) trigger.focus({ preventScroll: true });
+        if (scroll) { $("#table-wrap").scrollLeft = scroll.table; window.scrollTo(scroll.x, scroll.y); }
     }
 
     function openBatchDeleteDialog() {
@@ -942,6 +1380,7 @@
             return;
         }
         state.batchDeleteBusy = true;
+        if (state.activeAudio && ids.includes(state.activeAudio.id)) stopSharedAudio();
         const confirm = $("#batch-delete-confirm");
         confirm.disabled = true;
         confirm.textContent = "正在删除…";
@@ -994,11 +1433,6 @@
     }
 
     function renderMedia(root, item) {
-        root.querySelectorAll("audio").forEach((audio) => {
-            audio.pause();
-            audio.removeAttribute("src");
-            audio.load();
-        });
         root.replaceChildren();
         const id = cleanText(item.id || item.submissionId);
         if (!isUuid(id)) return renderEmptyMedia(root);
@@ -1043,17 +1477,12 @@
         image.alt = `${label}缩略图`;
         image.loading = "lazy";
         image.decoding = "async";
-        image.addEventListener("error", () => {
-            if (image.dataset.fallback !== "original") {
-                image.dataset.fallback = "original";
-                image.src = previewUrl;
-                return;
-            }
+        bindThumbnailFallback(image, () => {
             button.classList.add("is-unavailable");
             image.hidden = true;
             const fallback = document.createElement("span");
             fallback.className = "media-thumbnail-fallback";
-            fallback.textContent = "点击查看原图";
+            fallback.textContent = "预览暂不可用，点击查看原图";
             button.appendChild(fallback);
         });
         button.addEventListener("click", () => openImagePreview(
@@ -1114,33 +1543,16 @@
 
         const label = `第${index + 1}段拜访录音`;
         if (segment.available) {
-            const audio = document.createElement("audio");
-            audio.className = "media-audio";
-            audio.controls = true;
-            audio.preload = "metadata";
-            audio.setAttribute("controlslist", "nodownload");
-            audio.setAttribute("aria-label", `播放${label}`);
-            const parsedDuration = evidence.querySelector("[data-audio-media-duration]");
-            audio.addEventListener("loadedmetadata", () => {
-                if (!parsedDuration) return;
-                parsedDuration.textContent = Number.isFinite(audio.duration) && audio.duration >= 0
-                    ? formatAudioDurationMs(audio.duration * 1000) : "无法解析";
-            });
-            audio.addEventListener("error", () => {
-                if (parsedDuration && parsedDuration.textContent === "读取中…") {
-                    parsedDuration.textContent = "无法解析";
-                }
-            });
-            audio.addEventListener("play", () => {
-                document.querySelectorAll("audio.media-audio").forEach((other) => {
-                    if (other !== audio) other.pause();
-                });
-            });
-            audio.src = mediaUrl(submissionId, "audio", { segmentId: segment.segmentId });
+            const play = document.createElement("button");
+            play.type = "button";
+            play.className = "row-audio-play";
+            play.textContent = `播放${label} · ${audioDurationLabel([segment])}`;
+            play.addEventListener("click", () => playAudioSegment(submission, segment.segmentId));
             const hint = document.createElement("span");
             hint.className = "media-audio-hint";
-            hint.textContent = "已读取媒体元数据；点击播放后可拖动进度";
-            section.append(audio, hint, createMediaActions(
+            hint.textContent = segment.playbackStatus === "PENDING" ? "播放副本处理中，点击可尝试播放原录音。"
+                : (segment.playbackStatus === "FAILED" ? "播放副本生成失败，原录音仍保留，可尝试播放或下载。" : "点击后加载音频，可切换片段和拖动进度。");
+            section.append(play, hint, createMediaActions(
                 submissionId, "audio", label,
                 mediaUrl(submissionId, "audio", { segmentId: segment.segmentId, download: true }),
                 segment.segmentId));
@@ -1151,9 +1563,9 @@
     }
 
     function createAudioTimingEvidence(segment, submission) {
-        const panel = document.createElement("section");
+        const panel = document.createElement("details");
         panel.className = "audio-timing-evidence";
-        const heading = document.createElement("strong");
+        const heading = document.createElement("summary");
         heading.className = "audio-timing-evidence__title";
         heading.textContent = "录音时间证据";
         const grid = document.createElement("dl");
@@ -1178,7 +1590,10 @@
             segment.clientDurationMs === null ? "未采集" : formatAudioDurationMs(segment.clientDurationMs));
         const mediaDuration = document.createElement("span");
         mediaDuration.dataset.audioMediaDuration = "true";
-        mediaDuration.textContent = segment.available ? "读取中…" : "文件已删除，无法解析";
+        mediaDuration.dataset.segmentId = segment.segmentId;
+        mediaDuration.dataset.durationSource = segment.parsedDurationMs === null ? "UNKNOWN" : "SERVER";
+        mediaDuration.textContent = !segment.available ? "文件已删除，无法解析"
+            : (segment.parsedDurationMs === null ? "待解析，播放时可读取媒体时长" : formatAudioDurationMs(segment.parsedDurationMs));
         appendAudioTimingField(grid, "媒体解析时长", mediaDuration);
 
         const relation = audioTimingRelationship(segment, submission);
@@ -1524,7 +1939,7 @@
         $("#image-preview-error").hidden = true;
         $("#image-preview-download").href = "#";
         syncDialogState();
-        if (state.previewTrigger && document.contains(state.previewTrigger)) state.previewTrigger.focus();
+        if (state.previewTrigger && document.contains(state.previewTrigger)) state.previewTrigger.focus({ preventScroll: true });
         state.previewTrigger = null;
         state.previewIdentity = null;
     }
@@ -1627,14 +2042,8 @@
     }
 
     function stopDeletedMedia(id, kind, segmentId) {
-        const selector = segmentId
-            ? `[data-media-id="${id}"][data-media-kind="${kind}"][data-segment-id="${segmentId}"] audio`
-            : `[data-media-id="${id}"][data-media-kind="${kind}"] audio`;
-        document.querySelectorAll(selector).forEach((audio) => {
-            audio.pause();
-            audio.removeAttribute("src");
-            audio.load();
-        });
+        if (kind === "audio" && state.activeAudio?.id === id
+                && (!segmentId || state.activeAudio.segmentId === segmentId)) stopSharedAudio();
     }
 
     function syncDialogState() {
@@ -2311,7 +2720,12 @@
             city: state.scope.allCities ? "" : state.scope.city,
             salespersonId: "",
             status: "",
-            visitType: ""
+            visitType: "",
+            locationStatus: "",
+            reviewStatus: "",
+            mediaStatus: "",
+            sortBy: "completedAt",
+            sortDirection: "desc"
         };
         state.page = 0;
         renderCityOptions();
@@ -2337,7 +2751,12 @@
             city: state.scope.allCities ? $("#filter-city").value : state.scope.city,
             salespersonId: $("#filter-salesperson").value,
             status: $("#filter-status").value,
-            visitType: $("#filter-visit-type").value
+            visitType: $("#filter-visit-type").value,
+            locationStatus: $("#filter-location-status").value,
+            reviewStatus: $("#filter-review-status").value,
+            mediaStatus: $("#filter-media-status").value,
+            sortBy: state.filters.sortBy,
+            sortDirection: state.filters.sortDirection
         };
         return true;
     }
@@ -2352,7 +2771,12 @@
             salespersonId: cleanText(params.get("salespersonId")),
             status: ["DRAFT", "SUBMITTED"].includes(params.get("status")) ? params.get("status") : "",
             visitType: ["FIRST_VISIT", "REVISIT"].includes(params.get("visitType"))
-                ? params.get("visitType") : ""
+                ? params.get("visitType") : "",
+            locationStatus: Object.hasOwn(LOCATION_LABELS, params.get("locationStatus")) ? params.get("locationStatus") : "",
+            reviewStatus: Object.hasOwn(REVIEW_LABELS, params.get("reviewStatus")) ? params.get("reviewStatus") : "",
+            mediaStatus: ["HAS_AUDIO", "MISSING_AUDIO", "MISSING_PHOTO"].includes(params.get("mediaStatus")) ? params.get("mediaStatus") : "",
+            sortBy: Object.hasOwn(SORT_LABELS, params.get("sortBy")) ? params.get("sortBy") : "completedAt",
+            sortDirection: params.get("sortDirection") === "asc" ? "asc" : "desc"
         };
         const page = Number.parseInt(params.get("page"), 10);
         state.page = Number.isInteger(page) && page > 0 ? page - 1 : 0;
@@ -2364,6 +2788,10 @@
         $("#filter-to").value = state.filters.to;
         $("#filter-status").value = state.filters.status;
         $("#filter-visit-type").value = state.filters.visitType;
+        $("#filter-location-status").value = state.filters.locationStatus;
+        $("#filter-review-status").value = state.filters.reviewStatus;
+        $("#filter-media-status").value = state.filters.mediaStatus;
+        renderSort();
         if (Array.from($("#filter-city").options).some((item) => item.value === state.filters.city)) {
             $("#filter-city").value = state.filters.city;
         }

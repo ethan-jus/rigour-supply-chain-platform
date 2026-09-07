@@ -1,5 +1,9 @@
 FROM eclipse-temurin:21-jre-jammy@sha256:eebd356ad7358b7094758e5787a6726f332917cfd56feab6457c56dab895cdbf
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --gid 10001 rigour \
     && useradd --uid 10001 --gid rigour --no-create-home --shell /usr/sbin/nologin rigour
 

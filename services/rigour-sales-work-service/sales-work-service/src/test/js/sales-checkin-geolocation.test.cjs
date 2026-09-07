@@ -3,166 +3,67 @@ const { webcrypto } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-
-const scriptPath = path.resolve(
-    __dirname, "../../main/resources/static/sales-checkin/app.js");
-let source = fs.readFileSync(scriptPath, "utf8");
-source = source.replace(/\n\}\)\(\);\s*$/, `
-    window.__geolocationTestApi = {
-        resolveGeolocationCapturedAtMs,
-        resolveAdvancingGeolocationClockCapturedAtMs,
-        resolveCompatibleGeolocationCapturedAtMs
-    };
+const sourcePath = path.resolve(__dirname, "../../main/resources/static/sales-checkin/app.js");
+const source = fs.readFileSync(sourcePath, "utf8").replace(/\n\}\)\(\);\s*$/, `
+    window.__test = { locationEvidenceFromPosition, shouldReplaceLocationSample,
+        normalizeUnverifiedLocationEvidence, visitSelectedStoreReady, isVisitStepReady,
+        buildSubmissionPayload, state };
 })();`);
-
 const window = {};
 vm.runInNewContext(source, {
-    window,
-    document: { addEventListener() {} },
-    navigator: {},
-    crypto: webcrypto,
-    btoa: (value) => Buffer.from(value, "binary").toString("base64"),
-    Blob,
-    Headers,
-    URL,
-    Map,
-    Set,
-    Uint8Array,
-    Date,
-    Math,
-    Number,
-    String,
-    Array,
-    Object,
-    RegExp,
-    Promise,
-    console
-}, { filename: scriptPath });
-
-const {
-    resolveGeolocationCapturedAtMs,
-    resolveAdvancingGeolocationClockCapturedAtMs,
-    resolveCompatibleGeolocationCapturedAtMs
-} = window.__geolocationTestApi;
-const now = Date.UTC(2026, 8, 1, 8, 0, 0);
-const appleEpochOffsetMs = 978307200000;
+    window, document: { addEventListener() {}, querySelector() { return {value: ""}; } },
+    navigator: {}, crypto: webcrypto, Blob, Headers, URL,
+    btoa: (value) => Buffer.from(value, "binary").toString("base64")
+}, { filename: sourcePath });
+const api = window.__test;
+const now = Date.UTC(2026, 8, 7, 8);
+const position = (time, accuracy = 30) => ({ coords: { longitude: 120.123456789,
+    latitude: 30.123456789, accuracy }, timestamp: time });
 let checks = 0;
-
-function expectCapturedAt(value, expected, label) {
-    const actual = resolveGeolocationCapturedAtMs(value, now, 60_000);
-    assert.ok(actual !== null && Math.abs(actual - expected) < 2,
-        `${label}: expected ${expected}, got ${actual}`);
-    checks += 1;
-}
-
-function expectNullCapturedAt(value, label) {
-    assert.equal(resolveGeolocationCapturedAtMs(value, now, 60_000), null, label);
-    checks += 1;
-}
-
-function expectAdvancing(previous, current, expected, label) {
-    assert.equal(resolveAdvancingGeolocationClockCapturedAtMs(previous, current), expected, label);
-    checks += 1;
-}
-
-function expectCompatibleFallback(options, expected, label) {
-    assert.equal(resolveCompatibleGeolocationCapturedAtMs(options), expected, label);
-    checks += 1;
-}
-
-expectCapturedAt(now - 1_000, now - 1_000, "epoch milliseconds");
-expectCapturedAt((now - 2_000) / 1_000, now - 2_000, "epoch seconds");
-expectCapturedAt((now - 3_000) * 1_000, now - 3_000, "epoch microseconds");
-expectCapturedAt((now - 4_000) * 1_000_000, now - 4_000, "epoch nanoseconds");
-expectCapturedAt(now - 5_000 - appleEpochOffsetMs, now - 5_000, "Apple milliseconds");
-expectCapturedAt(
-    (now - 6_000 - appleEpochOffsetMs) / 1_000, now - 6_000, "Apple seconds");
-expectCapturedAt(String((now - 7_000) / 1_000), now - 7_000, "numeric string seconds");
-
-expectNullCapturedAt(44_000, "single monotonic millisecond sample is not trusted");
-expectNullCapturedAt(44_000_000, "single monotonic microsecond sample is not trusted");
-expectNullCapturedAt(44_000_000_000, "single monotonic nanosecond sample is not trusted");
-expectNullCapturedAt(now - 61_000, "stale epoch milliseconds");
-expectNullCapturedAt(0, "zero timestamp");
-expectNullCapturedAt(Number.NaN, "NaN timestamp");
-expectNullCapturedAt(
-    (now - 7 * 24 * 60 * 60 * 1000) / 1000, "seven-day-old Unix seconds");
-expectNullCapturedAt(Date.UTC(2001, 8, 1) / 1000, "2001 Unix seconds");
-expectNullCapturedAt(
-    (now + 7 * 24 * 60 * 60 * 1000) / 1000, "future Unix seconds");
-
-expectAdvancing(
-    { value: 5_000_000_000_000, receivedAtMs: now - 1_000 },
-    { value: 5_001_000_000_000, receivedAtMs: now }, now,
-    "advancing boot-relative nanoseconds");
-expectAdvancing(
-    { value: 5_000_000_000_000, receivedAtMs: now - 1_000 },
-    { value: 5_000_000_000_000, receivedAtMs: now }, null,
-    "static boot-relative timestamp");
-expectAdvancing(
-    { value: now - 7 * 24 * 60 * 60 * 1000, receivedAtMs: now - 1_000 },
-    { value: now - 7 * 24 * 60 * 60 * 1000 + 1, receivedAtMs: now }, null,
-    "stale epoch milliseconds cannot masquerade as microseconds");
-expectAdvancing(
-    { value: (now - 7 * 24 * 60 * 60 * 1000) / 1000, receivedAtMs: now - 1_000 },
-    { value: (now - 7 * 24 * 60 * 60 * 1000) / 1000 + 1, receivedAtMs: now }, null,
-    "stale epoch seconds cannot masquerade as milliseconds");
-expectAdvancing(
-    { value: (now + 7 * 24 * 60 * 60 * 1000) / 1000, receivedAtMs: now - 1_000 },
-    { value: (now + 7 * 24 * 60 * 60 * 1000) / 1000 + 1, receivedAtMs: now }, null,
-    "future epoch seconds cannot masquerade as milliseconds");
-expectAdvancing(
-    { value: 44_000, receivedAtMs: now - 1_000 },
-    { value: 45_000, receivedAtMs: now }, now,
-    "advancing page-relative milliseconds");
-expectAdvancing(
-    { value: 44_000_000, receivedAtMs: now - 1_000 },
-    { value: 45_000_000, receivedAtMs: now }, now,
-    "advancing page-relative microseconds");
-expectAdvancing(
-    { value: 44_000_000_000, receivedAtMs: now - 1_000 },
-    { value: 45_000_000_000, receivedAtMs: now }, now,
-    "advancing page-relative nanoseconds");
-expectAdvancing(
-    { value: 400 * 24 * 60 * 60 * 1_000_000_000, receivedAtMs: now - 1_000 },
-    { value: 400 * 24 * 60 * 60 * 1_000_000_000 + 1_000_000_000,
-        receivedAtMs: now }, null,
-    "implausibly long boot-relative nanoseconds");
-
-expectCompatibleFallback({
-    capturedAtMs: now - 1_000,
-    compatibleAttempted: true,
-    visibilityState: "visible",
-    receivedAtMs: now,
-    captureDeadlineMs: now + 1_000
-}, now - 1_000, "valid browser timestamp is preserved");
-expectCompatibleFallback({
-    capturedAtMs: null,
-    compatibleAttempted: false,
-    visibilityState: "visible",
-    receivedAtMs: now,
-    captureDeadlineMs: now + 1_000
-}, null, "first high-accuracy stage cannot use receipt fallback");
-expectCompatibleFallback({
-    capturedAtMs: null,
-    compatibleAttempted: true,
-    visibilityState: "hidden",
-    receivedAtMs: now,
-    captureDeadlineMs: now + 1_000
-}, null, "hidden page cannot use receipt fallback");
-expectCompatibleFallback({
-    capturedAtMs: null,
-    compatibleAttempted: true,
-    visibilityState: "visible",
-    receivedAtMs: now + 1_000,
-    captureDeadlineMs: now + 1_000
-}, null, "expired capture cannot use receipt fallback");
-expectCompatibleFallback({
-    capturedAtMs: null,
-    compatibleAttempted: true,
-    visibilityState: "visible",
-    receivedAtMs: now,
-    captureDeadlineMs: now + 1_000
-}, now, "first compatible callback uses receipt fallback");
-
-console.log(`sales-checkin geolocation timestamp tests: ${checks}/${checks} passed`);
+const check = (label, fn) => { fn(); checks += 1; console.log(`ok - ${label}`); };
+check("raw epoch milliseconds and full coordinate are preserved", () => {
+    const sample = api.locationEvidenceFromPosition(position(now - 1000), now);
+    assert.equal(sample.capturedAt, new Date(now - 1000).toISOString());
+    assert.equal(sample.receivedAt, new Date(now).toISOString());
+    assert.equal(sample.rawTimestamp, String(now - 1000));
+    assert.equal(sample.longitude, 120.123456789);
+    assert.equal(sample.timeStatus, "KNOWN");
+});
+check("stale location remains evidence without becoming fresh", () => {
+    const sample = api.locationEvidenceFromPosition(position(now - 600000), now);
+    assert.equal(sample.capturedAt, new Date(now - 600000).toISOString());
+    assert.equal(sample.timeStatus, "STALE");
+    assert.notEqual(sample.capturedAt, sample.receivedAt);
+});
+check("unknown clocks and epoch seconds never become receipt time", () => {
+    for (const value of [0, 5000, now / 1000, "not-a-time", NaN, undefined, now + 86400000]) {
+        const sample = api.locationEvidenceFromPosition(position(value), now);
+        assert.equal(sample.capturedAt, null);
+        assert.equal(sample.timeStatus, "UNKNOWN");
+        assert.equal(sample.longitude, 120.123456789);
+    }
+});
+check("low or missing accuracy is retained rather than blocking", () => {
+    assert.equal(api.locationEvidenceFromPosition(position(now, 25000), now).accuracyMeters, 25000);
+    assert.equal(api.locationEvidenceFromPosition(position(now, null), now).accuracyMeters, null);
+    assert.equal(api.normalizeUnverifiedLocationEvidence({longitude: 181, latitude: 30}), null);
+});
+check("later better sample wins, stale or older callback cannot replace fresh", () => {
+    const good = api.locationEvidenceFromPosition(position(now - 2000, 70), now);
+    const better = api.locationEvidenceFromPosition(position(now - 1000, 20), now);
+    const stale = api.locationEvidenceFromPosition(position(now - 600000, 1), now);
+    assert.equal(api.shouldReplaceLocationSample(good, better), true);
+    assert.equal(api.shouldReplaceLocationSample(better, good), false);
+    assert.equal(api.shouldReplaceLocationSample(good, stale), false);
+    assert.equal(api.shouldReplaceLocationSample(null, stale), true);
+});
+check("selected authorized store progresses without GPS or nearby membership", () => {
+    Object.assign(api.state.visit, {city: "杭州", salespersonId: "sales", selectedStore: {id: "far-store"},
+        location: null, locationContext: null, nearbyStores: []});
+    assert.equal(api.visitSelectedStoreReady(), true);
+    assert.equal(api.isVisitStepReady(1), true);
+    const payload = api.buildSubmissionPayload();
+    assert.equal(payload.storeId, "far-store");
+    assert.equal(payload.location ?? null, null);
+});
+console.log(`${checks} geolocation behavior checks passed`);

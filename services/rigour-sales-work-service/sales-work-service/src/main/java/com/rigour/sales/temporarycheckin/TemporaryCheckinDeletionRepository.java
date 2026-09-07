@@ -101,6 +101,12 @@ public class TemporaryCheckinDeletionRepository {
                 """, timestamp(now), bin(tenantId), bin(id));
     }
 
+    List<String> derivedObjectKeys(UUID tenantId, UUID id) {
+        return jdbc.query("SELECT derived_object_key FROM temp_sales_checkin_media_derivative "
+                + "WHERE tenant_id=? AND submission_id=? AND derived_object_key IS NOT NULL",
+                (rs,n)->rs.getString(1),bin(tenantId),bin(id));
+    }
+
     int hardDelete(UUID tenantId, UUID id) {
         return jdbc.update("""
                 DELETE FROM temp_sales_checkin_submission
