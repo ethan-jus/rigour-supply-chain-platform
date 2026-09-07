@@ -141,6 +141,7 @@ public class TemporaryCheckinService {
     private final TemporaryCheckinRepository repository;
     private final TemporaryCheckinEvidenceRepository evidenceRepository;
     private final TemporaryCheckinDerivativeRepository derivativeRepository;
+    private final TemporaryCheckinImagePreviewService imagePreviewService;
     private final TemporaryCheckinAdminAuthRepository adminAuthRepository;
     private final TemporaryCheckinProperties properties;
     private final FileStorage fileStorage;
@@ -161,6 +162,7 @@ public class TemporaryCheckinService {
             TemporaryCheckinRepository repository,
             TemporaryCheckinEvidenceRepository evidenceRepository,
             TemporaryCheckinDerivativeRepository derivativeRepository,
+            TemporaryCheckinImagePreviewService imagePreviewService,
             TemporaryCheckinAdminAuthRepository adminAuthRepository,
             TemporaryCheckinProperties properties,
             FileStorage fileStorage,
@@ -178,6 +180,7 @@ public class TemporaryCheckinService {
         this.repository = repository;
         this.evidenceRepository = evidenceRepository;
         this.derivativeRepository = derivativeRepository;
+        this.imagePreviewService = imagePreviewService;
         this.adminAuthRepository = adminAuthRepository;
         this.properties = properties;
         this.fileStorage = fileStorage;
@@ -349,16 +352,30 @@ public class TemporaryCheckinService {
         List<UUID> segmentIds = segments.stream().map(AudioSegment::segmentId).toList();
         if (!segmentIds.isEmpty()) media.add("audio");
         Long duration = segments.isEmpty() ? null : 0L;
+        Long displayDuration = segments.isEmpty() ? null : 0L;
+        boolean serverDurationUsed=false, clientDurationUsed=false;
         for (AudioSegment segment : segments) {
             var derived = derivatives.get(row.id()+"/"+segment.segmentId()+"/"+segment.sha256());
-            if (derived == null || derived.durationMs() == null || derived.durationMs() <= 0) { duration = null; break; }
-            duration += derived.durationMs();
+            Long parsed=positiveDuration(derived==null?null:derived.durationMs());
+            Long shown=parsed==null?positiveDuration(segment.clientDurationMs()):parsed;
+            if(parsed==null) duration=null;
+            else if(duration!=null) duration+=parsed;
+            if(shown==null) displayDuration=null;
+            else if(displayDuration!=null) displayDuration+=shown;
+            if(parsed!=null) serverDurationUsed=true;
+            else if(shown!=null) clientDurationUsed=true;
         }
+        String durationSource=displayDuration==null?"UNKNOWN":serverDurationUsed
+                ?clientDurationUsed?"MIXED":"SERVER_PARSED":"CLIENT_ESTIMATE";
         return new TemporaryCheckinModels.SubmissionReceipt(row.id(), row.clientSubmissionId(), row.status(),
                 row.storeName(), row.city(), row.createdAt(), row.submittedAt(), List.copyOf(media), segmentIds,
                 row.submittedAt() == null ? null : row.submittedAt().plus(Duration.ofHours(properties.getSupplementalEvidenceHours())),
-                row.visitResult(), duration, photos.stream().map(PhotoRow::photoId).toList(),photoViews(photos,false));
+                row.visitResult(), duration, photos.stream().map(PhotoRow::photoId).toList(),photoViews(photos,false),
+                displayDuration,durationSource);
     }
+
+    /** 客户端录制计时始终只是估计；不会由开始时间、上传时间或中断时间反推媒体长度。 */
+    private static Long positiveDuration(Long duration) { return duration!=null && duration>0?duration:null; }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public TemporaryCheckinModels.OwnSubmissionDetail ownSubmission(UUID id, TemporaryCheckinRequestFacts facts) {
@@ -382,10 +399,14 @@ public class TemporaryCheckinService {
             String mediaId = segment.segmentId().toString();
             var derived = derivatives.get(id+"/"+mediaId+"/"+segment.sha256());
             String playbackStatus = derived == null || "PROCESSING".equals(derived.status()) ? "PENDING" : derived.status();
+            Long parsed=positiveDuration(derived==null?null:derived.durationMs());
+            Long estimated=positiveDuration(segment.clientDurationMs());
             media.add(new TemporaryCheckinModels.OwnMediaView(mediaId, "audio", segment.originalFilename(),
-                    segment.contentType(), segment.sizeBytes(), segment.uploadedAt(), derived == null ? null : derived.durationMs(),
+                    segment.contentType(), segment.sizeBytes(), segment.uploadedAt(), parsed,
                     playbackStatus, null, "READY".equals(playbackStatus) ? ownMediaUrl(id,mediaId,"playback") : null,
-                    ownMediaUrl(id,mediaId,"original")));
+                    ownMediaUrl(id,mediaId,"original"),segment.clientDurationMs(),normalizedAudioCaptureSource(segment.captureSource()),
+                    normalizedAudioTimingStatus(segment.timingStatus()),segment.clientStartedAt(),segment.fileLastModifiedAt(),
+                    parsed==null?estimated:parsed,parsed!=null?"SERVER_PARSED":estimated!=null?"CLIENT_ESTIMATE":"UNKNOWN"));
         }
         Instant supplementUntil = row.submittedAt() == null ? null
                 : row.submittedAt().plus(Duration.ofHours(properties.getSupplementalEvidenceHours()));
@@ -1205,6 +1226,7 @@ public class TemporaryCheckinService {
         if (updated != 1) {
             throw TemporaryCheckinException.conflict("草稿状态已变化，请刷新后重试");
         }
+        enqueueDerivative(submissionId,segmentId.toString(),"AUDIO",added.media());
         if ("SUBMITTED".equals(submission.status())) {
             evidenceRepository.supplement(tenantId,submissionId,segmentId,
                     identity.salesperson().name(),objectKey,validated.sha256(),now);
@@ -1681,12 +1703,7 @@ public class TemporaryCheckinService {
         PhotoRow photo=activePhotos(submission.id()).stream().filter(item -> item.photoId().equals(photoId)).findFirst()
                 .orElseThrow(() -> TemporaryCheckinException.notFound("照片不存在或已删除"));
         if(thumbnail) {
-            enqueueDerivative(submission.id(),photo.mediaId(),"IMAGE",photo.media());
-            var derived=derivativeRepository.find(tenantId,submission.id(),photo.mediaId(),photo.sha256());
-            if(derived==null || !"READY".equals(derived.status()) || derived.thumbnail()==null)
-                throw TemporaryCheckinException.conflict(derived!=null && "FAILED".equals(derived.status())
-                        ?"缩略图生成失败，可查看原图":"缩略图正在生成，请稍后重试");
-            byte[] bytes=derived.thumbnail();
+            byte[] bytes=imagePreviewService.thumbnail(submission.id(),photo.mediaId(),photo.media());
             return new AdminMedia(() -> new java.io.ByteArrayInputStream(bytes),bytes.length,"image/jpeg","thumbnail.jpg");
         }
         return new AdminMedia(() -> fileStorage.open(tenantId.toString(),photo.objectKey()),photo.sizeBytes(),photo.contentType(),photo.originalFilename());
@@ -1703,12 +1720,7 @@ public class TemporaryCheckinService {
         UUID submissionId = submission.id();
         MediaReference original=media(submission,kind);
         if(!hasMedia(original)) throw TemporaryCheckinException.notFound("媒体文件不存在");
-        enqueueDerivative(submissionId,kind.pathValue,"IMAGE",original);
-        var derived=derivativeRepository.find(tenantId,submissionId,kind.pathValue,original.sha256());
-        if(derived==null || !"READY".equals(derived.status()) || derived.thumbnail()==null)
-            throw TemporaryCheckinException.conflict(derived!=null && "FAILED".equals(derived.status())
-                    ? "缩略图生成失败，可查看原图" : "缩略图正在生成，请稍后重试");
-        return derived.thumbnail();
+        return imagePreviewService.thumbnail(submissionId,kind.pathValue,original);
     }
 
     public AdminMedia openAdminAudioPlayback(AdminScope scope,UUID submissionId,UUID segmentId) {
@@ -2040,7 +2052,7 @@ public class TemporaryCheckinService {
         return hasText(second) ? second : null;
     }
 
-    private AdminQuery normalizeAdminQuery(
+    AdminQuery normalizeAdminQuery(
             AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId,
             String status, String visitType, String query) {
         if (from != null && to != null && from.isAfter(to)) {
@@ -3372,7 +3384,7 @@ public class TemporaryCheckinService {
         }
     }
 
-    private record AdminQuery(
+    record AdminQuery(
             Instant from, Instant toExclusive, String city, UUID salespersonId, String status,
             String visitType, String escapedQuery) { }
 

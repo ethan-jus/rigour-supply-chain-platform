@@ -301,6 +301,9 @@ class SalesWorkVisitIntegrationTests {
 
     @Test
     void managerPlanFlowsToOwnTodayPlanExecutionAndCompletion() {
+        // 本场景创建并执行自然日计划；凌晨运行时不能继承04:00换日的跨夜外勤规则。
+        assertThat(jdbc.update("UPDATE sales_field_policy_version SET business_day_cutoff='00:00:00' "
+                + "WHERE tenant_id=? AND id=?", bin(tenantId), bin(fieldPolicyVersionId))).isEqualTo(1);
         LocalDate today = LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
         var planned = visitPlanService.create(new UpsertVisitPlanCommand(
                 profileId, today, storeId, "核对陈列并确认下月补货计划", null));
@@ -318,6 +321,7 @@ class SalesWorkVisitIntegrationTests {
 
         WorkDayView workDay = attendanceService.checkIn(new CheckInCommand("plan-check-in-day-1",
                 "plan-client-1", Instant.now(), location("120.1000000", "30.2000000"), null, "ONLINE"));
+        assertThat(workDay.businessDate()).isEqualTo(today);
         CreateVisitCommand createCommand = new CreateVisitCommand("plan-visit-create-1",
                 workDay.id(), planned.planId(), null, null, null,
                 location("120.1000000", "30.2000000"), Instant.now(), "plan-device-1");

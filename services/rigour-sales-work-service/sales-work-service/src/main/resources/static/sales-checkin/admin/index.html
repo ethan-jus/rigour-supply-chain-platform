@@ -7,7 +7,7 @@
     <meta name="robots" content="noindex,nofollow,noarchive">
     <meta name="description" content="销售拜访临时采集数据管理与导出">
     <title>销售拜访数据管理</title>
-    <link rel="stylesheet" href="/sales-checkin/admin/admin.css?v=20260907-multi-photo">
+    <link rel="stylesheet" href="/sales-checkin/admin/admin.css?v=20260908-attendance-multi-photo">
 </head>
 <body>
 <header class="topbar">
@@ -115,6 +115,12 @@
             <button id="reset-button" class="text-button" type="button">重置条件</button>
         </div>
 
+        <div class="date-presets" role="group" aria-label="快捷选择打卡日期">
+            <span>打卡日期</span>
+            <button type="button" class="text-button" data-attendance-range="today">今天</button>
+            <button type="button" class="text-button" data-attendance-range="week">近 7 天</button>
+            <button type="button" class="text-button" data-attendance-range="month">本月</button>
+        </div>
         <form id="filter-form" class="filter-form">
             <label class="field field--query">
                 <span>关键词</span>
@@ -196,11 +202,36 @@
                 <button id="search-button" class="primary-button" type="submit">
                     查询数据
                 </button>
-                <a id="export-link" class="secondary-button" href="/sales-checkin/admin/export.csv" download>
-                    导出当前筛选 CSV
+                <a id="export-link" class="secondary-button" href="/sales-checkin/admin/export.xlsx" download="销售拜访打卡统计.xlsx">
+                    导出 Excel
                 </a>
             </div>
         </form>
+        <p class="attendance-note">修改条件后点击“查询数据”，统计、明细与 Excel 使用同一组条件。</p>
+    </section>
+
+    <section id="attendance-card" class="attendance-card" aria-labelledby="attendance-heading">
+        <div class="section-heading">
+            <div><p class="section-kicker">当前筛选 · 全量统计</p><h2 id="attendance-heading">销售每日打卡</h2></div>
+            <button id="attendance-retry" class="text-button" type="button" hidden>重试统计</button>
+        </div>
+        <dl class="attendance-metrics" aria-label="当前筛选全量概览">
+            <div><dt>总拜访记录</dt><dd id="attendance-total">--</dd><small>当前筛选全部记录</small></div>
+            <div><dt>已打卡销售</dt><dd id="attendance-salespeople">--</dd><small>已提交记录的去重人数</small></div>
+            <div><dt>待复核记录</dt><dd id="attendance-pending-review">--</dd><small>当前筛选待处理</small></div>
+        </dl>
+        <p id="attendance-state" class="attendance-state" role="status" aria-live="polite">正在读取统计…</p>
+        <p class="attendance-note">日期按北京时间统计。每日汇总仅包含已提交拜访；没有记录不等于旷工，不能替代排班或考勤判定。</p>
+        <div id="attendance-table-wrap" class="table-wrap attendance-table-wrap" role="region" aria-label="每日销售打卡汇总，可横向滚动" tabindex="0" hidden>
+            <table class="attendance-table">
+                <thead><tr><th scope="col">日期</th><th scope="col">城市</th><th scope="col">销售</th><th scope="col">拜访次数</th><th scope="col">门店数</th><th scope="col">首次打卡</th><th scope="col">末次打卡</th><th scope="col">待复核</th><th scope="col">明细</th></tr></thead>
+                <tbody id="attendance-rows"></tbody>
+            </table>
+        </div>
+        <div id="attendance-pagination" class="attendance-pagination" hidden>
+            <span id="attendance-page-indicator"></span>
+            <div><button id="attendance-previous" type="button" class="secondary-button">上一页</button><button id="attendance-next" type="button" class="secondary-button">下一页</button></div>
+        </div>
     </section>
 
     <section class="data-card" aria-labelledby="data-heading">
@@ -741,6 +772,6 @@
     </tr>
 </template>
 
-<script src="/sales-checkin/admin/admin.js?v=20260907-multi-photo" defer></script>
+<script src="/sales-checkin/admin/admin.js?v=20260908-attendance-multi-photo" defer></script>
 </body>
 </html>

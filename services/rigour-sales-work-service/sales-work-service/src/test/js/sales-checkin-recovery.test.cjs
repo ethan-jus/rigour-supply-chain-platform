@@ -209,13 +209,13 @@ async function check(name, run) {await run(); checks++; console.log(`ok - ${name
         h.api.handleStoreResultKeydown(key("ArrowDown",first));
         assert.equal(h.context.document.activeElement,second);
         h.api.handleStoreResultKeydown(key("Escape",second));
-        assert.equal(root.hidden,true); assert.equal(h.context.document.activeElement,h.element("#store-search"));
+        assert.equal(root.hidden,true); assert.equal(h.context.document.activeElement,h.element("#store-search-toggle"));
         for (const name of ["Enter"," "]) {
             const event=key(name,first); h.api.handleStoreResultKeydown(event);
             assert.equal(event.prevented,false,"native button activation must remain enabled");
         }
         first.dispatch("click");
-        assert.equal(h.api.state.visit.selectedStore.id,"first"); assert.equal(root.hidden,false);
+        assert.equal(h.api.state.visit.selectedStore.id,"first"); assert.equal(root.hidden,true);
         assert.equal(root.children[0].getAttribute("aria-pressed"),"true");
         assert.equal(h.element("#store-search").value,"");
     });

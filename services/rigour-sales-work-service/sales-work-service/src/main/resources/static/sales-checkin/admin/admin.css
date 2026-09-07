@@ -2798,3 +2798,34 @@ body.can-delete-submissions .records-table td.selection-cell {
 .row-photo-gallery { overscroll-behavior-x: contain; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
 .row-photo-gallery .row-thumbnail-button { scroll-snap-align: start; }
 .row-photo-count { display: block; margin-top: 3px; color: var(--ink-soft); font-size: 10px; line-height: 1.5; white-space: nowrap; }
+
+/* The overview and daily groups are server aggregates of the applied filters. */
+.date-presets{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0 16px;color:var(--muted);font-size:13px}
+.date-presets>span{margin-right:4px}
+.date-presets>button{padding:8px 14px;min-height:38px;border:1px solid var(--line);border-radius:6px;background:var(--surface-soft)}
+.attendance-card{scroll-margin-top:70px;margin:20px 0;padding:22px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.attendance-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:20px 0 14px}
+.attendance-metrics>div{padding:18px 20px;background:var(--surface-soft);border:1px solid var(--line);border-radius:8px}
+.attendance-metrics dt{font-size:13px;font-weight:600;color:var(--muted)}
+.attendance-metrics dd{margin:8px 0;color:var(--brand);font-size:32px;line-height:1.2;font-variant-numeric:tabular-nums;font-weight:750}
+.attendance-metrics small{color:var(--muted);font-size:11px}
+.attendance-state{margin:10px 0;color:var(--ink);font-size:13px;line-height:1.6}
+.attendance-note{margin:10px 0 16px;color:var(--muted);font-size:12px;line-height:1.7}
+.attendance-table-wrap{border:1px solid var(--line);border-radius:7px;max-width:100%;max-height:460px;overflow:auto;overscroll-behavior:contain}
+.attendance-table{display:table;table-layout:auto;width:100%;min-width:850px;border-collapse:collapse;text-align:left;font-size:13px;font-variant-numeric:tabular-nums}
+.attendance-table th{position:sticky;top:0;z-index:1;padding:12px 14px;background:var(--surface-soft);color:var(--muted);font-size:12px;font-weight:650;white-space:nowrap}
+.attendance-table td{padding:12px 14px;border-top:1px solid var(--line);vertical-align:middle}
+.attendance-table td:nth-child(1),.attendance-table td:nth-child(6),.attendance-table td:nth-child(7){white-space:nowrap}
+.attendance-table .text-button{white-space:nowrap;min-height:36px}
+.attendance-pagination{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:16px;color:var(--muted);font-size:12px}
+.attendance-pagination>div{display:flex;gap:8px}
+.attendance-pagination button{min-height:38px;padding:8px 14px}
+@media(max-width:700px){.attendance-card{padding:16px}.attendance-metrics{gap:8px}.attendance-metrics>div{padding:12px 10px}.attendance-metrics dd{font-size:26px}.attendance-metrics dt{font-size:11px}.attendance-metrics small{font-size:10px}.attendance-pagination{align-items:flex-start;flex-direction:column}.date-presets{gap:6px}}
+/* Keep this aggregate grid tabular; legacy phone card rules apply only to record detail rows. */
+.attendance-table thead{display:table-header-group;position:static;width:auto;height:auto;overflow:visible;clip:auto;clip-path:none;white-space:normal}
+.attendance-table tbody{display:table-row-group;width:auto}
+.attendance-table tr{display:table-row;width:auto;padding:0;border-bottom:0}
+.attendance-table th,.attendance-table td{display:table-cell;width:auto;min-width:0;gap:0;border-bottom:0}
+.attendance-table td::before{display:none;content:none}
+
+#data-heading{scroll-margin-top:70px}

@@ -55,6 +55,26 @@ class TemporaryCheckinDerivativeRepository {
                 """,(rs,n)->read(rs),bin(tenant),bin(submission),mediaId,sha).stream().findFirst().orElse(null);
     }
 
+    /** 调用方已确认原件仍可读；对象键和 SHA 同时匹配才复用旧编号的缩略图。 */
+    byte[] readyImage(UUID tenant,UUID submission,String key,String sha) {
+        return jdbc.query("""
+                SELECT thumbnail_bytes FROM temp_sales_checkin_media_derivative d
+                WHERE tenant_id=? AND submission_id=? AND kind='IMAGE' AND source_object_key=?
+                    AND source_sha256=? AND status='READY' AND thumbnail_bytes IS NOT NULL
+                """+" AND "+SOURCE_ACTIVE+" ORDER BY updated_at DESC LIMIT 1",
+                (rs,n)->rs.getBytes(1),bin(tenant),bin(submission),key,sha).stream().findFirst().orElse(null);
+    }
+
+    boolean claimRequestedImage(UUID tenant,UUID id,UUID lease,Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_media_derivative SET status='PROCESSING',attempts=attempts+1,
+                    lease_token=?,updated_at=?
+                WHERE tenant_id=? AND id=? AND kind='IMAGE' AND attempts<3
+                    AND (status='PENDING' OR (status='FAILED' AND updated_at<=?
+                        AND error_code IN ('DECODE_OR_STORAGE_FAILED','MEDIA_IO_FAILED','STORAGE_UNAVAILABLE','WORKER_INTERRUPTED')))
+                """,bin(lease),Timestamp.from(now),bin(tenant),bin(id),Timestamp.from(now.minusSeconds(2)))==1;
+    }
+
     java.util.Map<String,Derivative> forSubmissions(UUID tenant,List<UUID> submissions) {
         if(submissions.isEmpty()) return java.util.Map.of();
         List<Object> arguments=new java.util.ArrayList<>();arguments.add(bin(tenant));
@@ -82,7 +102,8 @@ class TemporaryCheckinDerivativeRepository {
                 photo.type(),photo.filename(),photo.bytes(),now);
         for (String prefix:List.of("storefront_photo_","wechat_screenshot_","audio_")) {
             String mediaId="audio_".equals(prefix)?null:("storefront_photo_".equals(prefix)?"storefront-photo":"wechat-screenshot");
-            String legacy="audio_".equals(prefix)?" AND (s.audio_segments_json IS NULL OR JSON_LENGTH(s.audio_segments_json)=0)":"";
+            String legacy="audio_".equals(prefix)?" AND (s.audio_segments_json IS NULL OR JSON_LENGTH(s.audio_segments_json)=0)"
+                    :"storefront_photo_".equals(prefix)?" AND NOT EXISTS (SELECT 1 FROM temp_sales_checkin_photo p WHERE p.tenant_id=s.tenant_id AND p.submission_id=s.id)":"";
             String identity="audio_".equals(prefix)?"LOWER(BIN_TO_UUID(s.id))":"'"+mediaId+"'";
             String sql="SELECT s.id,s."+prefix+"object_key,s."+prefix+"sha256,s."+prefix+"content_type,s."
                     +prefix+"original_filename,s."+prefix+"size_bytes FROM temp_sales_checkin_submission s "
@@ -124,6 +145,11 @@ class TemporaryCheckinDerivativeRepository {
 
     List<Derivative> next(UUID tenant,Instant now) {
         jdbc.update("""
+                UPDATE temp_sales_checkin_media_derivative SET status='PENDING',lease_token=NULL,updated_at=?
+                WHERE tenant_id=? AND status='FAILED' AND attempts<3 AND updated_at<?
+                  AND error_code IN ('DECODE_OR_STORAGE_FAILED','MEDIA_IO_FAILED','STORAGE_UNAVAILABLE','PROCESS_TIMEOUT','WORKER_INTERRUPTED')
+                """,Timestamp.from(now),bin(tenant),Timestamp.from(now.minusSeconds(60)));
+        jdbc.update("""
                 UPDATE temp_sales_checkin_media_derivative SET status=IF(attempts>=3,'FAILED','PENDING'),
                     error_code='WORKER_INTERRUPTED',lease_token=NULL,updated_at=?
                 WHERE tenant_id=? AND status='PROCESSING' AND updated_at<?
@@ -132,6 +158,14 @@ class TemporaryCheckinDerivativeRepository {
                 SELECT * FROM temp_sales_checkin_media_derivative
                 WHERE tenant_id=? AND status='PENDING' AND attempts<3 ORDER BY created_at,id LIMIT 1
                 """,(rs,n)->read(rs),bin(tenant));
+    }
+
+    void deferBusyImage(UUID tenant,UUID id,UUID lease,Instant now) {
+        jdbc.update("""
+                UPDATE temp_sales_checkin_media_derivative SET status='PENDING',attempts=GREATEST(0,attempts-1),
+                    lease_token=NULL,updated_at=?
+                WHERE tenant_id=? AND id=? AND status='PROCESSING' AND lease_token=?
+                """,Timestamp.from(now),bin(tenant),bin(id),bin(lease));
     }
 
     boolean claim(UUID tenant,UUID id,UUID lease,Instant now) {

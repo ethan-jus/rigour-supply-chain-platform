@@ -30,6 +30,7 @@ const check=(value,name,details)=>{checks.push({name,passed:!!value,details});as
    const identity={username:'虚构管理员',allCities:true,csrfToken:'local-fixture-token',canDeleteSubmissions:true,canManageSalespersons:true,canManageCities:true};
    if(url.pathname===api+'/auth/me')return json(identity);
    if(url.pathname===api+'/options')return json({scope:identity,cities:['杭州'],salespersons:[{id:id(70),name:'虚构销售',city:'杭州'}],audioIntelligenceEnabled:false});
+   if(url.pathname===api+'/submissions/attendance-summary')return json({totalVisits:1,checkedInSalespeople:1,pendingReviewTotal:1,items:[{date:'2026-09-07',city:'杭州',salespersonId:id(70),salespersonName:'虚构销售',visitCount:1,storeCount:1,firstCheckinAt:item.completedAt,lastCheckinAt:item.completedAt,pendingReviewCount:1}],page:0,size:50,totalElements:1,totalPages:1});
    if(url.pathname===api+'/submissions')return json({scope:identity,items:[item],page:0,size:20,total:1,totalElements:1,totalPages:1,firstVisitTotal:1,revisitTotal:0,locationAttentionTotal:1,reviewPendingTotal:1,missingAudioTotal:1});
    if(url.pathname===`${api}/submissions/${id(1)}/reviews`)return json([]);
    const match=url.pathname.match(/^\/sales-checkin\/admin\/api\/v1\/submissions\/([^/]+)\/media\/photos\/([^/]+)$/);

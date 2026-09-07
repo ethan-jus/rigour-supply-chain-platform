@@ -3274,10 +3274,6 @@ class TemporaryCheckinApiIntegrationTests {
                 .andExpect(content().contentType(MediaType.IMAGE_JPEG))
                 .andExpect(content().bytes(jpeg));
 
-        mockMvc.perform(get("/sales-checkin/admin/submissions/{id}/media/storefront-photo/thumbnail",submissionId)
-                .with(admin("city-beijing"))).andExpect(status().isConflict());
-        new TemporaryCheckinDerivativeWorker(derivativeRepository,thumbnailer,fileStorage,checkinProperties,
-                java.time.Clock.systemUTC(),"ffmpeg","ffprobe").process();
         MvcResult thumbnail = mockMvc.perform(get(
                         "/sales-checkin/admin/submissions/{id}/media/storefront-photo/thumbnail", submissionId)
                         .with(admin("city-beijing")))
@@ -3344,6 +3340,33 @@ class TemporaryCheckinApiIntegrationTests {
                     request.setMethod("PUT");
                     return request;
                 }));
+    }
+
+    @Test
+    void exportsRealChineseWorkbookWithSameFiltersAndCityScope() throws Exception {
+        UUID beijing=insertAdminSubmission("北京",VISITOR_ID,STORE_ID,"北京导出门店","导出客户","报表样例");
+        UUID shenzhen=insertAdminSubmission("深圳",SHENZHEN_SALESPERSON_ID,SHENZHEN_STORE_ID,"深圳导出门店","导出客户","报表样例");
+        Instant at=Instant.parse("2026-09-07T16:33:33Z");
+        markSubmitted(beijing,at.minusSeconds(60),at);markSubmitted(shenzhen,at.minusSeconds(60),at);
+        jdbc.update("UPDATE temp_sales_checkin_submission SET transcript=?,summary_text=? WHERE id=?","大文本".repeat(1000),"不需要加载".repeat(1000),bin(beijing));
+        MvcResult result=mockMvc.perform(get("/sales-checkin/admin/export.xlsx").with(admin("city-beijing"))
+                .param("from","2026-09-08").param("to","2026-09-08").param("q","导出"))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+                .andExpect(content().contentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .andExpect(header().string("Content-Disposition",org.hamcrest.Matchers.containsString(".xlsx"))).andReturn();
+        try(var book=new org.apache.poi.xssf.usermodel.XSSFWorkbook(new ByteArrayInputStream(result.getResponse().getContentAsByteArray()))) {
+            var detail=book.getSheet("打卡明细");var summary=book.getSheet("每日销售汇总");
+            assertThat(detail.getLastRowNum()).isEqualTo(5);
+            assertThat(detail.getRow(5).getCell(3).getStringCellValue()).isEqualTo("北京导出门店");
+            assertThat(new org.apache.poi.ss.usermodel.DataFormatter().formatCellValue(detail.getRow(5).getCell(0))).isEqualTo("2026-09-08 00:33:33");
+            assertThat(summary.getRow(5).getCell(3).getNumericCellValue()).isEqualTo(1);
+            assertThat(detail.getRow(5).getCell(16).getNumericCellValue()).isEqualTo(1);
+        }
+        mockMvc.perform(get("/sales-checkin/admin/export.xlsx")).andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/sales-checkin/admin/export.xlsx").with(admin("city-beijing")).param("city","深圳"))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/sales-checkin/admin/export.xlsx").with(admin("city-beijing")).param("sortBy","id;DROP"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -3484,6 +3507,207 @@ class TemporaryCheckinApiIntegrationTests {
         bytes.putInt(16).putShort((short)1).putShort((short)1).putInt(8000).putInt(16000).putShort((short)2).putShort((short)16);
         bytes.put("data".getBytes(StandardCharsets.US_ASCII)).putInt(16000);
         return bytes.array();
+    }
+
+    @Test
+    void streamingWebmWithoutHeaderDurationGetsVerifiedPlaybackDuration() throws Exception {
+        java.nio.file.Path directory=java.nio.file.Files.createTempDirectory("checkin-streaming-webm-");
+        try {
+            java.nio.file.Path stream=directory.resolve("stream.webm");
+            Process generate=new ProcessBuilder("ffmpeg","-nostdin","-hide_banner","-loglevel","error",
+                    "-f","lavfi","-i","sine=frequency=440:sample_rate=24000","-t","1",
+                    "-c:a","libopus","-live","1","-f","webm","pipe:1")
+                    .redirectOutput(stream.toFile()).redirectError(directory.resolve("generate.log").toFile()).start();
+            assertThat(generate.waitFor(10,TimeUnit.SECONDS)).isTrue();
+            assertThat(generate.exitValue()).isZero();
+            Process probe=new ProcessBuilder("ffprobe","-v","error","-show_entries","format=duration",
+                    "-of","default=noprint_wrappers=1:nokey=1",stream.toString()).start();
+            assertThat(probe.waitFor(10,TimeUnit.SECONDS)).isTrue();
+            assertThat(new String(probe.getInputStream().readAllBytes(),StandardCharsets.UTF_8).trim()).isEqualTo("N/A");
+            byte[] webm=java.nio.file.Files.readAllBytes(stream);
+            UUID id=insertAdminSubmission("北京",VISITOR_ID,STORE_ID,"流式录音门店","客户","录音");
+            String source="test/streaming.webm",sha="e".repeat(64);
+            jdbc.update("""
+                    UPDATE temp_sales_checkin_submission SET storefront_photo_object_key=NULL,
+                    storefront_photo_sha256=NULL,storefront_photo_size_bytes=NULL,storefront_photo_content_type=NULL,
+                    storefront_photo_original_filename=NULL,audio_object_key=?,audio_sha256=?,
+                    audio_content_type='audio/webm',audio_original_filename='recorded.webm',audio_size_bytes=? WHERE id=?
+                    """,source,sha,webm.length,bin(id));
+            when(fileStorage.open(TENANT_ID.toString(),source)).thenAnswer(call->new ByteArrayInputStream(webm));
+            new TemporaryCheckinDerivativeWorker(derivativeRepository,thumbnailer,fileStorage,checkinProperties,
+                    java.time.Clock.systemUTC(),"ffmpeg","ffprobe").process();
+            var derived=derivativeRepository.find(TENANT_ID,id,id.toString(),sha);
+            assertThat(derived.status()).isEqualTo("READY");
+            assertThat(derived.durationMs()).isBetween(900L,1200L);
+            assertThat(derived.derivedBytes()).isPositive();
+        } finally {
+            try(var paths=java.nio.file.Files.walk(directory)) {
+                for(var path:paths.sorted(java.util.Comparator.reverseOrder()).toList()) java.nio.file.Files.deleteIfExists(path);
+            }
+        }
+    }
+
+    @Test
+    void personalThumbnailsGenerateOnDemandRetryTransientReadAndKeepAuthenticationAndDeletion() throws Exception {
+        var owner=historyIdentity(VISITOR_ID,"北京");
+        var other=historyIdentity(CREATOR_ID,"北京");
+        UUID id=insertAdminSubmission("北京",VISITOR_ID,STORE_ID,"缩略图门店","客户","看图");
+        byte[] jpeg=jpeg(960,640);
+        jdbc.update("UPDATE temp_sales_checkin_submission SET storefront_photo_size_bytes=? WHERE id=?",jpeg.length,bin(id));
+        String path="/sales-checkin/api/v1/submissions/{id}/mine/media/{mediaId}";
+        mockMvc.perform(get(path,id,"photo-"+id).param("variant","thumbnail").with(ownerCookies(other)))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get(path,id,"photo-"+id).param("variant","thumbnail").with(trustedHistoryRequest()))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(fileStorage);
+        when(fileStorage.open(TENANT_ID.toString(),"tenant/beijing.jpg"))
+                .thenThrow(TemporaryCheckinException.storage("测试暂时无法读取"))
+                .thenAnswer(call->new ByteArrayInputStream(jpeg));
+        mockMvc.perform(get(path,id,"photo-"+id).param("variant","thumbnail").with(ownerCookies(owner)))
+                .andExpect(status().isServiceUnavailable());
+        var job=derivativeRepository.find(TENANT_ID,id,"photo-"+id,"b".repeat(64));
+        assertThat(job.status()).isEqualTo("FAILED");
+        jdbc.update("UPDATE temp_sales_checkin_media_derivative SET updated_at=? WHERE id=?",
+                Timestamp.from(Instant.now().minusSeconds(3)),bin(job.id()));
+        byte[] preview=mockMvc.perform(get(path,id,"photo-"+id).param("variant","thumbnail").with(ownerCookies(owner)))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control","private, no-store"))
+                .andReturn().getResponse().getContentAsByteArray();
+        assertThat(ImageIO.read(new ByteArrayInputStream(preview)).getWidth()).isEqualTo(320);
+        assertThat(derivativeRepository.find(TENANT_ID,id,"photo-"+id,"b".repeat(64)).status()).isEqualTo("READY");
+        mockMvc.perform(get(path,id,"storefront-photo").param("variant","thumbnail").with(ownerCookies(owner)))
+                .andExpect(status().isOk()).andExpect(content().bytes(preview));
+        verify(fileStorage,times(2)).open(TENANT_ID.toString(),"tenant/beijing.jpg");
+        // 已缓存对象仍受原件删除状态限制，鉴权失败也不会触发解码。
+        jdbc.update("""
+                UPDATE temp_sales_checkin_submission SET storefront_photo_deleted_at=?,
+                storefront_photo_deleted_by='test-admin',storefront_photo_deletion_reason='test' WHERE id=?
+                """,Timestamp.from(Instant.now()),bin(id));
+        clearInvocations(fileStorage);
+        mockMvc.perform(get(path,id,"photo-"+id).param("variant","thumbnail").with(ownerCookies(owner)))
+                .andExpect(status().isNotFound());
+        verifyNoInteractions(fileStorage);
+    }
+
+    @Test
+    void personalAudioDurationsKeepClientEstimatesSeparateFromServerParsingAndUnknownSegments() throws Exception {
+        var owner=historyIdentity(VISITOR_ID,"北京");
+        UUID client=UUID.randomUUID();
+        var created=mockMvc.perform(post("/sales-checkin/api/v1/submissions").with(ownerCookies(owner))
+                .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsBytes(
+                        unverifiedSubmission(client,STORE_ID,"时长语义",null,null,null))))
+                .andExpect(status().isOk()).andReturn();
+        UUID id=UUID.fromString(objectMapper.readTree(created.getResponse().getContentAsByteArray()).path("id").asText());
+        UUID first=UUID.randomUUID(),second=UUID.randomUUID(),unknown=UUID.randomUUID();
+        String started=Instant.now().minusSeconds(12).toString();
+        mockMvc.perform(multipart("/sales-checkin/api/v1/submissions/{id}/media/audio/{segmentId}",id,first)
+                .file(new MockMultipartFile("file","recorded.wav","audio/wav",pcmWav()))
+                .param("captureSource","BROWSER_RECORDER").param("clientDurationMs","10000")
+                .param("clientStartedAt",started).with(ownerCookies(owner)).header("X-Submission-Key",SUBMISSION_KEY)
+                .with(request->{request.setMethod("PUT");return request;})).andExpect(status().isOk());
+        var manifest=objectMapper.readTree(jdbc.queryForObject("SELECT audio_segments_json FROM temp_sales_checkin_submission WHERE id=?",String.class,bin(id)));
+        String sha=manifest.get(0).path("sha256").asText();
+        var job=derivativeRepository.find(TENANT_ID,id,first.toString(),sha);
+        assertThat(job).as("上传完成立即排队，无需等待 discover").isNotNull();
+        assertThat(job.status()).isEqualTo("PENDING");
+        mockMvc.perform(get("/sales-checkin/api/v1/submissions/{id}/mine",id).with(ownerCookies(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.media[0].clientDurationMs").value(10000))
+                .andExpect(jsonPath("$.media[0].captureSource").value("BROWSER_RECORDER"))
+                .andExpect(jsonPath("$.media[0].durationMs").value(10000))
+                .andExpect(jsonPath("$.media[0].durationSource").value("CLIENT_ESTIMATE"))
+                .andExpect(jsonPath("$.media[0].parsedDurationMs").doesNotExist());
+        mockMvc.perform(get("/sales-checkin/api/v1/submissions/mine").with(ownerCookies(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].audioDisplayDurationMs").value(10000))
+                .andExpect(jsonPath("$.items[0].audioDurationSource").value("CLIENT_ESTIMATE"))
+                .andExpect(jsonPath("$.items[0].audioDurationMs").doesNotExist());
+        UUID lease=UUID.randomUUID();
+        assertThat(derivativeRepository.claim(TENANT_ID,job.id(),lease,Instant.now())).isTrue();
+        assertThat(derivativeRepository.success(TENANT_ID,job.id(),lease,9000L,null,"test/verified.mp3",100L,Instant.now())).isTrue();
+        mockMvc.perform(get("/sales-checkin/api/v1/submissions/{id}/mine",id).with(ownerCookies(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.media[0].durationMs").value(9000))
+                .andExpect(jsonPath("$.media[0].parsedDurationMs").value(9000))
+                .andExpect(jsonPath("$.media[0].clientDurationMs").value(10000))
+                .andExpect(jsonPath("$.media[0].durationSource").value("SERVER_PARSED"));
+        mockMvc.perform(get("/sales-checkin/api/v1/submissions/mine").with(ownerCookies(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].audioDurationMs").value(9000))
+                .andExpect(jsonPath("$.items[0].audioDisplayDurationMs").value(9000))
+                .andExpect(jsonPath("$.items[0].audioDurationSource").value("SERVER_PARSED"));
+        byte[] secondWav=pcmWav();secondWav[secondWav.length-1]=1;
+        mockMvc.perform(multipart("/sales-checkin/api/v1/submissions/{id}/media/audio/{segmentId}",id,second)
+                .file(new MockMultipartFile("file","second.wav","audio/wav",secondWav))
+                .param("captureSource","BROWSER_RECORDER").param("clientDurationMs","2000")
+                .with(ownerCookies(owner)).header("X-Submission-Key",SUBMISSION_KEY)
+                .with(request->{request.setMethod("PUT");return request;})).andExpect(status().isOk());
+        mockMvc.perform(get("/sales-checkin/api/v1/submissions/mine").with(ownerCookies(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].audioDisplayDurationMs").value(11000))
+                .andExpect(jsonPath("$.items[0].audioDurationSource").value("MIXED"))
+                .andExpect(jsonPath("$.items[0].audioDurationMs").doesNotExist());
+        byte[] unknownWav=pcmWav();unknownWav[unknownWav.length-1]=2;
+        mockMvc.perform(multipart("/sales-checkin/api/v1/submissions/{id}/media/audio/{segmentId}",id,unknown)
+                .file(new MockMultipartFile("file","unknown.wav","audio/wav",unknownWav))
+                .param("captureSource","BROWSER_RECORDER").param("clientStartedAt",started)
+                .with(ownerCookies(owner)).header("X-Submission-Key",SUBMISSION_KEY)
+                .with(request->{request.setMethod("PUT");return request;})).andExpect(status().isOk());
+        mockMvc.perform(get("/sales-checkin/api/v1/submissions/{id}/mine",id).with(ownerCookies(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.media[2].durationMs").doesNotExist())
+                .andExpect(jsonPath("$.media[2].durationSource").value("UNKNOWN"));
+        mockMvc.perform(get("/sales-checkin/api/v1/submissions/mine").with(ownerCookies(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].audioDisplayDurationMs").doesNotExist())
+                .andExpect(jsonPath("$.items[0].audioDurationSource").value("UNKNOWN"));
+    }
+
+    @Test
+    void nineConcurrentHttpThumbnailsWaitFairlyForSingleDecoderAndAllReturnImages() throws Exception {
+        var owner=historyIdentity(VISITOR_ID,"北京");
+        var created=mockMvc.perform(post("/sales-checkin/api/v1/submissions").with(ownerCookies(owner))
+                .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsBytes(
+                        unverifiedSubmission(UUID.randomUUID(),STORE_ID,"九张照片并发预览",null,null,null))))
+                .andExpect(status().isOk()).andReturn();
+        UUID id=UUID.fromString(objectMapper.readTree(created.getResponse().getContentAsByteArray()).path("id").asText());
+        byte[] jpeg=jpeg(960,640);
+        List<UUID> photos=new java.util.ArrayList<>();
+        for(int index=0;index<9;index++) {
+            UUID photo=UUID.randomUUID();photos.add(photo);
+            uploadPhoto(id,photo,new MockMultipartFile("file","现场.jpg","image/jpeg",jpeg),owner)
+                    .andExpect(status().isOk());
+        }
+        java.util.concurrent.atomic.AtomicInteger active=new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger maximum=new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger opened=new java.util.concurrent.atomic.AtomicInteger();
+        when(fileStorage.open(any(String.class),any(String.class))).thenAnswer(call-> {
+            opened.incrementAndGet();maximum.accumulateAndGet(active.incrementAndGet(),Math::max);
+            try {Thread.sleep(180);}
+            catch(InterruptedException interrupted) {
+                active.decrementAndGet();Thread.currentThread().interrupt();throw new IllegalStateException(interrupted);
+            }
+            return new ByteArrayInputStream(jpeg) {
+                @Override public void close() throws java.io.IOException {super.close();active.decrementAndGet();}
+            };
+        });
+        String cookies=owner.deviceCookie().getName()+"="+owner.deviceCookie().getValue()+"; "
+                +owner.identityCookie().getName()+"="+owner.identityCookie().getValue();
+        try(var http=java.net.http.HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(5))
+                .version(java.net.http.HttpClient.Version.HTTP_1_1).build()) {
+            // 真实Servlet同页九个请求同时在途，不能靠前端串行或重发掩盖立即409。
+            var requests=photos.stream().map(photo->java.net.http.HttpRequest.newBuilder(java.net.URI.create(
+                            "http://127.0.0.1:"+serverPort+"/sales-checkin/api/v1/submissions/"+id+"/mine/media/photo-"+photo+"?variant=thumbnail"))
+                    .timeout(java.time.Duration.ofSeconds(10)).header("Cookie",cookies)
+                    .header(TemporaryCheckinRequestFacts.CLIENT_IP_HEADER,"192.0.2.11")
+                    .header(TemporaryCheckinRequestFacts.PROXY_MARKER_HEADER,historyProxyMarker())
+                    .header("User-Agent","History Integration Test").GET().build()).toList();
+            var responses=requests.stream().map(request->http.sendAsync(request,java.net.http.HttpResponse.BodyHandlers.ofByteArray())).toList();
+            for(var pending:responses) {
+                var response=pending.get(12,TimeUnit.SECONDS);
+                assertThat(response.statusCode()).as("每张首次并发请求应直接返回缩略图").isEqualTo(200);
+                assertThat(ImageIO.read(new ByteArrayInputStream(response.body())).getWidth()).isEqualTo(320);
+            }
+        }
+        assertThat(maximum.get()).as("原件读取直到解码完成全程最多一张").isEqualTo(1);
+        assertThat(active.get()).isZero();assertThat(opened.get()).isEqualTo(9);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM temp_sales_checkin_media_derivative WHERE submission_id=? AND kind='IMAGE' AND status='READY'",
+                Integer.class,bin(id))).isEqualTo(9);
+        for(UUID photo:photos) mockMvc.perform(get("/sales-checkin/admin/api/v1/submissions/{id}/media/photos/{photo}",id,photo)
+                .param("thumbnail","true").with(admin("city-beijing"))).andExpect(status().isOk());
+        assertThat(opened.get()).as("管理员随后使用同一缓存，不再打开九张原件").isEqualTo(9);
     }
 
     @Test
@@ -3729,14 +3953,15 @@ class TemporaryCheckinApiIntegrationTests {
             mockMvc.perform(get("/sales-checkin/api/v1/submissions/{id}/mine", id).with(ownerCookies(otherDevice)))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.media[1].parsedDurationMs").value(691000))
                     .andExpect(jsonPath("$.media[1].playbackUrl").value("/sales-checkin/api/v1/submissions/"+id+"/mine/media/"+id+"?variant=playback"));
-            mockMvc.perform(get(mediaPath, id, "storefront-photo").with(ownerCookies(otherDevice)).param("variant", "thumbnail"))
-                    .andExpect(status().isConflict());
-            var photo = derivativeRepository.find(TENANT_ID, id, "storefront-photo", "b".repeat(64));
-            UUID photoLease = UUID.randomUUID();
-            assertThat(derivativeRepository.claim(TENANT_ID, photo.id(), photoLease, Instant.now())).isTrue();
-            assertThat(derivativeRepository.success(TENANT_ID, photo.id(), photoLease, null, jpeg, null, null, Instant.now())).isTrue();
-            mockMvc.perform(get(mediaPath, id, "storefront-photo").with(ownerCookies(otherDevice)).param("variant", "thumbnail"))
-                    .andExpect(status().isOk()).andExpect(content().bytes(jpeg));
+            clearInvocations(fileStorage);
+            byte[] preview = mockMvc.perform(get(mediaPath, id, "storefront-photo").with(ownerCookies(otherDevice)).param("variant", "thumbnail"))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+            assertThat(ImageIO.read(new ByteArrayInputStream(preview))).isNotNull();
+            assertThat(derivativeRepository.find(TENANT_ID, id, "storefront-photo", "b".repeat(64)).status()).isEqualTo("READY");
+            // 旧单图与新 photo-ID 同原件共享缓存，不再为别名打开原图或等待队列。
+            mockMvc.perform(get(mediaPath, id, "photo-"+id).with(ownerCookies(otherDevice)).param("variant", "thumbnail"))
+                    .andExpect(status().isOk()).andExpect(content().bytes(preview));
+            verify(fileStorage,times(1)).open(TENANT_ID.toString(),"history/photo.jpg");
             // 历史读取跨设备，但附加证据仍保留原设备和原草稿密钥双重校验。
             mockMvc.perform(post("/sales-checkin/api/v1/submissions/{id}/complete", id).with(ownerCookies(otherDevice))
                     .header("X-Submission-Key", SUBMISSION_KEY)).andExpect(status().isForbidden());

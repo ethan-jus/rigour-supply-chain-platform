@@ -4,14 +4,14 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const {chromium} = require(process.env.PW_MODULE_PATH || 'playwright');
+const {chromium,webkit} = require(process.env.PW_MODULE_PATH || 'playwright');
 const base = 'http://127.0.0.1:8774';
-const output = path.resolve('docs/qa-20260907/search-upgrade');
+const output = path.resolve('docs/qa-20260907/search-upgrade'+(process.env.PW_BROWSER==='webkit'?'-webkit':''));
 const checks = [];
 function check(value, name) { assert.ok(value, name); checks.push(name); }
 (async () => {
  await fs.mkdir(output, {recursive:true});
- const browser = await chromium.launch({channel:'chrome',headless:true});
+ const browser = process.env.PW_BROWSER==='webkit' ? await webkit.launch({headless:true}) : await chromium.launch({channel:'chrome',headless:true});
  const errors = [];
  async function open(width, hq=false, location=true) {
   const context = await browser.newContext({viewport:{width,height:844},isMobile:true,hasTouch:true,locale:'zh-CN',
@@ -73,11 +73,42 @@ function check(value, name) { assert.ok(value, name); checks.push(name); }
   check(results[4].includes('距离未知'),'unknown distances sort last without becoming zero metres');
   check(results[1].includes('地图门店')&&results[0].includes('已建档'),'registered and map-only stores are clearly identified');
   check(await page.locator('#store-search-results').evaluate(e=>getComputedStyle(e).overflowY==='auto'),'merged selection list scrolls vertically');
-  await page.locator('#hero-title').click();await page.screenshot({path:path.join(output,'390-combined-search.png')});
+  check(await page.locator('#nearby-stores-panel').getAttribute('role')==='dialog','search opens dedicated store picker');
+  check(await page.locator('#store-search').boundingBox().then(box=>box.y<90),'query is pinned near the top of the picker');
+  check(await page.locator('#store-search-results').boundingBox().then(box=>box.height>600),'results use the available screen height');
+  check(await page.locator('#store-search-results .visit-store-result__meta').first().evaluate(e=>e.parentElement===e.closest('button').firstElementChild),'distance and source sit below the address');
+  await page.screenshot({path:path.join(output,'390-combined-search.png')});
+  await page.setViewportSize({width:390,height:460});
+  const inputTop=await page.locator('#store-search').boundingBox().then(box=>box.y);
+  await page.locator('#store-search-results').evaluate(e=>{e.scrollTop=e.scrollHeight;});
+  check(await page.locator('#store-search-results').evaluate(e=>e.scrollTop>0),'short viewport can scroll to the last result');
+  check(await page.locator('#store-search').boundingBox().then(box=>Math.abs(box.y-inputTop)<1),'scrolling results keeps search controls fixed');
+  check(await page.locator('#store-picker-close').isVisible(),'cancel remains available in short viewport');
+  const beforeCancel=calls.filter(c=>c.path.endsWith('/locations/search-new-store')).length;
+  await page.locator('#store-picker-close').click();
+  check(!await page.locator('body').evaluate(e=>e.classList.contains('is-store-picker-open')),'cancel closes picker without changing selection');
+  await page.locator('#store-search').focus();
+  check(calls.filter(c=>c.path.endsWith('/locations/search-new-store')).length===beforeCancel,'reopening picker spends no map request');
+  await page.locator('#store-search').press('Escape');
+  check(await page.locator('#store-search-toggle').evaluate(e=>document.activeElement===e),'Escape returns focus to search action');
+  await page.locator('#store-search').focus();
+  await page.setViewportSize({width:390,height:844});
+
   test.setMapMode('failed');await page.locator('#store-search-toggle').click();
   await page.waitForFunction(()=>document.querySelector('#store-search-help').textContent.includes('地图搜索暂不可用'));
   check(await page.locator('#store-search-results button').count()===2,'map failure keeps selectable internal results');
   await page.locator('#store-search-results button').first().click();
+  check(!await page.locator('body').evaluate(e=>e.classList.contains('is-store-picker-open')),'selection closes picker and returns to visit');
+  check(await page.locator('#selected-store-card').isVisible(),'selected store card is visible after selection');
+  const selectedName=await page.locator('#selected-store-name').innerText();
+  await page.locator('#clear-store-button').click();
+  await page.locator('#store-picker-close').click();
+  check(await page.locator('#selected-store-name').innerText()===selectedName,'cancel reselect preserves the original store');
+  await page.locator('#store-search').fill('悦邻');
+  await page.locator('#store-picker-close').click();
+  await page.waitForTimeout(700);
+  check(!await page.locator('body').evaluate(e=>e.classList.contains('is-store-picker-open')),'cancel clears pending debounced search without reopening');
+  check(await page.locator('#selected-store-name').innerText()===selectedName,'cancel pending search preserves original store');
   await page.locator('#visit-step-1-next').click();await page.locator('#customer-name').fill('业务城独立GPS · 本地测试');
   await page.locator('#visit-result').fill('本地测试：跨业务城市门店，提交时采样真实当前位置。');
   await page.locator('#visit-step-2-next').click();await page.locator('#storefront-photo').setInputFiles(path.join(__dirname,'fixtures/demo-storefront.jpg'));
@@ -94,7 +125,12 @@ function check(value, name) { assert.ok(value, name); checks.push(name); }
   check(await hq.page.locator('#visit-city').inputValue()==='总部','headquarters account defaults to headquarters instead of empty city');
   check(!(await hq.page.locator('body').innerText()).includes('city不能为空'),'headquarters entry never exposes an empty-city API error');
   await hq.page.locator('#store-search-results button').first().waitFor();await hq.page.screenshot({path:path.join(output,'320-headquarters.png')});
-  check(await hq.page.evaluate(()=>document.documentElement.scrollWidth===innerWidth),'320px homepage has no horizontal overflow');await hq.context.close();
+  check(await hq.page.evaluate(()=>document.documentElement.scrollWidth===innerWidth),'320px homepage has no horizontal overflow');
+  await hq.page.locator('#store-search').fill('悦');
+  await hq.page.locator('#store-picker-close').waitFor();
+  check(await hq.page.evaluate(()=>document.documentElement.scrollWidth===innerWidth),'320px picker has no horizontal overflow');
+  await hq.page.screenshot({path:path.join(output,'320-picker.png')});
+  await hq.context.close();
   const mapVisit=await open(390);
   await mapVisit.page.locator('#store-search-results button').first().waitFor();
   await mapVisit.page.locator('#visit-city').selectOption('苏州');

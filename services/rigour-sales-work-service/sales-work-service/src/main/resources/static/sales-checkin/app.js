@@ -39,6 +39,8 @@
         "#store-tab"
     ]);
 
+    let storePickerOpen = false;
+    let storePickerScrollY = 0;
     const emptyLocation = () => null;
     const freshVisit = () => ({
         city: "",
@@ -650,10 +652,18 @@
         $("#visit-salesperson").addEventListener("change", persistFromForm);
         $("#store-salesperson").addEventListener("change", persistFromForm);
 
+        $("#store-search").addEventListener("focus", openStorePicker);
         $("#store-search").addEventListener("input", handleVisitStoreSearchInput);
+        $("#store-picker-close").addEventListener("click", () => closeStorePicker(true));
+        $("#nearby-stores-panel").addEventListener("keydown", handleStorePickerKeydown);
+        window.visualViewport?.addEventListener("resize", sizeStorePicker);
+        window.visualViewport?.addEventListener("scroll", sizeStorePicker);
+        window.addEventListener("resize", sizeStorePicker);
         $("#store-search").addEventListener("keydown", handleStoreSearchKeydown);
         $("#store-search-toggle").addEventListener("click", toggleVisitStoreOptions);
-        $("#clear-store-button").addEventListener("click", () => clearSelectedStore(true, true, true));
+        $("#clear-store-button").addEventListener("click", () => {
+            if (!$("#store-search").disabled) $("#store-search").focus();
+        });
         $("#create-store-link").addEventListener("click", () => prepareNewStore());
         $("#cancel-store-button").addEventListener("click", () => switchTab("visit"));
 
@@ -821,6 +831,7 @@
             : historyScreen === "detail" ? "history-detail" : historyScreen === "list" ? "history"
                 : state.completed && !state.editingEvidence ? "result" : state.activeTab === "store" ? "store"
                     : state.ui.visitStep === 1 ? "visit-home" : state.ui.visitStep === 2 ? "visit-form" : "visit-photo";
+        if (screen !== "visit-home") closeStorePicker();
         document.body.dataset.screen = screen;
         const titles = { identity: "拜访打卡", "visit-home": "拜访打卡", "visit-form": "记录拜访",
             "visit-photo": "拍照提交", store: "新增门店", result: "提交结果", history: "我的打卡记录", "history-detail": "打卡明细" };
@@ -1508,7 +1519,68 @@
         }
     }
 
+    function sizeStorePicker() {
+        if (!storePickerOpen) return;
+        const viewport = window.visualViewport;
+        const panel = $("#nearby-stores-panel");
+        panel.style.setProperty("--store-picker-height", `${viewport?.height || window.innerHeight}px`);
+        panel.style.setProperty("--store-picker-top", `${viewport?.offsetTop || 0}px`);
+    }
+
+    function openStorePicker() {
+        if (storePickerOpen || $("#store-search").disabled || state.submitting || isBusinessLocked()) return;
+        storePickerOpen = true;
+        storePickerScrollY = window.scrollY;
+        const panel = $("#nearby-stores-panel");
+        panel.classList.add("is-picker-open");
+        panel.setAttribute("role", "dialog");
+        panel.setAttribute("aria-modal", "true");
+        panel.setAttribute("aria-labelledby", "store-picker-title");
+        $("#nearby-stores-title").textContent = "搜索结果";
+        document.body.classList.add("is-store-picker-open");
+        sizeStorePicker();
+        showVisitStoreOptions();
+    }
+
+    function closeStorePicker(restoreFocus = false) {
+        if (!storePickerOpen) {
+            if (restoreFocus) $("#store-search-toggle").focus({preventScroll: true});
+            return;
+        }
+        storePickerOpen = false;
+        abortStoreDirectorySearch();
+        if (state.visit.selectedStore) hideStoreResults();
+        releaseActiveInput();
+        const panel = $("#nearby-stores-panel");
+        panel.classList.remove("is-picker-open");
+        panel.removeAttribute("role");
+        panel.removeAttribute("aria-modal");
+        panel.setAttribute("aria-labelledby", "nearby-stores-title");
+        $("#nearby-stores-title").textContent = "选择门店";
+        document.body.classList.remove("is-store-picker-open");
+        window.scrollTo({top: storePickerScrollY, behavior: "auto"});
+        if (restoreFocus) $("#store-search-toggle").focus({preventScroll: true});
+    }
+
+    function handleStorePickerKeydown(event) {
+        if (!storePickerOpen) return;
+        if (event.key === "Escape") {
+            event.preventDefault();
+            closeStorePicker(true);
+        } else if (event.key === "Tab") {
+            const controls = [...$("#nearby-stores-panel").querySelectorAll("button:not(:disabled),input:not(:disabled)")]
+                .filter(element => element.getClientRects().length);
+            const first = controls[0], last = controls[controls.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault(); last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault(); first?.focus();
+            }
+        }
+    }
+
     function handleVisitStoreSearchInput() {
+        openStorePicker();
         abortStoreDirectorySearch();
         const query = $("#store-search").value.trim();
         if (query !== state.visit.directoryQuery) {
@@ -1550,6 +1622,8 @@
         if (includeMap && state.storeDirectoryController && !state.directorySearchExplicit) abortStoreDirectorySearch();
         if (state.submitting || isBusinessLocked() || state.storeDirectoryController
                 || !state.identity?.authenticated) return;
+        openStorePicker();
+        if (includeMap) releaseActiveInput();
         const query = $("#store-search").value.trim();
         const controller = createRequestController();
         state.storeDirectoryController = controller;
@@ -1656,10 +1730,16 @@
                 const distance = document.createElement("small");
                 distance.textContent = formatDistance(store.distanceMeters) || "距离未知";
                 meta.append(status, distance);
-                button.append(detail, meta);
+                detail.appendChild(meta);
+                button.appendChild(detail);
                 button.addEventListener("click", async () => {
                     if (registered) {
                         selectStore(store);
+                        if (String(state.visit.selectedStore?.id) === String(store.id || store.storeId)) {
+                            closeStorePicker();
+                            hideStoreResults();
+                            $("#visit-step-1-next").focus({preventScroll: true});
+                        }
                         releaseActiveInput();
                     } else {
                         const clientStoreId = state.visit.directoryClientStoreId;
@@ -1689,6 +1769,7 @@
         if (event.key === "Escape") {
             event.preventDefault();
             hideStoreResults();
+            closeStorePicker(true);
             return;
         }
         if (event.key === "Enter") {
@@ -1708,7 +1789,7 @@
         if (event.key === "Escape") {
             event.preventDefault();
             hideStoreResults();
-            $("#store-search").focus({preventScroll: true});
+            closeStorePicker(true);
             return;
         }
         const buttons = [...$("#store-search-results").querySelectorAll("button.visit-store-result")];
@@ -1937,7 +2018,8 @@
                 const distance = document.createElement("small");
                 distance.textContent = formatDistance(poi.distanceMeters) || "附近";
                 meta.append(badge, distance);
-                button.append(detail, meta);
+                detail.appendChild(meta);
+                button.appendChild(detail);
                 button.addEventListener("click", () => {
                     if (registered) selectExistingStoreFromProfileFlow(poi);
                     else selectSourcePoi(poi);
@@ -5723,16 +5805,6 @@
                 if (context.receipt) mergeSubmissionReceipt(context.receipt);
                 historyView.close();
                 await recoverInterruptedSubmission();
-                return true;
-            },
-            onSupplement: async (detail, record) => {
-                if (state.submitting || recordingBusy() || !record) return false;
-                if (!await openSavedDraft(record)) return false;
-                mergeSubmissionReceipt({ ...detail,
-                    uploadedMedia: [...new Set((detail.media || []).map(item => item.kind))],
-                    audioSegmentIds: (detail.media || []).filter(item => item.kind === MEDIA.audio).map(item => item.mediaId) });
-                historyView.close();
-                openEvidenceEditor();
                 return true;
             },
             onBack: () => syncAppScreen(),

@@ -7,7 +7,7 @@
     <meta name="description" content="销售拜访、现场证据与进度记录">
     <meta name="robots" content="noindex,nofollow,noarchive">
     <title>销售拜访打卡</title>
-    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260907-multi-photo">
+    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260908-attendance-multi-photo">
 </head>
 <body data-screen="identity">
 <header class="hero">
@@ -174,6 +174,7 @@
                         <button id="visit-location-button" class="outline-button location-button" type="button"><span class="app-icon icon-refresh" aria-hidden="true"></span><span id="visit-location-button-label">重新定位</span></button>
                     </section>
                     <section id="nearby-stores-panel" class="nearby-panel" aria-labelledby="nearby-stores-title" hidden>
+                        <div class="store-picker-header"><strong id="store-picker-title">选择门店</strong><button id="store-picker-close" class="text-button" type="button">取消</button></div>
                         <div class="field store-search-field">
                             <div class="store-search-controls">
                                 <div class="search-input-wrap"><label for="store-search" class="visually-hidden">搜索门店名称或地址</label><input id="store-search" type="search" inputmode="search" autocomplete="off" placeholder="输入门店名称或地址" aria-describedby="store-search-help" aria-controls="store-search-results" disabled></div>
@@ -631,10 +632,10 @@
 
 <dialog id="local-photo-dialog" class="history-photo-dialog" aria-label="已选择的现场照片"><button id="local-photo-close" class="icon-button photo-dialog-close" type="button" aria-label="关闭照片"><img class="dialog-close-icon" src="/sales-checkin/icons/x.svg" alt="" aria-hidden="true" width="22" height="22"></button><div class="photo-dialog-content"><img id="local-photo-full" alt="本次拜访现场照片"></div></dialog>
 
-    <script src="/sales-checkin/storage.js?v=20260907-multi-photo" defer></script>
-    <script src="/sales-checkin/recording-journal.js?v=20260907-multi-photo" defer></script>
-    <script src="/sales-checkin/personal-history.js?v=20260907-multi-photo" defer></script>
-    <script src="/sales-checkin/photos.js?v=20260907-multi-photo" defer></script>
-    <script src="/sales-checkin/app.js?v=20260907-multi-photo" defer></script>
+    <script src="/sales-checkin/storage.js?v=20260908-attendance-multi-photo" defer></script>
+    <script src="/sales-checkin/recording-journal.js?v=20260908-attendance-multi-photo" defer></script>
+    <script src="/sales-checkin/personal-history.js?v=20260908-attendance-multi-photo" defer></script>
+    <script src="/sales-checkin/photos.js?v=20260908-attendance-multi-photo" defer></script>
+    <script src="/sales-checkin/app.js?v=20260908-attendance-multi-photo" defer></script>
 </body>
 </html>

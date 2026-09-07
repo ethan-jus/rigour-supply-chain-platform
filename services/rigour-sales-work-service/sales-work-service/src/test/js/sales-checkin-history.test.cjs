@@ -18,7 +18,7 @@ const local = (extra = {}, owner = 'tenant1:sales1') => ({owner, updatedAt: NOW,
     submission: {clientSubmissionId: 'client-record1', submissionKey: 'local-private-key', status: 'DRAFT', audioSegments: [], ...extra}}});
 
 function harness(options = {}) {
-    const elements = new Map();
+    const elements = new Map(); const timers = [];
     let activeElement = null;
     class Element {
         constructor(tag = 'div') { this.tagName = tag.toUpperCase(); this.children = []; this.attributes = new Map(); this.listeners = new Map();
@@ -62,6 +62,7 @@ function harness(options = {}) {
     const document = {getElementById: (id) => elements.get(id), createElement: (tag) => new Element(tag), get activeElement() { return activeElement; }};
     const requests = []; const views = []; const resumes = []; const supplements = [];
     const window = {document, location: {origin: 'https://sales.example.test'}, AbortController, scrollY: 0,
+        setTimeout(fn, ms) { timers.push({fn, ms}); return timers.length; },
         scrollTo(x, y) { window.scrollY = y; }, requestAnimationFrame(fn) { fn(); }};
     vm.runInNewContext(source, {window, URL, URLSearchParams, Intl, Date, Set, Map, console});
     let identity = {authenticated: true, tenantId: 'tenant1', salespersonId: 'sales1', salespersonName: '王销售'};
@@ -75,7 +76,8 @@ function harness(options = {}) {
         const node = elements.get(container).querySelectorAll(selector).find((item) => text === undefined || item.textContent.includes(text));
         assert.ok(node, `missing ${selector}: ${text}`); node.dispatch('click'); return node;
     };
-    return {controller, requests, views, resumes, supplements, elements, window, click,
+    return {controller, requests, views, resumes, supplements, elements, window, click, timers,
+        runTimer() { timers.shift()?.fn(); },
         setIdentity(value) { identity = value; }, setRecords(value) { records = value; }, setRequest(value) { handler = value; },
         text(id = 'history-content') { return elements.get(id).textContent; }};
 }
@@ -212,25 +214,70 @@ test('a confirmed missing receipt allows resuming the existing local request ide
     assert.equal(h.resumes[0][1].receipt, null);
 });
 
-test('supplement entry requires server device permission, deadline and original local key', async () => {
-    const h = harness({records: [local({status: 'SUBMITTED', serverId: 'record1', submissionKey: ''})]});
+test('detail hides the entire supplement entry even with server permission and a local key', async () => {
+    const h = harness({records: [local({status: 'SUBMITTED', serverId: 'record1'})]});
     await h.controller.open(); await h.controller.showDetail('record1');
-    assert.doesNotMatch(h.text('history-detail-content'), /补充照片、录音或截图/); assert.match(h.text('history-detail-content'), /仅供查看/);
-    h.setRecords([local({status: 'SUBMITTED', serverId: 'record1'})]); await h.controller.refresh();
-    assert.match(h.text('history-detail-content'), /补充照片、录音或截图/);
+    assert.equal(h.elements.get('history-detail-content').querySelectorAll('.history-detail-supplement').length, 0);
+    assert.doesNotMatch(h.text('history-detail-content'), /补充证据|补充照片、录音或截图|补传期限|原提交浏览器/);
+    assert.equal(h.supplements.length, 0);
     h.setRequest(async (url) => url.includes('/mine?') ? page([receipt()]) : detail('record1', {canSupplement: false}));
-    h.click('.primary-button', '补充照片、录音或截图', 'history-detail-content'); await tick();
-    assert.equal(h.supplements.length, 0); assert.match(h.text('history-detail-content'), /已不满足补传条件/);
+    await h.controller.refresh();
+    assert.doesNotMatch(h.text('history-detail-content'), /补充证据|补传期限/);
 });
 
-test('an uncertain supplement reconciles server detail and does not claim successful upload', async () => {
-    let detailCalls = 0;
-    const h = harness({records: [local({status: 'SUBMITTED', serverId: 'record1'})], onSupplement: async () => { throw new Error('network result unknown'); },
-        request: async (url) => { if (url.includes('/mine?')) return page([receipt()]); detailCalls += 1; return detail(); }});
+test('audio duration uses server values first and labels client values without inferring elapsed time', () => {
+    assert.equal(helpers.audioDuration({parsedDurationMs: 61000, clientDurationMs: 120000}), '1:01');
+    assert.equal(helpers.audioDuration({durationMs: 691000, durationSource: 'SERVER_PARSED'}), '11:31');
+    assert.equal(helpers.audioDuration({durationMs: 691000, durationSource: 'CLIENT_ESTIMATE', clientDurationMs: 691000}), '11:31 · 本机记录');
+    assert.equal(helpers.audioDuration({parsedDurationMs: 0, clientDurationMs: 65000}), '1:05 · 本机记录');
+    assert.equal(helpers.audioDuration({clientElapsedMs: 691000, elapsedMs: 691000, interrupted: true,
+        clientStartedAt: '2026-09-07T08:00:00Z', uploadedAt: '2026-09-07T08:12:00Z'}), '时长待确认');
+    assert.equal(helpers.audioDuration({audioDurationMs: 65000, audioDisplayDurationMs: 120000, audioDurationSource: 'MIXED'}, true), '1:05');
+    assert.equal(helpers.audioDuration({audioDurationMs: null, audioDisplayDurationMs: 120000, audioDurationSource: 'MIXED'}, true), '2:00 · 含本机计时');
+    assert.equal(helpers.audioDuration({audioDisplayDurationMs: null, audioDurationSource: 'UNKNOWN'}, true), '时长待确认');
+});
+
+test('history creates actual photo images from photos or photoIds without the legacy media flag', async () => {
+    const photoId = '30000000-0000-4000-8000-000000000020';
+    const record = {...receipt(), uploadedMedia: [], photos: [{photoId}], audioSegmentIds: ['a1'],
+        audioDisplayDurationMs: 691000, audioDurationSource: 'CLIENT_ESTIMATE'};
+    const h = harness({request: async () => page([record])}); await h.controller.open();
+    let image = h.elements.get('history-content').querySelector('img');
+    assert.equal(image.src, helpers.mediaUrl('record1', `photo-${photoId}`, 'thumbnail'));
+    assert.match(h.text(), /11:31 · 本机记录/);
+    h.setRequest(async () => page([{...record, photos: [], photoIds: [photoId]}])); await h.controller.refresh();
+    image = h.elements.get('history-content').querySelector('img');
+    assert.equal(image.src, helpers.mediaUrl('record1', `photo-${photoId}`, 'thumbnail'));
+});
+
+test('thumbnail failures retry only bounded thumbnails and expose a real original plus refresh action', async () => {
+    const photo = {mediaId: 'photo-one', kind: 'storefront-photo', originalUrl: helpers.mediaUrl('record1', 'photo-one', 'original')};
+    const h = harness({request: async (url) => url.includes('/mine?') ? page([receipt()]) : detail('record1', {photos: [photo]})});
     await h.controller.open(); await h.controller.showDetail('record1');
-    h.click('.primary-button', '补充照片、录音或截图', 'history-detail-content'); await tick();
-    assert.ok(detailCalls >= 3); assert.match(h.text('history-detail-content'), /结果暂未确认/);
-    assert.doesNotMatch(h.text('history-detail-content'), /补传成功/);
+    const image = h.elements.get('history-detail-content').querySelector('img');
+    image.dispatch('error');
+    assert.equal(image.hidden, true); assert.equal(h.timers.length, 1);
+    assert.match(h.text('history-detail-content'), /预览暂不可用，点开原图/);
+    const retry = h.elements.get('history-detail-content').querySelectorAll('.history-media-refresh').find(node => node.textContent === '刷新图片');
+    assert.equal(retry.hidden, false);
+    h.runTimer(); assert.equal(image.src, helpers.mediaUrl('record1', 'photo-one', 'thumbnail'));
+    assert.equal(image.loading, 'eager'); image.dispatch('error'); h.runTimer(); image.dispatch('error');
+    assert.equal(h.timers.length, 0, 'no endless retry loop');
+    image.dispatch('load'); assert.equal(image.hidden, false);
+    h.click('.history-detail-photo', undefined, 'history-detail-content');
+    assert.equal(h.elements.get('history-photo-content').querySelector('img').src, photo.originalUrl);
+    retry.dispatch('click'); await tick();
+    assert.ok(h.requests.filter(request => request.url === '/submissions/record1/mine').length >= 2);
+});
+
+test('thumbnail retry never crosses an identity change and missing original URLs use the owned endpoint', async () => {
+    const h = harness({request: async (url) => url.includes('/mine?') ? page([receipt()]) : detail('record1', {photos: [{mediaId: 'photo-one'}]})});
+    await h.controller.open(); await h.controller.showDetail('record1');
+    h.click('.history-detail-photo', undefined, 'history-detail-content');
+    assert.equal(h.elements.get('history-photo-content').querySelector('img').src, helpers.mediaUrl('record1', 'photo-one', 'original'));
+    const image = h.elements.get('history-detail-content').querySelector('img'); image.dispatch('error');
+    h.setIdentity({authenticated: true, tenantId: 'tenant2', salespersonId: 'sales2'}); h.controller.resetIdentity();
+    image.src = 'unchanged'; h.runTimer(); assert.equal(image.src, 'unchanged');
 });
 
 test('native audio players use no preload, own URL, and pause their predecessor', async () => {

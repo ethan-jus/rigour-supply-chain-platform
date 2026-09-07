@@ -51,6 +51,28 @@
         const minutes = Math.floor(seconds / 60);
         return `${minutes}:${pad(seconds % 60)}`;
     }
+    function positiveDuration(value) {
+        return value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0
+            ? Number(value) : null;
+    }
+    function audioDuration(item, aggregate = false) {
+        const parsed = positiveDuration(aggregate ? item.audioDurationMs : item.parsedDurationMs);
+        if (parsed !== null) return duration(parsed);
+        const displayed = positiveDuration(aggregate ? item.audioDisplayDurationMs : item.durationMs);
+        const source = aggregate ? item.audioDurationSource : item.durationSource;
+        if (displayed !== null && source === "SERVER_PARSED") return duration(displayed);
+        const estimated = displayed !== null && ["CLIENT_ESTIMATE", "MIXED"].includes(source)
+            ? displayed : !aggregate ? positiveDuration(item.clientDurationMs) : null;
+        if (estimated !== null) return `${duration(estimated)} · ${source === "MIXED" ? "含本机计时" : "本机记录"}`;
+        // Interrupted session elapsed time is not the encoded recording duration.
+        return "时长待确认";
+    }
+    function firstPhoto(item) {
+        const photo = item.photos?.find((value) => value && (value.mediaId || value.photoId));
+        if (photo) return { ...photo, mediaId: photo.mediaId || `photo-${photo.photoId}` };
+        if (item.photoIds?.length) return { mediaId: `photo-${item.photoIds[0]}` };
+        return item.uploadedMedia?.includes("storefront-photo") ? { mediaId: "storefront-photo" } : null;
+    }
     function ownerKey(identity) {
         return identity?.authenticated && identity.salespersonId
             ? `${identity.tenantId || "same-origin"}:${identity.salespersonId}` : "";
@@ -103,7 +125,7 @@
         const state = { owner: "", open: false, view: "list", tab: "submitted", filters: initialFilters(),
             items: [], total: null, pages: 0, page: -1, loaded: false, loading: false, error: "", nextError: "",
             locals: [], localLoading: false, localError: "", actionError: "", actionBusy: false, actionRecordId: "",
-            detailId: "", detail: null, detailLoading: false, detailError: "", supplementMessage: "",
+            detailId: "", detail: null, detailLoading: false, detailError: "",
             listEpoch: 0, localEpoch: 0, detailEpoch: 0, listAbort: null, detailAbort: null,
             scrollY: 0, calendar: null, activeAudio: null, dialogFocus: null };
 
@@ -165,7 +187,7 @@
             Object.assign(state, { owner: "", open: false, view: "list", tab: "submitted", filters: initialFilters(),
                 items: [], total: null, pages: 0, page: -1, loaded: false, error: "", nextError: "", locals: [],
                 localError: "", actionError: "", actionBusy: false, actionRecordId: "", detailId: "", detail: null, detailError: "",
-                supplementMessage: "", scrollY: 0 });
+                scrollY: 0 });
             refs.content.replaceChildren(); refs.detailContent.replaceChildren(); refs.photoContent.replaceChildren();
             refs.calendarContent.replaceChildren(); refs.page.hidden = true; refs.detailPage.hidden = true;
         }
@@ -265,20 +287,37 @@
             if (tab === "submitted" && !state.loaded && !state.loading) void loadPage(0);
             if (tab === "pending") void loadLocals();
         }
-        function recordThumbnail(id, label, available, mediaId = "storefront-photo") {
+        function thumbnailImage(id, item, label, onError, onLoad) {
+            const image = element("img"); image.alt = label; image.loading = "lazy"; image.decoding = "async";
+            const url = safeMediaUrl(item.thumbnailUrl, id, item.mediaId, "thumbnail") || mediaUrl(id, item.mediaId, "thumbnail");
+            const owner = state.owner; const view = state.view;
+            let retries = 0;
+            image.addEventListener("load", () => { image.hidden = false; onLoad?.(); });
+            image.addEventListener("error", () => {
+                image.hidden = true; onError?.();
+                if (retries >= 2 || typeof root.setTimeout !== "function") return;
+                retries += 1;
+                root.setTimeout(() => {
+                    if (!state.open || state.view !== view || state.owner !== owner
+                            || ownerKey(adapters.getIdentity()) !== owner || image.isConnected === false) return;
+                    // Only retry the bounded server thumbnail, never auto-decode original phone photos.
+                    image.loading = "eager"; image.src = url;
+                }, retries * 1500);
+            });
+            image.src = url;
+            return image;
+        }
+        function recordThumbnail(id, label, photo) {
             const box = element("span", "history-record-image");
             box.append(icon("photo"));
-            if (available) {
-                const image = element("img"); image.alt = label; image.loading = "lazy"; image.decoding = "async";
-                image.src = mediaUrl(id, mediaId, "thumbnail");
-                image.addEventListener("error", () => { image.hidden = true; box.setAttribute("aria-label", "照片缩略图暂不可用"); });
-                box.append(image);
-            }
+            if (id && photo) box.append(thumbnailImage(id, photo, label,
+                () => box.setAttribute("aria-label", "预览暂不可用，打开明细查看照片"),
+                () => box.removeAttribute("aria-label")));
             return box;
         }
         function submittedCard(item) {
             const card = button("", "history-record-card", () => { void showDetail(item.id); });
-            card.append(recordThumbnail(item.id, "门店现场照片", item.uploadedMedia?.includes("storefront-photo"), item.photos?.[0]?.mediaId || "storefront-photo"));
+            card.append(recordThumbnail(item.id, "门店现场照片", firstPhoto(item)));
             const body = element("span", "history-record-body");
             body.append(element("span", "history-record-time", timestamp(item.submittedAt)),
                 element("strong", "history-record-name", item.storeName || "未命名门店"),
@@ -286,7 +325,7 @@
             const count = item.audioSegmentIds?.length || 0;
             const status = element("span", "history-record-status", "已提交");
             status.prepend?.(icon("check-circle"));
-            if (count) status.append(element("span", "history-record-audio", ` · ${count} 段录音 · ${duration(item.audioDurationMs)}`));
+            if (count) status.append(element("span", "history-record-audio", ` · ${count} 段录音 · ${audioDuration(item, true)}`));
             body.append(status); card.append(body, icon("chevron-right")); return card;
         }
         function pendingCard(record) {
@@ -296,7 +335,8 @@
             const status = isSubmitted ? "已提交 · 证据待补传" : unknown ? "提交结果待确认" : submission.syncRequested ? "待同步" : "本机草稿";
             const card = button("", "history-record-card", () => { void resumeLocal(record); });
             card.disabled = state.actionBusy;
-            card.append(recordThumbnail(submission.serverId, "现场照片", false));
+            card.append(recordThumbnail(submission.serverId, "现场照片", firstPhoto({
+                photos: submission.photos?.filter((photo) => photo.uploadState === "UPLOADED") })));
             const body = element("span", "history-record-body");
             body.append(element("span", "history-record-time", `本机保存于 ${timestamp(record.updatedAt || snapshot.savedAt)}`),
                 element("strong", "history-record-name", snapshot.visit.selectedStore?.name || snapshot.store?.name || "尚未选择门店"),
@@ -402,15 +442,6 @@
             announceView("list"); renderList(); restoreScroll();
             if (!state.loaded && !state.loading) void loadPage(0);
         }
-        function matchingLocal(detail) {
-            return state.locals.find((record) => String(record.snapshot.submission.serverId || "") === String(detail.id)
-                || (detail.clientSubmissionId && record.snapshot.submission.clientSubmissionId === detail.clientSubmissionId));
-        }
-        function supplementAllowed(detail, record) {
-            return detail?.status === "SUBMITTED" && detail.canSupplement === true
-                && Number.isFinite(Date.parse(detail.supplementUntil)) && Date.parse(detail.supplementUntil) > now()
-                && Boolean(record?.snapshot?.submission?.submissionKey);
-        }
         async function getDetail(id, options) {
             const result = unwrap(await adapters.requestJson(`/submissions/${encodeURIComponent(id)}/mine`, options || {}));
             if (!result?.id || String(result.id) !== String(id) || String(result.salespersonId) !== String(adapters.getIdentity()?.salespersonId)) {
@@ -422,7 +453,7 @@
             if (!ensureOwner()) return;
             if (state.view === "list") state.scrollY = root.scrollY || 0;
             state.open = true; stopAudio(); state.detailId = String(id); state.detail = null;
-            state.supplementMessage = ""; state.detailError = ""; announceView("detail"); root.scrollTo?.(0, 0);
+            state.detailError = ""; announceView("detail"); root.scrollTo?.(0, 0);
             await loadDetail(state.detailId);
             if (!state.locals.length && !state.localLoading) await loadLocals();
         }
@@ -486,41 +517,36 @@
                 evidence.append(fields); location.append(evidence); body.append(location);
                 const media = Array.isArray(detail.media) ? detail.media : [];
                 const storefront = Array.isArray(detail.photos) && detail.photos.length
-                    ? detail.photos.map(photo => ({...photo, kind: "storefront-photo"}))
+                    ? detail.photos.map(photo => ({...photo, mediaId: photo.mediaId || `photo-${photo.photoId}`, kind: "storefront-photo"}))
                     : media.filter(item => item.kind === "storefront-photo");
                 const photos = [...storefront, ...media.filter(item => item.kind === "wechat-screenshot")];
                 const photoSection = section(`现场照片与截图 · ${photos.length} 张`); const gallery = element("div", "history-detail-photos");
-                for (const photo of photos) gallery.append(photoThumbnail(detail, photo));
+                const retryPhotos = button("刷新图片", "history-media-refresh", () => { void loadDetail(detail.id); });
+                retryPhotos.hidden = true;
+                for (const photo of photos) gallery.append(photoThumbnail(detail, photo, () => { retryPhotos.hidden = false; }));
                 if (!photos.length) photoSection.append(element("p", "", "当前没有可查看的图片。"));
-                photoSection.append(gallery); body.append(photoSection);
+                photoSection.append(gallery, retryPhotos); body.append(photoSection);
                 const audios = media.filter((item) => item.kind === "audio");
                 const audioSection = section(`沟通录音 · ${audios.length} 段`);
                 audios.forEach((mediaItem, index) => audioSection.append(audioPlayer(detail, mediaItem, index)));
                 if (!audios.length) audioSection.append(element("p", "", "本次未上传录音。")); body.append(audioSection);
-                const supplement = section("补充证据", "history-detail-supplement"); const local = matchingLocal(detail);
-                if (supplementAllowed(detail, local) && typeof adapters.onSupplement === "function") {
-                    supplement.append(element("p", "", `可补充照片、录音或截图，截止 ${timestamp(detail.supplementUntil)}。原始拜访内容保持不变。`));
-                    const action = button(state.actionBusy ? "正在核对回执…" : "补充照片、录音或截图", "primary-button", () => { void startSupplement(); }, "upload");
-                    action.disabled = state.actionBusy; supplement.append(action);
-                } else if (detail.status !== "SUBMITTED") supplement.append(element("p", "", "该记录尚未完成提交，可从本机待处理继续。"));
-                else if (!detail.supplementUntil || Date.parse(detail.supplementUntil) <= now()) supplement.append(element("p", "", "补传期限已结束，原始记录仍可查看。"));
-                else supplement.append(element("p", "", `补传须在原提交浏览器保留的记录中进行，截止 ${timestamp(detail.supplementUntil)}。当前页面仅供查看。`));
-                if (state.supplementMessage) supplement.append(notice(state.supplementMessage, "history-supplement-message"));
-                body.append(supplement);
+
             }
             refs.detailContent.replaceChildren(body);
         }
-        function photoThumbnail(detail, item) {
+        function photoThumbnail(detail, item, onError) {
             const label = item.kind === "storefront-photo" ? "现场门店照片" : "微信截图";
             const node = button("", "history-detail-photo", () => openPhoto(detail, item)); node.setAttribute("aria-label", `${label}，点击放大`);
-            const image = element("img"); image.alt = label; image.loading = "lazy"; image.decoding = "async";
-            const url = safeMediaUrl(item.thumbnailUrl, detail.id, item.mediaId, "thumbnail") || mediaUrl(detail.id, item.mediaId, "thumbnail");
-            image.src = url; image.addEventListener("error", () => { image.hidden = true; });
-            node.append(icon("photo"), image, element("span", "", label)); return node;
+            const caption = element("span", "", label);
+            const image = thumbnailImage(detail.id, item, label, () => {
+                caption.textContent = "预览暂不可用，点开原图"; onError?.();
+            }, () => { caption.textContent = label; });
+            node.append(icon("photo"), image, caption); return node;
         }
         function openPhoto(detail, item) {
             if (!ensureOwner() || !state.open || state.detailId !== String(detail.id)) return;
-            const url = safeMediaUrl(item.originalUrl, detail.id, item.mediaId, "original");
+            const url = item.originalUrl ? safeMediaUrl(item.originalUrl, detail.id, item.mediaId, "original")
+                : item.mediaId ? mediaUrl(detail.id, item.mediaId, "original") : "";
             refs.photoContent.replaceChildren();
             if (!url) refs.photoContent.append(notice("照片地址暂不可用，请刷新明细后重试。", "history-error"));
             else {
@@ -536,7 +562,7 @@
         function audioPlayer(detail, item, index) {
             const box = element("div", "history-detail-audio");
             const header = element("div", "history-detail-audio-header");
-            header.append(icon("mic"), element("strong", "", `录音 ${index + 1}`), element("span", "", duration(item.parsedDurationMs))); box.append(header);
+            header.append(icon("mic"), element("strong", "", `录音 ${index + 1}`), element("span", "", audioDuration(item))); box.append(header);
             box.append(element("p", "history-audio-filename", item.originalFilename || "录音文件"));
             const playback = item.playbackStatus === "READY" ? safeMediaUrl(item.playbackUrl, detail.id, item.mediaId, "playback") : "";
             const original = safeMediaUrl(item.originalUrl, detail.id, item.mediaId, "original");
@@ -546,7 +572,7 @@
             if (playback) audio.src = playback;
             else if (original) {
                 audio.src = original;
-                status.textContent = item.playbackStatus === "FAILED" ? "兼容音频生成失败，可尝试播放或下载原件。" : "兼容音频待解析，可尝试播放原件；时长以服务端解析为准。";
+                status.textContent = item.playbackStatus === "FAILED" ? "兼容音频生成失败，可播放或下载原件。" : "可直接播放原件。";
             } else status.textContent = "录音地址暂不可用，请刷新明细重试。";
             audio.addEventListener("play", () => {
                 if (!state.open || state.view !== "detail" || !ensureOwner()) { audio.pause(); return; }
@@ -585,35 +611,6 @@
                 if (state.owner === owner) { state.actionBusy = false; if (state.view === "list") renderList(); }
             }
         }
-        async function startSupplement() {
-            if (!ensureOwner() || !state.open || state.actionBusy || !state.detail) return;
-            const id = state.detailId; const owner = state.owner;
-            state.actionBusy = true; state.supplementMessage = ""; renderDetail();
-            try {
-                const latest = await getDetail(id);
-                if (!state.open || state.detailId !== id || state.owner !== owner || ownerKey(adapters.getIdentity()) !== owner) return;
-                state.detail = latest;
-                const local = matchingLocal(latest);
-                if (!supplementAllowed(latest, local)) { state.supplementMessage = "当前回执已不满足补传条件，请查看明细中的期限和原设备说明。"; return; }
-                if (await adapters.onSupplement(latest, local) === false) {
-                    state.supplementMessage = "当前还有操作未结束，请稍后再补充证据。"; return;
-                }
-                // A transport timeout is not an upload receipt. Re-read the server if this detail is still open.
-                if (state.open && state.view === "detail" && state.detailId === id && state.owner === owner) {
-                    state.detail = await getDetail(id);
-                    state.supplementMessage = "已重新读取服务端明细，请以这里已接收的附件为准。";
-                }
-            } catch (_) {
-                if (state.owner !== owner || ownerKey(adapters.getIdentity()) !== owner) return;
-                state.supplementMessage = "操作结果暂未确认。请保留本机记录，刷新明细查看服务端已接收的附件。";
-                if (state.open && state.view === "detail" && state.detailId === id) {
-                    try { const latest = await getDetail(id); if (state.owner === owner && state.detailId === id) state.detail = latest; } catch (_) { /* Unknown remains explicit. */ }
-                }
-            } finally {
-                if (state.owner === owner) { state.actionBusy = false; renderDetail(); }
-            }
-        }
-
         function openCalendar() {
             if (!ensureOwner() || !state.open) return;
             state.calendar = { mode: state.filters.from === state.filters.to ? "single" : "range", from: state.filters.from,
@@ -714,13 +711,12 @@
             getState: () => ({ owner: state.owner, open: state.open, view: state.view, tab: state.tab, filters: { ...state.filters },
                 ids: state.items.map((item) => item.id), totalElements: state.total, page: state.page, totalPages: state.pages,
                 loading: state.loading, error: state.error, nextError: state.nextError, pendingCount: pendingRecords().length,
-                localError: state.localError, actionError: state.actionError, detailId: state.detailId, detailError: state.detailError,
-                supplementMessage: state.supplementMessage }),
+                localError: state.localError, actionError: state.actionError, detailId: state.detailId, detailError: state.detailError }),
             destroy: () => { resetIdentity(); bindings.forEach(([node, name, handler]) => node.removeEventListener(name, handler)); }
         });
     }
 
     root.SalesCheckinHistory = Object.freeze({ init });
     if (typeof module !== "undefined" && module.exports) module.exports = { init, dayKey, timestamp, validDay, shiftDay,
-        validRange, duration, ownerKey, pendingEvidence, ownLocalRecords, mediaUrl, safeMediaUrl };
+        validRange, duration, audioDuration, firstPhoto, ownerKey, pendingEvidence, ownLocalRecords, mediaUrl, safeMediaUrl };
 })(typeof window !== "undefined" ? window : globalThis);

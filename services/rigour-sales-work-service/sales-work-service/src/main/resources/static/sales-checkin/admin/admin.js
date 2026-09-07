@@ -2,7 +2,7 @@
     "use strict";
 
     const API_BASE = "/sales-checkin/admin/api/v1";
-    const EXPORT_PATH = "/sales-checkin/admin/export.csv";
+    const EXPORT_PATH = "/sales-checkin/admin/export.xlsx";
     const MEDIA_PATH = "/sales-checkin/admin/submissions";
     const PAGE_SIZE = 20;
     const SORT_LABELS = { completedAt: "打卡时间", cityName: "城市", salespersonName: "销售", storeName: "门店" };
@@ -32,6 +32,7 @@
         totalPages: 1,
         loading: false,
         controller: null,
+        attendance: { controller: null, loading: false, page: 0, totalPages: 0 },
         itemsById: new Map(),
         currentItemIds: [],
         selectedIds: new Set(),
@@ -131,8 +132,14 @@
         });
         $("#filter-city").addEventListener("change", () => {
             const currentSalesperson = $("#filter-salesperson").value;
-            renderSalespersonOptions($("#filter-city").value, currentSalesperson);
+            renderSalespersonOptions($("#filter-city").value, currentSalesperson, false);
         });
+        document.querySelectorAll("[data-attendance-range]").forEach(button => {
+            button.addEventListener("click", () => applyAttendanceRange(button.dataset.attendanceRange));
+        });
+        $("#attendance-retry").addEventListener("click", () => loadAttendanceSummary(state.attendance.page));
+        $("#attendance-previous").addEventListener("click", () => changeAttendancePage(state.attendance.page - 1));
+        $("#attendance-next").addEventListener("click", () => changeAttendancePage(state.attendance.page + 1));
         document.querySelectorAll("[data-sort-by]").forEach((button) => {
             button.addEventListener("click", () => changeSort(button.dataset.sortBy));
         });
@@ -234,6 +241,9 @@
     }
 
     function showLoginDialog(message) {
+        state.attendance.controller?.abort();
+        state.attendance.controller = null;
+        clearAttendanceView();
         $("#admin-main").hidden = true;
         $("#logout-button").hidden = true;
         closeAuthDialog("#change-password-dialog");
@@ -460,7 +470,7 @@
         select.value = current;
     }
 
-    function renderSalespersonOptions(city, selectedId) {
+    function renderSalespersonOptions(city, selectedId, updateAppliedFilter = true) {
         const select = $("#filter-salesperson");
         const people = state.salespersons
             .filter((person) => !city || cleanText(person.city) === city)
@@ -473,10 +483,121 @@
         });
         if (selectedId && Array.from(select.options).some((item) => item.value === selectedId)) {
             select.value = selectedId;
+        } else if (selectedId && updateAppliedFilter) {
+            // A historical salesperson may be absent from the current directory; keep the exact filter on reload.
+            select.appendChild(option(selectedId, "已选销售（未在当前目录）"));
+            select.value = selectedId;
         } else {
             select.value = "";
-            if (selectedId) state.filters.salespersonId = "";
         }
+    }
+
+    function clearAttendanceView() {
+        for (const id of ["attendance-total", "attendance-salespeople", "attendance-pending-review"]) $("#" + id).textContent = "--";
+        $("#attendance-rows").replaceChildren();
+        $("#attendance-table-wrap").hidden = true;
+        $("#attendance-pagination").hidden = true;
+    }
+
+    async function loadAttendanceSummary(page = 0) {
+        state.attendance.controller?.abort();
+        const controller = new AbortController();
+        state.attendance.controller = controller;
+        state.attendance.page = page;
+        state.attendance.loading = true;
+        const params = buildFilterParams();
+        params.set("summaryPage", String(page));
+        params.set("summarySize", "50");
+        clearAttendanceView();
+        $("#attendance-retry").hidden = true;
+        $("#attendance-state").textContent = "正在读取当前筛选的全量统计…";
+        try {
+            const payload = unwrap(await requestJson(`${API_BASE}/submissions/attendance-summary?${params}`, controller.signal));
+            if (state.attendance.controller !== controller) return;
+            const count = value => Number.isInteger(value) && value >= 0;
+            if (!payload || ![payload.totalVisits, payload.checkedInSalespeople, payload.pendingReviewTotal,
+                payload.totalElements, payload.totalPages].every(count) || payload.page !== page || !Array.isArray(payload.items)
+                || (payload.totalElements > 0 && payload.totalPages < 1)
+                || payload.items.some(item => !safeDate(item.date) || !cleanText(item.salespersonId)
+                    || ![item.visitCount, item.storeCount, item.pendingReviewCount].every(count))) {
+                throw new Error("统计响应尚未完整返回");
+            }
+            if (payload.totalElements > 0 && page >= payload.totalPages) return loadAttendanceSummary(payload.totalPages - 1);
+            state.attendance.totalPages = payload.totalPages;
+            $("#attendance-total").textContent = formatCount(payload.totalVisits);
+            $("#attendance-salespeople").textContent = formatCount(payload.checkedInSalespeople);
+            $("#attendance-pending-review").textContent = formatCount(payload.pendingReviewTotal);
+            $("#attendance-state").textContent = payload.items.length
+                ? `每日按城市、销售汇总，共 ${formatCount(payload.totalElements)} 组；指标覆盖当前筛选全部记录。`
+                : state.filters.status === "DRAFT" ? "当前筛选为草稿，没有已提交的每日打卡汇总。"
+                    : "当前筛选没有已提交的每日打卡记录。";
+            renderAttendanceRows(payload.items);
+            $("#attendance-table-wrap").hidden = payload.items.length === 0;
+            $("#attendance-pagination").hidden = payload.totalElements === 0;
+            $("#attendance-page-indicator").textContent = `第 ${page + 1} / ${payload.totalPages} 页 · 共 ${formatCount(payload.totalElements)} 组`;
+            $("#attendance-previous").disabled = page <= 0;
+            $("#attendance-next").disabled = page + 1 >= payload.totalPages;
+        } catch (error) {
+            if (error.name === "AbortError" || state.attendance.controller !== controller) return;
+            $("#attendance-state").textContent = errorMessage(error, "统计读取失败，请重试；下方明细仍可独立查看。");
+            $("#attendance-retry").hidden = false;
+        } finally {
+            if (state.attendance.controller === controller) state.attendance.loading = false;
+        }
+    }
+
+    function renderAttendanceRows(items) {
+        const root = $("#attendance-rows");
+        root.replaceChildren();
+        for (const item of items) {
+            const row = document.createElement("tr");
+            const time = value => value && Number.isFinite(Date.parse(value)) ? new Intl.DateTimeFormat("zh-CN", {
+                timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+            }).format(new Date(value)) : "--";
+            for (const value of [item.date, item.city || "未记录", item.salespersonName || "未记录销售",
+                formatCount(item.visitCount), formatCount(item.storeCount), time(item.firstCheckinAt), time(item.lastCheckinAt), formatCount(item.pendingReviewCount)]) {
+                const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
+            }
+            const action = document.createElement("td"); const button = document.createElement("button");
+            button.type = "button"; button.className = "text-button"; button.textContent = "查看明细";
+            button.setAttribute("aria-label", `${item.date} ${item.city || ""} ${item.salespersonName || "销售"} 查看明细`);
+            button.addEventListener("click", () => openAttendanceDetails(item));
+            action.append(button); row.append(action); root.append(row);
+        }
+    }
+
+    function changeAttendancePage(page) {
+        if (state.attendance.loading || page < 0 || page >= state.attendance.totalPages) return;
+        void loadAttendanceSummary(page);
+    }
+
+    async function openAttendanceDetails(item) {
+        state.filters = { ...state.filters, from: item.date, to: item.date,
+            city: state.scope.allCities ? cleanText(item.city) : state.scope.city,
+            salespersonId: cleanText(item.salespersonId), status: "SUBMITTED" };
+        state.page = 0;
+        renderCityOptions();
+        renderSalespersonOptions(state.filters.city, state.filters.salespersonId, false);
+        const salesperson = $("#filter-salesperson");
+        if (!Array.from(salesperson.options).some(option => option.value === state.filters.salespersonId)) {
+            salesperson.append(option(state.filters.salespersonId, cleanText(item.salespersonName) || "历史销售"));
+        }
+        writeFiltersToForm(); updateBrowserUrl(); updateExportLink();
+        await loadSubmissions();
+        $("#data-heading").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    async function applyAttendanceRange(range) {
+        const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" })
+            .formatToParts(new Date());
+        const date = Object.fromEntries(parts.map(part => [part.type, part.value]));
+        const today = `${date.year}-${date.month}-${date.day}`;
+        const from = range === "month" ? `${date.year}-${date.month}-01` : range === "week"
+            ? new Date(Date.parse(`${today}T00:00:00Z`) - 6 * 86400000).toISOString().slice(0, 10) : today;
+        $("#filter-from").value = from; $("#filter-to").value = today;
+        if (!readFiltersFromForm()) return;
+        state.page = 0; updateBrowserUrl(); updateExportLink();
+        await loadSubmissions();
     }
 
     async function loadSubmissions() {
@@ -486,6 +607,7 @@
         clearSelection();
         hideError();
         renderLoading(true);
+        void loadAttendanceSummary(0);
         try {
             const params = buildFilterParams();
             params.set("page", String(state.page));
@@ -626,7 +748,7 @@
             $("[data-sort-indicator]", button).textContent = active ? (ascending ? "↑" : "↓") : "↕";
             button.setAttribute("aria-label", `${SORT_LABELS[button.dataset.sortBy]}，点击按${active && ascending ? "降序" : "升序"}排列全部结果`);
         });
-        $("#sort-summary").textContent = `按${SORT_LABELS[state.filters.sortBy]}${state.filters.sortDirection === "asc" ? "升序" : "降序"}排列；排序作用于全部筛选结果，CSV 使用相同顺序。`;
+        $("#sort-summary").textContent = `按${SORT_LABELS[state.filters.sortBy]}${state.filters.sortDirection === "asc" ? "升序" : "降序"}排列；排序作用于全部筛选结果，Excel 明细使用相同顺序。`;
     }
 
     function locationQualityLabel(item) {

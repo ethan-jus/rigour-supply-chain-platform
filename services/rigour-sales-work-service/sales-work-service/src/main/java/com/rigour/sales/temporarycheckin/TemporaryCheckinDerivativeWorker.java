@@ -23,6 +23,7 @@ import org.springframework.stereotype.Component;
 @Component
 @ConditionalOnProperty(prefix="rigour.sales.temporary-checkin",name="enabled",havingValue="true")
 class TemporaryCheckinDerivativeWorker {
+    private static final org.slf4j.Logger log=org.slf4j.LoggerFactory.getLogger(TemporaryCheckinDerivativeWorker.class);
     private final TemporaryCheckinDerivativeRepository repository;
     private final TemporaryCheckinAdminThumbnailer thumbnailer;
     private final FileStorage storage;
@@ -43,7 +44,7 @@ class TemporaryCheckinDerivativeWorker {
     }
 
     @Scheduled(initialDelayString="${rigour.sales.temporary-checkin.media.initial-delay:60s}",
-            fixedDelayString="${rigour.sales.temporary-checkin.media.poll-interval:3s}")
+            fixedDelayString="${rigour.sales.temporary-checkin.media.poll-interval:3s}",scheduler="temporaryCheckinMediaScheduler")
     public synchronized void process() {
         for (var stale:repository.obsolete(tenant)) {
             try {
@@ -64,6 +65,11 @@ class TemporaryCheckinDerivativeWorker {
             if (job.sourceBytes() < 1 || job.sourceBytes()>maximumSourceBytes)
                 throw new IllegalArgumentException("SOURCE_LIMIT");
             if ("IMAGE".equals(job.kind())) {
+                byte[] cached=repository.readyImage(tenant,job.submissionId(),job.sourceKey(),job.sha());
+                if(cached!=null) {
+                    repository.success(tenant,job.id(),lease,null,cached,null,null,clock.instant());
+                    return;
+                }
                 var media=new TemporaryCheckinService.AdminMedia(
                         ()->storage.open(tenant.toString(),job.sourceKey()),job.sourceBytes(),job.sourceType(),job.filename());
                 var thumbnail=thumbnailer.create(media);
@@ -80,23 +86,23 @@ class TemporaryCheckinDerivativeWorker {
                     output.write(buffer,0,count);
                 }
             }
-            Path probeOutput=directory.resolve("duration.txt");
-            run(List.of(ffprobe,"-v","error","-protocol_whitelist","file,pipe","-show_entries",
-                    "format=duration","-of","default=noprint_wrappers=1:nokey=1",source.toString()),
-                    probeOutput,directory.resolve("probe-error.txt"),15);
-            String raw=Files.readString(probeOutput).trim();
-            double seconds=Double.parseDouble(raw);
-            if (!Double.isFinite(seconds) || seconds<=0) throw new IllegalArgumentException("DURATION_UNKNOWN");
-            duration=Math.round(seconds*1000);
+            duration=probeDuration(source,directory);
             // 最长三小时的兼容副本，避免超长容器消耗无限CPU/磁盘；超限保留原件与已解析时长。
-            if (seconds>10800) throw new IllegalArgumentException("DURATION_LIMIT");
+            if (duration!=null && duration>10800_000) throw new IllegalArgumentException("DURATION_LIMIT");
             Path converted=directory.resolve("playback.mp3");
             run(List.of(ffmpeg,"-nostdin","-hide_banner","-loglevel","error","-protocol_whitelist","file,pipe",
                     "-threads","1","-i",source.toString(),"-map","0:a:0","-vn","-ac","1","-ar","24000",
                     "-codec:a","libmp3lame","-b:a","48k","-threads","1","-fs","83886080","-y",converted.toString()),
                     directory.resolve("convert-output.txt"),directory.resolve("convert-error.txt"),60);
             long size=Files.size(converted);
-            if (size<1 || size>80L*1024*1024) throw new IllegalArgumentException("OUTPUT_LIMIT");
+            if (size<1 || size>=80L*1024*1024-65536) throw new IllegalArgumentException("OUTPUT_LIMIT");
+            // 浏览器流式 WebM 常没有容器 duration；完整解码后的播放副本才提供服务端解析值。
+            if(duration==null) {
+                Long convertedDuration=probeDuration(converted,directory);
+                if(convertedDuration==null) throw new IllegalArgumentException("DURATION_UNKNOWN");
+                if(convertedDuration>10800_000) throw new IllegalArgumentException("DURATION_LIMIT");
+                duration=convertedDuration;
+            }
             MessageDigest digest=MessageDigest.getInstance("SHA-256");
             try(InputStream input=Files.newInputStream(converted)) {
                 byte[] buffer=new byte[8192];int count;
@@ -111,9 +117,12 @@ class TemporaryCheckinDerivativeWorker {
             if (repository.success(tenant,job.id(),lease,duration,null,uploadedKey,size,clock.instant()))
                 uploadedKey=null;
         } catch (Exception error) {
-            String code=error instanceof IllegalArgumentException ? error.getMessage() : "DECODE_OR_STORAGE_FAILED";
-            if (code==null || !code.matches("[A-Z_]{1,64}")) code="DECODE_OR_STORAGE_FAILED";
-            repository.failed(tenant,job.id(),lease,code,duration,clock.instant());
+            String code=failureCode(error);
+            if("IMAGE_BUSY".equals(code)) repository.deferBusyImage(tenant,job.id(),lease,clock.instant());
+            else {
+                repository.failed(tenant,job.id(),lease,code,duration,clock.instant());
+                log.warn("临时打卡媒体派生失败 kind={} code={}",job.kind(),code);
+            }
         } finally {
             if (uploadedKey!=null) try { storage.delete(tenant.toString(),uploadedKey); } catch(RuntimeException ignored) { }
             if (directory!=null) try (var paths=Files.walk(directory)) {
@@ -122,6 +131,30 @@ class TemporaryCheckinDerivativeWorker {
                 });
             } catch(java.io.IOException ignored) { }
         }
+    }
+
+    private Long probeDuration(Path source,Path directory) throws Exception {
+        Path output=directory.resolve("duration.txt");
+        run(List.of(ffprobe,"-v","error","-protocol_whitelist","file,pipe","-show_entries",
+                "format=duration","-of","default=noprint_wrappers=1:nokey=1",source.toString()),
+                output,directory.resolve("probe-error.txt"),15);
+        try {
+            double seconds=Double.parseDouble(Files.readString(output).trim());
+            return Double.isFinite(seconds) && seconds>0 && seconds<Long.MAX_VALUE/1000d?Math.round(seconds*1000):null;
+        } catch(NumberFormatException unknown) { return null; }
+    }
+
+    static String failureCode(Throwable error) {
+        if(error instanceof TemporaryCheckinException temporary) return switch(temporary.code()) {
+            case "TEMP_CHECKIN_IMAGE_BUSY" -> "IMAGE_BUSY";
+            case "TEMP_CHECKIN_IMAGE_LIMIT" -> "IMAGE_LIMIT";
+            case "TEMP_CHECKIN_IMAGE_UNSUPPORTED" -> "IMAGE_UNSUPPORTED";
+            case "TEMP_CHECKIN_STORAGE_FAILED" -> "STORAGE_UNAVAILABLE";
+            default -> "DECODE_OR_STORAGE_FAILED";
+        };
+        if(error instanceof java.io.IOException) return "MEDIA_IO_FAILED";
+        String code=error instanceof IllegalArgumentException?error.getMessage():null;
+        return code!=null && code.matches("[A-Z_]{1,64}")?code:"DECODE_OR_STORAGE_FAILED";
     }
 
     private static void run(List<String> command,Path output,Path error,int timeoutSeconds) throws Exception {

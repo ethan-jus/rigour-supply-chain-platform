@@ -69,7 +69,8 @@ public final class TemporaryCheckinModels {
     public record SubmissionReceipt(UUID id, UUID clientSubmissionId, String status,
             String storeName, String city, Instant createdAt, Instant submittedAt,
             List<String> uploadedMedia, List<UUID> audioSegmentIds, Instant supplementUntil,
-            String visitResult, Long audioDurationMs, List<UUID> photoIds, List<PhotoView> photos) { }
+            String visitResult, Long audioDurationMs, List<UUID> photoIds, List<PhotoView> photos,
+            Long audioDisplayDurationMs, String audioDurationSource) { }
 
     public record SubmissionReceiptPage(List<SubmissionReceipt> items, int page, int size,
             long totalElements, int totalPages) { }
@@ -90,7 +91,16 @@ public final class TemporaryCheckinModels {
 
     public record OwnMediaView(String mediaId, String kind, String originalFilename, String contentType,
             long sizeBytes, Instant uploadedAt, Long parsedDurationMs, String playbackStatus,
-            String thumbnailUrl, String playbackUrl, String originalUrl) { }
+            String thumbnailUrl, String playbackUrl, String originalUrl,
+            Long clientDurationMs, String captureSource, String timingStatus, Instant clientStartedAt,
+            Instant fileLastModifiedAt, Long durationMs, String durationSource) {
+        public OwnMediaView(String mediaId, String kind, String originalFilename, String contentType,
+                long sizeBytes, Instant uploadedAt, Long parsedDurationMs, String playbackStatus,
+                String thumbnailUrl, String playbackUrl, String originalUrl) {
+            this(mediaId,kind,originalFilename,contentType,sizeBytes,uploadedAt,parsedDurationMs,playbackStatus,
+                    thumbnailUrl,playbackUrl,originalUrl,null,null,null,null,null,null,"UNKNOWN");
+        }
+    }
 
     public record CreateStoreRequest(
             UUID clientStoreId,

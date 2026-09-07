@@ -624,6 +624,17 @@ public class TemporaryCheckinRepository {
     public List<ExportRow> export(UUID tenantId, Instant from, Instant toExclusive, String city,
                                   UUID salespersonId, String status, String visitType,
                                   String escapedQuery, int limit, AdminReadOptions options) {
+        return exportRows(tenantId,from,toExclusive,city,salespersonId,status,visitType,escapedQuery,limit,options,false);
+    }
+
+    /** Excel只读业务展示列，排除MEDIUMTEXT转写等未使用大字段。 */
+    List<ExportRow> exportForWorkbook(UUID tenantId, Instant from, Instant toExclusive, String city,
+            UUID salespersonId,String status,String visitType,String escapedQuery,int limit,AdminReadOptions options) {
+        return exportRows(tenantId,from,toExclusive,city,salespersonId,status,visitType,escapedQuery,limit,options,true);
+    }
+
+    private List<ExportRow> exportRows(UUID tenantId, Instant from, Instant toExclusive, String city,
+            UUID salespersonId,String status,String visitType,String escapedQuery,int limit,AdminReadOptions options,boolean compact) {
         StringBuilder sql = new StringBuilder("""
                 WITH visit_ranks AS (
                     SELECT id,
@@ -652,12 +663,31 @@ public class TemporaryCheckinRepository {
                   LEFT JOIN visit_ranks r ON r.id=s.id
                  WHERE s.tenant_id=?
                 """);
+        if(compact) {
+            String projection=sql.toString();
+            for(String column:List.of("transcript","summary_text","audio_segments_json","location_note","risk_flags_json","user_agent_summary"))
+                projection=projection.replaceAll("\\b"+column+"\\b","NULL AS "+column);
+            sql=new StringBuilder(projection);
+        }
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
         appendAdminFilters(
                 sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, options);
         sql.append(options.orderBy()).append(" LIMIT ?");
         arguments.add(limit);
         return jdbc.query(sql.toString(), (rs, row) -> exportRow(rs), arguments.toArray());
+    }
+
+    /** 按记录聚合照片张数，不把所有照片元数据装入导出内存。 */
+    java.util.Map<UUID,Long> photoCounts(UUID tenantId,List<UUID> ids) {
+        java.util.Map<UUID,Long> counts=new java.util.HashMap<>();
+        for(int start=0;start<ids.size();start+=500) {
+            List<UUID> batch=ids.subList(start,Math.min(start+500,ids.size()));
+            List<Object> args=new ArrayList<>();args.add(bin(tenantId));batch.forEach(id->args.add(bin(id)));
+            jdbc.query("SELECT submission_id,COUNT(*) AS total FROM temp_sales_checkin_photo WHERE tenant_id=? AND deleted_at IS NULL AND submission_id IN ("
+                    +String.join(",",java.util.Collections.nCopies(batch.size(),"?"))+") GROUP BY submission_id",
+                    (org.springframework.jdbc.core.RowCallbackHandler) rs->counts.put(SalesUuidCodec.decode(rs.getBytes(1)),rs.getLong(2)),args.toArray());
+        }
+        return counts;
     }
 
     public AdminSubmissionStats adminSubmissionStats(
@@ -1011,7 +1041,7 @@ public class TemporaryCheckinRepository {
         return transcription + summary;
     }
 
-    private static void appendAdminFilters(
+    static void appendAdminFilters(
             StringBuilder sql, List<Object> arguments, Instant from, Instant toExclusive, String city,
             UUID salespersonId, String status, String visitType, String escapedQuery, AdminReadOptions options) {
         if (options.locationStatus() != null) {
