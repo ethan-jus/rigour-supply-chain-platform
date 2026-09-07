@@ -10,9 +10,12 @@ import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
 import com.rigour.integration.api.v1.model.DhbConnectionTestResult;
 import com.rigour.integration.api.v1.model.DhbExternalObjectMappingPageView;
+import com.rigour.integration.api.v1.model.DhbManualResolutionCommand;
+import com.rigour.integration.api.v1.model.DhbManualResolutionView;
 import com.rigour.integration.api.v1.model.DhbSyncExceptionView;
 import com.rigour.integration.api.v1.model.DhbSyncFieldDescriptionView;
 import com.rigour.integration.api.v1.model.DhbSyncLogDetailView;
+import com.rigour.integration.api.v1.model.DhbSyncOpenIssueGroupView;
 import com.rigour.integration.api.v1.model.DhbSyncReconciliationCaseView;
 import com.rigour.integration.api.v1.model.DhbSyncRunAuditView;
 import com.rigour.integration.api.v1.DhbIntegrationApi;
@@ -141,5 +144,27 @@ public final class DhbIntegrationController implements DhbIntegrationApi {
             @RequestParam(name = "severity", required = false) String severity,
             @RequestParam(name = "limit", defaultValue = "100") int limit) {
         return service.syncReconciliationCases(status, severity, limit);
+    }
+
+    @GetMapping("/sync-center/open-issues")
+    public List<DhbSyncOpenIssueGroupView> openIssues(
+            @RequestParam(name = "limit", defaultValue = "500") int limit) {
+        return service.openIssues(limit);
+    }
+
+    @GetMapping("/sync-center/manual-resolutions")
+    public List<DhbManualResolutionView> manualResolutions(
+            @RequestParam(name = "resolutionType", required = false) String resolutionType,
+            @RequestParam(name = "sourceObjectType", required = false) String sourceObjectType,
+            @RequestParam(name = "sourceId", required = false) String sourceId,
+            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "limit", defaultValue = "100") int limit) {
+        return service.manualResolutions(resolutionType, sourceObjectType, sourceId, status, limit);
+    }
+
+    @PostMapping("/sync-center/manual-resolutions")
+    public DhbManualResolutionView createManualResolution(
+            @RequestBody DhbManualResolutionCommand command) {
+        return service.createManualResolution(command);
     }
 }

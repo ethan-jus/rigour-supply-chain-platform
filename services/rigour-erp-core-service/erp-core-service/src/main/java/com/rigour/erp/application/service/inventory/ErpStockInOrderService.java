@@ -113,6 +113,9 @@ public final class ErpStockInOrderService {
         ErpServiceValidation.requireRevision(command.procurementRevision());
         ProcurementOrderSnapshot order = store.procurementOrderForStockIn(tenantId, procurementOrderId)
                 .orElseThrow(() -> notFound("采购订单不存在"));
+        if (externalSource(order.sourceSystemCode())) {
+            throw conflict("外部来源采购订单已按来源入库凭证同步，无需在ERP重复确认入库");
+        }
         if (!ErpProcurementStatus.SUBMITTED.code().equals(order.statusCode())
                 && !ErpProcurementStatus.PARTIAL_IN.code().equals(order.statusCode())) {
             throw conflict("只有已提交或部分入库的采购订单才能确认入库");
@@ -196,6 +199,10 @@ public final class ErpStockInOrderService {
 
     private static BigDecimal zeroIfNull(BigDecimal value) {
         return value == null ? ZERO : value;
+    }
+
+    private static boolean externalSource(String sourceSystemCode) {
+        return sourceSystemCode != null && !sourceSystemCode.isBlank();
     }
 
     private static CallerIdentity actor(String permission) {

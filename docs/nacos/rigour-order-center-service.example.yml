@@ -40,6 +40,18 @@ rigour:
   integration:
     base-url: http://rigour-integration-migration-service:26882
   order:
+    fund-attachment:
+      url-ttl: 10m
+      cos:
+        enabled: true
+        object-prefix: fund-attachments
+        region: ap-beijing
+        bucket: rigour-sales-recordings-1361731487
+        secret-id: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SECRET_ID:}
+        secret-key: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SECRET_KEY:}
+#        session-token: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SESSION_TOKEN:}
+        connection-timeout-ms: 5000
+        socket-timeout-ms: 30000
     dhb:
       http:
         connect-timeout: 5s

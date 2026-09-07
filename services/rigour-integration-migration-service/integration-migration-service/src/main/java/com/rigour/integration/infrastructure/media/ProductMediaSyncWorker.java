@@ -42,6 +42,7 @@ public final class ProductMediaSyncWorker {
 
     @Scheduled(fixedDelayString = "${rigour.integration.product-media.worker-poll-interval-ms:1000}")
     public void dispatch() {
+        if (!properties.isWorkerEnabled()) return;
         int available = properties.getWorkerConcurrency() - inFlight.get();
         if (available <= 0) return;
         List<ClaimedMediaItem> items = store.claimPending(available, properties.getWorkerMaxAttempts());

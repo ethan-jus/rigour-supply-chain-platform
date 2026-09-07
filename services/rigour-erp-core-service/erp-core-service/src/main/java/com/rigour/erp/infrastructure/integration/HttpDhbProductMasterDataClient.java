@@ -19,9 +19,10 @@ import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Objects;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -33,8 +34,8 @@ import tools.jackson.databind.ObjectMapper;
 public final class HttpDhbProductMasterDataClient implements DhbProductMasterDataClient {
     /** 商品图片先异步处理；较小的商品页避免一次任务积压过多图片。 */
     private static final int PAGE_SIZE = 50;
-    /** 订货宝全量状态筛选：C=全部商品状态，A=全部上下架状态。 */
-    private static final String ALL_PRODUCT_STATUSES = "C";
+    /** 订货宝商品状态分桶：T=正常，A=待审，N=未通过，R=撤销，F=回收站。 */
+    private static final List<String> PRODUCT_STATUS_BUCKETS = List.of("T", "A", "N", "R", "F");
     private static final String ALL_PUTAWAY_STATUSES = "A";
     private static final Duration MEDIA_SYNC_POLL_INTERVAL = Duration.ofSeconds(1);
     private static final Duration MEDIA_SYNC_MAX_WAIT = Duration.ofMinutes(30);
@@ -67,38 +68,49 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
     }
 
     private Collected products(CallerIdentity caller, UUID connectorId, int maxPages) {
-        List<Product> result = new ArrayList<>();
-        long total = 0;
+        Map<String, Product> result = new LinkedHashMap<>();
         int pages = 0;
-        for (int pageNumber = 0; pageNumber < maxPages; pageNumber++) {
-            int begin = pageNumber * PAGE_SIZE;
-            DhbApiModels.ProductQueryCommand command =
-                    new DhbApiModels.ProductQueryCommand(begin, PAGE_SIZE,
-                            ALL_PRODUCT_STATUSES, ALL_PUTAWAY_STATUSES, null);
-            DhbApiModels.ProductMediaSyncView mediaJob = post(caller,
-                    path(connectorId, "media-sync"), command,
-                    DhbApiModels.ProductMediaSyncView.class);
-            awaitMediaSync(caller, connectorId, mediaJob);
-            DhbApiModels.ProductQueryCommand completedCommand =
-                    new DhbApiModels.ProductQueryCommand(begin, PAGE_SIZE,
-                            ALL_PRODUCT_STATUSES, ALL_PUTAWAY_STATUSES, null,
-                            null, null, null, mediaJob.jobId());
-            DhbApiModels.ProductPageView page = post(caller,
-                    path(connectorId, "query"),
-                    completedCommand,
-                    DhbApiModels.ProductPageView.class);
-            pages++;
-            if (pageNumber == 0) total = page.total();
-            List<DhbApiModels.ProductView> items = page.items() == null ? List.of() : page.items();
-            items.stream().map(this::product).forEach(result::add);
-            boolean complete = total >= 0 ? begin + PAGE_SIZE >= total : items.size() < PAGE_SIZE;
-            if (complete) {
-                return collected(MasterDataObjectType.PRODUCT_SPU, Math.max(0, total), pages, result,
-                        null, null, null, null);
+        for (String productStatus : PRODUCT_STATUS_BUCKETS) {
+            for (int pageNumber = 0; pageNumber < maxPages; pageNumber++) {
+                int begin = pageNumber * PAGE_SIZE;
+                DhbApiModels.ProductQueryCommand command =
+                        new DhbApiModels.ProductQueryCommand(begin, PAGE_SIZE,
+                                productStatus, ALL_PUTAWAY_STATUSES, null);
+                DhbApiModels.ProductMediaSyncView mediaJob = post(caller,
+                        path(connectorId, "media-sync"), command,
+                        DhbApiModels.ProductMediaSyncView.class);
+                awaitMediaSync(caller, connectorId, mediaJob);
+                DhbApiModels.ProductQueryCommand completedCommand =
+                        new DhbApiModels.ProductQueryCommand(begin, PAGE_SIZE,
+                                productStatus, ALL_PUTAWAY_STATUSES, null,
+                                null, null, null, mediaJob.jobId());
+                DhbApiModels.ProductPageView page = post(caller,
+                        path(connectorId, "query"),
+                        completedCommand,
+                        DhbApiModels.ProductPageView.class);
+                pages++;
+                List<DhbApiModels.ProductView> items = page.items() == null ? List.of() : page.items();
+                items.stream().map(this::product).forEach(product -> mergeProduct(result, product));
+                boolean complete = page.total() >= 0
+                        ? begin + PAGE_SIZE >= page.total() : items.size() < PAGE_SIZE;
+                if (complete) {
+                    break;
+                }
+                if (pageNumber + 1 >= maxPages) {
+                    throw new IllegalStateException("订货宝商品同步达到maxPages=" + maxPages
+                            + " status=" + productStatus + "，但供应商仍有后续数据；本次批次失败");
+                }
             }
         }
-        throw new IllegalStateException("订货宝商品同步达到maxPages=" + maxPages
-                + "，但供应商仍有后续数据；本次批次失败");
+        return collected(MasterDataObjectType.PRODUCT_SPU, result.size(), pages, new ArrayList<>(result.values()),
+                null, null, null, null);
+    }
+
+    private static void mergeProduct(Map<String, Product> result, Product product) {
+        Product existing = result.get(product.sourceId());
+        if (existing == null || "SOURCE_DELETED".equalsIgnoreCase(product.sourceLifecycle())) {
+            result.put(product.sourceId(), product);
+        }
     }
 
     private void awaitMediaSync(CallerIdentity caller, UUID connectorId,
@@ -218,7 +230,7 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
                 .map(image -> new ProductImage(image.sourceResourceId(), image.sourceGoodsId(),
                         image.originalName(), image.fileName(), image.sortOrder(), image.objectKey()))
                 .toList();
-        return new Product(item.sourceId(), item.code(), item.name(), item.putaway(),
+        return new Product(item.sourceId(), item.code(), item.name(), item.putaway(), item.sourceLifecycle(),
                 item.barcode(), item.unit(), item.categorySourceId(), item.brandSourceId(),
                 item.model(), item.subtitle(), item.keywords(), item.allocation(), item.mainImageKey(),
                 item.multiId(), item.orderPrice(), item.marketPrice(), item.purchasePrice(), item.price4(),

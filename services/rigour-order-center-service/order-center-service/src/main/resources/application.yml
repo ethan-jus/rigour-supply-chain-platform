@@ -44,6 +44,19 @@ rigour:
       # Order对下游ERP的连接和读取超时；订货宝同步统一收口到Integration编排器。
       connect-timeout: ${RIGOUR_ORDER_HTTP_CONNECT_TIMEOUT:3s}
       read-timeout: ${RIGOUR_ORDER_HTTP_READ_TIMEOUT:30s}
+    fund-attachment:
+      # 资金附件为 COS 私桶短时 URL；本地默认关闭，DEV/生产由环境和 Nacos 显式开启。
+      url-ttl: ${RIGOUR_ORDER_FUND_ATTACHMENT_URL_TTL:10m}
+      cos:
+        enabled: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_ENABLED:false}
+        object-prefix: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_OBJECT_PREFIX:fund-attachments}
+        region:
+        bucket:
+        secret-id: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SECRET_ID:}
+        secret-key: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SECRET_KEY:}
+        session-token: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SESSION_TOKEN:}
+        connection-timeout-ms: 5000
+        socket-timeout-ms: 30000
   context:
     trust:
       # 当前主动签名/验签密钥版本；轮换密钥时按v1、v2递增。

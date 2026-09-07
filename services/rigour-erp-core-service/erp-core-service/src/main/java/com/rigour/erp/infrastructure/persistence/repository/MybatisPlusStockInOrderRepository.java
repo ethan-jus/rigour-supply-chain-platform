@@ -52,6 +52,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class MybatisPlusStockInOrderRepository
         extends ServiceImpl<InternalStockInOrderMapper, InternalStockInOrderEntity>
         implements ErpStockInOrderStore {
+    private static final String SYSTEM_ACTOR = "SYSTEM";
     private static final BigDecimal ZERO = BigDecimal.ZERO;
 
     private final InternalStockInOrderLineMapper stockInLineMapper;
@@ -90,7 +91,7 @@ public class MybatisPlusStockInOrderRepository
         InternalStockInOrderMapper mapper = getBaseMapper();
         long total = mapper.selectCount(query(tenantId, criteria));
         List<InternalStockInOrderEntity> page = mapper.selectList(query(tenantId, criteria)
-                .orderByDesc(InternalStockInOrderEntity::getUpdatedTime)
+                .orderByDesc(InternalStockInOrderEntity::getStockInTime)
                 .orderByDesc(InternalStockInOrderEntity::getId)
                 .last("LIMIT " + step + " OFFSET " + begin));
         Set<Long> orderIds = ids(page);
@@ -123,6 +124,7 @@ public class MybatisPlusStockInOrderRepository
                 .map(MybatisPlusStockInOrderRepository::procurementLineSnapshot)
                 .toList();
         return Optional.of(new ProcurementOrderSnapshot(order.getId(), order.getProcurementNo(),
+                order.getSourceSystemCode(), order.getSourceDocumentNo(),
                 order.getSupplierId(), order.getTargetWarehouseId(), order.getStatusCode(),
                 order.getRevision(), lineSnapshots));
     }
@@ -150,10 +152,11 @@ public class MybatisPlusStockInOrderRepository
         try {
             getBaseMapper().insert(order);
             for (ProcurementStockInLineWrite line : command.lines()) {
-                insertStockInLine(tenantId, order.getId(), line, now);
-                updateProcurementLineReceived(tenantId, command.procurementOrderId(), line, now);
+                insertStockInLine(tenantId, order.getId(), line, actorId, now);
+                updateProcurementLineReceived(tenantId, command.procurementOrderId(), line, actorId, now);
                 StockQuantityChange quantityChange = increaseStockBalance(
-                        tenantId, command.warehouseId(), line.productId(), line.productVariantId(), line.quantity(), now);
+                        tenantId, command.warehouseId(), line.productId(), line.productVariantId(),
+                        line.quantity(), actorId, now);
                 insertStockFlow(tenantId, order.getId(), stockInNo, command.warehouseId(), line,
                         quantityChange, actorId, now);
             }
@@ -165,7 +168,8 @@ public class MybatisPlusStockInOrderRepository
     }
 
     private void updateProcurementLineReceived(
-            String tenantId, Long procurementOrderId, ProcurementStockInLineWrite line, LocalDateTime now) {
+            String tenantId, Long procurementOrderId, ProcurementStockInLineWrite line, String actorId,
+            LocalDateTime now) {
         InternalProcurementOrderLineEntity current = procurementLineMapper.selectOne(
                 Wrappers.<InternalProcurementOrderLineEntity>lambdaQuery()
                         .eq(InternalProcurementOrderLineEntity::getTenantId, tenantId)
@@ -181,6 +185,9 @@ public class MybatisPlusStockInOrderRepository
         }
         int updated = procurementLineMapper.update(null, Wrappers.<InternalProcurementOrderLineEntity>lambdaUpdate()
                 .set(InternalProcurementOrderLineEntity::getReceivedQuantity, afterReceived)
+                .set(InternalProcurementOrderLineEntity::getRevision,
+                        current.getRevision() == null ? 1 : current.getRevision() + 1)
+                .set(InternalProcurementOrderLineEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalProcurementOrderLineEntity::getUpdatedTime, now)
                 .eq(InternalProcurementOrderLineEntity::getTenantId, tenantId)
                 .eq(InternalProcurementOrderLineEntity::getId, line.procurementOrderLineId())
@@ -192,13 +199,14 @@ public class MybatisPlusStockInOrderRepository
 
     private StockQuantityChange increaseStockBalance(
             String tenantId, Long warehouseId, Long productId, Long productVariantId, BigDecimal quantity,
-            LocalDateTime now) {
+            String actorId, LocalDateTime now) {
         InternalStockBalanceEntity existing = stockBalanceMapper.selectOne(
                 Wrappers.<InternalStockBalanceEntity>lambdaQuery()
                         .eq(InternalStockBalanceEntity::getTenantId, tenantId)
                         .eq(InternalStockBalanceEntity::getWarehouseId, warehouseId)
                         .eq(InternalStockBalanceEntity::getProductId, productId)
                         .eq(InternalStockBalanceEntity::getProductVariantId, productVariantId)
+                        .eq(InternalStockBalanceEntity::getDeleted, 0)
                         .last("LIMIT 1"));
         if (existing == null) {
             InternalStockBalanceEntity created = new InternalStockBalanceEntity();
@@ -210,8 +218,11 @@ public class MybatisPlusStockInOrderRepository
             created.setLockedQuantity(ZERO);
             created.setInTransitQuantity(ZERO);
             created.setRevision(1);
+            created.setCreatedBy(auditActor(actorId));
             created.setCreatedTime(now);
+            created.setUpdatedBy(auditActor(actorId));
             created.setUpdatedTime(now);
+            created.setDeleted(0);
             stockBalanceMapper.insert(created);
             return new StockQuantityChange(ZERO, quantity);
         }
@@ -220,10 +231,12 @@ public class MybatisPlusStockInOrderRepository
         int updated = stockBalanceMapper.update(null, Wrappers.<InternalStockBalanceEntity>lambdaUpdate()
                 .set(InternalStockBalanceEntity::getAvailableQuantity, after)
                 .set(InternalStockBalanceEntity::getRevision, existing.getRevision() + 1)
+                .set(InternalStockBalanceEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalStockBalanceEntity::getUpdatedTime, now)
                 .eq(InternalStockBalanceEntity::getTenantId, tenantId)
                 .eq(InternalStockBalanceEntity::getId, existing.getId())
-                .eq(InternalStockBalanceEntity::getRevision, existing.getRevision()));
+                .eq(InternalStockBalanceEntity::getRevision, existing.getRevision())
+                .eq(InternalStockBalanceEntity::getDeleted, 0));
         if (updated != 1) throw conflict("库存余额已被其他单据修改，请重试入库");
         return new StockQuantityChange(before, after);
     }
@@ -233,7 +246,7 @@ public class MybatisPlusStockInOrderRepository
         int updated = procurementOrderMapper.update(null, Wrappers.<InternalProcurementOrderEntity>lambdaUpdate()
                 .set(InternalProcurementOrderEntity::getStatusCode, command.nextProcurementStatusCode())
                 .set(InternalProcurementOrderEntity::getRevision, command.procurementRevision() + 1)
-                .set(InternalProcurementOrderEntity::getUpdatedBy, actorId)
+                .set(InternalProcurementOrderEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalProcurementOrderEntity::getUpdatedTime, now)
                 .eq(InternalProcurementOrderEntity::getTenantId, tenantId)
                 .eq(InternalProcurementOrderEntity::getId, command.procurementOrderId())
@@ -243,7 +256,8 @@ public class MybatisPlusStockInOrderRepository
     }
 
     private void insertStockInLine(
-            String tenantId, Long stockInOrderId, ProcurementStockInLineWrite line, LocalDateTime now) {
+            String tenantId, Long stockInOrderId, ProcurementStockInLineWrite line, String actorId,
+            LocalDateTime now) {
         InternalStockInOrderLineEntity entity = new InternalStockInOrderLineEntity();
         entity.setTenantId(tenantId);
         entity.setStockInOrderId(stockInOrderId);
@@ -259,7 +273,10 @@ public class MybatisPlusStockInOrderRepository
         entity.setUnitPrice(line.unitPrice());
         entity.setAmount(line.amount());
         entity.setRemark(line.remark());
+        entity.setRevision(1);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
+        entity.setUpdatedBy(auditActor(actorId));
         entity.setUpdatedTime(now);
         entity.setDeleted(0);
         stockInLineMapper.insert(entity);
@@ -281,8 +298,12 @@ public class MybatisPlusStockInOrderRepository
         entity.setBeforeQuantity(quantityChange.beforeQuantity());
         entity.setAfterQuantity(quantityChange.afterQuantity());
         entity.setRemark(line.remark());
-        entity.setCreatedBy(actorId);
+        entity.setRevision(1);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
+        entity.setUpdatedBy(auditActor(actorId));
+        entity.setUpdatedTime(now);
+        entity.setDeleted(0);
         stockFlowMapper.insert(entity);
     }
 
@@ -300,9 +321,9 @@ public class MybatisPlusStockInOrderRepository
         entity.setStockInTime(local(command.stockInTime()));
         entity.setRemark(command.remark());
         entity.setRevision(1);
-        entity.setCreatedBy(actorId);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
-        entity.setUpdatedBy(actorId);
+        entity.setUpdatedBy(auditActor(actorId));
         entity.setUpdatedTime(now);
         entity.setDeleted(0);
         return entity;
@@ -313,11 +334,13 @@ public class MybatisPlusStockInOrderRepository
         Map<Long, ProcurementLineDisplay> procurementLines = procurementLineDisplays(tenantId,
                 lines.stream().map(InternalStockInOrderLineEntity::getProcurementOrderLineId).collect(Collectors.toSet()));
         LineMetrics metrics = metrics(lines);
-        return new InternalStockInOrderDetailView(order.getId(), order.getStockInNo(), order.getStockInTypeCode(),
+        return new InternalStockInOrderDetailView(order.getId(), order.getStockInNo(),
+                order.getSourceSystemCode(), order.getSourceDocumentNo(), order.getStockInTypeCode(),
                 order.getProcurementOrderId(), order.getProcurementNo(),
                 order.getTransferOrderId(), order.getTransferOrderNo(), order.getWarehouseId(),
-                warehouseNames(tenantId, Set.of(order.getWarehouseId())).get(order.getWarehouseId()),
-                order.getSupplierId(), supplierNames(tenantId, Set.of(order.getSupplierId())).get(order.getSupplierId()),
+                mapValue(warehouseNames(tenantId, singletonId(order.getWarehouseId())), order.getWarehouseId()),
+                order.getSupplierId(), mapValue(supplierNames(tenantId, singletonId(order.getSupplierId())),
+                order.getSupplierId()),
                 order.getStatusCode(), instant(order.getStockInTime()), metrics.totalQuantity(), metrics.totalAmount(),
                 lines.stream().map(line -> lineView(line, procurementLines)).toList(), order.getRemark(),
                 order.getRevision(), order.getCreatedBy(), instant(order.getCreatedTime()), order.getUpdatedBy(),
@@ -328,10 +351,12 @@ public class MybatisPlusStockInOrderRepository
             InternalStockInOrderEntity order, Map<Long, String> suppliers, Map<Long, String> warehouses,
             Map<Long, LineMetrics> metricsByOrder) {
         LineMetrics metrics = metricsByOrder.getOrDefault(order.getId(), LineMetrics.ZERO);
-        return new InternalStockInOrderSummaryView(order.getId(), order.getStockInNo(), order.getStockInTypeCode(),
+        return new InternalStockInOrderSummaryView(order.getId(), order.getStockInNo(),
+                order.getSourceSystemCode(), order.getSourceDocumentNo(), order.getStockInTypeCode(),
                 order.getProcurementOrderId(), order.getProcurementNo(),
                 order.getTransferOrderId(), order.getTransferOrderNo(), order.getWarehouseId(),
-                warehouses.get(order.getWarehouseId()), order.getSupplierId(), suppliers.get(order.getSupplierId()),
+                mapValue(warehouses, order.getWarehouseId()), order.getSupplierId(),
+                mapValue(suppliers, order.getSupplierId()),
                 order.getStatusCode(), instant(order.getStockInTime()), metrics.totalQuantity(), metrics.totalAmount(),
                 metrics.lineCount(), order.getRevision(), instant(order.getUpdatedTime()));
     }
@@ -369,7 +394,16 @@ public class MybatisPlusStockInOrderRepository
                         .eq(InternalStockInOrderEntity::getTenantId, tenantId)
                         .eq(InternalStockInOrderEntity::getDeleted, 0);
         if (criteria.stockInNo() != null) {
-            query.like(InternalStockInOrderEntity::getStockInNo, criteria.stockInNo());
+            query.and(value -> value
+                    .like(InternalStockInOrderEntity::getStockInNo, criteria.stockInNo())
+                    .or()
+                    .like(InternalStockInOrderEntity::getSourceDocumentNo, criteria.stockInNo())
+                    .or()
+                    .like(InternalStockInOrderEntity::getProcurementNo, criteria.stockInNo())
+                    .or()
+                    .like(InternalStockInOrderEntity::getTransferOrderNo, criteria.stockInNo())
+                    .or()
+                    .like(InternalStockInOrderEntity::getRemark, criteria.stockInNo()));
         }
         if (criteria.stockInTypeCode() != null) {
             query.eq(InternalStockInOrderEntity::getStockInTypeCode, criteria.stockInTypeCode());
@@ -452,7 +486,7 @@ public class MybatisPlusStockInOrderRepository
 
     private static InternalStockInOrderLineView lineView(
             InternalStockInOrderLineEntity entity, Map<Long, ProcurementLineDisplay> procurementLines) {
-        ProcurementLineDisplay display = procurementLines.get(entity.getProcurementOrderLineId());
+        ProcurementLineDisplay display = mapValue(procurementLines, entity.getProcurementOrderLineId());
         return new InternalStockInOrderLineView(entity.getId(), entity.getLineNo(),
                 entity.getProcurementOrderLineId(), entity.getTransferOrderLineId(),
                 entity.getProductId(), entity.getProductVariantId(),
@@ -461,6 +495,14 @@ public class MybatisPlusStockInOrderRepository
                 firstNonBlank(entity.getProductNameSnapshot(), display == null ? null : display.productName()),
                 entity.getUnitCode(), entity.getQuantity(),
                 entity.getUnitPrice(), entity.getAmount(), entity.getRemark());
+    }
+
+    private static Set<Long> singletonId(Long id) {
+        return id == null ? Set.of() : Set.of(id);
+    }
+
+    private static <T> T mapValue(Map<Long, T> values, Long key) {
+        return key == null ? null : values.get(key);
     }
 
     private static ProcurementOrderLineSnapshot procurementLineSnapshot(InternalProcurementOrderLineEntity line) {
@@ -506,6 +548,10 @@ public class MybatisPlusStockInOrderRepository
 
     private static Instant instant(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC);
+    }
+
+    private static String auditActor(String actorId) {
+        return actorId == null || actorId.isBlank() ? SYSTEM_ACTOR : actorId;
     }
 
     private static BusinessException conflict(String message) {

@@ -33,6 +33,14 @@ public interface DhbSyncStore {
     ExternalObjectMapping findActiveMapping(UUID tenantId, UUID connectorId,
                                             String sourceObjectType, String sourceObjectId);
 
+    List<TransferInboundReceiptCandidate> findTransferInboundReceiptCandidates(
+            UUID tenantId, UUID connectorId, int limit);
+
+    ManualResolution findActiveManualResolution(UUID tenantId, UUID connectorId,
+                                                String resolutionType,
+                                                String sourceObjectType,
+                                                String sourceId);
+
     void upsertExternalObjectMapping(UUID tenantId, UUID actorId,
                                      ExternalObjectMappingWrite value);
 
@@ -45,6 +53,11 @@ public interface DhbSyncStore {
 
     void recordReconciliationCase(UUID tenantId, UUID actorId,
                                   ReconciliationCaseWrite value);
+
+    void resolveRecoveredProjectionIssues(UUID tenantId, UUID actorId);
+
+    void resolveProjectionIssues(UUID tenantId, UUID actorId,
+                                 String sourceObjectType, String sourceId);
 
     void recordSyncLog(UUID tenantId, UUID taskId, UUID runId, String level,
                        String message, String errorCode);
@@ -85,6 +98,24 @@ public interface DhbSyncStore {
                                  String internalDomain, String internalObjectType,
                                  Long internalObjectId, String internalObjectNo,
                                  String mappingStatus, String payloadChecksum) {
+    }
+
+    record TransferInboundReceiptCandidate(UUID rawLandingId, String sourceId,
+                                           String sourceNo, Instant sourceUpdatedAt,
+                                           Instant receivedAt,
+                                           Map<String, Object> payload) {
+    }
+
+    record ManualResolution(UUID id, String resolutionType, String sourceObjectType,
+                            String sourceId, String selectedSourceObjectType,
+                            String selectedSourceId, String selectedInternalObjectType,
+                            Long selectedInternalObjectId, Map<String, Object> evidence,
+                            String reason) {
+        public ManualResolution {
+            evidence = evidence == null
+                    ? Map.of()
+                    : java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(evidence));
+        }
     }
 
     record ExternalObjectMappingWrite(UUID connectorId, String sourceObjectType,

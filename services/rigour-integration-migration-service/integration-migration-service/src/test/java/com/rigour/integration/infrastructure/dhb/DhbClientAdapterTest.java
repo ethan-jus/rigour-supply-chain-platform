@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
@@ -86,6 +87,87 @@ class DhbClientAdapterTest {
 
         assertThat(page.hasNext()).isTrue();
         assertThat(page.nextRequest()).isEqualTo(new DhbClient.PageRequest(100, 100));
+    }
+
+    @Test
+    void classifiesReturnedDeletedProductWithoutTreatingItAsNormal() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://api.test/erp")).andRespond(withSuccess("""
+                {"rStatus":100,"message":"success","rData":{"token":"opaque-token","expires_in":3600}}
+                """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.test/erp"))
+                .andExpect(content().json("""
+                        {"f":"getGoodsList","v":{"sKey":"opaque-token","begin":0,"step":100}}
+                        """))
+                .andRespond(withSuccess("""
+                        {"rStatus":100,"message":"success","rTotal":1,"rData":[
+                          {"guid":"P-1","coding":"SPU-1","name":"已删除商品","putaway":"T","is_delete":1}
+                        ]}
+                        """, MediaType.APPLICATION_JSON));
+
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
+
+        Product product = client.getProducts(CONNECTOR, ProductQuery.first(100)).items().getFirst();
+
+        assertThat(product.sourceLifecycle()).isEqualTo("SOURCE_DELETED");
+        server.verify();
+    }
+
+    @Test
+    void classifiesRecycleBinQueryProductAsSourceDeleted() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://api.test/erp")).andRespond(withSuccess("""
+                {"rStatus":100,"message":"success","rData":{"token":"opaque-token","expires_in":3600}}
+                """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.test/erp"))
+                .andExpect(content().json("""
+                        {"f":"getGoodsList","v":{"sKey":"opaque-token","begin":0,"step":100,"status":"F","putaway":"A"}}
+                        """))
+                .andRespond(withSuccess("""
+                        {"rStatus":100,"message":"success","rTotal":1,"rData":[
+                          {"guid":"P-1","coding":"SPU-1","name":"回收站商品","putaway":"T"}
+                        ]}
+                        """, MediaType.APPLICATION_JSON));
+
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
+
+        Product product = client.getProducts(CONNECTOR, new ProductQuery(
+                new DhbClient.PageRequest(0, 100), "F", "A", null)).items().getFirst();
+
+        assertThat(product.sourceLifecycle()).isEqualTo("SOURCE_DELETED");
+        assertThat(product.attributes()).containsEntry("_query_status", "F")
+                .containsEntry("_query_putaway", "A");
+        server.verify();
+    }
+
+    @Test
+    void classifiesExplicitNotDeletedProductAsNormal() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://api.test/erp")).andRespond(withSuccess("""
+                {"rStatus":100,"message":"success","rData":{"token":"opaque-token","expires_in":3600}}
+                """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.test/erp"))
+                .andExpect(content().json("""
+                        {"f":"getGoodsList","v":{"sKey":"opaque-token","begin":0,"step":100}}
+                        """))
+                .andRespond(withSuccess("""
+                        {"rStatus":100,"message":"success","rTotal":1,"rData":[
+                          {"guid":"P-1","coding":"SPU-1","name":"有效商品","is_delete":0}
+                        ]}
+                        """, MediaType.APPLICATION_JSON));
+
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
+
+        Product product = client.getProducts(CONNECTOR, ProductQuery.first(100)).items().getFirst();
+
+        assertThat(product.sourceLifecycle()).isEqualTo("NORMAL");
+        server.verify();
     }
 
     @Test
@@ -166,6 +248,27 @@ class DhbClientAdapterTest {
 
         assertThat(image.content()).isEqualTo("image-bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8));
         assertThat(image.contentType()).isEqualTo(MediaType.IMAGE_JPEG_VALUE);
+        server.verify();
+    }
+
+    @Test
+    void downloadsRelativeBusinessAttachmentAgainstConfiguredImageBaseUrl() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://images.test/receipts/proof.png"))
+                .andRespond(withSuccess("attachment-bytes", MediaType.IMAGE_PNG));
+
+        DhbClientProperties properties = properties();
+        properties.setImageBaseUrl("https://images.test/");
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties);
+
+        DhbClient.DownloadedFile attachment = client.downloadAttachment(CONNECTOR,
+                "/receipts/proof.png");
+
+        assertThat(attachment.content()).isEqualTo(
+                "attachment-bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(attachment.contentType()).isEqualTo(MediaType.IMAGE_PNG_VALUE);
         server.verify();
     }
 
@@ -257,6 +360,45 @@ class DhbClientAdapterTest {
         assertThat(order.orderNumber()).isEqualTo("DH-1");
         assertThat(order.amount()).isEqualByComparingTo("12.50");
         server.verify();
+    }
+
+    @Test
+    void getsOrderContentWithoutAutoSignOrAutoAudit() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://api.test/erp")).andRespond(withSuccess("""
+                {"rStatus":100,"message":"success","rData":{"token":"opaque-token","expires_in":3600}}
+                """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.test/erp"))
+                .andExpect(content().json("""
+                        {"f":"getOrderContent","v":{"sKey":"opaque-token","orderSn":"DH-1",
+                          "isAutoSign":2,"isAutoAudit":2}}
+                        """))
+                .andRespond(withSuccess("""
+                        {"rStatus":100,"message":"success","rData":{
+                          "OrderSN":"DH-1","status_name":"已取消","OrderTotal":"12.50"}}
+                        """, MediaType.APPLICATION_JSON));
+
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
+        DhbClient.OrderDetail detail = client.getOrderContent(CONNECTOR, "DH-1");
+
+        assertThat(detail.orderNumber()).isEqualTo("DH-1");
+        assertThat(detail.status()).isEqualTo("已取消");
+        assertThat(detail.amount()).isEqualByComparingTo("12.50");
+        server.verify();
+    }
+
+    @Test
+    void onlyAllowsDhbReadOnlyBusinessFunctions() {
+        assertThat(DhbClientAdapter.isReadOnlyBusinessFunction("getGoodsList")).isTrue();
+        assertThat(DhbClientAdapter.isReadOnlyBusinessFunction("getOrderContent")).isTrue();
+        assertThat(DhbClientAdapter.isReadOnlyBusinessFunction("batchGetStock")).isTrue();
+        assertThat(DhbClientAdapter.isReadOnlyBusinessFunction("writeOrderDownloadStatus")).isFalse();
+        assertThat(DhbClientAdapter.isReadOnlyBusinessFunction("addGoods")).isFalse();
+        assertThat(DhbClientAdapter.isReadOnlyBusinessFunction("approvePurchase")).isFalse();
+        assertThat(DhbClientAdapter.isReadOnlyBusinessFunction("cancelOrder")).isFalse();
+        assertThat(DhbClientAdapter.isReadOnlyBusinessFunction("confirmShips")).isFalse();
     }
 
     @Test
@@ -757,6 +899,83 @@ class DhbClientAdapterTest {
                 ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), properties());
 
         assertThat(client.getProducts(CONNECTOR, DhbClient.ProductQuery.first(100)).items()).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    void mapsAdminTransferListDetailAndRelatedVouchers() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://m.dhb168.com/RestfulApi/transfers?page=1&pageSize=100"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header("Cookie", "sid=fixture"))
+                .andRespond(withSuccess("""
+                        {"code":200,"message":"ok","data":{"count":1,"list":[{
+                          "transfer_id":"100","transfer_num":"DB.20260826.0054",
+                          "ships_stock_id":"S1","ships_stock_name":"指间云仓",
+                          "warehouse_stock_id":"S2","warehouse_stock_name":"北京仓",
+                          "transfer_status_name":"待出库","review_status_name":"已审核",
+                          "staff_name":"肖涵月","create_date":"2026-08-26 15:11:00"}]}}
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://m.dhb168.com/RestfulApi/transfers/100/detail"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header("Cookie", "sid=fixture"))
+                .andRespond(withSuccess("""
+                        {"code":200,"message":"ok","data":{
+                          "transfer_id":"100","transfer_num":"DB.20260826.0054",
+                          "ships_stock_id":"S1","ships_stock_name":"指间云仓",
+                          "warehouse_stock_id":"S2","warehouse_stock_name":"北京仓",
+                          "staff_name":"肖涵月","create_date":"2026-08-26 15:11:00",
+                          "transfer_list":{"data":[{
+                            "transfer_list_id":"TL1","goods_id":"G1","goods_num":"P1",
+                            "goods_name":"调拨商品","options_id":"O1","options_goods_num":"SKU1",
+                            "options_name":"红色","base_units":"件","transfer_number":"3.0000"}]}}}
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://m.dhb168.com/RestfulApi/transfers/100/ships/detail"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header("Cookie", "sid=fixture"))
+                .andRespond(withSuccess("""
+                        {"code":200,"message":"ok","data":{"ships_list":[{
+                          "ships_id":"200","ships_num":"FH.20260826.0001",
+                          "create_date":"2026-08-26 15:12:00","ships_stock_id":"S1",
+                          "ships_stock_name":"指间云仓","data":[{
+                            "ships_list_id":"SL1","goods_id":"G1","goods_num":"P1",
+                            "goods_name":"调拨商品","options_id":"O1","options_goods_num":"SKU1",
+                            "options_name":"红色","base_units":"件","ships_number":"3.0000"}]}]}}
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://m.dhb168.com/RestfulApi/transfers/100/warehousing/detail"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header("Cookie", "sid=fixture"))
+                .andRespond(withSuccess("""
+                        {"code":200,"message":"ok","data":{"warehouse_list":[{
+                          "warehousing_id":"300","warehousing_num":"RK.20260826.0001",
+                          "create_date":"2026-08-26 15:13:00","warehouse_stock_id":"S2",
+                          "warehouse_stock_name":"北京仓","data":[{
+                            "warehousing_list_id":"WL1","goods_id":"G1","goods_num":"P1",
+                            "goods_name":"调拨商品","options_id":"O1","options_goods_num":"SKU1",
+                            "options_name":"红色","base_units":"件","warehousing_number":"3.0000"}]}]}}
+                        """, MediaType.APPLICATION_JSON));
+
+        DhbClientProperties properties = properties();
+        properties.setAdminTransferEnabled(true);
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential",
+                        "sid=fixture"),
+                properties);
+
+        DhbClient.Page<DhbClient.TransferOrder> page = client.getTransferOrders(CONNECTOR,
+                DhbClient.TransferOrderQuery.first(100, null));
+        DhbClient.TransferOrder detail = client.getTransferOrder(CONNECTOR,
+                page.items().getFirst().sourceId());
+
+        assertThat(page.total()).isEqualTo(1);
+        assertThat(page.items().getFirst().transferNumber()).isEqualTo("DB.20260826.0054");
+        assertThat(detail.lines()).hasSize(1);
+        assertThat(detail.lines().getFirst().quantity()).isEqualByComparingTo("3.0000");
+        assertThat(detail.stockOutVouchers()).extracting(DhbClient.TransferStockOutVoucher::voucherNumber)
+                .containsExactly("FH.20260826.0001");
+        assertThat(detail.stockInVouchers()).extracting(DhbClient.TransferStockInVoucher::voucherNumber)
+                .containsExactly("RK.20260826.0001");
         server.verify();
     }
 

@@ -39,6 +39,8 @@ import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
 import com.rigour.order.api.v1.model.SalesOrderLineCommand;
 import com.rigour.order.api.v1.model.SalesOrderLineView;
+import com.rigour.order.api.v1.model.SalesOrderSourceProjectionCommand;
+import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
 import com.rigour.order.api.v1.model.SalesPaymentRecordCommand;
 import com.rigour.order.api.v1.model.SalesPaymentRecordDetailView;
 import com.rigour.order.api.v1.model.SalesRefundRecordCommand;
@@ -70,7 +72,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -269,7 +270,7 @@ class IntegrationMigrationServiceApplicationTests {
                     ? new DhbClient.Page<>(query.page(), 2, List.of(first))
                     : new DhbClient.Page<>(query.page(), 2, List.of(second));
         });
-        when(client.getOrderContent(any(), any(), anyBoolean(), anyBoolean()))
+        when(client.getOrderContent(any(), any()))
                 .thenAnswer(invocation -> orderDetail(invocation.getArgument(1)));
         stubEmptyDependentOrderFeeds(client);
         seedOrderProjectionMappings(tenant, connector.id());
@@ -307,7 +308,7 @@ class IntegrationMigrationServiceApplicationTests {
     }
 
     @Test
-    void defaultOrderPullUsesFullSourceFeedWithoutCheckpointWindow() {
+    void defaultOrderPullUsesCheckpointBootstrapWindow() {
         UUID tenant = UUID.randomUUID();
         UUID actor = UUID.randomUUID();
         ConnectorView connector = store.createConnector(tenant, actor,
@@ -321,17 +322,18 @@ class IntegrationMigrationServiceApplicationTests {
             DhbClient.OrderQuery query = invocation.getArgument(1);
             assertThat(query.orderStatus()).isEqualTo("all");
             assertThat(query.createdWindow()).isNull();
-            assertThat(query.updatedWindow()).isNull();
+            assertThat(query.updatedWindow()).isNotNull();
+            assertThat(query.updatedWindow().from()).isBefore(query.updatedWindow().to());
             assertThat(query.exceptionStatus()).isEqualTo("all");
             assertThat(query.apiStatus()).isEqualTo("all");
             return new DhbClient.Page<>(query.page(), 1,
                     query.page().begin() == 0 ? List.of(source) : List.of());
         });
-        when(client.getOrderContent(any(), any(), anyBoolean(), anyBoolean()))
+        when(client.getOrderContent(any(), any()))
                 .thenAnswer(invocation -> orderDetail(invocation.getArgument(1)));
         when(client.getShipments(any(), any())).thenAnswer(invocation -> {
             DhbClient.ShipmentQuery query = invocation.getArgument(1);
-            assertThat(query.createdWindow()).isNull();
+            assertThat(query.createdWindow()).isNotNull();
             assertThat(query.updatedWindow()).isNull();
             assertThat(query.isApi()).isNull();
             return new DhbClient.Page<>(query.page(), 0, List.of());
@@ -339,12 +341,12 @@ class IntegrationMigrationServiceApplicationTests {
         when(client.getReceipts(any(), any())).thenAnswer(invocation -> {
             DhbClient.ReceiptQuery query = invocation.getArgument(1);
             assertThat(query.createdWindow()).isNull();
-            assertThat(query.updatedFrom()).isNull();
+            assertThat(query.updatedFrom()).isNotNull();
             return new DhbClient.Page<>(query.page(), 0, List.of());
         });
         when(client.getPayments(any(), any())).thenAnswer(invocation -> {
             DhbClient.PaymentQuery query = invocation.getArgument(1);
-            assertThat(query.createdWindow()).isNull();
+            assertThat(query.createdWindow()).isNotNull();
             return new DhbClient.Page<>(query.page(), 0, List.of());
         });
         seedOrderProjectionMappings(tenant, connector.id());
@@ -356,10 +358,11 @@ class IntegrationMigrationServiceApplicationTests {
         var result = worker.runOrderPull(caller, task.id(), null);
 
         assertThat(result.status()).isEqualTo("SUCCEEDED");
-        assertThat(result.windowFrom()).isNull();
-        assertThat(result.windowTo()).isNull();
+        assertThat(result.windowFrom()).isNotNull();
+        assertThat(result.windowTo()).isNotNull();
+        assertThat(result.windowFrom()).isBefore(result.windowTo());
         assertThat(result.acceptedCount()).isEqualTo(1);
-        assertThat(checkpoint(tenant, task.id())).isNull();
+        assertThat(checkpoint(tenant, task.id()).cursorValue).isEqualTo(result.windowTo().toString());
     }
 
     @Test
@@ -383,7 +386,7 @@ class IntegrationMigrationServiceApplicationTests {
             return new DhbClient.Page<>(query.page(), 1,
                     query.page().begin() == 0 ? List.of(source) : List.of());
         });
-        when(client.getOrderContent(any(), any(), anyBoolean(), anyBoolean()))
+        when(client.getOrderContent(any(), any()))
                 .thenAnswer(invocation -> orderDetail(invocation.getArgument(1)));
         stubEmptyDependentOrderFeeds(client);
         seedOrderProjectionMappings(tenant, firstConnector.id());
@@ -423,7 +426,7 @@ class IntegrationMigrationServiceApplicationTests {
             return new DhbClient.Page<>(query.page(), 1,
                     query.page().begin() == 0 ? List.of(source) : List.of());
         });
-        when(client.getOrderContent(any(), any(), anyBoolean(), anyBoolean()))
+        when(client.getOrderContent(any(), any()))
                 .thenReturn(orderDetail("DHB-DUP-LINE", List.of(
                         orderProductRow("PROD-1", "SKU-1", "2", "10.00", "箱"),
                         orderProductRow("PROD-1", "SKU-1", "3", "12.00", "箱"))));
@@ -462,7 +465,7 @@ class IntegrationMigrationServiceApplicationTests {
             return new DhbClient.Page<>(query.page(), 1,
                     query.page().begin() == 0 ? List.of(source) : List.of());
         });
-        when(client.getOrderContent(any(), any(), anyBoolean(), anyBoolean()))
+        when(client.getOrderContent(any(), any()))
                 .thenReturn(orderDetail("DHB-CODE-ONLY", List.of(Map.of(
                         "Coding", "P-1",
                         "OptionsGoodsNo", "SKU-1",
@@ -623,12 +626,77 @@ class IntegrationMigrationServiceApplicationTests {
         }
 
         @Override
+        public SalesOrderDetailView updateSalesOrderSourceStatus(
+                CallerIdentity caller, Long id, SalesOrderSourceStatusCommand command) {
+            SalesOrderDetailView current = salesOrder(caller, id);
+            SalesOrderCommand updated = new SalesOrderCommand(current.customerId(),
+                    current.sourceSystemCode(), current.sourceOrderNo(), command.sourceStatusCode(),
+                    current.sourceCreatorId(), current.sourceCreatorStaffCode(), current.sourceCreatorName(),
+                    current.customerCodeSnapshot(), current.customerNameSnapshot(),
+                    current.contactNameSnapshot(), current.contactPhoneSnapshot(), current.regionCode(),
+                    current.ownerSalesUserId(), current.ownerSalesName(), current.ownerStaffCode(),
+                    current.ownerStaffNameSnapshot(), current.orderDate(), current.orderTypeCode(),
+                    current.paymentMethodCode(), current.discountRate(), current.discountAmount(),
+                    current.remark(), current.lines().stream()
+                    .map(line -> new SalesOrderLineCommand(line.productId(), line.productVariantId(),
+                            line.productCodeSnapshot(), line.skuCodeSnapshot(),
+                            line.productNameSnapshot(), line.specificationSnapshot(),
+                            line.unitCode(), line.quantity(), line.unitPrice(),
+                            line.discountRate(), line.discountAmount(), line.remark()))
+                    .toList(), "SUBMITTED".equals(current.orderStatusCode()), command.revision());
+            SalesOrderDetailView value = detail(id, current.orderNo(), updated,
+                    current.orderStatusCode(), command.revision() + 1);
+            rows.put(id, value);
+            return value;
+        }
+
+        @Override
+        public SalesOrderDetailView updateSalesOrderSourceProjection(
+                CallerIdentity caller, Long id, SalesOrderSourceProjectionCommand command) {
+            SalesOrderDetailView current = salesOrder(caller, id);
+            SalesOrderCommand updated = new SalesOrderCommand(current.customerId(),
+                    current.sourceSystemCode(), current.sourceOrderNo(),
+                    first(command.sourceStatusCode(), current.sourceStatusCode()),
+                    first(command.sourceCreatorId(), current.sourceCreatorId()),
+                    first(command.sourceCreatorStaffCode(), current.sourceCreatorStaffCode()),
+                    first(command.sourceCreatorName(), current.sourceCreatorName()),
+                    current.customerCodeSnapshot(), current.customerNameSnapshot(),
+                    current.contactNameSnapshot(), current.contactPhoneSnapshot(), current.regionCode(),
+                    first(command.ownerSalesUserId(), current.ownerSalesUserId()),
+                    first(command.ownerSalesName(), current.ownerSalesName()),
+                    first(command.ownerStaffCode(), current.ownerStaffCode()),
+                    first(command.ownerStaffNameSnapshot(), current.ownerStaffNameSnapshot()),
+                    current.orderDate(), current.orderTypeCode(),
+                    current.paymentMethodCode(), current.discountRate(), current.discountAmount(),
+                    current.remark(), current.lines().stream()
+                    .map(line -> new SalesOrderLineCommand(line.productId(), line.productVariantId(),
+                            line.productCodeSnapshot(), line.skuCodeSnapshot(),
+                            line.productNameSnapshot(), line.specificationSnapshot(),
+                            line.unitCode(), line.quantity(), line.unitPrice(),
+                            line.discountRate(), line.discountAmount(), line.remark()))
+                    .toList(), "SUBMITTED".equals(current.orderStatusCode()), command.revision());
+            SalesOrderDetailView value = detail(id, current.orderNo(), updated,
+                    current.orderStatusCode(), command.revision() + 1);
+            rows.put(id, value);
+            return value;
+        }
+
+        private static String first(String preferred, String fallback) {
+            return preferred == null || preferred.isBlank() ? fallback : preferred;
+        }
+
+        @Override
         public SalesOrderDetailView cancelSalesOrder(CallerIdentity caller, Long id, int revision) {
             SalesOrderDetailView current = salesOrder(caller, id);
             SalesOrderDetailView cancelled = detail(id, current.orderNo(), command(current),
                     "CANCELLED", revision + 1);
             rows.put(id, cancelled);
             return cancelled;
+        }
+
+        @Override
+        public SalesOrderDetailView cancelSalesOrderBySource(CallerIdentity caller, Long id, int revision) {
+            return cancelSalesOrder(caller, id, revision);
         }
 
         @Override
@@ -747,12 +815,15 @@ class IntegrationMigrationServiceApplicationTests {
                             line.unitPrice(), line.discountRate(), line.discountAmount(),
                             line.quantity().multiply(line.unitPrice()), line.remark()))
                     .toList();
-            return new SalesOrderDetailView(id, orderNo, command.customerId(),
+            return new SalesOrderDetailView(id, orderNo, command.sourceSystemCode(),
+                    command.sourceOrderNo(), command.sourceStatusCode(),
+                    command.sourceCreatorId(), command.sourceCreatorStaffCode(), command.sourceCreatorName(),
+                    command.customerId(),
                     command.customerCodeSnapshot(), command.customerNameSnapshot(),
                     command.contactNameSnapshot(), command.contactPhoneSnapshot(),
                     command.regionCode(), command.ownerSalesUserId(), command.ownerSalesName(),
                     command.ownerStaffCode(), command.ownerStaffNameSnapshot(),
-                    command.orderDate(), status, command.orderTypeCode(),
+                    command.orderDate(), null, null, null, status, command.orderTypeCode(),
                     command.paymentMethodCode(), "UNPAID", "PENDING", totalQuantity,
                     payableAmount, command.discountRate(), command.discountAmount(),
                     payableAmount, BigDecimal.ZERO, payableAmount, command.remark(), revision,
@@ -760,7 +831,10 @@ class IntegrationMigrationServiceApplicationTests {
         }
 
         private static SalesOrderCommand command(SalesOrderDetailView source) {
-            return new SalesOrderCommand(source.customerId(), source.customerCodeSnapshot(),
+            return new SalesOrderCommand(source.customerId(), source.sourceSystemCode(), source.sourceOrderNo(),
+                    source.sourceStatusCode(),
+                    source.sourceCreatorId(), source.sourceCreatorStaffCode(), source.sourceCreatorName(),
+                    source.customerCodeSnapshot(),
                     source.customerNameSnapshot(), source.contactNameSnapshot(),
                     source.contactPhoneSnapshot(), source.regionCode(), source.ownerSalesUserId(),
                     source.ownerSalesName(), source.ownerStaffCode(), source.ownerStaffNameSnapshot(),
@@ -777,7 +851,8 @@ class IntegrationMigrationServiceApplicationTests {
 
         private static SalesPaymentRecordDetailView payment(
                 Long id, String paymentNo, SalesPaymentRecordCommand command, int revision) {
-            return new SalesPaymentRecordDetailView(id, paymentNo, command.orderId(),
+            return new SalesPaymentRecordDetailView(id, paymentNo, command.connectorId(),
+                    command.sourceSystemCode(), command.sourceDocumentNo(), command.orderId(),
                     "DD202608040001", 1L, "KH202608040001", "测试客户",
                     command.collectorStaffCode(), command.collectorNameSnapshot(),
                     command.paymentTime(), command.paymentMethodCode(), command.paidAmount(),
@@ -787,15 +862,19 @@ class IntegrationMigrationServiceApplicationTests {
 
         private static FundDocumentDetailView fundDocument(
                 Long id, String documentNo, FundDocumentCommand command, int revision) {
-            return new FundDocumentDetailView(id, documentNo, command.directionCode(),
+            return new FundDocumentDetailView(id, documentNo, command.connectorId(), command.sourceSystemCode(),
+                    command.directionCode(),
                     command.relatedOrderId(), command.salesOrderNoSnapshot(), command.customerId(),
                     command.customerCodeSnapshot(), command.customerNameSnapshot(),
                     command.counterpartyTypeCode(), command.counterpartyCodeSnapshot(),
                     command.counterpartyNameSnapshot(), command.handlerStaffCode(),
                     command.handlerStaffNameSnapshot(), command.occurredTime(),
                     command.settlementMethodCode(), command.businessTypeCode(),
-                    command.documentStatusCode(), command.amount(), command.voucherKeys(),
-                    command.remark(), revision, "TEST", Instant.now(), "TEST", Instant.now());
+                    command.documentStatusCode(), command.amount(), command.sourceDocumentNo(),
+                    command.sourceOrderNo(), command.paymentSerialNo(), command.bankAccountName(),
+                    command.bankName(), command.bankAccountNo(), command.submittedAt(), command.confirmedAt(),
+                    command.sourceAttachmentKeys(), command.voucherKeys(), List.of(), command.remark(),
+                    revision, "TEST", Instant.now(), "TEST", Instant.now());
         }
 
         private static SalesRefundRecordDetailView refund(
@@ -820,7 +899,8 @@ class IntegrationMigrationServiceApplicationTests {
                             line.specificationSnapshot(), line.unitCode(), line.shippedQuantity(),
                             line.remark()))
                     .toList();
-            return new SalesShipmentDetailView(id, shipmentNo, command.salesOrderId(),
+            return new SalesShipmentDetailView(id, shipmentNo, command.connectorId(),
+                    command.sourceSystemCode(), command.sourceDocumentNo(), command.salesOrderId(),
                     "DD202608040001", 1L, "KH202608040001", "测试客户", "13800000000",
                     null, null, command.warehouseId(), command.stockOutOrderId(), command.stockOutNo(),
                     command.shipmentStatusCode(), command.logisticsCompany(), command.trackingNo(),

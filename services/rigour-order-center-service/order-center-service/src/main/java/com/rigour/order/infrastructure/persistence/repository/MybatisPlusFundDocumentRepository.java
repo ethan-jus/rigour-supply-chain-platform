@@ -19,6 +19,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,7 +39,9 @@ public class MybatisPlusFundDocumentRepository
 
     private final Clock clock;
 
-    public MybatisPlusFundDocumentRepository(InternalFundDocumentMapper mapper, Clock orderClock) {
+    public MybatisPlusFundDocumentRepository(
+            InternalFundDocumentMapper mapper,
+            Clock orderClock) {
         this.baseMapper = mapper;
         this.clock = orderClock;
     }
@@ -91,6 +94,8 @@ public class MybatisPlusFundDocumentRepository
                 .orElseThrow(() -> notFound("资金单据不存在"));
         LocalDateTime now = now();
         int updated = getBaseMapper().update(null, Wrappers.<InternalFundDocumentEntity>lambdaUpdate()
+                .set(InternalFundDocumentEntity::getConnectorId, uuidText(command.connectorId()))
+                .set(InternalFundDocumentEntity::getSourceSystemCode, command.sourceSystemCode())
                 .set(InternalFundDocumentEntity::getDirectionCode, command.directionCode())
                 .set(InternalFundDocumentEntity::getRelatedOrderId, command.relatedOrderId())
                 .set(InternalFundDocumentEntity::getSalesOrderNoSnapshot, command.salesOrderNoSnapshot())
@@ -107,6 +112,15 @@ public class MybatisPlusFundDocumentRepository
                 .set(InternalFundDocumentEntity::getBusinessTypeCode, command.businessTypeCode())
                 .set(InternalFundDocumentEntity::getDocumentStatusCode, command.documentStatusCode())
                 .set(InternalFundDocumentEntity::getAmount, command.amount())
+                .set(InternalFundDocumentEntity::getSourceDocumentNo, command.sourceDocumentNo())
+                .set(InternalFundDocumentEntity::getSourceOrderNo, command.sourceOrderNo())
+                .set(InternalFundDocumentEntity::getPaymentSerialNo, command.paymentSerialNo())
+                .set(InternalFundDocumentEntity::getBankAccountName, command.bankAccountName())
+                .set(InternalFundDocumentEntity::getBankName, command.bankName())
+                .set(InternalFundDocumentEntity::getBankAccountNo, command.bankAccountNo())
+                .set(InternalFundDocumentEntity::getSubmittedAt, local(command.submittedAt()))
+                .set(InternalFundDocumentEntity::getConfirmedAt, local(command.confirmedAt()))
+                .set(InternalFundDocumentEntity::getSourceAttachmentKeysJson, json(command.sourceAttachmentKeys()))
                 .set(InternalFundDocumentEntity::getVoucherKeysJson, json(command.voucherKeys()))
                 .set(InternalFundDocumentEntity::getRemark, command.remark())
                 .set(InternalFundDocumentEntity::getRevision, command.revision() + 1)
@@ -123,6 +137,8 @@ public class MybatisPlusFundDocumentRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(String tenantId, Long id, int revision, String actorId) {
+        InternalFundDocumentEntity existing = selectActive(tenantId, id)
+                .orElseThrow(() -> notFound("资金单据不存在"));
         LocalDateTime now = now();
         int updated = getBaseMapper().update(null, Wrappers.<InternalFundDocumentEntity>lambdaUpdate()
                 .set(InternalFundDocumentEntity::getDeleted, 1)
@@ -150,9 +166,24 @@ public class MybatisPlusFundDocumentRepository
                 Wrappers.<InternalFundDocumentEntity>lambdaQuery()
                         .eq(InternalFundDocumentEntity::getTenantId, tenantId)
                         .eq(InternalFundDocumentEntity::getDeleted, 0);
+        if (criteria.keyword() != null) {
+            query.and(wrapper -> wrapper
+                    .like(InternalFundDocumentEntity::getDocumentNo, criteria.keyword())
+                    .or()
+                    .like(InternalFundDocumentEntity::getSourceDocumentNo, criteria.keyword())
+                    .or()
+                    .like(InternalFundDocumentEntity::getSalesOrderNoSnapshot, criteria.keyword())
+                    .or()
+                    .like(InternalFundDocumentEntity::getSourceOrderNo, criteria.keyword())
+                    .or()
+                    .like(InternalFundDocumentEntity::getPaymentSerialNo, criteria.keyword()));
+        }
         if (criteria.directionCode() != null) query.eq(InternalFundDocumentEntity::getDirectionCode, criteria.directionCode());
         if (criteria.documentNo() != null) query.like(InternalFundDocumentEntity::getDocumentNo, criteria.documentNo());
+        if (criteria.sourceDocumentNo() != null) query.like(InternalFundDocumentEntity::getSourceDocumentNo, criteria.sourceDocumentNo());
         if (criteria.salesOrderNo() != null) query.like(InternalFundDocumentEntity::getSalesOrderNoSnapshot, criteria.salesOrderNo());
+        if (criteria.sourceOrderNo() != null) query.like(InternalFundDocumentEntity::getSourceOrderNo, criteria.sourceOrderNo());
+        if (criteria.paymentSerialNo() != null) query.like(InternalFundDocumentEntity::getPaymentSerialNo, criteria.paymentSerialNo());
         if (criteria.counterpartyName() != null) query.like(InternalFundDocumentEntity::getCounterpartyNameSnapshot, criteria.counterpartyName());
         if (criteria.handlerStaffCode() != null) query.eq(InternalFundDocumentEntity::getHandlerStaffCode, criteria.handlerStaffCode());
         if (criteria.settlementMethodCode() != null) query.eq(InternalFundDocumentEntity::getSettlementMethodCode, criteria.settlementMethodCode());
@@ -168,6 +199,8 @@ public class MybatisPlusFundDocumentRepository
         InternalFundDocumentEntity entity = new InternalFundDocumentEntity();
         entity.setTenantId(tenantId);
         entity.setDocumentNo(documentNo);
+        entity.setConnectorId(uuidText(command.connectorId()));
+        entity.setSourceSystemCode(command.sourceSystemCode());
         entity.setDirectionCode(command.directionCode());
         entity.setRelatedOrderId(command.relatedOrderId());
         entity.setSalesOrderNoSnapshot(command.salesOrderNoSnapshot());
@@ -184,6 +217,15 @@ public class MybatisPlusFundDocumentRepository
         entity.setBusinessTypeCode(command.businessTypeCode());
         entity.setDocumentStatusCode(command.documentStatusCode());
         entity.setAmount(command.amount());
+        entity.setSourceDocumentNo(command.sourceDocumentNo());
+        entity.setSourceOrderNo(command.sourceOrderNo());
+        entity.setPaymentSerialNo(command.paymentSerialNo());
+        entity.setBankAccountName(command.bankAccountName());
+        entity.setBankName(command.bankName());
+        entity.setBankAccountNo(command.bankAccountNo());
+        entity.setSubmittedAt(local(command.submittedAt()));
+        entity.setConfirmedAt(local(command.confirmedAt()));
+        entity.setSourceAttachmentKeysJson(json(command.sourceAttachmentKeys()));
         entity.setVoucherKeysJson(json(command.voucherKeys()));
         entity.setRemark(command.remark());
         entity.setRevision(1);
@@ -200,26 +242,35 @@ public class MybatisPlusFundDocumentRepository
     }
 
     private static FundDocumentSummaryView summary(InternalFundDocumentEntity entity) {
-        return new FundDocumentSummaryView(entity.getId(), entity.getDocumentNo(), entity.getDirectionCode(),
+        return new FundDocumentSummaryView(entity.getId(), entity.getDocumentNo(),
+                uuid(entity.getConnectorId()), entity.getSourceSystemCode(), entity.getDirectionCode(),
                 entity.getRelatedOrderId(), entity.getSalesOrderNoSnapshot(), entity.getCustomerId(),
                 entity.getCustomerCodeSnapshot(), entity.getCustomerNameSnapshot(),
                 entity.getCounterpartyTypeCode(), entity.getCounterpartyCodeSnapshot(),
                 entity.getCounterpartyNameSnapshot(), entity.getHandlerStaffCode(),
                 entity.getHandlerStaffNameSnapshot(), instant(entity.getOccurredTime()),
                 entity.getSettlementMethodCode(), entity.getBusinessTypeCode(),
-                entity.getDocumentStatusCode(), entity.getAmount(), entity.getRevision(),
+                entity.getDocumentStatusCode(), entity.getAmount(), entity.getSourceDocumentNo(),
+                entity.getSourceOrderNo(), entity.getPaymentSerialNo(), entity.getBankAccountName(),
+                entity.getBankName(), entity.getBankAccountNo(), instant(entity.getSubmittedAt()),
+                instant(entity.getConfirmedAt()), parseStrings(entity.getSourceAttachmentKeysJson()), entity.getRevision(),
                 instant(entity.getUpdatedTime()));
     }
 
     private static FundDocumentDetailView detail(InternalFundDocumentEntity entity) {
-        return new FundDocumentDetailView(entity.getId(), entity.getDocumentNo(), entity.getDirectionCode(),
+        return new FundDocumentDetailView(entity.getId(), entity.getDocumentNo(),
+                uuid(entity.getConnectorId()), entity.getSourceSystemCode(), entity.getDirectionCode(),
                 entity.getRelatedOrderId(), entity.getSalesOrderNoSnapshot(), entity.getCustomerId(),
                 entity.getCustomerCodeSnapshot(), entity.getCustomerNameSnapshot(),
                 entity.getCounterpartyTypeCode(), entity.getCounterpartyCodeSnapshot(),
                 entity.getCounterpartyNameSnapshot(), entity.getHandlerStaffCode(),
                 entity.getHandlerStaffNameSnapshot(), instant(entity.getOccurredTime()),
                 entity.getSettlementMethodCode(), entity.getBusinessTypeCode(),
-                entity.getDocumentStatusCode(), entity.getAmount(), parseStrings(entity.getVoucherKeysJson()),
+                entity.getDocumentStatusCode(), entity.getAmount(), entity.getSourceDocumentNo(),
+                entity.getSourceOrderNo(), entity.getPaymentSerialNo(), entity.getBankAccountName(),
+                entity.getBankName(), entity.getBankAccountNo(), instant(entity.getSubmittedAt()),
+                instant(entity.getConfirmedAt()), parseStrings(entity.getSourceAttachmentKeysJson()),
+                parseStrings(entity.getVoucherKeysJson()), List.of(),
                 entity.getRemark(), entity.getRevision(), entity.getCreatedBy(), instant(entity.getCreatedTime()),
                 entity.getUpdatedBy(), instant(entity.getUpdatedTime()));
     }
@@ -250,6 +301,19 @@ public class MybatisPlusFundDocumentRepository
 
     private static Instant instant(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC);
+    }
+
+    private static String uuidText(UUID value) {
+        return value == null ? null : value.toString();
+    }
+
+    private static UUID uuid(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return UUID.fromString(value.strip());
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private static BusinessException conflict(String message) {

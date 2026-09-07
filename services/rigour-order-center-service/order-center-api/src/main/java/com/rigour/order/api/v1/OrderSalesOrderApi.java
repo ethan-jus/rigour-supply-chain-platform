@@ -3,6 +3,8 @@ package com.rigour.order.api.v1;
 import com.rigour.order.api.v1.model.OrderPageView;
 import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
+import com.rigour.order.api.v1.model.SalesOrderSourceProjectionCommand;
+import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutResult;
 import com.rigour.order.api.v1.model.SalesOrderSummaryView;
@@ -26,6 +28,7 @@ public interface OrderSalesOrderApi {
             @RequestParam(defaultValue = "20") int step,
             @RequestParam(required = false) String orderNo,
             @RequestParam(required = false) String sourceOrderNo,
+            @RequestParam(required = false) String sourceStatusCode,
             @RequestParam(required = false) String customerName,
             @RequestParam(required = false) String contactPhone,
             @RequestParam(required = false) String regionCode,
@@ -47,12 +50,24 @@ public interface OrderSalesOrderApi {
     ApiResponse<SalesOrderDetailView> updateSalesOrder(
             @PathVariable("id") Long id, @RequestBody SalesOrderCommand command);
 
+    @PutMapping(BASE_PATH + "/{id}/source-status")
+    ApiResponse<SalesOrderDetailView> updateSalesOrderSourceStatus(
+            @PathVariable("id") Long id, @RequestBody SalesOrderSourceStatusCommand command);
+
+    @PutMapping(BASE_PATH + "/{id}/source-projection")
+    ApiResponse<SalesOrderDetailView> updateSalesOrderSourceProjection(
+            @PathVariable("id") Long id, @RequestBody SalesOrderSourceProjectionCommand command);
+
     @PostMapping(BASE_PATH + "/{id}/submissions")
     ApiResponse<SalesOrderDetailView> submitSalesOrder(
             @PathVariable("id") Long id, @RequestParam int revision);
 
     @PostMapping(BASE_PATH + "/{id}/cancellations")
     ApiResponse<SalesOrderDetailView> cancelSalesOrder(
+            @PathVariable("id") Long id, @RequestParam int revision);
+
+    @PostMapping(BASE_PATH + "/{id}/source-cancellations")
+    ApiResponse<SalesOrderDetailView> cancelSalesOrderBySource(
             @PathVariable("id") Long id, @RequestParam int revision);
 
     @PostMapping(BASE_PATH + "/{id}/outbound-confirmations")

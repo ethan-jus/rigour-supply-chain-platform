@@ -24,6 +24,7 @@ import com.rigour.erp.domain.model.product.Brand;
 import com.rigour.erp.domain.model.product.Category;
 import com.rigour.erp.domain.model.product.MasterDataObjectType;
 import com.rigour.erp.domain.model.product.Product;
+import com.rigour.erp.domain.model.product.Sku;
 import com.rigour.erp.domain.model.product.Specification;
 import com.rigour.erp.domain.model.product.Tag;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
@@ -119,6 +120,38 @@ class ProductMasterDataSyncServiceTest {
         successBoundary.verify(guard).ensureActive();
         successBoundary.verify(store).completeRunWithSourcePresence(eq(TENANT_ID.toString()),
                 eq(RUN_ID), any(), any());
+    }
+
+    @Test
+    void productSpuFetchedCountDoesNotCountSkuChildrenAsProducts() throws Exception {
+        DhbProductMasterDataClient integration = mock(DhbProductMasterDataClient.class);
+        DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
+        ProductMasterDataStore store = mock(ProductMasterDataStore.class);
+        BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
+        ProductMasterDataSyncService service = syncService(
+                integration, discovery, store, dictionaryCoverage, passthroughLease());
+        Product product = new Product("P-1", "SPU-1", "商品一", "T", null, "件",
+                null, null, List.of(
+                new Sku("P-1::SKU-1", "SKU-1", null, null, null, "红色", "b".repeat(64)),
+                new Sku("P-1::SKU-2", "SKU-2", null, null, null, "蓝色", "c".repeat(64))),
+                "a".repeat(64));
+        Collected collected = new Collected(MasterDataObjectType.PRODUCT_SPU, 1, 1,
+                List.of(product), List.of(), List.of(), List.of(), List.of());
+        when(discovery.discover(any())).thenReturn(List.of(
+                new SyncTargetView(TASK_ID, TENANT_ID, CONNECTOR_ID)));
+        when(store.startRun(TENANT_ID.toString(), CONNECTOR_ID, USER_ID,
+                MasterDataObjectType.PRODUCT_SPU, 3)).thenReturn(RUN_ID);
+        when(integration.collect(any(), eq(CONNECTOR_ID), eq(MasterDataObjectType.PRODUCT_SPU), eq(3)))
+                .thenReturn(collected);
+        when(store.importProduct(any(), any(), eq(product))).thenReturn(ImportResult.created(3));
+        setCaller();
+
+        var result = service.run(MasterDataObjectType.PRODUCT_SPU, 3);
+
+        assertThat(result.fetched()).isEqualTo(1);
+        assertThat(result.created()).isEqualTo(3);
+        assertThat(result.sourceDetails()).containsEntry("PRODUCT_SPU", 1L)
+                .containsEntry("PRODUCT_SKU", 2L);
     }
 
     @Test

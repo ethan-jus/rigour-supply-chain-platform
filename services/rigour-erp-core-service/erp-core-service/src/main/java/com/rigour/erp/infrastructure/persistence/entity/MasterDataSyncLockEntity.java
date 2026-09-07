@@ -15,4 +15,10 @@ public class MasterDataSyncLockEntity {
     public String runId;
     public LocalDateTime acquiredAt;
     public LocalDateTime expiresAt;
+    public Integer revision;
+    public String createdBy;
+    public LocalDateTime createdTime;
+    public String updatedBy;
+    public LocalDateTime updatedTime;
+    public Integer deleted;
 }

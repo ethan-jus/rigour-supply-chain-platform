@@ -9,6 +9,10 @@ public record SalesOrderSummaryView(
         String orderNo,
         String sourceSystemCode,
         String sourceOrderNo,
+        String sourceStatusCode,
+        String sourceCreatorId,
+        String sourceCreatorStaffCode,
+        String sourceCreatorName,
         Long customerId,
         String customerNameSnapshot,
         String contactPhoneSnapshot,
@@ -18,6 +22,9 @@ public record SalesOrderSummaryView(
         String ownerStaffCode,
         String ownerStaffNameSnapshot,
         Instant orderDate,
+        Instant paymentTime,
+        Instant shipmentTime,
+        String shipmentStatusCode,
         String orderStatusCode,
         String paymentStatusCode,
         String outboundStatusCode,
@@ -27,6 +34,45 @@ public record SalesOrderSummaryView(
         BigDecimal unpaidAmount,
         Integer revision,
         Instant updatedTime) {
+    public SalesOrderSummaryView(Long id, String orderNo, String sourceSystemCode, String sourceOrderNo,
+                                 Long customerId, String customerNameSnapshot,
+                                 String contactPhoneSnapshot, String regionCode,
+                                 String ownerSalesUserId, String ownerSalesName,
+                                 String ownerStaffCode, String ownerStaffNameSnapshot,
+                                 Instant orderDate, Instant paymentTime,
+                                 Instant shipmentTime, String orderStatusCode,
+                                 String paymentStatusCode, String outboundStatusCode,
+                                 BigDecimal totalQuantity, BigDecimal payableAmount,
+                                 BigDecimal paidAmount, BigDecimal unpaidAmount,
+                                 Integer revision, Instant updatedTime) {
+        this(id, orderNo, sourceSystemCode, sourceOrderNo, null, null, null, null, customerId,
+                customerNameSnapshot, contactPhoneSnapshot, regionCode,
+                ownerSalesUserId, ownerSalesName, ownerStaffCode, ownerStaffNameSnapshot,
+                orderDate, paymentTime, shipmentTime, null, orderStatusCode, paymentStatusCode,
+                outboundStatusCode, totalQuantity, payableAmount, paidAmount,
+                unpaidAmount, revision, updatedTime);
+    }
+
+    public SalesOrderSummaryView(Long id, String orderNo, String sourceSystemCode, String sourceOrderNo,
+                                 String sourceStatusCode, Long customerId,
+                                 String customerNameSnapshot, String contactPhoneSnapshot,
+                                 String regionCode, String ownerSalesUserId,
+                                 String ownerSalesName, String ownerStaffCode,
+                                 String ownerStaffNameSnapshot, Instant orderDate,
+                                 Instant paymentTime, Instant shipmentTime,
+                                 String orderStatusCode, String paymentStatusCode,
+                                 String outboundStatusCode, BigDecimal totalQuantity,
+                                 BigDecimal payableAmount, BigDecimal paidAmount,
+                                 BigDecimal unpaidAmount, Integer revision,
+                                 Instant updatedTime) {
+        this(id, orderNo, sourceSystemCode, sourceOrderNo, sourceStatusCode, null, null, null,
+                customerId, customerNameSnapshot, contactPhoneSnapshot, regionCode,
+                ownerSalesUserId, ownerSalesName, ownerStaffCode, ownerStaffNameSnapshot,
+                orderDate, paymentTime, shipmentTime, null, orderStatusCode, paymentStatusCode,
+                outboundStatusCode, totalQuantity, payableAmount, paidAmount,
+                unpaidAmount, revision, updatedTime);
+    }
+
     public SalesOrderSummaryView(Long id, String orderNo, Long customerId,
                                  String customerNameSnapshot, String contactPhoneSnapshot,
                                  String regionCode, String ownerSalesUserId,
@@ -37,9 +83,10 @@ public record SalesOrderSummaryView(
                                  BigDecimal payableAmount, BigDecimal paidAmount,
                                  BigDecimal unpaidAmount, Integer revision,
                                  Instant updatedTime) {
-        this(id, orderNo, null, null, customerId, customerNameSnapshot, contactPhoneSnapshot,
-                regionCode, ownerSalesUserId, ownerSalesName, ownerStaffCode,
-                ownerStaffNameSnapshot, orderDate, orderStatusCode, paymentStatusCode,
+        this(id, orderNo, null, null, null, null, null, null, customerId,
+                customerNameSnapshot, contactPhoneSnapshot, regionCode,
+                ownerSalesUserId, ownerSalesName, ownerStaffCode,
+                ownerStaffNameSnapshot, orderDate, null, null, null, orderStatusCode, paymentStatusCode,
                 outboundStatusCode, totalQuantity, payableAmount, paidAmount,
                 unpaidAmount, revision, updatedTime);
     }
@@ -53,9 +100,11 @@ public record SalesOrderSummaryView(
                                  BigDecimal payableAmount, BigDecimal paidAmount,
                                  BigDecimal unpaidAmount, Integer revision,
                                  Instant updatedTime) {
-        this(id, orderNo, null, null, customerId, customerNameSnapshot, contactPhoneSnapshot,
-                regionCode, ownerSalesUserId, ownerSalesName, null, null, orderDate,
-                orderStatusCode, paymentStatusCode, outboundStatusCode, totalQuantity,
-                payableAmount, paidAmount, unpaidAmount, revision, updatedTime);
+        this(id, orderNo, null, null, null, null, null, null, customerId,
+                customerNameSnapshot, contactPhoneSnapshot, regionCode,
+                ownerSalesUserId, ownerSalesName, null, null, orderDate,
+                null, null, null, orderStatusCode, paymentStatusCode,
+                outboundStatusCode, totalQuantity, payableAmount, paidAmount,
+                unpaidAmount, revision, updatedTime);
     }
 }

@@ -31,7 +31,10 @@ public class SourceBindingEntity {
     public byte[] lastSeenRunId;
     public byte[] lastSyncRunId;
     public LocalDateTime syncedAt;
-    public Long version;
-    public LocalDateTime createdAt;
-    public LocalDateTime updatedAt;
+    public Long revision;
+    public String createdBy;
+    public LocalDateTime createdTime;
+    public String updatedBy;
+    public LocalDateTime updatedTime;
+    public Integer deleted;
 }

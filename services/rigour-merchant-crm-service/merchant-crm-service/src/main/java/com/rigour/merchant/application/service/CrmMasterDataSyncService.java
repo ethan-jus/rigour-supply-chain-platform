@@ -44,6 +44,7 @@ import org.springframework.stereotype.Service;
 @Service
 public final class CrmMasterDataSyncService {
     private static final int IMPORT_BATCH_SIZE = 200;
+    private static final int MAPPING_BATCH_SIZE = 200;
     static final String CONNECTOR_LEASE_CONFLICT = "CONNECTOR_LEASE_CONFLICT";
     static final String OBJECT_SYNC_ALREADY_RUNNING = "OBJECT_SYNC_ALREADY_RUNNING";
     static final String MULTIPLE_ACTIVE_CONNECTORS = "MULTIPLE_ACTIVE_CONNECTORS";
@@ -176,14 +177,15 @@ public final class CrmMasterDataSyncService {
             leaseGuard.ensureActive();
             RunStatistics statistics = store.completeRun(tenantId, connectorId, runId,
                     objectType, counts.statistics(), counts.rejected == 0);
-            String status = dictionaryAudit.unmapped() == 0 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
+            long unmapped = counts.unmapped + dictionaryAudit.unmapped();
+            String status = unmapped == 0 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
             log.info("CRM订货宝同步完成 tenantId={} connectorId={} objectType={} runId={} fetched={} created={} changed={} repaired={} duplicates={} absent={} rejected={} pages={} unmapped={} mappingAccepted={} dictionaryRevisions={}",
                     tenantId, connectorId, objectType, runId, statistics.fetched(),
                     statistics.created(), statistics.changed(), statistics.repaired(),
                     statistics.duplicates(), statistics.absent(), statistics.rejected(),
-                    statistics.pages(), dictionaryAudit.unmapped(), mappingAccepted,
+                    statistics.pages(), unmapped, mappingAccepted,
                     dictionaryAudit.revisions());
-            return result(runId, objectType, status, statistics, dictionaryAudit);
+            return result(runId, objectType, status, statistics, unmapped, dictionaryAudit);
         } catch (RuntimeException error) {
             RunStatistics statistics = counts.statistics();
             store.failRun(tenantId, connectorId, runId, statistics, error);
@@ -293,8 +295,13 @@ public final class CrmMasterDataSyncService {
                                                CrmMasterDataObjectType objectType) {
         var mappings = store.externalObjectMappings(tenantId, connectorId, runId, objectType);
         if (mappings.isEmpty()) return 0;
-        var result = mappingClient.upsert(tenantId, mappings);
-        return result == null ? 0 : result.accepted();
+        int accepted = 0;
+        for (int begin = 0; begin < mappings.size(); begin += MAPPING_BATCH_SIZE) {
+            int end = Math.min(begin + MAPPING_BATCH_SIZE, mappings.size());
+            var result = mappingClient.upsert(tenantId, mappings.subList(begin, end));
+            accepted += result == null ? 0 : result.accepted();
+        }
+        return accepted;
     }
 
     SyncResult recordScheduledSkip(CallerIdentity caller, UUID connectorId,
@@ -360,10 +367,11 @@ public final class CrmMasterDataSyncService {
     }
 
     private static SyncObjectResult result(UUID runId, CrmMasterDataObjectType type,
-                                           String status, RunStatistics value, Audit audit) {
+                                           String status, RunStatistics value, long unmapped,
+                                           Audit audit) {
         return new SyncObjectResult(runId, type.name(), status, value.fetched(), value.created(),
                 value.changed(), value.repaired(), value.duplicates(), value.absent(),
-                value.rejected(), value.pages(), Instant.now(), audit.unmapped(), audit.revisions());
+                value.rejected(), value.pages(), Instant.now(), unmapped, audit.revisions());
     }
 
     private static int maxPages(Integer value) {
@@ -414,6 +422,7 @@ public final class CrmMasterDataSyncService {
         long duplicates;
         long absent;
         long rejected;
+        long unmapped;
         int pages;
 
         void add(ImportResult result) {
@@ -422,6 +431,7 @@ public final class CrmMasterDataSyncService {
             repaired += result.repaired();
             duplicates += result.duplicates();
             rejected += result.rejected();
+            unmapped += result.unmapped();
             fetched++;
         }
 

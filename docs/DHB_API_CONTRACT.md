@@ -62,13 +62,19 @@
 | 商品标签 | `getGoodsTag` | 由项目对接要求确认；当前 V1.1 本地文档未提供字段表，需真实账号验证 |
 | 客户 | `getDealersList` | `begin + step`；支持创建/更新时间、客户编号、地区和客户类型筛选 |
 | 订单摘要 | `getOrderList` | `begin + step`；支持创建/更新时间、订单状态、下载状态、异常状态、付款状态和拆单类型筛选 |
-| 订单明细 | `getOrderContent` | 单订单号查询；`isAutoSign`/`isAutoAudit` 显式控制外部标记和审核副作用 |
+| 订单明细 | `getOrderContent` | 单订单号查询；适配器固定传 `isAutoSign=2`、`isAutoAudit=2`，只读查询，不改变订货宝下载/审核状态 |
 | 出库/发货单列表 | `getShipsList` | 订货宝 `page/page_size` 分页；支持状态、下载状态、出库类型、创建/更新时间、客户和仓库筛选 |
 | 出库/发货单详情 | `getShipsContent` | `ships_num` 查询；返回主单、收货地址、联营商和 `list` 商品明细 |
 | 退货单列表 | `getReturnsList` | `begin + step`；支持退货状态、下载状态、创建/更新时间和仓库筛选 |
 | 退货单明细 | `getReturnsContent` | `returnsSn` 查询；返回退货单主信息和 `body` 商品明细 |
 | 收款单列表 | `getReceiptsList` | `begin + step`；支持订单号、转账时间、`updateDateGe` 和收款状态筛选 |
-| 付款单列表 | `getPaymentList` | `begin + step`；支持订单号、转账时间和付款状态筛选 |
+| 付款单列表 | `getPaymentList` | `begin + step`；支持订单号、转账时间和付款状态筛选；官方接口不提供更新时间筛选 |
+
+本轮订货宝对接只允许查询类函数。`DhbClientAdapter` 对业务函数设置只读白名单，包含商品、分类、
+品牌、规格、标签、仓库、库存、客户类型、归属地区、客户、收货地址、员工、订单、出库、退货、
+收款、付款、供应商、采购、采购退货和入库查询；`write...DownloadStatus`、`add...`、`approve...`、
+`cancel...`、`confirm...`、`sync...` 等会改变订货宝数据或状态的函数不得进入适配层。我们自己的
+CRM、ERP、Order 业务新增、编辑、作废和审核继续走本平台领域服务接口，不反向写订货宝。
 
 适配器还提供：
 
@@ -187,9 +193,9 @@ POST /api/v1/orders/sales-orders/{id}/stock-out
 出库、物流、退货和收付款来源快照由 Integration 在 Raw 和对账记录中保存；业务页面按我方
 销售订单、ERP 出库单和收款业务模型展示，不再提供订货宝镜像列表。
 
-商品和订单列表查询只执行对应的订货宝读取接口；订单明细查询需要
-`integration:dhb:write` 权限，并显式传入 `autoMarkDownloaded`、`autoAudit`，因为官方文档说明
-`getOrderContent` 可能改变订单获取/审核状态。返回中的 `sourceFields` 只包含业务字段，不包含账号、密码或 Token。
+商品、订单列表和订单明细查询都只执行订货宝读取接口。订单明细虽然官方参数支持自动标记和自动审核，
+但本平台固定传入 `isAutoSign=2`、`isAutoAudit=2`，并只要求 `integration:dhb:read` 权限。
+返回中的 `sourceFields` 只包含业务字段，不包含账号、密码或 Token。
 
 当前业务域边界：商品和订单已公开 V1 API；仓库、客户、员工目录暂不公开 API，待确认官方接口
 和内部领域落库责任后分别新增 `DhbWarehouseApi`、`DhbCustomerApi`、`DhbEmployeeApi`，不复用

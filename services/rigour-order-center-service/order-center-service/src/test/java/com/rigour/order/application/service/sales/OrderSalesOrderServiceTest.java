@@ -5,6 +5,7 @@ import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
 import com.rigour.order.api.v1.model.SalesOrderLineCommand;
 import com.rigour.order.api.v1.model.SalesOrderLineView;
+import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutResult;
 import com.rigour.order.api.v1.model.SalesOrderSummaryView;
@@ -13,8 +14,10 @@ import com.rigour.order.application.port.out.ErpSalesStockOutClient.SalesStockOu
 import com.rigour.order.application.port.out.IamStaffDisplayClient;
 import com.rigour.order.application.port.out.OrderSalesOrderStore;
 import com.rigour.order.application.port.out.OrderSalesOrderStore.SalesOrderSearchCriteria;
+import com.rigour.order.application.port.out.OrderSalesOrderStore.SalesOrderSourceProjectionWrite;
 import com.rigour.order.application.port.out.OrderSalesOrderStore.SalesOrderWrite;
 import com.rigour.order.domain.enums.SalesOrderOutboundStatus;
+import com.rigour.order.domain.enums.SalesOrderPaymentStatus;
 import com.rigour.order.domain.enums.SalesOrderStatus;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.context.TestAuthorizationContext;
@@ -67,13 +70,33 @@ class OrderSalesOrderServiceTest {
     void createDinghuobaoOrderUsesSourceOrderDateForOrderNo() {
         FakeStore store = new FakeStore();
         OrderSalesOrderService service = service(store);
-        TestAuthorizationContext.set(caller("order:write"));
+        TestAuthorizationContext.set(serviceCaller("order:write"));
 
         SalesOrderDetailView created = service.create(dinghuobaoCommand());
 
         assertThat(created.orderNo()).isEqualTo("DD202608191234");
         assertThat(created.sourceSystemCode()).isEqualTo("DINGHUOBAO");
         assertThat(created.sourceOrderNo()).isEqualTo("DH.20260819.0001");
+    }
+
+    @Test
+    void createDinghuobaoOrderRejectsMissingSourceOrderDate() {
+        OrderSalesOrderService service = service(new FakeStore());
+        TestAuthorizationContext.set(serviceCaller("order:write"));
+
+        assertThatThrownBy(() -> service.create(dinghuobaoCommandWithoutOrderDate()))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.BAD_REQUEST);
+    }
+
+    @Test
+    void createRejectsManualExternalSource() {
+        OrderSalesOrderService service = service(new FakeStore());
+        TestAuthorizationContext.set(caller("order:write"));
+
+        assertThatThrownBy(() -> service.create(dinghuobaoCommand()))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.CONFLICT);
     }
 
     @Test
@@ -95,12 +118,13 @@ class OrderSalesOrderServiceTest {
         OrderSalesOrderService service = service(store);
         TestAuthorizationContext.set(caller("order:read"));
 
-        service.salesOrders(0, 20, " DD ", " DH.20260824.0341 ", " 门店 ", " 138 ",
+        service.salesOrders(0, 20, " DD ", " DH.20260824.0341 ", "shipped", " 门店 ", " 138 ",
                 "east", "legacy-sales-user", "RY202608220001", "draft", "unpaid", "pending",
                 Instant.parse("2026-08-01T00:00:00Z"), Instant.parse("2026-08-31T23:59:59Z"));
 
         assertThat(store.criteria.orderNo()).isEqualTo("DD");
         assertThat(store.criteria.sourceOrderNo()).isEqualTo("DH.20260824.0341");
+        assertThat(store.criteria.sourceStatusCode()).isEqualTo("shipped");
         assertThat(store.criteria.customerName()).isEqualTo("门店");
         assertThat(store.criteria.contactPhone()).isEqualTo("138");
         assertThat(store.criteria.regionCode()).isEqualTo("EAST");
@@ -183,6 +207,7 @@ class OrderSalesOrderServiceTest {
         assertThat(result.stockOutOrderId()).isEqualTo(99L);
         assertThat(result.stockOutNo()).isEqualTo("CK202608201234");
         assertThat(result.salesOrder().outboundStatusCode()).isEqualTo(SalesOrderOutboundStatus.OUT_CONFIRMED.code());
+        assertThat(result.salesOrder().shipmentTime()).isEqualTo(stockOutTime);
         assertThat(result.salesOrder().revision()).isEqualTo(submitted.revision() + 1);
     }
 
@@ -196,6 +221,68 @@ class OrderSalesOrderServiceTest {
         service.delete(created.id(), created.revision());
 
         assertThat(store.deleted).contains(created.id());
+    }
+
+    @Test
+    void manualMutationsRejectExternalSalesOrder() {
+        FakeStore store = new FakeStore();
+        FakeErpSalesStockOutClient erp = new FakeErpSalesStockOutClient();
+        OrderSalesOrderService service = service(store, erp);
+        TestAuthorizationContext.set(serviceCaller("order:write"));
+        SalesOrderDetailView external = service.create(dinghuobaoCommand());
+        TestAuthorizationContext.set(caller("order:write", "erp:supply:write"));
+
+        assertThatThrownBy(() -> service.update(external.id(), command(false, external.revision())))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.CONFLICT);
+        assertThatThrownBy(() -> service.submit(external.id(), external.revision()))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.CONFLICT);
+        assertThatThrownBy(() -> service.cancel(external.id(), external.revision()))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.CONFLICT);
+        assertThatThrownBy(() -> service.confirmOutbound(external.id(), external.revision()))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.CONFLICT);
+        assertThatThrownBy(() -> service.confirmStockOut(external.id(),
+                new SalesOrderStockOutCommand(9L, Instant.parse("2026-08-20T05:00:00Z"),
+                        "手动出库", external.revision())))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.CONFLICT);
+        assertThatThrownBy(() -> service.delete(external.id(), external.revision()))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode").isEqualTo(ErrorCode.CONFLICT);
+        assertThat(erp.request).isNull();
+    }
+
+    @Test
+    void serviceCallerCanUpdateExternalSourceStatusOnly() {
+        FakeStore store = new FakeStore();
+        OrderSalesOrderService service = service(store);
+        TestAuthorizationContext.set(serviceCaller("order:write"));
+        SalesOrderDetailView external = service.create(dinghuobaoCommand());
+
+        SalesOrderDetailView updated = service.updateSourceStatus(external.id(),
+                new SalesOrderSourceStatusCommand("finished", external.revision()));
+
+        assertThat(updated.sourceStatusCode()).isEqualTo("finished");
+        assertThat(updated.orderStatusCode()).isEqualTo(external.orderStatusCode());
+        assertThat(updated.revision()).isEqualTo(external.revision() + 1);
+    }
+
+    @Test
+    void serviceCallerCanCancelExternalSalesOrderBySource() {
+        FakeStore store = new FakeStore();
+        OrderSalesOrderService service = service(store);
+        TestAuthorizationContext.set(serviceCaller("order:write"));
+        SalesOrderDetailView external = service.create(dinghuobaoCommand());
+
+        SalesOrderDetailView cancelled = service.cancelBySource(external.id(), external.revision());
+
+        assertThat(cancelled.orderStatusCode()).isEqualTo(SalesOrderStatus.CANCELLED.code());
+        assertThat(cancelled.paymentStatusCode()).isEqualTo(SalesOrderPaymentStatus.CANCELLED.code());
+        assertThat(cancelled.unpaidAmount()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(cancelled.revision()).isEqualTo(external.revision() + 1);
     }
 
     private static OrderSalesOrderService service(FakeStore store) {
@@ -235,6 +322,14 @@ class OrderSalesOrderServiceTest {
                 false, 0);
     }
 
+    private static SalesOrderCommand dinghuobaoCommandWithoutOrderDate() {
+        return new SalesOrderCommand(1L, "DINGHUOBAO", "DH.20260819.0002",
+                "CUS-1", "上海静安店", "张三", "13800000000", "east",
+                "sales-1", "李四", null, null, null, "normal", "cash",
+                null, new BigDecimal("1.00"), "订货宝导入", List.of(line()),
+                false, 0);
+    }
+
     private static SalesOrderLineCommand line() {
         return new SalesOrderLineCommand(10L, 11L, "P-1", "SKU-1", "酸麻粉面菜蛋",
                 "箱", "box", new BigDecimal("2"), new BigDecimal("10.00"),
@@ -244,6 +339,11 @@ class OrderSalesOrderServiceTest {
     private static CallerIdentity caller(String... permissions) {
         return new CallerIdentity("TENANT", USER_ID, TENANT_ID, USER_ID, null,
                 UUID.randomUUID(), 0, 0, 0, Set.of("order"), Set.of(permissions));
+    }
+
+    private static CallerIdentity serviceCaller(String... permissions) {
+        return new CallerIdentity("SERVICE", USER_ID, TENANT_ID, null, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of("DHB_ORDER_SYNC_SERVICE"), Set.of(permissions));
     }
 
     private static final class FakeErpSalesStockOutClient implements ErpSalesStockOutClient {
@@ -307,14 +407,57 @@ class OrderSalesOrderServiceTest {
         }
 
         @Override
-        public SalesOrderDetailView submit(String tenantId, Long id, int revision, String actorId) {
+        public SalesOrderDetailView updateSourceStatus(
+                String tenantId, Long id, String sourceStatusCode, int revision, String actorId) {
             SalesOrderDetailView current = rows.get(id);
-            SalesOrderDetailView submitted = new SalesOrderDetailView(current.id(), current.orderNo(),
-                    current.sourceSystemCode(), current.sourceOrderNo(),
+            SalesOrderDetailView row = new SalesOrderDetailView(current.id(), current.orderNo(),
+                    current.sourceSystemCode(), current.sourceOrderNo(), sourceStatusCode,
                     current.customerId(), current.customerCodeSnapshot(), current.customerNameSnapshot(),
                     current.contactNameSnapshot(), current.contactPhoneSnapshot(), current.regionCode(),
                     current.ownerSalesUserId(), current.ownerSalesName(), current.ownerStaffCode(),
                     current.ownerStaffNameSnapshot(), current.orderDate(),
+                    current.paymentTime(), current.shipmentTime(), current.orderStatusCode(),
+                    current.orderTypeCode(), current.paymentMethodCode(),
+                    current.paymentStatusCode(), current.outboundStatusCode(), current.totalQuantity(),
+                    current.originalAmount(), current.discountRate(), current.discountAmount(),
+                    current.payableAmount(), current.paidAmount(), current.unpaidAmount(), current.remark(),
+                    revision + 1, current.createdBy(), current.createdTime(), actorId, Instant.now(),
+                    current.lines());
+            rows.put(id, row);
+            return row;
+        }
+
+        @Override
+        public SalesOrderDetailView updateSourceProjection(
+                String tenantId, Long id, SalesOrderSourceProjectionWrite command, String actorId) {
+            SalesOrderDetailView current = rows.get(id);
+            SalesOrderDetailView row = new SalesOrderDetailView(current.id(), current.orderNo(),
+                    current.sourceSystemCode(), current.sourceOrderNo(), command.sourceStatusCode(),
+                    command.sourceCreatorId(), command.sourceCreatorStaffCode(), command.sourceCreatorName(),
+                    current.customerId(), current.customerCodeSnapshot(), current.customerNameSnapshot(),
+                    current.contactNameSnapshot(), current.contactPhoneSnapshot(), current.regionCode(),
+                    command.ownerSalesUserId(), command.ownerSalesName(), command.ownerStaffCode(),
+                    command.ownerStaffNameSnapshot(), current.orderDate(), current.paymentTime(),
+                    current.shipmentTime(), current.shipmentStatusCode(), current.orderStatusCode(),
+                    current.orderTypeCode(), current.paymentMethodCode(), current.paymentStatusCode(),
+                    current.outboundStatusCode(), current.totalQuantity(), current.originalAmount(),
+                    current.discountRate(), current.discountAmount(), current.payableAmount(),
+                    current.paidAmount(), current.unpaidAmount(), current.remark(), command.revision() + 1,
+                    current.createdBy(), current.createdTime(), actorId, Instant.now(), current.lines());
+            rows.put(id, row);
+            return row;
+        }
+
+        @Override
+        public SalesOrderDetailView submit(String tenantId, Long id, int revision, String actorId) {
+            SalesOrderDetailView current = rows.get(id);
+            SalesOrderDetailView submitted = new SalesOrderDetailView(current.id(), current.orderNo(),
+                    current.sourceSystemCode(), current.sourceOrderNo(), current.sourceStatusCode(),
+                    current.customerId(), current.customerCodeSnapshot(), current.customerNameSnapshot(),
+                    current.contactNameSnapshot(), current.contactPhoneSnapshot(), current.regionCode(),
+                    current.ownerSalesUserId(), current.ownerSalesName(), current.ownerStaffCode(),
+                    current.ownerStaffNameSnapshot(), current.orderDate(),
+                    current.paymentTime(), current.shipmentTime(),
                     SalesOrderStatus.SUBMITTED.code(), current.orderTypeCode(), current.paymentMethodCode(),
                     current.paymentStatusCode(), current.outboundStatusCode(), current.totalQuantity(),
                     current.originalAmount(), current.discountRate(), current.discountAmount(),
@@ -329,15 +472,16 @@ class OrderSalesOrderServiceTest {
         public SalesOrderDetailView cancel(String tenantId, Long id, int revision, String actorId) {
             SalesOrderDetailView current = rows.get(id);
             SalesOrderDetailView cancelled = new SalesOrderDetailView(current.id(), current.orderNo(),
-                    current.sourceSystemCode(), current.sourceOrderNo(),
+                    current.sourceSystemCode(), current.sourceOrderNo(), current.sourceStatusCode(),
                     current.customerId(), current.customerCodeSnapshot(), current.customerNameSnapshot(),
                     current.contactNameSnapshot(), current.contactPhoneSnapshot(), current.regionCode(),
                     current.ownerSalesUserId(), current.ownerSalesName(), current.ownerStaffCode(),
                     current.ownerStaffNameSnapshot(), current.orderDate(),
+                    current.paymentTime(), current.shipmentTime(),
                     SalesOrderStatus.CANCELLED.code(), current.orderTypeCode(), current.paymentMethodCode(),
-                    current.paymentStatusCode(), current.outboundStatusCode(), current.totalQuantity(),
+                    SalesOrderPaymentStatus.CANCELLED.code(), current.outboundStatusCode(), current.totalQuantity(),
                     current.originalAmount(), current.discountRate(), current.discountAmount(),
-                    current.payableAmount(), current.paidAmount(), current.unpaidAmount(), current.remark(),
+                    current.payableAmount(), current.paidAmount(), BigDecimal.ZERO, current.remark(),
                     revision + 1, current.createdBy(), current.createdTime(), actorId, Instant.now(),
                     current.lines());
             rows.put(id, cancelled);
@@ -345,14 +489,21 @@ class OrderSalesOrderServiceTest {
         }
 
         @Override
-        public SalesOrderDetailView confirmOutbound(String tenantId, Long id, int revision, String actorId) {
+        public SalesOrderDetailView cancelBySource(String tenantId, Long id, int revision, String actorId) {
+            return cancel(tenantId, id, revision, actorId);
+        }
+
+        @Override
+        public SalesOrderDetailView confirmOutbound(
+                String tenantId, Long id, int revision, Instant shipmentTime, String actorId) {
             SalesOrderDetailView current = rows.get(id);
             SalesOrderDetailView confirmed = new SalesOrderDetailView(current.id(), current.orderNo(),
-                    current.sourceSystemCode(), current.sourceOrderNo(),
+                    current.sourceSystemCode(), current.sourceOrderNo(), current.sourceStatusCode(),
                     current.customerId(), current.customerCodeSnapshot(), current.customerNameSnapshot(),
                     current.contactNameSnapshot(), current.contactPhoneSnapshot(), current.regionCode(),
                     current.ownerSalesUserId(), current.ownerSalesName(), current.ownerStaffCode(),
                     current.ownerStaffNameSnapshot(), current.orderDate(),
+                    current.paymentTime(), shipmentTime,
                     current.orderStatusCode(), current.orderTypeCode(), current.paymentMethodCode(),
                     current.paymentStatusCode(), SalesOrderOutboundStatus.OUT_CONFIRMED.code(),
                     current.totalQuantity(), current.originalAmount(), current.discountRate(),
@@ -374,11 +525,12 @@ class OrderSalesOrderServiceTest {
                     "酸麻粉面菜蛋", "箱", "BOX", new BigDecimal("2"), new BigDecimal("10.00"),
                     null, BigDecimal.ZERO, new BigDecimal("20.00"), null);
             return new SalesOrderDetailView(id, orderNo, command.sourceSystemCode(),
-                    command.sourceOrderNo(), command.customerId(), command.customerCodeSnapshot(),
+                    command.sourceOrderNo(), command.sourceStatusCode(),
+                    command.customerId(), command.customerCodeSnapshot(),
                     command.customerNameSnapshot(), command.contactNameSnapshot(),
                     command.contactPhoneSnapshot(), command.regionCode(), command.ownerSalesUserId(),
                     command.ownerSalesName(), command.ownerStaffCode(), command.ownerStaffNameSnapshot(),
-                    command.orderDate(), command.orderStatusCode(), command.orderTypeCode(),
+                    command.orderDate(), null, null, command.orderStatusCode(), command.orderTypeCode(),
                     command.paymentMethodCode(), "UNPAID", "PENDING", command.totalQuantity(),
                     command.originalAmount(), command.discountRate(), command.discountAmount(),
                     command.payableAmount(), BigDecimal.ZERO, command.payableAmount(), command.remark(),

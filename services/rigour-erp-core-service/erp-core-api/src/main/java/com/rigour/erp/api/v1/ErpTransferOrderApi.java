@@ -6,6 +6,9 @@ import com.rigour.erp.api.v1.model.InternalTransferOrderSummaryView;
 import com.rigour.erp.api.v1.model.InternalTransferStockInCommand;
 import com.rigour.erp.api.v1.model.InternalTransferStockOutCommand;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
+import com.rigour.erp.api.v1.model.ExternalTransferOrderProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferStockInProjectionCommand;
+import com.rigour.erp.api.v1.model.ExternalTransferStockOutProjectionCommand;
 import com.rigour.shared.core.api.ApiResponse;
 import java.time.Instant;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -55,6 +58,18 @@ public interface ErpTransferOrderApi {
     ApiResponse<InternalTransferOrderDetailView> confirmTransferStockOut(
             @PathVariable("id") Long id,
             @RequestBody InternalTransferStockOutCommand command);
+
+    @PostMapping(BASE_PATH + "/external-stock-out-confirmations")
+    ApiResponse<InternalTransferOrderDetailView> confirmExternalTransferStockOut(
+            @RequestBody ExternalTransferStockOutProjectionCommand command);
+
+    @PostMapping(BASE_PATH + "/external-stock-in-confirmations")
+    ApiResponse<InternalTransferOrderDetailView> confirmExternalTransferStockIn(
+            @RequestBody ExternalTransferStockInProjectionCommand command);
+
+    @PostMapping(BASE_PATH + "/external-projections")
+    ApiResponse<InternalTransferOrderDetailView> upsertExternalTransferOrder(
+            @RequestBody ExternalTransferOrderProjectionCommand command);
 
     @PostMapping(BASE_PATH + "/{id}/stock-in-confirmations")
     ApiResponse<InternalTransferOrderDetailView> confirmTransferStockIn(

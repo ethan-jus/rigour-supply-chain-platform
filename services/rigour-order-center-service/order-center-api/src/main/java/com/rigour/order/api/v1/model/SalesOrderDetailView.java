@@ -10,6 +10,10 @@ public record SalesOrderDetailView(
         String orderNo,
         String sourceSystemCode,
         String sourceOrderNo,
+        String sourceStatusCode,
+        String sourceCreatorId,
+        String sourceCreatorStaffCode,
+        String sourceCreatorName,
         Long customerId,
         String customerCodeSnapshot,
         String customerNameSnapshot,
@@ -21,6 +25,9 @@ public record SalesOrderDetailView(
         String ownerStaffCode,
         String ownerStaffNameSnapshot,
         Instant orderDate,
+        Instant paymentTime,
+        Instant shipmentTime,
+        String shipmentStatusCode,
         String orderStatusCode,
         String orderTypeCode,
         String paymentMethodCode,
@@ -44,6 +51,63 @@ public record SalesOrderDetailView(
         lines = lines == null ? List.of() : List.copyOf(lines);
     }
 
+    public SalesOrderDetailView(Long id, String orderNo, String sourceSystemCode, String sourceOrderNo,
+                                Long customerId, String customerCodeSnapshot,
+                                String customerNameSnapshot, String contactNameSnapshot,
+                                String contactPhoneSnapshot, String regionCode,
+                                String ownerSalesUserId, String ownerSalesName,
+                                String ownerStaffCode, String ownerStaffNameSnapshot,
+                                Instant orderDate, Instant paymentTime,
+                                Instant shipmentTime, String orderStatusCode,
+                                String orderTypeCode, String paymentMethodCode,
+                                String paymentStatusCode, String outboundStatusCode,
+                                BigDecimal totalQuantity, BigDecimal originalAmount,
+                                BigDecimal discountRate, BigDecimal discountAmount,
+                                BigDecimal payableAmount, BigDecimal paidAmount,
+                                BigDecimal unpaidAmount, String remark, Integer revision,
+                                String createdBy, Instant createdTime, String updatedBy,
+                                Instant updatedTime, List<SalesOrderLineView> lines) {
+        this(id, orderNo, sourceSystemCode, sourceOrderNo, null, null, null, null,
+                customerId, customerCodeSnapshot, customerNameSnapshot,
+                contactNameSnapshot, contactPhoneSnapshot, regionCode,
+                ownerSalesUserId, ownerSalesName, ownerStaffCode,
+                ownerStaffNameSnapshot, orderDate, paymentTime, shipmentTime,
+                null, orderStatusCode, orderTypeCode, paymentMethodCode,
+                paymentStatusCode, outboundStatusCode, totalQuantity,
+                originalAmount, discountRate, discountAmount, payableAmount,
+                paidAmount, unpaidAmount, remark, revision, createdBy,
+                createdTime, updatedBy, updatedTime, lines);
+    }
+
+    public SalesOrderDetailView(Long id, String orderNo, String sourceSystemCode, String sourceOrderNo,
+                                String sourceStatusCode, Long customerId,
+                                String customerCodeSnapshot, String customerNameSnapshot,
+                                String contactNameSnapshot, String contactPhoneSnapshot,
+                                String regionCode, String ownerSalesUserId,
+                                String ownerSalesName, String ownerStaffCode,
+                                String ownerStaffNameSnapshot, Instant orderDate,
+                                Instant paymentTime, Instant shipmentTime,
+                                String orderStatusCode, String orderTypeCode,
+                                String paymentMethodCode, String paymentStatusCode,
+                                String outboundStatusCode, BigDecimal totalQuantity,
+                                BigDecimal originalAmount, BigDecimal discountRate,
+                                BigDecimal discountAmount, BigDecimal payableAmount,
+                                BigDecimal paidAmount, BigDecimal unpaidAmount,
+                                String remark, Integer revision, String createdBy,
+                                Instant createdTime, String updatedBy, Instant updatedTime,
+                                List<SalesOrderLineView> lines) {
+        this(id, orderNo, sourceSystemCode, sourceOrderNo, sourceStatusCode, null, null, null,
+                customerId, customerCodeSnapshot, customerNameSnapshot,
+                contactNameSnapshot, contactPhoneSnapshot, regionCode,
+                ownerSalesUserId, ownerSalesName, ownerStaffCode,
+                ownerStaffNameSnapshot, orderDate, paymentTime, shipmentTime,
+                null, orderStatusCode, orderTypeCode, paymentMethodCode,
+                paymentStatusCode, outboundStatusCode, totalQuantity,
+                originalAmount, discountRate, discountAmount, payableAmount,
+                paidAmount, unpaidAmount, remark, revision, createdBy,
+                createdTime, updatedBy, updatedTime, lines);
+    }
+
     public SalesOrderDetailView(Long id, String orderNo, Long customerId,
                                 String customerCodeSnapshot, String customerNameSnapshot,
                                 String contactNameSnapshot, String contactPhoneSnapshot,
@@ -59,13 +123,15 @@ public record SalesOrderDetailView(
                                 String remark, Integer revision, String createdBy,
                                 Instant createdTime, String updatedBy, Instant updatedTime,
                                 List<SalesOrderLineView> lines) {
-        this(id, orderNo, null, null, customerId, customerCodeSnapshot, customerNameSnapshot,
-                contactNameSnapshot, contactPhoneSnapshot, regionCode, ownerSalesUserId,
-                ownerSalesName, ownerStaffCode, ownerStaffNameSnapshot, orderDate,
-                orderStatusCode, orderTypeCode, paymentMethodCode, paymentStatusCode,
-                outboundStatusCode, totalQuantity, originalAmount, discountRate,
-                discountAmount, payableAmount, paidAmount, unpaidAmount, remark,
-                revision, createdBy, createdTime, updatedBy, updatedTime, lines);
+        this(id, orderNo, null, null, null, null, null, null, customerId,
+                customerCodeSnapshot, customerNameSnapshot, contactNameSnapshot,
+                contactPhoneSnapshot, regionCode, ownerSalesUserId, ownerSalesName,
+                ownerStaffCode, ownerStaffNameSnapshot, orderDate, null, null,
+                null, orderStatusCode, orderTypeCode, paymentMethodCode,
+                paymentStatusCode, outboundStatusCode, totalQuantity,
+                originalAmount, discountRate, discountAmount, payableAmount,
+                paidAmount, unpaidAmount, remark, revision, createdBy,
+                createdTime, updatedBy, updatedTime, lines);
     }
 
     public SalesOrderDetailView(Long id, String orderNo, Long customerId,
@@ -82,12 +148,13 @@ public record SalesOrderDetailView(
                                 String remark, Integer revision, String createdBy,
                                 Instant createdTime, String updatedBy, Instant updatedTime,
                                 List<SalesOrderLineView> lines) {
-        this(id, orderNo, null, null, customerId, customerCodeSnapshot, customerNameSnapshot,
-                contactNameSnapshot, contactPhoneSnapshot, regionCode, ownerSalesUserId,
-                ownerSalesName, null, null, orderDate, orderStatusCode, orderTypeCode,
-                paymentMethodCode, paymentStatusCode, outboundStatusCode, totalQuantity,
-                originalAmount, discountRate, discountAmount, payableAmount, paidAmount,
-                unpaidAmount, remark, revision, createdBy, createdTime, updatedBy,
-                updatedTime, lines);
+        this(id, orderNo, null, null, null, null, null, null, customerId,
+                customerCodeSnapshot, customerNameSnapshot, contactNameSnapshot,
+                contactPhoneSnapshot, regionCode, ownerSalesUserId, ownerSalesName,
+                null, null, orderDate, null, null, null, orderStatusCode,
+                orderTypeCode, paymentMethodCode, paymentStatusCode,
+                outboundStatusCode, totalQuantity, originalAmount, discountRate,
+                discountAmount, payableAmount, paidAmount, unpaidAmount, remark,
+                revision, createdBy, createdTime, updatedBy, updatedTime, lines);
     }
 }

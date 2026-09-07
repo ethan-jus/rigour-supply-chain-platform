@@ -33,7 +33,7 @@ public class CrmInternalCustomerService {
     private static final Logger log = LoggerFactory.getLogger(CrmInternalCustomerService.class);
     private static final String READ_PERMISSION = "crm:customer:read";
     private static final String WRITE_PERMISSION = "crm:customer:write";
-    private static final Pattern CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
+    private static final Pattern CODE = Pattern.compile("[A-Z0-9][A-Z0-9_]{0,63}");
 
     private final CrmInternalCustomerStore store;
     private final BusinessCodeGenerator codeGenerator;

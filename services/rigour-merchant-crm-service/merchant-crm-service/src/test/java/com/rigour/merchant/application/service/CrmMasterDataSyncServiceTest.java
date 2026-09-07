@@ -8,6 +8,8 @@ import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient.SourceRec
 import com.rigour.merchant.application.port.out.DhbCrmSyncTargetDiscoveryClient;
 import com.rigour.merchant.application.port.out.IamStaffDirectoryClient;
 import com.rigour.merchant.domain.model.CrmMasterDataObjectType;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingBatchResult;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand;
 import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.integration.client.ConnectorSyncLeaseClient.LeaseGuard;
 import com.rigour.integration.client.ExternalObjectMappingClient;
@@ -15,11 +17,13 @@ import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 import com.rigour.settings.client.BusinessDictionaryBatchClient.Audit;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
@@ -119,6 +123,100 @@ class CrmMasterDataSyncServiceTest {
 
         verify(store).failRun(eq(TENANT_ID), eq(CONNECTOR_ID), eq(runId), any(), any());
         verify(store, never()).completeRun(any(), any(), any(), any(), any(), anyBoolean());
+    }
+
+    @Test
+    void unresolvedBusinessReferenceIsReturnedAsUnmappedWarning() {
+        DhbCrmMasterDataClient client = mock(DhbCrmMasterDataClient.class);
+        DhbCrmSyncTargetDiscoveryClient discovery = mock(DhbCrmSyncTargetDiscoveryClient.class);
+        CrmMasterDataStore store = mock(CrmMasterDataStore.class);
+        CrmDictionaryCoverageService dictionaries = mock(CrmDictionaryCoverageService.class);
+        CrmMasterDataSyncService service = syncService(
+                client, discovery, store, dictionaries, passthroughLease());
+        UUID runId = UUID.randomUUID();
+        SourceRecord item = new SourceRecord("ADDR-1", null, "地址", null,
+                null, null, Map.of("clientGuid", "UNKNOWN-CUSTOMER"));
+        when(store.startRun(eq(TENANT_ID), eq(CONNECTOR_ID), eq(null), eq(TASK_ID),
+                any(), eq(10), eq("SCHEDULED"))).thenAnswer(invocation -> {
+                    CrmMasterDataObjectType type = invocation.getArgument(4);
+                    return type == CrmMasterDataObjectType.ADDRESS ? runId : UUID.randomUUID();
+                });
+        when(client.collect(any(), eq(CONNECTOR_ID), any(), eq(10)))
+                .thenAnswer(invocation -> {
+                    CrmMasterDataObjectType type = invocation.getArgument(2);
+                    return type == CrmMasterDataObjectType.ADDRESS
+                            ? new Collected(type, 1, 1, List.of(item))
+                            : new Collected(type, 0, 1, List.of());
+                });
+        when(store.importRecords(eq(TENANT_ID), eq(CONNECTOR_ID), eq(runId),
+                eq(CrmMasterDataObjectType.ADDRESS), any()))
+                .thenReturn(List.of(ImportResult.unmappedOne()));
+        when(dictionaries.sync(eq(TENANT_ID), any())).thenReturn(Audit.empty());
+        when(store.completeRun(eq(TENANT_ID), eq(CONNECTOR_ID), any(), any(), any(), eq(true)))
+                .thenAnswer(invocation -> invocation.getArgument(4));
+
+        var result = service.runScheduled(scheduledCaller(), CONNECTOR_ID, TASK_ID, 10);
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
+        assertThat(result.objects()).filteredOn(object -> "ADDRESS".equals(object.objectType()))
+                .singleElement().satisfies(object -> {
+            assertThat(object.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
+            assertThat(object.fetched()).isEqualTo(1);
+            assertThat(object.changed()).isZero();
+            assertThat(object.unmapped()).isEqualTo(1);
+        });
+    }
+
+    @Test
+    void externalObjectMappingsAreRegisteredInBatches() {
+        DhbCrmMasterDataClient client = mock(DhbCrmMasterDataClient.class);
+        DhbCrmSyncTargetDiscoveryClient discovery = mock(DhbCrmSyncTargetDiscoveryClient.class);
+        CrmMasterDataStore store = mock(CrmMasterDataStore.class);
+        CrmDictionaryCoverageService dictionaries = mock(CrmDictionaryCoverageService.class);
+        ExternalObjectMappingClient mappingClient = mock(ExternalObjectMappingClient.class);
+        CrmMasterDataSyncService service = syncService(
+                client, discovery, store, dictionaries, passthroughLease(), mappingClient);
+        UUID runId = UUID.randomUUID();
+        List<ExternalObjectMappingCommand> mappings = IntStream.range(0, 401)
+                .mapToObj(CrmMasterDataSyncServiceTest::mapping)
+                .toList();
+        when(store.startRun(eq(TENANT_ID), eq(CONNECTOR_ID), eq(null), eq(TASK_ID),
+                any(), eq(10), eq("SCHEDULED"))).thenAnswer(invocation -> {
+                    CrmMasterDataObjectType type = invocation.getArgument(4);
+                    return type == CrmMasterDataObjectType.CUSTOMER ? runId : UUID.randomUUID();
+                });
+        when(client.collect(any(), eq(CONNECTOR_ID), any(), eq(10))).thenAnswer(invocation -> {
+            CrmMasterDataObjectType type = invocation.getArgument(2);
+            List<SourceRecord> records = type == CrmMasterDataObjectType.CUSTOMER
+                    ? List.of(new SourceRecord("CLIENT-1", "C-1", "客户一", null,
+                    null, null, Map.of()))
+                    : List.of();
+            return new Collected(type, records.size(), 1, records);
+        });
+        when(store.importRecords(eq(TENANT_ID), eq(CONNECTOR_ID), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    List<SourceRecord> records = invocation.getArgument(4);
+                    return records.stream().map(ignored -> ImportResult.createdOne()).toList();
+                });
+        when(store.externalObjectMappings(eq(TENANT_ID), eq(CONNECTOR_ID), any(), any()))
+                .thenAnswer(invocation -> {
+                    CrmMasterDataObjectType type = invocation.getArgument(3);
+                    return type == CrmMasterDataObjectType.CUSTOMER ? mappings : List.of();
+                });
+        when(mappingClient.upsert(eq(TENANT_ID), any())).thenAnswer(invocation -> {
+            List<?> batch = invocation.getArgument(1);
+            return new ExternalObjectMappingBatchResult(batch.size(), batch.size());
+        });
+        when(dictionaries.sync(eq(TENANT_ID), any())).thenReturn(Audit.empty());
+        when(store.completeRun(eq(TENANT_ID), eq(CONNECTOR_ID), any(), any(), any(), eq(true)))
+                .thenAnswer(invocation -> invocation.getArgument(4));
+
+        var result = service.runScheduled(scheduledCaller(), CONNECTOR_ID, TASK_ID, 10);
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        ArgumentCaptor<List<ExternalObjectMappingCommand>> batches = ArgumentCaptor.forClass(List.class);
+        verify(mappingClient, org.mockito.Mockito.times(3)).upsert(eq(TENANT_ID), batches.capture());
+        assertThat(batches.getAllValues()).extracting(List::size).containsExactly(200, 200, 1);
     }
 
     @Test
@@ -287,9 +385,28 @@ class CrmMasterDataSyncServiceTest {
             CrmMasterDataStore store,
             CrmDictionaryCoverageService dictionaries,
             ConnectorSyncLeaseClient lease) {
+        return syncService(client, discovery, store, dictionaries,
+                lease, mock(ExternalObjectMappingClient.class));
+    }
+
+    private static CrmMasterDataSyncService syncService(
+            DhbCrmMasterDataClient client,
+            DhbCrmSyncTargetDiscoveryClient discovery,
+            CrmMasterDataStore store,
+            CrmDictionaryCoverageService dictionaries,
+            ConnectorSyncLeaseClient lease,
+            ExternalObjectMappingClient mappingClient) {
         IamStaffDirectoryClient staffDirectory = mock(IamStaffDirectoryClient.class);
         when(staffDirectory.resolveDinghuobaoStaff(any(), any(), any())).thenReturn(List.of());
         return new CrmMasterDataSyncService(client, discovery, store, dictionaries,
-                lease, mock(ExternalObjectMappingClient.class), staffDirectory);
+                lease, mappingClient, staffDirectory);
+    }
+
+    private static ExternalObjectMappingCommand mapping(int index) {
+        return new ExternalObjectMappingCommand(CONNECTOR_ID, "DINGHUOBAO",
+                "CUSTOMER", "CLIENT-" + index, "C-" + index,
+                "CRM", "CUSTOMER", (long) index, "CUST-" + index,
+                "ACTIVE", TASK_ID, Instant.parse("2026-08-25T00:00:00Z"),
+                null, "hash-" + index, null, "CRM客户同步映射");
     }
 }

@@ -11,8 +11,11 @@ import com.rigour.order.application.port.out.OrderSalesShipmentStore;
 import com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentLineWrite;
 import com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentSearchCriteria;
 import com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentWrite;
+import com.rigour.order.domain.enums.SalesShipmentStatus;
+import com.rigour.order.infrastructure.persistence.entity.InternalSalesOrderEntity;
 import com.rigour.order.infrastructure.persistence.entity.InternalSalesShipmentEntity;
 import com.rigour.order.infrastructure.persistence.entity.InternalSalesShipmentLineEntity;
+import com.rigour.order.infrastructure.persistence.mapper.InternalSalesOrderMapper;
 import com.rigour.order.infrastructure.persistence.mapper.InternalSalesShipmentLineMapper;
 import com.rigour.order.infrastructure.persistence.mapper.InternalSalesShipmentMapper;
 import com.rigour.shared.core.api.ErrorCode;
@@ -23,6 +26,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,15 +36,20 @@ import org.springframework.transaction.annotation.Transactional;
 public class MybatisPlusSalesShipmentRepository
         extends ServiceImpl<InternalSalesShipmentMapper, InternalSalesShipmentEntity>
         implements OrderSalesShipmentStore {
+    private static final String SYSTEM_ACTOR = "SYSTEM";
+
     private final InternalSalesShipmentLineMapper lineMapper;
+    private final InternalSalesOrderMapper orderMapper;
     private final Clock clock;
 
     public MybatisPlusSalesShipmentRepository(
             InternalSalesShipmentMapper mapper,
             InternalSalesShipmentLineMapper lineMapper,
+            InternalSalesOrderMapper orderMapper,
             Clock orderClock) {
         this.baseMapper = mapper;
         this.lineMapper = lineMapper;
+        this.orderMapper = orderMapper;
         this.clock = orderClock;
     }
 
@@ -79,7 +88,8 @@ public class MybatisPlusSalesShipmentRepository
         InternalSalesShipmentEntity entity = entity(tenantId, shipmentNo, command, actorId, now);
         try {
             getBaseMapper().insert(entity);
-            insertLines(tenantId, entity.getId(), command.lines(), now);
+            insertLines(tenantId, entity.getId(), command.lines(), actorId, now);
+            refreshOrderShipmentTime(tenantId, command.salesOrderId(), actorId, now);
         } catch (DataIntegrityViolationException exception) {
             throw conflict("销售发货单号已存在或销售发货单引用数据无效");
         }
@@ -90,9 +100,13 @@ public class MybatisPlusSalesShipmentRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesShipmentDetailView update(
             String tenantId, Long id, SalesShipmentWrite command, String actorId) {
-        requireActive(tenantId, id);
+        InternalSalesShipmentEntity existing = selectActive(tenantId, id)
+                .orElseThrow(() -> notFound("销售发货单不存在"));
         LocalDateTime now = now();
         int updated = getBaseMapper().update(null, Wrappers.<InternalSalesShipmentEntity>lambdaUpdate()
+                .set(InternalSalesShipmentEntity::getConnectorId, uuidText(command.connectorId()))
+                .set(InternalSalesShipmentEntity::getSourceSystemCode, command.sourceSystemCode())
+                .set(InternalSalesShipmentEntity::getSourceDocumentNo, command.sourceDocumentNo())
                 .set(InternalSalesShipmentEntity::getSalesOrderId, command.salesOrderId())
                 .set(InternalSalesShipmentEntity::getSalesOrderNoSnapshot, command.salesOrderNoSnapshot())
                 .set(InternalSalesShipmentEntity::getCustomerId, command.customerId())
@@ -111,34 +125,40 @@ public class MybatisPlusSalesShipmentRepository
                 .set(InternalSalesShipmentEntity::getTotalQuantity, command.totalQuantity())
                 .set(InternalSalesShipmentEntity::getRemark, command.remark())
                 .set(InternalSalesShipmentEntity::getRevision, command.revision() + 1)
-                .set(InternalSalesShipmentEntity::getUpdatedBy, actorId)
+                .set(InternalSalesShipmentEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalSalesShipmentEntity::getUpdatedTime, now)
                 .eq(InternalSalesShipmentEntity::getTenantId, tenantId)
                 .eq(InternalSalesShipmentEntity::getId, id)
                 .eq(InternalSalesShipmentEntity::getRevision, command.revision())
                 .eq(InternalSalesShipmentEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售发货单已被其他人修改，请刷新后重试");
-        logicDeleteLines(tenantId, id, now);
-        insertLines(tenantId, id, command.lines(), now);
+        logicDeleteLines(tenantId, id, actorId, now);
+        insertLines(tenantId, id, command.lines(), actorId, now);
+        refreshOrderShipmentTime(tenantId, existing.getSalesOrderId(), actorId, now);
+        if (!java.util.Objects.equals(existing.getSalesOrderId(), command.salesOrderId())) {
+            refreshOrderShipmentTime(tenantId, command.salesOrderId(), actorId, now);
+        }
         return shipment(tenantId, id).orElseThrow(() -> notFound("销售发货单不存在"));
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(String tenantId, Long id, int revision, String actorId) {
-        requireActive(tenantId, id);
+        InternalSalesShipmentEntity existing = selectActive(tenantId, id)
+                .orElseThrow(() -> notFound("销售发货单不存在"));
         LocalDateTime now = now();
         int updated = getBaseMapper().update(null, Wrappers.<InternalSalesShipmentEntity>lambdaUpdate()
                 .set(InternalSalesShipmentEntity::getDeleted, 1)
                 .set(InternalSalesShipmentEntity::getRevision, revision + 1)
-                .set(InternalSalesShipmentEntity::getUpdatedBy, actorId)
+                .set(InternalSalesShipmentEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalSalesShipmentEntity::getUpdatedTime, now)
                 .eq(InternalSalesShipmentEntity::getTenantId, tenantId)
                 .eq(InternalSalesShipmentEntity::getId, id)
                 .eq(InternalSalesShipmentEntity::getRevision, revision)
                 .eq(InternalSalesShipmentEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售发货单已被其他人修改，请刷新后重试");
-        logicDeleteLines(tenantId, id, now);
+        logicDeleteLines(tenantId, id, actorId, now);
+        refreshOrderShipmentTime(tenantId, existing.getSalesOrderId(), actorId, now);
     }
 
     private Optional<InternalSalesShipmentEntity> selectActive(String tenantId, Long id) {
@@ -149,8 +169,26 @@ public class MybatisPlusSalesShipmentRepository
                 .last("LIMIT 1")));
     }
 
-    private void requireActive(String tenantId, Long id) {
-        selectActive(tenantId, id).orElseThrow(() -> notFound("销售发货单不存在"));
+    private void refreshOrderShipmentTime(String tenantId, Long salesOrderId, String actorId, LocalDateTime now) {
+        if (salesOrderId == null) return;
+        LocalDateTime shipmentTime = getBaseMapper().selectList(Wrappers.<InternalSalesShipmentEntity>lambdaQuery()
+                        .eq(InternalSalesShipmentEntity::getTenantId, tenantId)
+                        .eq(InternalSalesShipmentEntity::getSalesOrderId, salesOrderId)
+                        .ne(InternalSalesShipmentEntity::getShipmentStatusCode, SalesShipmentStatus.CANCELLED.code())
+                        .eq(InternalSalesShipmentEntity::getDeleted, 0))
+                .stream()
+                .map(InternalSalesShipmentEntity::getShipTime)
+                .filter(java.util.Objects::nonNull)
+                .max(LocalDateTime::compareTo)
+                .orElse(null);
+        orderMapper.update(null, Wrappers.<InternalSalesOrderEntity>lambdaUpdate()
+                .set(InternalSalesOrderEntity::getShipmentTime, shipmentTime)
+                .set(InternalSalesOrderEntity::getUpdatedBy, auditActor(actorId))
+                .set(InternalSalesOrderEntity::getUpdatedTime, now)
+                .setSql("revision = revision + 1")
+                .eq(InternalSalesOrderEntity::getTenantId, tenantId)
+                .eq(InternalSalesOrderEntity::getId, salesOrderId)
+                .eq(InternalSalesOrderEntity::getDeleted, 0));
     }
 
     private LambdaQueryWrapper<InternalSalesShipmentEntity> query(
@@ -173,6 +211,9 @@ public class MybatisPlusSalesShipmentRepository
         InternalSalesShipmentEntity entity = new InternalSalesShipmentEntity();
         entity.setTenantId(tenantId);
         entity.setShipmentNo(shipmentNo);
+        entity.setConnectorId(uuidText(command.connectorId()));
+        entity.setSourceSystemCode(command.sourceSystemCode());
+        entity.setSourceDocumentNo(command.sourceDocumentNo());
         entity.setSalesOrderId(command.salesOrderId());
         entity.setSalesOrderNoSnapshot(command.salesOrderNoSnapshot());
         entity.setCustomerId(command.customerId());
@@ -191,15 +232,16 @@ public class MybatisPlusSalesShipmentRepository
         entity.setTotalQuantity(command.totalQuantity());
         entity.setRemark(command.remark());
         entity.setRevision(1);
-        entity.setCreatedBy(actorId);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
-        entity.setUpdatedBy(actorId);
+        entity.setUpdatedBy(auditActor(actorId));
         entity.setUpdatedTime(now);
         entity.setDeleted(0);
         return entity;
     }
 
-    private void insertLines(String tenantId, Long shipmentId, List<SalesShipmentLineWrite> lines, LocalDateTime now) {
+    private void insertLines(String tenantId, Long shipmentId, List<SalesShipmentLineWrite> lines,
+                             String actorId, LocalDateTime now) {
         for (SalesShipmentLineWrite item : lines) {
             InternalSalesShipmentLineEntity entity = new InternalSalesShipmentLineEntity();
             entity.setTenantId(tenantId);
@@ -215,16 +257,21 @@ public class MybatisPlusSalesShipmentRepository
             entity.setUnitCode(item.unitCode());
             entity.setShippedQuantity(item.shippedQuantity());
             entity.setRemark(item.remark());
+            entity.setRevision(1);
+            entity.setCreatedBy(auditActor(actorId));
             entity.setCreatedTime(now);
+            entity.setUpdatedBy(auditActor(actorId));
             entity.setUpdatedTime(now);
             entity.setDeleted(0);
             lineMapper.insert(entity);
         }
     }
 
-    private void logicDeleteLines(String tenantId, Long shipmentId, LocalDateTime now) {
+    private void logicDeleteLines(String tenantId, Long shipmentId, String actorId, LocalDateTime now) {
         lineMapper.update(null, Wrappers.<InternalSalesShipmentLineEntity>lambdaUpdate()
                 .set(InternalSalesShipmentLineEntity::getDeleted, 1)
+                .setSql("revision = revision + 1")
+                .set(InternalSalesShipmentLineEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalSalesShipmentLineEntity::getUpdatedTime, now)
                 .eq(InternalSalesShipmentLineEntity::getTenantId, tenantId)
                 .eq(InternalSalesShipmentLineEntity::getShipmentId, shipmentId)
@@ -248,6 +295,7 @@ public class MybatisPlusSalesShipmentRepository
 
     private static SalesShipmentSummaryView summary(InternalSalesShipmentEntity entity) {
         return new SalesShipmentSummaryView(entity.getId(), entity.getShipmentNo(),
+                uuid(entity.getConnectorId()), entity.getSourceSystemCode(), entity.getSourceDocumentNo(),
                 entity.getSalesOrderId(), entity.getSalesOrderNoSnapshot(), entity.getCustomerId(),
                 entity.getCustomerCodeSnapshot(), entity.getCustomerNameSnapshot(),
                 entity.getContactPhoneSnapshot(), entity.getRegionCode(), entity.getOwnerStaffCode(),
@@ -260,6 +308,7 @@ public class MybatisPlusSalesShipmentRepository
     private static SalesShipmentDetailView detail(
             InternalSalesShipmentEntity entity, List<SalesShipmentLineView> lines) {
         return new SalesShipmentDetailView(entity.getId(), entity.getShipmentNo(),
+                uuid(entity.getConnectorId()), entity.getSourceSystemCode(), entity.getSourceDocumentNo(),
                 entity.getSalesOrderId(), entity.getSalesOrderNoSnapshot(), entity.getCustomerId(),
                 entity.getCustomerCodeSnapshot(), entity.getCustomerNameSnapshot(),
                 entity.getContactPhoneSnapshot(), entity.getRegionCode(), entity.getOwnerStaffCode(),
@@ -284,6 +333,23 @@ public class MybatisPlusSalesShipmentRepository
 
     private static Instant instant(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC);
+    }
+
+    private static String uuidText(UUID value) {
+        return value == null ? null : value.toString();
+    }
+
+    private static UUID uuid(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return UUID.fromString(value.strip());
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private static String auditActor(String actorId) {
+        return actorId == null || actorId.isBlank() ? SYSTEM_ACTOR : actorId;
     }
 
     private static BusinessException conflict(String message) {

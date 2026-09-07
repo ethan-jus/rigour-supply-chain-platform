@@ -4,20 +4,29 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 import com.rigour.erp.api.v1.model.ErpDataSyncResult;
 import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
+import com.rigour.integration.api.v1.model.DhbSyncOrchestrationCommand;
 import com.rigour.integration.api.v1.model.DhbSyncOrchestrationResult;
 import com.rigour.integration.application.port.out.CrmDhbDomainSyncClient;
 import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
+import com.rigour.integration.application.port.out.DhbOrchestrationLease;
 import com.rigour.integration.application.port.out.ErpDhbDomainSyncClient;
 import com.rigour.integration.application.port.out.IamDhbStaffSyncClient;
 import com.rigour.merchant.api.v1.model.SyncObjectResult;
 import com.rigour.merchant.api.v1.model.SyncResult;
+import com.rigour.settings.client.BusinessDictionaryBatchClient;
+import com.rigour.settings.client.BusinessDictionaryBatchClient.Audit;
+import com.rigour.settings.client.BusinessDictionaryBatchClient.MappingIssue;
+import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -55,6 +64,8 @@ class DhbSyncOrchestrationServiceTest {
     private DhbClient dhbClient;
     @Mock
     private DhbOrderSyncService orderSyncService;
+    @Mock
+    private BusinessDictionaryBatchClient dictionaryClient;
 
     private DhbSyncOrchestrationService service;
 
@@ -62,7 +73,7 @@ class DhbSyncOrchestrationServiceTest {
     void setUp() {
         DhbSyncOrchestrationProperties properties = new DhbSyncOrchestrationProperties();
         service = new DhbSyncOrchestrationService(store, erpClient, crmClient, iamClient,
-                dhbClient, orderSyncService, properties,
+                dhbClient, orderSyncService, dictionaryClient, passthroughLease(), properties,
                 Clock.fixed(Instant.parse("2026-08-21T08:00:00Z"), ZoneOffset.UTC),
                 JsonMapper.builder().build());
         when(store.activeProductMasterSyncTargets()).thenReturn(List.of(target(PRODUCT_TASK_ID)));
@@ -70,10 +81,10 @@ class DhbSyncOrchestrationServiceTest {
         when(store.activeCrmMasterSyncTargets()).thenReturn(List.of(target(CRM_TASK_ID)));
         when(store.activeOrderSyncTargets()).thenReturn(List.of(target(ORDER_TASK_ID)));
         when(store.activeBusinessDictionarySyncTargets()).thenReturn(List.of(target(DICTIONARY_TASK_ID)));
-        when(store.connector(TENANT_ID, CONNECTOR_ID)).thenReturn(new ConnectorView(CONNECTOR_ID,
+        lenient().when(store.connector(TENANT_ID, CONNECTOR_ID)).thenReturn(new ConnectorView(CONNECTOR_ID,
                 TENANT_ID, "DHB_TEST", "订货宝测试连接", "https://dhb.example",
                 "env://DHB_TEST", "ACTIVE", 0));
-        when(dhbClient.getStaff(any(), any())).thenAnswer(invocation -> {
+        lenient().when(dhbClient.getStaff(any(), any())).thenAnswer(invocation -> {
             DhbClient.StaffQuery query = invocation.getArgument(1);
             return new DhbClient.Page<>(query.page(), 0, List.of());
         });
@@ -179,13 +190,92 @@ class DhbSyncOrchestrationServiceTest {
                 assertThat(tenant.status()).isEqualTo("PARTIAL"));
     }
 
+    @Test
+    void scheduledRunSkipsTenantWhenDistributedOrchestrationLeaseIsBusy() {
+        DhbSyncOrchestrationProperties properties = new DhbSyncOrchestrationProperties();
+        service = new DhbSyncOrchestrationService(store, erpClient, crmClient, iamClient,
+                dhbClient, orderSyncService, dictionaryClient, busyLease(), properties,
+                Clock.fixed(Instant.parse("2026-08-21T08:00:00Z"), ZoneOffset.UTC),
+                JsonMapper.builder().build());
+
+        DhbSyncOrchestrationResult result = service.runScheduled();
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.tenants()).singleElement().satisfies(tenant -> {
+            assertThat(tenant.status()).isEqualTo("SKIPPED");
+            assertThat(tenant.steps()).singleElement().satisfies(step -> {
+                assertThat(step.domain()).isEqualTo("INTEGRATION");
+                assertThat(step.objectType()).isEqualTo("DHB_ORCHESTRATION");
+                assertThat(step.message()).contains("已有统一同步编排批次运行中");
+            });
+        });
+    }
+
+    @Test
+    void dictionaryBootstrapWarningsAreVisibleButDoNotStopDependentDomains() {
+        when(dictionaryClient.sync(any(), eq("DHB_ORCHESTRATION_BASELINE"), any()))
+                .thenReturn(new Audit(1, Map.of("DHB_PAYMENT_METHOD", -1L),
+                        List.of(new MappingIssue("DHB_PAYMENT_METHOD", "fund.typeId",
+                                "Offline", 1))));
+        for (String objectType : List.of("CATEGORY", "BRAND", "SPECIFICATION", "TAG",
+                "PRODUCT_SPU")) {
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType), eq(100)))
+                    .thenReturn(erpResult(objectType));
+        }
+        for (String objectType : List.of("SUPPLIER", "WAREHOUSE", "PURCHASE_ORDER",
+                "PURCHASE_RETURN", "WAREHOUSING_RECEIPT", "INVENTORY")) {
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(SUPPLY_TASK_ID), eq(objectType), eq(100)))
+                    .thenReturn(erpResult(objectType));
+        }
+        when(crmClient.sync(any(), eq(CONNECTOR_ID), eq(CRM_TASK_ID), eq(100)))
+                .thenReturn(crmResult());
+        when(orderSyncService.runOrderPull(any(), eq(ORDER_TASK_ID), isNull(), eq(100)))
+                .thenReturn(orderResult());
+
+        DhbSyncOrchestrationResult result = service.runScheduled();
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
+        assertThat(result.tenants()).singleElement().satisfies(tenant ->
+                assertThat(tenant.steps().getFirst().message())
+                        .contains("DHB_PAYMENT_METHOD.fund.typeId=Offlinex1"));
+    }
+
+    @Test
+    void manualRunCanExecuteErpProductWithoutSupplyChainOrOtherDomains() {
+        List<String> calls = new ArrayList<>();
+        for (String objectType : List.of("CATEGORY", "BRAND", "SPECIFICATION", "TAG",
+                "PRODUCT_SPU")) {
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType), eq(10)))
+                    .thenAnswer(invocation -> {
+                        calls.add("ERP:" + objectType);
+                        return erpResult(objectType);
+                    });
+        }
+
+        DhbSyncOrchestrationCommand command = new DhbSyncOrchestrationCommand(
+                10, null, false, false, false, false, true, false);
+        DhbSyncOrchestrationResult result = service.runManual(manualCaller(), command);
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        assertThat(calls).containsExactly(
+                "ERP:CATEGORY",
+                "ERP:BRAND",
+                "ERP:SPECIFICATION",
+                "ERP:TAG",
+                "ERP:PRODUCT_SPU");
+        assertThat(result.tenants()).singleElement().satisfies(tenant ->
+                assertThat(tenant.steps()).extracting("objectType")
+                        .containsExactly("CATEGORY", "BRAND", "SPECIFICATION", "TAG", "PRODUCT_SPU"));
+    }
+
     private static SyncTargetView target(UUID taskId) {
         return new SyncTargetView(taskId, TENANT_ID, CONNECTOR_ID);
     }
 
     private static ErpDataSyncResult erpResult(String objectType) {
         return new ErpDataSyncResult(UUID.randomUUID(), objectType, "SUCCEEDED", CONNECTOR_ID,
-                1, 1, 0, 0, 0, 0, Map.of(), 1, Instant.parse("2026-08-21T08:00:00Z"));
+                1, 1, 0, 0, 0, 0, Map.of(), Map.of(), 1,
+                Instant.parse("2026-08-21T08:00:00Z"));
     }
 
     private static SyncResult crmResult() {
@@ -199,5 +289,33 @@ class DhbSyncOrchestrationServiceTest {
         return new SyncRunView(UUID.randomUUID(), ORDER_TASK_ID, "SUCCEEDED",
                 Instant.parse("2026-08-21T07:00:00Z"), Instant.parse("2026-08-21T08:00:00Z"),
                 1, 1, 0, 0, null, null);
+    }
+
+    private static CallerIdentity manualCaller() {
+        UUID userId = UUID.randomUUID();
+        return new CallerIdentity("TENANT", userId, TENANT_ID, userId, null,
+                UUID.randomUUID(), 0, 0, 1,
+                Set.of("INTEGRATION_ADMIN"), Set.of("integration:dhb:read", "integration:dhb:write"));
+    }
+
+    private static DhbOrchestrationLease passthroughLease() {
+        return new DhbOrchestrationLease() {
+            @Override
+            public <T> T execute(UUID tenantId, UUID connectorId, String ownerId,
+                                 java.util.function.Supplier<T> action) {
+                return action.get();
+            }
+        };
+    }
+
+    private static DhbOrchestrationLease busyLease() {
+        return new DhbOrchestrationLease() {
+            @Override
+            public <T> T execute(UUID tenantId, UUID connectorId, String ownerId,
+                                 java.util.function.Supplier<T> action) {
+                throw new BusinessException(ErrorCode.SYNC_ALREADY_RUNNING,
+                        "当前订货宝连接器已有统一同步编排批次运行中", List.of());
+            }
+        };
     }
 }

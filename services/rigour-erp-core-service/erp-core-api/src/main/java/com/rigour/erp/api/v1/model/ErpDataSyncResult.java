@@ -14,7 +14,7 @@ public record ErpDataSyncResult(
         String status,
         /** 本次使用的 Integration 订货宝连接器 UUID。 */
         UUID connectorId,
-        /** 本批次交给 ERP 导入流程并完成统计的记录总数，商品同步包含 SKU。 */
+        /** 本批次来源根对象数量；商品同步为 SPU 数，不把 SKU 计为商品。 */
         long fetched,
         /** 本批次首次创建的 ERP 记录数量，商品同步包含 SKU。 */
         long created,
@@ -28,11 +28,15 @@ public record ErpDataSyncResult(
         long unmapped,
         /** 本批次使用的字典内容版本；-1表示对应字典不可用或未配置。 */
         Map<String, Long> dictionaryRevisions,
+        /** 来源对象明细数量，例如 PRODUCT_SPU、PRODUCT_SKU、SPECIFICATION_VALUE。 */
+        Map<String, Long> sourceDetails,
         /** 本次从 Integration 读取的页数或库存批次数。 */
         int pages,
         /** ERP 完成本批次的时间。 */
         Instant completedAt) {
     public ErpDataSyncResult {
         dictionaryRevisions = dictionaryRevisions == null ? Map.of() : Map.copyOf(dictionaryRevisions);
+        sourceDetails = sourceDetails == null ? Map.of()
+                : java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(sourceDetails));
     }
 }

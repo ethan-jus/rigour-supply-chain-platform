@@ -4,6 +4,8 @@ import com.rigour.order.api.v1.OrderSalesOrderApi;
 import com.rigour.order.api.v1.model.OrderPageView;
 import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
+import com.rigour.order.api.v1.model.SalesOrderSourceProjectionCommand;
+import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutResult;
 import com.rigour.order.api.v1.model.SalesOrderSummaryView;
@@ -23,12 +25,13 @@ public final class OrderSalesOrderController implements OrderSalesOrderApi {
 
     @Override
     public ApiResponse<OrderPageView<SalesOrderSummaryView>> salesOrders(
-            int begin, int step, String orderNo, String sourceOrderNo, String customerName, String contactPhone,
-            String regionCode, String ownerSalesUserId, String ownerStaffCode, String orderStatusCode,
+            int begin, int step, String orderNo, String sourceOrderNo, String sourceStatusCode,
+            String customerName, String contactPhone, String regionCode, String ownerSalesUserId,
+            String ownerStaffCode, String orderStatusCode,
             String paymentStatusCode, String outboundStatusCode, Instant orderDateFrom, Instant orderDateTo) {
-        return ApiResponse.success(service.salesOrders(begin, step, orderNo, sourceOrderNo, customerName, contactPhone,
-                regionCode, ownerSalesUserId, ownerStaffCode, orderStatusCode, paymentStatusCode, outboundStatusCode,
-                orderDateFrom, orderDateTo));
+        return ApiResponse.success(service.salesOrders(begin, step, orderNo, sourceOrderNo, sourceStatusCode,
+                customerName, contactPhone, regionCode, ownerSalesUserId, ownerStaffCode, orderStatusCode,
+                paymentStatusCode, outboundStatusCode, orderDateFrom, orderDateTo));
     }
 
     @Override
@@ -47,6 +50,18 @@ public final class OrderSalesOrderController implements OrderSalesOrderApi {
     }
 
     @Override
+    public ApiResponse<SalesOrderDetailView> updateSalesOrderSourceStatus(
+            Long id, SalesOrderSourceStatusCommand command) {
+        return ApiResponse.success(service.updateSourceStatus(id, command));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderDetailView> updateSalesOrderSourceProjection(
+            Long id, SalesOrderSourceProjectionCommand command) {
+        return ApiResponse.success(service.updateSourceProjection(id, command));
+    }
+
+    @Override
     public ApiResponse<SalesOrderDetailView> submitSalesOrder(Long id, int revision) {
         return ApiResponse.success(service.submit(id, revision));
     }
@@ -54,6 +69,11 @@ public final class OrderSalesOrderController implements OrderSalesOrderApi {
     @Override
     public ApiResponse<SalesOrderDetailView> cancelSalesOrder(Long id, int revision) {
         return ApiResponse.success(service.cancel(id, revision));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderDetailView> cancelSalesOrderBySource(Long id, int revision) {
+        return ApiResponse.success(service.cancelBySource(id, revision));
     }
 
     @Override

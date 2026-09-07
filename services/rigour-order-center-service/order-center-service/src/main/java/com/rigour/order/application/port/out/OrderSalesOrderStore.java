@@ -21,17 +21,26 @@ public interface OrderSalesOrderStore {
 
     SalesOrderDetailView update(String tenantId, Long id, SalesOrderWrite command, String actorId);
 
+    SalesOrderDetailView updateSourceStatus(
+            String tenantId, Long id, String sourceStatusCode, int revision, String actorId);
+
+    SalesOrderDetailView updateSourceProjection(
+            String tenantId, Long id, SalesOrderSourceProjectionWrite command, String actorId);
+
     SalesOrderDetailView submit(String tenantId, Long id, int revision, String actorId);
 
     SalesOrderDetailView cancel(String tenantId, Long id, int revision, String actorId);
 
-    SalesOrderDetailView confirmOutbound(String tenantId, Long id, int revision, String actorId);
+    SalesOrderDetailView cancelBySource(String tenantId, Long id, int revision, String actorId);
+
+    SalesOrderDetailView confirmOutbound(String tenantId, Long id, int revision, Instant shipmentTime, String actorId);
 
     void delete(String tenantId, Long id, int revision, String actorId);
 
     record SalesOrderSearchCriteria(
             String orderNo,
             String sourceOrderNo,
+            String sourceStatusCode,
             String customerName,
             String contactPhone,
             String regionCode,
@@ -48,7 +57,7 @@ public interface OrderSalesOrderStore {
                                         String orderStatusCode, String paymentStatusCode,
                                         String outboundStatusCode, Instant orderDateFrom,
                                         Instant orderDateTo) {
-            this(orderNo, null, customerName, contactPhone, regionCode, ownerSalesUserId,
+            this(orderNo, null, null, customerName, contactPhone, regionCode, ownerSalesUserId,
                     ownerStaffCode, orderStatusCode, paymentStatusCode, outboundStatusCode,
                     orderDateFrom, orderDateTo);
         }
@@ -58,7 +67,7 @@ public interface OrderSalesOrderStore {
                                         String ownerSalesUserId, String orderStatusCode,
                                         String paymentStatusCode, String outboundStatusCode,
                                         Instant orderDateFrom, Instant orderDateTo) {
-            this(orderNo, null, customerName, contactPhone, regionCode, ownerSalesUserId,
+            this(orderNo, null, null, customerName, contactPhone, regionCode, ownerSalesUserId,
                     null, orderStatusCode, paymentStatusCode, outboundStatusCode,
                     orderDateFrom, orderDateTo);
         }
@@ -68,6 +77,10 @@ public interface OrderSalesOrderStore {
             Long customerId,
             String sourceSystemCode,
             String sourceOrderNo,
+            String sourceStatusCode,
+            String sourceCreatorId,
+            String sourceCreatorStaffCode,
+            String sourceCreatorName,
             String customerCodeSnapshot,
             String customerNameSnapshot,
             String contactNameSnapshot,
@@ -100,8 +113,8 @@ public interface OrderSalesOrderStore {
                                BigDecimal discountRate, BigDecimal discountAmount,
                                BigDecimal payableAmount, List<SalesOrderLineWrite> lines,
                                String remark, Integer revision) {
-            this(customerId, null, null, customerCodeSnapshot, customerNameSnapshot,
-                    contactNameSnapshot, contactPhoneSnapshot, regionCode,
+            this(customerId, null, null, null, null, null, null, customerCodeSnapshot,
+                    customerNameSnapshot, contactNameSnapshot, contactPhoneSnapshot, regionCode,
                     ownerSalesUserId, ownerSalesName, ownerStaffCode, ownerStaffNameSnapshot,
                     orderDate, orderStatusCode, orderTypeCode, paymentMethodCode,
                     totalQuantity, originalAmount, discountRate, discountAmount,
@@ -118,13 +131,25 @@ public interface OrderSalesOrderStore {
                                BigDecimal discountRate, BigDecimal discountAmount,
                                BigDecimal payableAmount, List<SalesOrderLineWrite> lines,
                                String remark, Integer revision) {
-            this(customerId, null, null, customerCodeSnapshot, customerNameSnapshot,
-                    contactNameSnapshot, contactPhoneSnapshot, regionCode,
+            this(customerId, null, null, null, null, null, null, customerCodeSnapshot,
+                    customerNameSnapshot, contactNameSnapshot, contactPhoneSnapshot, regionCode,
                     ownerSalesUserId, ownerSalesName, null, null, orderDate,
                     orderStatusCode, orderTypeCode, paymentMethodCode, totalQuantity,
                     originalAmount, discountRate, discountAmount, payableAmount,
                     lines, remark, revision);
         }
+    }
+
+    record SalesOrderSourceProjectionWrite(
+            String sourceStatusCode,
+            String sourceCreatorId,
+            String sourceCreatorStaffCode,
+            String sourceCreatorName,
+            String ownerSalesUserId,
+            String ownerSalesName,
+            String ownerStaffCode,
+            String ownerStaffNameSnapshot,
+            Integer revision) {
     }
 
     record SalesOrderLineWrite(

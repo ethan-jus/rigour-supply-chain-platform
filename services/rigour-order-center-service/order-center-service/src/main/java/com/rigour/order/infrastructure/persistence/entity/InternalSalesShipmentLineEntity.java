@@ -24,7 +24,10 @@ public class InternalSalesShipmentLineEntity {
     private String unitCode;
     private BigDecimal shippedQuantity;
     private String remark;
+    private Integer revision;
+    private String createdBy;
     private LocalDateTime createdTime;
+    private String updatedBy;
     private LocalDateTime updatedTime;
     private Integer deleted;
 
@@ -56,8 +59,14 @@ public class InternalSalesShipmentLineEntity {
     public void setShippedQuantity(BigDecimal shippedQuantity) { this.shippedQuantity = shippedQuantity; }
     public String getRemark() { return remark; }
     public void setRemark(String remark) { this.remark = remark; }
+    public Integer getRevision() { return revision; }
+    public void setRevision(Integer revision) { this.revision = revision; }
+    public String getCreatedBy() { return createdBy; }
+    public void setCreatedBy(String createdBy) { this.createdBy = createdBy; }
     public LocalDateTime getCreatedTime() { return createdTime; }
     public void setCreatedTime(LocalDateTime createdTime) { this.createdTime = createdTime; }
+    public String getUpdatedBy() { return updatedBy; }
+    public void setUpdatedBy(String updatedBy) { this.updatedBy = updatedBy; }
     public LocalDateTime getUpdatedTime() { return updatedTime; }
     public void setUpdatedTime(LocalDateTime updatedTime) { this.updatedTime = updatedTime; }
     public Integer getDeleted() { return deleted; }

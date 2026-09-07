@@ -58,8 +58,8 @@ class MybatisPlusErpSyncRunAuditStoreTest {
                     .doesNotContain("token", "password", "connector busy");
             assertThat(entity.startedAt).isEqualTo(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
             assertThat(entity.finishedAt).isEqualTo(entity.startedAt);
-            assertThat(entity.createdAt).isEqualTo(entity.startedAt);
-            assertThat(entity.updatedAt).isEqualTo(entity.startedAt);
+            assertThat(entity.createdTime).isEqualTo(entity.startedAt);
+            assertThat(entity.updatedTime).isEqualTo(entity.startedAt);
         });
     }
 

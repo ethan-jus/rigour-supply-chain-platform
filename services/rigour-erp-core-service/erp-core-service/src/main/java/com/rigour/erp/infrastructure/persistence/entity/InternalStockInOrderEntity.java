@@ -15,6 +15,12 @@ public class InternalStockInOrderEntity {
     private String tenantId;
     /** 入库单号，由 ERP 编码规则生成。 */
     private String stockInNo;
+    /** Integration连接器ID；外部同步单据非空。 */
+    private String connectorId;
+    /** 来源系统编码。 */
+    private String sourceSystemCode;
+    /** 来源业务单号。 */
+    private String sourceDocumentNo;
     /** 入库类型，关联 STOCK_IN_TYPE 字典项。 */
     private String stockInTypeCode;
     /** 采购订单ID；采购入库时必填。 */
@@ -54,6 +60,12 @@ public class InternalStockInOrderEntity {
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getStockInNo() { return stockInNo; }
     public void setStockInNo(String stockInNo) { this.stockInNo = stockInNo; }
+    public String getConnectorId() { return connectorId; }
+    public void setConnectorId(String connectorId) { this.connectorId = connectorId; }
+    public String getSourceSystemCode() { return sourceSystemCode; }
+    public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
+    public String getSourceDocumentNo() { return sourceDocumentNo; }
+    public void setSourceDocumentNo(String sourceDocumentNo) { this.sourceDocumentNo = sourceDocumentNo; }
     public String getStockInTypeCode() { return stockInTypeCode; }
     public void setStockInTypeCode(String stockInTypeCode) { this.stockInTypeCode = stockInTypeCode; }
     public Long getProcurementOrderId() { return procurementOrderId; }

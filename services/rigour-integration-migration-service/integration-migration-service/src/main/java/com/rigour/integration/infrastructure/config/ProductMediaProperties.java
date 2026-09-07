@@ -7,20 +7,28 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class ProductMediaProperties {
     /** 单张图片最大字节数，防止供应商异常响应耗尽内存。 */
     private long maxBytes = 10L * 1024 * 1024;
+    /** 后台消费者总开关；本地单条重放可关闭，避免误领共享DEV图片队列。 */
+    private boolean workerEnabled = true;
     /** 后台消费者并发数；按实例限制，避免图片任务打满连接池和 COS。 */
     private int workerConcurrency = 4;
     private long workerPollIntervalMs = 1000L;
     private int workerMaxAttempts = 3;
+    /** 订货宝收付款附件对象 Key 前缀；与商品图片共用 COS 桶但分目录隔离。 */
+    private String fundAttachmentPrefix = "fund-attachments";
     private final Cos cos = new Cos();
 
     public long getMaxBytes() { return maxBytes; }
     public void setMaxBytes(long maxBytes) { this.maxBytes = maxBytes; }
+    public boolean isWorkerEnabled() { return workerEnabled; }
+    public void setWorkerEnabled(boolean workerEnabled) { this.workerEnabled = workerEnabled; }
     public int getWorkerConcurrency() { return workerConcurrency; }
     public void setWorkerConcurrency(int workerConcurrency) { this.workerConcurrency = workerConcurrency; }
     public long getWorkerPollIntervalMs() { return workerPollIntervalMs; }
     public void setWorkerPollIntervalMs(long workerPollIntervalMs) { this.workerPollIntervalMs = workerPollIntervalMs; }
     public int getWorkerMaxAttempts() { return workerMaxAttempts; }
     public void setWorkerMaxAttempts(int workerMaxAttempts) { this.workerMaxAttempts = workerMaxAttempts; }
+    public String getFundAttachmentPrefix() { return fundAttachmentPrefix; }
+    public void setFundAttachmentPrefix(String fundAttachmentPrefix) { this.fundAttachmentPrefix = fundAttachmentPrefix; }
     public Cos getCos() { return cos; }
 
     public static class Cos {

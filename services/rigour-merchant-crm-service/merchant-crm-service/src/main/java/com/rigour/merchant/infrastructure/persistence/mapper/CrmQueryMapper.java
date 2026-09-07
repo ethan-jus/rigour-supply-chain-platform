@@ -13,7 +13,7 @@ public interface CrmQueryMapper {
             SELECT COUNT(*)
               FROM crm_party p
               JOIN crm_customer_profile cp ON cp.tenant_id=p.tenant_id AND cp.party_id=p.id
-             WHERE p.tenant_id=#{tenantId} AND p.deleted_at IS NULL
+             WHERE p.tenant_id=#{tenantId} AND p.deleted=0
             <if test="query != null and query != ''">
                AND (p.party_code LIKE #{query} OR p.display_name LIKE #{query}
                     OR cp.login_account LIKE #{query})
@@ -42,13 +42,13 @@ public interface CrmQueryMapper {
                    AND sa.assignment_type='PRIMARY' AND sa.status='ACTIVE'
               LEFT JOIN crm_source_binding b ON b.tenant_id=p.tenant_id AND b.target_id=p.id
                    AND b.target_type='PARTY' AND b.source_object_type='CUSTOMER'
-             WHERE p.tenant_id=#{tenantId} AND p.deleted_at IS NULL
+             WHERE p.tenant_id=#{tenantId} AND p.deleted=0
             <if test="query != null and query != ''">
                AND (p.party_code LIKE #{query} OR p.display_name LIKE #{query}
                     OR cp.login_account LIKE #{query})
             </if>
             <if test="status != null and status != ''"> AND p.internal_status=#{status}</if>
-             ORDER BY b.source_updated_at DESC,p.updated_at DESC
+             ORDER BY b.source_updated_at DESC,p.updated_time DESC
              LIMIT #{step} OFFSET #{begin}
             </script>
             """)
@@ -68,7 +68,7 @@ public interface CrmQueryMapper {
                  #{partyId}
                </foreach>
              ORDER BY sa.party_id,FIELD(sa.assignment_type,'PRIMARY','SECONDARY','SERVICE'),
-                      sa.effective_from,sa.created_at
+                      sa.effective_from,sa.created_time
             </script>
             """)
     List<Map<String, Object>> salesAssignments(@Param("tenantId") byte[] tenantId,
@@ -96,7 +96,7 @@ public interface CrmQueryMapper {
                    AND sa.assignment_type='PRIMARY' AND sa.status='ACTIVE'
               LEFT JOIN crm_source_binding b ON b.tenant_id=p.tenant_id AND b.target_id=p.id
                    AND b.target_type='PARTY' AND b.source_object_type='CUSTOMER'
-             WHERE p.tenant_id=#{tenantId} AND p.id=#{id} AND p.deleted_at IS NULL
+             WHERE p.tenant_id=#{tenantId} AND p.id=#{id} AND p.deleted=0
              LIMIT 1
             """)
     Map<String, Object> customer(@Param("tenantId") byte[] tenantId, @Param("id") byte[] id);
@@ -110,8 +110,8 @@ public interface CrmQueryMapper {
               LEFT JOIN crm_source_binding b ON b.tenant_id=a.tenant_id AND b.target_id=a.id
                    AND b.target_type='ADDRESS' AND b.source_object_type='ADDRESS'
              WHERE a.tenant_id=#{tenantId} AND a.party_id=#{partyId}
-               AND a.address_type='SHIPPING' AND a.deleted_at IS NULL
-             ORDER BY a.is_default DESC,a.updated_at DESC
+               AND a.address_type='SHIPPING' AND a.deleted=0
+             ORDER BY a.is_default DESC,a.updated_time DESC
             """)
     List<Map<String, Object>> shippingAddresses(@Param("tenantId") byte[] tenantId,
                                                 @Param("partyId") byte[] partyId);
@@ -123,7 +123,7 @@ public interface CrmQueryMapper {
               JOIN crm_party p ON p.tenant_id=a.tenant_id AND p.id=a.party_id
               LEFT JOIN crm_contact c ON c.tenant_id=a.tenant_id AND c.id=a.contact_id
              WHERE a.tenant_id=#{tenantId} AND a.address_type='SHIPPING'
-               AND a.deleted_at IS NULL AND p.deleted_at IS NULL
+               AND a.deleted=0 AND p.deleted=0
             <if test="query != null and query != ''">
                AND (p.party_code LIKE #{query} OR p.display_name LIKE #{query}
                     OR a.consignee LIKE #{query} OR c.contact_name LIKE #{query}
@@ -149,7 +149,7 @@ public interface CrmQueryMapper {
               LEFT JOIN crm_source_binding b ON b.tenant_id=a.tenant_id AND b.target_id=a.id
                    AND b.target_type='ADDRESS' AND b.source_object_type='ADDRESS'
              WHERE a.tenant_id=#{tenantId} AND a.address_type='SHIPPING'
-               AND a.deleted_at IS NULL AND p.deleted_at IS NULL
+               AND a.deleted=0 AND p.deleted=0
             <if test="query != null and query != ''">
                AND (p.party_code LIKE #{query} OR p.display_name LIKE #{query}
                     OR a.consignee LIKE #{query} OR c.contact_name LIKE #{query}
@@ -157,7 +157,7 @@ public interface CrmQueryMapper {
                     OR a.area_name LIKE #{query} OR a.address_detail LIKE #{query}
                     OR a.full_address LIKE #{query})
             </if>
-             ORDER BY a.is_default DESC,b.source_updated_at DESC,a.updated_at DESC
+             ORDER BY a.is_default DESC,b.source_updated_at DESC,a.updated_time DESC
              LIMIT #{step} OFFSET #{begin}
             </script>
             """)
@@ -169,7 +169,7 @@ public interface CrmQueryMapper {
     @Select("""
             <script>
             SELECT COUNT(*) FROM crm_customer_type d
-             WHERE d.tenant_id=#{tenantId} AND d.deleted_at IS NULL
+             WHERE d.tenant_id=#{tenantId} AND d.deleted=0
             <if test="query != null and query != ''">
               AND (d.type_code LIKE #{query} OR d.type_name LIKE #{query})
             </if>
@@ -184,7 +184,7 @@ public interface CrmQueryMapper {
               FROM crm_customer_type d
               LEFT JOIN crm_source_binding b ON b.tenant_id=d.tenant_id AND b.target_id=d.id
                    AND b.source_object_type='CUSTOMER_TYPE'
-             WHERE d.tenant_id=#{tenantId} AND d.deleted_at IS NULL
+             WHERE d.tenant_id=#{tenantId} AND d.deleted=0
             <if test="query != null and query != ''">
               AND (d.type_code LIKE #{query} OR d.type_name LIKE #{query})
             </if>
@@ -198,7 +198,7 @@ public interface CrmQueryMapper {
     @Select("""
             <script>
             SELECT COUNT(*) FROM crm_customer_area d
-             WHERE d.tenant_id=#{tenantId} AND d.deleted_at IS NULL
+             WHERE d.tenant_id=#{tenantId} AND d.deleted=0
             <if test="query != null and query != ''">
               AND (d.area_code LIKE #{query} OR d.area_name LIKE #{query})
             </if>
@@ -213,10 +213,10 @@ public interface CrmQueryMapper {
                    d.parent_area_code AS parent_code,p.id AS parent_id
               FROM crm_customer_area d
               LEFT JOIN crm_customer_area p ON p.tenant_id=d.tenant_id
-                   AND p.area_code=d.parent_area_code AND p.deleted_at IS NULL
+                   AND p.area_code=d.parent_area_code AND p.deleted=0
               LEFT JOIN crm_source_binding b ON b.tenant_id=d.tenant_id AND b.target_id=d.id
                    AND b.source_object_type='CUSTOMER_AREA'
-             WHERE d.tenant_id=#{tenantId} AND d.deleted_at IS NULL
+             WHERE d.tenant_id=#{tenantId} AND d.deleted=0
             <if test="query != null and query != ''">
               AND (d.area_code LIKE #{query} OR d.area_name LIKE #{query})
             </if>

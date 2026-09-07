@@ -64,12 +64,13 @@ public interface CrmMasterDataStore {
                  RunStatistics statistics, RuntimeException error);
 
     record ImportResult(long created, long changed, long repaired,
-                        long duplicates, long rejected) {
-        public static ImportResult createdOne() { return new ImportResult(1, 0, 0, 0, 0); }
-        public static ImportResult changedOne() { return new ImportResult(0, 1, 0, 0, 0); }
-        public static ImportResult repairedOne() { return new ImportResult(0, 0, 1, 0, 0); }
-        public static ImportResult duplicateOne() { return new ImportResult(0, 0, 0, 1, 0); }
-        public static ImportResult rejectedOne() { return new ImportResult(0, 0, 0, 0, 1); }
+                        long duplicates, long rejected, long unmapped) {
+        public static ImportResult createdOne() { return new ImportResult(1, 0, 0, 0, 0, 0); }
+        public static ImportResult changedOne() { return new ImportResult(0, 1, 0, 0, 0, 0); }
+        public static ImportResult repairedOne() { return new ImportResult(0, 0, 1, 0, 0, 0); }
+        public static ImportResult duplicateOne() { return new ImportResult(0, 0, 0, 1, 0, 0); }
+        public static ImportResult rejectedOne() { return new ImportResult(0, 0, 0, 0, 1, 0); }
+        public static ImportResult unmappedOne() { return new ImportResult(0, 0, 0, 0, 0, 1); }
     }
 
     record RunStatistics(long fetched, long created, long changed, long repaired,

@@ -52,7 +52,7 @@ class ProductImageJsonCompatibilityTest {
     }
 
     private static Product productWithImages(String mainImageKey, List<ProductImage> images) {
-        return new Product("1168437", "DHB-001", "Test Product", "T", "barcode",
+        return new Product("1168437", "DHB-001", "Test Product", "T", "NORMAL", "barcode",
                 "箱", "cat-1", "brand-1", "model", null, null, null,
                 mainImageKey, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null,

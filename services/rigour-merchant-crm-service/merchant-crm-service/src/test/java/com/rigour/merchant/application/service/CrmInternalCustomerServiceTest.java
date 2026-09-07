@@ -74,6 +74,31 @@ class CrmInternalCustomerServiceTest {
     }
 
     @Test
+    void listAcceptsNumericMasterDataCodes() {
+        FakeStore store = new FakeStore();
+        CrmInternalCustomerService service = service(store);
+        TestAuthorizationContext.set(caller("crm:customer:read"));
+
+        service.customers(0, 20, null, null, null,
+                "25887", "1001", null, null, null);
+
+        assertThat(store.criteria.customerTypeCode()).isEqualTo("25887");
+        assertThat(store.criteria.regionCode()).isEqualTo("1001");
+    }
+
+    @Test
+    void listAcceptsInactiveCustomerStatusFromBusinessDictionary() {
+        FakeStore store = new FakeStore();
+        CrmInternalCustomerService service = service(store);
+        TestAuthorizationContext.set(caller("crm:customer:read"));
+
+        service.customers(0, 20, null, null, null,
+                null, null, null, null, "inactive");
+
+        assertThat(store.criteria.statusCode()).isEqualTo(CrmCustomerStatus.INACTIVE.code());
+    }
+
+    @Test
     void updateRequiresRevision() {
         CrmInternalCustomerService service = service(new FakeStore());
         TestAuthorizationContext.set(caller("crm:customer:write"));

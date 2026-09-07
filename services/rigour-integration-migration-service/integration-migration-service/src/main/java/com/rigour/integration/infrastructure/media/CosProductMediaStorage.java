@@ -14,6 +14,7 @@ import com.rigour.integration.infrastructure.config.ProductMediaProperties;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +32,7 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
     private final COSClient client;
     private final String bucket;
     private final String objectPrefix;
+    private final List<String> allowedObjectPrefixes;
     private final long maxBytes;
     private final boolean serverSideEncryption;
 
@@ -46,6 +48,9 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
         this.maxBytes = properties.getMaxBytes();
         this.serverSideEncryption = cos.isServerSideEncryption();
         this.objectPrefix = normalizePrefix(cos.getObjectPrefix());
+        this.allowedObjectPrefixes = List.of(
+                this.objectPrefix,
+                normalizePrefix(properties.getFundAttachmentPrefix()));
     }
 
     private static ProductMediaProperties.Cos validatedCos(ProductMediaProperties properties) {
@@ -86,14 +91,14 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
 
     @Override
     public boolean exists(String tenantId, String objectKey) {
-        validateKey(tenantId, objectKey, objectPrefix);
+        validateKey(tenantId, objectKey, allowedObjectPrefixes);
         return client.doesObjectExist(bucket, objectKey);
     }
 
     @Override
     public void put(String tenantId, String objectKey, String originalName,
                     String contentType, byte[] content) {
-        validateKey(tenantId, objectKey, objectPrefix);
+        validateKey(tenantId, objectKey, allowedObjectPrefixes);
         if (content == null || content.length == 0 || content.length > maxBytes) {
             throw new IllegalArgumentException("商品图片大小无效");
         }
@@ -181,8 +186,13 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
     void shutdown() { client.shutdown(); }
 
     private static void validateKey(String tenantId, String objectKey, String objectPrefix) {
+        validateKey(tenantId, objectKey, List.of(objectPrefix));
+    }
+
+    private static void validateKey(String tenantId, String objectKey, List<String> objectPrefixes) {
         if (!StringUtils.hasText(tenantId) || !StringUtils.hasText(objectKey)
-                || !objectKey.startsWith(tenantId + "/" + objectPrefix + "/") || objectKey.contains("..")) {
+                || objectKey.contains("..") || objectPrefixes.stream().noneMatch(prefix ->
+                objectKey.startsWith(tenantId + "/" + prefix + "/"))) {
             throw new IllegalArgumentException("商品图片对象 key 无效");
         }
     }

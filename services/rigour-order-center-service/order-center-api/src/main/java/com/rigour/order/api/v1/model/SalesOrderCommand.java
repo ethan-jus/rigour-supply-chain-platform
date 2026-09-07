@@ -9,6 +9,10 @@ public record SalesOrderCommand(
         Long customerId,
         String sourceSystemCode,
         String sourceOrderNo,
+        String sourceStatusCode,
+        String sourceCreatorId,
+        String sourceCreatorStaffCode,
+        String sourceCreatorName,
         String customerCodeSnapshot,
         String customerNameSnapshot,
         String contactNameSnapshot,
@@ -27,6 +31,24 @@ public record SalesOrderCommand(
         List<SalesOrderLineCommand> lines,
         Boolean submit,
         Integer revision) {
+    public SalesOrderCommand(Long customerId, String sourceSystemCode, String sourceOrderNo,
+                             String customerCodeSnapshot, String customerNameSnapshot,
+                             String contactNameSnapshot, String contactPhoneSnapshot,
+                             String regionCode, String ownerSalesUserId,
+                             String ownerSalesName, String ownerStaffCode,
+                             String ownerStaffNameSnapshot, Instant orderDate,
+                             String orderTypeCode, String paymentMethodCode,
+                             BigDecimal discountRate, BigDecimal discountAmount,
+                             String remark, List<SalesOrderLineCommand> lines,
+                             Boolean submit, Integer revision) {
+        this(customerId, sourceSystemCode, sourceOrderNo, null, null, null, null,
+                customerCodeSnapshot, customerNameSnapshot, contactNameSnapshot,
+                contactPhoneSnapshot, regionCode, ownerSalesUserId, ownerSalesName,
+                ownerStaffCode, ownerStaffNameSnapshot, orderDate, orderTypeCode,
+                paymentMethodCode, discountRate, discountAmount, remark, lines,
+                submit, revision);
+    }
+
     public SalesOrderCommand(Long customerId, String customerCodeSnapshot,
                              String customerNameSnapshot, String contactNameSnapshot,
                              String contactPhoneSnapshot, String regionCode,
@@ -37,11 +59,11 @@ public record SalesOrderCommand(
                              BigDecimal discountAmount, String remark,
                              List<SalesOrderLineCommand> lines, Boolean submit,
                              Integer revision) {
-        this(customerId, null, null, customerCodeSnapshot, customerNameSnapshot,
-                contactNameSnapshot, contactPhoneSnapshot, regionCode, ownerSalesUserId,
-                ownerSalesName, ownerStaffCode, ownerStaffNameSnapshot, orderDate,
-                orderTypeCode, paymentMethodCode, discountRate, discountAmount,
-                remark, lines, submit, revision);
+        this(customerId, null, null, null, null, null, null, customerCodeSnapshot,
+                customerNameSnapshot, contactNameSnapshot, contactPhoneSnapshot,
+                regionCode, ownerSalesUserId, ownerSalesName, ownerStaffCode,
+                ownerStaffNameSnapshot, orderDate, orderTypeCode, paymentMethodCode,
+                discountRate, discountAmount, remark, lines, submit, revision);
     }
 
     public SalesOrderCommand(Long customerId, String customerCodeSnapshot,
@@ -53,9 +75,10 @@ public record SalesOrderCommand(
                              BigDecimal discountAmount, String remark,
                              List<SalesOrderLineCommand> lines, Boolean submit,
                              Integer revision) {
-        this(customerId, null, null, customerCodeSnapshot, customerNameSnapshot, contactNameSnapshot,
-                contactPhoneSnapshot, regionCode, ownerSalesUserId, ownerSalesName,
-                null, null, orderDate, orderTypeCode, paymentMethodCode,
-                discountRate, discountAmount, remark, lines, submit, revision);
+        this(customerId, null, null, null, null, null, null, customerCodeSnapshot,
+                customerNameSnapshot, contactNameSnapshot, contactPhoneSnapshot,
+                regionCode, ownerSalesUserId, ownerSalesName, null, null,
+                orderDate, orderTypeCode, paymentMethodCode, discountRate,
+                discountAmount, remark, lines, submit, revision);
     }
 }

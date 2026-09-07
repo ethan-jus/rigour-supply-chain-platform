@@ -21,6 +21,8 @@ import org.junit.jupiter.api.Test;
 class CosProductMediaStorageTest {
     private static final String TENANT_ID = "019fbaf9-cfb5-740d-b347-739d29765d8e";
     private static final String OBJECT_KEY = TENANT_ID + "/product-images/P-1/IMG-1/hash.png";
+    private static final String FUND_ATTACHMENT_KEY =
+            TENANT_ID + "/fund-attachments/FR_20260826_0247/ATT/hash.png";
 
     @Test
     void usesShortConnectionAndApplicationManagedRetryForCosUploadRequests() {
@@ -79,6 +81,17 @@ class CosProductMediaStorageTest {
 
         assertThat(storage.exists(TENANT_ID, OBJECT_KEY)).isTrue();
         verify(client).doesObjectExist("bucket", OBJECT_KEY);
+    }
+
+    @Test
+    void allowsFundAttachmentPrefixInSharedCosBucket() {
+        COSClient client = mock(COSClient.class);
+        when(client.doesObjectExist("bucket", FUND_ATTACHMENT_KEY)).thenReturn(true);
+
+        CosProductMediaStorage storage = new CosProductMediaStorage(properties(), client);
+
+        assertThat(storage.exists(TENANT_ID, FUND_ATTACHMENT_KEY)).isTrue();
+        verify(client).doesObjectExist("bucket", FUND_ATTACHMENT_KEY);
     }
 
     private static ProductMediaProperties properties() {

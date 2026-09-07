@@ -5,6 +5,8 @@ import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
 import com.rigour.order.api.v1.model.SalesOrderLineCommand;
 import com.rigour.order.api.v1.model.SalesOrderLineView;
+import com.rigour.order.api.v1.model.SalesOrderSourceProjectionCommand;
+import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutResult;
 import com.rigour.order.api.v1.model.SalesOrderSummaryView;
@@ -16,6 +18,7 @@ import com.rigour.order.application.port.out.IamStaffDisplayClient;
 import com.rigour.order.application.port.out.OrderSalesOrderStore;
 import com.rigour.order.application.port.out.OrderSalesOrderStore.SalesOrderLineWrite;
 import com.rigour.order.application.port.out.OrderSalesOrderStore.SalesOrderSearchCriteria;
+import com.rigour.order.application.port.out.OrderSalesOrderStore.SalesOrderSourceProjectionWrite;
 import com.rigour.order.application.port.out.OrderSalesOrderStore.SalesOrderWrite;
 import com.rigour.order.domain.code.OrderBusinessCodeRules;
 import com.rigour.order.domain.enums.SalesOrderOutboundStatus;
@@ -27,6 +30,7 @@ import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.code.BusinessCodeGenerator;
 import com.rigour.shared.core.exception.BusinessException;
+import com.rigour.shared.core.sync.ExternalSourceCodes;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -51,7 +55,7 @@ public final class OrderSalesOrderService {
     private static final String READ_PERMISSION = "order:read";
     private static final String WRITE_PERMISSION = "order:write";
     private static final String ERP_STOCK_OUT_PERMISSION = "erp:supply:write";
-    private static final String SOURCE_SYSTEM_DINGHUOBAO = "DINGHUOBAO";
+    private static final String SOURCE_SYSTEM_DINGHUOBAO = ExternalSourceCodes.DOMAIN_DINGHUOBAO;
     private static final Pattern CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
     private static final BigDecimal ZERO = BigDecimal.ZERO;
     private static final BigDecimal ONE = BigDecimal.ONE;
@@ -88,7 +92,7 @@ public final class OrderSalesOrderService {
             int begin, int step, String orderNo, String customerName, String contactPhone,
             String regionCode, String ownerSalesUserId, String ownerStaffCode, String orderStatusCode,
             String paymentStatusCode, String outboundStatusCode, Instant orderDateFrom, Instant orderDateTo) {
-        return salesOrders(begin, step, orderNo, null, customerName, contactPhone,
+        return salesOrders(begin, step, orderNo, null, null, customerName, contactPhone,
                 regionCode, ownerSalesUserId, ownerStaffCode, orderStatusCode,
                 paymentStatusCode, outboundStatusCode, orderDateFrom, orderDateTo);
     }
@@ -97,6 +101,16 @@ public final class OrderSalesOrderService {
             int begin, int step, String orderNo, String sourceOrderNo, String customerName, String contactPhone,
             String regionCode, String ownerSalesUserId, String ownerStaffCode, String orderStatusCode,
             String paymentStatusCode, String outboundStatusCode, Instant orderDateFrom, Instant orderDateTo) {
+        return salesOrders(begin, step, orderNo, sourceOrderNo, null, customerName, contactPhone,
+                regionCode, ownerSalesUserId, ownerStaffCode, orderStatusCode,
+                paymentStatusCode, outboundStatusCode, orderDateFrom, orderDateTo);
+    }
+
+    public OrderPageView<SalesOrderSummaryView> salesOrders(
+            int begin, int step, String orderNo, String sourceOrderNo, String sourceStatusCode,
+            String customerName, String contactPhone, String regionCode, String ownerSalesUserId,
+            String ownerStaffCode, String orderStatusCode, String paymentStatusCode,
+            String outboundStatusCode, Instant orderDateFrom, Instant orderDateTo) {
         CallerIdentity actor = actor(READ_PERMISSION);
         String tenantId = actor.tenantId().toString();
         if (orderDateFrom != null && orderDateTo != null && orderDateFrom.isAfter(orderDateTo)) {
@@ -105,6 +119,7 @@ public final class OrderSalesOrderService {
         SalesOrderSearchCriteria criteria = new SalesOrderSearchCriteria(
                 text(orderNo, 50, "orderNo"),
                 text(sourceOrderNo, 80, "sourceOrderNo"),
+                text(sourceStatusCode, 64, "sourceStatusCode"),
                 text(customerName, 200, "customerName"),
                 text(contactPhone, 50, "contactPhone"),
                 code(regionCode, "regionCode", false),
@@ -140,10 +155,11 @@ public final class OrderSalesOrderService {
         CallerIdentity actor = actor(WRITE_PERMISSION);
         String tenantId = actor.tenantId().toString();
         SalesOrderWrite normalized = normalize(command, false);
+        requireExternalProjectionAllowed(actor, normalized.sourceSystemCode());
         String orderNo = codeGenerator.generateUnique(OrderBusinessCodeRules.SALES_ORDER,
                 orderCodeBusinessTime(normalized), candidate -> !store.existsByNo(tenantId, candidate));
         SalesOrderDetailView created = store.create(
-                tenantId, orderNo, normalized, actor.principalId().toString());
+                tenantId, orderNo, normalized, OrderAuditActors.writeActor(actor));
         created = withStaffName(actor, created);
         log.info("Order销售订单创建完成 tenantId={} salesOrderId={} orderNo={} orderStatusCode={} payableAmount={} actorId={}",
                 tenantId, created.id(), created.orderNo(), created.orderStatusCode(),
@@ -162,11 +178,64 @@ public final class OrderSalesOrderService {
         CallerIdentity actor = actor(WRITE_PERMISSION);
         String tenantId = actor.tenantId().toString();
         SalesOrderWrite normalized = normalize(command, true);
+        SalesOrderDetailView current = store.salesOrder(tenantId, requireId(id, "销售订单ID无效"))
+                .orElseThrow(() -> notFound("销售订单不存在"));
+        requireManualExternalMutationAllowed(actor, current);
+        requireExternalProjectionAllowed(actor, normalized.sourceSystemCode());
         SalesOrderDetailView updated = store.update(
-                tenantId, requireId(id, "销售订单ID无效"), normalized, actor.principalId().toString());
+                tenantId, current.id(), normalized, OrderAuditActors.writeActor(actor));
         updated = withStaffName(actor, updated);
         log.info("Order销售订单修改完成 tenantId={} salesOrderId={} orderNo={} orderStatusCode={} revision={} actorId={}",
                 tenantId, updated.id(), updated.orderNo(), updated.orderStatusCode(),
+                updated.revision(), actor.principalId());
+        return updated;
+    }
+
+    public SalesOrderDetailView updateSourceStatus(Long id, SalesOrderSourceStatusCommand command) {
+        CallerIdentity actor = serviceActor();
+        if (command == null) throw badRequest("销售订单来源状态参数不能为空");
+        checkRevision(command.revision(), true);
+        String tenantId = actor.tenantId().toString();
+        SalesOrderDetailView current = store.salesOrder(tenantId, requireId(id, "销售订单ID无效"))
+                .orElseThrow(() -> notFound("销售订单不存在"));
+        if (!externalSource(current.sourceSystemCode())) {
+            throw conflict("只有外部来源销售订单允许更新来源状态");
+        }
+        String sourceStatusCode = text(command.sourceStatusCode(), 64, "sourceStatusCode");
+        if (Objects.equals(current.sourceStatusCode(), sourceStatusCode)) {
+            return withStaffName(actor, current);
+        }
+        SalesOrderDetailView updated = store.updateSourceStatus(
+                tenantId, current.id(), sourceStatusCode, command.revision(),
+                OrderAuditActors.writeActor(actor));
+        updated = withStaffName(actor, updated);
+        log.info("Order销售订单来源状态更新完成 tenantId={} salesOrderId={} orderNo={} sourceStatusCode={} revision={} actorId={}",
+                tenantId, updated.id(), updated.orderNo(), value(updated.sourceStatusCode()),
+                updated.revision(), actor.principalId());
+        return updated;
+    }
+
+    public SalesOrderDetailView updateSourceProjection(Long id, SalesOrderSourceProjectionCommand command) {
+        CallerIdentity actor = serviceActor();
+        if (command == null) throw badRequest("销售订单来源投影参数不能为空");
+        checkRevision(command.revision(), true);
+        String tenantId = actor.tenantId().toString();
+        SalesOrderDetailView current = store.salesOrder(tenantId, requireId(id, "销售订单ID无效"))
+                .orElseThrow(() -> notFound("销售订单不存在"));
+        if (!externalSource(current.sourceSystemCode())) {
+            throw conflict("只有外部来源销售订单允许更新来源投影资料");
+        }
+        SalesOrderSourceProjectionWrite normalized = normalizeSourceProjection(command, current);
+        if (sourceProjectionSame(current, normalized)) {
+            return withStaffName(actor, current);
+        }
+        SalesOrderDetailView updated = store.updateSourceProjection(
+                tenantId, current.id(), normalized, OrderAuditActors.writeActor(actor));
+        updated = withStaffName(actor, updated);
+        log.info("Order销售订单来源投影资料更新完成 tenantId={} salesOrderId={} orderNo={} "
+                        + "sourceStatusCode={} sourceCreatorName={} ownerStaffCode={} revision={} actorId={}",
+                tenantId, updated.id(), updated.orderNo(), value(updated.sourceStatusCode()),
+                value(updated.sourceCreatorName()), value(updated.ownerStaffCode()),
                 updated.revision(), actor.principalId());
         return updated;
     }
@@ -175,8 +244,11 @@ public final class OrderSalesOrderService {
         CallerIdentity actor = actor(WRITE_PERMISSION);
         requireRevision(revision);
         String tenantId = actor.tenantId().toString();
+        SalesOrderDetailView current = store.salesOrder(tenantId, requireId(id, "销售订单ID无效"))
+                .orElseThrow(() -> notFound("销售订单不存在"));
+        requireManualExternalMutationAllowed(actor, current);
         SalesOrderDetailView submitted = store.submit(
-                tenantId, requireId(id, "销售订单ID无效"), revision, actor.principalId().toString());
+                tenantId, current.id(), revision, OrderAuditActors.writeActor(actor));
         submitted = withStaffName(actor, submitted);
         log.info("Order销售订单提交完成 tenantId={} salesOrderId={} orderNo={} revision={} actorId={}",
                 tenantId, submitted.id(), submitted.orderNo(), submitted.revision(), actor.principalId());
@@ -187,10 +259,30 @@ public final class OrderSalesOrderService {
         CallerIdentity actor = actor(WRITE_PERMISSION);
         requireRevision(revision);
         String tenantId = actor.tenantId().toString();
+        SalesOrderDetailView current = store.salesOrder(tenantId, requireId(id, "销售订单ID无效"))
+                .orElseThrow(() -> notFound("销售订单不存在"));
+        requireManualExternalMutationAllowed(actor, current);
         SalesOrderDetailView cancelled = store.cancel(
-                tenantId, requireId(id, "销售订单ID无效"), revision, actor.principalId().toString());
+                tenantId, current.id(), revision, OrderAuditActors.writeActor(actor));
         cancelled = withStaffName(actor, cancelled);
         log.info("Order销售订单取消完成 tenantId={} salesOrderId={} orderNo={} revision={} actorId={}",
+                tenantId, cancelled.id(), cancelled.orderNo(), cancelled.revision(), actor.principalId());
+        return cancelled;
+    }
+
+    public SalesOrderDetailView cancelBySource(Long id, int revision) {
+        CallerIdentity actor = serviceActor();
+        requireRevision(revision);
+        String tenantId = actor.tenantId().toString();
+        SalesOrderDetailView current = store.salesOrder(tenantId, requireId(id, "销售订单ID无效"))
+                .orElseThrow(() -> notFound("销售订单不存在"));
+        if (!externalSource(current.sourceSystemCode())) {
+            throw conflict("只有外部来源销售订单允许按来源取消");
+        }
+        SalesOrderDetailView cancelled = store.cancelBySource(
+                tenantId, current.id(), revision, OrderAuditActors.writeActor(actor));
+        cancelled = withStaffName(actor, cancelled);
+        log.info("Order销售订单来源取消完成 tenantId={} salesOrderId={} orderNo={} revision={} actorId={}",
                 tenantId, cancelled.id(), cancelled.orderNo(), cancelled.revision(), actor.principalId());
         return cancelled;
     }
@@ -199,8 +291,11 @@ public final class OrderSalesOrderService {
         CallerIdentity actor = actor(WRITE_PERMISSION);
         requireRevision(revision);
         String tenantId = actor.tenantId().toString();
+        SalesOrderDetailView current = store.salesOrder(tenantId, requireId(id, "销售订单ID无效"))
+                .orElseThrow(() -> notFound("销售订单不存在"));
+        requireManualExternalMutationAllowed(actor, current);
         SalesOrderDetailView confirmed = store.confirmOutbound(
-                tenantId, requireId(id, "销售订单ID无效"), revision, actor.principalId().toString());
+                tenantId, current.id(), revision, Instant.now(), OrderAuditActors.writeActor(actor));
         confirmed = withStaffName(actor, confirmed);
         log.info("Order销售订单出库状态确认完成 tenantId={} salesOrderId={} orderNo={} revision={} actorId={}",
                 tenantId, confirmed.id(), confirmed.orderNo(), confirmed.revision(), actor.principalId());
@@ -217,6 +312,7 @@ public final class OrderSalesOrderService {
         String tenantId = actor.tenantId().toString();
         SalesOrderDetailView current = store.salesOrder(tenantId, orderId)
                 .orElseThrow(() -> notFound("销售订单不存在"));
+        requireManualExternalMutationAllowed(actor, current);
         if (!Objects.equals(current.revision(), command.revision())) {
             throw conflict("销售订单已被其他人修改，请刷新后重试");
         }
@@ -245,7 +341,7 @@ public final class OrderSalesOrderService {
         SalesOrderDetailView confirmed;
         try {
             confirmed = store.confirmOutbound(
-                    tenantId, orderId, command.revision(), actor.principalId().toString());
+                    tenantId, orderId, command.revision(), stockOutTime, OrderAuditActors.writeActor(actor));
         } catch (RuntimeException exception) {
             log.error("ERP销售出库已成功但Order订单出库状态回写失败，需人工核对 tenantId={} salesOrderId={} "
                             + "orderNo={} stockOutOrderId={} stockOutNo={} actorId={}",
@@ -267,7 +363,10 @@ public final class OrderSalesOrderService {
         requireRevision(revision);
         String tenantId = actor.tenantId().toString();
         Long orderId = requireId(id, "销售订单ID无效");
-        store.delete(tenantId, orderId, revision, actor.principalId().toString());
+        SalesOrderDetailView current = store.salesOrder(tenantId, orderId)
+                .orElseThrow(() -> notFound("销售订单不存在"));
+        requireManualExternalMutationAllowed(actor, current);
+        store.delete(tenantId, orderId, revision, OrderAuditActors.writeActor(actor));
         log.info("Order销售订单逻辑删除完成 tenantId={} salesOrderId={} revision={} actorId={}",
                 tenantId, orderId, revision, actor.principalId());
     }
@@ -303,20 +402,28 @@ public final class OrderSalesOrderService {
         String staffName = staffNames.get(item.ownerStaffCode().strip());
         if (staffName == null || staffName.isBlank()) return item;
         return new SalesOrderSummaryView(item.id(), item.orderNo(),
-                item.sourceSystemCode(), item.sourceOrderNo(), item.customerId(), item.customerNameSnapshot(),
+                item.sourceSystemCode(), item.sourceOrderNo(), item.sourceStatusCode(),
+                item.sourceCreatorId(), item.sourceCreatorStaffCode(), item.sourceCreatorName(),
+                item.customerId(), item.customerNameSnapshot(),
                 item.contactPhoneSnapshot(), item.regionCode(), item.ownerSalesUserId(),
                 item.ownerSalesName(), item.ownerStaffCode(), staffName,
-                item.orderDate(), item.orderStatusCode(), item.paymentStatusCode(),
+                item.orderDate(), item.paymentTime(), item.shipmentTime(),
+                item.shipmentStatusCode(),
+                item.orderStatusCode(), item.paymentStatusCode(),
                 item.outboundStatusCode(), item.totalQuantity(), item.payableAmount(),
                 item.paidAmount(), item.unpaidAmount(), item.revision(), item.updatedTime());
     }
 
     private SalesOrderDetailView withStaffName(SalesOrderDetailView detail, String staffName) {
         return new SalesOrderDetailView(detail.id(), detail.orderNo(),
-                detail.sourceSystemCode(), detail.sourceOrderNo(), detail.customerId(), detail.customerCodeSnapshot(),
+                detail.sourceSystemCode(), detail.sourceOrderNo(), detail.sourceStatusCode(),
+                detail.sourceCreatorId(), detail.sourceCreatorStaffCode(), detail.sourceCreatorName(),
+                detail.customerId(), detail.customerCodeSnapshot(),
                 detail.customerNameSnapshot(), detail.contactNameSnapshot(), detail.contactPhoneSnapshot(),
                 detail.regionCode(), detail.ownerSalesUserId(), detail.ownerSalesName(),
                 detail.ownerStaffCode(), staffName, detail.orderDate(),
+                detail.paymentTime(), detail.shipmentTime(),
+                detail.shipmentStatusCode(),
                 detail.orderStatusCode(), detail.orderTypeCode(), detail.paymentMethodCode(),
                 detail.paymentStatusCode(), detail.outboundStatusCode(), detail.totalQuantity(),
                 detail.originalAmount(), detail.discountRate(), detail.discountAmount(),
@@ -365,10 +472,16 @@ public final class OrderSalesOrderService {
             throw badRequest("discountAmount不能大于明细应收合计");
         }
         BigDecimal payableAmount = linePayableAmount.subtract(orderDiscountAmount);
+        String sourceSystemCode = code(command.sourceSystemCode(), "sourceSystemCode", false);
+        Instant orderDate = orderBusinessDate(sourceSystemCode, command.orderDate());
         return new SalesOrderWrite(
                 requireId(command.customerId(), "customerId无效"),
-                code(command.sourceSystemCode(), "sourceSystemCode", false),
+                sourceSystemCode,
                 text(command.sourceOrderNo(), 80, "sourceOrderNo"),
+                text(command.sourceStatusCode(), 64, "sourceStatusCode"),
+                text(command.sourceCreatorId(), 80, "sourceCreatorId"),
+                text(command.sourceCreatorStaffCode(), 50, "sourceCreatorStaffCode"),
+                text(command.sourceCreatorName(), 100, "sourceCreatorName"),
                 text(command.customerCodeSnapshot(), 50, "customerCodeSnapshot"),
                 required(command.customerNameSnapshot(), "customerNameSnapshot不能为空", 200),
                 text(command.contactNameSnapshot(), 100, "contactNameSnapshot"),
@@ -379,7 +492,7 @@ public final class OrderSalesOrderService {
                 text(command.ownerStaffCode(), 50, "ownerStaffCode"),
                 text(first(command.ownerStaffNameSnapshot(), command.ownerSalesName()), 100,
                         "ownerStaffNameSnapshot"),
-                command.orderDate() == null ? Instant.now() : command.orderDate(),
+                orderDate,
                 Boolean.TRUE.equals(command.submit()) ? SalesOrderStatus.SUBMITTED.code() : SalesOrderStatus.DRAFT.code(),
                 code(command.orderTypeCode(), "orderTypeCode", false),
                 code(command.paymentMethodCode(), "paymentMethodCode", false),
@@ -391,6 +504,52 @@ public final class OrderSalesOrderService {
                 lines,
                 text(command.remark(), 1000, "remark"),
                 update ? command.revision() : 0);
+    }
+
+    private static Instant orderBusinessDate(String sourceSystemCode, Instant orderDate) {
+        if (externalSource(sourceSystemCode) && orderDate == null) {
+            throw badRequest("外部来源销售订单orderDate必须使用来源下单/创建时间");
+        }
+        return orderDate == null ? Instant.now() : orderDate;
+    }
+
+    private SalesOrderSourceProjectionWrite normalizeSourceProjection(
+            SalesOrderSourceProjectionCommand command, SalesOrderDetailView current) {
+        String sourceStatusCode = first(text(command.sourceStatusCode(), 64, "sourceStatusCode"),
+                current.sourceStatusCode());
+        boolean hasCreator = hasAny(command.sourceCreatorId(), command.sourceCreatorStaffCode(),
+                command.sourceCreatorName());
+        boolean hasOwner = hasAny(command.ownerSalesUserId(), command.ownerSalesName(),
+                command.ownerStaffCode(), command.ownerStaffNameSnapshot());
+        return new SalesOrderSourceProjectionWrite(
+                sourceStatusCode,
+                hasCreator ? text(command.sourceCreatorId(), 80, "sourceCreatorId")
+                        : current.sourceCreatorId(),
+                hasCreator ? text(command.sourceCreatorStaffCode(), 50, "sourceCreatorStaffCode")
+                        : current.sourceCreatorStaffCode(),
+                hasCreator ? text(command.sourceCreatorName(), 100, "sourceCreatorName")
+                        : current.sourceCreatorName(),
+                hasOwner ? text(command.ownerSalesUserId(), 64, "ownerSalesUserId")
+                        : current.ownerSalesUserId(),
+                hasOwner ? text(command.ownerSalesName(), 100, "ownerSalesName")
+                        : current.ownerSalesName(),
+                hasOwner ? text(command.ownerStaffCode(), 50, "ownerStaffCode")
+                        : current.ownerStaffCode(),
+                hasOwner ? text(first(command.ownerStaffNameSnapshot(), command.ownerSalesName()), 100,
+                        "ownerStaffNameSnapshot") : current.ownerStaffNameSnapshot(),
+                command.revision());
+    }
+
+    private static boolean sourceProjectionSame(
+            SalesOrderDetailView current, SalesOrderSourceProjectionWrite expected) {
+        return Objects.equals(current.sourceStatusCode(), expected.sourceStatusCode())
+                && Objects.equals(current.sourceCreatorId(), expected.sourceCreatorId())
+                && Objects.equals(current.sourceCreatorStaffCode(), expected.sourceCreatorStaffCode())
+                && Objects.equals(current.sourceCreatorName(), expected.sourceCreatorName())
+                && Objects.equals(current.ownerSalesUserId(), expected.ownerSalesUserId())
+                && Objects.equals(current.ownerSalesName(), expected.ownerSalesName())
+                && Objects.equals(current.ownerStaffCode(), expected.ownerStaffCode())
+                && Objects.equals(current.ownerStaffNameSnapshot(), expected.ownerStaffNameSnapshot());
     }
 
     private List<SalesOrderLineWrite> lines(List<SalesOrderLineCommand> source) {
@@ -442,6 +601,26 @@ public final class OrderSalesOrderService {
                 text(line.remark(), 1000, "lineRemark"));
     }
 
+    private static void requireExternalProjectionAllowed(CallerIdentity actor, String sourceSystemCode) {
+        if (externalSource(sourceSystemCode) && !serviceCaller(actor)) {
+            throw conflict("外部来源销售订单只能由同步服务写入");
+        }
+    }
+
+    private static void requireManualExternalMutationAllowed(CallerIdentity actor, SalesOrderDetailView order) {
+        if (externalSource(order.sourceSystemCode()) && !serviceCaller(actor)) {
+            throw conflict("外部来源销售订单已按来源单据同步，无需在Order重复人工操作");
+        }
+    }
+
+    private static boolean externalSource(String sourceSystemCode) {
+        return sourceSystemCode != null && !sourceSystemCode.isBlank();
+    }
+
+    private static boolean serviceCaller(CallerIdentity actor) {
+        return actor != null && "SERVICE".equals(actor.principalScope());
+    }
+
     private static String salesOrderStatus(String value, boolean required) {
         String normalized = code(value, "orderStatusCode", required);
         if (normalized == null) return null;
@@ -487,6 +666,13 @@ public final class OrderSalesOrderService {
         CallerIdentity caller = AuthorizationContext.requireCurrent();
         if (caller.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
         AuthorizationContext.requirePermission(permission);
+        return caller;
+    }
+
+    private static CallerIdentity serviceActor() {
+        CallerIdentity caller = AuthorizationContext.requireCurrent();
+        if (caller.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
+        if (!serviceCaller(caller)) throw new AuthorizationDeniedException("service-caller");
         return caller;
     }
 
@@ -544,6 +730,14 @@ public final class OrderSalesOrderService {
 
     private static String value(String value) {
         return value == null || value.isBlank() ? "-" : value;
+    }
+
+    private static boolean hasAny(String... values) {
+        if (values == null) return false;
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return true;
+        }
+        return false;
     }
 
     private static String first(String preferred, String fallback) {

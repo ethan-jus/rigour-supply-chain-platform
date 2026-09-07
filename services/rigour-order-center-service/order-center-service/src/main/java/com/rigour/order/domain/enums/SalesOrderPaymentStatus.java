@@ -4,7 +4,8 @@ package com.rigour.order.domain.enums;
 public enum SalesOrderPaymentStatus {
     UNPAID("UNPAID", "未收款"),
     PARTIAL_PAID("PARTIAL_PAID", "部分收款"),
-    PAID("PAID", "已收款");
+    PAID("PAID", "已收款"),
+    CANCELLED("CANCELLED", "已取消");
 
     private final String code;
     private final String description;

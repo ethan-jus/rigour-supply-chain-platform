@@ -13,6 +13,9 @@ public class InternalSalesShipmentEntity {
     private Long id;
     private String tenantId;
     private String shipmentNo;
+    private String connectorId;
+    private String sourceSystemCode;
+    private String sourceDocumentNo;
     private Long salesOrderId;
     private String salesOrderNoSnapshot;
     private Long customerId;
@@ -43,6 +46,12 @@ public class InternalSalesShipmentEntity {
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getShipmentNo() { return shipmentNo; }
     public void setShipmentNo(String shipmentNo) { this.shipmentNo = shipmentNo; }
+    public String getConnectorId() { return connectorId; }
+    public void setConnectorId(String connectorId) { this.connectorId = connectorId; }
+    public String getSourceSystemCode() { return sourceSystemCode; }
+    public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
+    public String getSourceDocumentNo() { return sourceDocumentNo; }
+    public void setSourceDocumentNo(String sourceDocumentNo) { this.sourceDocumentNo = sourceDocumentNo; }
     public Long getSalesOrderId() { return salesOrderId; }
     public void setSalesOrderId(Long salesOrderId) { this.salesOrderId = salesOrderId; }
     public String getSalesOrderNoSnapshot() { return salesOrderNoSnapshot; }

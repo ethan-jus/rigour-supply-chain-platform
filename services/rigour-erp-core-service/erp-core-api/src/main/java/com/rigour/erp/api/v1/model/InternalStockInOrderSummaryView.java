@@ -7,6 +7,8 @@ import java.time.Instant;
 public record InternalStockInOrderSummaryView(
         Long id,
         String stockInNo,
+        String sourceSystemCode,
+        String sourceDocumentNo,
         String stockInTypeCode,
         Long procurementOrderId,
         String procurementNo,

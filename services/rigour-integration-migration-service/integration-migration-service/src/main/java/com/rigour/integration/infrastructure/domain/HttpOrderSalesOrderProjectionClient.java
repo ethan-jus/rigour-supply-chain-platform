@@ -10,6 +10,8 @@ import com.rigour.order.api.v1.model.FundDocumentCommand;
 import com.rigour.order.api.v1.model.FundDocumentDetailView;
 import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
+import com.rigour.order.api.v1.model.SalesOrderSourceProjectionCommand;
+import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
 import com.rigour.order.api.v1.model.SalesPaymentRecordCommand;
 import com.rigour.order.api.v1.model.SalesPaymentRecordDetailView;
 import com.rigour.order.api.v1.model.SalesRefundRecordCommand;
@@ -28,13 +30,24 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
-import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
+import tools.jackson.core.type.TypeReference;
 
 /** Integration到Order销售订单的HTTP客户端；只投影到自研业务接口。 */
 public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrderProjectionClient {
+    private static final TypeReference<ApiResponse<SalesOrderDetailView>> SALES_ORDER_RESPONSE =
+            new TypeReference<>() { };
+    private static final TypeReference<ApiResponse<SalesPaymentRecordDetailView>> SALES_PAYMENT_RESPONSE =
+            new TypeReference<>() { };
+    private static final TypeReference<ApiResponse<SalesRefundRecordDetailView>> SALES_REFUND_RESPONSE =
+            new TypeReference<>() { };
+    private static final TypeReference<ApiResponse<FundDocumentDetailView>> FUND_DOCUMENT_RESPONSE =
+            new TypeReference<>() { };
+    private static final TypeReference<ApiResponse<SalesShipmentDetailView>> SALES_SHIPMENT_RESPONSE =
+            new TypeReference<>() { };
+
     private final RestClient restClient;
     private final TrustedContextSigner signer;
     private final URI baseUri;
@@ -61,8 +74,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .accept(MediaType.APPLICATION_JSON)
                 .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单查询"));
         return requiredResponse(response);
     }
 
@@ -81,8 +94,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单创建"));
         return requiredResponse(response);
     }
 
@@ -104,8 +117,54 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单更新"));
+        return requiredResponse(response);
+    }
+
+    @Override
+    public SalesOrderDetailView updateSalesOrderSourceStatus(
+            CallerIdentity caller, Long id, SalesOrderSourceStatusCommand command) {
+        requireCaller(caller);
+        if (id == null || id < 1) throw new IllegalArgumentException("salesOrderId无效");
+        if (command == null) throw new IllegalArgumentException("salesOrder source status command不能为空");
+        URI uri = UriComponentsBuilder.fromUri(baseUri)
+                .path(OrderSalesOrderApi.BASE_PATH)
+                .path("/{id}/source-status")
+                .buildAndExpand(id)
+                .encode()
+                .toUri();
+        ApiResponse<SalesOrderDetailView> response = restClient.put().uri(uri)
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.APPLICATION_JSON)
+                .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
+                .header(RequestHeaders.REQUEST_ID, requestId())
+                .body(command)
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单来源状态更新"));
+        return requiredResponse(response);
+    }
+
+    @Override
+    public SalesOrderDetailView updateSalesOrderSourceProjection(
+            CallerIdentity caller, Long id, SalesOrderSourceProjectionCommand command) {
+        requireCaller(caller);
+        if (id == null || id < 1) throw new IllegalArgumentException("salesOrderId无效");
+        if (command == null) throw new IllegalArgumentException("salesOrder source projection command不能为空");
+        URI uri = UriComponentsBuilder.fromUri(baseUri)
+                .path(OrderSalesOrderApi.BASE_PATH)
+                .path("/{id}/source-projection")
+                .buildAndExpand(id)
+                .encode()
+                .toUri();
+        ApiResponse<SalesOrderDetailView> response = restClient.put().uri(uri)
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.APPLICATION_JSON)
+                .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
+                .header(RequestHeaders.REQUEST_ID, requestId())
+                .body(command)
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单来源投影更新"));
         return requiredResponse(response);
     }
 
@@ -125,8 +184,29 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .accept(MediaType.APPLICATION_JSON)
                 .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单取消"));
+        return requiredResponse(response);
+    }
+
+    @Override
+    public SalesOrderDetailView cancelSalesOrderBySource(CallerIdentity caller, Long id, int revision) {
+        requireCaller(caller);
+        if (id == null || id < 1) throw new IllegalArgumentException("salesOrderId无效");
+        if (revision < 1) throw new IllegalArgumentException("revision必须大于0");
+        URI uri = UriComponentsBuilder.fromUri(baseUri)
+                .path(OrderSalesOrderApi.BASE_PATH)
+                .path("/{id}/source-cancellations")
+                .queryParam("revision", revision)
+                .buildAndExpand(id)
+                .encode()
+                .toUri();
+        ApiResponse<SalesOrderDetailView> response = restClient.post().uri(uri)
+                .accept(MediaType.APPLICATION_JSON)
+                .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                .header(RequestHeaders.REQUEST_ID, requestId())
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单来源取消"));
         return requiredResponse(response);
     }
 
@@ -144,8 +224,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .accept(MediaType.APPLICATION_JSON)
                 .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_PAYMENT_RESPONSE, "Order销售回款查询"));
         return requiredPaymentResponse(response);
     }
 
@@ -165,8 +245,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_PAYMENT_RESPONSE, "Order销售回款创建"));
         return requiredPaymentResponse(response);
     }
 
@@ -188,8 +268,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_PAYMENT_RESPONSE, "Order销售回款更新"));
         return requiredPaymentResponse(response);
     }
 
@@ -207,8 +287,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .accept(MediaType.APPLICATION_JSON)
                 .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, FUND_DOCUMENT_RESPONSE, "Order资金单查询"));
         return requiredFundDocumentResponse(response);
     }
 
@@ -227,8 +307,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, FUND_DOCUMENT_RESPONSE, "Order资金单创建"));
         return requiredFundDocumentResponse(response);
     }
 
@@ -250,8 +330,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, FUND_DOCUMENT_RESPONSE, "Order资金单更新"));
         return requiredFundDocumentResponse(response);
     }
 
@@ -269,8 +349,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .accept(MediaType.APPLICATION_JSON)
                 .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_REFUND_RESPONSE, "Order销售退款查询"));
         return requiredRefundResponse(response);
     }
 
@@ -290,8 +370,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_REFUND_RESPONSE, "Order销售退款创建"));
         return requiredRefundResponse(response);
     }
 
@@ -313,8 +393,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_REFUND_RESPONSE, "Order销售退款更新"));
         return requiredRefundResponse(response);
     }
 
@@ -332,8 +412,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .accept(MediaType.APPLICATION_JSON)
                 .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_SHIPMENT_RESPONSE, "Order销售发货查询"));
         return requiredShipmentResponse(response);
     }
 
@@ -352,8 +432,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_SHIPMENT_RESPONSE, "Order销售发货创建"));
         return requiredShipmentResponse(response);
     }
 
@@ -375,8 +455,8 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
                 .body(command)
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_SHIPMENT_RESPONSE, "Order销售发货更新"));
         return requiredShipmentResponse(response);
     }
 

@@ -20,12 +20,12 @@ public interface CrmSyncRunMapper extends BaseMapper<CrmSyncRunEntity> {
                    sync_run.error_code = 'STALE_RUN_RECOVERED',
                    sync_run.error_message = '同步运行超过恢复阈值且没有有效锁，已在后续批次启动前终结',
                    sync_run.finished_at = #{now},
-                   sync_run.updated_at = #{now}
+                   sync_run.updated_time = #{now}
              WHERE sync_run.tenant_id = #{tenantId}
                AND sync_run.connector_id = #{connectorId}
                AND sync_run.object_type = #{objectType}
                AND sync_run.status = 'RUNNING'
-               AND sync_run.updated_at <= #{staleBefore}
+               AND sync_run.updated_time <= #{staleBefore}
                AND lock_row.id IS NULL
             """)
     int recoverStaleRuns(@Param("tenantId") byte[] tenantId,

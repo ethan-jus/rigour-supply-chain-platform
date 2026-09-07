@@ -20,6 +20,14 @@ public class InternalSalesOrderEntity {
     private String sourceSystemCode;
     /** 来源平台订单号，用于展示、搜索和人工对账。 */
     private String sourceOrderNo;
+    /** 来源平台订单状态原值，用于展示、筛选和对账，不驱动我方流程。 */
+    private String sourceStatusCode;
+    /** 来源平台制单人ID。 */
+    private String sourceCreatorId;
+    /** 来源平台制单人匹配到的我方员工编码。 */
+    private String sourceCreatorStaffCode;
+    /** 来源平台制单人名称。 */
+    private String sourceCreatorName;
     /** CRM 客户ID。 */
     private Long customerId;
     /** 客户编号快照。 */
@@ -42,6 +50,10 @@ public class InternalSalesOrderEntity {
     private String ownerStaffNameSnapshot;
     /** 销售日期。 */
     private LocalDateTime orderDate;
+    /** 付款时间，来自关联资金付款单。 */
+    private LocalDateTime paymentTime;
+    /** 发货时间，来自关联销售发货单或销售出库确认。 */
+    private LocalDateTime shipmentTime;
     /** 销售订单状态。 */
     private String orderStatusCode;
     /** 订单类型。 */
@@ -91,6 +103,14 @@ public class InternalSalesOrderEntity {
     public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
     public String getSourceOrderNo() { return sourceOrderNo; }
     public void setSourceOrderNo(String sourceOrderNo) { this.sourceOrderNo = sourceOrderNo; }
+    public String getSourceStatusCode() { return sourceStatusCode; }
+    public void setSourceStatusCode(String sourceStatusCode) { this.sourceStatusCode = sourceStatusCode; }
+    public String getSourceCreatorId() { return sourceCreatorId; }
+    public void setSourceCreatorId(String sourceCreatorId) { this.sourceCreatorId = sourceCreatorId; }
+    public String getSourceCreatorStaffCode() { return sourceCreatorStaffCode; }
+    public void setSourceCreatorStaffCode(String sourceCreatorStaffCode) { this.sourceCreatorStaffCode = sourceCreatorStaffCode; }
+    public String getSourceCreatorName() { return sourceCreatorName; }
+    public void setSourceCreatorName(String sourceCreatorName) { this.sourceCreatorName = sourceCreatorName; }
     public Long getCustomerId() { return customerId; }
     public void setCustomerId(Long customerId) { this.customerId = customerId; }
     public String getCustomerCodeSnapshot() { return customerCodeSnapshot; }
@@ -113,6 +133,10 @@ public class InternalSalesOrderEntity {
     public void setOwnerStaffNameSnapshot(String ownerStaffNameSnapshot) { this.ownerStaffNameSnapshot = ownerStaffNameSnapshot; }
     public LocalDateTime getOrderDate() { return orderDate; }
     public void setOrderDate(LocalDateTime orderDate) { this.orderDate = orderDate; }
+    public LocalDateTime getPaymentTime() { return paymentTime; }
+    public void setPaymentTime(LocalDateTime paymentTime) { this.paymentTime = paymentTime; }
+    public LocalDateTime getShipmentTime() { return shipmentTime; }
+    public void setShipmentTime(LocalDateTime shipmentTime) { this.shipmentTime = shipmentTime; }
     public String getOrderStatusCode() { return orderStatusCode; }
     public void setOrderStatusCode(String orderStatusCode) { this.orderStatusCode = orderStatusCode; }
     public String getOrderTypeCode() { return orderTypeCode; }

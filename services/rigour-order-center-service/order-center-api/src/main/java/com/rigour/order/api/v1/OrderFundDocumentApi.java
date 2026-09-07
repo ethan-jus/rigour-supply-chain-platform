@@ -22,9 +22,13 @@ public interface OrderFundDocumentApi {
     ApiResponse<OrderPageView<FundDocumentSummaryView>> fundDocuments(
             @RequestParam(defaultValue = "0") int begin,
             @RequestParam(defaultValue = "20") int step,
+            @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String directionCode,
             @RequestParam(required = false) String documentNo,
+            @RequestParam(required = false) String sourceDocumentNo,
             @RequestParam(required = false) String salesOrderNo,
+            @RequestParam(required = false) String sourceOrderNo,
+            @RequestParam(required = false) String paymentSerialNo,
             @RequestParam(required = false) String counterpartyName,
             @RequestParam(required = false) String handlerStaffCode,
             @RequestParam(required = false) String settlementMethodCode,

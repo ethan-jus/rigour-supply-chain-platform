@@ -78,7 +78,7 @@ public interface ProductMasterDataStore {
 
     /** 一个 ERP 商品主数据同步批次的持久化统计。 */
     record RunStatistics(
-            /** 本批次交给 ERP 导入流程并完成统计的记录总数，商品同步包含 SKU。 */
+            /** 本批次来源根对象数量；商品同步为 SPU 数，不把 SKU 计为商品。 */
             long fetched,
             /** 首次创建的 ERP 主数据和子记录数量。 */
             long created,

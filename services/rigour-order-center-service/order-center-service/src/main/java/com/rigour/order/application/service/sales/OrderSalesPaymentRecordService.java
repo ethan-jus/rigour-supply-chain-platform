@@ -108,11 +108,11 @@ public final class OrderSalesPaymentRecordService {
     public SalesPaymentRecordDetailView create(SalesPaymentRecordCommand command) {
         CallerIdentity actor = actor(WRITE_PERMISSION);
         String tenantId = actor.tenantId().toString();
-        SalesPaymentWrite normalized = normalize(tenantId, command, false);
+        SalesPaymentWrite normalized = normalize(tenantId, command, false, actor, null);
         String paymentNo = codeGenerator.generateUnique(OrderBusinessCodeRules.PAYMENT_RECORD,
-                candidate -> !store.existsByNo(tenantId, candidate));
+                normalized.paymentTime(), candidate -> !store.existsByNo(tenantId, candidate));
         SalesPaymentRecordDetailView created =
-                store.create(tenantId, paymentNo, normalized, actor.principalId().toString());
+                store.create(tenantId, paymentNo, normalized, OrderAuditActors.writeActor(actor));
         created = withStaffName(actor, created);
         log.info("Order销售回款记录创建完成 tenantId={} paymentId={} paymentNo={} salesOrderId={} paidAmount={} actorId={}",
                 tenantId, created.id(), created.paymentNo(), created.orderId(),
@@ -123,9 +123,14 @@ public final class OrderSalesPaymentRecordService {
     public SalesPaymentRecordDetailView update(Long id, SalesPaymentRecordCommand command) {
         CallerIdentity actor = actor(WRITE_PERMISSION);
         String tenantId = actor.tenantId().toString();
-        SalesPaymentWrite normalized = normalize(tenantId, command, true);
+        Long paymentId = requireId(id, "销售回款记录ID无效");
+        SalesPaymentRecordDetailView existing = store.payment(tenantId, paymentId)
+                .orElseThrow(() -> notFound("销售回款记录不存在"));
+        requireExternalMutationAllowed(actor, existing.sourceSystemCode(), "销售回款记录");
+        SalesPaymentWrite normalized = normalize(tenantId, command, true, actor, existing.sourceSystemCode());
         SalesPaymentRecordDetailView updated = store.update(
-                tenantId, requireId(id, "销售回款记录ID无效"), normalized, actor.principalId().toString());
+                tenantId, paymentId, normalized,
+                OrderAuditActors.writeActor(actor));
         updated = withStaffName(actor, updated);
         log.info("Order销售回款记录修改完成 tenantId={} paymentId={} paymentNo={} revision={} actorId={}",
                 tenantId, updated.id(), updated.paymentNo(), updated.revision(), actor.principalId());
@@ -137,20 +142,38 @@ public final class OrderSalesPaymentRecordService {
         requireRevision(revision);
         String tenantId = actor.tenantId().toString();
         Long paymentId = requireId(id, "销售回款记录ID无效");
-        store.delete(tenantId, paymentId, revision, actor.principalId().toString());
+        SalesPaymentRecordDetailView existing = store.payment(tenantId, paymentId)
+                .orElseThrow(() -> notFound("销售回款记录不存在"));
+        requireExternalMutationAllowed(actor, existing.sourceSystemCode(), "销售回款记录");
+        store.delete(tenantId, paymentId, revision, OrderAuditActors.writeActor(actor));
         log.info("Order销售回款记录逻辑删除完成 tenantId={} paymentId={} revision={} actorId={}",
                 tenantId, paymentId, revision, actor.principalId());
     }
 
-    private SalesPaymentWrite normalize(String tenantId, SalesPaymentRecordCommand command, boolean update) {
+    private SalesPaymentWrite normalize(String tenantId, SalesPaymentRecordCommand command, boolean update,
+                                        CallerIdentity actor, String existingSourceSystemCode) {
         if (command == null) throw badRequest("销售回款记录参数不能为空");
         checkRevision(command.revision(), update);
+        String sourceSystemCode = sourceSystemCode(command.sourceSystemCode());
+        String sourceDocumentNo = text(command.sourceDocumentNo(), 128, "sourceDocumentNo");
+        requireSourceFieldsAllowed(actor, command.connectorId(), sourceSystemCode, sourceDocumentNo);
+        if (hasText(existingSourceSystemCode) && !hasText(sourceSystemCode)) {
+            throw badRequest("外部来源销售回款记录更新必须保留sourceSystemCode");
+        }
+        if (hasText(sourceSystemCode)) {
+            if (command.connectorId() == null) throw badRequest("外部来源销售回款记录connectorId不能为空");
+            if (!hasText(sourceDocumentNo)) throw badRequest("外部来源销售回款记录sourceDocumentNo不能为空");
+            if (command.paymentTime() == null) throw badRequest("外部来源销售回款记录paymentTime必须使用来源交易时间");
+        }
         Long orderId = requireId(command.orderId(), "orderId无效");
         SalesOrderDetailView order = orderStore.salesOrder(tenantId, orderId)
                 .orElseThrow(() -> notFound("销售订单不存在"));
         BigDecimal paidAmount = money(command.paidAmount(), "paidAmount");
         String collectorStaffCode = text(command.collectorStaffCode(), 50, "collectorStaffCode");
         return new SalesPaymentWrite(
+                command.connectorId(),
+                sourceSystemCode,
+                sourceDocumentNo,
                 order.id(),
                 order.orderNo(),
                 order.customerId(),
@@ -195,7 +218,8 @@ public final class OrderSalesPaymentRecordService {
         String staffName = staffNames(actor, Set.of(detail.collectorStaffCode().strip()))
                 .get(detail.collectorStaffCode().strip());
         if (staffName == null || staffName.isBlank()) return detail;
-        return new SalesPaymentRecordDetailView(detail.id(), detail.paymentNo(), detail.orderId(),
+        return new SalesPaymentRecordDetailView(detail.id(), detail.paymentNo(), detail.connectorId(),
+                detail.sourceSystemCode(), detail.sourceDocumentNo(), detail.orderId(),
                 detail.salesOrderNoSnapshot(), detail.customerId(), detail.customerCodeSnapshot(),
                 detail.customerNameSnapshot(), detail.collectorStaffCode(), staffName, detail.paymentTime(),
                 detail.paymentMethodCode(), detail.paidAmount(), detail.voucherKeys(), detail.remark(),
@@ -208,7 +232,8 @@ public final class OrderSalesPaymentRecordService {
         if (item.collectorStaffCode() == null || item.collectorStaffCode().isBlank()) return item;
         String staffName = staffNames.get(item.collectorStaffCode().strip());
         if (staffName == null || staffName.isBlank()) return item;
-        return new SalesPaymentRecordSummaryView(item.id(), item.paymentNo(), item.orderId(),
+        return new SalesPaymentRecordSummaryView(item.id(), item.paymentNo(), item.connectorId(),
+                item.sourceSystemCode(), item.sourceDocumentNo(), item.orderId(),
                 item.salesOrderNoSnapshot(), item.customerId(), item.customerCodeSnapshot(),
                 item.customerNameSnapshot(), item.collectorStaffCode(), staffName, item.paymentTime(),
                 item.paymentMethodCode(), item.paidAmount(), item.revision(), item.updatedTime());
@@ -298,6 +323,35 @@ public final class OrderSalesPaymentRecordService {
     private static String upper(String value) {
         String normalized = text(value, 64, "code");
         return normalized == null ? null : normalized.toUpperCase(Locale.ROOT);
+    }
+
+    private static String sourceSystemCode(String value) {
+        String normalized = upper(value);
+        if (normalized == null) return null;
+        if (normalized.length() > 64) throw badRequest("sourceSystemCode长度不能超过64");
+        return normalized;
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static void requireSourceFieldsAllowed(
+            CallerIdentity actor, UUID connectorId, String sourceSystemCode, String sourceDocumentNo) {
+        if (!isServiceActor(actor) && (connectorId != null || hasText(sourceSystemCode) || hasText(sourceDocumentNo))) {
+            throw new AuthorizationDeniedException("external-source-write");
+        }
+    }
+
+    private static void requireExternalMutationAllowed(
+            CallerIdentity actor, String sourceSystemCode, String documentName) {
+        if (hasText(sourceSystemCode) && !isServiceActor(actor)) {
+            throw new AuthorizationDeniedException(documentName + "-external-readonly");
+        }
+    }
+
+    private static boolean isServiceActor(CallerIdentity actor) {
+        return actor != null && "SERVICE".equals(actor.principalScope());
     }
 
     private static String value(String value) {

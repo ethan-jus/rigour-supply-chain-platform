@@ -143,7 +143,7 @@ class TenantIamServiceApplicationTests {
 
     @Test
     void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 54);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 70);
         assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1 AND ("
                 + "(version='33' AND script='V33__iam_erp_product_master_data_permissions.sql') OR "
                 + "(version='34' AND script='V34__iam_align_erp_product_center_menu.sql') OR "
@@ -164,7 +164,9 @@ class TenantIamServiceApplicationTests {
                 + "(version='51' AND script='V51__iam_hide_unimplemented_supply_navigation.sql') OR "
                 + "(version='52' AND script='V52__iam_business_first_supply_navigation.sql') OR "
                 + "(version='53' AND script='V53__iam_product_specification_business_page.sql') OR "
-                + "(version='54' AND script='V54__iam_delete_legacy_dhb_order_navigation.sql'))", 20);
+                + "(version='54' AND script='V54__iam_delete_legacy_dhb_order_navigation.sql') OR "
+                + "(version='69' AND script='V69__iam_hide_crm_workspace_navigation.sql') OR "
+                + "(version='74' AND script='V74__iam_supply_bi_gross_profit_and_payment_risk_navigation.sql'))", 22);
         assertCount("SELECT COUNT(*) FROM information_schema.tables "
                 + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 36);
         assertCount("SELECT COUNT(*) FROM iam_application", 6);
@@ -192,8 +194,52 @@ class TenantIamServiceApplicationTests {
         assertCount("SELECT COUNT(*) FROM iam_application "
                 + "WHERE app_code='DHB_INTEGRATION' AND status='DISABLED'", 1);
         assertCount("SELECT COUNT(*) FROM iam_application "
-                + "WHERE app_code='FEISHU_SALES' AND app_type='EXTERNAL' AND launch_mode='FEISHU_DEEPLINK' "
+                + "WHERE app_code='FEISHU_SALES' AND app_name='门户工作台' AND app_type='EXTERNAL' "
+                + "AND icon_key='app-workbench' AND launch_mode='FEISHU_DEEPLINK' "
                 + "AND target_uri='/sales-workbench' AND status='ACTIVE'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource "
+                + "WHERE id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000070') "
+                + "AND resource_code='WORKBENCH.ROOT' AND display_name='门户工作台' "
+                + "AND status='ACTIVE'", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource "
+                + "WHERE parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000070') "
+                + "AND resource_code IN ("
+                + "'WORKBENCH.PAGE.HOME','WORKBENCH.PAGE.ATTENDANCE',"
+                + "'WORKBENCH.PAGE.TARGETS','WORKBENCH.PAGE.VISIT',"
+                + "'WORKBENCH.PAGE.TRACK','WORKBENCH.PAGE.CHAT',"
+                + "'WORKBENCH.PAGE.PROFILE') "
+                + "AND resource_type='PAGE' AND status='ACTIVE'", 7);
+        assertCount("SELECT COUNT(*) FROM iam_resource "
+                + "WHERE permission_code IN ('collaboration:im:use','collaboration:meeting:use') "
+                + "AND resource_code IN ('WORKBENCH.API.COLLABORATION_IM',"
+                + "'WORKBENCH.API.COLLABORATION_MEETING') AND status='ACTIVE'", 2);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui "
+                + "WHERE route_key IN ('workbench.home','workbench.attendance','workbench.targets',"
+                + "'workbench.visit','workbench.track','workbench.chat','workbench.profile') "
+                + "AND route_path IN ('/home','/attendance','/targets','/visit','/track','/chat','/profile') "
+                + "AND visible=1", 7);
+        assertCount("SELECT COUNT(DISTINCT resource_id) FROM iam_package_resource "
+                + "WHERE resource_id IN ("
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000070'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000343'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000344'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000345'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000346'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000347'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000348'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000349'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-00000000034a'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-00000000034b'))", 10);
+        assertCount("SELECT COUNT(DISTINCT resource_id) FROM iam_tenant_menu_config "
+                + "WHERE resource_id IN ("
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000343'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000344'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000345'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000346'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000347'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000348'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000349')) "
+                + "AND visible=1", 7);
         assertCount("SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND ("
                 + "id IN (UUID_TO_BIN('019facf2-0000-7000-8000-000000000057'),"
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000058')) OR id BETWEEN "
@@ -267,23 +313,35 @@ class TenantIamServiceApplicationTests {
                 + "(id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000292') "
                 + "AND parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000199') "
                 + "AND display_name='归属地区')", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
+                + "'supply.crm.customers.shipping-addresses',"
+                + "'supply.crm.customers.levels-tags',"
+                + "'supply.crm.customers.areas') "
+                + "AND visible=1", 3);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key="
+                + "'supply.crm.index' AND route_path='/supply-chain/crm' AND visible=0", 1);
+        assertCount("SELECT COUNT(DISTINCT resource_id) FROM iam_tenant_menu_config "
+                + "WHERE resource_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000054') "
+                + "AND visible=0", 1);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key="
                 + "'supply.crm.assignments.external-staff'", 0);
-        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
-                + "'supply.crm.customers.areas','supply.crm.assignments.external-staff') "
-                + "AND visible=1", 0);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE id=UUID_TO_BIN("
+                + "'019facf2-0000-7000-8000-000000000199') AND parent_id=UUID_TO_BIN("
+                + "'019facf2-0000-7000-8000-000000000053') AND display_name='客户管理'", 1);
         assertCount("SELECT COUNT(*) FROM iam_resource WHERE id=UUID_TO_BIN("
                 + "'019facf2-0000-7000-8000-000000000200') AND parent_id=UUID_TO_BIN("
-                + "'019facf2-0000-7000-8000-000000000053') AND display_name='客户管理'", 1);
+                + "'019facf2-0000-7000-8000-000000000199') AND display_name='客户档案'", 1);
         assertCount("SELECT COUNT(*) FROM iam_resource WHERE id IN ("
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000200'),"
-                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000202'))"
-                + " AND display_name IN ('客户管理','客户类型')", 2);
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000202'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000292'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000294'))"
+                + " AND display_name IN ('客户档案','客户地址','客户类型','归属地区')", 4);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key="
-                + "'supply.crm.customers.shipping-addresses' AND visible=1", 0);
+                + "'supply.crm.customers.shipping-addresses' AND visible=1", 1);
         assertCount("SELECT COUNT(DISTINCT resource_id) FROM iam_tenant_menu_config "
                 + "WHERE resource_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000294')"
-                + " AND visible=1", 0);
+                + " AND visible=1", 1);
         assertCount("SELECT COUNT(*) FROM iam_resource resource_record "
                 + "JOIN iam_resource_ui ui_record ON ui_record.resource_id=resource_record.id "
                 + "WHERE resource_record.id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000297') "
@@ -298,7 +356,10 @@ class TenantIamServiceApplicationTests {
         assertCount("SELECT COUNT(DISTINCT resource_id) FROM iam_tenant_menu_config "
                 + "WHERE resource_id IN ("
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000292'),"
-                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000293')) AND visible=1", 0);
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000202')) AND visible=1", 2);
+        assertCount("SELECT COUNT(DISTINCT resource_id) FROM iam_tenant_menu_config "
+                + "WHERE resource_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000293')"
+                + " AND visible=1", 0);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
                 + "'supply.erp.master-data.products','supply.erp.master-data.attributes.categories',"
                 + "'supply.erp.master-data.attributes.brands','supply.erp.master-data.attributes.tags',"
@@ -312,6 +373,24 @@ class TenantIamServiceApplicationTests {
                 + "'supply.erp.suppliers.products','supply.erp.procurement.receipts',"
                 + "'supply.crm.credit-policy.limits') "
                 + "AND visible=0", 3);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE id IN ("
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000374'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000375')) "
+                + "AND resource_code IN ('SUPPLY_CHAIN.PAGE.BI_GROSS_PROFIT',"
+                + "'SUPPLY_CHAIN.PAGE.BI_PAYMENT_RISK') "
+                + "AND display_name IN ('销售毛利分析','回款风险看板') "
+                + "AND parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000065') "
+                + "AND status='ACTIVE'", 2);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
+                + "'supply.bi.gross-profit','supply.bi.payment-risk') "
+                + "AND route_path IN ('/supply-chain/bi/gross-profit',"
+                + "'/supply-chain/bi/payment-risk') "
+                + "AND visible=1", 2);
+        assertCount("SELECT COUNT(DISTINCT resource_id) FROM iam_tenant_menu_config "
+                + "WHERE resource_id IN ("
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000374'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000375')) "
+                + "AND visible=1", 2);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.integration.%'", 3);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
                 + "'supply.city.menu','supply.erp.index','supply.sales.attendance.menu',"
@@ -404,6 +483,11 @@ class TenantIamServiceApplicationTests {
         assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
                 .noneMatch(root -> root.children().stream()
                         .flatMap(domain -> domain.children().stream())
+                        .anyMatch(menu -> "CRM 工作台".equals(menu.displayName())
+                                || "/supply-chain/crm".equals(menu.routePath())));
+        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
+                .noneMatch(root -> root.children().stream()
+                        .flatMap(domain -> domain.children().stream())
                         .flatMap(group -> group.children().stream())
                         .anyMatch(page -> "/supply-chain/crm/customers/customer-360"
                                 .equals(page.routePath())));
@@ -416,6 +500,11 @@ class TenantIamServiceApplicationTests {
                 .anyMatch(root -> root.children().stream()
                         .flatMap(domain -> domain.children().stream())
                         .flatMap(group -> group.children().stream())
+                        .anyMatch(page -> "/supply-chain/crm/customers/levels-tags".equals(page.routePath())));
+        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
+                .anyMatch(root -> root.children().stream()
+                        .flatMap(domain -> domain.children().stream())
+                        .flatMap(group -> group.children().stream())
                         .anyMatch(page -> "/supply-chain/crm/customers/areas".equals(page.routePath())));
         assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
                 .noneMatch(root -> root.children().stream()
@@ -423,6 +512,16 @@ class TenantIamServiceApplicationTests {
                         .flatMap(group -> group.children().stream())
                         .anyMatch(page -> "/supply-chain/crm/assignments/external-staff"
                                 .equals(page.routePath())));
+        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
+                .anyMatch(root -> root.children().stream()
+                        .flatMap(domain -> domain.children().stream())
+                        .flatMap(group -> group.children().stream())
+                        .anyMatch(page -> "/supply-chain/bi/gross-profit".equals(page.routePath())));
+        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
+                .anyMatch(root -> root.children().stream()
+                        .flatMap(domain -> domain.children().stream())
+                        .flatMap(group -> group.children().stream())
+                        .anyMatch(page -> "/supply-chain/bi/payment-risk".equals(page.routePath())));
 
         List<TenantMenuView> tenantMenus = managementStore.tenantMenus(first.actor());
         TenantMenuView configurableMenu = tenantMenus.stream()

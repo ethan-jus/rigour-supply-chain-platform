@@ -13,8 +13,8 @@ spring:
       connection-timeout: 30000
       validation-timeout: 5000
   flyway:
-    # 当前 BI 还没有正式 V1 迁移；完成字段评审后改为 true。
-    enabled: false
+    # BI 已有正式迁移，启动时应校验并执行新增版本。
+    enabled: true
     url: jdbc:mysql://82.157.4.176:13306/rigour_bi?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
     user: rigour_bi_migrator
     password: ${BI_DB_MIGRATOR_PASSWORD}
