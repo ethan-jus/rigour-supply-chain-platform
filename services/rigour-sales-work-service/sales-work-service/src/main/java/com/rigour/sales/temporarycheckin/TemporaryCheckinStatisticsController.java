@@ -36,10 +36,12 @@ class TemporaryCheckinStatisticsController {
             @RequestParam(name = "reviewStatus", required = false) String reviewStatus,
             @RequestParam(name = "mediaStatus", required = false) String mediaStatus,
             @RequestParam(name = "summaryPage", required = false) Integer page,
-            @RequestParam(name = "summarySize", required = false) Integer size) {
+            @RequestParam(name = "summarySize", required = false) Integer size,
+            @RequestParam(name = "summarySortBy", required = false) String summarySortBy,
+            @RequestParam(name = "summarySortDirection", required = false) String summarySortDirection) {
         var scope = access.requireScope(request);
         var options = new TemporaryCheckinRepository.AdminReadOptions(locationStatus, reviewStatus, mediaStatus, null, null);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(service.summary(scope, from, to,
-                city, salespersonId, status, visitType, query, options, page, size));
+                city, salespersonId, status, visitType, query, options, page, size, summarySortBy, summarySortDirection));
     }
 }

@@ -29,6 +29,11 @@ class TemporaryCheckinStatisticsRepository {
 
     AttendanceSummary aggregate(UUID tenantId, TemporaryCheckinService.AdminQuery filters,
             TemporaryCheckinRepository.AdminReadOptions options) {
+        return aggregate(tenantId, filters, options, SummarySort.defaults());
+    }
+
+    AttendanceSummary aggregate(UUID tenantId, TemporaryCheckinService.AdminQuery filters,
+            TemporaryCheckinRepository.AdminReadOptions options, SummarySort sort) {
         StringBuilder sql = new StringBuilder("""
                 WITH visit_ranks AS (
                     SELECT id, ROW_NUMBER() OVER (
@@ -53,7 +58,7 @@ class TemporaryCheckinStatisticsRepository {
             for (int index = 0; index < arguments.size(); index++) statement.setObject(index + 1, arguments.get(index));
             return statement;
         }, (RowCallbackHandler) result::accept);
-        return result.finish();
+        return result.finish(sort);
     }
 
     private static final class Accumulator {
@@ -77,12 +82,9 @@ class TemporaryCheckinStatisticsRepository {
             groups.computeIfAbsent(key, DayAccumulator::new).accept(row, at, pending);
         }
 
-        AttendanceSummary finish() {
+        AttendanceSummary finish(SummarySort sort) {
             List<DailyAttendance> items = groups.values().stream().map(DayAccumulator::finish)
-                    .sorted(Comparator.comparing(DailyAttendance::date).reversed()
-                            .thenComparing(DailyAttendance::city, Comparator.nullsFirst(Comparator.naturalOrder()))
-                            .thenComparing(DailyAttendance::salespersonName, Comparator.nullsFirst(Comparator.naturalOrder()))
-                            .thenComparing(item -> item.salespersonId().toString()))
+                    .sorted(sort.comparator())
                     .toList();
             return new AttendanceSummary(totalVisits, checkedInSalespeople.size(), pendingReviewTotal, items);
         }
@@ -124,6 +126,39 @@ class TemporaryCheckinStatisticsRepository {
 
     record AttendanceSummary(long totalVisits, long checkedInSalespeople, long pendingReviewTotal,
             List<DailyAttendance> items) { }
+
+    /** 汇总专用白名单排序；主列方向独立于明细排序，其余分组键提供确定顺序。 */
+    record SummarySort(String sortBy, String direction) {
+        SummarySort {
+            sortBy = sortBy == null || sortBy.isBlank() ? "date" : sortBy;
+            direction = direction == null || direction.isBlank() ? "desc" : direction;
+            if (!Set.of("date", "city", "salesperson").contains(sortBy))
+                throw TemporaryCheckinException.badRequest("summarySortBy无效");
+            if (!Set.of("asc", "desc").contains(direction))
+                throw TemporaryCheckinException.badRequest("summarySortDirection无效");
+        }
+
+        static SummarySort defaults() { return new SummarySort(null, null); }
+
+        Comparator<DailyAttendance> comparator() {
+            Comparator<String> text = Comparator.nullsFirst(Comparator.naturalOrder());
+            Comparator<DailyAttendance> primary = switch (sortBy) {
+                case "city" -> Comparator.comparing(DailyAttendance::city, text);
+                case "salesperson" -> Comparator.comparing(DailyAttendance::salespersonName, text);
+                default -> Comparator.comparing(DailyAttendance::date);
+            };
+            if ("desc".equals(direction)) primary = primary.reversed();
+            return primary.thenComparing(Comparator.comparing(DailyAttendance::date).reversed())
+                    .thenComparing(DailyAttendance::city, text)
+                    .thenComparing(DailyAttendance::salespersonName, text)
+                    .thenComparing(item -> item.salespersonId().toString());
+        }
+
+        String description() {
+            String column = switch (sortBy) { case "city" -> "城市"; case "salesperson" -> "销售"; default -> "日期"; };
+            return column + ("asc".equals(direction) ? "升序" : "降序");
+        }
+    }
 
     record DailyAttendance(LocalDate date, String city, UUID salespersonId, String salespersonName,
             long visitCount, long storeCount, Instant firstCheckinAt, Instant lastCheckinAt,

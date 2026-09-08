@@ -2829,3 +2829,11 @@ body.can-delete-submissions .records-table td.selection-cell {
 .attendance-table td::before{display:none;content:none}
 
 #data-heading{scroll-margin-top:70px}
+
+/* Readable before application initialization; the HTML link remains usable without CSS or JS. */
+.resource-status { padding: 12px 20px; background: #fff5db; color: #563d10; text-align: center; font-size: 14px; line-height: 1.6; }
+.resource-status a { color: #174c62; font-weight: 700; text-decoration: underline; white-space: nowrap; }
+.attendance-table th { vertical-align: middle; }
+.attendance-table .sort-button { min-height: 36px; }
+.attendance-table [data-summary-sort-indicator] { color: var(--brand); }
+@media (max-width: 700px) { .attendance-table .sort-button { min-height: 44px; } }

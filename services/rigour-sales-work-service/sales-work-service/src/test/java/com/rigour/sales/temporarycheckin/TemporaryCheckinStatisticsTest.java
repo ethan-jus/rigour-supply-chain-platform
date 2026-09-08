@@ -11,19 +11,26 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.rigour.sales.infrastructure.persistence.SalesUuidCodec;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinAdminAccessPolicy.AdminScope;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.AdminReadOptions;
+import java.io.ByteArrayInputStream;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
+import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -82,7 +89,10 @@ class TemporaryCheckinStatisticsTest {
                 beans.getBeanProvider(TemporaryCheckinAiClient.class),
                 beans.getBeanProvider(org.springframework.boot.servlet.autoconfigure.MultipartProperties.class));
         statistics = new TemporaryCheckinStatisticsService(checkins, new TemporaryCheckinStatisticsRepository(jdbc), properties);
-        mvc = MockMvcBuilders.standaloneSetup(new TemporaryCheckinStatisticsController(statistics, new TemporaryCheckinAdminAccessPolicy()))
+        var workbook = new TemporaryCheckinWorkbookService(checkins, originals, new TemporaryCheckinStatisticsRepository(jdbc),
+                new TemporaryCheckinEvidenceRepository(jdbc), new TemporaryCheckinWorkbookWriter(), properties);
+        mvc = MockMvcBuilders.standaloneSetup(new TemporaryCheckinStatisticsController(statistics, new TemporaryCheckinAdminAccessPolicy()),
+                        new TemporaryCheckinWorkbookController(workbook, new TemporaryCheckinAdminAccessPolicy()))
                 .setControllerAdvice(new TemporaryCheckinExceptionHandler()).build();
     }
 
@@ -153,8 +163,10 @@ class TemporaryCheckinStatisticsTest {
         submission(TENANT, SALES, STORE, "深圳", "测试销售", "深圳门店", "SUBMITTED", NOW);
         String path = "/sales-checkin/admin/api/v1/submissions/attendance-summary";
         mvc.perform(get(path)).andExpect(status().isUnauthorized());
-        mvc.perform(get(path).with(admin("北京")).param("city", "深圳")).andExpect(status().isForbidden());
-        mvc.perform(get(path).with(admin("北京"))).andExpect(status().isOk())
+        mvc.perform(get(path).with(admin("北京")).param("city", "深圳")
+                .param("summarySortBy", "city").param("summarySortDirection", "desc")).andExpect(status().isForbidden());
+        mvc.perform(get(path).with(admin("北京")).param("summarySortBy", "salesperson")
+                .param("summarySortDirection", "asc")).andExpect(status().isOk())
                 .andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(jsonPath("$.totalVisits").value(1))
                 .andExpect(jsonPath("$.items[0].city").value("北京"))
@@ -163,6 +175,101 @@ class TemporaryCheckinStatisticsTest {
         mvc.perform(get(path).with(admin(null)).param("summaryPage", "-1")).andExpect(status().isBadRequest());
         mvc.perform(get(path).with(admin(null)).param("summarySize", "101")).andExpect(status().isBadRequest());
         mvc.perform(get(path).with(admin(null)).param("locationStatus", "INVALID")).andExpect(status().isBadRequest());
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "date,asc,B D E F C A",
+            "date,desc,E F C A B D",
+            "city,asc,E F C B A D",
+            "city,desc,A D E F C B",
+            "salesperson,asc,E F A D C B",
+            "salesperson,desc,B C E F A D"
+    })
+    void summaryHeadersSortAllGroupsBeforePagingAndWorkbookUsesSameOrder(String sortBy, String direction,
+            String expectedLabels) throws Exception {
+        Map<String, SortFixture> rows = sortingRows();
+        List<String> expected = List.of(expectedLabels.split(" "));
+        List<String> actual = new ArrayList<>();
+        var json = new tools.jackson.databind.ObjectMapper();
+        for (int page = 0; page < 3; page++) {
+            var result = mvc.perform(get("/sales-checkin/admin/api/v1/submissions/attendance-summary").with(admin(null))
+                    .param("status", "SUBMITTED").param("summarySortBy", sortBy).param("summarySortDirection", direction)
+                    .param("summaryPage", String.valueOf(page)).param("summarySize", "2")
+                    // 明细排序故意相反，不得影响每日汇总。
+                    .param("sortBy", "storeName").param("sortDirection", "desc"))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.totalVisits").value(6))
+                    .andExpect(jsonPath("$.checkedInSalespeople").value(4)).andExpect(jsonPath("$.totalElements").value(6))
+                    .andExpect(jsonPath("$.totalPages").value(3)).andReturn();
+            for (var item : json.readTree(result.getResponse().getContentAsString()).path("items")) {
+                String key = item.path("date").asText() + "|" + item.path("city").asText() + "|" + item.path("salespersonId").asText();
+                actual.add(rows.entrySet().stream().filter(entry -> entry.getValue().key().equals(key))
+                        .map(Map.Entry::getKey).findFirst().orElseThrow());
+            }
+        }
+        assertThat(actual).containsExactlyElementsOf(expected);
+        var repeated = statistics.exportSummary(GLOBAL, null, null, null, null, "SUBMITTED", null, null,
+                AdminReadOptions.defaults(), sortBy, direction);
+        assertThat(repeated.items().stream().map(item -> item.date() + "|" + item.city() + "|" + item.salespersonId()).toList())
+                .containsExactlyElementsOf(expected.stream().map(label -> rows.get(label).key()).toList());
+
+        byte[] bytes = mvc.perform(get("/sales-checkin/admin/export.xlsx").with(admin(null))
+                .param("status", "SUBMITTED").param("summarySortBy", sortBy).param("summarySortDirection", direction)
+                .param("summaryPage", "2").param("summarySize", "2")
+                .param("sortBy", "storeName").param("sortDirection", "desc"))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
+                .andReturn().getResponse().getContentAsByteArray();
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(bytes))) {
+            var summary = book.getSheet("每日销售汇总");
+            var detail = book.getSheet("打卡明细");
+            var format = new DataFormatter();
+            assertThat(summary.getLastRowNum()).isEqualTo(10);
+            for (int index = 0; index < expected.size(); index++) {
+                SortFixture fixture = rows.get(expected.get(index));
+                var line = summary.getRow(index + 5);
+                assertThat(format.formatCellValue(line.getCell(0))).isEqualTo(fixture.date().toString());
+                assertThat(line.getCell(1).getStringCellValue()).isEqualTo(fixture.city());
+                assertThat(line.getCell(2).getStringCellValue()).isEqualTo(fixture.name());
+            }
+            // 真正重开Excel验证明细仍按原storeName降序；不是随汇总一起倒序。
+            List<String> detailNames = new ArrayList<>();
+            for (int index = 5; index <= detail.getLastRowNum(); index++)
+                detailNames.add(detail.getRow(index).getCell(3).getStringCellValue());
+            assertThat(detailNames).containsExactly("F门店", "E门店", "D门店", "C门店", "B门店", "A门店");
+        }
+    }
+
+    @Test void rejectsUnknownSummarySortFieldsOnBothEndpoints() throws Exception {
+        for (String path : List.of("/sales-checkin/admin/api/v1/submissions/attendance-summary", "/sales-checkin/admin/export.xlsx")) {
+            mvc.perform(get(path).with(admin(null)).param("summarySortBy", "completedAt"))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.message").value("summarySortBy无效"));
+            mvc.perform(get(path).with(admin(null)).param("summarySortDirection", "descending"))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.message").value("summarySortDirection无效"));
+            mvc.perform(get(path).param("summarySortBy", "city").param("summarySortDirection", "desc"))
+                    .andExpect(status().isUnauthorized());
+        }
+    }
+
+    private Map<String, SortFixture> sortingRows() {
+        UUID second = UUID.fromString("20000000-0000-0000-0000-000000000003");
+        UUID third = UUID.fromString("20000000-0000-0000-0000-000000000004");
+        UUID sameName = UUID.fromString("20000000-0000-0000-0000-000000000005");
+        salesperson(TENANT, second, "王五"); salesperson(TENANT, third, "李四"); salesperson(TENANT, sameName, "另一个张三");
+        Map<String, SortFixture> rows = new LinkedHashMap<>();
+        rows.put("A", new SortFixture(LocalDate.of(2026,9,9), "深圳", SALES, "张三"));
+        rows.put("B", new SortFixture(LocalDate.of(2026,9,8), "北京", second, "王五"));
+        rows.put("C", new SortFixture(LocalDate.of(2026,9,9), "北京", third, "李四"));
+        rows.put("D", new SortFixture(LocalDate.of(2026,9,8), "深圳", SALES, "张三"));
+        rows.put("E", new SortFixture(LocalDate.of(2026,9,9), "北京", SALES, "张三"));
+        rows.put("F", new SortFixture(LocalDate.of(2026,9,9), "北京", sameName, "张三"));
+        rows.forEach((label, row) -> submission(TENANT, row.salesperson(), STORE, row.city(), row.name(), label + "门店",
+                "SUBMITTED", row.date().atTime(10,0).atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant()));
+        submission(OTHER, OTHER_SALES, OTHER_STORE, "北京", "越权销售", "Z越权门店", "SUBMITTED", NOW.plus(3, ChronoUnit.DAYS));
+        return rows;
+    }
+
+    private record SortFixture(LocalDate date, String city, UUID salesperson, String name) {
+        String key() { return date + "|" + city + "|" + salesperson; }
     }
 
     @Test void draftsAndEmptyFiltersNeverInventAttendanceOrAbsenceRows() {

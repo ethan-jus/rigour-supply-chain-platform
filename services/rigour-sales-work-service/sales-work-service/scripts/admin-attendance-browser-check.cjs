@@ -13,7 +13,7 @@ const id=n=>`40000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 const checks=[],requests=[],errors=[];
 const check=(ok,name)=>{checks.push({name,passed:!!ok});assert.ok(ok,name);};
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-const filters=url=>Object.fromEntries([...new URL(url,base).searchParams].filter(([key])=>!['page','size','summaryPage','summarySize'].includes(key)));
+const filters=url=>Object.fromEntries([...new URL(url,base).searchParams].filter(([key])=>!['page','size','summaryPage','summarySize','summarySortBy','summarySortDirection'].includes(key)));
 (async()=>{
  await fs.mkdir(output,{recursive:true});const browser=await chromium.launch({headless:true,channel:'chrome'});let page;
  async function setup(cityScoped=false,width=1440){
@@ -62,7 +62,7 @@ const filters=url=>Object.fromEntries([...new URL(url,base).searchParams].filter
   await page.locator('#filter-query').fill('便利');await page.locator('#filter-status').selectOption('SUBMITTED');await page.locator('#filter-review-status').selectOption('PENDING');await page.locator('#filter-media-status').selectOption('HAS_AUDIO');
   await page.locator('#search-button').click();await page.locator('#attendance-total').getByText('7',{exact:true}).waitFor();
   const latest=kind=>requests.filter(r=>r.scope==='all'&&r.path===api+'/submissions'+kind).at(-1).query;
-  const strip=obj=>Object.fromEntries(Object.entries(obj).filter(([key])=>!['page','size','summaryPage','summarySize'].includes(key)));
+  const strip=obj=>Object.fromEntries(Object.entries(obj).filter(([key])=>!['page','size','summaryPage','summarySize','summarySortBy','summarySortDirection'].includes(key)));
   const expected=strip(latest(''));
   check(JSON.stringify(strip(latest('/attendance-summary')))===JSON.stringify(expected),'date, city, salesperson, keyword, status, review and media filters exactly match detail and summary requests');
   const link=await page.locator('#export-link').getAttribute('href');check(new URL(link,base).pathname==='/sales-checkin/admin/export.xlsx','normal UI exports actual XLSX endpoint');
@@ -100,6 +100,12 @@ const filters=url=>Object.fromEntries([...new URL(url,base).searchParams].filter
   check(await page.locator('#filter-city').isDisabled()&&await page.locator('#filter-city').inputValue()==='杭州','city-scoped UI cannot adopt a foreign city from URL');
   check(requests.filter(r=>r.scope==='city'&&r.path.includes('/submissions')).every(r=>r.query.city==='杭州'),'detail and summary both retain the verified city scope');
   check(new URL(await page.locator('#export-link').getAttribute('href'),base).searchParams.get('city')==='杭州','city-scoped Excel URL retains verified city');
+  await page.locator('[data-summary-sort-by="city"]').click();await page.waitForFunction(()=>document.querySelector('#attendance-total').textContent==='127');
+  const resetRequest=page.waitForRequest(req=>new URL(req.url()).pathname===api+'/submissions');
+  await page.locator('#reset-button').click();await resetRequest;await page.waitForFunction(()=>document.querySelector('#attendance-total').textContent==='127');
+  check(await page.locator('#filter-city').isDisabled()&&await page.locator('#filter-city').inputValue()==='杭州'&&requests.filter(r=>r.scope==='city'&&r.path===api+'/submissions').at(-1).query.city==='杭州','native form reset keeps the verified city restriction and request scope');
+  const resetSummary=requests.filter(r=>r.scope==='city'&&r.path.endsWith('/attendance-summary')).at(-1).query;
+  check(resetSummary.summarySortBy==='date'&&resetSummary.summarySortDirection==='desc','city-scoped reset restores default daily date sorting');
   await page.locator('#attendance-card').evaluate(element=>element.scrollIntoView({block:'start'}));await page.screenshot({path:path.join(output,'03-mobile-fresh-statistics.png')});
   check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'fresh mobile page keeps table within its own scroll region');
   await c.context.close();check(requests.every(r=>r.method==='GET'),'statistics and drilldown issue no business mutation');check(errors.length===0,'all exercised admin views have no JavaScript exception');

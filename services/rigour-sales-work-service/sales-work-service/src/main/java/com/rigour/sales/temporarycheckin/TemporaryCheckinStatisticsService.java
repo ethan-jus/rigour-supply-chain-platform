@@ -29,10 +29,19 @@ class TemporaryCheckinStatisticsService {
     public AttendancePage summary(AdminScope scope, LocalDate from, LocalDate to, String city,
             UUID salespersonId, String status, String visitType, String query, AdminReadOptions options,
             Integer requestedPage, Integer requestedSize) {
+        return summary(scope, from, to, city, salespersonId, status, visitType, query, options,
+                requestedPage, requestedSize, null, null);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public AttendancePage summary(AdminScope scope, LocalDate from, LocalDate to, String city,
+            UUID salespersonId, String status, String visitType, String query, AdminReadOptions options,
+            Integer requestedPage, Integer requestedSize, String summarySortBy, String summarySortDirection) {
         int page = requestedPage == null ? 0 : requestedPage;
         int size = requestedSize == null ? 50 : requestedSize;
         if (page < 0 || size < 1 || size > 100) throw TemporaryCheckinException.badRequest("汇总页码不能小于0，每页数量须在1到100之间");
-        AttendanceSummary all = exportSummary(scope, from, to, city, salespersonId, status, visitType, query, options);
+        AttendanceSummary all = exportSummary(scope, from, to, city, salespersonId, status, visitType, query,
+                options, summarySortBy, summarySortDirection);
         int total = all.items().size();
         long offset = (long) page * size;
         List<DailyAttendance> items = offset >= total ? List.of()
@@ -45,8 +54,16 @@ class TemporaryCheckinStatisticsService {
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public AttendanceSummary exportSummary(AdminScope scope, LocalDate from, LocalDate to, String city,
             UUID salespersonId, String status, String visitType, String query, AdminReadOptions options) {
+        return exportSummary(scope, from, to, city, salespersonId, status, visitType, query, options, null, null);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public AttendanceSummary exportSummary(AdminScope scope, LocalDate from, LocalDate to, String city,
+            UUID salespersonId, String status, String visitType, String query, AdminReadOptions options,
+            String summarySortBy, String summarySortDirection) {
         var filters = checkins.normalizeAdminQuery(scope, from, to, city, salespersonId, status, visitType, query);
-        return repository.aggregate(properties.requireTenantId(), filters, options);
+        var sort = new TemporaryCheckinStatisticsRepository.SummarySort(summarySortBy, summarySortDirection);
+        return repository.aggregate(properties.requireTenantId(), filters, options, sort);
     }
 
     record AttendancePage(long totalVisits, long checkedInSalespeople, long pendingReviewTotal,

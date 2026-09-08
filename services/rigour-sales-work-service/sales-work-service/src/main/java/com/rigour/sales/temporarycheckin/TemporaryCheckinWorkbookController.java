@@ -35,9 +35,12 @@ class TemporaryCheckinWorkbookController {
             @RequestParam(name="reviewStatus",required=false) String reviewStatus,
             @RequestParam(name="mediaStatus",required=false) String mediaStatus,
             @RequestParam(name="sortBy",required=false) String sortBy,
-            @RequestParam(name="sortDirection",required=false) String sortDirection) {
+            @RequestParam(name="sortDirection",required=false) String sortDirection,
+            @RequestParam(name="summarySortBy",required=false) String summarySortBy,
+            @RequestParam(name="summarySortDirection",required=false) String summarySortDirection) {
         byte[] body=service.export(access.requireScope(request),from,to,city,salespersonId,status,visitType,query,
-                new TemporaryCheckinRepository.AdminReadOptions(locationStatus,reviewStatus,mediaStatus,sortBy,sortDirection));
+                new TemporaryCheckinRepository.AdminReadOptions(locationStatus,reviewStatus,mediaStatus,sortBy,sortDirection),
+                summarySortBy,summarySortDirection);
         return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .contentLength(body.length).header(HttpHeaders.CACHE_CONTROL,"no-store")
                 .header(HttpHeaders.CONTENT_DISPOSITION,ContentDisposition.attachment()

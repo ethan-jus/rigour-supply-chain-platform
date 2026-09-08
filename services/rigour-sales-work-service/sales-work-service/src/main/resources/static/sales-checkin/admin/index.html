@@ -7,9 +7,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive">
     <meta name="description" content="销售拜访临时采集数据管理与导出">
     <title>销售拜访数据管理</title>
-    <link rel="stylesheet" href="/sales-checkin/admin/admin.css?v=20260908-attendance-multi-photo">
+    <link id="admin-stylesheet" rel="stylesheet" href="/sales-checkin/admin/admin.css?v=20260908-admin-recovery-sort-multi-photo">
 </head>
 <body>
+<div id="admin-resource-status" class="resource-status" role="status">
+    <span>正在加载管理页面。若长时间未显示完整界面，请</span>
+    <a href="">重新加载页面</a>
+</div>
 <header class="topbar">
     <div class="topbar__inner">
         <div class="brand">
@@ -224,7 +228,7 @@
         <p class="attendance-note">日期按北京时间统计。每日汇总仅包含已提交拜访；没有记录不等于旷工，不能替代排班或考勤判定。</p>
         <div id="attendance-table-wrap" class="table-wrap attendance-table-wrap" role="region" aria-label="每日销售打卡汇总，可横向滚动" tabindex="0" hidden>
             <table class="attendance-table">
-                <thead><tr><th scope="col">日期</th><th scope="col">城市</th><th scope="col">销售</th><th scope="col">拜访次数</th><th scope="col">门店数</th><th scope="col">首次打卡</th><th scope="col">末次打卡</th><th scope="col">待复核</th><th scope="col">明细</th></tr></thead>
+                <thead><tr><th scope="col" aria-sort="descending"><button type="button" class="sort-button" data-summary-sort-by="date">日期 <span data-summary-sort-indicator aria-hidden="true">↓</span></button></th><th scope="col" aria-sort="none"><button type="button" class="sort-button" data-summary-sort-by="city">城市 <span data-summary-sort-indicator aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button type="button" class="sort-button" data-summary-sort-by="salesperson">销售 <span data-summary-sort-indicator aria-hidden="true">↕</span></button></th><th scope="col">拜访次数</th><th scope="col">门店数</th><th scope="col">首次打卡</th><th scope="col">末次打卡</th><th scope="col">待复核</th><th scope="col">明细</th></tr></thead>
                 <tbody id="attendance-rows"></tbody>
             </table>
         </div>
@@ -772,6 +776,6 @@
     </tr>
 </template>
 
-<script src="/sales-checkin/admin/admin.js?v=20260908-attendance-multi-photo" defer></script>
+<script src="/sales-checkin/admin/admin.js?v=20260908-admin-recovery-sort-multi-photo" defer></script>
 </body>
 </html>

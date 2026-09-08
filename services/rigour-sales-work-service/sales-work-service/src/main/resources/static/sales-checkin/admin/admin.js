@@ -6,6 +6,7 @@
     const MEDIA_PATH = "/sales-checkin/admin/submissions";
     const PAGE_SIZE = 20;
     const SORT_LABELS = { completedAt: "打卡时间", cityName: "城市", salespersonName: "销售", storeName: "门店" };
+    const SUMMARY_SORT_LABELS = { date: "日期", city: "城市", salesperson: "销售" };
     const LOCATION_LABELS = { GOOD: "定位新鲜", LOW_ACCURACY: "低精度", STALE: "位置过期", TIME_UNKNOWN: "采样时间未知", MISSING: "未取得位置", USER_REPORTED: "销售报告异常", OUT_OF_RANGE: "超出门店范围", STORE_UNLOCATED: "门店未定位", LEGACY: "历史位置" };
     const REVIEW_LABELS = { PENDING: "待复核", APPROVED: "已核实拜访", FOLLOW_UP: "需补充说明", FLAGGED: "异常已确认" };
 
@@ -32,7 +33,9 @@
         totalPages: 1,
         loading: false,
         controller: null,
-        attendance: { controller: null, loading: false, page: 0, totalPages: 0 },
+        bootstrapReady: false,
+        bootstrapBusy: false,
+        attendance: { controller: null, loading: false, page: 0, totalPages: 0, sortBy: "date", sortDirection: "desc" },
         itemsById: new Map(),
         currentItemIds: [],
         selectedIds: new Set(),
@@ -75,12 +78,47 @@
 
     const $ = (selector, root = document) => root.querySelector(selector);
 
-    document.addEventListener("DOMContentLoaded", init);
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init, { once: true });
+    else void init();
+
+    function stylesheetLoaded(stylesheet) {
+        try { return Boolean(stylesheet?.sheet?.cssRules.length); } catch (_) { return false; }
+    }
+
+    function waitForStylesheet(stylesheet) {
+        if (stylesheetLoaded(stylesheet)) return Promise.resolve(true);
+        if (!stylesheet || document.readyState === "complete") return Promise.resolve(false);
+        return new Promise(resolve => {
+            const finish = () => {
+                stylesheet.removeEventListener("load", finish);
+                stylesheet.removeEventListener("error", finish);
+                window.removeEventListener("load", finish);
+                resolve(stylesheetLoaded(stylesheet));
+            };
+            stylesheet.addEventListener("load", finish, { once: true });
+            stylesheet.addEventListener("error", finish, { once: true });
+            window.addEventListener("load", finish, { once: true });
+        });
+    }
 
     async function init() {
+        // An unfinished stylesheet is not a failed stylesheet. Keep the native recovery link until it settles.
+        if (!await waitForStylesheet($("#admin-stylesheet"))) return;
         bindEvents();
         readFiltersFromUrl();
         writeFiltersToForm();
+        try {
+            await bootstrapAdmin();
+        } finally {
+            $("#admin-resource-status").hidden = true;
+        }
+    }
+
+    async function bootstrapAdmin() {
+        if (state.bootstrapBusy) return;
+        state.bootstrapBusy = true;
+        $("#retry-button").disabled = true;
+        hideError();
         try {
             const identity = unwrap(await requestJson(`${API_BASE}/auth/me`));
             if (identity.mustChangePassword === true) {
@@ -93,17 +131,22 @@
                 showLoginDialog();
                 return;
             }
-            showError(errorMessage(error, "后台数据加载失败，请确认管理账号权限后重试。"));
+            showError(errorMessage(error, "后台数据加载失败，请稍后重试。"));
             renderLoading(false);
             $("#admin-main").hidden = false;
+        } finally {
+            state.bootstrapBusy = false;
+            $("#retry-button").disabled = false;
         }
     }
 
     async function enterAdmin(identity) {
+        state.bootstrapReady = false;
         applyAdminIdentity(identity);
         const options = unwrap(await requestJson(`${API_BASE}/options`));
         applyOptions(options);
         applyAdminIdentity(identity);
+        state.bootstrapReady = true;
         closeAuthDialog("#login-dialog");
         closeAuthDialog("#change-password-dialog");
         $("#admin-main").hidden = false;
@@ -140,6 +183,9 @@
         $("#attendance-retry").addEventListener("click", () => loadAttendanceSummary(state.attendance.page));
         $("#attendance-previous").addEventListener("click", () => changeAttendancePage(state.attendance.page - 1));
         $("#attendance-next").addEventListener("click", () => changeAttendancePage(state.attendance.page + 1));
+        document.querySelectorAll("[data-summary-sort-by]").forEach(button => {
+            button.addEventListener("click", () => changeSummarySort(button.dataset.summarySortBy));
+        });
         document.querySelectorAll("[data-sort-by]").forEach((button) => {
             button.addEventListener("click", () => changeSort(button.dataset.sortBy));
         });
@@ -154,7 +200,7 @@
             $("#shared-audio-status").textContent = "暂时无法播放：会话可能失效、文件不可用或浏览器不支持此格式。可重试播放或下载原录音。";
         });
         $("#reset-button").addEventListener("click", resetFilters);
-        $("#retry-button").addEventListener("click", loadSubmissions);
+        $("#retry-button").addEventListener("click", () => state.bootstrapReady ? loadSubmissions() : bootstrapAdmin());
         $("#success-close-button").addEventListener("click", hideSuccess);
         $("#previous-page").addEventListener("click", () => changePage(state.page - 1));
         $("#next-page").addEventListener("click", () => changePage(state.page + 1));
@@ -241,6 +287,7 @@
     }
 
     function showLoginDialog(message) {
+        state.bootstrapReady = false;
         state.attendance.controller?.abort();
         state.attendance.controller = null;
         clearAttendanceView();
@@ -500,12 +547,13 @@
     }
 
     async function loadAttendanceSummary(page = 0) {
+        if (!state.bootstrapReady) return bootstrapAdmin();
         state.attendance.controller?.abort();
         const controller = new AbortController();
         state.attendance.controller = controller;
         state.attendance.page = page;
         state.attendance.loading = true;
-        const params = buildFilterParams();
+        const params = buildFilterParams(true);
         params.set("summaryPage", String(page));
         params.set("summarySize", "50");
         clearAttendanceView();
@@ -544,6 +592,27 @@
         } finally {
             if (state.attendance.controller === controller) state.attendance.loading = false;
         }
+    }
+
+    async function changeSummarySort(sortBy) {
+        if (!Object.hasOwn(SUMMARY_SORT_LABELS, sortBy)) return;
+        state.attendance.sortDirection = state.attendance.sortBy === sortBy && state.attendance.sortDirection === "asc" ? "desc" : "asc";
+        state.attendance.sortBy = sortBy;
+        state.attendance.page = 0;
+        renderSummarySort();
+        updateBrowserUrl();
+        updateExportLink();
+        await loadAttendanceSummary(0);
+    }
+
+    function renderSummarySort() {
+        document.querySelectorAll("[data-summary-sort-by]").forEach(button => {
+            const active = button.dataset.summarySortBy === state.attendance.sortBy;
+            const ascending = state.attendance.sortDirection === "asc";
+            button.closest("th").setAttribute("aria-sort", active ? (ascending ? "ascending" : "descending") : "none");
+            $("[data-summary-sort-indicator]", button).textContent = active ? (ascending ? "↑" : "↓") : "↕";
+            button.setAttribute("aria-label", `${SUMMARY_SORT_LABELS[button.dataset.summarySortBy]}，点击按${active && ascending ? "降序" : "升序"}排列全部每日汇总`);
+        });
     }
 
     function renderAttendanceRows(items) {
@@ -601,6 +670,7 @@
     }
 
     async function loadSubmissions() {
+        if (!state.bootstrapReady) return bootstrapAdmin();
         if (state.controller) state.controller.abort();
         const controller = new AbortController();
         state.controller = controller;
@@ -2855,6 +2925,8 @@
     }
 
     async function resetFilters() {
+        // Reset native date editor state as well as values before restoring the authorized filter defaults.
+        $("#filter-form").reset();
         state.filters = {
             q: "",
             from: "",
@@ -2870,6 +2942,8 @@
             sortDirection: "desc"
         };
         state.page = 0;
+        state.attendance.sortBy = "date";
+        state.attendance.sortDirection = "desc";
         renderCityOptions();
         renderSalespersonOptions(state.filters.city, "");
         writeFiltersToForm();
@@ -2920,6 +2994,8 @@
             sortBy: Object.hasOwn(SORT_LABELS, params.get("sortBy")) ? params.get("sortBy") : "completedAt",
             sortDirection: params.get("sortDirection") === "asc" ? "asc" : "desc"
         };
+        state.attendance.sortBy = Object.hasOwn(SUMMARY_SORT_LABELS, params.get("summarySortBy")) ? params.get("summarySortBy") : "date";
+        state.attendance.sortDirection = params.get("summarySortDirection") === "asc" ? "asc" : "desc";
         const page = Number.parseInt(params.get("page"), 10);
         state.page = Number.isInteger(page) && page > 0 ? page - 1 : 0;
     }
@@ -2934,6 +3010,7 @@
         $("#filter-review-status").value = state.filters.reviewStatus;
         $("#filter-media-status").value = state.filters.mediaStatus;
         renderSort();
+        renderSummarySort();
         if (Array.from($("#filter-city").options).some((item) => item.value === state.filters.city)) {
             $("#filter-city").value = state.filters.city;
         }
@@ -2943,33 +3020,48 @@
     }
 
     function updateExportLink() {
-        const params = buildFilterParams();
+        const params = buildFilterParams(true);
         $("#export-link").href = params.toString() ? `${EXPORT_PATH}?${params.toString()}` : EXPORT_PATH;
     }
 
     function updateBrowserUrl() {
-        const params = buildFilterParams();
+        const params = buildFilterParams(true);
         if (state.page > 0) params.set("page", String(state.page + 1));
         const query = params.toString();
         window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
     }
 
-    function buildFilterParams() {
+    function buildFilterParams(includeSummarySort = false) {
         const params = new URLSearchParams();
         Object.entries(state.filters).forEach(([name, value]) => {
             if (value) params.set(name, value);
         });
+        if (includeSummarySort) {
+            params.set("summarySortBy", state.attendance.sortBy);
+            params.set("summarySortDirection", state.attendance.sortDirection);
+        }
         return params;
     }
 
     async function requestJson(url, signal) {
-        const response = await fetch(url, {
-            method: "GET",
-            credentials: "same-origin",
-            cache: "no-store",
-            headers: { Accept: "application/json" },
-            signal
-        });
+        let response;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            if (signal?.aborted) throw new DOMException("Request cancelled", "AbortError");
+            response = await fetch(url, {
+                method: "GET",
+                credentials: "same-origin",
+                cache: "no-store",
+                headers: { Accept: "application/json" },
+                signal
+            });
+            if (![429, 502, 503].includes(response.status) || attempt === 2) break;
+            const retryAfter = response.headers.get("retry-after");
+            const seconds = retryAfter && /^\d+(?:\.\d+)?$/.test(retryAfter.trim()) ? Number(retryAfter) * 1000 : NaN;
+            const requestedDelay = Number.isFinite(seconds) ? seconds : Date.parse(retryAfter || "") - Date.now();
+            const delay = Math.min(4000, Math.max(600 * (attempt + 1), Number.isFinite(requestedDelay) ? requestedDelay : 0));
+            await response.body?.cancel().catch(() => {});
+            await waitForReadRetry(delay, signal);
+        }
         let payload = null;
         const contentType = response.headers.get("content-type") || "";
         if (contentType.includes("application/json")) {
@@ -2979,12 +3071,29 @@
             const error = new Error(response.status === 401
                 ? "管理会话已失效，请重新登录。"
                 : (response.status === 403 ? "当前账号无权查看该城市数据。"
-                    : (cleanText(payload && payload.message) || `请求失败（HTTP ${response.status}）`)));
+                    : (cleanText(payload && payload.message) || ([429, 502, 503].includes(response.status)
+                        ? "服务暂时繁忙，请稍后重试。" : `请求失败（HTTP ${response.status}）`))));
             error.status = response.status;
             error.code = cleanText(payload && payload.code);
             throw error;
         }
         return payload || {};
+    }
+
+    function waitForReadRetry(delay, signal) {
+        return new Promise((resolve, reject) => {
+            if (signal?.aborted) { reject(new DOMException("Request cancelled", "AbortError")); return; }
+            const onAbort = () => {
+                clearTimeout(timer);
+                signal?.removeEventListener("abort", onAbort);
+                reject(new DOMException("Request cancelled", "AbortError"));
+            };
+            const timer = setTimeout(() => {
+                signal?.removeEventListener("abort", onAbort);
+                resolve();
+            }, delay);
+            signal?.addEventListener("abort", onAbort, { once: true });
+        });
     }
 
     async function requestAuth(url, body) {
