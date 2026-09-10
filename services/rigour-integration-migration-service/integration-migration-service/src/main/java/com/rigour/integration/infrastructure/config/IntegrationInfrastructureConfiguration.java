@@ -75,6 +75,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.mybatis.spring.annotation.MapperScan;
@@ -393,12 +394,19 @@ public final class IntegrationInfrastructureConfiguration {
         }
         try {
             URI uri = new URI(configuredUrl);
+            if (!isServiceDiscoveryHost(uri.getHost())) return configuredUrl;
             String scheme = uri.getScheme() == null ? "http" : uri.getScheme();
             return new URI(scheme, uri.getUserInfo(), "127.0.0.1",
                     localPort, uri.getPath(), uri.getQuery(), uri.getFragment()).toString();
         } catch (URISyntaxException ignored) {
             return configuredUrl;
         }
+    }
+
+    private static boolean isServiceDiscoveryHost(String host) {
+        if (host == null || host.isBlank()) return false;
+        String normalized = host.toLowerCase(Locale.ROOT);
+        return normalized.startsWith("rigour-") && normalized.endsWith("-service");
     }
 
     @Bean
