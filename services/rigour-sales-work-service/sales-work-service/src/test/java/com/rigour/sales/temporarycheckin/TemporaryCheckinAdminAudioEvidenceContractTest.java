@@ -35,16 +35,21 @@ class TemporaryCheckinAdminAudioEvidenceContractTest {
     }
 
     @Test
-    void parsesActualMediaDurationFromLoadedMetadata() throws IOException {
+    void usesOneOnDemandPlayerAndKeepsUnknownDurationDistinctFromZero() throws IOException {
         String script = resource("static/sales-checkin/admin/admin.js");
+        String html = resource("static/sales-checkin/admin/index.html");
 
         assertThat(script)
-                .contains("audio.preload = \"metadata\"")
-                .contains("audio.addEventListener(\"loadedmetadata\"")
+                .contains("audio.preload = \"none\"")
+                .contains("addEventListener(\"loadedmetadata\", updatePlayingDuration)")
                 .contains("audio.duration * 1000")
+                .contains("parsedDurationMs: optionalNonNegativeNumber(segment.parsedDurationMs)")
+                .contains("时长待解析")
                 .contains("媒体解析时长")
                 .contains("客户端报告时长")
-                .contains("mediaDuration.dataset.audioMediaDuration = \"true\"");
+                .contains("mediaDuration.dataset.audioMediaDuration = \"true\"")
+                .doesNotContain("document.createElement(\"audio\")");
+        assertThat(html).contains("id=\"shared-audio\"", "controls preload=\"none\"");
     }
 
     private static String resource(String path) throws IOException {

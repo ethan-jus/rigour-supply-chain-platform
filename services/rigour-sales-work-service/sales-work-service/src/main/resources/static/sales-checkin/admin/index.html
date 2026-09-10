@@ -3,13 +3,17 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#0b3d59">
+    <meta name="theme-color" content="#133c3f">
     <meta name="robots" content="noindex,nofollow,noarchive">
     <meta name="description" content="销售拜访临时采集数据管理与导出">
     <title>销售拜访数据管理</title>
-    <link rel="stylesheet" href="/sales-checkin/admin/admin.css">
+    <link id="admin-stylesheet" rel="stylesheet" href="/sales-checkin/admin/admin.css?v=20260908-admin-recovery-sort-multi-photo">
 </head>
 <body>
+<div id="admin-resource-status" class="resource-status" role="status">
+    <span>正在加载管理页面。若长时间未显示完整界面，请</span>
+    <a href="">重新加载页面</a>
+</div>
 <header class="topbar">
     <div class="topbar__inner">
         <div class="brand">
@@ -115,6 +119,12 @@
             <button id="reset-button" class="text-button" type="button">重置条件</button>
         </div>
 
+        <div class="date-presets" role="group" aria-label="快捷选择打卡日期">
+            <span>打卡日期</span>
+            <button type="button" class="text-button" data-attendance-range="today">今天</button>
+            <button type="button" class="text-button" data-attendance-range="week">近 7 天</button>
+            <button type="button" class="text-button" data-attendance-range="month">本月</button>
+        </div>
         <form id="filter-form" class="filter-form">
             <label class="field field--query">
                 <span>关键词</span>
@@ -158,15 +168,74 @@
                     <option value="REVISIT">复访</option>
                 </select>
             </label>
+            <label class="field">
+                <span>位置状态</span>
+                <select id="filter-location-status" name="locationStatus">
+                    <option value="">全部位置</option>
+                    <option value="GOOD">定位新鲜</option>
+                    <option value="LOW_ACCURACY">低精度</option>
+                    <option value="STALE">位置过期</option>
+                    <option value="TIME_UNKNOWN">采样时间未知</option>
+                    <option value="MISSING">未取得位置</option>
+                    <option value="USER_REPORTED">销售报告异常</option>
+                    <option value="OUT_OF_RANGE">超出门店范围</option>
+                    <option value="STORE_UNLOCATED">门店未定位</option>
+                    <option value="LEGACY">历史位置</option>
+                </select>
+            </label>
+            <label class="field">
+                <span>复核状态</span>
+                <select id="filter-review-status" name="reviewStatus">
+                    <option value="">全部复核状态</option>
+                    <option value="PENDING">待复核</option>
+                    <option value="APPROVED">已核实拜访</option>
+                    <option value="FOLLOW_UP">需补充说明</option>
+                    <option value="FLAGGED">异常已确认</option>
+                </select>
+            </label>
+            <label class="field">
+                <span>现场材料</span>
+                <select id="filter-media-status" name="mediaStatus">
+                    <option value="">全部材料状态</option>
+                    <option value="HAS_AUDIO">有录音</option>
+                    <option value="MISSING_AUDIO">未附录音</option>
+                    <option value="MISSING_PHOTO">现场照片缺失</option>
+                </select>
+            </label>
             <div class="filter-actions">
                 <button id="search-button" class="primary-button" type="submit">
                     查询数据
                 </button>
-                <a id="export-link" class="secondary-button" href="/sales-checkin/admin/export.csv" download>
-                    导出当前筛选 CSV
+                <a id="export-link" class="secondary-button" href="/sales-checkin/admin/export.xlsx" download="销售拜访打卡统计.xlsx">
+                    导出 Excel
                 </a>
             </div>
         </form>
+        <p class="attendance-note">修改条件后点击“查询数据”，统计、明细与 Excel 使用同一组条件。</p>
+    </section>
+
+    <section id="attendance-card" class="attendance-card" aria-labelledby="attendance-heading">
+        <div class="section-heading">
+            <div><p class="section-kicker">当前筛选 · 全量统计</p><h2 id="attendance-heading">销售每日打卡</h2></div>
+            <button id="attendance-retry" class="text-button" type="button" hidden>重试统计</button>
+        </div>
+        <dl class="attendance-metrics" aria-label="当前筛选全量概览">
+            <div><dt>总拜访记录</dt><dd id="attendance-total">--</dd><small>当前筛选全部记录</small></div>
+            <div><dt>已打卡销售</dt><dd id="attendance-salespeople">--</dd><small>已提交记录的去重人数</small></div>
+            <div><dt>待复核记录</dt><dd id="attendance-pending-review">--</dd><small>当前筛选待处理</small></div>
+        </dl>
+        <p id="attendance-state" class="attendance-state" role="status" aria-live="polite">正在读取统计…</p>
+        <p class="attendance-note">日期按北京时间统计。每日汇总仅包含已提交拜访；没有记录不等于旷工，不能替代排班或考勤判定。</p>
+        <div id="attendance-table-wrap" class="table-wrap attendance-table-wrap" role="region" aria-label="每日销售打卡汇总，可横向滚动" tabindex="0" hidden>
+            <table class="attendance-table">
+                <thead><tr><th scope="col" aria-sort="descending"><button type="button" class="sort-button" data-summary-sort-by="date">日期 <span data-summary-sort-indicator aria-hidden="true">↓</span></button></th><th scope="col" aria-sort="none"><button type="button" class="sort-button" data-summary-sort-by="city">城市 <span data-summary-sort-indicator aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button type="button" class="sort-button" data-summary-sort-by="salesperson">销售 <span data-summary-sort-indicator aria-hidden="true">↕</span></button></th><th scope="col">拜访次数</th><th scope="col">门店数</th><th scope="col">首次打卡</th><th scope="col">末次打卡</th><th scope="col">待复核</th><th scope="col">明细</th></tr></thead>
+                <tbody id="attendance-rows"></tbody>
+            </table>
+        </div>
+        <div id="attendance-pagination" class="attendance-pagination" hidden>
+            <span id="attendance-page-indicator"></span>
+            <div><button id="attendance-previous" type="button" class="secondary-button">上一页</button><button id="attendance-next" type="button" class="secondary-button">下一页</button></div>
+        </div>
     </section>
 
     <section class="data-card" aria-labelledby="data-heading">
@@ -177,6 +246,13 @@
             </div>
             <p id="result-summary" aria-live="polite">正在加载…</p>
         </div>
+
+        <dl class="review-statistics" aria-label="当前筛选范围统计">
+            <div><dt>位置需关注</dt><dd id="result-location-attention">--</dd></div>
+            <div><dt>待复核</dt><dd id="result-review-pending">--</dd></div>
+            <div><dt>未附录音</dt><dd id="result-missing-audio">--</dd></div>
+        </dl>
+        <p class="sort-summary" id="sort-summary" aria-live="polite">按打卡时间降序排列；排序作用于全部筛选结果。</p>
 
         <div id="bulk-toolbar" class="bulk-toolbar" role="region" aria-label="批量操作" aria-live="polite" hidden>
             <p>已选 <strong id="selected-count">0</strong> 条</p>
@@ -190,16 +266,19 @@
             <span>正在读取拜访数据…</span>
         </div>
 
-        <div id="table-wrap" class="table-wrap" hidden>
+        <div id="table-wrap" class="table-wrap" role="region" aria-label="拜访记录列表，可横向滚动查看独立列" tabindex="0" hidden>
             <table class="records-table">
                 <colgroup>
                     <col class="records-col records-col--select">
                     <col class="records-col records-col--time">
-                    <col class="records-col records-col--person">
+                    <col class="records-col records-col--city">
+                    <col class="records-col records-col--salesperson">
                     <col class="records-col records-col--store">
+                    <col class="records-col records-col--photo">
+                    <col class="records-col records-col--audio">
                     <col class="records-col records-col--visit">
                     <col class="records-col records-col--location">
-                    <col class="records-col records-col--evidence">
+                    <col class="records-col records-col--review">
                     <col class="records-col records-col--action">
                 </colgroup>
                 <thead>
@@ -207,17 +286,30 @@
                     <th scope="col" class="selection-cell">
                         <input id="select-page" class="row-checkbox" type="checkbox" aria-label="选择本页全部记录">
                     </th>
-                    <th scope="col">时间 / 状态</th>
-                    <th scope="col">城市 / 销售</th>
-                    <th scope="col">门店 / 客户</th>
+                    <th scope="col" aria-sort="descending"><button type="button" class="sort-button" data-sort-by="completedAt">打卡时间 <span data-sort-indicator aria-hidden="true">↓</span></button></th>
+                    <th scope="col" aria-sort="none"><button type="button" class="sort-button" data-sort-by="cityName">城市 <span data-sort-indicator aria-hidden="true">↕</span></button></th>
+                    <th scope="col" aria-sort="none"><button type="button" class="sort-button" data-sort-by="salespersonName">销售 <span data-sort-indicator aria-hidden="true">↕</span></button></th>
+                    <th scope="col" aria-sort="none"><button type="button" class="sort-button" data-sort-by="storeName">门店 <span data-sort-indicator aria-hidden="true">↕</span></button></th>
+                    <th scope="col">现场照片</th>
+                    <th scope="col">拜访录音</th>
                     <th scope="col">拜访结果</th>
-                    <th scope="col">实际位置 / 异常</th>
-                    <th scope="col">现场材料</th>
+                    <th scope="col">设备位置 / 异常</th>
+                    <th scope="col">复核 / 材料</th>
                     <th scope="col">操作</th>
                 </tr>
                 </thead>
                 <tbody id="submission-rows"></tbody>
             </table>
+        </div>
+
+        <div id="record-audio-dock">
+            <section id="shared-audio-panel" class="shared-audio-panel" aria-labelledby="shared-audio-title" hidden>
+                <div class="shared-audio-heading"><strong id="shared-audio-title">拜访录音</strong><button id="shared-audio-close" type="button" class="text-button">停止播放</button></div>
+                <label class="shared-audio-segments">录音片段<select id="shared-audio-segment" aria-label="选择录音片段"></select></label>
+                <audio id="shared-audio" class="media-audio" controls preload="none" aria-label="拜访录音播放器"></audio>
+                <p id="shared-audio-status" role="status" aria-live="polite"></p>
+                <a id="shared-audio-download" class="media-download" download>下载原录音</a>
+            </section>
         </div>
 
         <div id="empty-state" class="empty-state" hidden>
@@ -234,7 +326,7 @@
 
     <aside class="data-note">
         <strong>数据说明</strong>
-        <p>本页为临时匿名自报采集数据。位置、照片、录音和销售姓名均可能被冒用或伪造，不能单独作为考勤、KPI、奖惩或纪律证据。</p>
+        <p>位置来自设备报告，门店登记点与设备点分别保留。低精度、旧位置及未附录音不自动判定拜访无效，请结合现场材料与复核记录判断。</p>
     </aside>
     </div>
 
@@ -408,10 +500,25 @@
                 </dl>
             </section>
             <section class="detail-section" aria-labelledby="detail-location-heading">
-                <h3 id="detail-location-heading">实际位置</h3>
+                <h3 id="detail-location-heading">设备报告位置</h3>
                 <p id="detail-address" class="detail-address"></p>
                 <p id="detail-location-note" class="detail-muted"></p>
+                <p id="detail-location-verification" class="detail-muted"></p>
                 <div id="detail-risk-chips" class="risk-chips"></div>
+                <dl class="detail-facts location-evidence-facts">
+                    <div><dt>设备报告点</dt><dd id="detail-device-point"></dd></div>
+                    <div><dt>门店登记点</dt><dd id="detail-store-point"></dd></div>
+                    <div><dt>设备原始时间</dt><dd id="detail-raw-timestamp"></dd></div>
+                    <div><dt>服务端接收时间</dt><dd id="detail-location-received-at"></dd></div>
+                    <div><dt>与门店距离</dt><dd id="detail-distance"></dd></div>
+                    <div><dt>定位来源 / 质量</dt><dd id="detail-location-source"></dd></div>
+                </dl>
+                <figure class="location-comparison" aria-labelledby="location-comparison-title">
+                    <figcaption id="location-comparison-title">设备与门店位置对照</figcaption>
+                    <p class="detail-muted">仅相对示意，不是街道底图。浏览器报告坐标按 WGS84 对照。</p>
+                    <div id="location-comparison-chart" class="location-comparison-chart"></div>
+                    <p id="location-comparison-note" class="detail-muted"></p>
+                </figure>
                 <dl class="detail-risk-facts">
                     <div><dt>身份方式</dt><dd id="detail-identity-method"></dd></div>
                     <div><dt>提交 IP（脱敏）</dt><dd id="detail-ip-masked"></dd></div>
@@ -431,6 +538,21 @@
             <section class="detail-section" aria-labelledby="detail-media-heading">
                 <h3 id="detail-media-heading">现场材料与录音摘要</h3>
                 <div id="detail-media" class="media-links detail-media"></div>
+                <div id="detail-audio-dock"></div>
+            </section>
+            <section class="detail-section" aria-labelledby="detail-review-heading">
+                <h3 id="detail-review-heading">人工复核</h3>
+                <p id="detail-review-status" class="detail-muted"></p>
+                <form id="review-form" class="review-form">
+                    <label class="field"><span>复核结果</span><select id="review-status" required>
+                        <option value="APPROVED">已核实拜访</option><option value="FOLLOW_UP">需补充说明</option><option value="FLAGGED">异常已确认</option>
+                    </select></label>
+                    <label class="field"><span>复核原因</span><textarea id="review-note" rows="3" minlength="2" maxlength="1000" required placeholder="填写核对的照片、定位或沟通内容，以及判断原因"></textarea></label>
+                    <p id="review-error" class="auth-error" role="alert" hidden></p>
+                    <button id="review-submit" class="primary-button" type="submit">保存复核记录</button>
+                </form>
+                <p class="risk-evidence-note">位置偏差和选填录音缺失不自动判定拜访无效。每次复核保留处理人与原因。</p>
+                <div id="review-history" class="review-history" aria-live="polite"></div>
             </section>
         </div>
     </article>
@@ -601,30 +723,34 @@
         <td data-label="选择" class="selection-cell">
             <input data-field="select" class="row-checkbox" type="checkbox">
         </td>
-        <td data-label="时间 / 状态" class="time-cell">
+        <td data-label="打卡时间" class="time-cell">
             <strong data-field="time"></strong>
             <div class="record-badges">
                 <span data-field="status" class="status-badge"></span>
                 <span class="visit-frequency" hidden></span>
             </div>
         </td>
-        <td data-label="城市 / 销售">
+        <td data-label="城市">
             <strong data-field="city"></strong>
-            <span data-field="salesperson"></span>
         </td>
-        <td data-label="门店 / 客户">
+        <td data-label="销售"><strong data-field="salesperson"></strong></td>
+        <td data-label="门店">
             <strong data-field="store"></strong>
             <span data-field="customer"></span>
             <a data-field="phone" class="inline-link" hidden></a>
         </td>
+        <td data-label="现场照片"><div data-field="photo" class="row-photo"></div></td>
+        <td data-label="拜访录音"><div data-field="audio" class="row-audio"></div></td>
         <td data-label="拜访结果">
             <p data-field="result" class="visit-result"></p>
         </td>
-        <td data-label="实际位置 / 异常" class="location-cell">
+        <td data-label="设备位置 / 异常" class="location-cell">
             <strong data-field="address"></strong>
+            <span data-field="location-facts" class="row-location-facts"></span>
             <div data-field="risks" class="risk-chips"></div>
         </td>
-        <td data-label="现场材料">
+        <td data-label="复核 / 材料">
+            <span data-field="review" class="review-state"></span>
             <div data-field="evidence" class="evidence-chips"></div>
         </td>
         <td data-label="操作" class="action-cell">
@@ -650,6 +776,6 @@
     </tr>
 </template>
 
-<script src="/sales-checkin/admin/admin.js" defer></script>
+<script src="/sales-checkin/admin/admin.js?v=20260908-admin-recovery-sort-multi-photo" defer></script>
 </body>
 </html>

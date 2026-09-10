@@ -38,7 +38,7 @@ class TemporaryCheckinLocationVerificationTokenServiceTest {
     }
 
     @Test
-    void rejectsDifferentTenantSalespersonCityOrLocationEvidence() {
+    void allowsBusinessCityChangeButRejectsDifferentTenantSalespersonOrLocationEvidence() {
         TemporaryCheckinLocationVerificationTokenService issuer = serviceAt(TENANT_ID, NOW);
         String token = issuer.issue(SALESPERSON_ID, "北京", LONGITUDE, LATITUDE,
                 ACCURACY_METERS, CAPTURED_AT, resolvedGeocode());
@@ -47,8 +47,8 @@ class TemporaryCheckinLocationVerificationTokenServiceTest {
                 LONGITUDE, LATITUDE, ACCURACY_METERS, CAPTURED_AT));
         assertInvalid(() -> issuer.verify(token, UUID.randomUUID(), "北京",
                 LONGITUDE, LATITUDE, ACCURACY_METERS, CAPTURED_AT));
-        assertInvalid(() -> issuer.verify(token, SALESPERSON_ID, "深圳",
-                LONGITUDE, LATITUDE, ACCURACY_METERS, CAPTURED_AT));
+        assertThat(issuer.verify(token, SALESPERSON_ID, "深圳",
+                LONGITUDE, LATITUDE, ACCURACY_METERS, CAPTURED_AT)).isEqualTo(resolvedGeocode());
         assertInvalid(() -> issuer.verify(token, SALESPERSON_ID, "北京",
                 LONGITUDE.add(new BigDecimal("0.0000001")), LATITUDE,
                 ACCURACY_METERS, CAPTURED_AT));

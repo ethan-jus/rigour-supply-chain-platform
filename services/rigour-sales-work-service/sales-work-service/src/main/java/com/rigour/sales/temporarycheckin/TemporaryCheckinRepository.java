@@ -82,28 +82,32 @@ public class TemporaryCheckinRepository {
                        contact_name, contact_phone, area_range, facility_count, business_types_json,
                        intended_businesses_json, cooperation_intent, store_grade, tags_json,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       location_verification_status, location_failure_reason, location_attempt_id,
                        source_poi_id, source_poi_name, source_poi_address,
                        source_poi_longitude, source_poi_latitude,
                        location_address, location_formatted_address, location_adcode,
                        amap_longitude, amap_latitude, geocode_status, geocode_error_code, geocoded_at,
                        status, created_at, updated_at
                   FROM temp_sales_checkin_store
-                 WHERE tenant_id=? AND city=? AND status='ACTIVE'
-                   AND (name LIKE ? ESCAPE '=' OR contact_name LIKE ? ESCAPE '=')
+                 WHERE tenant_id=? AND (? IS NULL OR city=?) AND status='ACTIVE'
+                   AND (name LIKE ? ESCAPE '=' OR contact_name LIKE ? ESCAPE '='
+                        OR source_poi_address LIKE ? ESCAPE '=' OR location_address LIKE ? ESCAPE '='
+                        OR location_formatted_address LIKE ? ESCAPE '=' OR location_note LIKE ? ESCAPE '=')
                  ORDER BY updated_at DESC, name, id
                  LIMIT ?
-                """, (rs, row) -> store(rs), bin(tenantId), city,
-                "%" + escapedQuery + "%", "%" + escapedQuery + "%", limit);
+                """, (rs, row) -> store(rs), bin(tenantId), city, city,
+                "%" + escapedQuery + "%", "%" + escapedQuery + "%", "%" + escapedQuery + "%",
+                "%" + escapedQuery + "%", "%" + escapedQuery + "%", "%" + escapedQuery + "%", limit);
     }
 
-    public List<StoreRow> findActiveStoresByCity(UUID tenantId, String city) {
+    public List<StoreRow> findActiveStores(UUID tenantId) {
         return jdbc.query(storeSelect() + """
-                 WHERE tenant_id=? AND city=? AND status='ACTIVE'
-                """, (rs, row) -> store(rs), bin(tenantId), city);
+                 WHERE tenant_id=? AND status='ACTIVE'
+                """, (rs, row) -> store(rs), bin(tenantId));
     }
 
     public List<StoreCheckinAnchorRow> findFirstAcceptableSubmittedStoreAnchors(
-            UUID tenantId, String city, int maxAccuracyMeters) {
+            UUID tenantId, int maxAccuracyMeters) {
         return jdbc.query("""
                 SELECT store_id, longitude, latitude, accuracy_meters, location_captured_at
                   FROM (
@@ -113,7 +117,8 @@ public class TemporaryCheckinRepository {
                                    ORDER BY submitted_at ASC, id ASC
                                ) AS anchor_rank
                           FROM temp_sales_checkin_submission
-                         WHERE tenant_id=? AND city=? AND status='SUBMITTED'
+                         WHERE tenant_id=? AND status='SUBMITTED'
+                           AND location_verification_status IN ('LEGACY', 'VERIFIED')
                            AND longitude IS NOT NULL AND latitude IS NOT NULL
                            AND longitude BETWEEN -180 AND 180
                            AND latitude BETWEEN -90 AND 90
@@ -123,15 +128,16 @@ public class TemporaryCheckinRepository {
                            AND submitted_at IS NOT NULL
                        ) ranked
                  WHERE anchor_rank=1
-                """, (rs, row) -> storeCheckinAnchor(rs), bin(tenantId), city, maxAccuracyMeters);
+                """, (rs, row) -> storeCheckinAnchor(rs), bin(tenantId), maxAccuracyMeters);
     }
 
     public Optional<StoreCheckinAnchorRow> findFirstAcceptableSubmittedStoreAnchor(
-            UUID tenantId, UUID storeId, String city, int maxAccuracyMeters) {
+            UUID tenantId, UUID storeId, int maxAccuracyMeters) {
         return jdbc.query("""
                 SELECT store_id, longitude, latitude, accuracy_meters, location_captured_at
                   FROM temp_sales_checkin_submission
-                 WHERE tenant_id=? AND store_id=? AND city=? AND status='SUBMITTED'
+                 WHERE tenant_id=? AND store_id=? AND status='SUBMITTED'
+                   AND location_verification_status IN ('LEGACY', 'VERIFIED')
                    AND longitude IS NOT NULL AND latitude IS NOT NULL
                    AND longitude BETWEEN -180 AND 180
                    AND latitude BETWEEN -90 AND 90
@@ -142,7 +148,7 @@ public class TemporaryCheckinRepository {
                  ORDER BY submitted_at ASC, id ASC
                  LIMIT 1
                 """, (rs, row) -> storeCheckinAnchor(rs),
-                bin(tenantId), bin(storeId), city, maxAccuracyMeters).stream().findFirst();
+                bin(tenantId), bin(storeId), maxAccuracyMeters).stream().findFirst();
     }
 
     public Optional<StoreRow> findStore(UUID tenantId, UUID id) {
@@ -184,18 +190,20 @@ public class TemporaryCheckinRepository {
                      operating_status, contact_name, contact_phone, area_range, facility_count,
                      business_types_json, intended_businesses_json, cooperation_intent, store_grade,
                      tags_json, longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                     location_verification_status, location_failure_reason, location_attempt_id,
                      location_address, location_formatted_address, location_adcode,
                      amap_longitude, amap_latitude, geocode_status, geocode_error_code, geocoded_at,
                      status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), ?, ?,
-                        CAST(? AS JSON), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+                        CAST(? AS JSON), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
                 """, bin(row.id()), bin(row.tenantId()), bin(row.clientStoreId()), row.sourcePoiId(),
                 row.sourcePoiName(), row.sourcePoiAddress(), row.sourcePoiLongitude(), row.sourcePoiLatitude(), row.city(),
                 bin(row.creatorSalespersonId()), row.attribute(), row.name(), row.operatingStatus(),
                 row.contactName(), row.contactPhone(), row.areaRange(), row.facilityCount(),
                 row.businessTypesJson(), row.intendedBusinessesJson(), row.cooperationIntent(),
                 row.storeGrade(), row.tagsJson(), row.longitude(), row.latitude(), row.accuracyMeters(),
-                timestamp(row.locationCapturedAt()), row.locationNote(), row.geocode().address(),
+                timestamp(row.locationCapturedAt()), row.locationNote(), row.locationVerificationStatus(),
+                row.locationFailureReason(), bin(row.locationAttemptId()), row.geocode().address(),
                 row.geocode().formattedAddress(), row.geocode().adcode(), row.geocode().amapLongitude(),
                 row.geocode().amapLatitude(), row.geocode().status(), row.geocode().errorCode(),
                 timestamp(row.geocode().geocodedAt()), timestamp(row.now()), timestamp(row.now()));
@@ -210,7 +218,8 @@ public class TemporaryCheckinRepository {
                        area_range=?, facility_count=?, business_types_json=CAST(? AS JSON),
                        intended_businesses_json=CAST(? AS JSON), cooperation_intent=?, store_grade=?,
                        tags_json=CAST(? AS JSON), longitude=?, latitude=?, accuracy_meters=?,
-                       location_captured_at=?, location_note=?, location_address=?,
+                       location_captured_at=?, location_note=?, location_verification_status=?,
+                       location_failure_reason=?, location_attempt_id=?, location_address=?,
                        location_formatted_address=?, location_adcode=?, amap_longitude=?, amap_latitude=?,
                        geocode_status=?, geocode_error_code=?, geocoded_at=?, updated_at=?
                  WHERE tenant_id=? AND id=? AND status='ACTIVE' AND source_poi_id=?
@@ -219,15 +228,44 @@ public class TemporaryCheckinRepository {
                 row.contactName(), row.contactPhone(), row.areaRange(), row.facilityCount(),
                 row.businessTypesJson(), row.intendedBusinessesJson(), row.cooperationIntent(),
                 row.storeGrade(), row.tagsJson(), row.longitude(), row.latitude(), row.accuracyMeters(),
-                timestamp(row.locationCapturedAt()), row.locationNote(), row.geocode().address(),
+                timestamp(row.locationCapturedAt()), row.locationNote(), row.locationVerificationStatus(),
+                row.locationFailureReason(), bin(row.locationAttemptId()), row.geocode().address(),
                 row.geocode().formattedAddress(), row.geocode().adcode(), row.geocode().amapLongitude(),
                 row.geocode().amapLatitude(), row.geocode().status(), row.geocode().errorCode(),
                 timestamp(row.geocode().geocodedAt()), timestamp(row.now()), bin(row.tenantId()),
                 bin(row.id()), row.sourcePoiId());
     }
 
+    public int upgradeUnverifiedStoreLocation(StoreWrite row) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_store
+                   SET source_poi_id=?, source_poi_name=?, source_poi_address=?,
+                       source_poi_longitude=?, source_poi_latitude=?,
+                       attribute=?, name=?, operating_status=?, contact_name=?, contact_phone=?,
+                       area_range=?, facility_count=?, business_types_json=CAST(? AS JSON),
+                       intended_businesses_json=CAST(? AS JSON), cooperation_intent=?, store_grade=?,
+                       tags_json=CAST(? AS JSON), longitude=?, latitude=?, accuracy_meters=?,
+                       location_captured_at=?, location_note=?, location_verification_status=?,
+                       location_failure_reason=?, location_attempt_id=?, location_address=?,
+                       location_formatted_address=?, location_adcode=?, amap_longitude=?, amap_latitude=?,
+                       geocode_status=?, geocode_error_code=?, geocoded_at=?, updated_at=?
+                 WHERE tenant_id=? AND id=? AND client_store_id=? AND status='ACTIVE'
+                   AND location_verification_status='UNVERIFIED'
+                """, row.sourcePoiId(), row.sourcePoiName(), row.sourcePoiAddress(),
+                row.sourcePoiLongitude(), row.sourcePoiLatitude(), row.attribute(), row.name(),
+                row.operatingStatus(), row.contactName(), row.contactPhone(), row.areaRange(),
+                row.facilityCount(), row.businessTypesJson(), row.intendedBusinessesJson(),
+                row.cooperationIntent(), row.storeGrade(), row.tagsJson(), row.longitude(), row.latitude(),
+                row.accuracyMeters(), timestamp(row.locationCapturedAt()), row.locationNote(),
+                row.locationVerificationStatus(), row.locationFailureReason(), bin(row.locationAttemptId()),
+                row.geocode().address(), row.geocode().formattedAddress(), row.geocode().adcode(),
+                row.geocode().amapLongitude(), row.geocode().amapLatitude(), row.geocode().status(),
+                row.geocode().errorCode(), timestamp(row.geocode().geocodedAt()), timestamp(row.now()),
+                bin(row.tenantId()), bin(row.id()), bin(row.clientStoreId()));
+    }
+
     public Optional<SubmissionRow> findSubmissionByClientId(UUID tenantId, UUID clientSubmissionId) {
-        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND client_submission_id=? LIMIT 1",
+        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND client_submission_id=? AND deletion_state='NONE' LIMIT 1",
                 (rs, row) -> submission(rs), bin(tenantId), bin(clientSubmissionId)).stream().findFirst();
     }
 
@@ -278,16 +316,21 @@ public class TemporaryCheckinRepository {
     }
 
     public Optional<SubmissionRow> findSubmission(UUID tenantId, UUID id) {
-        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND id=? LIMIT 1",
+        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND id=? AND deletion_state='NONE' LIMIT 1",
                 (rs, row) -> submission(rs), bin(tenantId), bin(id)).stream().findFirst();
     }
 
     public Optional<SubmissionRow> findSubmissionForUpdate(UUID tenantId, UUID id) {
-        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND id=? LIMIT 1 FOR UPDATE",
+        return jdbc.query(submissionSelect() + " WHERE tenant_id=? AND id=? AND deletion_state='NONE' LIMIT 1 FOR UPDATE",
                 (rs, row) -> submission(rs), bin(tenantId), bin(id)).stream().findFirst();
     }
 
     public void insertSubmission(SubmissionWrite row) {
+        insertSubmission(row, true);
+    }
+
+    /** 新公开请求按实际布尔值持久化；旧内部导入调用继续保留其既有明确同意记录。 */
+    public void insertSubmission(SubmissionWrite row, boolean privacyAccepted) {
         GeocodeWrite geocode = row.geocode();
         IdentityRiskWrite identity = row.identityRisk() == null
                 ? IdentityRiskWrite.legacy(row.now()) : row.identityRisk();
@@ -296,7 +339,8 @@ public class TemporaryCheckinRepository {
                     (id, tenant_id, client_submission_id, submission_key_hash, status, city,
                      salesperson_id, salesperson_name_snapshot, store_id, store_name_snapshot,
                      customer_name, customer_phone, visit_result, longitude, latitude, accuracy_meters,
-                     location_captured_at, location_note,
+                     location_captured_at, location_note, location_verification_status,
+                     location_failure_reason, location_attempt_id,
                      location_address, location_formatted_address, location_adcode, location_province,
                      location_city, location_district, location_township, amap_longitude, amap_latitude,
                      geocode_status, geocode_error_code, geocoded_at,
@@ -305,17 +349,18 @@ public class TemporaryCheckinRepository {
                      draft_ip_hash, draft_ip_network_hash, draft_ip_masked,
                      user_agent_hash, user_agent_summary, risk_level, risk_flags_json, risk_evaluated_at,
                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?,
+                VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?)
                 """, bin(row.id()), bin(row.tenantId()), bin(row.clientSubmissionId()), row.keyHash(), row.city(),
                 bin(row.salespersonId()), row.salespersonName(), bin(row.storeId()), row.storeName(),
                 row.customerName(), row.customerPhone(), row.visitResult(), row.longitude(), row.latitude(),
                 row.accuracyMeters(), timestamp(row.locationCapturedAt()), row.locationNote(),
+                row.locationVerificationStatus(), row.locationFailureReason(), bin(row.locationAttemptId()),
                 geocode.address(), geocode.formattedAddress(), geocode.adcode(), geocode.province(),
                 geocode.city(), geocode.district(), geocode.township(), geocode.amapLongitude(),
                 geocode.amapLatitude(), geocode.status(), geocode.errorCode(), timestamp(geocode.geocodedAt()),
-                row.privacyNoticeVersion(), identity.identityMethod(), timestamp(identity.identityVerifiedAt()),
+                privacyAccepted, row.privacyNoticeVersion(), identity.identityMethod(), timestamp(identity.identityVerifiedAt()),
                 identity.credentialVersion(), identity.deviceTokenHash(), identity.ipHash(),
                 identity.ipNetworkHash(), identity.ipMasked(), identity.userAgentHash(),
                 identity.userAgentSummary(), identity.riskLevel(), identity.riskFlagsJson(),
@@ -328,10 +373,126 @@ public class TemporaryCheckinRepository {
                 + prefix + "object_key=?, " + prefix + "content_type=?, " + prefix + "size_bytes=?, "
                 + prefix + "sha256=?, " + prefix + "original_filename=?, "
                 + prefix + "deleted_at=NULL, " + prefix + "deleted_by=NULL, "
-                + prefix + "deletion_reason=NULL, updated_at=? "
+                + prefix + "deletion_reason=NULL, "
+                + "updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at)) "
                 + "WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE'";
         return jdbc.update(sql, media.objectKey(), media.contentType(), media.sizeBytes(), media.sha256(),
                 media.originalFilename(), timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    /** 调用方先锁提交行；照片行和旧单图投影始终在同一事务中更新。 */
+    public List<PhotoRow> photos(UUID tenant, UUID submission) {
+        List<PhotoRow> rows=jdbc.query("""
+                SELECT * FROM temp_sales_checkin_photo WHERE tenant_id=? AND submission_id=?
+                ORDER BY (photo_id=submission_id) DESC, uploaded_at, photo_id
+                """, (rs,n) -> photo(rs), bin(tenant), bin(submission));
+        if(!rows.isEmpty()) return rows;
+        return jdbc.query(legacyPhotoSelect()+" AND s.tenant_id=? AND s.id=?",(rs,n)->photo(rs),bin(tenant),bin(submission));
+    }
+
+    public java.util.Map<UUID,List<PhotoRow>> photosBatch(UUID tenant, List<UUID> submissions) {
+        if (submissions.isEmpty()) return java.util.Map.of();
+        List<Object> args = new ArrayList<>(); args.add(bin(tenant));
+        submissions.forEach(id -> args.add(bin(id)));
+        List<PhotoRow> rows=new ArrayList<>(jdbc.query("SELECT p.* FROM temp_sales_checkin_photo p JOIN temp_sales_checkin_submission s "
+                + "ON s.tenant_id=p.tenant_id AND s.id=p.submission_id WHERE p.tenant_id=? "
+                + "AND s.deletion_state='NONE' AND p.deleted_at IS NULL AND p.submission_id IN ("
+                + String.join(",", java.util.Collections.nCopies(submissions.size(), "?"))
+                + ") ORDER BY (p.photo_id=p.submission_id) DESC, p.uploaded_at, p.photo_id",
+                (rs,n) -> photo(rs), args.toArray()));
+        rows.addAll(jdbc.query(legacyPhotoSelect()+" AND s.tenant_id=? AND s.deletion_state='NONE' "
+                +"AND s.storefront_photo_deleted_at IS NULL AND s.id IN ("
+                +String.join(",",java.util.Collections.nCopies(submissions.size(),"?"))+")",(rs,n)->photo(rs),args.toArray()));
+        return rows.stream().collect(java.util.stream.Collectors.groupingBy(PhotoRow::submissionId));
+    }
+
+    /** 兼容旧容器在迁移后写入的单图，不把缺失的来源或上传时间猜成拍摄事实。 */
+    private static String legacyPhotoSelect() {
+        return """
+                SELECT s.id AS submission_id,s.id AS photo_id,s.storefront_photo_object_key AS object_key,
+                    s.storefront_photo_content_type AS content_type,s.storefront_photo_size_bytes AS size_bytes,
+                    s.storefront_photo_sha256 AS sha256,s.storefront_photo_original_filename AS original_filename,
+                    NULL AS uploaded_at,NULL AS capture_source,s.storefront_photo_deleted_at AS deleted_at,
+                    s.storefront_photo_deleted_by AS deleted_by,s.storefront_photo_deletion_reason AS deletion_reason
+                FROM temp_sales_checkin_submission s WHERE s.storefront_photo_object_key IS NOT NULL
+                    AND NOT EXISTS (SELECT 1 FROM temp_sales_checkin_photo p WHERE p.tenant_id=s.tenant_id AND p.submission_id=s.id)
+                """;
+    }
+
+    private void materializeLegacyPhoto(UUID tenant,UUID submission) {
+        jdbc.update("""
+                INSERT INTO temp_sales_checkin_photo
+                (tenant_id,submission_id,photo_id,object_key,content_type,size_bytes,sha256,original_filename,
+                    deleted_at,deleted_by,deletion_reason)
+                SELECT tenant_id,id,id,storefront_photo_object_key,storefront_photo_content_type,
+                    storefront_photo_size_bytes,storefront_photo_sha256,storefront_photo_original_filename,
+                    storefront_photo_deleted_at,storefront_photo_deleted_by,storefront_photo_deletion_reason
+                FROM temp_sales_checkin_submission s WHERE tenant_id=? AND id=? AND storefront_photo_object_key IS NOT NULL
+                AND NOT EXISTS(SELECT 1 FROM temp_sales_checkin_photo p WHERE p.tenant_id=s.tenant_id AND p.submission_id=s.id)
+                """,bin(tenant),bin(submission));
+    }
+
+    public void savePhoto(UUID tenant, UUID submission, UUID photoId, MediaWrite media,
+            String captureSource, Instant uploadedAt) {
+        materializeLegacyPhoto(tenant,submission);
+        jdbc.update("""
+                INSERT INTO temp_sales_checkin_photo
+                (tenant_id,submission_id,photo_id,object_key,content_type,size_bytes,sha256,
+                 original_filename,uploaded_at,capture_source)
+                VALUES (?,?,?,?,?,?,?,?,?,?) AS incoming
+                ON DUPLICATE KEY UPDATE object_key=incoming.object_key,content_type=incoming.content_type,
+                    size_bytes=incoming.size_bytes,sha256=incoming.sha256,original_filename=incoming.original_filename,
+                    uploaded_at=incoming.uploaded_at,capture_source=incoming.capture_source,
+                    deleted_at=NULL,deleted_by=NULL,deletion_reason=NULL
+                """,bin(tenant),bin(submission),bin(photoId),media.objectKey(),media.contentType(),media.sizeBytes(),
+                media.sha256(),media.originalFilename(),timestamp(uploadedAt),captureSource);
+        syncPhotoProjection(tenant,submission,uploadedAt);
+    }
+
+    public void markPhotoDeleted(UUID tenant, UUID submission, UUID photoId, String actor, String reason, Instant now) {
+        materializeLegacyPhoto(tenant,submission);
+        jdbc.update("""
+                UPDATE temp_sales_checkin_photo SET deleted_at=?,deleted_by=?,deletion_reason=?
+                WHERE tenant_id=? AND submission_id=? AND photo_id=? AND deleted_at IS NULL
+                """,timestamp(now),actor,reason,bin(tenant),bin(submission),bin(photoId));
+        syncPhotoProjection(tenant,submission,now);
+    }
+
+    private void syncPhotoProjection(UUID tenant, UUID submission, Instant now) {
+        List<PhotoRow> rows=photos(tenant,submission);
+        PhotoRow first=rows.stream().filter(PhotoRow::available).findFirst().orElse(rows.isEmpty()?null:rows.getFirst());
+        if(first==null) return;
+        jdbc.update("""
+                UPDATE temp_sales_checkin_submission SET storefront_photo_object_key=?,storefront_photo_content_type=?,
+                    storefront_photo_size_bytes=?,storefront_photo_sha256=?,storefront_photo_original_filename=?,
+                    storefront_photo_deleted_at=?,storefront_photo_deleted_by=?,storefront_photo_deletion_reason=?,
+                    updated_at=GREATEST(?,TIMESTAMPADD(MICROSECOND,1,updated_at))
+                WHERE tenant_id=? AND id=? AND deletion_state='NONE'
+                """,first.objectKey(),first.contentType(),first.sizeBytes(),first.sha256(),first.originalFilename(),
+                timestamp(first.deletedAt()),first.deletedBy(),first.deletionReason(),timestamp(now),bin(tenant),bin(submission));
+    }
+
+    private static PhotoRow photo(ResultSet rs) throws SQLException {
+        return new PhotoRow(uuid(rs,"submission_id"),uuid(rs,"photo_id"),rs.getString("object_key"),
+                rs.getString("content_type"),rs.getLong("size_bytes"),rs.getString("sha256"),
+                rs.getString("original_filename"),instant(rs,"uploaded_at"),rs.getString("capture_source"),
+                instant(rs,"deleted_at"),rs.getString("deleted_by"),rs.getString("deletion_reason"));
+    }
+
+    public int updateMediaIfRevision(
+            UUID tenantId, UUID submissionId, String prefix, MediaWrite media,
+            Instant expectedUpdatedAt, Instant now) {
+        String sql = "UPDATE temp_sales_checkin_submission SET "
+                + prefix + "object_key=?, " + prefix + "content_type=?, " + prefix + "size_bytes=?, "
+                + prefix + "sha256=?, " + prefix + "original_filename=?, "
+                + prefix + "deleted_at=NULL, " + prefix + "deleted_by=NULL, "
+                + prefix + "deletion_reason=NULL, "
+                + "updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at)) "
+                + "WHERE tenant_id=? AND id=? AND status IN ('DRAFT','SUBMITTED') AND deletion_state='NONE' "
+                + "AND updated_at=?";
+        return jdbc.update(sql, media.objectKey(), media.contentType(), media.sizeBytes(), media.sha256(),
+                media.originalFilename(), timestamp(now), bin(tenantId), bin(submissionId),
+                timestamp(expectedUpdatedAt));
     }
 
     public int clearDraftMedia(
@@ -339,10 +500,20 @@ public class TemporaryCheckinRepository {
         String sql = "UPDATE temp_sales_checkin_submission SET "
                 + prefix + "object_key=NULL, " + prefix + "content_type=NULL, "
                 + prefix + "size_bytes=NULL, " + prefix + "sha256=NULL, "
-                + prefix + "original_filename=NULL, updated_at=? "
+                + prefix + "original_filename=NULL, "
+                + "updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at)) "
                 + "WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE' AND "
                 + prefix + "object_key=?";
         return jdbc.update(sql, timestamp(now), bin(tenantId), bin(submissionId), expectedObjectKey);
+    }
+
+    public int touchDraftMediaMutation(UUID tenantId, UUID submissionId) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET updated_at=GREATEST(
+                       UTC_TIMESTAMP(6), TIMESTAMPADD(MICROSECOND,1,updated_at))
+                 WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE'
+                """, bin(tenantId), bin(submissionId));
     }
 
     public int updateDraftAudioManifest(
@@ -354,7 +525,8 @@ public class TemporaryCheckinRepository {
                        audio_active_segment_count=?, audio_active_size_bytes=?,
                        audio_object_key=?, audio_content_type=?, audio_size_bytes=?, audio_sha256=?,
                        audio_original_filename=?, audio_deleted_at=NULL, audio_deleted_by=NULL,
-                       audio_deletion_reason=NULL, updated_at=?
+                       audio_deletion_reason=NULL,
+                       updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at))
                  WHERE tenant_id=? AND id=? AND status='DRAFT' AND deletion_state='NONE'
                 """, manifestJson, activeCount, activeBytes,
                 projection == null ? null : projection.objectKey(),
@@ -363,6 +535,28 @@ public class TemporaryCheckinRepository {
                 projection == null ? null : projection.sha256(),
                 projection == null ? null : projection.originalFilename(),
                 timestamp(now), bin(tenantId), bin(submissionId));
+    }
+
+    public int updateDraftAudioManifestIfRevision(
+            UUID tenantId, UUID submissionId, String manifestJson, int activeCount, long activeBytes,
+            MediaWrite projection, Instant expectedUpdatedAt, Instant now) {
+        return jdbc.update("""
+                UPDATE temp_sales_checkin_submission
+                   SET audio_segments_json=CAST(? AS JSON),
+                       audio_active_segment_count=?, audio_active_size_bytes=?,
+                       audio_object_key=?, audio_content_type=?, audio_size_bytes=?, audio_sha256=?,
+                       audio_original_filename=?, audio_deleted_at=NULL, audio_deleted_by=NULL,
+                       audio_deletion_reason=NULL,
+                       updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at))
+                 WHERE tenant_id=? AND id=? AND status IN ('DRAFT','SUBMITTED') AND deletion_state='NONE'
+                   AND updated_at=?
+                """, manifestJson, activeCount, activeBytes,
+                projection == null ? null : projection.objectKey(),
+                projection == null ? null : projection.contentType(),
+                projection == null ? null : projection.sizeBytes(),
+                projection == null ? null : projection.sha256(),
+                projection == null ? null : projection.originalFilename(),
+                timestamp(now), bin(tenantId), bin(submissionId), timestamp(expectedUpdatedAt));
     }
 
     public int updateAdminAudioManifest(
@@ -374,7 +568,8 @@ public class TemporaryCheckinRepository {
                        audio_active_segment_count=?, audio_active_size_bytes=?,
                        audio_object_key=?, audio_content_type=?, audio_size_bytes=?, audio_sha256=?,
                        audio_original_filename=?,
-                       audio_deleted_at=?, audio_deleted_by=?, audio_deletion_reason=?, updated_at=?
+                       audio_deleted_at=?, audio_deleted_by=?, audio_deletion_reason=?,
+                       updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at))
                  WHERE tenant_id=? AND id=? AND deletion_state='NONE'
                 """, manifestJson, activeCount, activeBytes,
                 projection == null ? null : projection.objectKey(),
@@ -423,6 +618,23 @@ public class TemporaryCheckinRepository {
     public List<ExportRow> export(UUID tenantId, Instant from, Instant toExclusive, String city,
                                   UUID salespersonId, String status, String visitType,
                                   String escapedQuery, int limit) {
+        return export(tenantId, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, limit, AdminReadOptions.defaults());
+    }
+
+    public List<ExportRow> export(UUID tenantId, Instant from, Instant toExclusive, String city,
+                                  UUID salespersonId, String status, String visitType,
+                                  String escapedQuery, int limit, AdminReadOptions options) {
+        return exportRows(tenantId,from,toExclusive,city,salespersonId,status,visitType,escapedQuery,limit,options,false);
+    }
+
+    /** Excel只读业务展示列，排除MEDIUMTEXT转写等未使用大字段。 */
+    List<ExportRow> exportForWorkbook(UUID tenantId, Instant from, Instant toExclusive, String city,
+            UUID salespersonId,String status,String visitType,String escapedQuery,int limit,AdminReadOptions options) {
+        return exportRows(tenantId,from,toExclusive,city,salespersonId,status,visitType,escapedQuery,limit,options,true);
+    }
+
+    private List<ExportRow> exportRows(UUID tenantId, Instant from, Instant toExclusive, String city,
+            UUID salespersonId,String status,String visitType,String escapedQuery,int limit,AdminReadOptions options,boolean compact) {
         StringBuilder sql = new StringBuilder("""
                 WITH visit_ranks AS (
                     SELECT id,
@@ -438,6 +650,7 @@ public class TemporaryCheckinRepository {
                        r.visit_ordinal,
                        customer_name, customer_phone, visit_result,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       location_verification_status, location_failure_reason, location_attempt_id,
                        location_address, location_adcode,
                        identity_method, submitted_ip_masked, user_agent_summary,
                        risk_level, risk_flags_json,
@@ -450,17 +663,42 @@ public class TemporaryCheckinRepository {
                   LEFT JOIN visit_ranks r ON r.id=s.id
                  WHERE s.tenant_id=?
                 """);
+        if(compact) {
+            String projection=sql.toString();
+            for(String column:List.of("transcript","summary_text","audio_segments_json","location_note","risk_flags_json","user_agent_summary"))
+                projection=projection.replaceAll("\\b"+column+"\\b","NULL AS "+column);
+            sql=new StringBuilder(projection);
+        }
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
         appendAdminFilters(
-                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery);
-        sql.append(" ORDER BY COALESCE(s.submitted_at, s.created_at) DESC, s.id DESC LIMIT ?");
+                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, options);
+        sql.append(options.orderBy()).append(" LIMIT ?");
         arguments.add(limit);
         return jdbc.query(sql.toString(), (rs, row) -> exportRow(rs), arguments.toArray());
+    }
+
+    /** 按记录聚合照片张数，不把所有照片元数据装入导出内存。 */
+    java.util.Map<UUID,Long> photoCounts(UUID tenantId,List<UUID> ids) {
+        java.util.Map<UUID,Long> counts=new java.util.HashMap<>();
+        for(int start=0;start<ids.size();start+=500) {
+            List<UUID> batch=ids.subList(start,Math.min(start+500,ids.size()));
+            List<Object> args=new ArrayList<>();args.add(bin(tenantId));batch.forEach(id->args.add(bin(id)));
+            jdbc.query("SELECT submission_id,COUNT(*) AS total FROM temp_sales_checkin_photo WHERE tenant_id=? AND deleted_at IS NULL AND submission_id IN ("
+                    +String.join(",",java.util.Collections.nCopies(batch.size(),"?"))+") GROUP BY submission_id",
+                    (org.springframework.jdbc.core.RowCallbackHandler) rs->counts.put(SalesUuidCodec.decode(rs.getBytes(1)),rs.getLong(2)),args.toArray());
+        }
+        return counts;
     }
 
     public AdminSubmissionStats adminSubmissionStats(
             UUID tenantId, Instant from, Instant toExclusive, String city,
             UUID salespersonId, String status, String visitType, String escapedQuery) {
+        return adminSubmissionStats(tenantId, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, AdminReadOptions.defaults());
+    }
+
+    public AdminSubmissionStats adminSubmissionStats(
+            UUID tenantId, Instant from, Instant toExclusive, String city,
+            UUID salespersonId, String status, String visitType, String escapedQuery, AdminReadOptions options) {
         StringBuilder sql = new StringBuilder("""
                 WITH visit_ranks AS (
                     SELECT id,
@@ -475,22 +713,32 @@ public class TemporaryCheckinRepository {
                        COALESCE(SUM(CASE WHEN r.visit_ordinal=1 THEN 1 ELSE 0 END), 0)
                            AS first_visit_total,
                        COALESCE(SUM(CASE WHEN r.visit_ordinal>1 THEN 1 ELSE 0 END), 0)
-                           AS revisit_total
+                           AS revisit_total,
+                       COALESCE(SUM(s.location_quality<>'GOOD'),0) AS location_attention_total,
+                       COALESCE(SUM(s.review_status='PENDING'),0) AS review_pending_total,
+                       COALESCE(SUM(s.audio_active_segment_count=0 AND (s.audio_object_key IS NULL OR s.audio_deleted_at IS NOT NULL)),0) AS missing_audio_total
                   FROM temp_sales_checkin_submission s
                   LEFT JOIN visit_ranks r ON r.id=s.id
                  WHERE s.tenant_id=?
                 """);
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
         appendAdminFilters(
-                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery);
+                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, options);
         return jdbc.queryForObject(sql.toString(), (rs, row) -> new AdminSubmissionStats(
-                rs.getLong("total"), rs.getLong("first_visit_total"), rs.getLong("revisit_total")),
+                rs.getLong("total"), rs.getLong("first_visit_total"), rs.getLong("revisit_total"),
+                rs.getLong("location_attention_total"),rs.getLong("review_pending_total"),rs.getLong("missing_audio_total")),
                 arguments.toArray());
     }
 
     public List<AdminSubmissionRow> findAdminSubmissions(
             UUID tenantId, Instant from, Instant toExclusive, String city, UUID salespersonId,
             String status, String visitType, String escapedQuery, int offset, int limit) {
+        return findAdminSubmissions(tenantId, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, offset, limit, AdminReadOptions.defaults());
+    }
+
+    public List<AdminSubmissionRow> findAdminSubmissions(
+            UUID tenantId, Instant from, Instant toExclusive, String city, UUID salespersonId,
+            String status, String visitType, String escapedQuery, int offset, int limit, AdminReadOptions options) {
         StringBuilder sql = new StringBuilder("""
                 WITH visit_ranks AS (
                     SELECT id,
@@ -505,6 +753,7 @@ public class TemporaryCheckinRepository {
                        s.store_id, s.store_name_snapshot, r.visit_ordinal,
                        customer_name, customer_phone, visit_result,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       location_verification_status, location_failure_reason, location_attempt_id,
                        location_address, location_adcode,
                        identity_method, submitted_ip_masked, user_agent_summary,
                        risk_level, risk_flags_json,
@@ -522,8 +771,8 @@ public class TemporaryCheckinRepository {
                 """);
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
         appendAdminFilters(
-                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery);
-        sql.append(" ORDER BY COALESCE(s.submitted_at, s.created_at) DESC, s.id DESC LIMIT ? OFFSET ?");
+                sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, options);
+        sql.append(options.orderBy()).append(" LIMIT ? OFFSET ?");
         arguments.add(limit);
         arguments.add(offset);
         return jdbc.query(sql.toString(), (rs, row) -> adminSubmission(rs), arguments.toArray());
@@ -537,7 +786,7 @@ public class TemporaryCheckinRepository {
                 + prefix + "original_filename AS original_filename, "
                 + prefix + "deleted_at AS deleted_at, " + prefix + "deleted_by AS deleted_by, "
                 + prefix + "deletion_reason AS deletion_reason "
-                + "FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=?"
+                + "FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=? AND deletion_state='NONE'"
                 + " AND " + prefix + "deleted_at IS NULL"
                 + (city == null ? "" : " AND city=?") + " LIMIT 1";
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(submissionId)));
@@ -554,7 +803,7 @@ public class TemporaryCheckinRepository {
         String cityClause = city == null ? "" : " AND city=?";
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId)));
         if (city != null) arguments.add(city);
-        return jdbc.query("""
+        MediaStorageStatsRow primary=jdbc.query("""
                 SELECT
                   COALESCE(SUM(
                     (storefront_photo_object_key IS NOT NULL AND storefront_photo_deleted_at IS NULL)
@@ -590,11 +839,21 @@ public class TemporaryCheckinRepository {
                     created_at, NULL
                   )) AS oldest_created_at
                 FROM temp_sales_checkin_submission
-                WHERE tenant_id=?
+                WHERE tenant_id=? AND deletion_state='NONE'
                 """ + cityClause, (rs, row) -> new MediaStorageStatsRow(
                         rs.getLong("active_files"), rs.getLong("total_bytes"), rs.getLong("image_bytes"),
                         rs.getLong("audio_bytes"), instant(rs, "oldest_created_at")), arguments.toArray())
                 .stream().findFirst().orElse(new MediaStorageStatsRow(0, 0, 0, 0, null));
+        long[] additional=jdbc.query("""
+                SELECT COUNT(*) AS files,COALESCE(SUM(p.size_bytes),0) AS bytes
+                FROM temp_sales_checkin_photo p JOIN temp_sales_checkin_submission s
+                    ON s.tenant_id=p.tenant_id AND s.id=p.submission_id
+                WHERE s.tenant_id=? AND s.deletion_state='NONE' AND p.deleted_at IS NULL
+                    AND p.object_key<>COALESCE(s.storefront_photo_object_key,'')
+                """+(city==null?"":" AND s.city=?"),(rs,n)->new long[]{rs.getLong("files"),rs.getLong("bytes")},
+                arguments.toArray()).getFirst();
+        return new MediaStorageStatsRow(primary.activeFiles()+additional[0],primary.totalBytes()+additional[1],
+                primary.imageBytes()+additional[1],primary.audioBytes(),primary.oldestCreatedAt());
     }
 
     public int markMediaDeleted(
@@ -606,7 +865,8 @@ public class TemporaryCheckinRepository {
                 + "summary_error_code=NULL, summary_updated_at=?"
                 : "";
         String sql = "UPDATE temp_sales_checkin_submission SET " + prefix + "deleted_at=?, "
-                + prefix + "deleted_by=?, " + prefix + "deletion_reason=?, updated_at=?" + extra
+                + prefix + "deleted_by=?, " + prefix + "deletion_reason=?, "
+                + "updated_at=GREATEST(?, TIMESTAMPADD(MICROSECOND,1,updated_at))" + extra
                 + " WHERE tenant_id=? AND id=? AND " + prefix + "object_key=? AND "
                 + prefix + "deleted_at IS NULL AND deletion_state='NONE'";
         if ("audio_".equals(prefix)) {
@@ -781,9 +1041,21 @@ public class TemporaryCheckinRepository {
         return transcription + summary;
     }
 
-    private static void appendAdminFilters(
+    static void appendAdminFilters(
             StringBuilder sql, List<Object> arguments, Instant from, Instant toExclusive, String city,
-            UUID salespersonId, String status, String visitType, String escapedQuery) {
+            UUID salespersonId, String status, String visitType, String escapedQuery, AdminReadOptions options) {
+        if (options.locationStatus() != null) {
+            sql.append(" AND s.location_quality=?"); arguments.add(options.locationStatus());
+        }
+        if (options.reviewStatus() != null) {
+            sql.append(" AND s.review_status=?"); arguments.add(options.reviewStatus());
+        }
+        if ("MISSING_AUDIO".equals(options.mediaStatus()))
+            sql.append(" AND s.audio_active_segment_count=0 AND (s.audio_object_key IS NULL OR s.audio_deleted_at IS NOT NULL)");
+        if ("HAS_AUDIO".equals(options.mediaStatus()))
+            sql.append(" AND (s.audio_active_segment_count>0 OR (s.audio_object_key IS NOT NULL AND s.audio_deleted_at IS NULL))");
+        if ("MISSING_PHOTO".equals(options.mediaStatus()))
+            sql.append(" AND (s.storefront_photo_object_key IS NULL OR s.storefront_photo_deleted_at IS NOT NULL)");
         // 已提交记录按真正的拜访提交时间归属日期；草稿尚无 submitted_at，才回退创建时间。
         if (from != null) {
             sql.append(" AND COALESCE(s.submitted_at, s.created_at)>=?");
@@ -847,6 +1119,7 @@ public class TemporaryCheckinRepository {
                        contact_name, contact_phone, area_range, facility_count, business_types_json,
                        intended_businesses_json, cooperation_intent, store_grade, tags_json,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
+                       location_verification_status, location_failure_reason, location_attempt_id,
                        source_poi_id, source_poi_name, source_poi_address,
                        source_poi_longitude, source_poi_latitude,
                        location_address, location_formatted_address, location_adcode,
@@ -861,7 +1134,8 @@ public class TemporaryCheckinRepository {
                 SELECT id, client_submission_id, submission_key_hash, status, city, salesperson_id,
                        salesperson_name_snapshot, store_id, store_name_snapshot, customer_name,
                        customer_phone, visit_result, longitude, latitude, accuracy_meters,
-                       location_captured_at, location_note, privacy_accepted, privacy_notice_version,
+                       location_captured_at, location_note, location_verification_status,
+                       location_failure_reason, location_attempt_id, privacy_accepted, privacy_notice_version,
                        identity_method, identity_verified_at, credential_version, device_token_hash,
                        draft_ip_hash, draft_ip_network_hash, draft_ip_masked,
                        submitted_ip_hash, submitted_ip_network_hash, submitted_ip_masked,
@@ -906,7 +1180,9 @@ public class TemporaryCheckinRepository {
                 rs.getString("cooperation_intent"), rs.getString("store_grade"), rs.getString("tags_json"),
                 rs.getBigDecimal("longitude"), rs.getBigDecimal("latitude"),
                 rs.getBigDecimal("accuracy_meters"), instant(rs, "location_captured_at"),
-                rs.getString("location_note"), rs.getString("source_poi_id"), rs.getString("source_poi_name"),
+                rs.getString("location_note"), rs.getString("location_verification_status"),
+                rs.getString("location_failure_reason"), uuid(rs, "location_attempt_id"),
+                rs.getString("source_poi_id"), rs.getString("source_poi_name"),
                 rs.getString("source_poi_address"), rs.getBigDecimal("source_poi_longitude"),
                 rs.getBigDecimal("source_poi_latitude"), rs.getString("location_address"),
                 rs.getString("location_formatted_address"), rs.getString("location_adcode"),
@@ -930,6 +1206,8 @@ public class TemporaryCheckinRepository {
                 rs.getString("customer_phone"), rs.getString("visit_result"), rs.getBigDecimal("longitude"),
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
+                rs.getString("location_verification_status"), rs.getString("location_failure_reason"),
+                uuid(rs, "location_attempt_id"),
                 rs.getBoolean("privacy_accepted"), rs.getString("privacy_notice_version"),
                 rs.getString("identity_method"), instant(rs, "identity_verified_at"),
                 nullableInt(rs, "credential_version"), rs.getString("device_token_hash"),
@@ -965,6 +1243,8 @@ public class TemporaryCheckinRepository {
                 rs.getString("customer_phone"), rs.getString("visit_result"), rs.getBigDecimal("longitude"),
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
+                rs.getString("location_verification_status"), rs.getString("location_failure_reason"),
+                uuid(rs, "location_attempt_id"),
                 rs.getString("location_address"), rs.getString("location_adcode"),
                 rs.getString("identity_method"), rs.getString("submitted_ip_masked"),
                 rs.getString("user_agent_summary"), rs.getString("risk_level"),
@@ -988,6 +1268,8 @@ public class TemporaryCheckinRepository {
                 rs.getString("customer_phone"), rs.getString("visit_result"), rs.getBigDecimal("longitude"),
                 rs.getBigDecimal("latitude"), rs.getBigDecimal("accuracy_meters"),
                 instant(rs, "location_captured_at"), rs.getString("location_note"),
+                rs.getString("location_verification_status"), rs.getString("location_failure_reason"),
+                uuid(rs, "location_attempt_id"),
                 rs.getString("location_address"), rs.getString("location_adcode"),
                 rs.getString("identity_method"), rs.getString("submitted_ip_masked"),
                 rs.getString("user_agent_summary"), rs.getString("risk_level"),
@@ -1052,7 +1334,8 @@ public class TemporaryCheckinRepository {
             String operatingStatus, String contactName, String contactPhone, String areaRange, String facilityCount,
             String businessTypesJson, String intendedBusinessesJson, String cooperationIntent, String storeGrade,
             String tagsJson, BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, String sourcePoiId, String sourcePoiName,
+            Instant locationCapturedAt, String locationNote, String locationVerificationStatus,
+            String locationFailureReason, UUID locationAttemptId, String sourcePoiId, String sourcePoiName,
             String sourcePoiAddress, BigDecimal sourcePoiLongitude, BigDecimal sourcePoiLatitude,
             String locationAddress, String locationFormattedAddress, String locationAdcode,
             BigDecimal amapLongitude, BigDecimal amapLatitude, String geocodeStatus, String geocodeErrorCode,
@@ -1064,6 +1347,7 @@ public class TemporaryCheckinRepository {
             String facilityCount, String businessTypesJson, String intendedBusinessesJson, String cooperationIntent,
             String storeGrade, String tagsJson, BigDecimal longitude, BigDecimal latitude,
             BigDecimal accuracyMeters, Instant locationCapturedAt, String locationNote,
+            String locationVerificationStatus, String locationFailureReason, UUID locationAttemptId,
             String sourcePoiId, String sourcePoiName, String sourcePoiAddress,
             BigDecimal sourcePoiLongitude, BigDecimal sourcePoiLatitude, GeocodeWrite geocode, Instant now) { }
 
@@ -1079,12 +1363,24 @@ public class TemporaryCheckinRepository {
             String objectKey, String contentType, Long sizeBytes, String sha256, String originalFilename,
             Instant deletedAt, String deletedBy, String deletionReason) { }
 
+    /** 独立照片事实，来源和上传时间在历史导入记录中可以未知。 */
+    public record PhotoRow(UUID submissionId, UUID photoId, String objectKey, String contentType,
+            long sizeBytes, String sha256, String originalFilename, Instant uploadedAt, String captureSource,
+            Instant deletedAt, String deletedBy, String deletionReason) {
+        public boolean available() { return objectKey != null && deletedAt == null; }
+        public MediaReference media() { return new MediaReference(objectKey,contentType,sizeBytes,sha256,
+                originalFilename,deletedAt,deletedBy,deletionReason); }
+        public String mediaId() { return "photo-" + photoId; }
+    }
+
     public record SubmissionRow(
             UUID id, UUID clientSubmissionId, String keyHash, String status, String city,
             UUID salespersonId, String salespersonName, UUID storeId, String storeName,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, boolean privacyAccepted, String privacyNoticeVersion,
+            Instant locationCapturedAt, String locationNote, String locationVerificationStatus,
+            String locationFailureReason, UUID locationAttemptId,
+            boolean privacyAccepted, String privacyNoticeVersion,
             String identityMethod, Instant identityVerifiedAt, Integer credentialVersion,
             String deviceTokenHash, String draftIpHash, String draftIpNetworkHash, String draftIpMasked,
             String submittedIpHash, String submittedIpNetworkHash, String submittedIpMasked,
@@ -1103,7 +1399,8 @@ public class TemporaryCheckinRepository {
             UUID salespersonId, String salespersonName, UUID storeId, String storeName,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, GeocodeWrite geocode,
+            Instant locationCapturedAt, String locationNote, String locationVerificationStatus,
+            String locationFailureReason, UUID locationAttemptId, GeocodeWrite geocode,
             String privacyNoticeVersion, IdentityRiskWrite identityRisk, Instant now) {
 
         public SubmissionWrite(
@@ -1115,7 +1412,8 @@ public class TemporaryCheckinRepository {
                 String privacyNoticeVersion, Instant now) {
             this(id, tenantId, clientSubmissionId, keyHash, city, salespersonId, salespersonName,
                     storeId, storeName, customerName, customerPhone, visitResult, longitude, latitude,
-                    accuracyMeters, locationCapturedAt, locationNote, geocode, privacyNoticeVersion,
+                    accuracyMeters, locationCapturedAt, locationNote, "LEGACY", null, null,
+                    geocode, privacyNoticeVersion,
                     null, now);
         }
     }
@@ -1163,7 +1461,8 @@ public class TemporaryCheckinRepository {
             Long visitOrdinal,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, String locationAddress, String locationAdcode,
+            Instant locationCapturedAt, String locationNote, String locationVerificationStatus,
+            String locationFailureReason, UUID locationAttemptId, String locationAddress, String locationAdcode,
             String identityMethod, String submittedIpMasked, String userAgentSummary,
             String riskLevel, String riskFlagsJson,
             String storefrontPhotoFilename,
@@ -1171,14 +1470,47 @@ public class TemporaryCheckinRepository {
             String transcriptionStatus, String transcript, String summaryStatus, String summaryText,
             Instant createdAt, Instant submittedAt) { }
 
-    public record AdminSubmissionStats(long total, long firstVisitTotal, long revisitTotal) { }
+    public record AdminSubmissionStats(long total, long firstVisitTotal, long revisitTotal,
+            long locationAttentionTotal, long reviewPendingTotal, long missingAudioTotal) { }
+
+    /** 固定列映射杜绝客户端排序字符串进入 SQL，列表、统计、CSV 使用同一过滤模型。 */
+    public record AdminReadOptions(String locationStatus, String reviewStatus, String mediaStatus,
+            String sortBy, String sortDirection) {
+        public AdminReadOptions {
+            locationStatus = choice(locationStatus, java.util.Set.of("GOOD","LOW_ACCURACY","STALE",
+                    "TIME_UNKNOWN","MISSING","USER_REPORTED","OUT_OF_RANGE","STORE_UNLOCATED","LEGACY"), "locationStatus");
+            reviewStatus = choice(reviewStatus,java.util.Set.of("PENDING","APPROVED","FOLLOW_UP","FLAGGED"),"reviewStatus");
+            mediaStatus = choice(mediaStatus,java.util.Set.of("MISSING_AUDIO","HAS_AUDIO","MISSING_PHOTO"),"mediaStatus");
+            sortBy = sortBy == null || sortBy.isBlank() ? "completedAt" : sortBy;
+            sortDirection = sortDirection == null || sortDirection.isBlank() ? "desc" : sortDirection;
+            choice(sortBy,java.util.Set.of("completedAt","cityName","salespersonName","storeName"),"sortBy");
+            choice(sortDirection,java.util.Set.of("asc","desc"),"sortDirection");
+        }
+        static AdminReadOptions defaults() { return new AdminReadOptions(null,null,null,null,null); }
+        private static String choice(String value,java.util.Set<String> choices,String name) {
+            if (value == null || value.isBlank()) return null;
+            if (!choices.contains(value)) throw TemporaryCheckinException.badRequest(name+"无效");
+            return value;
+        }
+        String orderBy() {
+            String column = switch(sortBy) {
+                case "cityName" -> "s.city";
+                case "salespersonName" -> "s.salesperson_name_snapshot";
+                case "storeName" -> "s.store_name_snapshot";
+                default -> "s.submitted_at";
+            };
+            String direction = "asc".equals(sortDirection) ? " ASC" : " DESC";
+            return " ORDER BY " + column + " IS NULL ASC, " + column + direction + ", s.id" + direction;
+        }
+    }
 
     public record AdminSubmissionRow(
             UUID id, String status, String city, UUID salespersonId, String salespersonName,
             UUID storeId, String storeName, Long visitOrdinal,
             String customerName, String customerPhone, String visitResult,
             BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant locationCapturedAt, String locationNote, String locationAddress, String locationAdcode,
+            Instant locationCapturedAt, String locationNote, String locationVerificationStatus,
+            String locationFailureReason, UUID locationAttemptId, String locationAddress, String locationAdcode,
             String identityMethod, String submittedIpMasked, String userAgentSummary,
             String riskLevel, String riskFlagsJson,
             boolean storefrontPhotoAvailable, boolean wechatScreenshotAvailable, boolean audioAvailable,

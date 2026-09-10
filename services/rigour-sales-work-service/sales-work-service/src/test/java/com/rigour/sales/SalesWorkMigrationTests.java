@@ -95,7 +95,9 @@ class SalesWorkMigrationTests {
                                       'temp_sales_checkin_city',
                                       'temp_sales_checkin_admin_account',
                                       'temp_sales_checkin_admin_session',
-                                      'temp_sales_checkin_deletion_job')
+                                      'temp_sales_checkin_deletion_job',
+                                      'temp_sales_checkin_evidence_event',
+                                      'temp_sales_checkin_media_derivative')
                 """, Integer.class);
         Integer temporaryTenantColumnCount = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.columns
@@ -106,7 +108,9 @@ class SalesWorkMigrationTests {
                                       'temp_sales_checkin_city',
                                       'temp_sales_checkin_admin_account',
                                       'temp_sales_checkin_admin_session',
-                                      'temp_sales_checkin_deletion_job')
+                                      'temp_sales_checkin_deletion_job',
+                                      'temp_sales_checkin_evidence_event',
+                                      'temp_sales_checkin_media_derivative')
                    AND column_name='tenant_id' AND is_nullable='NO'
                 """, Integer.class);
         Integer temporaryMediaColumnCount = jdbc.queryForObject("""
@@ -130,6 +134,48 @@ class SalesWorkMigrationTests {
                        'location_province','location_city','location_district','location_township',
                        'amap_longitude','amap_latitude','geocode_status','geocode_error_code','geocoded_at'
                    )
+                """, Integer.class);
+        Integer temporaryLocationVerificationColumnCount = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema=DATABASE()
+                   AND table_name IN ('temp_sales_checkin_store', 'temp_sales_checkin_submission')
+                   AND (
+                       (column_name='location_verification_status' AND data_type='varchar'
+                            AND character_maximum_length=24 AND is_nullable='NO'
+                            AND column_default='LEGACY')
+                       OR (column_name='location_failure_reason' AND data_type='varchar'
+                            AND character_maximum_length=64 AND is_nullable='YES')
+                       OR (column_name='location_attempt_id' AND data_type='binary'
+                            AND character_maximum_length=16 AND is_nullable='YES')
+                   )
+                """, Integer.class);
+        Integer temporaryLocationVerificationIndexCount = jdbc.queryForObject("""
+                SELECT COUNT(DISTINCT table_name, index_name)
+                  FROM information_schema.statistics
+                 WHERE table_schema=DATABASE()
+                   AND index_name IN (
+                       'idx_temp_sales_checkin_store_location_verification',
+                       'idx_temp_sales_checkin_submission_location_verification'
+                   )
+                """, Integer.class);
+        Integer temporaryLocationVerificationConstraintCount = jdbc.queryForObject("""
+                SELECT COUNT(*)
+                  FROM information_schema.table_constraints
+                 WHERE constraint_schema=DATABASE() AND constraint_type='CHECK'
+                   AND constraint_name IN (
+                       'ck_temp_checkin_store_verification_v21',
+                       'ck_temp_checkin_verification_v21'
+                   )
+                """, Integer.class);
+        Integer temporarySkippedGeocodeConstraintCount = jdbc.queryForObject("""
+                SELECT COUNT(*)
+                  FROM information_schema.check_constraints
+                 WHERE constraint_schema=DATABASE()
+                   AND constraint_name IN (
+                       'ck_temp_sales_checkin_store_geocode_status',
+                       'ck_temp_sales_checkin_submission_geocode_status'
+                   )
+                   AND check_clause LIKE '%SKIPPED%'
                 """, Integer.class);
         Integer temporarySalespersonImportColumnCount = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.columns
@@ -192,7 +238,7 @@ class SalesWorkMigrationTests {
         Integer temporaryCheckConstraintCount = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.table_constraints
                  WHERE constraint_schema=DATABASE() AND constraint_type='CHECK'
-                   AND constraint_name LIKE 'ck\\_temp\\_sales\\_checkin\\_%'
+                   AND table_name LIKE 'temp\\_sales\\_checkin\\_%'
                 """, Integer.class);
         Integer temporaryIdentitySalespersonColumnCount = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.columns
@@ -358,23 +404,42 @@ class SalesWorkMigrationTests {
                    )
                 """, Integer.class);
 
-        assertThat(migrationCount).isEqualTo(19);
-        assertThat(tableCount).isEqualTo(39);
+        Integer evidenceColumns = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema=DATABASE() AND table_name='temp_sales_checkin_submission'
+                   AND column_name IN ('location_quality','location_raw_timestamp','location_received_at',
+                    'location_client_received_at','location_source','location_evidence_json',
+                    'store_longitude_snapshot','store_latitude_snapshot','distance_meters',
+                    'review_status','reviewed_by','reviewed_at')
+                """, Integer.class);
+        Integer evidenceUniqueColumns = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.key_column_usage
+                 WHERE constraint_schema=DATABASE()
+                   AND constraint_name IN ('uk_temp_evidence_event','uk_temp_media_derivative')
+                """, Integer.class);
+        assertThat(evidenceColumns).isEqualTo(12);
+        assertThat(evidenceUniqueColumns).isEqualTo(7);
+        assertThat(migrationCount).isEqualTo(23);
+        assertThat(tableCount).isEqualTo(42);
         assertThat(editableStoreTableCount).isZero();
         assertThat(storefrontEvidenceColumnCount).isEqualTo(10);
         assertThat(visitPlanExecutionConstraintCount).isEqualTo(3);
         assertThat(activePlanGeneratedColumnCount).isEqualTo(1);
         assertThat(decodedContentHashIndexColumnCount).isEqualTo(2);
-        assertThat(temporaryTableCount).isEqualTo(7);
-        assertThat(temporaryTenantColumnCount).isEqualTo(7);
+        assertThat(temporaryTableCount).isEqualTo(9);
+        assertThat(temporaryTenantColumnCount).isEqualTo(9);
         assertThat(temporaryMediaColumnCount).isEqualTo(15);
         assertThat(temporaryReadableLocationColumnCount).isEqualTo(12);
+        assertThat(temporaryLocationVerificationColumnCount).isEqualTo(6);
+        assertThat(temporaryLocationVerificationIndexCount).isEqualTo(2);
+        assertThat(temporaryLocationVerificationConstraintCount).isEqualTo(2);
+        assertThat(temporarySkippedGeocodeConstraintCount).isEqualTo(2);
         assertThat(temporarySalespersonImportColumnCount).isEqualTo(3);
         assertThat(temporaryStoreImportColumnCount).isEqualTo(6);
         assertThat(temporaryUniqueConstraintCount).isEqualTo(9);
         assertThat(temporaryForeignKeyCount).isEqualTo(3);
         assertThat(temporarySubmissionStoreForeignKeyColumnCount).isEqualTo(2);
-        assertThat(temporaryCheckConstraintCount).isEqualTo(38);
+        assertThat(temporaryCheckConstraintCount).isEqualTo(46);
         assertThat(temporaryIdentitySalespersonColumnCount).isEqualTo(5);
         assertThat(temporaryIdentityRiskSubmissionColumnCount).isEqualTo(15);
         assertThat(temporaryIdentityRiskConstraintCount).isEqualTo(5);

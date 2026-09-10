@@ -1,47 +1,92 @@
-# Sales Check-in Product Design QA
+# 拜访打卡蓝白七页面 · Design QA · 2026-09-07
 
-## Scope
+本结论仅覆盖本地浏览器渲染与本轮明确的生产界面约束。没有发布、生产业务验收或荣耀 / MagicOS 真机验收含义。未发现仍需修复的 P0 / P1 / P2 视觉问题；保留的内容差异和 P3 细节见下文。
 
-- Reference: `/Users/ethan/.codex/generated_images/01a032c2-a8fd-7cd0-9402-b40bcb449cf7/exec-ed0841e1-efc8-43e9-ad77-99052be11af1.png`
-- Implemented page: `services/rigour-sales-work-service/sales-work-service/src/main/resources/static/sales-checkin/`
-- Tested viewport: 426 x 926 CSS pixels
-- Tested state: Beijing, salesperson selected, synthetic readable location resolved, three nearby stores loaded, first registered store selected
-- Implementation capture: `/tmp/rigour-sales-checkin-option1-local-selected-final-v2.png`
-- Side-by-side comparison: `/tmp/rigour-sales-checkin-design-comparison-passed.png`
+## 对照基准与证据
 
-## Interaction QA
+批准稿目录：`/Users/ethan/myspance/rigour/B2B供应链/自动化系统构建/拜访打卡完整设计-20260907/`。
 
-- City and salesperson selectors work; salesperson options display names only.
-- Successful positioning shows a readable address, collection time, and accuracy without exposing raw coordinates as the primary UI.
-- Nearby registered stores can be selected directly.
-- Nearby unregistered Amap POIs open the prefilled store-enrichment flow.
-- A missing store can be added without maintaining a second equal-level workflow.
-- The selected nearby row is highlighted without rendering a duplicate selected-store card.
-- Recording removal pauses playback, clears the audio source, reloads the player, revokes the object URL, and removes the file from form state.
-- Static JavaScript syntax and DOM ID contracts passed; the tested browser console had no warnings or errors.
+所有主对照均将源图与浏览器图合成在同一个输入中，左侧源图、右侧实现。CSS 视口为 `390 × 844`，浏览器 PNG 为 `390 × 844`（DPR 1）。源图大多为 `853 × 1844`；第 3 张为 `852 × 1846`。仅为像素密度对照，将源图整体归一到 `390 × 844`，没有把源图的门店照片或控件切片用于生产界面。两种源图比例的微小差异不作为布局缺陷。
 
-## Visual Comparison History
+| 页面 | 浏览器证据 | 同输入对照 |
+| --- | --- | --- |
+| 选择门店（已选择） | `pw-01-home.png` | `comparisons/pw-01-home-final-comparison.png` |
+| 客户与沟通（已填写，录音入口） | `pw-02-form.png` | `comparisons/pw-02-form-final-comparison.png` |
+| 拍照确认（真实选入文件，有录音） | `pw-03-photo.png` | `comparisons/pw-03-photo-final-comparison.png` |
+| 提交结果（主记录已提交，附件异常） | `pw-04-result-pending.png` | `comparisons/pw-04-result-pending-final-comparison.png` |
+| 本人记录（数据已加载） | `pw-05-history.png` | `comparisons/pw-05-history-final-comparison.png` |
+| 日期范围（9 月 1–7 日） | `history-check/390-calendar.png` | `comparisons/06-calendar-final-comparison.png` |
+| 打卡明细（真实状态、图片、音频） | `pw-07-detail.png` | `comparisons/pw-07-detail-final-comparison.png` |
 
-The first comparison found P2 density mismatches: the hero, located-state button, and nearby rows were too tall, which delayed the core customer and visit fields. The implementation was tightened with a shorter solid-color hero, a compact reposition link after location succeeds, denser nearby-store rows, reduced repeated section headings, and a single selected-row state.
+上表和局部证据的路径相对 `docs/qa-20260907/`。已另行直接检查 `history-check/320-calendar.png`、`320-detail.png` 等窄屏图。最终确认第 3 步整宽照片图的文件时间晚于 CSS 冻结时间 `2026-09-07 19:59:34 +08:00`。
 
-The final same-width comparison found no actionable P0, P1, or P2 differences.
+局部对照：
 
-## Fidelity Surfaces
+- `comparisons/focus-history-row.png`：姓名、完整时间、照片裁切、摘要和真实媒体状态；归一后的局部统一放大 2 倍。
+- `comparisons/focus-calendar-close.png`：关键关闭控件；同一 Tabler 图标以原生 `img` 呈现后可见。
+- `comparisons/focus-photo-stage-final.png`：照片整宽、裁切与独立重拍按钮；修复后的局部等比例对照。
 
-- Typography: compact native sans-serif hierarchy matches the selected direction; field labels and values remain readable on a phone.
-- Spacing and density: the core flow fits more actions above the fold while preserving touch targets.
-- Color: deep teal brand header, white cards, neutral borders, and restrained status colors match the selected direction.
-- Shape: flat cards and modest radii are consistent across location, store, media, and consent areas.
-- Assets and image quality: the reference contains no photographic assets. No placeholder, fake raster asset, handcrafted SVG, emoji icon, or CSS illustration was introduced.
-- Copy: labels prioritize action language and readable addresses; privacy details remain available without dominating the primary flow.
+较早的 `*-comparison.png` / `*-v2-comparison.png` 为迭代证据，不能替代上表的最终图。早期 `/tmp` 中错误视口或页面状态尚未切换的截图未用于通过结论。
 
-## Intentional Differences
+## 五项必查表面
 
-- City and salesperson are side by side instead of stacked to shorten the anonymous mobile form.
-- Decorative line icons from the visual reference are not approximated with text symbols or fake drawings; clear text labels and native controls retain the affordances.
-- The public page does not show first-visit or revisit counts. Those counts are available only in the protected admin list and CSV because exposing them through anonymous store/salesperson identifiers would disclose visit-history aggregates.
-- Required media and consent steps can extend below the first viewport because they are functional and compliance constraints, not decorative content.
+- **字体和文字层级**：采用系统中文字体，首页 / 记录页标题与页面内主标题分级；步骤、门店、字段、真实状态可区分。重点次要记录文字为 `#6d7788`，白底对比度约 4.52。长门店名和客户内容允许换行，不伪造缩短业务值。
+- **布局和间距**：首页身份、已选门店行、底部双导航完整；第 2 步表单、录音入口和完整主按钮可见；第 3 步照片宽度恢复整行，固定提交按钮与录音动作分离。记录筛选、缩略图、日历和详情结构已按稿收紧。
+- **颜色和状态**：蓝白为主，绿色用于已收到 / 已提交，琥珀色用于待核对或附件问题。成功页不会因为选填附件异常改成整次打卡失败。
+- **图像与图标**：生产照片来自实际选入 / 服务器媒体；源图中的假门店不进入业务 UI。标准图标来自本地 Tabler MIT 资源。高像素原件不为追求即时预览而无界解码；关闭图标采用同源 SVG 的原生图片，两个宽度已目视确认。
+- **业务文案**：已去除多处重复步骤、技术规格长说明和冗余照片总标题；定位状态与“仍可选店”同时可见。413 显示“文件过大，请更换”等明确状态，不提供无效的同文件重试建议。
 
-## Result
+## 本轮问题、修复与复查
+
+| 严重度 | 问题 | 修复 | 复查结果 |
+| --- | --- | --- | --- |
+| P1 | 首页身份被白色顶栏盖住；底部导航没有显示 | 去除负上边距；根集成根据页面切换 `hidden` 和活动状态 | `pw-01-home` 身份、导航和固定主按钮完整 |
+| P2 | 首屏定位说明与列表行过厚，选中后又出现重复门店卡 | 合并定位提示；收紧行距；已有选中行时隐藏备用卡 | 目录层次清楚，仍保留刷新、详情和位置不准入口 |
+| P2 | 步骤条横排、表单过高、底部计数挤窄下一步 | 步骤圆点上 / 标签下；收紧字段和文本框；计数独立一行 | `pw-02-form` 客户字段、录音入口、完整下一步同时清楚 |
+| P2 | 第 3 步冗余照片标题与相册入口把图片推后 | 单一门头标题；相册置后；独立重拍；普通 review 收紧重复录音说明 | 图片和真实已选择状态优先 |
+| P1 | 新照片容器被共享 metadata 的 flex 选择器压成窄条 | 给 `.photo-preview-card > .photo-preview-stage` 明确整行尺寸 | 最新 `pw-03-photo` 与局部图确认 350px 整宽 |
+| P2 | 记录页头和筛选区过高，缩略图过小 | 头部 / 筛选收紧，390px 时 100px 图，320px 时 80px 图 | 最新记录列表与 320px 检查无横向溢出 |
+| P2 | 日历受 UA `max-width` 影响变成悬浮窄卡；月份总显示 42 天 | 明确整宽底部 dialog；按实际月历显示 4 / 5 / 6 周；日期上下顺序按稿 | 390 / 320 的日期范围图完整 |
+| P2 | 日历 X 的 mask 属性正常却未绘制 | 关键关闭改为同一个标准 SVG 的原生 `img` | 390 / 320 最新图均清晰，点击关闭测试通过 |
+| P2 | 详情事实与定位说明过厚 | 销售 / 城市并排；设备定位摘要与明细折叠；照片网格收紧 | 明细可读，位置来源没有被误称为门店地址 |
+
+## 有意保留的差异与 P3
+
+1. 本地截图使用隔离的示例 API 数据，因此姓名、门店、照片、总条数、录音时长和内容不会与批准稿的示例完全相同。代码没有内置这些业务示例来代替真实记录。
+2. 源图的结果异常是网络中断；本次对应图是已确认 413。后者需要“更换文件、同文件无需重试”的专门提示。两者共同验证主记录成功与选填附件状态分开呈现。
+3. 音频使用可拖动、可播放的原生浏览器控件。照片的安全元数据、多个音频段和异常说明会使第 3 步 / 详情纵向内容比静态稿更长，需要滚动；固定主动作不挡住页面末尾。没有用假的紧凑播放器或假时长换取首屏相似。
+4. 无法安全即时解码的大图显示明确的已选择状态，原图保留用于提交。现场照片的真实性和大图稳定性优先于复刻示例照片。
+5. 日期采用原生可键盘操作的日期 / 月份输入；详情使用服务端完整日期秒值，缺少门店档案地址时只显示已知城市，不拿设备 GPS 地址代替门店地址。
+6. P3：标准 Tabler 勾选圈比稿件的填充勾选圈更细；少量录音文件元数据仍比静态稿详细。这些不阻断阅读或核心作业，可在后续真实设备反馈中继续精简。
+
+## 交互证据边界
+
+视觉审查没有替代功能测试。实际执行结果为 Chrome 33 项、WebKit 持久模式 50 项通过，包含可信原生点击、真实 MediaRecorder、系统文件选择器重拍、草稿恢复、丢回执查询、首次详情返回和 413 后继续下一家；记录模块 390 / 320 共 92 项通过。另有 Node 80 项、Sales 158 项、最终 11 项页面契约与打包通过，33 个静态文件 SHA 一致。对应 JSON、日志和复现入口见下方；隔离数据验证不等于生产或荣耀真机验证。
+
+## 本轮浏览器验收与发布边界
+
+上轮仅有首页有效截图，故为 blocked；用户随后明确“改用本地playwright验证”。本轮按授权运行独立的本地 Chrome / 官方 Playwright WebKit，只允许访问 loopback 示例服务。实现就是工作树中的生产静态文件，不是另做的展示页。预览为 http://127.0.0.1:8774/sales-checkin/ 。
+
+行为回归还发现并修复：
+
+- WebKit 输入失焦时重复重写相同按钮文字，会取消原生首次触摸点击；生产改为只更新变化值，最小原生复现与最终两宽单次触摸验证均保留。
+- 录音容器的 `aria-disabled` 被操作按钮继承，导致录音中无法正常识别停止按钮；取消容器层禁用，具体按钮继续按录制状态控制。
+- 成功页首次直达详情后返回列表未触发查询；补首次加载，同时保留正常往返的筛选和滚动位置。
+- 重拍按钮通过原相机输入的同步点击进入原生文件选择流程，保留原有草稿保护和提交锁定。
+
+| 验收 | 最新结果 | 可复核证据 |
+| --- | --- | --- |
+| Chrome 录音/照片/恢复/回执/413 | 33 检查通过 | `docs/qa-20260907/public-browser-results.json` |
+| 本人历史两宽、日期/分页/排序/媒体/乱序 | 92 检查通过 | `docs/qa-20260907/history-check/README.md` |
+| WebKit 持久测试目录，两宽原生触摸/照片恢复/回执 | 50 检查通过 | `docs/qa-20260907/webkit/README.md` |
+| Node 行为回归 | 80 检查通过 | `/tmp/sales-checkin-js-playwright-final.log` |
+| 销售模块完整 verify | 158 测试通过，依赖 24 测试通过 | `/tmp/sales-module-verify-playwright-final.log` |
+| 最终样式后页面契约与重新打包 | 11 测试通过；Jar 中 33 个静态文件 SHA256 全匹配 | `/tmp/sales-page-contract-playwright-final.log`、`docs/qa-20260907/package-resources.json` |
+
+正式浏览器闭环没有未捕获 JS 异常。注入的网络失败/413 是测试条件；示例 API 未实现 `/diagnostics/events` 会返回 404，WebKit 会提示忽略 `interactive-widget`，这些已记录而没有宣称控制台绝对零信息。默认非持久 WebKit 上下文单独复现 Blob/File 原生存储失败；持久化临时目录中的原生探针和 App 刷新恢复均通过。该差异与失败时的降级流程有单独证据，不据此推断 iPhone 隐私模式表现。
+
+设计及本地销售浏览器验收通过，但**整个仓库发布门禁尚未通过**：已执行的全仓 verify 被原有 IAM V52 的 INACTIVE 与状态检查约束冲突阻塞。遵守不改写历史迁移的要求，未修改相关 IAM 代码；详见 `/tmp/sales-upgrade-full-verify.log`。销售模块成功不能代替全仓成功。
+
+真实 iPhone / Honor 的相机返回、软键盘、系统麦克风权限、GPS 和系统回收仍需真机验收；本轮不能证明原始“上传中退回首页”事件的根因或彻底消除。没有部署、提交、推送、生产数据库变更；旧 Docker 镜像不包含最终界面，不能作为交付镜像。
 
 final result: passed

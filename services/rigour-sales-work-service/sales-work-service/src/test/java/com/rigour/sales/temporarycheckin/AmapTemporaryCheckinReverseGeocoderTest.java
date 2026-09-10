@@ -57,6 +57,7 @@ class AmapTemporaryCheckinReverseGeocoderTest {
         assertThat(result.city()).isNull();
         assertThat(result.district()).isEqualTo("东城区");
         assertThat(result.amapLongitude()).isEqualByComparingTo("116.431200");
+        assertThat(geocoder.resolve(new BigDecimal("116.425123400"),new BigDecimal("39.886788600"))).isEqualTo(result);
         verify(converter).convert(new BigDecimal("116.4251234"), new BigDecimal("39.8867886"));
         server.verify();
     }
