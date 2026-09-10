@@ -169,7 +169,7 @@ public final class OrderSalesShipmentService {
                 order.customerNameSnapshot(),
                 order.contactPhoneSnapshot(),
                 code(order.regionCode(), "regionCode", false),
-                text(order.ownerStaffCode(), 50, "ownerStaffCode"),
+                text(order.ownerEmployeeCode(), 50, "ownerEmployeeCode"),
                 optionalId(command.warehouseId(), "warehouseId"),
                 optionalId(command.stockOutOrderId(), "stockOutOrderId"),
                 text(command.stockOutNo(), 50, "stockOutNo"),

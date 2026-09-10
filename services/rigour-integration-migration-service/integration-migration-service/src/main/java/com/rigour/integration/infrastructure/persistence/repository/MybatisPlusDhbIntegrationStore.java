@@ -221,15 +221,25 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
 
     @Override
     public List<SyncTargetView> activeSyncTargets(String objectType) {
+        return syncTargets(objectType, true);
+    }
+
+    @Override
+    public List<SyncTargetView> configuredSyncTargets(String objectType) {
+        return syncTargets(objectType, false);
+    }
+
+    private List<SyncTargetView> syncTargets(String objectType, boolean activeOnly) {
         String normalizedType = normalizedObjectType(objectType);
         List<SyncTargetView> targets = new ArrayList<>();
-        List<IntegrationSyncTaskEntity> tasks = taskMapper.selectList(
-                Wrappers.<IntegrationSyncTaskEntity>query()
-                        .eq("object_type", normalizedType)
-                        .eq("enabled", 1)
-                        .ne("task_status", "PAUSED")
-                        .isNull("deleted_at")
-                        .orderByAsc("tenant_id", "id"));
+        QueryWrapper<IntegrationSyncTaskEntity> query = Wrappers.<IntegrationSyncTaskEntity>query()
+                .eq("object_type", normalizedType)
+                .isNull("deleted_at")
+                .orderByAsc("tenant_id", "id");
+        if (activeOnly) {
+            query.eq("enabled", 1).ne("task_status", "PAUSED");
+        }
+        List<IntegrationSyncTaskEntity> tasks = taskMapper.selectList(query);
         for (IntegrationSyncTaskEntity task : tasks) {
             DhbConnectorEntity connector = connectorRow(
                     IntegrationUuidCodec.decode(task.tenantId),

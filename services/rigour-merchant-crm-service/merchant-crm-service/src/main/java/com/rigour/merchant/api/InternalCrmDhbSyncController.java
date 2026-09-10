@@ -5,6 +5,7 @@ import com.rigour.merchant.application.service.CrmMasterDataSyncService;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ApiResponse;
+import java.time.Instant;
 import java.util.UUID;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -30,8 +31,10 @@ public final class InternalCrmDhbSyncController {
         }
         CallerIdentity caller = AuthorizationContext.requireCurrent();
         return ApiResponse.success(service.runScheduled(caller, command.connectorId(),
-                command.sourceTaskId(), command.maxPages() == null ? 100 : command.maxPages()));
+                command.sourceTaskId(), command.maxPages() == null ? 100 : command.maxPages(),
+                command.from(), command.to()));
     }
 
-    public record InternalCrmDhbSyncCommand(UUID connectorId, UUID sourceTaskId, Integer maxPages) { }
+    public record InternalCrmDhbSyncCommand(UUID connectorId, UUID sourceTaskId, Integer maxPages,
+                                            Instant from, Instant to) { }
 }

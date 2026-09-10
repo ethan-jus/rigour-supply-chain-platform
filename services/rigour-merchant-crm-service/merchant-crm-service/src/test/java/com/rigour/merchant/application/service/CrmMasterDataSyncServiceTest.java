@@ -6,7 +6,7 @@ import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient;
 import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient.Collected;
 import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient.SourceRecord;
 import com.rigour.merchant.application.port.out.DhbCrmSyncTargetDiscoveryClient;
-import com.rigour.merchant.application.port.out.IamStaffDirectoryClient;
+import com.rigour.merchant.application.port.out.HrEmployeeDirectoryClient;
 import com.rigour.merchant.domain.model.CrmMasterDataObjectType;
 import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingBatchResult;
 import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand;
@@ -396,10 +396,10 @@ class CrmMasterDataSyncServiceTest {
             CrmDictionaryCoverageService dictionaries,
             ConnectorSyncLeaseClient lease,
             ExternalObjectMappingClient mappingClient) {
-        IamStaffDirectoryClient staffDirectory = mock(IamStaffDirectoryClient.class);
-        when(staffDirectory.resolveDinghuobaoStaff(any(), any(), any())).thenReturn(List.of());
+        HrEmployeeDirectoryClient employeeDirectory = mock(HrEmployeeDirectoryClient.class);
+        when(employeeDirectory.resolveDinghuobaoEmployees(any(), any(), any())).thenReturn(List.of());
         return new CrmMasterDataSyncService(client, discovery, store, dictionaries,
-                lease, mappingClient, staffDirectory);
+                lease, mappingClient, employeeDirectory);
     }
 
     private static ExternalObjectMappingCommand mapping(int index) {

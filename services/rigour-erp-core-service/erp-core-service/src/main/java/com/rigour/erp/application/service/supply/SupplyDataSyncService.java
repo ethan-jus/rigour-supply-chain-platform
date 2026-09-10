@@ -62,30 +62,59 @@ public final class SupplyDataSyncService {
     }
 
     public ErpDataSyncResult run(SupplyDataObjectType type, int maxPages) {
+        return run(type, maxPages, null, null);
+    }
+
+    public ErpDataSyncResult run(SupplyDataObjectType type, int maxPages,
+                                 Instant from, Instant to) {
         CallerIdentity caller = AuthorizationContext.requireCurrent();
         if (caller.tenantId() == null || caller.userId() == null) throw new AuthorizationDeniedException("tenant-caller");
         AuthorizationContext.requirePermission("erp:supply:write");
         if (maxPages < 1 || maxPages > 100) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "maxPages必须在1到100之间", List.of());
         }
+        validateWindow(from, to);
         SyncTargetView target = uniqueTarget(caller);
-        return runWithCaller(caller, target.connectorId(), caller.userId(), type, maxPages, false);
+        return runWithCaller(caller, target.connectorId(), caller.userId(), type, maxPages,
+                false, from, to);
     }
 
     /** 供 ERP 内部定时编排器调用；目标连接器已经由调度器完成发现和校验。 */
     public ErpDataSyncResult runScheduled(CallerIdentity caller, UUID connectorId,
                                           SupplyDataObjectType type, int maxPages) {
+        return runInternal(caller, connectorId, type, maxPages, true);
+    }
+
+    /** 供 ERP 内部定时编排器调用；目标连接器已经由调度器完成发现和校验。 */
+    public ErpDataSyncResult runScheduled(CallerIdentity caller, UUID connectorId,
+                                          SupplyDataObjectType type, int maxPages,
+                                          Instant from, Instant to) {
+        return runInternal(caller, connectorId, type, maxPages, true, from, to);
+    }
+
+    /** 供 Integration 统一编排器调用；目标连接器已经由 Integration 完成发现和校验。 */
+    public ErpDataSyncResult runInternal(CallerIdentity caller, UUID connectorId,
+                                         SupplyDataObjectType type, int maxPages,
+                                         boolean scheduled) {
+        return runInternal(caller, connectorId, type, maxPages, scheduled, null, null);
+    }
+
+    /** 供 Integration 统一编排器调用；目标连接器已经由 Integration 完成发现和校验。 */
+    public ErpDataSyncResult runInternal(CallerIdentity caller, UUID connectorId,
+                                         SupplyDataObjectType type, int maxPages,
+                                         boolean scheduled, Instant from, Instant to) {
         requireScheduledCaller(caller);
         if (connectorId == null) throw new IllegalArgumentException("connectorId不能为空");
         if (maxPages < 1 || maxPages > 100) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "maxPages必须在1到100之间", List.of());
         }
-        return runWithCaller(caller, connectorId, null, type, maxPages, true);
+        validateWindow(from, to);
+        return runWithCaller(caller, connectorId, null, type, maxPages, scheduled, from, to);
     }
 
     private ErpDataSyncResult runWithCaller(CallerIdentity caller, UUID connectorId, UUID actorId,
                                              SupplyDataObjectType type, int maxPages,
-                                             boolean scheduled) {
+                                             boolean scheduled, Instant from, Instant to) {
         String tenantId = caller.tenantId().toString();
         AtomicBoolean actionStarted = new AtomicBoolean(false);
         SyncAttempt attempt = new SyncAttempt();
@@ -93,7 +122,7 @@ public final class SupplyDataSyncService {
             return connectorLease.executeWithLeaseGuard(caller.tenantId(), connectorId, guard -> {
                 actionStarted.set(true);
                 return runUnderLease(caller, connectorId, actorId, type, maxPages,
-                        scheduled, attempt, guard);
+                        scheduled, from, to, attempt, guard);
             });
         } catch (RuntimeException error) {
             if (scheduled && !actionStarted.get() && SyncConflictClassifier.isAlreadyRunning(error)) {
@@ -111,7 +140,8 @@ public final class SupplyDataSyncService {
 
     private ErpDataSyncResult runUnderLease(CallerIdentity caller, UUID connectorId, UUID actorId,
                                              SupplyDataObjectType type, int maxPages,
-                                             boolean scheduled, SyncAttempt attempt, LeaseGuard guard) {
+                                             boolean scheduled, Instant from, Instant to,
+                                             SyncAttempt attempt, LeaseGuard guard) {
         String tenantId = caller.tenantId().toString();
         try {
             attempt.runId = scheduled
@@ -123,14 +153,18 @@ public final class SupplyDataSyncService {
             }
             throw error;
         }
-        log.info("ERP供应链数据同步批次已创建 tenantId={} userId={} objectType={} connectorId={} runId={} maxPages={}",
-                tenantId, actorId, type, connectorId, attempt.runId, maxPages);
+        log.info("ERP供应链数据同步批次已创建 tenantId={} userId={} objectType={} connectorId={} runId={} maxPages={} windowFrom={} windowTo={}",
+                tenantId, actorId, type, connectorId, attempt.runId, maxPages, from, to);
         List<String> codes = type == SupplyDataObjectType.INVENTORY
                 ? store.sourceProductCodes(tenantId, connectorId) : List.of();
-        DhbSupplyDataClient.Collected collected = client.collect(dataCaller(caller.tenantId()),
-                connectorId, type, maxPages, codes);
+        boolean windowRequested = from != null;
+        boolean windowApplied = windowRequested && supportsWindow(type);
+        DhbSupplyDataClient.Collected collected = windowApplied
+                ? client.collect(dataCaller(caller.tenantId()), connectorId, type, maxPages, codes, from, to)
+                : client.collect(dataCaller(caller.tenantId()), connectorId, type, maxPages, codes);
         store.heartbeatRun(tenantId, attempt.runId);
         attempt.counts.pages = collected.pages();
+        attempt.counts.sourceDetails = sourceDetails(type, collected, windowRequested, windowApplied);
         importCollected(tenantId, attempt.runId, collected, attempt.counts);
         store.heartbeatRun(tenantId, attempt.runId);
         attempt.counts.dictionaryAudit = dictionaryCoverage.inspect(caller.tenantId(), collected);
@@ -146,11 +180,13 @@ public final class SupplyDataSyncService {
                 tenantId, type, connectorId, attempt.runId, stats.fetched(), stats.created(),
                 stats.changed(), stats.duplicates(), stats.rejected(), stats.pages(), mappingAccepted);
         String status = stats.rejected() == 0 && stats.dictionaryAudit().unmapped() == 0
+                && (windowApplied || !windowRequested)
                 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
         return new ErpDataSyncResult(attempt.runId, type.name(), status, connectorId,
                 stats.fetched(), stats.created(), stats.changed(), stats.duplicates(),
                 stats.rejected(), stats.dictionaryAudit().unmapped(),
-                stats.dictionaryAudit().revisions(), Map.of(), stats.pages(), Instant.now());
+                stats.dictionaryAudit().revisions(), attempt.counts.sourceDetails,
+                stats.pages(), Instant.now());
     }
 
     private int registerExternalObjectMappings(String tenantId, UUID connectorId, UUID runId,
@@ -222,6 +258,35 @@ public final class SupplyDataSyncService {
             throw new AuthorizationDeniedException("integration:dhb:read");
         }
     }
+    private static void validateWindow(Instant from, Instant to) {
+        if ((from == null) != (to == null)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "同步窗口from和to必须同时提供", List.of());
+        }
+        if (from != null && !from.isBefore(to)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "同步窗口from必须早于to", List.of());
+        }
+    }
+
+    private static boolean supportsWindow(SupplyDataObjectType type) {
+        return false;
+    }
+
+    private static Map<String, Long> sourceDetails(SupplyDataObjectType type,
+                                                   DhbSupplyDataClient.Collected collected,
+                                                   boolean windowRequested,
+                                                   boolean windowApplied) {
+        Map<String, Long> details = new LinkedHashMap<>();
+        details.put(type.name(), collected.total());
+        if (windowRequested) {
+            details.put("DHB_SYNC_WINDOW_REQUESTED", 1L);
+            details.put("DHB_SYNC_WINDOW_APPLIED", windowApplied ? 1L : 0L);
+            if (!windowApplied) {
+                details.put("DHB_SYNC_WINDOW_UNSUPPORTED_BY_SOURCE_API", 1L);
+            }
+        }
+        return java.util.Collections.unmodifiableMap(details);
+    }
+
     private static CallerIdentity dataCaller(UUID tenantId) {
         return serviceCaller(tenantId, Set.of("integration:dhb:read"));
     }
@@ -232,6 +297,7 @@ public final class SupplyDataSyncService {
 
     private static final class Counts {
         long fetched; long created; long changed; long duplicates; long rejected; int pages;
+        Map<String, Long> sourceDetails = Map.of();
         DictionaryMappingAudit dictionaryAudit = DictionaryMappingAudit.empty();
         List<MappingIssue> issues = new ArrayList<>();
         void add(ImportResult value) {

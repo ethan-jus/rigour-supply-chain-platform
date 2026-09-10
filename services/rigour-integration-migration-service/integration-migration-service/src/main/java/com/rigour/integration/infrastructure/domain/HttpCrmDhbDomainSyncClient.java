@@ -7,6 +7,7 @@ import com.rigour.shared.context.RequestHeaders;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.shared.core.api.ApiResponse;
 import java.net.URI;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.http.MediaType;
@@ -32,7 +33,8 @@ public final class HttpCrmDhbDomainSyncClient implements CrmDhbDomainSyncClient 
     }
 
     @Override
-    public SyncResult sync(CallerIdentity caller, UUID connectorId, UUID sourceTaskId, int maxPages) {
+    public SyncResult sync(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
+                           int maxPages, Instant from, Instant to) {
         if (connectorId == null || sourceTaskId == null) {
             throw new IllegalArgumentException("CRM同步connectorId和sourceTaskId不能为空");
         }
@@ -47,11 +49,12 @@ public final class HttpCrmDhbDomainSyncClient implements CrmDhbDomainSyncClient 
                 .headers(headers -> SignedDomainRequest.signedHeaders(signer, "POST", uri, caller)
                         .forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, SignedDomainRequest.requestId())
-                .body(new SyncCommand(connectorId, sourceTaskId, maxPages))
+                .body(new SyncCommand(connectorId, sourceTaskId, maxPages, from, to))
                 .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
                         httpResponse, SYNC_RESULT_RESPONSE, "CRM订货宝同步"));
         return SignedDomainRequest.required(response, "CRM");
     }
 
-    private record SyncCommand(UUID connectorId, UUID sourceTaskId, Integer maxPages) { }
+    private record SyncCommand(UUID connectorId, UUID sourceTaskId, Integer maxPages,
+                               Instant from, Instant to) { }
 }

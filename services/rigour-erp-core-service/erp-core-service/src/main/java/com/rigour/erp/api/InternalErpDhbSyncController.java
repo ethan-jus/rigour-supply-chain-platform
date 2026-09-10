@@ -6,6 +6,8 @@ import com.rigour.erp.application.service.sync.ErpDataSyncService;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ApiResponse;
+import java.time.Instant;
+import java.util.Locale;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -28,10 +30,16 @@ public final class InternalErpDhbSyncController {
             throw new IllegalArgumentException("connectorId和sourceTaskId不能为空");
         }
         CallerIdentity caller = AuthorizationContext.requireCurrent();
-        return ApiResponse.success(service.runScheduled(caller, command.connectorId(), command.sourceTaskId(),
-                new ErpDataSyncCommand(command.objectType(), command.maxPages())));
+        return ApiResponse.success(service.runInternal(caller, command.connectorId(), command.sourceTaskId(),
+                triggerType(command.triggerType()),
+                new ErpDataSyncCommand(command.objectType(), command.maxPages(), command.from(), command.to())));
     }
 
     public record InternalErpDhbSyncCommand(UUID connectorId, UUID sourceTaskId,
-                                            String objectType, Integer maxPages) { }
+                                            String objectType, Integer maxPages,
+                                            String triggerType, Instant from, Instant to) { }
+
+    private static String triggerType(String value) {
+        return value == null || value.isBlank() ? "SCHEDULED" : value.strip().toUpperCase(Locale.ROOT);
+    }
 }

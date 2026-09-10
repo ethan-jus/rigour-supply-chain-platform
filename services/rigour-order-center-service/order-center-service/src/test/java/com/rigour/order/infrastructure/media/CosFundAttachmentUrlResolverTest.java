@@ -26,6 +26,26 @@ class CosFundAttachmentUrlResolverTest {
                         "tenant-id/product-images/P-1/hash.jpg", "fund-attachments"));
     }
 
+    @Test
+    void acceptsConfiguredFeishuAttachmentDirectory() {
+        CosFundAttachmentUrlResolver.validateKey("tenant-id",
+                "tenant-id/feishu-attachments/FEISHU_SALES_ORDER/DD202609010001/回款凭证/hash.png",
+                java.util.List.of("fund-attachments", "feishu-attachments"));
+    }
+
+    @Test
+    void usesInlinePreviewHeadersForKnownAttachmentTypes() {
+        assertEquals("inline",
+                CosFundAttachmentUrlResolver.previewHeaders("tenant-id/feishu-attachments/order/proof.JPEG")
+                        .getContentDisposition());
+        assertEquals("image/jpeg",
+                CosFundAttachmentUrlResolver.previewContentType(
+                        "tenant-id/feishu-attachments/order/proof.JPEG"));
+        assertEquals("application/pdf",
+                CosFundAttachmentUrlResolver.previewContentType(
+                        "tenant-id/feishu-attachments/order/proof.pdf"));
+    }
+
     private static FundAttachmentAccessProperties validProperties() {
         FundAttachmentAccessProperties properties = new FundAttachmentAccessProperties();
         FundAttachmentAccessProperties.Cos cos = properties.getCos();

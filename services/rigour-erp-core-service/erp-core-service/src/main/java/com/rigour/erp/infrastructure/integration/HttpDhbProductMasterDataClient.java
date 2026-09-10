@@ -56,10 +56,18 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
     @Override
     public Collected collect(CallerIdentity caller, UUID connectorId,
                              MasterDataObjectType objectType, int maxPages) {
+        return collect(caller, connectorId, objectType, maxPages, null, null);
+    }
+
+    @Override
+    public Collected collect(CallerIdentity caller, UUID connectorId,
+                             MasterDataObjectType objectType, int maxPages,
+                             Instant from, Instant to) {
         Objects.requireNonNull(caller, "caller不能为空");
         Objects.requireNonNull(connectorId, "connectorId不能为空");
+        validateWindow(from, to);
         return switch (objectType) {
-            case PRODUCT_SPU -> products(caller, connectorId, maxPages);
+            case PRODUCT_SPU -> products(caller, connectorId, maxPages, from, to);
             case CATEGORY -> categories(caller, connectorId);
             case BRAND -> brands(caller, connectorId);
             case SPECIFICATION -> specifications(caller, connectorId, maxPages);
@@ -67,7 +75,8 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
         };
     }
 
-    private Collected products(CallerIdentity caller, UUID connectorId, int maxPages) {
+    private Collected products(CallerIdentity caller, UUID connectorId, int maxPages,
+                               Instant from, Instant to) {
         Map<String, Product> result = new LinkedHashMap<>();
         int pages = 0;
         for (String productStatus : PRODUCT_STATUS_BUCKETS) {
@@ -75,7 +84,8 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
                 int begin = pageNumber * PAGE_SIZE;
                 DhbApiModels.ProductQueryCommand command =
                         new DhbApiModels.ProductQueryCommand(begin, PAGE_SIZE,
-                                productStatus, ALL_PUTAWAY_STATUSES, null);
+                                productStatus, ALL_PUTAWAY_STATUSES, null,
+                                null, from, to, null);
                 DhbApiModels.ProductMediaSyncView mediaJob = post(caller,
                         path(connectorId, "media-sync"), command,
                         DhbApiModels.ProductMediaSyncView.class);
@@ -83,7 +93,7 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
                 DhbApiModels.ProductQueryCommand completedCommand =
                         new DhbApiModels.ProductQueryCommand(begin, PAGE_SIZE,
                                 productStatus, ALL_PUTAWAY_STATUSES, null,
-                                null, null, null, mediaJob.jobId());
+                                null, from, to, mediaJob.jobId());
                 DhbApiModels.ProductPageView page = post(caller,
                         path(connectorId, "query"),
                         completedCommand,
@@ -104,6 +114,15 @@ public final class HttpDhbProductMasterDataClient implements DhbProductMasterDat
         }
         return collected(MasterDataObjectType.PRODUCT_SPU, result.size(), pages, new ArrayList<>(result.values()),
                 null, null, null, null);
+    }
+
+    private static void validateWindow(Instant from, Instant to) {
+        if ((from == null) != (to == null)) {
+            throw new IllegalArgumentException("商品同步窗口from和to必须同时提供");
+        }
+        if (from != null && !from.isBefore(to)) {
+            throw new IllegalArgumentException("商品同步窗口from必须早于to");
+        }
     }
 
     private static void mergeProduct(Map<String, Product> result, Product product) {

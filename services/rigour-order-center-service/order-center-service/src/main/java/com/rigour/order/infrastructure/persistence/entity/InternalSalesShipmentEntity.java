@@ -23,7 +23,7 @@ public class InternalSalesShipmentEntity {
     private String customerNameSnapshot;
     private String contactPhoneSnapshot;
     private String regionCode;
-    private String ownerStaffCode;
+    private String ownerEmployeeCode;
     private Long warehouseId;
     private Long stockOutOrderId;
     private String stockOutNo;
@@ -66,8 +66,8 @@ public class InternalSalesShipmentEntity {
     public void setContactPhoneSnapshot(String contactPhoneSnapshot) { this.contactPhoneSnapshot = contactPhoneSnapshot; }
     public String getRegionCode() { return regionCode; }
     public void setRegionCode(String regionCode) { this.regionCode = regionCode; }
-    public String getOwnerStaffCode() { return ownerStaffCode; }
-    public void setOwnerStaffCode(String ownerStaffCode) { this.ownerStaffCode = ownerStaffCode; }
+    public String getOwnerEmployeeCode() { return ownerEmployeeCode; }
+    public void setOwnerEmployeeCode(String ownerEmployeeCode) { this.ownerEmployeeCode = ownerEmployeeCode; }
     public Long getWarehouseId() { return warehouseId; }
     public void setWarehouseId(Long warehouseId) { this.warehouseId = warehouseId; }
     public Long getStockOutOrderId() { return stockOutOrderId; }

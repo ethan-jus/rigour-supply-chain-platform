@@ -21,6 +21,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class MybatisPlusSupplyDashboardRepository
         extends ServiceImpl<SupplyDashboardQueryMapper, SupplyDashboardSourceMarkerEntity>
         implements SupplyDashboardStore {
+    private static final BigDecimal BACKFILL_AMOUNT_TOLERANCE = new BigDecimal("0.01");
+
     public MybatisPlusSupplyDashboardRepository(SupplyDashboardQueryMapper mapper) {
         this.baseMapper = mapper;
     }
@@ -64,10 +66,20 @@ public class MybatisPlusSupplyDashboardRepository
                 mapper.salesRanking(tenantId, from, to,
                         filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
                         .stream().map(MybatisPlusSupplyDashboardRepository::ranking).toList(),
+                mapper.salesMonthlyPerformance(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::salesMonthlyPerformance).toList(),
+                mapper.cityCollectionRateRanking(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::ranking).toList(),
                 mapper.sourceSystemBreakdown(tenantId, from, to,
                         filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
                         .stream().map(MybatisPlusSupplyDashboardRepository::ranking).toList(),
                 mapper.productSalesRanking(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(),
+                        filter.productCategoryId(), filter.sourceSystemCode())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::productSales).toList(),
+                mapper.skuSalesRanking(tenantId, from, to,
                         filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(),
                         filter.productCategoryId(), filter.sourceSystemCode())
                         .stream().map(MybatisPlusSupplyDashboardRepository::productSales).toList(),
@@ -85,12 +97,42 @@ public class MybatisPlusSupplyDashboardRepository
                 mapper.paymentRiskSalesRanking(tenantId, from, to,
                         filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
                         .stream().map(MybatisPlusSupplyDashboardRepository::ranking).toList(),
+                mapper.paymentAgingBuckets(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::paymentAgingBucket).toList(),
+                mapper.cityTargetCompletions(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::targetCompletion).toList(),
+                mapper.salesTargetCompletions(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::targetCompletion).toList(),
+                mapper.customerSegmentSummary(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::customerSegment).toList(),
+                mapper.customerActivityRanking(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::customerActivity).toList(),
+                mapper.customerChurnRiskRanking(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::customerActivity).toList(),
+                mapper.inventoryItemSummary(tenantId, from, to, filter.productCategoryId())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::inventoryItemSummary).toList(),
+                mapper.inventoryReplenishment(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(),
+                        filter.productCategoryId(), filter.sourceSystemCode())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::inventoryReplenishment).toList(),
                 mapper.cityCostRanking(tenantId, from, to,
                         filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
                         .stream().map(MybatisPlusSupplyDashboardRepository::cityCost).toList(),
                 mapper.inventoryRisks(tenantId, filter.regionCode(), filter.productCategoryId())
                         .stream().map(MybatisPlusSupplyDashboardRepository::risk).toList(),
                 mapper.dataFreshness(tenantId).stream().map(MybatisPlusSupplyDashboardRepository::freshness).toList());
+    }
+
+    @Override
+    public Optional<Instant> latestSalesOrderDate(String tenantId) {
+        return Optional.ofNullable(getBaseMapper().latestSalesOrderDate(tenantId))
+                .map(value -> value.toInstant(ZoneOffset.UTC));
     }
 
     @Override
@@ -104,11 +146,37 @@ public class MybatisPlusSupplyDashboardRepository
     @Override
     public ReconciliationData reconciliation(String tenantId, SupplyDashboardFilter filter) {
         SupplyDashboardQueryMapper mapper = getBaseMapper();
-        List<Map<String, Object>> rows = mapper.currentReconciliation(tenantId);
+        LocalDateTime from = local(filter.from());
+        LocalDateTime to = local(filter.to());
+        List<Map<String, Object>> rows = List.of(
+                mapper.salesOrderReconciliation(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode()),
+                mapper.cityAttributionReconciliation(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode()),
+                mapper.paymentReconciliation(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode()),
+                mapper.customerReconciliation(tenantId,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode()),
+                mapper.customerContactReconciliation(tenantId,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode()),
+                mapper.productReconciliation(tenantId, filter.productCategoryId()),
+                mapper.saleableProductReconciliation(tenantId, filter.productCategoryId()),
+                mapper.orderLineReconciliation(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(),
+                        filter.productCategoryId(), filter.sourceSystemCode()),
+                mapper.estimatedGrossProfitReconciliation(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(),
+                        filter.productCategoryId(), filter.sourceSystemCode()),
+                mapper.paymentRiskReconciliation(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode()),
+                mapper.inventoryReconciliation(tenantId, filter.regionCode(), filter.productCategoryId()),
+                mapper.inventoryOperationReconciliation(tenantId, from, to, filter.productCategoryId()),
+                mapper.businessTargetReconciliation(tenantId, from, to),
+                mapper.cityCostReconciliation(tenantId, from, to, filter.regionCode()));
         return new ReconciliationData(
-                minInstant(rows, "fromTime"),
-                maxInstant(rows, "toTime"),
-                maxInstant(rows, "observedAt"),
+                filter.from(),
+                filter.to(),
+                Instant.now(),
                 rows.stream().map(MybatisPlusSupplyDashboardRepository::reconciliation).toList());
     }
 
@@ -180,6 +248,25 @@ public class MybatisPlusSupplyDashboardRepository
     }
 
     @Override
+    public boolean refreshTargetNeedsBackfill(String tenantId, String sourceCode) {
+        SupplyDashboardQueryMapper mapper = getBaseMapper();
+        return switch (sourceCode) {
+            case "CRM_CUSTOMER" -> targetBehind(mapper.crmCustomerSourceTotal(tenantId), mapper.biCustomerDimTotal(tenantId));
+            case "ORDER_SALES_ORDER" -> targetBehind(
+                    mapper.orderSourceBackfillHealth(tenantId),
+                    mapper.biSalesOrderFactBackfillHealth(tenantId));
+            case "ORDER_SALES_ORDER_LINE" -> targetBehind(
+                    mapper.orderLineSourceBackfillHealth(tenantId),
+                    mapper.biSalesOrderLineFactBackfillHealth(tenantId));
+            case "ERP_PRODUCT" -> targetBehind(mapper.productSourceTotal(tenantId), mapper.biProductDimTotal(tenantId));
+            case "ORDER_PAYMENT_RECORD" -> targetBehind(
+                    mapper.paymentSourceBackfillHealth(tenantId),
+                    mapper.biSalesPaymentFactBackfillHealth(tenantId));
+            default -> false;
+        };
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public void updateCheckpoint(
             String tenantId, String sourceCode, String sourceName, Instant watermarkTime,
@@ -194,8 +281,10 @@ public class MybatisPlusSupplyDashboardRepository
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         LocalDateTime localFrom = local(from);
         LocalDateTime localTo = local(to);
+        LocalDateTime localSyncedAt = local(syncedAt);
         Map<String, Object> summary = mapper.customerSourceSummary(tenantId, localFrom, localTo);
-        int affected = mapper.upsertCustomerDimFromSource(tenantId, localFrom, localTo, local(syncedAt));
+        int affected = mapper.upsertCustomerDimFromSource(tenantId, localFrom, localTo, localSyncedAt);
+        affected += mapper.backfillCustomerContactSnapshots(tenantId, localSyncedAt);
         return sourceResult("CRM_CUSTOMER", "客户/门店", summary, affected);
     }
 
@@ -268,6 +357,18 @@ public class MybatisPlusSupplyDashboardRepository
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public SourceRefreshResult refreshInventoryOperationFact(String tenantId, Instant syncedAt) {
+        SupplyDashboardQueryMapper mapper = getBaseMapper();
+        Map<String, Object> summary = mapper.inventoryOperationSourceSummary(tenantId);
+        LocalDateTime localSyncedAt = local(syncedAt);
+        mapper.markInventoryOperationFactDeleted(tenantId, localSyncedAt);
+        int affected = mapper.upsertProcurementOperationFactFromSource(tenantId, localSyncedAt);
+        affected += mapper.upsertSalesShipmentOperationFactFromSource(tenantId, localSyncedAt);
+        return sourceResult("ERP_INVENTORY_OPERATION", "采购/发货流转", summary, affected);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public SourceRefreshResult refreshReconciliationCurrent(String tenantId, Instant from, Instant to, Instant observedAt) {
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         LocalDateTime localFrom = local(from);
@@ -276,11 +377,23 @@ public class MybatisPlusSupplyDashboardRepository
         List<ReconciliationItem> items = List.of(
                 reconciliation(mapper.salesOrderReconciliation(tenantId, localFrom, localTo,
                         null, null, null, null)),
+                reconciliation(mapper.cityAttributionReconciliation(tenantId, localFrom, localTo,
+                        null, null, null, null)),
                 reconciliation(mapper.paymentReconciliation(tenantId, localFrom, localTo,
                         null, null, null, null)),
                 reconciliation(mapper.customerReconciliation(tenantId, null, null, null)),
+                reconciliation(mapper.customerContactReconciliation(tenantId, null, null, null)),
                 reconciliation(mapper.productReconciliation(tenantId, null)),
+                reconciliation(mapper.saleableProductReconciliation(tenantId, null)),
+                reconciliation(mapper.orderLineReconciliation(tenantId, localFrom, localTo,
+                        null, null, null, null, null)),
+                reconciliation(mapper.estimatedGrossProfitReconciliation(tenantId, localFrom, localTo,
+                        null, null, null, null, null)),
+                reconciliation(mapper.paymentRiskReconciliation(tenantId, localFrom, localTo,
+                        null, null, null, null)),
                 reconciliation(mapper.inventoryReconciliation(tenantId, null, null)),
+                reconciliation(mapper.inventoryOperationReconciliation(tenantId, localFrom, localTo, null)),
+                reconciliation(mapper.businessTargetReconciliation(tenantId, localFrom, localTo)),
                 reconciliation(mapper.cityCostReconciliation(tenantId, localFrom, localTo, null)));
         int affected = 0;
         for (ReconciliationItem item : items) {
@@ -364,6 +477,7 @@ public class MybatisPlusSupplyDashboardRepository
         return new SalesSummary(
                 number(row, "orderCount"),
                 number(row, "orderingCustomerCount"),
+                number(row, "repeatCustomerCount"),
                 decimal(row, "totalQuantity"),
                 decimal(row, "salesAmount"),
                 decimal(row, "paidAmount"),
@@ -373,7 +487,10 @@ public class MybatisPlusSupplyDashboardRepository
     }
 
     private static CustomerSummary customers(Map<String, Object> row) {
-        return new CustomerSummary(number(row, "activeCustomerCount"), instant(row, "latestUpdatedTime"));
+        return new CustomerSummary(
+                number(row, "activeCustomerCount"),
+                number(row, "contactedCustomerCount"),
+                instant(row, "latestUpdatedTime"));
     }
 
     private static CollectionSummary collections(Map<String, Object> row) {
@@ -427,6 +544,23 @@ public class MybatisPlusSupplyDashboardRepository
                 text(row, "rankType"),
                 text(row, "dimensionCode"),
                 text(row, "dimensionName"),
+                text(row, "regionCode"),
+                text(row, "regionName"),
+                decimal(row, "salesAmount"),
+                decimal(row, "paidAmount"),
+                decimal(row, "unpaidAmount"),
+                number(row, "orderCount"),
+                number(row, "customerCount"),
+                decimal(row, "rate"));
+    }
+
+    private static SalesMonthlyPerformanceItem salesMonthlyPerformance(Map<String, Object> row) {
+        return new SalesMonthlyPerformanceItem(
+                text(row, "period"),
+                text(row, "ownerStaffCode"),
+                text(row, "ownerStaffName"),
+                text(row, "regionCode"),
+                text(row, "regionName"),
                 decimal(row, "salesAmount"),
                 decimal(row, "paidAmount"),
                 decimal(row, "unpaidAmount"),
@@ -455,6 +589,15 @@ public class MybatisPlusSupplyDashboardRepository
                 number(row, "customerCount"));
     }
 
+    private static PaymentAgingBucket paymentAgingBucket(Map<String, Object> row) {
+        return new PaymentAgingBucket(
+                text(row, "bucketCode"),
+                text(row, "bucketName"),
+                number(row, "orderCount"),
+                number(row, "customerCount"),
+                decimal(row, "unpaidAmount"));
+    }
+
     private static CityCostItem cityCost(Map<String, Object> row) {
         String regionCode = text(row, "regionCode");
         BigDecimal costAmount = decimal(row, "costAmount");
@@ -468,6 +611,82 @@ public class MybatisPlusSupplyDashboardRepository
                 decimal(row, "costRate"),
                 number(row, "recordCount"),
                 instant(row, "latestCostTime"));
+    }
+
+    private static TargetCompletionItem targetCompletion(Map<String, Object> row) {
+        return new TargetCompletionItem(
+                text(row, "dimensionType"),
+                text(row, "dimensionCode"),
+                text(row, "dimensionName"),
+                text(row, "metricCode"),
+                text(row, "metricName"),
+                decimal(row, "targetValue"),
+                decimal(row, "actualValue"),
+                decimal(row, "achievementRate"));
+    }
+
+    private static CustomerSegmentItem customerSegment(Map<String, Object> row) {
+        return new CustomerSegmentItem(
+                text(row, "segmentCode"),
+                text(row, "segmentName"),
+                number(row, "customerCount"),
+                decimal(row, "salesAmount"),
+                decimal(row, "paidAmount"),
+                decimal(row, "unpaidAmount"),
+                decimal(row, "averageActivityScore"),
+                number(row, "churnRiskCustomerCount"));
+    }
+
+    private static CustomerActivityItem customerActivity(Map<String, Object> row) {
+        return new CustomerActivityItem(
+                text(row, "customerCode"),
+                text(row, "customerName"),
+                text(row, "regionCode"),
+                text(row, "regionName"),
+                text(row, "ownerStaffCode"),
+                text(row, "ownerStaffName"),
+                text(row, "customerTypeCode"),
+                text(row, "customerTypeName"),
+                text(row, "segmentCode"),
+                text(row, "segmentName"),
+                decimal(row, "salesAmount"),
+                decimal(row, "paidAmount"),
+                decimal(row, "unpaidAmount"),
+                number(row, "orderCount"),
+                number(row, "paymentCount"),
+                instant(row, "lastOrderTime"),
+                instant(row, "lastPaymentTime"),
+                number(row, "inactiveDays"),
+                decimal(row, "activityScore"),
+                text(row, "churnRiskLevel"));
+    }
+
+    private static InventoryItemSummary inventoryItemSummary(Map<String, Object> row) {
+        return new InventoryItemSummary(
+                text(row, "categoryCode"),
+                text(row, "categoryName"),
+                text(row, "unitCode"),
+                decimal(row, "procurementQuantity"),
+                decimal(row, "shippedQuantity"),
+                decimal(row, "remainingQuantity"),
+                decimal(row, "inactiveRemainingQuantity"));
+    }
+
+    private static InventoryReplenishmentItem inventoryReplenishment(Map<String, Object> row) {
+        return new InventoryReplenishmentItem(
+                text(row, "categoryCode"),
+                text(row, "categoryName"),
+                text(row, "productCode"),
+                text(row, "productName"),
+                text(row, "unitCode"),
+                decimal(row, "salesQuantity"),
+                decimal(row, "dailySalesQuantity"),
+                decimal(row, "availableQuantity"),
+                decimal(row, "inTransitQuantity"),
+                decimal(row, "coverageDays"),
+                decimal(row, "suggestedProcurementQuantity"),
+                text(row, "riskLevel"),
+                text(row, "inventoryStatus"));
     }
 
     private static RiskItem risk(Map<String, Object> row) {
@@ -582,6 +801,27 @@ public class MybatisPlusSupplyDashboardRepository
                 affected,
                 0L,
                 instant(summary, "watermarkTime"));
+    }
+
+    private static boolean targetBehind(long sourceRows, long targetRows) {
+        return sourceRows > 0 && targetRows < sourceRows;
+    }
+
+    private static boolean targetBehind(Map<String, Object> source, Map<String, Object> target) {
+        long sourceRows = number(source, "rowCount");
+        if (sourceRows <= 0) return false;
+        if (number(target, "rowCount") < sourceRows) return true;
+        if (amountDiffers(source, target, "amount")) return true;
+        if (amountDiffers(source, target, "rowSignature")) return true;
+        return number(target, "regionCount") < number(source, "regionCount")
+                || number(target, "ownerCount") < number(source, "ownerCount");
+    }
+
+    private static boolean amountDiffers(Map<String, Object> source, Map<String, Object> target, String key) {
+        BigDecimal sourceAmount = decimal(source, key);
+        if (sourceAmount.abs().compareTo(BACKFILL_AMOUNT_TOLERANCE) <= 0) return false;
+        BigDecimal targetAmount = decimal(target, key);
+        return sourceAmount.subtract(targetAmount).abs().compareTo(BACKFILL_AMOUNT_TOLERANCE) > 0;
     }
 
     private static LocalDateTime local(Instant instant) {

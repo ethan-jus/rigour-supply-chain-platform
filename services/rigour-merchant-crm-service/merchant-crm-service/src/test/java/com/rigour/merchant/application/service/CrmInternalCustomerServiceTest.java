@@ -1,5 +1,8 @@
 package com.rigour.merchant.application.service;
 
+import com.rigour.merchant.api.v1.model.ExternalCrmCustomerRowCommand;
+import com.rigour.merchant.api.v1.model.ExternalCrmCustomerSyncCommand;
+import com.rigour.merchant.api.v1.model.ExternalCrmCustomerSyncResult;
 import com.rigour.merchant.api.v1.model.InternalCustomerCommand;
 import com.rigour.merchant.api.v1.model.InternalCustomerDetailView;
 import com.rigour.merchant.api.v1.model.InternalCustomerSummaryView;
@@ -69,7 +72,7 @@ class CrmInternalCustomerServiceTest {
         assertThat(store.criteria.customerTypeCode()).isEqualTo("VIP");
         assertThat(store.criteria.regionCode()).isEqualTo("EAST");
         assertThat(store.criteria.ownerSalesUserId()).isEqualTo("sales-1");
-        assertThat(store.criteria.ownerStaffCode()).isEqualTo("RY202608220001");
+        assertThat(store.criteria.ownerEmployeeCode()).isEqualTo("RY202608220001");
         assertThat(store.criteria.statusCode()).isEqualTo(CrmCustomerStatus.ACTIVE.code());
     }
 
@@ -140,6 +143,29 @@ class CrmInternalCustomerServiceTest {
                 .extracting("errorCode").isEqualTo(ErrorCode.NOT_FOUND);
     }
 
+    @Test
+    void syncExternalCustomersUsesSystemAuditActorForServiceCaller() {
+        FakeStore store = new FakeStore();
+        CrmInternalCustomerService service = service(store);
+        TestAuthorizationContext.set(serviceCaller("crm:customer:sync"));
+
+        service.syncExternalCustomers(new ExternalCrmCustomerSyncCommand(" feishu ", List.of(
+                new ExternalCrmCustomerRowCommand(null, " default ", " store-1 ",
+                        "STORE-1", " 西安门店 ", null, null, null, " 零售 ",
+                        " 华北地区 ", " 西安 ", " 西安市雁塔区 ", null, null,
+                        null, " 正常 ", Instant.parse("2026-09-01T00:00:00Z"),
+                        null, "hash-1", "{}"))));
+
+        assertThat(store.syncTenantId).isEqualTo(TENANT_ID.toString());
+        assertThat(store.syncSourceSystem).isEqualTo("FEISHU");
+        assertThat(store.syncActorId).isEqualTo("SYSTEM");
+        assertThat(store.syncRows).singleElement().satisfies(row -> {
+            assertThat(row.sourceTenantKey()).isEqualTo("default");
+            assertThat(row.sourceCustomerId()).isEqualTo("store-1");
+            assertThat(row.customerName()).isEqualTo("西安门店");
+        });
+    }
+
     private static CrmInternalCustomerService service(FakeStore store) {
         BusinessCodeGenerator generator = new BusinessCodeGenerator(
                 Clock.fixed(Instant.parse("2026-08-20T03:00:00Z"), ZoneId.of("Asia/Shanghai")),
@@ -152,11 +178,20 @@ class CrmInternalCustomerServiceTest {
                 UUID.randomUUID(), 0, 0, 0, Set.of("crm"), Set.of(permission));
     }
 
+    private static CallerIdentity serviceCaller(String permission) {
+        return new CallerIdentity("SERVICE", USER_ID, TENANT_ID, null, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of("crm"), Set.of(permission));
+    }
+
     private static final class FakeStore implements CrmInternalCustomerStore {
         private final Map<Long, InternalCustomerDetailView> rows = new LinkedHashMap<>();
         private final Set<Long> deleted = new java.util.LinkedHashSet<>();
         private long nextId = 1;
         private CustomerSearchCriteria criteria;
+        private String syncTenantId;
+        private String syncSourceSystem;
+        private String syncActorId;
+        private List<ExternalCrmCustomerRowCommand> syncRows = List.of();
 
         @Override
         public PageView<InternalCustomerSummaryView> customers(String tenantId, int begin, int step,
@@ -218,6 +253,20 @@ class CrmInternalCustomerServiceTest {
             if (current == null || deleted.contains(id)) throw business(ErrorCode.NOT_FOUND);
             if (current.revision() != revision) throw business(ErrorCode.CONFLICT);
             deleted.add(id);
+        }
+
+        @Override
+        public ExternalCrmCustomerSyncResult syncExternalCustomers(String tenantId, String sourceSystem,
+                                                                  List<ExternalCrmCustomerRowCommand> rows,
+                                                                  String actorId,
+                                                                  BusinessCodeGenerator codeGenerator) {
+            this.syncTenantId = tenantId;
+            this.syncSourceSystem = sourceSystem;
+            this.syncActorId = actorId;
+            this.syncRows = rows == null ? List.of() : List.copyOf(rows);
+            return new ExternalCrmCustomerSyncResult(
+                    rows == null ? 0 : rows.size(), 0, 0, rows == null ? 0 : rows.size(),
+                    0, List.of(), List.of());
         }
 
         private static BusinessException business(ErrorCode errorCode) {

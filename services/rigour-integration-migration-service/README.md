@@ -53,6 +53,9 @@
 | `GET /api/v1/integration/dhb/orders/mirrors` | 订单域：查询订单镜像 |
 | `GET /api/v1/integration/dhb/sync-logs` | 同步诊断日志 |
 | `GET /internal/v1/integration/dhb/sync-targets` | 仅供 Order Center 调度器发现启用订单同步目标；不经过 Gateway |
+| `GET /api/v1/integration/feishu/import-bundles` | 飞书导入批次历史，返回执行状态；不暴露本地文件路径 |
+| `POST /api/v1/integration/feishu/import-bundles/preflight` | 飞书导出 xlsx 批次预检，落原始行和附件引用 |
+| `POST /api/v1/integration/feishu/import-bundles/{batchId}/runs` | 飞书导入批次执行领域投影；缺内部映射的行保留为待处理 |
 
 这些接口必须经过 Gateway，并使用可信 `tenantId` 与 Integration 权限。同步完成后，订单中心通过内部导入契约或事件接收数据；该契约不得携带外部凭据。
 
@@ -109,6 +112,17 @@ SPRING_PROFILES_ACTIVE=dev,local \
 
 健康检查：`http://localhost:26882/actuator/health`。完整数据库、Nacos 和共享 DEV 步骤见 [`INTEGRATION_DATABASE_RUNTIME.md`](../../docs/INTEGRATION_DATABASE_RUNTIME.md)。
 
+如果启动日志提示 `Detected failed migration to version ...`，不要手工删除
+`flyway_schema_history`。在同一个 IDEA Run Configuration 中保留
+`INTEGRATION_DB_MIGRATOR_PASSWORD`，只临时增加 Program arguments：
+
+```text
+--rigour.integration.maintenance=flyway-repair
+```
+
+维护模式会先执行 Flyway `repair`，再执行 `migrate`，打印迁移状态后直接退出。执行成功后移除该参数，
+再正常启动 Integration 服务。
+
 当前已实现客户端适配器、连接测试控制面和手动订单 Worker。Worker 使用连接器配置的
 完整 API URL，读取 `env://` Secret 引用，按供应商更新时间窗口分页拉取订单，先写 Raw Landing，
 再写订单镜像和 Outbox；重复 payload 幂等跳过，成功后推进 checkpoint。
@@ -126,5 +140,27 @@ RIGOUR_DHB_DEV_PASSWORD=<订货宝接口密码>
 POST /api/v1/integration/dhb/orders/sync-tasks/{taskId}/run
 Body: {"from":"2026-08-04T00:00:00Z","to":"2026-08-04T01:00:00Z","pageSize":100}
 ```
+
+统一定时同步从指定日期开始拉取时，在 Integration 运行配置或 Nacos 中配置：
+
+```text
+RIGOUR_DHB_SYNC_ORCHESTRATION_ENABLED=true
+RIGOUR_DHB_SYNC_ORCHESTRATION_SCHEDULED_WINDOW_FROM=2026-09-01
+```
+
+`scheduled-window-from` 支持 `yyyy-MM-dd`，例如 `2026-09-01` 会按系统时区当天 00:00:00
+作为统一同步起点；开启定时同步后每次都按该起点拉取之后的数据。
+`enabled=false` 时只关闭定时触发，不影响 Portal 的手动统一同步入口。
+
+飞书导入统一走批次入口：
+
+```text
+GET /api/v1/integration/feishu/import-bundles
+POST /api/v1/integration/feishu/import-bundles/preflight
+POST /api/v1/integration/feishu/import-bundles/{batchId}/runs
+```
+
+预检上传的原始 xlsx 只进入批次解析和原始行落库，不在 API 或前端返回服务端本地路径。
+切换环境时使用业务人员保留的原始导出文件重新预检和执行。
 
 商品落库同步、客户/仓库/员工目录、死信重放和 Outbox 消费仍未完成；不得用测试账号或猜测字段冒充真实联调。

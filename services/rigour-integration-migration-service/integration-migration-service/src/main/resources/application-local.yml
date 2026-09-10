@@ -12,6 +12,16 @@ spring:
 # RIGOUR_DHB_DEV_PASSWORD=<真实 Password>
 
 rigour:
+  erp:
+    base-url: ${RIGOUR_ERP_BASE_URL:http://127.0.0.1:26884}
+  crm:
+    base-url: ${RIGOUR_CRM_BASE_URL:http://127.0.0.1:26883}
+  order:
+    base-url: ${RIGOUR_ORDER_BASE_URL:http://127.0.0.1:26885}
+  hr:
+    base-url: ${RIGOUR_HR_BASE_URL:http://127.0.0.1:26889}
+  business-settings:
+    base-url: ${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://127.0.0.1:26892}
   integration:
     feishu:
       # 本机真机调试使用的非敏感应用标识与 H5 来源；App Secret 仍只从进程环境注入。
@@ -20,3 +30,6 @@ rigour:
       allowed-origins: http://localhost:5200
       # 仅local开发开启；生产必须关闭，并把实际HTTPS域名配置到allowed-origins。
       allow-insecure-lan: true
+      import-bundle:
+        # 本机导入飞书导出Excel时，页面未填写Base地址也能回查附件字段并下载到COS。
+        default-source-url: ${RIGOUR_FEISHU_IMPORT_BUNDLE_DEFAULT_SOURCE_URL:https://mcn7tpu25x8w.feishu.cn/base/LUvobJ32Fa1dKesorBhc7VF8nye}

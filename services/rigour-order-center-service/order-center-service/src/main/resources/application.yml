@@ -36,9 +36,9 @@ rigour:
   erp:
     # Order一键销售出库只调用ERP版本化HTTP契约，不访问ERP数据库。
     base-url: ${RIGOUR_ERP_BASE_URL:http://localhost:26884}
-  iam:
-    # Order列表按员工编码批量查询IAM人员中心展示名；业务表仍只以owner_staff_code关联。
-    base-url: ${RIGOUR_IAM_BASE_URL:http://localhost:26881}
+  hr:
+    # Order列表按员工编码查询HR员工主档展示名；业务表只保存employee_code。
+    base-url: ${RIGOUR_HR_BASE_URL:http://localhost:26889}
   order:
     http:
       # Order对下游ERP的连接和读取超时；订货宝同步统一收口到Integration编排器。
@@ -47,6 +47,8 @@ rigour:
     fund-attachment:
       # 资金附件为 COS 私桶短时 URL；本地默认关闭，DEV/生产由环境和 Nacos 显式开启。
       url-ttl: ${RIGOUR_ORDER_FUND_ATTACHMENT_URL_TTL:10m}
+      additional-object-prefixes:
+        - ${RIGOUR_ORDER_FEISHU_ATTACHMENT_COS_OBJECT_PREFIX:feishu-attachments}
       cos:
         enabled: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_ENABLED:false}
         object-prefix: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_OBJECT_PREFIX:fund-attachments}

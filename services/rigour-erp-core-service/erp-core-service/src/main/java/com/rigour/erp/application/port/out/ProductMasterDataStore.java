@@ -27,6 +27,11 @@ public interface ProductMasterDataStore {
 
     ImportResult importProduct(String tenantId, UUID runId, Product product);
 
+    /** 商品本体与来源绑定落库后，刷新订货宝关联商品到本系统商品关联。 */
+    default ImportResult refreshProductRecommendations(String tenantId, UUID runId, List<Product> products) {
+        return ImportResult.duplicate(0);
+    }
+
     ImportResult importCategory(String tenantId, UUID runId, Category category);
 
     ImportResult importBrand(String tenantId, UUID runId, Brand brand);

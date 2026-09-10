@@ -43,7 +43,7 @@ public class BusinessDictionaryService {
     private static final String WRITE_PERMISSION = "business-settings:dict:write";
     private static final String SYNC_PERMISSION = "business-settings:dict:sync";
     private static final int MAX_SYNC_VALUES = 500;
-    private static final Set<String> DICTIONARY_TYPES = Set.of("COMMON", "ERP", "CRM", "ORDER");
+    private static final Set<String> DICTIONARY_TYPES = Set.of("COMMON", "ERP", "CRM", "ORDER", "HR");
     private static final Pattern CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,49}");
 
     private final BusinessDictionaryStore store;

@@ -1,9 +1,11 @@
 package com.rigour.order.infrastructure.config;
 
 import com.rigour.order.application.port.out.ErpSalesStockOutClient;
-import com.rigour.order.application.port.out.IamStaffDisplayClient;
+import com.rigour.order.application.port.out.CrmCustomerAreaDisplayClient;
+import com.rigour.order.application.port.out.HrEmployeeDisplayClient;
 import com.rigour.order.infrastructure.integration.HttpErpSalesStockOutClient;
-import com.rigour.order.infrastructure.integration.HttpIamStaffDisplayClient;
+import com.rigour.order.infrastructure.integration.HttpCrmCustomerAreaDisplayClient;
+import com.rigour.order.infrastructure.integration.HttpHrEmployeeDisplayClient;
 import com.rigour.shared.context.TrustedContextSigner;
 import java.time.Clock;
 import java.time.Duration;
@@ -43,11 +45,19 @@ public class OrderInfrastructureConfiguration {
     }
 
     @Bean
-    IamStaffDisplayClient iamStaffDisplayClient(
+    HrEmployeeDisplayClient hrEmployeeDisplayClient(
             TrustedContextSigner signer,
-            @Value("${rigour.iam.base-url:http://localhost:26881}") String iamBaseUrl,
+            @Value("${rigour.hr.base-url:http://localhost:26889}") String hrBaseUrl,
             SimpleClientHttpRequestFactory requestFactory) {
-        return new HttpIamStaffDisplayClient(RestClient.builder().requestFactory(requestFactory), signer, iamBaseUrl);
+        return new HttpHrEmployeeDisplayClient(RestClient.builder().requestFactory(requestFactory), signer, hrBaseUrl);
+    }
+
+    @Bean
+    CrmCustomerAreaDisplayClient crmCustomerAreaDisplayClient(
+            TrustedContextSigner signer,
+            @Value("${rigour.crm.base-url:http://localhost:26883}") String crmBaseUrl,
+            SimpleClientHttpRequestFactory requestFactory) {
+        return new HttpCrmCustomerAreaDisplayClient(RestClient.builder().requestFactory(requestFactory), signer, crmBaseUrl);
     }
 
     private static void positive(Duration value, String name) {

@@ -79,6 +79,62 @@ class ErpDataSyncServiceTest {
     }
 
     @Test
+    void dispatchesScheduledWindowThroughTheSameUnifiedService() {
+        ProductMasterDataSyncService product = mock(ProductMasterDataSyncService.class);
+        SupplyDataSyncService supply = mock(SupplyDataSyncService.class);
+        CallerIdentity caller = scheduledCaller();
+        Instant from = Instant.parse("2026-09-01T00:00:00Z");
+        Instant to = Instant.parse("2026-09-02T00:00:00Z");
+        ErpDataSyncResult expected = result("PRODUCT_SPU");
+        when(product.runScheduled(caller, CONNECTOR_ID, MasterDataObjectType.PRODUCT_SPU,
+                3, from, to)).thenReturn(expected);
+
+        ErpDataSyncResult actual = new ErpDataSyncService(product, supply, mock(ErpSyncRunAuditStore.class))
+                .runScheduled(caller, CONNECTOR_ID, SOURCE_TASK_ID,
+                        new ErpDataSyncCommand("product_spu", 3, from, to));
+
+        assertThat(actual).isSameAs(expected);
+        verify(product).runScheduled(caller, CONNECTOR_ID, MasterDataObjectType.PRODUCT_SPU,
+                3, from, to);
+        verifyNoInteractions(supply);
+    }
+
+    @Test
+    void dispatchesInternalManualProductSyncWithoutScheduledBatchEntry() {
+        ProductMasterDataSyncService product = mock(ProductMasterDataSyncService.class);
+        SupplyDataSyncService supply = mock(SupplyDataSyncService.class);
+        CallerIdentity caller = scheduledCaller();
+        ErpDataSyncResult expected = result("PRODUCT_SPU");
+        when(product.runInternal(caller, CONNECTOR_ID, MasterDataObjectType.PRODUCT_SPU,
+                3, false)).thenReturn(expected);
+
+        ErpDataSyncResult actual = new ErpDataSyncService(product, supply, mock(ErpSyncRunAuditStore.class))
+                .runInternal(caller, CONNECTOR_ID, SOURCE_TASK_ID, "MANUAL",
+                        new ErpDataSyncCommand("product_spu", 3));
+
+        assertThat(actual).isSameAs(expected);
+        verify(product).runInternal(caller, CONNECTOR_ID, MasterDataObjectType.PRODUCT_SPU, 3, false);
+        verifyNoInteractions(supply);
+    }
+
+    @Test
+    void dispatchesManualSupplyWindowThroughTheSameUnifiedService() {
+        ProductMasterDataSyncService product = mock(ProductMasterDataSyncService.class);
+        SupplyDataSyncService supply = mock(SupplyDataSyncService.class);
+        Instant from = Instant.parse("2026-09-01T00:00:00Z");
+        Instant to = Instant.parse("2026-09-02T00:00:00Z");
+        ErpDataSyncResult expected = result("SUPPLIER");
+        when(supply.run(SupplyDataObjectType.SUPPLIER, 3, from, to)).thenReturn(expected);
+
+        ErpDataSyncResult actual = new ErpDataSyncService(product, supply, mock(ErpSyncRunAuditStore.class))
+                .run(new ErpDataSyncCommand("supplier", 3, from, to));
+
+        assertThat(actual).isSameAs(expected);
+        verify(supply).run(SupplyDataObjectType.SUPPLIER, 3, from, to);
+        verifyNoInteractions(product);
+    }
+
+    @Test
     void scheduledSkipIsAuditedAndReturnedAsSkippedResult() {
         ProductMasterDataSyncService product = mock(ProductMasterDataSyncService.class);
         SupplyDataSyncService supply = mock(SupplyDataSyncService.class);

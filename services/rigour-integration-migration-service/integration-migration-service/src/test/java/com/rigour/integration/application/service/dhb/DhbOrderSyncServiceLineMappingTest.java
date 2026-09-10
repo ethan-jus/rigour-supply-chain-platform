@@ -4,7 +4,7 @@ import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbSyncStore;
 import com.rigour.integration.application.port.out.DhbSyncStore.ExternalObjectMapping;
 import com.rigour.integration.application.port.out.DhbSyncStore.ManualResolution;
-import com.rigour.integration.application.port.out.IamDhbStaffSyncClient;
+import com.rigour.integration.application.port.out.HrDhbStaffSyncClient;
 import com.rigour.integration.application.port.out.OrderSalesOrderProjectionClient;
 import com.rigour.integration.application.port.out.ProductMediaStorage;
 import com.rigour.order.api.v1.model.FundDocumentCommand;
@@ -165,7 +165,7 @@ class DhbOrderSyncServiceLineMappingTest {
                 .thenReturn(new DhbClient.DownloadedFile(content, "image/png"));
         DhbOrderSyncService service = new DhbOrderSyncService(storeWithMappings(mappings),
                 client, proxy(OrderSalesOrderProjectionClient.class), null,
-                proxy(IamDhbStaffSyncClient.class), null, 3,
+                proxy(HrDhbStaffSyncClient.class), null, 3,
                 storage, new DhbAttachmentObjectKeyFactory("fund-attachments"));
         Map<String, Object> attributes = Map.of(
                 "Attachments", List.of(Map.of(
@@ -636,7 +636,7 @@ class DhbOrderSyncServiceLineMappingTest {
                     throw new UnsupportedOperationException("Unexpected projection call: " + method.getName());
                 });
         DhbOrderSyncService service = new DhbOrderSyncService(proxy(DhbSyncStore.class),
-                proxy(DhbClient.class), projection, proxy(IamDhbStaffSyncClient.class));
+                proxy(DhbClient.class), projection, proxy(HrDhbStaffSyncClient.class));
         SalesOrderDetailView current = salesOrderDetail("SUBMITTED");
         SalesOrderDetailView result = upsertSalesOrder(service, UUID.randomUUID(), current,
                 salesOrderCommand(false), false);
@@ -663,7 +663,7 @@ class DhbOrderSyncServiceLineMappingTest {
                     throw new UnsupportedOperationException("Unexpected projection call: " + method.getName());
                 });
         DhbOrderSyncService service = new DhbOrderSyncService(proxy(DhbSyncStore.class),
-                proxy(DhbClient.class), projection, proxy(IamDhbStaffSyncClient.class));
+                proxy(DhbClient.class), projection, proxy(HrDhbStaffSyncClient.class));
 
         SalesOrderDetailView result = upsertSalesOrder(service, UUID.randomUUID(), current,
                 salesOrderCommand(false), true);
@@ -674,7 +674,7 @@ class DhbOrderSyncServiceLineMappingTest {
 
     private static DhbOrderSyncService service(DhbSyncStore store) {
         return new DhbOrderSyncService(store, proxy(DhbClient.class),
-                proxy(OrderSalesOrderProjectionClient.class), proxy(IamDhbStaffSyncClient.class));
+                proxy(OrderSalesOrderProjectionClient.class), proxy(HrDhbStaffSyncClient.class));
     }
 
     @SuppressWarnings("unchecked")

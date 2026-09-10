@@ -137,8 +137,24 @@
         LEFT JOIN iam_external_staff_binding source_binding
           ON source_binding.tenant_id = staff.tenant_id
          AND source_binding.staff_id = staff.id
-         AND source_binding.source_system = 'DINGHUOBAO'
          AND source_binding.deleted_at IS NULL
+         AND source_binding.id = (
+             SELECT selected_binding.id
+               FROM iam_external_staff_binding selected_binding
+              WHERE selected_binding.tenant_id = staff.tenant_id
+                AND selected_binding.staff_id = staff.id
+                AND selected_binding.source_presence = 'PRESENT'
+                AND selected_binding.deleted_at IS NULL
+              ORDER BY
+                CASE selected_binding.source_system
+                    WHEN 'FEISHU' THEN 0
+                    WHEN 'DINGHUOBAO' THEN 1
+                    ELSE 2
+                END,
+                selected_binding.updated_at DESC,
+                selected_binding.created_at DESC
+              LIMIT 1
+         )
     </sql>
 
     <select id="selectStaff" resultMap="staffListRowMap">
@@ -188,11 +204,32 @@
 
     <select id="selectDhbStaffBySource" resultMap="staffListRowMap">
         SELECT <include refid="staffColumns"/>
-        <include refid="staffJoins"/>
+        FROM iam_staff_profile staff
+        LEFT JOIN iam_organization organization_record
+          ON organization_record.tenant_id = staff.tenant_id
+         AND organization_record.id = staff.primary_organization_id
+         AND organization_record.deleted_at IS NULL
+        LEFT JOIN iam_position position_record
+          ON position_record.tenant_id = staff.tenant_id
+         AND position_record.id = staff.primary_position_id
+         AND position_record.deleted_at IS NULL
+        LEFT JOIN iam_staff_user_binding user_binding
+          ON user_binding.tenant_id = staff.tenant_id
+         AND user_binding.staff_id = staff.id
+         AND user_binding.status = 'ACTIVE'
+         AND user_binding.deleted_at IS NULL
+        LEFT JOIN iam_user user_record
+          ON user_record.tenant_id = staff.tenant_id
+         AND user_record.id = user_binding.user_id
+         AND user_record.deleted_at IS NULL
+        JOIN iam_external_staff_binding source_binding
+          ON source_binding.tenant_id = staff.tenant_id
+         AND source_binding.staff_id = staff.id
+         AND source_binding.source_system = 'DINGHUOBAO'
+         AND source_binding.deleted_at IS NULL
         WHERE staff.tenant_id =
               #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
           AND staff.deleted_at IS NULL
-          AND source_binding.source_system = 'DINGHUOBAO'
           AND source_binding.source_tenant_key = #{sourceTenantKey}
           AND source_binding.source_presence = 'PRESENT'
           AND (

@@ -55,6 +55,7 @@ public final class SupplyDashboardGovernanceService {
             "ORDER_SALES_ORDER_LINE", "销售订单行",
             "ORDER_PAYMENT_RECORD", "销售回款记录",
             "ERP_STOCK_BALANCE", "库存余额",
+            "ERP_INVENTORY_OPERATION", "采购/发货流转",
             "BI_RECONCILIATION_CURRENT", "对账快照");
 
     private final SupplyDashboardStore store;
@@ -244,8 +245,9 @@ public final class SupplyDashboardGovernanceService {
         long sourceBusinessDiff = number(item.sourceRowCount()) == 0L
                 ? 0L : number(item.businessRowCount()) - number(item.sourceRowCount());
         long businessBiDiff = number(item.biRowCount()) - number(item.businessRowCount());
+        BigDecimal sourceAmountDiff = money(item.businessAmount()).subtract(money(item.sourceAmount()));
         BigDecimal amountDiff = money(item.biAmount()).subtract(money(item.businessAmount()));
-        String status = reconciliationStatus(item, sourceBusinessDiff, businessBiDiff, amountDiff);
+        String status = reconciliationStatus(item, sourceBusinessDiff, sourceAmountDiff, businessBiDiff, amountDiff);
         return new SupplyDashboardReconciliationItemView(
                 item.subjectCode(),
                 item.subjectName(),
@@ -256,6 +258,7 @@ public final class SupplyDashboardGovernanceService {
                 money(item.businessAmount()),
                 money(item.biAmount()),
                 sourceBusinessDiff,
+                sourceAmountDiff,
                 businessBiDiff,
                 amountDiff,
                 status,
@@ -263,11 +266,16 @@ public final class SupplyDashboardGovernanceService {
     }
 
     private static String reconciliationStatus(
-            ReconciliationItem item, long sourceBusinessDiff, long businessBiDiff, BigDecimal amountDiff) {
+            ReconciliationItem item, long sourceBusinessDiff, BigDecimal sourceAmountDiff,
+            long businessBiDiff, BigDecimal amountDiff) {
         if (number(item.sourceRowCount()) == 0L && number(item.businessRowCount()) == 0L && number(item.biRowCount()) == 0L) {
             return "EMPTY";
         }
-        if (sourceBusinessDiff != 0L || businessBiDiff != 0L || amountDiff.abs().compareTo(MONEY_TOLERANCE) > 0) {
+        boolean sourceAmountComparable = money(item.sourceAmount()).abs().compareTo(MONEY_TOLERANCE) > 0;
+        if (sourceBusinessDiff != 0L
+                || (sourceAmountComparable && sourceAmountDiff.abs().compareTo(MONEY_TOLERANCE) > 0)
+                || businessBiDiff != 0L
+                || amountDiff.abs().compareTo(MONEY_TOLERANCE) > 0) {
             return "DIFF";
         }
         return "PASS";
@@ -306,6 +314,7 @@ public final class SupplyDashboardGovernanceService {
             List<SupplyDashboardFilterOptionView> sourceSystems) {
         Map<String, SupplyDashboardFilterOptionView> values = new LinkedHashMap<>();
         values.put("DINGHUOBAO", new SupplyDashboardFilterOptionView("SOURCE_SYSTEM", "DINGHUOBAO", "订货宝", 0L));
+        values.put("FEISHU", new SupplyDashboardFilterOptionView("SOURCE_SYSTEM", "FEISHU", "飞书", 0L));
         values.put("MANUAL", new SupplyDashboardFilterOptionView("SOURCE_SYSTEM", "MANUAL", "手工订单", 0L));
         for (SupplyDashboardFilterOptionView item : sourceSystems) values.put(item.optionValue(), item);
         return List.copyOf(values.values());

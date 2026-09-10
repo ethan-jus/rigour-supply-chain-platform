@@ -1,14 +1,21 @@
 package com.rigour.analytics.application.service;
 
 import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostItemView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardCustomerActivityItemView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardCustomerSegmentItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardDataFreshnessView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardInventoryItemSummaryView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardInventoryReplenishmentItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardMetricCardView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardMetricDefinitionView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOverviewView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardPaymentAgingBucketView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardProductSalesItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRankingItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRiskItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRolePerspectiveView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardSalesMonthlyPerformanceView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardTargetCompletionItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardTrendPointView;
 import com.rigour.analytics.application.model.SupplyDashboardFilter;
 import com.rigour.analytics.application.port.out.SupplyDashboardStore;
@@ -49,8 +56,9 @@ public final class SupplyDashboardQueryService {
             Instant from, Instant to, String regionCode, String ownerStaffCode,
             String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
         CallerIdentity actor = actor();
+        String tenantId = actor.tenantId().toString();
         Instant now = Instant.now(clock);
-        Instant normalizedTo = to == null ? now : to;
+        Instant normalizedTo = to == null ? defaultDashboardTo(tenantId, now) : to;
         Instant normalizedFrom = from == null ? monthStart(normalizedTo) : from;
         if (normalizedFrom.isAfter(normalizedTo)) throw badRequest("from不能晚于to");
         SupplyDashboardFilter filter = new SupplyDashboardFilter(
@@ -61,7 +69,7 @@ public final class SupplyDashboardQueryService {
                 code(customerTypeCode, "customerTypeCode"),
                 positiveId(productCategoryId, "productCategoryId"),
                 sourceSystemCode(sourceSystemCode));
-        SupplyDashboardData data = store.overview(actor.tenantId().toString(), filter);
+        SupplyDashboardData data = store.overview(tenantId, filter);
         Instant cutoff = cutoff(data);
         return new SupplyDashboardOverviewView(
                 filter.from(),
@@ -73,12 +81,23 @@ public final class SupplyDashboardQueryService {
                 data.cityCostTrend().stream().map(SupplyDashboardQueryService::trend).toList(),
                 data.citySalesRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
                 data.salesRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
+                data.salesMonthlyPerformance().stream().map(SupplyDashboardQueryService::salesMonthlyPerformance).toList(),
+                data.cityCollectionRateRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
                 data.sourceSystemBreakdown().stream().map(SupplyDashboardQueryService::ranking).toList(),
                 data.productSalesRanking().stream().map(SupplyDashboardQueryService::productSales).toList(),
+                data.skuSalesRanking().stream().map(SupplyDashboardQueryService::productSales).toList(),
                 data.categorySalesRanking().stream().map(SupplyDashboardQueryService::productSales).toList(),
                 data.brandSalesRanking().stream().map(SupplyDashboardQueryService::productSales).toList(),
                 data.paymentRiskCityRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
                 data.paymentRiskSalesRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
+                data.paymentAgingBuckets().stream().map(SupplyDashboardQueryService::paymentAgingBucket).toList(),
+                data.cityTargetCompletions().stream().map(SupplyDashboardQueryService::targetCompletion).toList(),
+                data.salesTargetCompletions().stream().map(SupplyDashboardQueryService::targetCompletion).toList(),
+                data.customerSegments().stream().map(SupplyDashboardQueryService::customerSegment).toList(),
+                data.customerActivityRanking().stream().map(SupplyDashboardQueryService::customerActivity).toList(),
+                data.customerChurnRiskRanking().stream().map(SupplyDashboardQueryService::customerActivity).toList(),
+                data.inventoryItemSummary().stream().map(SupplyDashboardQueryService::inventoryItemSummary).toList(),
+                data.inventoryReplenishment().stream().map(SupplyDashboardQueryService::inventoryReplenishment).toList(),
                 data.cityCostRanking().stream().map(SupplyDashboardQueryService::cityCost).toList(),
                 data.risks().stream().map(SupplyDashboardQueryService::risk).toList(),
                 data.freshness().stream().map(SupplyDashboardQueryService::freshness).toList(),
@@ -95,22 +114,38 @@ public final class SupplyDashboardQueryService {
 
     private static List<SupplyDashboardMetricCardView> metrics(SupplyDashboardData data) {
         BigDecimal cityCostRate = ratio(data.cityCost().costAmount(), data.sales().salesAmount());
+        BigDecimal targetAchievementRate = averageTargetAchievement(data.cityTargetCompletions());
+        BigDecimal customerActivityScore = averageCustomerActivityScore(data.customerSegments());
+        long customerChurnRiskCount = data.customerSegments().stream()
+                .map(SupplyDashboardStore.CustomerSegmentItem::churnRiskCustomerCount)
+                .mapToLong(SupplyDashboardQueryService::number)
+                .sum();
         return List.of(
-                metric("sales_amount", "销售额", money(data.sales().salesAmount()), "CNY",
+                metric("sales_amount", "总交易额", money(data.sales().salesAmount()), "CNY",
                         "销售订单应收金额，不含已取消订单"),
-                metric("paid_amount", "订单已收", money(data.sales().paidAmount()), "CNY",
-                        "销售订单累计已收金额"),
+                metric("paid_amount", "总回款额", money(data.sales().paidAmount()), "CNY",
+                        "当前筛选范围内销售订单累计已收金额"),
                 metric("unpaid_amount", "待回款", money(data.sales().unpaidAmount()), "CNY",
                         "销售订单未收金额，供销售和运营跟进"),
-                metric("receipt_amount", "回款额", money(data.collections().receiptAmount()), "CNY",
-                        "销售回款记录的回款金额，不把订货宝付款流水默认为退款"),
+                metric("receipt_amount", "期间实际回款", money(data.collections().receiptAmount()), "CNY",
+                        "按回款记录 payment_time 统计的期间实际回款金额"),
                 metric("refund_amount", "退款额", money(data.profit().refundAmount()), "CNY",
                         "订单级退款按订单行金额比例分摊后的退款金额"),
                 metric("order_count", "订单数", decimal(data.sales().orderCount()), "COUNT",
                         "查询周期内销售订单数量"),
+                metric("contacted_customer_count", "建联客户数", decimal(data.customers().contactedCustomerCount()), "COUNT",
+                        "CRM 有联系人或联系电话的有效客户数"),
+                metric("cooperated_customer_count", "合作客户数", decimal(data.sales().orderingCustomerCount()), "COUNT",
+                        "查询周期内产生非取消订单的客户数"),
+                metric("repeat_customer_count", "复购客户数", decimal(data.sales().repeatCustomerCount()), "COUNT",
+                        "查询周期内有2笔及以上非取消订单的客户数"),
+                metric("customer_activity_score", "客户活跃度", customerActivityScore, "SCORE",
+                        "按客户最近下单、订单数、回款数和销售额计算的0-100活跃评分"),
+                metric("customer_churn_risk_count", "流失预警客户数", decimal(customerChurnRiskCount), "COUNT",
+                        "近30天以上未下单或无历史下单的客户数"),
                 metric("ordering_customer_count", "下单客户数", decimal(data.sales().orderingCustomerCount()), "COUNT",
-                        "查询周期内有订单的客户数"),
-                metric("active_customer_count", "有效客户数", decimal(data.customers().activeCustomerCount()), "COUNT",
+                        "兼容旧口径：查询周期内有订单的客户数"),
+                metric("active_customer_count", "可用客户数", decimal(data.customers().activeCustomerCount()), "COUNT",
                         "CRM 有效客户数"),
                 metric("sales_net_amount", "销售净收入", money(data.profit().salesNetAmount()), "CNY",
                         "订单行金额扣减订单级退款分摊后的金额"),
@@ -123,17 +158,19 @@ public final class SupplyDashboardQueryService {
                 metric("cost_coverage_rate", "成本覆盖率", ratioValue(data.profit().costCoverageRate()), "PERCENT",
                         "有 ERP 采购参考价的订单行金额占比"),
                 metric("payment_risk_amount", "回款风险金额", money(data.paymentRisk().riskAmount()), "CNY",
-                        "当前仍待回款订单金额"),
+                        "超过客户账期且仍未回款订单金额"),
                 metric("payment_risk_customer_count", "回款风险门店数", decimal(data.paymentRisk().riskCustomerCount()), "COUNT",
                         "当前存在待回款订单的客户/门店数"),
                 metric("payment_high_risk_customer_count", "高风险门店数", decimal(data.paymentRisk().highRiskCustomerCount()), "COUNT",
-                        "逾期60天及以上且仍有待回款的客户/门店数"),
+                        "超过客户账期且回款率不高于20%的客户/门店数"),
                 metric("payment_avg_overdue_days", "平均逾期天数", money(data.paymentRisk().averageOverdueDays()), "DAYS",
-                        "待回款订单按订单日期估算的平均逾期天数"),
+                        "待回款订单超过客户账期后的平均逾期天数，缺失账期按30天"),
                 metric("payment_risk_amount_rate", "风险金额占比", ratioValue(data.paymentRisk().riskAmountRate()), "PERCENT",
-                        "待回款金额 / 销售额"),
-                metric("target_achievement_rate", "目标达成率", BigDecimal.ZERO, "PERCENT",
-                        "目标配置尚未接入 BI，当前只保留占位"),
+                        "超过账期风险金额 / 销售额"),
+                metric("payment_aging_bucket_count", "回款账龄桶数", decimal((long) data.paymentAgingBuckets().size()), "COUNT",
+                        "当前待回款订单按应回款到期日分桶的桶数量"),
+                metric("target_achievement_rate", "目标达成率", targetAchievementRate, "PERCENT",
+                        "BI 目标配置表按城市/月份累计后的平均完成率"),
                 metric("city_cost_amount", "城市端成本", money(data.cityCost().costAmount()), "CNY",
                         "城市端成本 BI 快照表中的成本金额"),
                 metric("city_cost_rate", "城市成本率", cityCostRate, "PERCENT",
@@ -157,6 +194,24 @@ public final class SupplyDashboardQueryService {
                 item.rankType(),
                 item.dimensionCode(),
                 item.dimensionName(),
+                item.regionCode(),
+                item.regionName(),
+                money(item.salesAmount()),
+                money(item.paidAmount()),
+                money(item.unpaidAmount()),
+                number(item.orderCount()),
+                number(item.customerCount()),
+                ratioValue(item.rate()));
+    }
+
+    private static SupplyDashboardSalesMonthlyPerformanceView salesMonthlyPerformance(
+            SupplyDashboardStore.SalesMonthlyPerformanceItem item) {
+        return new SupplyDashboardSalesMonthlyPerformanceView(
+                item.period(),
+                item.ownerStaffCode(),
+                item.ownerStaffName(),
+                item.regionCode(),
+                item.regionName(),
                 money(item.salesAmount()),
                 money(item.paidAmount()),
                 money(item.unpaidAmount()),
@@ -185,6 +240,16 @@ public final class SupplyDashboardQueryService {
                 number(item.customerCount()));
     }
 
+    private static SupplyDashboardPaymentAgingBucketView paymentAgingBucket(
+            SupplyDashboardStore.PaymentAgingBucket item) {
+        return new SupplyDashboardPaymentAgingBucketView(
+                item.bucketCode(),
+                item.bucketName(),
+                number(item.orderCount()),
+                number(item.customerCount()),
+                money(item.unpaidAmount()));
+    }
+
     private static SupplyDashboardCityCostItemView cityCost(SupplyDashboardStore.CityCostItem item) {
         return new SupplyDashboardCityCostItemView(
                 item.regionCode(),
@@ -196,6 +261,87 @@ public final class SupplyDashboardQueryService {
                 ratioValue(item.costRate()),
                 number(item.recordCount()),
                 item.latestCostTime());
+    }
+
+    private static SupplyDashboardTargetCompletionItemView targetCompletion(
+            SupplyDashboardStore.TargetCompletionItem item) {
+        return new SupplyDashboardTargetCompletionItemView(
+                item.dimensionType(),
+                item.dimensionCode(),
+                item.dimensionName(),
+                item.metricCode(),
+                item.metricName(),
+                money(item.targetValue()),
+                money(item.actualValue()),
+                ratioValue(item.achievementRate()));
+    }
+
+    private static SupplyDashboardInventoryItemSummaryView inventoryItemSummary(
+            SupplyDashboardStore.InventoryItemSummary item) {
+        return new SupplyDashboardInventoryItemSummaryView(
+                item.categoryCode(),
+                item.categoryName(),
+                item.unitCode(),
+                money(item.procurementQuantity()),
+                money(item.shippedQuantity()),
+                money(item.remainingQuantity()),
+                money(item.inactiveRemainingQuantity()));
+    }
+
+    private static SupplyDashboardCustomerSegmentItemView customerSegment(
+            SupplyDashboardStore.CustomerSegmentItem item) {
+        return new SupplyDashboardCustomerSegmentItemView(
+                item.segmentCode(),
+                item.segmentName(),
+                number(item.customerCount()),
+                money(item.salesAmount()),
+                money(item.paidAmount()),
+                money(item.unpaidAmount()),
+                ratioValue(item.averageActivityScore()),
+                number(item.churnRiskCustomerCount()));
+    }
+
+    private static SupplyDashboardCustomerActivityItemView customerActivity(
+            SupplyDashboardStore.CustomerActivityItem item) {
+        return new SupplyDashboardCustomerActivityItemView(
+                item.customerCode(),
+                item.customerName(),
+                item.regionCode(),
+                item.regionName(),
+                item.ownerStaffCode(),
+                item.ownerStaffName(),
+                item.customerTypeCode(),
+                item.customerTypeName(),
+                item.segmentCode(),
+                item.segmentName(),
+                money(item.salesAmount()),
+                money(item.paidAmount()),
+                money(item.unpaidAmount()),
+                number(item.orderCount()),
+                number(item.paymentCount()),
+                item.lastOrderTime(),
+                item.lastPaymentTime(),
+                number(item.inactiveDays()),
+                ratioValue(item.activityScore()),
+                item.churnRiskLevel());
+    }
+
+    private static SupplyDashboardInventoryReplenishmentItemView inventoryReplenishment(
+            SupplyDashboardStore.InventoryReplenishmentItem item) {
+        return new SupplyDashboardInventoryReplenishmentItemView(
+                item.categoryCode(),
+                item.categoryName(),
+                item.productCode(),
+                item.productName(),
+                item.unitCode(),
+                money(item.salesQuantity()),
+                money(item.dailySalesQuantity()),
+                money(item.availableQuantity()),
+                money(item.inTransitQuantity()),
+                money(item.coverageDays()),
+                money(item.suggestedProcurementQuantity()),
+                item.riskLevel(),
+                item.inventoryStatus());
     }
 
     private static SupplyDashboardRiskItemView risk(SupplyDashboardStore.RiskItem item) {
@@ -223,19 +369,24 @@ public final class SupplyDashboardQueryService {
         return List.of(
                 new SupplyDashboardRolePerspectiveView(
                         "CEO", "CEO",
-                        List.of("sales_amount", "estimated_gross_profit_rate", "payment_risk_amount", "inventory_risk_count"),
-                        List.of("overview", "productSalesRanking", "citySalesRanking", "paymentRisk"),
-                        "默认关注经营规模、估算毛利、回款风险和库存风险"),
+                        List.of("sales_amount", "paid_amount", "target_achievement_rate", "payment_risk_amount"),
+                        List.of("overview", "cityTarget", "sourceSystemBreakdown", "paymentRisk"),
+                        "默认关注经营规模、回款健康、城市目标和业务占比"),
                 new SupplyDashboardRolePerspectiveView(
                         "OPERATION", "运营",
-                        List.of("city_cost_amount", "city_cost_rate", "inventory_risk_count", "payment_risk_customer_count"),
-                        List.of("cityCost", "productSalesRanking", "inventoryRisk", "paymentRisk"),
-                        "默认关注城市预算执行、库存风险和回款风险跟进"),
+                        List.of("city_cost_amount", "city_cost_rate", "inventory_risk_count", "customer_churn_risk_count"),
+                        List.of("cityCost", "skuSalesRanking", "inventoryRisk", "customerRisk"),
+                        "默认关注城市预算执行、SKU动销、库存风险和客户流失预警"),
                 new SupplyDashboardRolePerspectiveView(
                         "SALES", "销售",
                         List.of("sales_amount", "paid_amount", "payment_risk_amount", "ordering_customer_count"),
                         List.of("salesRanking", "collectionTrend", "paymentRiskCityRanking"),
-                        "默认关注本人业绩、已收回款、回款风险和下单客户"));
+                        "默认关注本人业绩、已收回款、回款风险和下单客户"),
+                new SupplyDashboardRolePerspectiveView(
+                        "CUSTOMER", "客户运营",
+                        List.of("active_customer_count", "customer_activity_score", "customer_churn_risk_count", "repeat_customer_count"),
+                        List.of("customerSegment", "customerActivityRanking", "customerChurnRiskRanking"),
+                        "默认关注客户分层、活跃度和流失预警"));
     }
 
     private static List<SupplyDashboardMetricDefinitionView> definitions(Instant updatedAt, Instant cutoff) {
@@ -244,8 +395,16 @@ public final class SupplyDashboardQueryService {
                         "SUM(bi_sales_order_fact.payable_amount)，排除逻辑删除和已取消订单",
                         "Analytics BI / bi_sales_order_fact", "排除 deleted=1 和 order_status_code=CANCELLED",
                         updatedAt, cutoff),
-                definition("receipt_amount", "回款额",
-                        "SUM(bi_sales_payment_fact.paid_amount)，以销售回款记录为准",
+                definition("paid_amount", "总回款额",
+                        "SUM(bi_sales_order_fact.paid_amount)，按订单事实累计已收金额统计",
+                        "Analytics BI / bi_sales_order_fact", "排除 deleted=1 和 order_status_code=CANCELLED",
+                        updatedAt, cutoff),
+                definition("unpaid_amount", "待回款",
+                        "SUM(bi_sales_order_fact.unpaid_amount)，按订单事实累计未收金额统计",
+                        "Analytics BI / bi_sales_order_fact", "排除 deleted=1 和 order_status_code=CANCELLED",
+                        updatedAt, cutoff),
+                definition("receipt_amount", "期间实际回款",
+                        "SUM(bi_sales_payment_fact.paid_amount)，按 payment_time 统计期间实际回款记录",
                         "Analytics BI / bi_sales_payment_fact", "排除 deleted=1；不把订货宝付款流水默认识别为退款",
                         updatedAt, cutoff),
                 definition("product_sales_amount", "商品销售额",
@@ -255,6 +414,10 @@ public final class SupplyDashboardQueryService {
                 definition("product_sales_quantity", "商品订货数量",
                         "SUM(bi_sales_order_line_fact.quantity)，按商品或分类汇总",
                         "Analytics BI / bi_sales_order_line_fact", "排除 deleted=1 和 order_status_code=CANCELLED",
+                        updatedAt, cutoff),
+                definition("sku_sales_amount", "SKU销售额",
+                        "SUM(bi_sales_order_line_fact.line_amount)，按商品规格或SKU编码汇总",
+                        "Analytics BI / bi_sales_order_line_fact", "排除 deleted=1 和 order_status_code=CANCELLED；没有SKU编码时回落到商品编码",
                         updatedAt, cutoff),
                 definition("refund_amount", "退款额",
                         "SUM(bi_sales_order_line_fact.refund_amount)，订单级退款按订单行金额比例分摊",
@@ -277,8 +440,44 @@ public final class SupplyDashboardQueryService {
                         "Analytics BI / bi_sales_order_line_fact", "成本缺失会降低成本覆盖率，不宣称为真实毛利",
                         updatedAt, cutoff),
                 definition("payment_risk_amount", "回款风险金额",
-                        "SUM(bi_sales_order_fact.unpaid_amount)，仅统计未取消且仍有待回款订单",
-                        "Analytics BI / bi_sales_order_fact", "高风险暂按订单日期距查询截止日 >= 60 天估算",
+                        "SUM(bi_sales_order_fact.unpaid_amount)，仅统计超过客户账期且仍有待回款订单",
+                        "Analytics BI / bi_sales_order_fact", "客户账期缺失时按30天计算",
+                        updatedAt, cutoff),
+                definition("payment_aging_bucket", "回款账龄分布",
+                        "待回款订单按 payment_due_date 与查询截止时间差分桶：未逾期、1-30天、31-60天、60天以上",
+                        "Analytics BI / bi_sales_order_fact", "排除 deleted=1 和 order_status_code=CANCELLED；仅统计 unpaid_amount>0",
+                        updatedAt, cutoff),
+                definition("contacted_customer_count", "建联客户数",
+                        "COUNT(bi_customer_dim.customer_id)，仅统计有联系人或联系电话的有效客户",
+                        "Analytics BI / bi_customer_dim", "排除 deleted=1 和非 ACTIVE 客户",
+                        updatedAt, cutoff),
+                definition("cooperated_customer_count", "合作客户数",
+                        "COUNT(DISTINCT bi_sales_order_fact.customer_id)，仅统计有非取消销售订单客户",
+                        "Analytics BI / bi_sales_order_fact", "排除 deleted=1 和 order_status_code=CANCELLED",
+                        updatedAt, cutoff),
+                definition("repeat_customer_count", "复购客户数",
+                        "COUNT(DISTINCT customer_id)，查询周期内非取消销售订单数>=2",
+                        "Analytics BI / bi_sales_order_fact", "排除 deleted=1 和 order_status_code=CANCELLED",
+                        updatedAt, cutoff),
+                definition("customer_abc_segment", "客户ABC分层",
+                        "按客户期间销售额降序累计贡献分层：A约前80%，B约80%-95%，其余为C",
+                        "Analytics BI / bi_customer_dim + bi_sales_order_fact", "客户销售额为0时归入C层",
+                        updatedAt, cutoff),
+                definition("customer_activity_score", "客户活跃度",
+                        "订单数、回款记录数、近一次下单间隔和销售额共同计算为0-100分",
+                        "Analytics BI / bi_customer_dim + bi_sales_order_fact + bi_sales_payment_fact", "无历史下单按高流失风险处理",
+                        updatedAt, cutoff),
+                definition("customer_churn_risk", "客户流失预警",
+                        "最后下单距查询截止日30天以上为预警，60天以上或无历史下单为高危",
+                        "Analytics BI / bi_customer_dim + bi_sales_order_fact", "仅用于业务跟进优先级，不等同客户真实流失判定",
+                        updatedAt, cutoff),
+                definition("target_achievement_rate", "目标达成率",
+                        "实际值 / BI 目标配置表目标值；跨月份自动累加目标",
+                        "Analytics BI / bi_business_target + BI 事实表", "目标值为0或未配置时不参与平均完成率",
+                        updatedAt, cutoff),
+                definition("inventory_item_summary", "库存/采购品项汇总",
+                        "采购量、销售出库量按 ERP 单据汇总；留存量取当前库存快照",
+                        "Analytics BI / ERP 采购单、销售出库单、库存余额", "按商品分类+单位聚合，不跨单位相加",
                         updatedAt, cutoff),
                 definition("city_cost_amount", "城市端成本",
                         "SUM(bi_city_cost_record.cost_amount)，按城市和成本类型汇总",
@@ -307,6 +506,10 @@ public final class SupplyDashboardQueryService {
                 .filter(Objects::nonNull)
                 .max(Instant::compareTo)
                 .orElse(null);
+    }
+
+    private Instant defaultDashboardTo(String tenantId, Instant now) {
+        return store.latestSalesOrderDate(tenantId).orElse(now);
     }
 
     private static Instant monthStart(Instant instant) {
@@ -363,6 +566,29 @@ public final class SupplyDashboardQueryService {
             return BigDecimal.ZERO;
         }
         return numerator.multiply(ONE_HUNDRED).divide(denominator, 2, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal averageTargetAchievement(List<SupplyDashboardStore.TargetCompletionItem> items) {
+        List<BigDecimal> rates = items.stream()
+                .map(SupplyDashboardStore.TargetCompletionItem::achievementRate)
+                .filter(Objects::nonNull)
+                .toList();
+        if (rates.isEmpty()) return BigDecimal.ZERO;
+        BigDecimal total = rates.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        return total.divide(BigDecimal.valueOf(rates.size()), 2, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal averageCustomerActivityScore(List<SupplyDashboardStore.CustomerSegmentItem> items) {
+        BigDecimal weightedScore = BigDecimal.ZERO;
+        long customerCount = 0L;
+        for (SupplyDashboardStore.CustomerSegmentItem item : items) {
+            long count = number(item.customerCount());
+            if (count <= 0) continue;
+            weightedScore = weightedScore.add(ratioValue(item.averageActivityScore()).multiply(BigDecimal.valueOf(count)));
+            customerCount += count;
+        }
+        if (customerCount == 0L) return BigDecimal.ZERO;
+        return weightedScore.divide(BigDecimal.valueOf(customerCount), 2, RoundingMode.HALF_UP);
     }
 
     private static BigDecimal ratioValue(BigDecimal value) {

@@ -36,6 +36,7 @@ import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 import java.lang.reflect.Method;
+import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -123,6 +124,32 @@ class ProductMasterDataSyncServiceTest {
     }
 
     @Test
+    void internalManualRunUsesManualBatchEntryWithoutRediscoveringTheTarget() {
+        DhbProductMasterDataClient integration = mock(DhbProductMasterDataClient.class);
+        DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
+        ProductMasterDataStore store = mock(ProductMasterDataStore.class);
+        BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
+        ProductMasterDataSyncService service = syncService(
+                integration, discovery, store, dictionaryCoverage, passthroughLease());
+        Collected collected = collected(MasterDataObjectType.BRAND);
+        when(store.startRun(TENANT_ID.toString(), CONNECTOR_ID, null,
+                MasterDataObjectType.BRAND, 3)).thenReturn(RUN_ID);
+        when(integration.collect(any(), eq(CONNECTOR_ID), eq(MasterDataObjectType.BRAND), eq(3)))
+                .thenReturn(collected);
+        stubImport(store, MasterDataObjectType.BRAND, collected);
+
+        var result = service.runInternal(scheduledCaller(), CONNECTOR_ID,
+                MasterDataObjectType.BRAND, 3, false);
+
+        assertThat(result.runId()).isEqualTo(RUN_ID);
+        verify(store).startRun(TENANT_ID.toString(), CONNECTOR_ID, null,
+                MasterDataObjectType.BRAND, 3);
+        verify(store, never()).startScheduledRun(any(), any(), any(), any(),
+                org.mockito.ArgumentMatchers.anyInt());
+        verify(discovery, never()).discover(any());
+    }
+
+    @Test
     void productSpuFetchedCountDoesNotCountSkuChildrenAsProducts() throws Exception {
         DhbProductMasterDataClient integration = mock(DhbProductMasterDataClient.class);
         DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
@@ -144,6 +171,8 @@ class ProductMasterDataSyncServiceTest {
         when(integration.collect(any(), eq(CONNECTOR_ID), eq(MasterDataObjectType.PRODUCT_SPU), eq(3)))
                 .thenReturn(collected);
         when(store.importProduct(any(), any(), eq(product))).thenReturn(ImportResult.created(3));
+        when(store.refreshProductRecommendations(any(), any(), eq(collected.products())))
+                .thenReturn(ImportResult.duplicate(0));
         setCaller();
 
         var result = service.run(MasterDataObjectType.PRODUCT_SPU, 3);
@@ -152,6 +181,65 @@ class ProductMasterDataSyncServiceTest {
         assertThat(result.created()).isEqualTo(3);
         assertThat(result.sourceDetails()).containsEntry("PRODUCT_SPU", 1L)
                 .containsEntry("PRODUCT_SKU", 2L);
+    }
+
+    @Test
+    void productSpuWindowUsesWindowAwareIntegrationClient() {
+        DhbProductMasterDataClient integration = mock(DhbProductMasterDataClient.class);
+        DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
+        ProductMasterDataStore store = mock(ProductMasterDataStore.class);
+        BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
+        ProductMasterDataSyncService service = syncService(
+                integration, discovery, store, dictionaryCoverage, passthroughLease());
+        Instant from = Instant.parse("2026-09-01T00:00:00Z");
+        Instant to = Instant.parse("2026-09-02T00:00:00Z");
+        Collected collected = collected(MasterDataObjectType.PRODUCT_SPU);
+        when(store.startScheduledRun(TENANT_ID.toString(), CONNECTOR_ID, null,
+                MasterDataObjectType.PRODUCT_SPU, 3)).thenReturn(RUN_ID);
+        when(integration.collect(any(), eq(CONNECTOR_ID), eq(MasterDataObjectType.PRODUCT_SPU),
+                eq(3), eq(from), eq(to))).thenReturn(collected);
+        stubImport(store, MasterDataObjectType.PRODUCT_SPU, collected);
+
+        var result = service.runScheduled(scheduledCaller(), CONNECTOR_ID,
+                MasterDataObjectType.PRODUCT_SPU, 3, from, to);
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        assertThat(result.sourceDetails())
+                .containsEntry("DHB_SYNC_WINDOW_REQUESTED", 1L)
+                .containsEntry("DHB_SYNC_WINDOW_APPLIED", 1L)
+                .doesNotContainKey("DHB_SYNC_WINDOW_UNSUPPORTED_BY_SOURCE_API");
+        verify(integration).collect(any(), eq(CONNECTOR_ID), eq(MasterDataObjectType.PRODUCT_SPU),
+                eq(3), eq(from), eq(to));
+    }
+
+    @Test
+    void unsupportedProductWindowFallsBackToFullSyncWithVisibleWarning() {
+        DhbProductMasterDataClient integration = mock(DhbProductMasterDataClient.class);
+        DhbProductSyncTargetDiscoveryClient discovery = mock(DhbProductSyncTargetDiscoveryClient.class);
+        ProductMasterDataStore store = mock(ProductMasterDataStore.class);
+        BusinessDictionaryCoverageService dictionaryCoverage = mock(BusinessDictionaryCoverageService.class);
+        ProductMasterDataSyncService service = syncService(
+                integration, discovery, store, dictionaryCoverage, passthroughLease());
+        Instant from = Instant.parse("2026-09-01T00:00:00Z");
+        Instant to = Instant.parse("2026-09-02T00:00:00Z");
+        Collected collected = collected(MasterDataObjectType.CATEGORY);
+        when(store.startScheduledRun(TENANT_ID.toString(), CONNECTOR_ID, null,
+                MasterDataObjectType.CATEGORY, 3)).thenReturn(RUN_ID);
+        when(integration.collect(any(), eq(CONNECTOR_ID), eq(MasterDataObjectType.CATEGORY), eq(3)))
+                .thenReturn(collected);
+        stubImport(store, MasterDataObjectType.CATEGORY, collected);
+
+        var result = service.runScheduled(scheduledCaller(), CONNECTOR_ID,
+                MasterDataObjectType.CATEGORY, 3, from, to);
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
+        assertThat(result.sourceDetails())
+                .containsEntry("DHB_SYNC_WINDOW_REQUESTED", 1L)
+                .containsEntry("DHB_SYNC_WINDOW_APPLIED", 0L)
+                .containsEntry("DHB_SYNC_WINDOW_UNSUPPORTED_BY_SOURCE_API", 1L);
+        verify(integration).collect(any(), eq(CONNECTOR_ID), eq(MasterDataObjectType.CATEGORY), eq(3));
+        verify(integration, never()).collect(any(), eq(CONNECTOR_ID), eq(MasterDataObjectType.CATEGORY),
+                eq(3), eq(from), eq(to));
     }
 
     @Test
@@ -299,8 +387,12 @@ class ProductMasterDataSyncServiceTest {
                                    Collected collected) {
         ImportResult created = ImportResult.created(1);
         switch (objectType) {
-            case PRODUCT_SPU -> when(store.importProduct(any(), any(), eq(collected.products().getFirst())))
-                    .thenReturn(created);
+            case PRODUCT_SPU -> {
+                when(store.importProduct(any(), any(), eq(collected.products().getFirst())))
+                        .thenReturn(created);
+                when(store.refreshProductRecommendations(any(), any(), eq(collected.products())))
+                        .thenReturn(ImportResult.duplicate(0));
+            }
             case CATEGORY -> when(store.importCategory(any(), any(), eq(collected.categories().getFirst())))
                     .thenReturn(created);
             case BRAND -> when(store.importBrand(any(), any(), eq(collected.brands().getFirst())))

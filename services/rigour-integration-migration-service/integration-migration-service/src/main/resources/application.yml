@@ -4,6 +4,11 @@ server:
 spring:
   application:
     name: rigour-integration-migration-service
+  servlet:
+    multipart:
+      # 飞书全量导出通常超过 Spring 默认 1MB；上限保留为环境可调，避免大文件直接打爆请求线程。
+      max-file-size: ${RIGOUR_FEISHU_IMPORT_MAX_FILE_SIZE:50MB}
+      max-request-size: ${RIGOUR_FEISHU_IMPORT_MAX_REQUEST_SIZE:60MB}
   datasource:
     hikari:
       # 统一同步可能跨数小时；保活要短于共享DEV中间网络/服务端空闲断连窗口，避免写死信/对账时拿到半开连接。
@@ -36,14 +41,21 @@ rigour:
   order:
     # 订货宝订单同步只投影到Order自研销售订单HTTP契约，不访问Order数据库。
     base-url: ${RIGOUR_ORDER_BASE_URL:http://localhost:26885}
+  hr:
+    # 飞书人员导入只投影到HR员工主档HTTP契约，不写IAM认证授权数据。
+    base-url: ${RIGOUR_HR_BASE_URL:http://localhost:26889}
   business-settings:
     # 订货宝同步批次内只通过Settings内部HTTP契约幂等补齐白名单业务字典。
     base-url: ${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://localhost:26892}
   integration:
     domain-http:
-      # 统一编排器调用ERP/CRM/Order时允许长批次完成；单领域内部仍负责自己的分页和幂等。
+      # 统一编排器调用ERP/CRM/Order时按小批次推进，单次慢请求失败后进入行级问题而不是卡住整批。
       connect-timeout: ${RIGOUR_INTEGRATION_DOMAIN_HTTP_CONNECT_TIMEOUT:5s}
-      read-timeout: ${RIGOUR_INTEGRATION_DOMAIN_HTTP_READ_TIMEOUT:15m}
+      read-timeout: ${RIGOUR_INTEGRATION_DOMAIN_HTTP_READ_TIMEOUT:120s}
+    dictionary-http:
+      # 字典补齐失败只进入同步审计告警，不应长时间阻塞后续订货宝编排步骤。
+      connect-timeout: ${RIGOUR_INTEGRATION_DICTIONARY_HTTP_CONNECT_TIMEOUT:3s}
+      read-timeout: ${RIGOUR_INTEGRATION_DICTIONARY_HTTP_READ_TIMEOUT:30s}
     connector-lease:
       # ERP、CRM、Order及多实例对同一租户连接器共用此分布式租约。
       ttl: ${RIGOUR_INTEGRATION_CONNECTOR_LEASE_TTL:2m}
@@ -57,6 +69,8 @@ rigour:
       worker-max-attempts: 3
       # 订货宝收付款附件写入同一个 COS 私桶，但必须和商品图片目录隔离。
       fund-attachment-prefix: ${RIGOUR_INTEGRATION_FUND_ATTACHMENT_COS_OBJECT_PREFIX:fund-attachments}
+      # 飞书导入附件写入同一个 COS 私桶，但必须和订货宝附件目录隔离。
+      feishu-attachment-prefix: ${RIGOUR_INTEGRATION_FEISHU_ATTACHMENT_COS_OBJECT_PREFIX:feishu-attachments}
       cos:
         # 非敏感项由 Nacos/环境配置；Secret 只从部署环境注入。
         object-prefix: ${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_OBJECT_PREFIX:product-images}
@@ -71,9 +85,11 @@ rigour:
     dhb:
       orchestration:
         # 订货宝同步统一由Integration编排器触发；领域服务定时入口默认关闭。
-        enabled: ${RIGOUR_DHB_SYNC_ORCHESTRATION_ENABLED:true}
+        enabled: ${RIGOUR_DHB_SYNC_ORCHESTRATION_ENABLED:false}
         cron: ${RIGOUR_DHB_SYNC_ORCHESTRATION_CRON:0 5/30 * * * ?}
         max-pages: ${RIGOUR_DHB_SYNC_ORCHESTRATION_MAX_PAGES:100}
+        # 定时任务开启后，统一同步按该起点拉取之后的数据；enabled=true时必须配置，支持yyyy-MM-dd，例如2026-09-01。
+        scheduled-window-from: ${RIGOUR_DHB_SYNC_ORCHESTRATION_SCHEDULED_WINDOW_FROM:}
       order:
         # getOrderContent/getShipsContent 明细接口按单号调用；默认3路受限并发，正式上线前以订货宝确认的限流阈值覆盖。
         detail-concurrency: ${RIGOUR_DHB_ORDER_DETAIL_CONCURRENCY:3}
@@ -96,9 +112,19 @@ rigour:
       app-secret: ${RIGOUR_FEISHU_APP_SECRET:}
       # 默认关闭动态局域网HTTP来源；生产只允许显式配置的HTTPS来源。
       allow-insecure-lan: false
-      connect-timeout: 3s
-      read-timeout: 5s
+      connect-timeout: ${RIGOUR_FEISHU_CONNECT_TIMEOUT:3s}
+      read-timeout: ${RIGOUR_FEISHU_READ_TIMEOUT:60s}
       token-safety-window: 60s
+      import-bundle:
+        # 飞书导出文件导入中心只做批次化处理；正式导入前先预检表头、行数和附件缺口。
+        enabled: ${RIGOUR_FEISHU_IMPORT_BUNDLE_ENABLED:true}
+        max-bytes: ${RIGOUR_FEISHU_IMPORT_BUNDLE_MAX_BYTES:104857600}
+        max-sheets: ${RIGOUR_FEISHU_IMPORT_BUNDLE_MAX_SHEETS:100}
+        max-columns: ${RIGOUR_FEISHU_IMPORT_BUNDLE_MAX_COLUMNS:300}
+        max-rows-per-sheet: ${RIGOUR_FEISHU_IMPORT_BUNDLE_MAX_ROWS_PER_SHEET:1000000}
+        sample-rows: ${RIGOUR_FEISHU_IMPORT_BUNDLE_SAMPLE_ROWS:3}
+        # 页面未填写飞书Base/视图地址时使用；只保存定位地址，App Secret 仍走进程环境。
+        default-source-url: ${RIGOUR_FEISHU_IMPORT_BUNDLE_DEFAULT_SOURCE_URL:}
   context:
     trust:
       active-key-id: v1

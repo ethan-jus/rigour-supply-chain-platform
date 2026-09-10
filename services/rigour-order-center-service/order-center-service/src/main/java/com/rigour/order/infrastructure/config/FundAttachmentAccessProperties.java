@@ -1,16 +1,26 @@
 package com.rigour.order.infrastructure.config;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /** Order 资金附件 COS 访问配置；凭据只从部署 Secret 注入。 */
 @ConfigurationProperties(prefix = "rigour.order.fund-attachment")
 public class FundAttachmentAccessProperties {
     private Duration urlTtl = Duration.ofMinutes(10);
+    /** 额外允许签名的附件目录；飞书导入附件与订货宝资金附件分目录隔离。 */
+    private List<String> additionalObjectPrefixes = new ArrayList<>(List.of("feishu-attachments"));
     private final Cos cos = new Cos();
 
     public Duration getUrlTtl() { return urlTtl; }
     public void setUrlTtl(Duration urlTtl) { this.urlTtl = urlTtl; }
+    public List<String> getAdditionalObjectPrefixes() { return additionalObjectPrefixes; }
+    public void setAdditionalObjectPrefixes(List<String> additionalObjectPrefixes) {
+        this.additionalObjectPrefixes = additionalObjectPrefixes == null
+                ? new ArrayList<>()
+                : new ArrayList<>(additionalObjectPrefixes);
+    }
     public Cos getCos() { return cos; }
 
     public static class Cos {

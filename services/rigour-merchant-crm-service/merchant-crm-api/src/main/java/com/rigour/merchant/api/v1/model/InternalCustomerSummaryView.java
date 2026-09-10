@@ -11,12 +11,20 @@ public record InternalCustomerSummaryView(
         String contactPhone,
         String customerTypeCode,
         String regionCode,
+        String regionName,
+        String cityName,
+        String customerSourceName,
+        String businessCategoryName,
         String ownerSalesUserId,
         String ownerSalesName,
-        String ownerStaffCode,
-        String ownerStaffNameSnapshot,
+        String ownerEmployeeCode,
+        String ownerEmployeeNameSnapshot,
         String settlementTypeCode,
         String statusCode,
+        String sourceSystemCode,
+        String sourceDocumentNo,
+        Instant sourceCreatedAt,
+        Instant sourceUpdatedAt,
         Integer revision,
         Instant updatedTime) {
     public InternalCustomerSummaryView(Long id, String customerCode, String customerName,
@@ -25,7 +33,20 @@ public record InternalCustomerSummaryView(
                                        String ownerSalesName, String settlementTypeCode,
                                        String statusCode, Integer revision, Instant updatedTime) {
         this(id, customerCode, customerName, contactName, contactPhone, null, regionCode,
+                null, null, null, null,
                 ownerSalesUserId, ownerSalesName, null, null, settlementTypeCode,
-                statusCode, revision, updatedTime);
+                statusCode, null, null, null, null, revision, updatedTime);
+    }
+
+    public InternalCustomerSummaryView(Long id, String customerCode, String customerName,
+                                       String contactName, String contactPhone, String customerTypeCode,
+                                       String regionCode, String ownerSalesUserId,
+                                       String ownerSalesName, String ownerEmployeeCode,
+                                       String ownerEmployeeNameSnapshot, String settlementTypeCode,
+                                       String statusCode, Integer revision, Instant updatedTime) {
+        this(id, customerCode, customerName, contactName, contactPhone, customerTypeCode, regionCode,
+                null, null, null, null,
+                ownerSalesUserId, ownerSalesName, ownerEmployeeCode, ownerEmployeeNameSnapshot,
+                settlementTypeCode, statusCode, null, null, null, null, revision, updatedTime);
     }
 }

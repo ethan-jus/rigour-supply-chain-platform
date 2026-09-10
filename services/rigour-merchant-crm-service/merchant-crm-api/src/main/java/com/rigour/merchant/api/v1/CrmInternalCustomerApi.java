@@ -31,7 +31,7 @@ public interface CrmInternalCustomerApi {
             @RequestParam(required = false) String customerTypeCode,
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) String ownerSalesUserId,
-            @RequestParam(required = false) String ownerStaffCode,
+            @RequestParam(required = false) String ownerEmployeeCode,
             @RequestParam(required = false) String statusCode);
 
     @GetMapping(BASE_PATH + "/{id}")

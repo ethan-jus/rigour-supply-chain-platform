@@ -9,6 +9,7 @@ import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutResult;
 import com.rigour.order.api.v1.model.SalesOrderSummaryView;
+import com.rigour.order.api.v1.model.SalesOrderTotalsView;
 import com.rigour.order.application.service.sales.OrderSalesOrderService;
 import com.rigour.shared.core.api.ApiResponse;
 import java.time.Instant;
@@ -26,12 +27,29 @@ public final class OrderSalesOrderController implements OrderSalesOrderApi {
     @Override
     public ApiResponse<OrderPageView<SalesOrderSummaryView>> salesOrders(
             int begin, int step, String orderNo, String sourceOrderNo, String sourceStatusCode,
-            String customerName, String contactPhone, String regionCode, String ownerSalesUserId,
-            String ownerStaffCode, String orderStatusCode,
-            String paymentStatusCode, String outboundStatusCode, Instant orderDateFrom, Instant orderDateTo) {
+            String dataQualityStatusCode, String customerName, String contactPhone, String regionCode,
+            String ownerSalesUserId, String ownerEmployeeCode, String orderStatusCode,
+            String paymentStatusCode, String outboundStatusCode, Instant orderDateFrom, Instant orderDateTo,
+            Long productId, Long productVariantId, String productCodeSnapshot, String skuCodeSnapshot,
+            String productNameSnapshot, String specificationSnapshot) {
         return ApiResponse.success(service.salesOrders(begin, step, orderNo, sourceOrderNo, sourceStatusCode,
-                customerName, contactPhone, regionCode, ownerSalesUserId, ownerStaffCode, orderStatusCode,
-                paymentStatusCode, outboundStatusCode, orderDateFrom, orderDateTo));
+                dataQualityStatusCode, customerName, contactPhone, regionCode, ownerSalesUserId, ownerEmployeeCode,
+                orderStatusCode, paymentStatusCode, outboundStatusCode, orderDateFrom, orderDateTo, productId,
+                productVariantId, productCodeSnapshot, skuCodeSnapshot, productNameSnapshot, specificationSnapshot));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderTotalsView> salesOrderTotals(
+            String orderNo, String sourceOrderNo, String sourceStatusCode, String dataQualityStatusCode,
+            String customerName, String contactPhone, String regionCode, String ownerSalesUserId,
+            String ownerEmployeeCode, String orderStatusCode, String paymentStatusCode, String outboundStatusCode,
+            Instant orderDateFrom, Instant orderDateTo, Long productId, Long productVariantId,
+            String productCodeSnapshot, String skuCodeSnapshot, String productNameSnapshot,
+            String specificationSnapshot) {
+        return ApiResponse.success(service.salesOrderTotals(orderNo, sourceOrderNo, sourceStatusCode,
+                dataQualityStatusCode, customerName, contactPhone, regionCode, ownerSalesUserId, ownerEmployeeCode,
+                orderStatusCode, paymentStatusCode, outboundStatusCode, orderDateFrom, orderDateTo, productId,
+                productVariantId, productCodeSnapshot, skuCodeSnapshot, productNameSnapshot, specificationSnapshot));
     }
 
     @Override

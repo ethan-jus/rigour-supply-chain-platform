@@ -10,6 +10,10 @@ import java.util.Optional;
 public interface SupplyDashboardStore {
     SupplyDashboardData overview(String tenantId, SupplyDashboardFilter filter);
 
+    default Optional<Instant> latestSalesOrderDate(String tenantId) {
+        return Optional.empty();
+    }
+
     TrustData trust(String tenantId);
 
     ReconciliationData reconciliation(String tenantId, SupplyDashboardFilter filter);
@@ -34,6 +38,10 @@ public interface SupplyDashboardStore {
 
     Optional<Instant> checkpointWatermark(String tenantId, String sourceCode);
 
+    default boolean refreshTargetNeedsBackfill(String tenantId, String sourceCode) {
+        return false;
+    }
+
     void updateCheckpoint(
             String tenantId, String sourceCode, String sourceName, Instant watermarkTime,
             Instant successTime, Long runId);
@@ -51,6 +59,8 @@ public interface SupplyDashboardStore {
     long backfillCustomerRegionAttribution(String tenantId, Instant syncedAt);
 
     SourceRefreshResult refreshInventoryBalanceCurrent(String tenantId, Instant syncedAt);
+
+    SourceRefreshResult refreshInventoryOperationFact(String tenantId, Instant syncedAt);
 
     SourceRefreshResult refreshReconciliationCurrent(String tenantId, Instant from, Instant to, Instant observedAt);
 
@@ -72,12 +82,23 @@ public interface SupplyDashboardStore {
             List<TrendPoint> cityCostTrend,
             List<RankingItem> citySalesRanking,
             List<RankingItem> salesRanking,
+            List<SalesMonthlyPerformanceItem> salesMonthlyPerformance,
+            List<RankingItem> cityCollectionRateRanking,
             List<RankingItem> sourceSystemBreakdown,
             List<ProductSalesItem> productSalesRanking,
+            List<ProductSalesItem> skuSalesRanking,
             List<ProductSalesItem> categorySalesRanking,
             List<ProductSalesItem> brandSalesRanking,
             List<RankingItem> paymentRiskCityRanking,
             List<RankingItem> paymentRiskSalesRanking,
+            List<PaymentAgingBucket> paymentAgingBuckets,
+            List<TargetCompletionItem> cityTargetCompletions,
+            List<TargetCompletionItem> salesTargetCompletions,
+            List<CustomerSegmentItem> customerSegments,
+            List<CustomerActivityItem> customerActivityRanking,
+            List<CustomerActivityItem> customerChurnRiskRanking,
+            List<InventoryItemSummary> inventoryItemSummary,
+            List<InventoryReplenishmentItem> inventoryReplenishment,
             List<CityCostItem> cityCostRanking,
             List<RiskItem> risks,
             List<DataFreshness> freshness) {
@@ -93,12 +114,23 @@ public interface SupplyDashboardStore {
             cityCostTrend = List.copyOf(cityCostTrend == null ? List.of() : cityCostTrend);
             citySalesRanking = List.copyOf(citySalesRanking == null ? List.of() : citySalesRanking);
             salesRanking = List.copyOf(salesRanking == null ? List.of() : salesRanking);
+            salesMonthlyPerformance = List.copyOf(salesMonthlyPerformance == null ? List.of() : salesMonthlyPerformance);
+            cityCollectionRateRanking = List.copyOf(cityCollectionRateRanking == null ? List.of() : cityCollectionRateRanking);
             sourceSystemBreakdown = List.copyOf(sourceSystemBreakdown == null ? List.of() : sourceSystemBreakdown);
             productSalesRanking = List.copyOf(productSalesRanking == null ? List.of() : productSalesRanking);
+            skuSalesRanking = List.copyOf(skuSalesRanking == null ? List.of() : skuSalesRanking);
             categorySalesRanking = List.copyOf(categorySalesRanking == null ? List.of() : categorySalesRanking);
             brandSalesRanking = List.copyOf(brandSalesRanking == null ? List.of() : brandSalesRanking);
             paymentRiskCityRanking = List.copyOf(paymentRiskCityRanking == null ? List.of() : paymentRiskCityRanking);
             paymentRiskSalesRanking = List.copyOf(paymentRiskSalesRanking == null ? List.of() : paymentRiskSalesRanking);
+            paymentAgingBuckets = List.copyOf(paymentAgingBuckets == null ? List.of() : paymentAgingBuckets);
+            cityTargetCompletions = List.copyOf(cityTargetCompletions == null ? List.of() : cityTargetCompletions);
+            salesTargetCompletions = List.copyOf(salesTargetCompletions == null ? List.of() : salesTargetCompletions);
+            customerSegments = List.copyOf(customerSegments == null ? List.of() : customerSegments);
+            customerActivityRanking = List.copyOf(customerActivityRanking == null ? List.of() : customerActivityRanking);
+            customerChurnRiskRanking = List.copyOf(customerChurnRiskRanking == null ? List.of() : customerChurnRiskRanking);
+            inventoryItemSummary = List.copyOf(inventoryItemSummary == null ? List.of() : inventoryItemSummary);
+            inventoryReplenishment = List.copyOf(inventoryReplenishment == null ? List.of() : inventoryReplenishment);
             cityCostRanking = List.copyOf(cityCostRanking == null ? List.of() : cityCostRanking);
             risks = List.copyOf(risks == null ? List.of() : risks);
             freshness = List.copyOf(freshness == null ? List.of() : freshness);
@@ -108,6 +140,7 @@ public interface SupplyDashboardStore {
     record SalesSummary(
             Long orderCount,
             Long orderingCustomerCount,
+            Long repeatCustomerCount,
             BigDecimal totalQuantity,
             BigDecimal salesAmount,
             BigDecimal paidAmount,
@@ -115,14 +148,14 @@ public interface SupplyDashboardStore {
             Long unpaidOrderCount,
             Instant latestUpdatedTime) {
         static SalesSummary empty() {
-            return new SalesSummary(0L, 0L, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+            return new SalesSummary(0L, 0L, 0L, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                     BigDecimal.ZERO, 0L, null);
         }
     }
 
-    record CustomerSummary(Long activeCustomerCount, Instant latestUpdatedTime) {
+    record CustomerSummary(Long activeCustomerCount, Long contactedCustomerCount, Instant latestUpdatedTime) {
         static CustomerSummary empty() {
-            return new CustomerSummary(0L, null);
+            return new CustomerSummary(0L, 0L, null);
         }
     }
 
@@ -177,6 +210,22 @@ public interface SupplyDashboardStore {
             String rankType,
             String dimensionCode,
             String dimensionName,
+            String regionCode,
+            String regionName,
+            BigDecimal salesAmount,
+            BigDecimal paidAmount,
+            BigDecimal unpaidAmount,
+            Long orderCount,
+            Long customerCount,
+            BigDecimal rate) {
+    }
+
+    record SalesMonthlyPerformanceItem(
+            String period,
+            String ownerStaffCode,
+            String ownerStaffName,
+            String regionCode,
+            String regionName,
             BigDecimal salesAmount,
             BigDecimal paidAmount,
             BigDecimal unpaidAmount,
@@ -204,6 +253,14 @@ public interface SupplyDashboardStore {
             Long customerCount) {
     }
 
+    record PaymentAgingBucket(
+            String bucketCode,
+            String bucketName,
+            Long orderCount,
+            Long customerCount,
+            BigDecimal unpaidAmount) {
+    }
+
     record CityCostItem(
             String regionCode,
             String regionName,
@@ -214,6 +271,77 @@ public interface SupplyDashboardStore {
             BigDecimal costRate,
             Long recordCount,
             Instant latestCostTime) {
+    }
+
+    record TargetCompletionItem(
+            String dimensionType,
+            String dimensionCode,
+            String dimensionName,
+            String metricCode,
+            String metricName,
+            BigDecimal targetValue,
+            BigDecimal actualValue,
+            BigDecimal achievementRate) {
+    }
+
+    record CustomerSegmentItem(
+            String segmentCode,
+            String segmentName,
+            Long customerCount,
+            BigDecimal salesAmount,
+            BigDecimal paidAmount,
+            BigDecimal unpaidAmount,
+            BigDecimal averageActivityScore,
+            Long churnRiskCustomerCount) {
+    }
+
+    record CustomerActivityItem(
+            String customerCode,
+            String customerName,
+            String regionCode,
+            String regionName,
+            String ownerStaffCode,
+            String ownerStaffName,
+            String customerTypeCode,
+            String customerTypeName,
+            String segmentCode,
+            String segmentName,
+            BigDecimal salesAmount,
+            BigDecimal paidAmount,
+            BigDecimal unpaidAmount,
+            Long orderCount,
+            Long paymentCount,
+            Instant lastOrderTime,
+            Instant lastPaymentTime,
+            Long inactiveDays,
+            BigDecimal activityScore,
+            String churnRiskLevel) {
+    }
+
+    record InventoryItemSummary(
+            String categoryCode,
+            String categoryName,
+            String unitCode,
+            BigDecimal procurementQuantity,
+            BigDecimal shippedQuantity,
+            BigDecimal remainingQuantity,
+            BigDecimal inactiveRemainingQuantity) {
+    }
+
+    record InventoryReplenishmentItem(
+            String categoryCode,
+            String categoryName,
+            String productCode,
+            String productName,
+            String unitCode,
+            BigDecimal salesQuantity,
+            BigDecimal dailySalesQuantity,
+            BigDecimal availableQuantity,
+            BigDecimal inTransitQuantity,
+            BigDecimal coverageDays,
+            BigDecimal suggestedProcurementQuantity,
+            String riskLevel,
+            String inventoryStatus) {
     }
 
     record RiskItem(

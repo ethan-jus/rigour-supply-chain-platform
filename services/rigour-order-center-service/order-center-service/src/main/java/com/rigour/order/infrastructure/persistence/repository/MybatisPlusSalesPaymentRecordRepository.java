@@ -45,6 +45,7 @@ public class MybatisPlusSalesPaymentRecordRepository
     private static final ObjectMapper JSON = JsonMapper.builder().build();
     private static final TypeReference<List<String>> STRING_LIST_TYPE = new TypeReference<>() {
     };
+    private static final String SOURCE_SYSTEM_FEISHU = "FEISHU";
     private static final BigDecimal ZERO = BigDecimal.ZERO;
 
     private final InternalSalesOrderMapper orderMapper;
@@ -79,6 +80,25 @@ public class MybatisPlusSalesPaymentRecordRepository
     @Override
     public Optional<SalesPaymentRecordDetailView> payment(String tenantId, Long id) {
         return selectActive(tenantId, id).map(MybatisPlusSalesPaymentRecordRepository::detail);
+    }
+
+    @Override
+    public Optional<SalesPaymentRecordDetailView> paymentBySource(
+            String tenantId, UUID connectorId, String sourceSystemCode, String sourceDocumentNo) {
+        LambdaQueryWrapper<InternalSalesPaymentRecordEntity> query =
+                Wrappers.<InternalSalesPaymentRecordEntity>lambdaQuery()
+                        .eq(InternalSalesPaymentRecordEntity::getTenantId, tenantId)
+                        .eq(InternalSalesPaymentRecordEntity::getSourceSystemCode, sourceSystemCode)
+                        .eq(InternalSalesPaymentRecordEntity::getSourceDocumentNo, sourceDocumentNo)
+                        .eq(InternalSalesPaymentRecordEntity::getDeleted, 0);
+        if (connectorId != null) {
+            query.eq(InternalSalesPaymentRecordEntity::getConnectorId, connectorId.toString());
+        }
+        return Optional.ofNullable(getBaseMapper().selectOne(query
+                        .orderByDesc(InternalSalesPaymentRecordEntity::getUpdatedTime)
+                        .orderByDesc(InternalSalesPaymentRecordEntity::getId)
+                        .last("LIMIT 1")))
+                .map(MybatisPlusSalesPaymentRecordRepository::detail);
     }
 
     @Override
@@ -187,6 +207,7 @@ public class MybatisPlusSalesPaymentRecordRepository
                         .eq(InternalSalesPaymentRecordEntity::getDeleted, 0);
         if (criteria.paymentNo() != null) query.like(InternalSalesPaymentRecordEntity::getPaymentNo, criteria.paymentNo());
         if (criteria.salesOrderNo() != null) query.like(InternalSalesPaymentRecordEntity::getSalesOrderNoSnapshot, criteria.salesOrderNo());
+        if (criteria.sourceDocumentNo() != null) query.like(InternalSalesPaymentRecordEntity::getSourceDocumentNo, criteria.sourceDocumentNo());
         if (criteria.customerName() != null) query.like(InternalSalesPaymentRecordEntity::getCustomerNameSnapshot, criteria.customerName());
         if (criteria.collectorStaffCode() != null) query.eq(InternalSalesPaymentRecordEntity::getCollectorStaffCode, criteria.collectorStaffCode());
         if (criteria.paymentMethodCode() != null) query.eq(InternalSalesPaymentRecordEntity::getPaymentMethodCode, criteria.paymentMethodCode());
@@ -253,8 +274,7 @@ public class MybatisPlusSalesPaymentRecordRepository
         if (paidAmount.compareTo(ZERO) < 0) paidAmount = ZERO;
         BigDecimal payableAmount = nz(order.getPayableAmount());
         boolean cancelledOrder = SalesOrderStatus.CANCELLED.code().equals(order.getOrderStatusCode());
-        BigDecimal unpaidAmount = cancelledOrder ? ZERO : payableAmount.subtract(paidAmount);
-        if (unpaidAmount.compareTo(ZERO) < 0) unpaidAmount = ZERO;
+        BigDecimal unpaidAmount = unpaidAmount(order, cancelledOrder, payableAmount, paidAmount);
         String status = cancelledOrder
                 ? SalesOrderPaymentStatus.CANCELLED.code()
                 : paymentStatus(payableAmount, paidAmount);
@@ -275,6 +295,18 @@ public class MybatisPlusSalesPaymentRecordRepository
         if (paidAmount.compareTo(ZERO) <= 0) return SalesOrderPaymentStatus.UNPAID.code();
         if (paidAmount.compareTo(payableAmount) >= 0) return SalesOrderPaymentStatus.PAID.code();
         return SalesOrderPaymentStatus.PARTIAL_PAID.code();
+    }
+
+    private static BigDecimal unpaidAmount(InternalSalesOrderEntity order, boolean cancelledOrder,
+                                           BigDecimal payableAmount, BigDecimal paidAmount) {
+        if (cancelledOrder) return ZERO;
+        if (order != null
+                && SOURCE_SYSTEM_FEISHU.equalsIgnoreCase(order.getSourceSystemCode())
+                && order.getSourceUnpaidAmount() != null) {
+            return order.getSourceUnpaidAmount();
+        }
+        BigDecimal unpaidAmount = payableAmount.subtract(paidAmount);
+        return unpaidAmount.compareTo(ZERO) < 0 ? ZERO : unpaidAmount;
     }
 
     private LocalDateTime now() {

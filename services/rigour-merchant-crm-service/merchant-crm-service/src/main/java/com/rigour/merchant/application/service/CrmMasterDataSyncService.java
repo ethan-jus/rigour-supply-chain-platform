@@ -14,8 +14,8 @@ import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient;
 import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient.Collected;
 import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient.SourceRecord;
 import com.rigour.merchant.application.port.out.DhbCrmSyncTargetDiscoveryClient;
-import com.rigour.merchant.application.port.out.IamStaffDirectoryClient;
-import com.rigour.merchant.application.port.out.IamStaffDirectoryClient.ResolvedStaff;
+import com.rigour.merchant.application.port.out.HrEmployeeDirectoryClient;
+import com.rigour.merchant.application.port.out.HrEmployeeDirectoryClient.ResolvedEmployee;
 import com.rigour.merchant.domain.model.CrmMasterDataObjectType;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
@@ -50,11 +50,11 @@ public final class CrmMasterDataSyncService {
     static final String MULTIPLE_ACTIVE_CONNECTORS = "MULTIPLE_ACTIVE_CONNECTORS";
     static final String MULTIPLE_ACTIVE_SYNC_TASKS = "MULTIPLE_ACTIVE_SYNC_TASKS";
     private static final Logger log = LoggerFactory.getLogger(CrmMasterDataSyncService.class);
-    public static final String IAM_STAFF_BY_SOURCE_ID = "_iamStaffBySourceId";
+    public static final String EMPLOYEE_BY_SOURCE_ID = "_employeeBySourceId";
     private static final UUID SERVICE_ID = UUID.nameUUIDFromBytes(
             "service:rigour-merchant-crm-service".getBytes(StandardCharsets.UTF_8));
     private static final Set<String> DISCOVERY_PERMISSIONS = Set.of("integration:dhb:sync-discovery");
-    private static final Set<String> DATA_PERMISSIONS = Set.of("integration:dhb:read", "iam:staff:read");
+    private static final Set<String> DATA_PERMISSIONS = Set.of("integration:dhb:read", "hr:employee:read");
 
     private final DhbCrmMasterDataClient client;
     private final DhbCrmSyncTargetDiscoveryClient discovery;
@@ -62,7 +62,7 @@ public final class CrmMasterDataSyncService {
     private final CrmDictionaryCoverageService dictionaryCoverage;
     private final ConnectorSyncLeaseClient connectorLease;
     private final ExternalObjectMappingClient mappingClient;
-    private final IamStaffDirectoryClient staffDirectory;
+    private final HrEmployeeDirectoryClient employeeDirectory;
 
     public CrmMasterDataSyncService(DhbCrmMasterDataClient client,
                                     DhbCrmSyncTargetDiscoveryClient discovery,
@@ -70,14 +70,14 @@ public final class CrmMasterDataSyncService {
                                     CrmDictionaryCoverageService dictionaryCoverage,
                                     ConnectorSyncLeaseClient connectorLease,
                                     ExternalObjectMappingClient mappingClient,
-                                    IamStaffDirectoryClient staffDirectory) {
+                                    HrEmployeeDirectoryClient employeeDirectory) {
         this.client = client;
         this.discovery = discovery;
         this.store = store;
         this.dictionaryCoverage = dictionaryCoverage;
         this.connectorLease = connectorLease;
         this.mappingClient = mappingClient;
-        this.staffDirectory = staffDirectory;
+        this.employeeDirectory = employeeDirectory;
     }
 
     public SyncResult run(SyncCommand command) {
@@ -90,16 +90,25 @@ public final class CrmMasterDataSyncService {
         CrmMasterDataObjectType selected = CrmMasterDataObjectType.parse(
                 command == null ? null : command.objectType());
         SyncTargetView target = uniqueTarget(caller.tenantId());
+        validateWindow(command == null ? null : command.from(), command == null ? null : command.to());
         return runBatch(caller.tenantId(), target.connectorId(), caller.userId(),
                 selected == null ? CrmMasterDataObjectType.SYNC_ORDER : List.of(selected),
-                maxPages, "MANUAL");
+                maxPages, "MANUAL", command == null ? null : command.from(),
+                command == null ? null : command.to());
     }
 
     public SyncResult runScheduled(CallerIdentity caller, UUID connectorId,
                                    UUID sourceTaskId, int maxPages) {
+        return runScheduled(caller, connectorId, sourceTaskId, maxPages, null, null);
+    }
+
+    public SyncResult runScheduled(CallerIdentity caller, UUID connectorId,
+                                   UUID sourceTaskId, int maxPages,
+                                   Instant from, Instant to) {
         requireScheduledCaller(caller);
         Objects.requireNonNull(sourceTaskId, "sourceTaskId不能为空");
         int pages = maxPages(maxPages);
+        validateWindow(from, to);
         AtomicBoolean leaseAcquired = new AtomicBoolean();
         try {
             return connectorLease.executeWithLeaseGuard(caller.tenantId(), connectorId,
@@ -107,7 +116,7 @@ public final class CrmMasterDataSyncService {
                         leaseAcquired.set(true);
                         return runBatchUnderLease(caller.tenantId(), connectorId, null,
                                 sourceTaskId, CrmMasterDataObjectType.SYNC_ORDER,
-                                pages, "SCHEDULED", guard);
+                                pages, "SCHEDULED", guard, from, to);
                     });
         } catch (RuntimeException error) {
             if (leaseAcquired.get() || !SyncConflictClassifier.isAlreadyRunning(error)) throw error;
@@ -118,22 +127,24 @@ public final class CrmMasterDataSyncService {
 
     private SyncResult runBatch(UUID tenantId, UUID connectorId, UUID actorId,
                                 List<CrmMasterDataObjectType> objectTypes,
-                                int maxPages, String triggerType) {
+                                int maxPages, String triggerType,
+                                Instant from, Instant to) {
         return connectorLease.executeWithLeaseGuard(tenantId, connectorId,
                 guard -> runBatchUnderLease(tenantId, connectorId, actorId, null,
-                        objectTypes, maxPages, triggerType, guard));
+                        objectTypes, maxPages, triggerType, guard, from, to));
     }
 
     private SyncResult runBatchUnderLease(UUID tenantId, UUID connectorId, UUID actorId,
                                           UUID sourceTaskId,
                                           List<CrmMasterDataObjectType> objectTypes,
                                           int maxPages, String triggerType,
-                                          LeaseGuard leaseGuard) {
+                                          LeaseGuard leaseGuard,
+                                          Instant from, Instant to) {
         UUID batchId = UUID.randomUUID();
         List<SyncObjectResult> results = new ArrayList<>();
         for (CrmMasterDataObjectType objectType : objectTypes) {
             results.add(runObject(tenantId, connectorId, actorId, sourceTaskId,
-                    objectType, maxPages, triggerType, leaseGuard));
+                    objectType, maxPages, triggerType, leaseGuard, from, to));
         }
         boolean skipped = results.stream().anyMatch(item -> "SKIPPED".equals(item.status()));
         boolean completed = results.stream().anyMatch(item -> !"SKIPPED".equals(item.status()));
@@ -146,7 +157,8 @@ public final class CrmMasterDataSyncService {
     private SyncObjectResult runObject(UUID tenantId, UUID connectorId, UUID actorId,
                                        UUID sourceTaskId,
                                        CrmMasterDataObjectType objectType, int maxPages,
-                                       String triggerType, LeaseGuard leaseGuard) {
+                                       String triggerType, LeaseGuard leaseGuard,
+                                       Instant from, Instant to) {
         UUID runId;
         try {
             runId = store.startRun(tenantId, connectorId, actorId, sourceTaskId,
@@ -159,14 +171,15 @@ public final class CrmMasterDataSyncService {
         }
         Accumulator counts = new Accumulator();
         try {
-            Collected collected = client.collect(tenantServiceCaller(tenantId), connectorId,
-                    objectType, maxPages);
+            Collected collected = from == null
+                    ? client.collect(tenantServiceCaller(tenantId), connectorId, objectType, maxPages)
+                    : client.collect(tenantServiceCaller(tenantId), connectorId, objectType, maxPages, from, to);
             counts.pages = collected.pages();
             for (int begin = 0; begin < collected.items().size(); begin += IMPORT_BATCH_SIZE) {
                 int end = Math.min(begin + IMPORT_BATCH_SIZE, collected.items().size());
                 List<SourceRecord> batch = collected.items().subList(begin, end);
                 if (objectType == CrmMasterDataObjectType.CUSTOMER) {
-                    batch = enrichIamStaff(tenantId, connectorId, batch);
+                    batch = enrichEmployee(tenantId, connectorId, batch);
                 }
                 store.importRecords(tenantId, connectorId, runId, objectType,
                         batch).forEach(counts::add);
@@ -195,31 +208,31 @@ public final class CrmMasterDataSyncService {
         }
     }
 
-    private List<SourceRecord> enrichIamStaff(UUID tenantId, UUID connectorId,
+    private List<SourceRecord> enrichEmployee(UUID tenantId, UUID connectorId,
                                               List<SourceRecord> records) {
         if (records == null || records.isEmpty()) return List.of();
         LinkedHashSet<String> sourceStaffIds = new LinkedHashSet<>();
         records.forEach(record -> collectStaffSourceIds(record.sourceFields(), sourceStaffIds));
         if (sourceStaffIds.isEmpty()) return records;
-        List<ResolvedStaff> resolved = staffDirectory.resolveDinghuobaoStaff(
+        List<ResolvedEmployee> resolved = employeeDirectory.resolveDinghuobaoEmployees(
                 tenantServiceCaller(tenantId), connectorId.toString(), List.copyOf(sourceStaffIds));
         Map<String, Map<String, Object>> bySourceId = new LinkedHashMap<>();
-        for (ResolvedStaff staff : resolved) {
-            String sourceStaffId = cleanStaffId(staff.sourceStaffId());
+        for (ResolvedEmployee employee : resolved) {
+            String sourceStaffId = cleanStaffId(employee.sourceStaffId());
             if (sourceStaffId == null) continue;
-            String staffCode = blankToNull(staff.staffCode());
-            String staffName = blankToNull(staff.staffName());
-            if (staffCode == null && staffName == null) continue;
+            String employeeCode = blankToNull(employee.employeeCode());
+            String employeeName = blankToNull(employee.employeeName());
+            if (employeeCode == null && employeeName == null) continue;
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("sourceStaffId", sourceStaffId);
-            item.put("staffCode", staffCode);
-            item.put("staffName", staffName);
+            item.put("employeeCode", employeeCode);
+            item.put("employeeName", employeeName);
             bySourceId.put(sourceStaffId, item);
         }
         if (bySourceId.isEmpty()) return records;
         return records.stream().map(record -> {
             Map<String, Object> fields = new LinkedHashMap<>(record.sourceFields());
-            fields.put(IAM_STAFF_BY_SOURCE_ID, bySourceId);
+            fields.put(EMPLOYEE_BY_SOURCE_ID, bySourceId);
             return new SourceRecord(record.sourceId(), record.sourceCode(), record.sourceName(),
                     record.sourceStatus(), record.sourceCreatedAt(), record.sourceUpdatedAt(), fields);
         }).toList();
@@ -388,6 +401,15 @@ public final class CrmMasterDataSyncService {
                 || (!caller.permissions().contains("integration:dhb:read")
                 && !caller.permissions().contains("*:*:*"))) {
             throw new AuthorizationDeniedException("tenant-service-caller");
+        }
+    }
+
+    private static void validateWindow(Instant from, Instant to) {
+        if ((from == null) != (to == null)) {
+            throw new IllegalArgumentException("同步窗口from和to必须同时提供");
+        }
+        if (from != null && !from.isBefore(to)) {
+            throw new IllegalArgumentException("同步窗口from必须早于to");
         }
     }
 

@@ -1,5 +1,6 @@
 package com.rigour.integration;
 
+import com.rigour.integration.maintenance.IntegrationFlywayMaintenance;
 import com.rigour.platform.startup.ServiceApplicationLauncher;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
@@ -14,6 +15,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class IntegrationMigrationServiceApplication {
     public static void main(String[] args) {
+        if (IntegrationFlywayMaintenance.runIfRequested(args)) {
+            return;
+        }
         ServiceApplicationLauncher.run(IntegrationMigrationServiceApplication.class, "集成迁移服务", args);
     }
 }

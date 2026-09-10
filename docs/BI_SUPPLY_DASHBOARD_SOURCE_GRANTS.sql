@@ -11,6 +11,7 @@ GRANT SELECT ON rigour_order.order_payment_record TO 'rigour_bi_app'@'%';
 GRANT SELECT ON rigour_order.order_refund_record TO 'rigour_bi_app'@'%';
 
 GRANT SELECT ON rigour_integration.integration_raw_landing TO 'rigour_bi_app'@'%';
+GRANT SELECT ON rigour_integration.integration_feishu_import_raw_row TO 'rigour_bi_app'@'%';
 
 GRANT SELECT ON rigour_erp.erp_stock_balance TO 'rigour_bi_app'@'%';
 GRANT SELECT ON rigour_erp.erp_inventory_warehouse TO 'rigour_bi_app'@'%';

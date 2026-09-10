@@ -41,7 +41,7 @@ public final class BusinessDictionaryCoverageService {
             add(values, "ERP", "DHB_PURCHASE_RETURN_STATUS", "purchaseReturn.sourceStatus",
                     value.sourceStatus(), value.sourceStatusName());
             value.lines().forEach(line -> add(values, "COMMON", "DHB_UNIT", "purchaseReturnLine.unit",
-                    firstText(line.unitCode(), line.unitName()), line.unitName()));
+                    sourceUnitText(line.unitCode(), line.unitName()), line.unitName()));
         });
         data.warehousingReceipts().forEach(value -> addWarehousing(values, value));
         data.warehouses().forEach(value -> add(values, "ERP", "DHB_WAREHOUSE_STATUS",
@@ -75,7 +75,7 @@ public final class BusinessDictionaryCoverageService {
         add(values, "ERP", "DHB_PURCHASE_PAYMENT_STATUS", "purchaseOrder.paymentStatus",
                 order.paymentStatus(), order.paymentStatusName());
         order.lines().forEach(line -> add(values, "COMMON", "DHB_UNIT", "purchaseOrderLine.unit",
-                firstText(line.unitCode(), line.unitName()), line.unitName()));
+                sourceUnitText(line.unitCode(), line.unitName()), line.unitName()));
     }
 
     private static void addWarehousing(List<Observation> values, WarehousingReceipt receipt) {
@@ -84,7 +84,7 @@ public final class BusinessDictionaryCoverageService {
         add(values, "ERP", "DHB_WAREHOUSING_TYPE", "warehousing.typeId",
                 receipt.typeId(), receipt.typeName());
         receipt.lines().forEach(line -> add(values, "COMMON", "DHB_UNIT", "warehousingLine.unit",
-                firstText(line.unitCode(), line.unitName()), line.unitName()));
+                sourceUnitText(line.unitCode(), line.unitName()), line.unitName()));
     }
 
     private static void add(List<Observation> target, String moduleCode, String dictCode,
@@ -103,6 +103,11 @@ public final class BusinessDictionaryCoverageService {
 
     private static String firstText(String primary, String fallback) {
         return primary != null && !primary.isBlank() ? primary : fallback;
+    }
+
+    private static String sourceUnitText(String sourceValue, String sourceName) {
+        if (sourceValue != null && !sourceValue.isBlank() && !isUnitLevel(sourceValue)) return sourceValue;
+        return firstText(sourceName, sourceValue);
     }
 
     private static String exact(java.util.Map<String, Object> fields, String key) {

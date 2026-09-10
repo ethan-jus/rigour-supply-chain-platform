@@ -6,13 +6,19 @@ import com.qcloud.cos.auth.BasicCOSCredentials;
 import com.qcloud.cos.auth.BasicSessionCredentials;
 import com.qcloud.cos.auth.COSCredentials;
 import com.qcloud.cos.http.HttpMethodName;
+import com.qcloud.cos.model.GeneratePresignedUrlRequest;
+import com.qcloud.cos.model.ResponseHeaderOverrides;
 import com.qcloud.cos.region.Region;
 import com.rigour.order.application.port.out.FundAttachmentUrlResolver;
 import com.rigour.order.infrastructure.config.FundAttachmentAccessProperties;
 import jakarta.annotation.PreDestroy;
 import java.net.URL;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -23,7 +29,7 @@ import org.springframework.util.StringUtils;
 public final class CosFundAttachmentUrlResolver implements FundAttachmentUrlResolver {
     private final COSClient client;
     private final String bucket;
-    private final String objectPrefix;
+    private final List<String> allowedObjectPrefixes;
     private final java.time.Duration ttl;
 
     public CosFundAttachmentUrlResolver(FundAttachmentAccessProperties properties) {
@@ -32,7 +38,12 @@ public final class CosFundAttachmentUrlResolver implements FundAttachmentUrlReso
         requireText(cos.getBucket(), "rigour.order.fund-attachment.cos.bucket");
         requireText(cos.getSecretId(), "rigour.order.fund-attachment.cos.secret-id");
         requireText(cos.getSecretKey(), "rigour.order.fund-attachment.cos.secret-key");
-        this.objectPrefix = normalizePrefix(cos.getObjectPrefix());
+        LinkedHashSet<String> prefixes = new LinkedHashSet<>();
+        prefixes.add(normalizePrefix(cos.getObjectPrefix()));
+        for (String prefix : properties.getAdditionalObjectPrefixes()) {
+            prefixes.add(normalizePrefix(prefix));
+        }
+        this.allowedObjectPrefixes = List.copyOf(prefixes);
         if (properties.getUrlTtl() == null || properties.getUrlTtl().isNegative()
                 || properties.getUrlTtl().isZero()) {
             throw new IllegalStateException("资金附件 URL 有效期必须大于0");
@@ -54,9 +65,13 @@ public final class CosFundAttachmentUrlResolver implements FundAttachmentUrlReso
 
     @Override
     public String temporaryUrl(String tenantId, String objectKey) {
-        validateKey(tenantId, objectKey, objectPrefix);
+        validateKey(tenantId, objectKey, allowedObjectPrefixes);
         Date expiration = Date.from(Instant.now().plus(ttl));
-        URL url = client.generatePresignedUrl(bucket, objectKey, expiration, HttpMethodName.GET);
+        GeneratePresignedUrlRequest request =
+                new GeneratePresignedUrlRequest(bucket, objectKey, HttpMethodName.GET);
+        request.setExpiration(expiration);
+        request.setResponseHeaders(previewHeaders(objectKey));
+        URL url = client.generatePresignedUrl(request);
         return url.toExternalForm();
     }
 
@@ -64,8 +79,14 @@ public final class CosFundAttachmentUrlResolver implements FundAttachmentUrlReso
     void shutdown() { client.shutdown(); }
 
     static void validateKey(String tenantId, String objectKey, String objectPrefix) {
+        validateKey(tenantId, objectKey, List.of(normalizePrefix(objectPrefix)));
+    }
+
+    static void validateKey(String tenantId, String objectKey, List<String> objectPrefixes) {
+        List<String> prefixes = objectPrefixes == null ? List.of() : new ArrayList<>(objectPrefixes);
         if (!StringUtils.hasText(tenantId) || !StringUtils.hasText(objectKey)
-                || !objectKey.startsWith(tenantId + "/" + objectPrefix + "/") || objectKey.contains("..")) {
+                || objectKey.contains("..") || prefixes.stream()
+                .noneMatch(prefix -> objectKey.startsWith(tenantId + "/" + prefix + "/"))) {
             throw new IllegalArgumentException("资金附件对象 key 无效");
         }
     }
@@ -76,6 +97,26 @@ public final class CosFundAttachmentUrlResolver implements FundAttachmentUrlReso
             throw new IllegalStateException("资金附件 COS object-prefix 必须是安全的相对路径");
         }
         return value;
+    }
+
+    static ResponseHeaderOverrides previewHeaders(String objectKey) {
+        ResponseHeaderOverrides headers = new ResponseHeaderOverrides()
+                .withContentDisposition("inline");
+        String contentType = previewContentType(objectKey);
+        if (StringUtils.hasText(contentType)) headers.setContentType(contentType);
+        return headers;
+    }
+
+    static String previewContentType(String objectKey) {
+        String value = objectKey == null ? "" : objectKey.toLowerCase(Locale.ROOT);
+        if (value.endsWith(".jpg") || value.endsWith(".jpeg")) return "image/jpeg";
+        if (value.endsWith(".png")) return "image/png";
+        if (value.endsWith(".gif")) return "image/gif";
+        if (value.endsWith(".webp")) return "image/webp";
+        if (value.endsWith(".bmp")) return "image/bmp";
+        if (value.endsWith(".svg")) return "image/svg+xml";
+        if (value.endsWith(".pdf")) return "application/pdf";
+        return null;
     }
 
     private static void requireText(String value, String name) {

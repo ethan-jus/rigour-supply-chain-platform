@@ -63,6 +63,15 @@ public final class FeishuClientProperties {
         positive(tokenSafetyWindow, "token-safety-window", 3600);
     }
 
+    public void validateForServerApi() {
+        if (isBlank(appId) || isBlank(appSecret)) {
+            throw new IllegalStateException("飞书 App ID 或 App Secret 未配置");
+        }
+        positive(connectTimeout, "connect-timeout", 30);
+        positive(readTimeout, "read-timeout", 600);
+        positive(tokenSafetyWindow, "token-safety-window", 3600);
+    }
+
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();
     }

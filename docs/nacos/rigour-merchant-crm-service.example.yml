@@ -24,6 +24,9 @@ spring:
     locations: classpath:db/migration
 
 rigour:
+  hr:
+    # CRM 读取 HR 员工主档做客户归属人员解析。
+    base-url: http://rigour-hr-payroll-service:26889
   business-settings:
     base-url: http://rigour-business-settings-service:26892
   integration:

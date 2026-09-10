@@ -12,7 +12,9 @@ import static org.mockito.Mockito.when;
 import com.rigour.order.api.v1.model.FundDocumentCommand;
 import com.rigour.order.api.v1.model.FundDocumentDetailView;
 import com.rigour.order.api.v1.model.OrderPageView;
+import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
+import com.rigour.order.api.v1.model.SalesOrderLineCommand;
 import com.rigour.order.api.v1.model.SalesOrderLineView;
 import com.rigour.order.api.v1.model.SalesPaymentRecordCommand;
 import com.rigour.order.api.v1.model.SalesPaymentRecordDetailView;
@@ -20,10 +22,11 @@ import com.rigour.order.api.v1.model.SalesRefundRecordCommand;
 import com.rigour.order.api.v1.model.SalesRefundRecordDetailView;
 import com.rigour.order.api.v1.model.SalesShipmentCommand;
 import com.rigour.order.api.v1.model.SalesShipmentDetailView;
-import com.rigour.order.application.port.out.IamStaffDisplayClient;
+import com.rigour.order.application.port.out.HrEmployeeDisplayClient;
 import com.rigour.order.application.port.out.OrderFundDocumentStore;
 import com.rigour.order.application.port.out.OrderFundDocumentStore.FundDocumentWrite;
 import com.rigour.order.application.port.out.OrderSalesOrderStore;
+import com.rigour.order.application.port.out.OrderSalesOrderStore.SalesOrderWrite;
 import com.rigour.order.application.port.out.OrderSalesPaymentRecordStore;
 import com.rigour.order.application.port.out.OrderSalesPaymentRecordStore.SalesPaymentWrite;
 import com.rigour.order.application.port.out.OrderSalesRefundRecordStore;
@@ -55,6 +58,25 @@ class OrderBusinessTimeCodeGenerationTest {
     @AfterEach
     void clearContext() {
         TestAuthorizationContext.clear();
+    }
+
+    @Test
+    void feishuSalesOrderNoUsesSourceCreatedAt() {
+        OrderSalesOrderStore store = mock(OrderSalesOrderStore.class);
+        OrderSalesOrderService service = new OrderSalesOrderService(store, generator());
+        TestAuthorizationContext.set(serviceCaller());
+        when(store.create(eq(TENANT_ID.toString()), any(), any(), any()))
+                .thenAnswer(invocation -> salesOrder(invocation.getArgument(1), invocation.getArgument(2)));
+
+        SalesOrderDetailView created = service.create(new SalesOrderCommand(
+                1L, "FEISHU", "FS.20260818.0001", "APPROVED",
+                "creator-1", null, "飞书创建人", "CUS202608190001",
+                "上海静安店", "张三", "13800000000", "EAST",
+                null, "李四", "RY202608190001", "李四",
+                BUSINESS_TIME, "NORMAL", "CASH", null, BigDecimal.ZERO,
+                "飞书订单", List.of(line()), true, 0));
+
+        assertThat(created.orderNo()).isEqualTo("DD202608198888");
     }
 
     @Test
@@ -97,7 +119,7 @@ class OrderBusinessTimeCodeGenerationTest {
     void tenantCannotForgeExternalSalesPaymentSourceFields() {
         OrderSalesPaymentRecordStore store = mock(OrderSalesPaymentRecordStore.class);
         OrderSalesPaymentRecordService service = new OrderSalesPaymentRecordService(
-                store, orderStore(), emptyStaffClient(), generator());
+                store, orderStore(), emptyEmployeeClient(), generator());
         TestAuthorizationContext.set(caller());
 
         assertThatThrownBy(() -> service.create(new SalesPaymentRecordCommand(
@@ -113,7 +135,7 @@ class OrderBusinessTimeCodeGenerationTest {
     void salesPaymentNoUsesPaymentTime() {
         OrderSalesPaymentRecordStore store = mock(OrderSalesPaymentRecordStore.class);
         OrderSalesPaymentRecordService service = new OrderSalesPaymentRecordService(
-                store, orderStore(), emptyStaffClient(), generator());
+                store, orderStore(), emptyEmployeeClient(), generator());
         TestAuthorizationContext.set(caller());
         when(store.create(eq(TENANT_ID.toString()), any(), any(), any()))
                 .thenAnswer(invocation -> payment(invocation.getArgument(1), invocation.getArgument(2)));
@@ -129,7 +151,7 @@ class OrderBusinessTimeCodeGenerationTest {
     void salesRefundNoUsesRefundTime() {
         OrderSalesRefundRecordStore store = mock(OrderSalesRefundRecordStore.class);
         OrderSalesRefundRecordService service = new OrderSalesRefundRecordService(
-                store, orderStore(), emptyStaffClient(), generator());
+                store, orderStore(), emptyEmployeeClient(), generator());
         TestAuthorizationContext.set(caller());
         when(store.create(eq(TENANT_ID.toString()), any(), any(), any()))
                 .thenAnswer(invocation -> refund(invocation.getArgument(1), invocation.getArgument(2)));
@@ -145,7 +167,7 @@ class OrderBusinessTimeCodeGenerationTest {
     void fundDocumentNoUsesOccurredTime() {
         OrderFundDocumentStore store = mock(OrderFundDocumentStore.class);
         OrderFundDocumentService service = new OrderFundDocumentService(
-                store, orderStore(), emptyStaffClient(), generator());
+                store, orderStore(), emptyEmployeeClient(), generator());
         TestAuthorizationContext.set(caller());
         when(store.create(eq(TENANT_ID.toString()), any(), any(), any()))
                 .thenAnswer(invocation -> fundDocument(invocation.getArgument(1), invocation.getArgument(2)));
@@ -162,7 +184,7 @@ class OrderBusinessTimeCodeGenerationTest {
     void fundDocumentSearchKeepsSourceKeysSeparate() {
         OrderFundDocumentStore store = mock(OrderFundDocumentStore.class);
         OrderFundDocumentService service = new OrderFundDocumentService(
-                store, orderStore(), emptyStaffClient(), generator());
+                store, orderStore(), emptyEmployeeClient(), generator());
         TestAuthorizationContext.set(caller());
         when(store.fundDocuments(eq(TENANT_ID.toString()), eq(0), eq(20), any()))
                 .thenReturn(new OrderPageView<>(0, 0, 20, List.of()));
@@ -189,7 +211,7 @@ class OrderBusinessTimeCodeGenerationTest {
     void fundDocumentDetailResolvesCosAttachmentUrlsWithoutHidingRawRefs() {
         OrderFundDocumentStore store = mock(OrderFundDocumentStore.class);
         OrderFundDocumentService service = new OrderFundDocumentService(
-                store, orderStore(), emptyStaffClient(), generator(),
+                store, orderStore(), emptyEmployeeClient(), generator(),
                 (tenantId, objectKey) -> "https://cos.test/" + objectKey);
         TestAuthorizationContext.set(caller());
         String objectKey = TENANT_ID + "/fund-attachments/FR_20260826_0247/ATT/hash.png";
@@ -237,7 +259,7 @@ class OrderBusinessTimeCodeGenerationTest {
     void tenantCannotDeleteExternalFundDocument() {
         OrderFundDocumentStore store = mock(OrderFundDocumentStore.class);
         OrderFundDocumentService service = new OrderFundDocumentService(
-                store, orderStore(), emptyStaffClient(), generator());
+                store, orderStore(), emptyEmployeeClient(), generator());
         TestAuthorizationContext.set(caller());
         when(store.fundDocument(eq(TENANT_ID.toString()), eq(40L))).thenReturn(Optional.of(
                 new FundDocumentDetailView(40L, "SK202608198888", CONNECTOR_ID, "DINGHUOBAO",
@@ -269,17 +291,37 @@ class OrderBusinessTimeCodeGenerationTest {
     private static CallerIdentity serviceCaller() {
         return new CallerIdentity("SERVICE", USER_ID, TENANT_ID, null, null,
                 UUID.randomUUID(), 0, 0, 0, Set.of("DHB_ORDER_SYNC_SERVICE"),
-                Set.of("order:write", "order:read", "iam:staff:read"));
+                Set.of("order:write", "order:read", "hr:employee:read"));
     }
 
-    private static IamStaffDisplayClient emptyStaffClient() {
-        return (caller, staffCodes) -> List.of();
+    private static HrEmployeeDisplayClient emptyEmployeeClient() {
+        return (caller, employeeCodes) -> List.of();
     }
 
     private static OrderSalesOrderStore orderStore() {
         OrderSalesOrderStore store = mock(OrderSalesOrderStore.class);
         when(store.salesOrder(eq(TENANT_ID.toString()), eq(1L))).thenReturn(Optional.of(order()));
         return store;
+    }
+
+    private static SalesOrderLineCommand line() {
+        return new SalesOrderLineCommand(201L, 301L, "PRD1", "SKU1",
+                "商品", "规格", "PCS", BigDecimal.ONE, new BigDecimal("100.00"),
+                null, BigDecimal.ZERO, "明细");
+    }
+
+    private static SalesOrderDetailView salesOrder(String orderNo, SalesOrderWrite write) {
+        return new SalesOrderDetailView(1L, orderNo, write.sourceSystemCode(), write.sourceOrderNo(),
+                write.sourceStatusCode(), write.sourceCreatorId(), write.sourceCreatorStaffCode(),
+                write.sourceCreatorName(), write.customerId(), write.customerCodeSnapshot(),
+                write.customerNameSnapshot(), write.contactNameSnapshot(), write.contactPhoneSnapshot(),
+                write.regionCode(), write.ownerSalesUserId(), write.ownerSalesName(),
+                write.ownerEmployeeCode(), write.ownerEmployeeNameSnapshot(), write.orderDate(),
+                null, null, null, write.orderStatusCode(), write.orderTypeCode(),
+                write.paymentMethodCode(), "UNPAID", "PENDING", write.totalQuantity(),
+                write.originalAmount(), write.discountRate(), write.discountAmount(),
+                write.payableAmount(), BigDecimal.ZERO, write.payableAmount(), write.remark(),
+                1, "SYSTEM", BUSINESS_TIME, "SYSTEM", BUSINESS_TIME, List.of());
     }
 
     private static SalesOrderDetailView order() {
@@ -299,7 +341,7 @@ class OrderBusinessTimeCodeGenerationTest {
                 write.sourceSystemCode(), write.sourceDocumentNo(), write.salesOrderId(),
                 write.salesOrderNoSnapshot(), write.customerId(), write.customerCodeSnapshot(),
                 write.customerNameSnapshot(), write.contactPhoneSnapshot(), write.regionCode(),
-                write.ownerStaffCode(), write.warehouseId(), write.stockOutOrderId(),
+                write.ownerEmployeeCode(), write.warehouseId(), write.stockOutOrderId(),
                 write.stockOutNo(), write.shipmentStatusCode(), write.logisticsCompany(),
                 write.trackingNo(), write.shipTime(), write.totalQuantity(), write.remark(),
                 1, "SYSTEM", BUSINESS_TIME, "SYSTEM", BUSINESS_TIME, List.of());

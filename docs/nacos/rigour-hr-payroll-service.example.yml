@@ -13,8 +13,8 @@ spring:
       connection-timeout: 30000
       validation-timeout: 5000
   flyway:
-    # 当前 HR 还没有正式 V1 迁移；完成字段评审后改为 true。
-    enabled: false
+    # HR 已有员工主档 V1 迁移；本地/共享环境启动前确认迁移账号可用。
+    enabled: true
     url: jdbc:mysql://82.157.4.176:13306/rigour_hr?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true
     user: rigour_hr_migrator
     password: ${HR_DB_MIGRATOR_PASSWORD}

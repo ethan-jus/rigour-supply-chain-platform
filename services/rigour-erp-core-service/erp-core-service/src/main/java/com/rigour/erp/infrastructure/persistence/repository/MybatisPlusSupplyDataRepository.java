@@ -936,7 +936,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.setVariantCodeSnapshot(variantEntity == null ? null : variantEntity.getVariantCode());
             entity.setProductNameSnapshot(firstText(line.goodsName(), productEntity == null ? null
                     : productEntity.getProductName()));
-            entity.setUnitCode(internalUnitCode(firstText(line.unitCode(), line.unitName())));
+            entity.setUnitCode(sourceUnitCode(line.unitCode(), line.unitName()));
             entity.setQuantity(amount(firstAmount(line.unitQuantity(), line.baseQuantity())));
             entity.setUnitPrice(amount(line.unitPrice()));
             entity.setLineAmount(amount(entity.getQuantity().multiply(entity.getUnitPrice())));
@@ -978,7 +978,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.setVariantCodeSnapshot(variantEntity == null ? null : variantEntity.getVariantCode());
             entity.setProductNameSnapshot(firstText(line.goodsName(), productEntity == null ? null
                     : productEntity.getProductName()));
-            entity.setUnitCode(internalUnitCode(firstText(line.unitCode(), line.unitName())));
+            entity.setUnitCode(sourceUnitCode(line.unitCode(), line.unitName()));
             entity.setQuantity(amount(firstAmount(line.unitQuantity(), line.baseQuantity())));
             entity.setUnitPrice(amount(firstAmount(line.unitCostPrice(), line.costPrice())));
             entity.setAmount(amount(entity.getQuantity().multiply(entity.getUnitPrice())));
@@ -1021,7 +1021,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.setVariantCodeSnapshot(variantEntity == null ? null : variantEntity.getVariantCode());
             entity.setProductNameSnapshot(firstText(line.goodsName(), productEntity == null ? null
                     : productEntity.getProductName()));
-            entity.setUnitCode(internalUnitCode(firstText(line.unitCode(), line.unitName())));
+            entity.setUnitCode(sourceUnitCode(line.unitCode(), line.unitName()));
             entity.setRequestedQuantity(amount(line.requestedQuantity()));
             entity.setReturnedQuantity(amount(firstAmount(line.confirmedQuantity(), line.requestedQuantity())));
             entity.setUnitPrice(amount(line.returnPrice()));
@@ -2110,15 +2110,34 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         return "F".equalsIgnoreCase(blank(sourceStatus)) ? "DISABLED" : "ACTIVE";
     }
 
+    private static String sourceUnitCode(String sourceUnitCode, String sourceUnitName) {
+        String source = isUnitLevel(sourceUnitCode) ? sourceUnitName : firstText(sourceUnitCode, sourceUnitName);
+        return internalUnitCode(source);
+    }
+
     private static String internalUnitCode(String value) {
-        if (missing(value)) return "PIECE";
-        return switch (value.strip()) {
-            case "箱" -> "BOX";
-            case "桶" -> "BUCKET";
-            case "份" -> "PORTION";
-            case "套" -> "SET";
-            case "床" -> "BED";
+        String normalized = blank(value);
+        if (normalized == null) return "PIECE";
+        return switch (normalized.toUpperCase(java.util.Locale.ROOT)) {
+            case "BOX", "箱" -> "BOX";
+            case "BUCKET", "桶" -> "BUCKET";
+            case "PORTION", "份" -> "PORTION";
+            case "SET", "套" -> "SET";
+            case "BED", "床" -> "BED";
+            case "PAIR", "副" -> "PAIR";
+            case "BOTTLE", "瓶" -> "BOTTLE";
+            case "STRIP", "条" -> "STRIP";
+            case "GRAIN", "颗" -> "GRAIN";
+            case "PIECE", "PCS", "EA", "件", "个", "只", "支" -> "PIECE";
             default -> "PIECE";
+        };
+    }
+
+    private static boolean isUnitLevel(String value) {
+        if (missing(value)) return false;
+        return switch (value.strip().toLowerCase(java.util.Locale.ROOT)) {
+            case "base_units", "middle_units", "container_units", "big_units" -> true;
+            default -> false;
         };
     }
 

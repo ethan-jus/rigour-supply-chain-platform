@@ -7,11 +7,11 @@ DB_HOST="${DB_HOST:-82.157.4.176}"
 DB_PORT="${DB_PORT:-13306}"
 DB_USER="${DB_USER:-root}"
 DB_URL_PARAMS="${DB_URL_PARAMS:-useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=PREFERRED&allowPublicKeyRetrieval=true}"
-SERVICES="${SERVICES:-settings iam integration erp crm order}"
+SERVICES="${SERVICES:-settings iam integration erp crm order hr}"
 ACTION="${ACTION:-migrate}"
 
-if [[ "$ACTION" != "info" && "$ACTION" != "validate" && "$ACTION" != "migrate" ]]; then
-  printf 'ACTION must be one of: info, validate, migrate\n' >&2
+if [[ "$ACTION" != "info" && "$ACTION" != "validate" && "$ACTION" != "migrate" && "$ACTION" != "repair" ]]; then
+  printf 'ACTION must be one of: info, validate, migrate, repair\n' >&2
   exit 2
 fi
 
@@ -32,6 +32,7 @@ import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.MigrationInfo;
 import org.flywaydb.core.api.MigrationInfoService;
 import org.flywaydb.core.api.output.MigrateResult;
+import org.flywaydb.core.api.output.RepairResult;
 
 public final class FlywayServiceRunner {
     public static void main(String[] args) {
@@ -58,6 +59,12 @@ public final class FlywayServiceRunner {
                 MigrateResult result = flyway.migrate();
                 System.out.printf("%s migrate OK initial=%s target=%s migrations=%d%n",
                         schema, result.initialSchemaVersion, result.targetSchemaVersion, result.migrationsExecuted);
+                printInfo(schema, flyway.info());
+            }
+            case "repair" -> {
+                RepairResult result = flyway.repair();
+                System.out.printf("%s repair OK migrationsRemoved=%d migrationsDeleted=%d migrationsAligned=%d%n",
+                        schema, result.migrationsRemoved.size(), result.migrationsDeleted.size(), result.migrationsAligned.size());
                 printInfo(schema, flyway.info());
             }
             default -> throw new IllegalArgumentException("Unsupported action: " + action);
@@ -91,6 +98,7 @@ module_pom() {
     erp) printf '%s\n' "$ROOT_DIR/services/rigour-erp-core-service/erp-core-service/pom.xml" ;;
     crm) printf '%s\n' "$ROOT_DIR/services/rigour-merchant-crm-service/merchant-crm-service/pom.xml" ;;
     order) printf '%s\n' "$ROOT_DIR/services/rigour-order-center-service/order-center-service/pom.xml" ;;
+    hr) printf '%s\n' "$ROOT_DIR/services/rigour-hr-payroll-service/hr-payroll-service/pom.xml" ;;
     bi) printf '%s\n' "$ROOT_DIR/services/rigour-analytics-bi-service/analytics-bi-service/pom.xml" ;;
     *) printf 'Unknown service: %s\n' "$1" >&2; return 1 ;;
   esac
@@ -104,6 +112,7 @@ schema_name() {
     erp) printf '%s\n' "rigour_erp" ;;
     crm) printf '%s\n' "rigour_crm" ;;
     order) printf '%s\n' "rigour_order" ;;
+    hr) printf '%s\n' "rigour_hr" ;;
     bi) printf '%s\n' "rigour_bi" ;;
     *) printf 'Unknown service: %s\n' "$1" >&2; return 1 ;;
   esac
@@ -117,6 +126,7 @@ migration_dir() {
     erp) printf '%s\n' "$ROOT_DIR/services/rigour-erp-core-service/erp-core-service/src/main/resources/db/migration" ;;
     crm) printf '%s\n' "$ROOT_DIR/services/rigour-merchant-crm-service/merchant-crm-service/src/main/resources/db/migration" ;;
     order) printf '%s\n' "$ROOT_DIR/services/rigour-order-center-service/order-center-service/src/main/resources/db/migration" ;;
+    hr) printf '%s\n' "$ROOT_DIR/services/rigour-hr-payroll-service/hr-payroll-service/src/main/resources/db/migration" ;;
     bi) printf '%s\n' "$ROOT_DIR/services/rigour-analytics-bi-service/analytics-bi-service/src/main/resources/db/migration" ;;
     *) printf 'Unknown service: %s\n' "$1" >&2; return 1 ;;
   esac

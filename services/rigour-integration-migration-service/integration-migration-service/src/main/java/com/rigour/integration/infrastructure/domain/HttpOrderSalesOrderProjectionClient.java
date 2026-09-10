@@ -8,10 +8,12 @@ import com.rigour.order.api.v1.OrderSalesRefundRecordApi;
 import com.rigour.order.api.v1.OrderSalesShipmentApi;
 import com.rigour.order.api.v1.model.FundDocumentCommand;
 import com.rigour.order.api.v1.model.FundDocumentDetailView;
+import com.rigour.order.api.v1.model.OrderPageView;
 import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
 import com.rigour.order.api.v1.model.SalesOrderSourceProjectionCommand;
 import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
+import com.rigour.order.api.v1.model.SalesOrderSummaryView;
 import com.rigour.order.api.v1.model.SalesPaymentRecordCommand;
 import com.rigour.order.api.v1.model.SalesPaymentRecordDetailView;
 import com.rigour.order.api.v1.model.SalesRefundRecordCommand;
@@ -27,17 +29,21 @@ import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.core.type.TypeReference;
 
 /** Integration到Order销售订单的HTTP客户端；只投影到自研业务接口。 */
 public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrderProjectionClient {
     private static final TypeReference<ApiResponse<SalesOrderDetailView>> SALES_ORDER_RESPONSE =
+            new TypeReference<>() { };
+    private static final TypeReference<ApiResponse<OrderPageView<SalesOrderSummaryView>>> SALES_ORDER_PAGE_RESPONSE =
             new TypeReference<>() { };
     private static final TypeReference<ApiResponse<SalesPaymentRecordDetailView>> SALES_PAYMENT_RESPONSE =
             new TypeReference<>() { };
@@ -77,6 +83,36 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
                         httpResponse, SALES_ORDER_RESPONSE, "Order销售订单查询"));
         return requiredResponse(response);
+    }
+
+    @Override
+    public Optional<SalesOrderDetailView> findSalesOrderBySource(
+            CallerIdentity caller, String sourceSystemCode, String sourceOrderNo) {
+        requireCaller(caller);
+        if (sourceSystemCode == null || sourceSystemCode.isBlank()
+                || sourceOrderNo == null || sourceOrderNo.isBlank()) {
+            return Optional.empty();
+        }
+        URI uri = UriComponentsBuilder.fromUri(baseUri)
+                .path(OrderSalesOrderApi.BASE_PATH)
+                .queryParam("begin", 0)
+                .queryParam("step", 20)
+                .queryParam("sourceOrderNo", sourceOrderNo.strip())
+                .build()
+                .encode()
+                .toUri();
+        ApiResponse<OrderPageView<SalesOrderSummaryView>> response = restClient.get().uri(uri)
+                .accept(MediaType.APPLICATION_JSON)
+                .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
+                .header(RequestHeaders.REQUEST_ID, requestId())
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SALES_ORDER_PAGE_RESPONSE, "Order销售订单来源查询"));
+        OrderPageView<SalesOrderSummaryView> page = requiredSalesOrderPageResponse(response);
+        return page.items().stream()
+                .filter(item -> sourceSystemCode.equalsIgnoreCase(item.sourceSystemCode()))
+                .filter(item -> sourceOrderNo.strip().equals(item.sourceOrderNo()))
+                .findFirst()
+                .map(item -> salesOrder(caller, item.id()));
     }
 
     @Override
@@ -227,6 +263,33 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                 .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
                         httpResponse, SALES_PAYMENT_RESPONSE, "Order销售回款查询"));
         return requiredPaymentResponse(response);
+    }
+
+    @Override
+    public Optional<SalesPaymentRecordDetailView> findSalesPaymentBySource(
+            CallerIdentity caller, String sourceSystemCode, String sourceDocumentNo) {
+        requireCaller(caller);
+        if (!hasText(sourceSystemCode) || !hasText(sourceDocumentNo)) return Optional.empty();
+        URI uri = UriComponentsBuilder.fromUri(baseUri)
+                .path(OrderSalesPaymentRecordApi.BASE_PATH)
+                .path("/source")
+                .queryParam("sourceSystemCode", sourceSystemCode)
+                .queryParam("sourceDocumentNo", sourceDocumentNo)
+                .build()
+                .encode()
+                .toUri();
+        try {
+            ApiResponse<SalesPaymentRecordDetailView> response = restClient.get().uri(uri)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
+                    .header(RequestHeaders.REQUEST_ID, requestId())
+                    .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                            httpResponse, SALES_PAYMENT_RESPONSE, "Order销售回款来源查询"));
+            return response == null || response.data() == null ? Optional.empty() : Optional.of(response.data());
+        } catch (RestClientResponseException exception) {
+            if (exception.getStatusCode().value() == 404) return Optional.empty();
+            throw exception;
+        }
     }
 
     @Override
@@ -488,6 +551,14 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
         return response.data();
     }
 
+    private static OrderPageView<SalesOrderSummaryView> requiredSalesOrderPageResponse(
+            ApiResponse<OrderPageView<SalesOrderSummaryView>> response) {
+        if (response == null || !"OK".equals(response.code()) || response.data() == null) {
+            throw new IllegalStateException("Order销售订单列表返回空响应");
+        }
+        return response.data();
+    }
+
     private static SalesPaymentRecordDetailView requiredPaymentResponse(
             ApiResponse<SalesPaymentRecordDetailView> response) {
         if (response == null || !"OK".equals(response.code()) || response.data() == null) {
@@ -537,6 +608,10 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
 
     private static void put(Map<String, String> target, String name, Object value) {
         if (value != null && !String.valueOf(value).isBlank()) target.put(name, String.valueOf(value));
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private static String joined(Set<String> values) {

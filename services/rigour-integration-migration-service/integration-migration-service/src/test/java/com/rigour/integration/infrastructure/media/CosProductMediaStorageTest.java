@@ -2,7 +2,6 @@ package com.rigour.integration.infrastructure.media;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -23,6 +22,8 @@ class CosProductMediaStorageTest {
     private static final String OBJECT_KEY = TENANT_ID + "/product-images/P-1/IMG-1/hash.png";
     private static final String FUND_ATTACHMENT_KEY =
             TENANT_ID + "/fund-attachments/FR_20260826_0247/ATT/hash.png";
+    private static final String FEISHU_ATTACHMENT_KEY =
+            TENANT_ID + "/feishu-attachments/FEISHU_SALES_ORDER/XS_20260901_0001/hash.png";
 
     @Test
     void usesShortConnectionAndApplicationManagedRetryForCosUploadRequests() {
@@ -31,12 +32,13 @@ class CosProductMediaStorageTest {
         assertThat(config.isShortConnection()).isTrue();
         assertThat(config.getMaxErrorRetry()).isZero();
         assertThat(config.getSocketTimeout()).isEqualTo(60_000);
+        assertThat(config.getRequestTimeOutEnable()).isTrue();
+        assertThat(config.getRequestTimeout()).isEqualTo(65_000);
     }
 
     @Test
     void retriesTransientCosUploadWithFreshRequestBody() {
         COSClient client = mock(COSClient.class);
-        when(client.doesObjectExist("bucket", OBJECT_KEY)).thenReturn(false);
         when(client.putObject(any(PutObjectRequest.class)))
                 .thenAnswer(invocation -> {
                     PutObjectRequest request = invocation.getArgument(0);
@@ -58,18 +60,20 @@ class CosProductMediaStorageTest {
         storage.put(TENANT_ID, OBJECT_KEY, "主图-2.png", "image/png", new byte[]{1, 2, 3});
 
         verify(client, times(2)).putObject(any(PutObjectRequest.class));
+        verify(client, never()).doesObjectExist("bucket", OBJECT_KEY);
     }
 
     @Test
-    void skipsUploadWhenCosObjectAlreadyExists() {
+    void uploadsWithoutCosHeadCheckSoBatchImportsCannotHangBeforePut() {
         COSClient client = mock(COSClient.class);
-        when(client.doesObjectExist("bucket", OBJECT_KEY)).thenReturn(true);
+        when(client.putObject(any(PutObjectRequest.class))).thenReturn(new PutObjectResult());
 
         CosProductMediaStorage storage = new CosProductMediaStorage(properties(), client);
 
         storage.put(TENANT_ID, OBJECT_KEY, "main.png", "image/png", new byte[]{1, 2, 3});
 
-        verify(client, never()).putObject(any(PutObjectRequest.class));
+        verify(client).putObject(any(PutObjectRequest.class));
+        verify(client, never()).doesObjectExist("bucket", OBJECT_KEY);
     }
 
     @Test
@@ -92,6 +96,17 @@ class CosProductMediaStorageTest {
 
         assertThat(storage.exists(TENANT_ID, FUND_ATTACHMENT_KEY)).isTrue();
         verify(client).doesObjectExist("bucket", FUND_ATTACHMENT_KEY);
+    }
+
+    @Test
+    void allowsFeishuAttachmentPrefixInSharedCosBucket() {
+        COSClient client = mock(COSClient.class);
+        when(client.doesObjectExist("bucket", FEISHU_ATTACHMENT_KEY)).thenReturn(true);
+
+        CosProductMediaStorage storage = new CosProductMediaStorage(properties(), client);
+
+        assertThat(storage.exists(TENANT_ID, FEISHU_ATTACHMENT_KEY)).isTrue();
+        verify(client).doesObjectExist("bucket", FEISHU_ATTACHMENT_KEY);
     }
 
     private static ProductMediaProperties properties() {

@@ -35,8 +35,8 @@ import com.rigour.integration.application.port.out.DhbSyncStore.SyncCheckpoint;
 import com.rigour.integration.application.port.out.DhbSyncStore.SyncRunStarted;
 import com.rigour.integration.application.port.out.DhbSyncStore.SyncTaskContext;
 import com.rigour.integration.application.port.out.DhbSyncStore.TransferInboundReceiptCandidate;
-import com.rigour.integration.application.port.out.IamDhbStaffSyncClient;
-import com.rigour.integration.application.port.out.IamDhbStaffSyncClient.ResolvedStaff;
+import com.rigour.integration.application.port.out.HrDhbStaffSyncClient;
+import com.rigour.integration.application.port.out.HrDhbStaffSyncClient.ResolvedEmployee;
 import com.rigour.integration.application.port.out.OrderSalesOrderProjectionClient;
 import com.rigour.integration.application.port.out.ProductMediaStorage;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
@@ -120,7 +120,7 @@ public final class DhbOrderSyncService {
     private static final UUID SERVICE_PRINCIPAL_ID =
             UUID.fromString("019fb700-0000-7000-8000-00000000d0b0");
     private static final Set<String> DOMAIN_PERMISSIONS = Set.of(
-            "order:read", "order:write", "iam:staff:read", "erp:supply:read", "erp:supply:write");
+            "order:read", "order:write", "hr:employee:read", "erp:supply:read", "erp:supply:write");
     private static final int DEFAULT_PAGE_SIZE = 100;
     private static final int DEFAULT_MAX_PAGES = 100;
     private static final int DEFAULT_DETAIL_CONCURRENCY = 3;
@@ -195,7 +195,7 @@ public final class DhbOrderSyncService {
     private final DhbClient client;
     private final OrderSalesOrderProjectionClient orderProjectionClient;
     private final ErpStockOutProjectionClient erpStockOutProjectionClient;
-    private final IamDhbStaffSyncClient iamStaffClient;
+    private final HrDhbStaffSyncClient hrEmployeeClient;
     private final BusinessDictionaryBatchClient dictionaryClient;
     private final int detailConcurrency;
     private final ProductMediaStorage fundAttachmentStorage;
@@ -203,40 +203,40 @@ public final class DhbOrderSyncService {
 
     public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
                                OrderSalesOrderProjectionClient orderProjectionClient,
-                               IamDhbStaffSyncClient iamStaffClient) {
-        this(store, client, orderProjectionClient, null, iamStaffClient, DEFAULT_DETAIL_CONCURRENCY);
+                               HrDhbStaffSyncClient hrEmployeeClient) {
+        this(store, client, orderProjectionClient, null, hrEmployeeClient, DEFAULT_DETAIL_CONCURRENCY);
     }
 
     public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
                                OrderSalesOrderProjectionClient orderProjectionClient,
-                               IamDhbStaffSyncClient iamStaffClient,
+                               HrDhbStaffSyncClient hrEmployeeClient,
                                int detailConcurrency) {
-        this(store, client, orderProjectionClient, null, iamStaffClient, null, detailConcurrency);
+        this(store, client, orderProjectionClient, null, hrEmployeeClient, null, detailConcurrency);
     }
 
     public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
                                OrderSalesOrderProjectionClient orderProjectionClient,
                                ErpStockOutProjectionClient erpStockOutProjectionClient,
-                               IamDhbStaffSyncClient iamStaffClient,
+                               HrDhbStaffSyncClient hrEmployeeClient,
                                int detailConcurrency) {
         this(store, client, orderProjectionClient, erpStockOutProjectionClient,
-                iamStaffClient, null, detailConcurrency);
+                hrEmployeeClient, null, detailConcurrency);
     }
 
     public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
                                OrderSalesOrderProjectionClient orderProjectionClient,
                                ErpStockOutProjectionClient erpStockOutProjectionClient,
-                               IamDhbStaffSyncClient iamStaffClient,
+                               HrDhbStaffSyncClient hrEmployeeClient,
                                BusinessDictionaryBatchClient dictionaryClient,
                                int detailConcurrency) {
-        this(store, client, orderProjectionClient, erpStockOutProjectionClient, iamStaffClient,
+        this(store, client, orderProjectionClient, erpStockOutProjectionClient, hrEmployeeClient,
                 dictionaryClient, detailConcurrency, null, null);
     }
 
     public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
                                OrderSalesOrderProjectionClient orderProjectionClient,
                                ErpStockOutProjectionClient erpStockOutProjectionClient,
-                               IamDhbStaffSyncClient iamStaffClient,
+                               HrDhbStaffSyncClient hrEmployeeClient,
                                BusinessDictionaryBatchClient dictionaryClient,
                                int detailConcurrency,
                                ProductMediaStorage fundAttachmentStorage,
@@ -246,7 +246,7 @@ public final class DhbOrderSyncService {
         this.orderProjectionClient = Objects.requireNonNull(orderProjectionClient,
                 "orderProjectionClient cannot be null");
         this.erpStockOutProjectionClient = erpStockOutProjectionClient;
-        this.iamStaffClient = Objects.requireNonNull(iamStaffClient, "iamStaffClient cannot be null");
+        this.hrEmployeeClient = Objects.requireNonNull(hrEmployeeClient, "hrEmployeeClient cannot be null");
         this.dictionaryClient = dictionaryClient;
         this.detailConcurrency = normalizeDetailConcurrency(detailConcurrency);
         this.fundAttachmentStorage = fundAttachmentStorage;
@@ -285,7 +285,7 @@ public final class DhbOrderSyncService {
         }
 
         Counts counts = new Counts();
-        Map<String, StaffProjection> staffCache = new ConcurrentHashMap<>();
+        Map<String, EmployeeProjection> employeeCache = new ConcurrentHashMap<>();
         Map<String, Object> sourceOrderLocks = new ConcurrentHashMap<>();
         MAPPING_LOOKUP_CACHE.set(new ConcurrentHashMap<>());
         UNIT_DICTIONARY_SYNC_CACHE.set(ConcurrentHashMap.newKeySet());
@@ -303,22 +303,22 @@ public final class DhbOrderSyncService {
                     store.persistOrderPage(caller.tenantId(), taskId, started.runId(),
                             page.items(), Instant.now());
                     counts.addAll(projectDetails(detailExecutor, "order-detail", page.items(),
-                            order -> projectOrder(caller, task, started.runId(), order, staffCache)));
+                            order -> projectOrder(caller, task, started.runId(), order, employeeCache)));
                     if (!page.hasNext() || pages >= pageLimit) {
                         break;
                     }
                     pageRequest = page.nextRequest();
                 }
                 syncTransferOrders(caller, task, started.runId(), window, pageSize, pageLimit, counts,
-                        staffCache, detailExecutor);
+                        employeeCache, detailExecutor);
                 syncShipments(caller, task, started.runId(), window, pageSize, pageLimit, counts,
-                        staffCache, sourceOrderLocks, detailExecutor);
+                        employeeCache, sourceOrderLocks, detailExecutor);
                 syncReceipts(caller, task, started.runId(), window, pageSize, pageLimit, counts);
                 syncPayments(caller, task, started.runId(), window, pageSize, pageLimit, counts);
             } else {
                 counts.fetched = 1;
                 counts.add(projectReplayTarget(caller, task, started.runId(), replayTarget,
-                        staffCache, sourceOrderLocks));
+                        employeeCache, sourceOrderLocks));
             }
 
             String status = counts.rejected == 0 ? "SUCCEEDED" : "PARTIAL";
@@ -440,7 +440,7 @@ public final class DhbOrderSyncService {
 
     private ProjectionOutcome projectOrder(CallerIdentity caller, SyncTaskContext task,
                                            UUID runId, OrderSummary summary,
-                                           Map<String, StaffProjection> staffCache) {
+                                           Map<String, EmployeeProjection> employeeCache) {
         String sourceOrderNo = firstNonBlank(summary == null ? null : summary.orderNumber(),
                 summary == null ? null : summary.sourceId(),
                 first(map(summary == null ? null : summary.attributes()), "OrderSN", "orders_num"));
@@ -468,7 +468,7 @@ public final class DhbOrderSyncService {
                     existing.internalObjectId());
             PreparedSalesOrder prepared = prepareSalesOrder(
                     caller.tenantId(), task.connectorId(), sourceOrderNo, summary, detail,
-                    staffCache);
+                    employeeCache);
             if (existing != null && existing.internalObjectId() != null
                     && Objects.equals(existing.payloadChecksum(), raw.payloadChecksum())
                     && projectionComplete(current, prepared.command(), prepared.cancelled())) {
@@ -545,7 +545,7 @@ public final class DhbOrderSyncService {
 
     private void syncTransferOrders(CallerIdentity caller, SyncTaskContext task, UUID runId,
                                     Window window, int pageSize, int pageLimit, Counts counts,
-                                    Map<String, StaffProjection> staffCache,
+                                    Map<String, EmployeeProjection> employeeCache,
                                     ExecutorService detailExecutor) {
         PageRequest pageRequest = PageRequest.first(pageSize);
         int pages = 0;
@@ -557,7 +557,7 @@ public final class DhbOrderSyncService {
                 pages++;
                 counts.fetched += page.items().size();
                 counts.addAll(projectDetails(detailExecutor, "transfer-order-detail", page.items(),
-                        transfer -> projectTransferOrder(caller, task, runId, transfer, staffCache)));
+                        transfer -> projectTransferOrder(caller, task, runId, transfer, employeeCache)));
                 if (!page.hasNext() || pages >= pageLimit) {
                     break;
                 }
@@ -579,7 +579,7 @@ public final class DhbOrderSyncService {
 
     private ProjectionOutcome projectTransferOrder(CallerIdentity caller, SyncTaskContext task,
                                                    UUID runId, TransferOrder summary,
-                                                   Map<String, StaffProjection> staffCache) {
+                                                   Map<String, EmployeeProjection> employeeCache) {
         Map<String, Object> summaryAttributes = map(summary == null ? null : summary.attributes());
         String sourceTransferId = firstNonBlank(
                 summary == null ? null : summary.sourceId(),
@@ -629,7 +629,7 @@ public final class DhbOrderSyncService {
                 existing = legacyTransferMapping(caller, task, detail);
             }
             PreparedTransferOrder prepared = prepareTransferOrder(caller.tenantId(), task.connectorId(),
-                    sourceTransferNo, detail, payload, staffCache);
+                    sourceTransferNo, detail, payload, employeeCache);
             ProjectedTransferOrder projected = projectExternalTransferOrder(caller, task, runId,
                     raw, existing, prepared);
             boolean changed = !projected.duplicate();
@@ -680,7 +680,7 @@ public final class DhbOrderSyncService {
 
     private void syncShipments(CallerIdentity caller, SyncTaskContext task, UUID runId,
                                Window window, int pageSize, int pageLimit, Counts counts,
-                               Map<String, StaffProjection> staffCache,
+                               Map<String, EmployeeProjection> employeeCache,
                                Map<String, Object> sourceOrderLocks,
                                ExecutorService detailExecutor) {
         PageRequest pageRequest = PageRequest.first(pageSize);
@@ -693,7 +693,7 @@ public final class DhbOrderSyncService {
             counts.fetched += page.items().size();
             counts.addAll(projectDetails(detailExecutor, "shipment-detail", page.items(),
                     shipment -> projectShipment(caller, task, runId, shipment,
-                            staffCache, sourceOrderLocks)));
+                            employeeCache, sourceOrderLocks)));
             if (!page.hasNext() || pages >= pageLimit) {
                 break;
             }
@@ -703,12 +703,12 @@ public final class DhbOrderSyncService {
 
     private ProjectionOutcome projectReplayTarget(CallerIdentity caller, SyncTaskContext task,
                                                   UUID runId, ReplayTarget replayTarget,
-                                                  Map<String, StaffProjection> staffCache,
+                                                  Map<String, EmployeeProjection> employeeCache,
                                                   Map<String, Object> sourceOrderLocks) {
         return switch (replayTarget.sourceObjectType()) {
             case SOURCE_OBJECT_ERP_STOCK_OUT, SOURCE_OBJECT_SALES_SHIPMENT ->
                     projectShipment(caller, task, runId, replayShipmentSummary(replayTarget.sourceId()),
-                            staffCache, sourceOrderLocks, replayTarget.sourceObjectType());
+                            employeeCache, sourceOrderLocks, replayTarget.sourceObjectType());
             default -> throw new IllegalArgumentException(
                     "当前订货宝单对象重放暂不支持 sourceObjectType=" + replayTarget.sourceObjectType());
         };
@@ -722,14 +722,14 @@ public final class DhbOrderSyncService {
 
     private ProjectionOutcome projectShipment(CallerIdentity caller, SyncTaskContext task,
                                               UUID runId, Shipment summary,
-                                              Map<String, StaffProjection> staffCache,
+                                              Map<String, EmployeeProjection> employeeCache,
                                               Map<String, Object> sourceOrderLocks) {
-        return projectShipment(caller, task, runId, summary, staffCache, sourceOrderLocks, null);
+        return projectShipment(caller, task, runId, summary, employeeCache, sourceOrderLocks, null);
     }
 
     private ProjectionOutcome projectShipment(CallerIdentity caller, SyncTaskContext task,
                                               UUID runId, Shipment summary,
-                                              Map<String, StaffProjection> staffCache,
+                                              Map<String, EmployeeProjection> employeeCache,
                                               Map<String, Object> sourceOrderLocks,
                                               String expectedSourceObjectType) {
         String sourceShipmentNo = firstNonBlank(
@@ -773,7 +773,7 @@ public final class DhbOrderSyncService {
                 rejectedSourceObjectType = SOURCE_OBJECT_ERP_STOCK_OUT;
                 ProjectedTransferStockOut projected = projectExternalTransferStockOut(caller, task, runId, raw,
                         existingStockOut, prepareTransferStockOut(caller.tenantId(), task.connectorId(),
-                                sourceShipmentNo, summary, detail, payload, staffCache));
+                                sourceShipmentNo, summary, detail, payload, employeeCache));
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
                 store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
                         "订货宝调拨出库已投影到ERP调拨单和出库单 shipmentNo=" + sourceShipmentNo
@@ -814,7 +814,7 @@ public final class DhbOrderSyncService {
             }
 
             String sourceOrderNo = shipmentSourceOrderNo(summary, payload);
-            ensureSalesOrderMapping(caller, task, runId, sourceOrderNo, staffCache, sourceOrderLocks);
+            ensureSalesOrderMapping(caller, task, runId, sourceOrderNo, employeeCache, sourceOrderLocks);
             PreparedSalesShipment prepared = prepareSalesShipment(caller.tenantId(), task.connectorId(),
                     sourceShipmentNo, summary, detail, payload);
             ProjectedStockOut projectedStockOut = projectExternalStockOut(caller, task, runId, raw,
@@ -1051,14 +1051,14 @@ public final class DhbOrderSyncService {
                         expected.sourceCreatorName(),
                         expected.ownerSalesUserId(),
                         expected.ownerSalesName(),
-                        expected.ownerStaffCode(),
-                        expected.ownerStaffNameSnapshot(),
+                        expected.ownerEmployeeCode(),
+                        expected.ownerEmployeeNameSnapshot(),
                         current.revision()));
     }
 
     private void ensureSalesOrderMapping(CallerIdentity caller, SyncTaskContext task, UUID runId,
                                          String sourceOrderNo,
-                                         Map<String, StaffProjection> staffCache,
+                                         Map<String, EmployeeProjection> employeeCache,
                                          Map<String, Object> sourceOrderLocks) {
         if (blank(sourceOrderNo)) {
             return;
@@ -1066,13 +1066,13 @@ public final class DhbOrderSyncService {
         String lockKey = sourceOrderNo.strip();
         Object lock = sourceOrderLocks.computeIfAbsent(lockKey, ignored -> new Object());
         synchronized (lock) {
-            ensureSalesOrderMappingLocked(caller, task, runId, lockKey, staffCache);
+            ensureSalesOrderMappingLocked(caller, task, runId, lockKey, employeeCache);
         }
     }
 
     private void ensureSalesOrderMappingLocked(CallerIdentity caller, SyncTaskContext task, UUID runId,
                                                String sourceOrderNo,
-                                               Map<String, StaffProjection> staffCache) {
+                                               Map<String, EmployeeProjection> employeeCache) {
         ExternalObjectMapping existing = store.findActiveMapping(caller.tenantId(), task.connectorId(),
                 SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
         if (existing != null && existing.internalObjectId() != null) {
@@ -1081,7 +1081,7 @@ public final class DhbOrderSyncService {
         ProjectionOutcome outcome = projectOrder(caller, task, runId,
                 new OrderSummary(sourceOrderNo, sourceOrderNo, null, null, null, null,
                         null, null, Map.of("OrderSN", sourceOrderNo)),
-                staffCache);
+                employeeCache);
         if (outcome == ProjectionOutcome.REJECTED) {
             throw new ProjectionRejected("DHB_SHIPMENT_ORDER_MAPPING_MISSING",
                     "订货宝发货单对应销售订单补同步失败，需先修复父订单",
@@ -1164,8 +1164,8 @@ public final class DhbOrderSyncService {
                 && !Objects.equals(current.regionCode(), expected.regionCode())) {
             return false;
         }
-        if (!blank(expected.ownerStaffCode())
-                && !Objects.equals(current.ownerStaffCode(), expected.ownerStaffCode())) {
+        if (!blank(expected.ownerEmployeeCode())
+                && !Objects.equals(current.ownerEmployeeCode(), expected.ownerEmployeeCode())) {
             return false;
         }
         List<SalesOrderLineCommand> expectedLines = expected.lines() == null ? List.of() : expected.lines();
@@ -1187,8 +1187,8 @@ public final class DhbOrderSyncService {
                 && matchesExpected(current.sourceCreatorName(), expected.sourceCreatorName())
                 && matchesExpected(current.ownerSalesUserId(), expected.ownerSalesUserId())
                 && matchesExpected(current.ownerSalesName(), expected.ownerSalesName())
-                && matchesExpected(current.ownerStaffCode(), expected.ownerStaffCode())
-                && matchesExpected(current.ownerStaffNameSnapshot(), expected.ownerStaffNameSnapshot());
+                && matchesExpected(current.ownerEmployeeCode(), expected.ownerEmployeeCode())
+                && matchesExpected(current.ownerEmployeeNameSnapshot(), expected.ownerEmployeeNameSnapshot());
     }
 
     private static boolean matchesExpected(String current, String expected) {
@@ -1255,7 +1255,7 @@ public final class DhbOrderSyncService {
     private PreparedSalesOrder prepareSalesOrder(UUID tenantId, UUID connectorId,
                                                  String sourceOrderNo, OrderSummary summary,
                                                  OrderDetail detail,
-                                                 Map<String, StaffProjection> staffCache) {
+                                                 Map<String, EmployeeProjection> employeeCache) {
         Map<String, Object> list = map(summary == null ? null : summary.attributes());
         Map<String, Object> content = map(detail == null ? null : detail.attributes());
         String sourceStatus = firstNonBlank(
@@ -1289,8 +1289,8 @@ public final class DhbOrderSyncService {
                 "SellerName", "sellerName", "seller_name",
                 "SalerName", "salerName", "saler_name",
                 "StaffName", "staffName", "staff_name");
-        StaffProjection owner = ownerStaff(tenantId, connectorId, ownerSourceStaffIds,
-                ownerSourceStaffNames, staffCache);
+        EmployeeProjection owner = resolveEmployee(tenantId, connectorId, ownerSourceStaffIds,
+                ownerSourceStaffNames, employeeCache);
         List<String> sourceCreatorIds = candidates(content, list,
                 "CreatorID", "CreatorId", "creatorID", "creatorId", "creator_id",
                 "CreateUserID", "CreateUserId", "createUserID", "createUserId", "create_user_id",
@@ -1312,8 +1312,8 @@ public final class DhbOrderSyncService {
                 "OperationName", "operationName", "operation_name",
                 "UserName", "userName", "user_name",
                 "AccountName", "accountName", "account_name", "accounts_name");
-        StaffProjection sourceCreator = ownerStaff(tenantId, connectorId, sourceCreatorIds,
-                sourceCreatorNames, staffCache);
+        EmployeeProjection sourceCreator = resolveEmployee(tenantId, connectorId, sourceCreatorIds,
+                sourceCreatorNames, employeeCache);
         String regionCode = customerAreaCode(tenantId, connectorId, content, list);
         Instant orderDate = sourceBusinessTime(
                 "DHB_ORDER_BUSINESS_TIME_MISSING",
@@ -1328,8 +1328,8 @@ public final class DhbOrderSyncService {
                 sourceOrderNo,
                 dhbOrderStatusCode(sourceStatus),
                 firstClean(sourceCreatorIds),
-                sourceCreator.staffCode(),
-                firstNonBlank(sourceCreator.staffName(), firstClean(sourceCreatorNames)),
+                sourceCreator.employeeCode(),
+                firstNonBlank(sourceCreator.employeeName(), firstClean(sourceCreatorNames)),
                 customer.internalObjectNo(),
                 firstNonBlank(first(content, list, "ClientName", "ClientCompanyName", "client_name"),
                         customer.sourceObjectNo(), customer.internalObjectNo(), "订货宝客户"),
@@ -1337,9 +1337,9 @@ public final class DhbOrderSyncService {
                 first(content, list, "OrderReceivePhone", "Mobile", "Phone", "ReceiverPhone"),
                 regionCode,
                 null,
-                owner.staffName(),
-                owner.staffCode(),
-                owner.staffName(),
+                owner.employeeName(),
+                owner.employeeCode(),
+                owner.employeeName(),
                 orderDate,
                 null,
                 null,
@@ -1697,7 +1697,7 @@ public final class DhbOrderSyncService {
 
     private PreparedTransferOrder prepareTransferOrder(
             UUID tenantId, UUID connectorId, String sourceTransferNo, TransferOrder transfer,
-            Map<String, Object> payload, Map<String, StaffProjection> staffCache) {
+            Map<String, Object> payload, Map<String, EmployeeProjection> employeeCache) {
         Map<String, Object> attributes = map(transfer == null ? null : transfer.attributes());
         Long sourceWarehouseId = transferWarehouseId(tenantId, connectorId, sourceTransferNo,
                 "调拨调出仓库",
@@ -1718,14 +1718,14 @@ public final class DhbOrderSyncService {
         List<String> outboundStaffNames = new ArrayList<>();
         addCandidate(outboundStaffIds, transfer == null ? null : transfer.outboundOperatorStaffId());
         addCandidate(outboundStaffNames, transfer == null ? null : transfer.outboundOperatorStaffName());
-        StaffProjection outboundOperator = ownerStaff(tenantId, connectorId,
-                outboundStaffIds, outboundStaffNames, staffCache);
+        EmployeeProjection outboundOperator = resolveEmployee(tenantId, connectorId,
+                outboundStaffIds, outboundStaffNames, employeeCache);
         List<String> inboundStaffIds = new ArrayList<>();
         List<String> inboundStaffNames = new ArrayList<>();
         addCandidate(inboundStaffIds, transfer == null ? null : transfer.inboundOperatorStaffId());
         addCandidate(inboundStaffNames, transfer == null ? null : transfer.inboundOperatorStaffName());
-        StaffProjection inboundOperator = ownerStaff(tenantId, connectorId,
-                inboundStaffIds, inboundStaffNames, staffCache);
+        EmployeeProjection inboundOperator = resolveEmployee(tenantId, connectorId,
+                inboundStaffIds, inboundStaffNames, employeeCache);
         List<ExternalTransferOrderProjectionLineCommand> lines =
                 transferOrderProjectionLines(tenantId, connectorId, sourceTransferNo,
                         transfer == null ? List.of() : transfer.lines());
@@ -1745,11 +1745,11 @@ public final class DhbOrderSyncService {
                         transfer == null ? null : transfer.transferStatus()),
                 firstNonBlank(transfer == null ? null : transfer.reviewStatusName(),
                         transfer == null ? null : transfer.reviewStatus()),
-                outboundOperator.staffCode(),
-                firstNonBlank(outboundOperator.staffName(),
+                outboundOperator.employeeCode(),
+                firstNonBlank(outboundOperator.employeeName(),
                         transfer == null ? null : transfer.outboundOperatorStaffName()),
-                inboundOperator.staffCode(),
-                firstNonBlank(inboundOperator.staffName(),
+                inboundOperator.employeeCode(),
+                firstNonBlank(inboundOperator.employeeName(),
                         transfer == null ? null : transfer.inboundOperatorStaffName()),
                 lines,
                 firstNonBlank(transfer == null ? null : transfer.remark(),
@@ -2056,10 +2056,10 @@ public final class DhbOrderSyncService {
 
     private PreparedTransferStockOut prepareTransferStockOut(
             UUID tenantId, UUID connectorId, String sourceShipmentNo, Shipment summary,
-            ShipmentDetail detail, Map<String, Object> payload, Map<String, StaffProjection> staffCache) {
+            ShipmentDetail detail, Map<String, Object> payload, Map<String, EmployeeProjection> employeeCache) {
         Map<String, Object> list = map(payload == null ? null : mapObject(payload.get("list")));
         Map<String, Object> content = map(payload == null ? null : mapObject(payload.get("detail")));
-        StaffProjection outboundOperator = operatorStaff(tenantId, connectorId, staffCache, content, list);
+        EmployeeProjection outboundOperator = operatorEmployee(tenantId, connectorId, employeeCache, content, list);
         Long sourceWarehouseId = warehouseId(tenantId, connectorId, sourceShipmentNo, summary, content, list);
         if (sourceWarehouseId == null) {
             throw new ProjectionRejected("DHB_TRANSFER_SOURCE_WAREHOUSE_MAPPING_MISSING",
@@ -2072,7 +2072,7 @@ public final class DhbOrderSyncService {
         if (targetWarehouseId == null) {
             inboundMatch = resolveTransferInboundReceipt(
                     tenantId, connectorId, sourceShipmentNo, sourceWarehouseId, summary, detail, content,
-                    staffCache);
+                    employeeCache);
             targetWarehouseId = inboundMatch == null ? null : inboundMatch.targetWarehouseId();
             if (targetWarehouseId == null) {
                 throw new ProjectionRejected("DHB_TRANSFER_TARGET_WAREHOUSE_MAPPING_MISSING",
@@ -2092,7 +2092,7 @@ public final class DhbOrderSyncService {
                 connectorId, SOURCE_SYSTEM_DINGHUOBAO, sourceShipmentNo, sourceWarehouseId, targetWarehouseId,
                 shipmentStockOutTime(sourceShipmentNo, summary, detail, content, list),
                 Boolean.FALSE,
-                outboundOperator.staffCode(), outboundOperator.staffName(),
+                outboundOperator.employeeCode(), outboundOperator.employeeName(),
                 inboundMatch == null ? null : inboundMatch.operatorStaffCode(),
                 inboundMatch == null ? null : inboundMatch.operatorStaffName(),
                 lines,
@@ -2104,7 +2104,7 @@ public final class DhbOrderSyncService {
     private TransferInboundMatch resolveTransferInboundReceipt(
             UUID tenantId, UUID connectorId, String sourceShipmentNo, Long sourceWarehouseId,
             Shipment summary, ShipmentDetail detail, Map<String, Object> stockOutContent,
-            Map<String, StaffProjection> staffCache) {
+            Map<String, EmployeeProjection> employeeCache) {
         TransferLineSignature stockOutSignature = transferLineSignature(stockOutContent,
                 "body", "Body", "Products", "OrderProduct", "OrderProducts", "Goods", "list", "details");
         if (stockOutSignature.empty()) return null;
@@ -2116,7 +2116,7 @@ public final class DhbOrderSyncService {
                         "list_detail", "ListDetail", "details", "Details", "body", "Body", "list", "List")))
                 .map(candidate -> transferInboundMatch(
                         tenantId, connectorId, sourceShipmentNo, sourceWarehouseId, stockOutTime, candidate,
-                        staffCache))
+                        employeeCache))
                 .filter(Objects::nonNull)
                 .toList();
         List<TransferInboundMatch> matches = distinctTransferInboundMatches(rawMatches);
@@ -2180,7 +2180,7 @@ public final class DhbOrderSyncService {
     private TransferInboundMatch transferInboundMatch(
             UUID tenantId, UUID connectorId, String sourceShipmentNo, Long sourceWarehouseId,
             Instant stockOutTime, TransferInboundReceiptCandidate candidate,
-            Map<String, StaffProjection> staffCache) {
+            Map<String, EmployeeProjection> employeeCache) {
         Map<String, Object> payload = candidate.payload();
         List<String> warehouseCandidates = candidates(payload,
                 "StockID", "StockId", "stockId", "stock_id",
@@ -2209,11 +2209,11 @@ public final class DhbOrderSyncService {
         if (Objects.equals(sourceWarehouseId, warehouse.internalObjectId())) {
             return null;
         }
-        StaffProjection inboundOperator = operatorStaff(tenantId, connectorId, staffCache, payload);
+        EmployeeProjection inboundOperator = operatorEmployee(tenantId, connectorId, employeeCache, payload);
         return new TransferInboundMatch(firstNonBlank(candidate.sourceNo(), candidate.sourceId()),
                 warehouse.internalObjectId(), firstNonBlank(warehouse.internalObjectNo(), warehouse.sourceObjectNo()),
                 transferInboundTime(candidate), stockOutTime,
-                inboundOperator.staffCode(), inboundOperator.staffName(), null);
+                inboundOperator.employeeCode(), inboundOperator.employeeName(), null);
     }
 
     private PreparedGenericStockOut prepareGenericStockOut(
@@ -2646,38 +2646,38 @@ public final class DhbOrderSyncService {
         return value == null ? "" : value.strip().toLowerCase(Locale.ROOT);
     }
 
-    private StaffProjection ownerStaff(UUID tenantId, UUID connectorId, List<String> sourceStaffIds,
+    private EmployeeProjection resolveEmployee(UUID tenantId, UUID connectorId, List<String> sourceStaffIds,
                                        List<String> sourceStaffNames,
-                                       Map<String, StaffProjection> staffCache) {
+                                       Map<String, EmployeeProjection> employeeCache) {
         List<String> cleanedSourceStaffIds = cleanDistinct(sourceStaffIds);
         List<String> cleanedSourceStaffNames = cleanDistinct(sourceStaffNames);
         String cleanedFallbackName = cleanedSourceStaffNames.isEmpty() ? null : cleanedSourceStaffNames.getFirst();
         if (cleanedSourceStaffIds.isEmpty() && cleanedSourceStaffNames.isEmpty()) {
-            return new StaffProjection(null, null);
+            return new EmployeeProjection(null, null);
         }
         String cacheKey = connectorId + "::ids=" + String.join("|", cleanedSourceStaffIds)
                 + "::names=" + String.join("|", cleanedSourceStaffNames);
-        StaffProjection cached = staffCache.get(cacheKey);
+        EmployeeProjection cached = employeeCache.get(cacheKey);
         if (cached != null) return cached;
-        StaffProjection result = new StaffProjection(null, cleanedFallbackName);
+        EmployeeProjection result = new EmployeeProjection(null, cleanedFallbackName);
         try {
-            List<ResolvedStaff> resolved = iamStaffClient.resolve(orderServiceCaller(tenantId),
+            List<ResolvedEmployee> resolved = hrEmployeeClient.resolve(orderServiceCaller(tenantId),
                     connectorId.toString(), cleanedSourceStaffIds, cleanedSourceStaffNames);
             if (resolved != null && !resolved.isEmpty()) {
-                ResolvedStaff staff = resolved.getFirst();
-                result = new StaffProjection(firstNonBlank(staff.staffCode(), null),
-                        firstNonBlank(staff.staffName(), cleanedFallbackName));
+                ResolvedEmployee employee = resolved.getFirst();
+                result = new EmployeeProjection(firstNonBlank(employee.employeeCode(), null),
+                        firstNonBlank(employee.employeeName(), cleanedFallbackName));
             }
         } catch (RuntimeException error) {
             log.warn("订货宝订单员工解析失败 tenantId={} connectorId={} sourceStaffIds={} sourceStaffNames={} reason={}",
                     tenantId, connectorId, cleanedSourceStaffIds, cleanedSourceStaffNames, safeMessage(error));
         }
-        staffCache.put(cacheKey, result);
+        employeeCache.put(cacheKey, result);
         return result;
     }
 
-    private StaffProjection operatorStaff(UUID tenantId, UUID connectorId,
-                                          Map<String, StaffProjection> staffCache,
+    private EmployeeProjection operatorEmployee(UUID tenantId, UUID connectorId,
+                                          Map<String, EmployeeProjection> employeeCache,
                                           Map<String, Object>... payloads) {
         List<String> sourceStaffIds = candidatesFromPayloads(payloads,
                 "StaffID", "StaffId", "staffID", "staffId", "staff_id",
@@ -2692,7 +2692,7 @@ public final class DhbOrderSyncService {
                 "AdminName", "adminName", "admin_name",
                 "UserName", "userName", "user_name",
                 "CollaboratorName", "collaboratorName", "collaborator_name");
-        return ownerStaff(tenantId, connectorId, sourceStaffIds, sourceStaffNames, staffCache);
+        return resolveEmployee(tenantId, connectorId, sourceStaffIds, sourceStaffNames, employeeCache);
     }
 
     private static List<String> candidatesFromPayloads(Map<String, Object>[] payloads, String... keys) {
@@ -3096,7 +3096,7 @@ public final class DhbOrderSyncService {
                 source.customerCodeSnapshot(),
                 source.customerNameSnapshot(), source.contactNameSnapshot(),
                 source.contactPhoneSnapshot(), source.regionCode(), source.ownerSalesUserId(),
-                source.ownerSalesName(), source.ownerStaffCode(), source.ownerStaffNameSnapshot(),
+                source.ownerSalesName(), source.ownerEmployeeCode(), source.ownerEmployeeNameSnapshot(),
                 source.orderDate(), source.orderTypeCode(),
                 source.paymentMethodCode(), source.discountRate(), source.discountAmount(),
                 source.remark(), source.lines(), source.submit(), revision);
@@ -4037,7 +4037,7 @@ public final class DhbOrderSyncService {
             String remark) {
     }
 
-    private record StaffProjection(String staffCode, String staffName) {
+    private record EmployeeProjection(String employeeCode, String employeeName) {
     }
 
     private record TransferLineSignature(List<String> lines) {

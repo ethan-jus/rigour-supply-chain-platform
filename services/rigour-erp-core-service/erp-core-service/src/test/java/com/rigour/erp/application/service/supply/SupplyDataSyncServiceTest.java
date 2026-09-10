@@ -152,6 +152,32 @@ class SupplyDataSyncServiceTest {
     }
 
     @Test
+    void unsupportedSupplyWindowFallsBackToFullSyncWithVisibleWarning() {
+        SupplyDataStore store = mock(SupplyDataStore.class);
+        DhbSupplyDataClient client = mock(DhbSupplyDataClient.class);
+        Instant from = Instant.parse("2026-09-01T00:00:00Z");
+        Instant to = Instant.parse("2026-09-02T00:00:00Z");
+        when(store.startScheduledRun(TENANT_ID.toString(), CONNECTOR_ID, null,
+                SupplyDataObjectType.SUPPLIER, 3)).thenReturn(RUN_ID);
+        when(client.collect(any(), eq(CONNECTOR_ID), eq(SupplyDataObjectType.SUPPLIER),
+                eq(3), eq(List.of()))).thenReturn(emptyCollected(SupplyDataObjectType.SUPPLIER));
+        SupplyDataSyncService service = service(store, client, passthroughLease());
+
+        var result = service.runScheduled(scheduledCaller(), CONNECTOR_ID,
+                SupplyDataObjectType.SUPPLIER, 3, from, to);
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
+        assertThat(result.sourceDetails())
+                .containsEntry("DHB_SYNC_WINDOW_REQUESTED", 1L)
+                .containsEntry("DHB_SYNC_WINDOW_APPLIED", 0L)
+                .containsEntry("DHB_SYNC_WINDOW_UNSUPPORTED_BY_SOURCE_API", 1L);
+        verify(client).collect(any(), eq(CONNECTOR_ID), eq(SupplyDataObjectType.SUPPLIER),
+                eq(3), eq(List.of()));
+        verify(client, never()).collect(any(), eq(CONNECTOR_ID), eq(SupplyDataObjectType.SUPPLIER),
+                eq(3), eq(List.of()), eq(from), eq(to));
+    }
+
+    @Test
     void rejectedRecordsReturnWarningStatusAndSkipSourcePresenceReconciliation() {
         SupplyDataStore store = mock(SupplyDataStore.class);
         DhbSupplyDataClient client = mock(DhbSupplyDataClient.class);

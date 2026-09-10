@@ -16,8 +16,9 @@ public final class DhbSyncOrchestrationScheduler {
                                          DhbSyncOrchestrationProperties properties) {
         this.service = service;
         this.properties = properties;
-        log.info("订货宝统一同步编排定时配置 enabled={} cron={} maxPages={}",
-                properties.isEnabled(), properties.getCron(), properties.getMaxPages());
+        log.info("订货宝统一同步编排定时配置 enabled={} cron={} maxPages={} scheduledWindowFrom={}",
+                properties.isEnabled(), properties.getCron(), properties.getMaxPages(),
+                properties.getScheduledWindowFrom());
     }
 
     @Scheduled(cron = "${rigour.integration.dhb.orchestration.cron:"

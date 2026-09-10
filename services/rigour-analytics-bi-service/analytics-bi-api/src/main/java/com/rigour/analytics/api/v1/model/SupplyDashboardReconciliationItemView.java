@@ -13,6 +13,7 @@ public record SupplyDashboardReconciliationItemView(
         BigDecimal businessAmount,
         BigDecimal biAmount,
         Long sourceBusinessRowDiff,
+        BigDecimal sourceBusinessAmountDiff,
         Long businessBiRowDiff,
         BigDecimal businessBiAmountDiff,
         String status,

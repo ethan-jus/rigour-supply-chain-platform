@@ -14,8 +14,8 @@ public class SalesAssignmentEntity {
     public String assignmentType;
     public String assigneeType;
     public String sourceStaffId;
-    public String iamStaffCode;
-    public String iamStaffNameSnapshot;
+    public String employeeCode;
+    public String employeeNameSnapshot;
     public byte[] salesProfileId;
     public byte[] salesTeamId;
     public byte[] cityId;

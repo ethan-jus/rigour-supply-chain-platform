@@ -243,7 +243,10 @@ class MybatisPlusSupplyDataRepositoryTest {
                 purchaseOrderWithLine("27781", supplier.getSupplierName(), warehouse.getWarehouseName()));
 
         assertThat(result.created()).isEqualTo(1);
-        verify(procurementLineMapper).insert(any(InternalProcurementOrderLineEntity.class));
+        ArgumentCaptor<InternalProcurementOrderLineEntity> insertedLine =
+                ArgumentCaptor.forClass(InternalProcurementOrderLineEntity.class);
+        verify(procurementLineMapper).insert(insertedLine.capture());
+        assertThat(insertedLine.getValue().getUnitCode()).isEqualTo("GRAIN");
         verify(productMapper, never()).insert(any(InternalProductEntity.class));
         verify(variantMapper, never()).insert(any(InternalProductVariantEntity.class));
     }
@@ -330,7 +333,10 @@ class MybatisPlusSupplyDataRepositoryTest {
 
         assertThat(result.created()).isEqualTo(1);
         verify(stockInMapper).insert(any(InternalStockInOrderEntity.class));
-        verify(stockInLineMapper).insert(any(InternalStockInOrderLineEntity.class));
+        ArgumentCaptor<InternalStockInOrderLineEntity> insertedLine =
+                ArgumentCaptor.forClass(InternalStockInOrderLineEntity.class);
+        verify(stockInLineMapper).insert(insertedLine.capture());
+        assertThat(insertedLine.getValue().getUnitCode()).isEqualTo("GRAIN");
         verifyNoInteractions(stockBalanceMapper);
     }
 
@@ -575,7 +581,10 @@ class MybatisPlusSupplyDataRepositoryTest {
                 ArgumentCaptor.forClass(InternalPurchaseReturnOrderEntity.class);
         verify(purchaseReturnMapper).updateById(updated.capture());
         assertThat(updated.getValue().getPurchaseReturnNo()).startsWith("PR20260821");
-        verify(purchaseReturnLineMapper).insert(any(InternalPurchaseReturnOrderLineEntity.class));
+        ArgumentCaptor<InternalPurchaseReturnOrderLineEntity> insertedLine =
+                ArgumentCaptor.forClass(InternalPurchaseReturnOrderLineEntity.class);
+        verify(purchaseReturnLineMapper).insert(insertedLine.capture());
+        assertThat(insertedLine.getValue().getUnitCode()).isEqualTo("GRAIN");
     }
 
     @Test

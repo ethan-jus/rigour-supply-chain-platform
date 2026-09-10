@@ -8,6 +8,7 @@ import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutResult;
 import com.rigour.order.api.v1.model.SalesOrderSummaryView;
+import com.rigour.order.api.v1.model.SalesOrderTotalsView;
 import com.rigour.shared.core.api.ApiResponse;
 import java.time.Instant;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -29,16 +30,46 @@ public interface OrderSalesOrderApi {
             @RequestParam(required = false) String orderNo,
             @RequestParam(required = false) String sourceOrderNo,
             @RequestParam(required = false) String sourceStatusCode,
+            @RequestParam(required = false) String dataQualityStatusCode,
             @RequestParam(required = false) String customerName,
             @RequestParam(required = false) String contactPhone,
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) String ownerSalesUserId,
-            @RequestParam(required = false) String ownerStaffCode,
+            @RequestParam(required = false) String ownerEmployeeCode,
             @RequestParam(required = false) String orderStatusCode,
             @RequestParam(required = false) String paymentStatusCode,
             @RequestParam(required = false) String outboundStatusCode,
             @RequestParam(required = false) Instant orderDateFrom,
-            @RequestParam(required = false) Instant orderDateTo);
+            @RequestParam(required = false) Instant orderDateTo,
+            @RequestParam(required = false) Long productId,
+            @RequestParam(required = false) Long productVariantId,
+            @RequestParam(required = false) String productCodeSnapshot,
+            @RequestParam(required = false) String skuCodeSnapshot,
+            @RequestParam(required = false) String productNameSnapshot,
+            @RequestParam(required = false) String specificationSnapshot);
+
+    @GetMapping(BASE_PATH + "/totals")
+    ApiResponse<SalesOrderTotalsView> salesOrderTotals(
+            @RequestParam(required = false) String orderNo,
+            @RequestParam(required = false) String sourceOrderNo,
+            @RequestParam(required = false) String sourceStatusCode,
+            @RequestParam(required = false) String dataQualityStatusCode,
+            @RequestParam(required = false) String customerName,
+            @RequestParam(required = false) String contactPhone,
+            @RequestParam(required = false) String regionCode,
+            @RequestParam(required = false) String ownerSalesUserId,
+            @RequestParam(required = false) String ownerEmployeeCode,
+            @RequestParam(required = false) String orderStatusCode,
+            @RequestParam(required = false) String paymentStatusCode,
+            @RequestParam(required = false) String outboundStatusCode,
+            @RequestParam(required = false) Instant orderDateFrom,
+            @RequestParam(required = false) Instant orderDateTo,
+            @RequestParam(required = false) Long productId,
+            @RequestParam(required = false) Long productVariantId,
+            @RequestParam(required = false) String productCodeSnapshot,
+            @RequestParam(required = false) String skuCodeSnapshot,
+            @RequestParam(required = false) String productNameSnapshot,
+            @RequestParam(required = false) String specificationSnapshot);
 
     @GetMapping(BASE_PATH + "/{id}")
     ApiResponse<SalesOrderDetailView> salesOrder(@PathVariable("id") Long id);

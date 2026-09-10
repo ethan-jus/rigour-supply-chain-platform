@@ -114,7 +114,7 @@ public class MybatisPlusSalesShipmentRepository
                 .set(InternalSalesShipmentEntity::getCustomerNameSnapshot, command.customerNameSnapshot())
                 .set(InternalSalesShipmentEntity::getContactPhoneSnapshot, command.contactPhoneSnapshot())
                 .set(InternalSalesShipmentEntity::getRegionCode, command.regionCode())
-                .set(InternalSalesShipmentEntity::getOwnerStaffCode, command.ownerStaffCode())
+                .set(InternalSalesShipmentEntity::getOwnerEmployeeCode, command.ownerEmployeeCode())
                 .set(InternalSalesShipmentEntity::getWarehouseId, command.warehouseId())
                 .set(InternalSalesShipmentEntity::getStockOutOrderId, command.stockOutOrderId())
                 .set(InternalSalesShipmentEntity::getStockOutNo, command.stockOutNo())
@@ -221,7 +221,7 @@ public class MybatisPlusSalesShipmentRepository
         entity.setCustomerNameSnapshot(command.customerNameSnapshot());
         entity.setContactPhoneSnapshot(command.contactPhoneSnapshot());
         entity.setRegionCode(command.regionCode());
-        entity.setOwnerStaffCode(command.ownerStaffCode());
+        entity.setOwnerEmployeeCode(command.ownerEmployeeCode());
         entity.setWarehouseId(command.warehouseId());
         entity.setStockOutOrderId(command.stockOutOrderId());
         entity.setStockOutNo(command.stockOutNo());
@@ -298,7 +298,7 @@ public class MybatisPlusSalesShipmentRepository
                 uuid(entity.getConnectorId()), entity.getSourceSystemCode(), entity.getSourceDocumentNo(),
                 entity.getSalesOrderId(), entity.getSalesOrderNoSnapshot(), entity.getCustomerId(),
                 entity.getCustomerCodeSnapshot(), entity.getCustomerNameSnapshot(),
-                entity.getContactPhoneSnapshot(), entity.getRegionCode(), entity.getOwnerStaffCode(),
+                entity.getContactPhoneSnapshot(), entity.getRegionCode(), entity.getOwnerEmployeeCode(),
                 entity.getWarehouseId(), entity.getStockOutOrderId(), entity.getStockOutNo(),
                 entity.getShipmentStatusCode(), entity.getLogisticsCompany(), entity.getTrackingNo(),
                 instant(entity.getShipTime()), entity.getTotalQuantity(), entity.getRevision(),
@@ -311,7 +311,7 @@ public class MybatisPlusSalesShipmentRepository
                 uuid(entity.getConnectorId()), entity.getSourceSystemCode(), entity.getSourceDocumentNo(),
                 entity.getSalesOrderId(), entity.getSalesOrderNoSnapshot(), entity.getCustomerId(),
                 entity.getCustomerCodeSnapshot(), entity.getCustomerNameSnapshot(),
-                entity.getContactPhoneSnapshot(), entity.getRegionCode(), entity.getOwnerStaffCode(),
+                entity.getContactPhoneSnapshot(), entity.getRegionCode(), entity.getOwnerEmployeeCode(),
                 entity.getWarehouseId(), entity.getStockOutOrderId(), entity.getStockOutNo(),
                 entity.getShipmentStatusCode(), entity.getLogisticsCompany(), entity.getTrackingNo(),
                 instant(entity.getShipTime()), entity.getTotalQuantity(), entity.getRemark(),

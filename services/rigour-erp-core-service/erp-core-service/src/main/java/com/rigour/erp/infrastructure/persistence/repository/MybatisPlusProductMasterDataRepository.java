@@ -51,6 +51,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -59,6 +60,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.json.JsonMapper;
@@ -82,6 +84,16 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
     private static final long RUN_LEASE_MINUTES = 30;
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter SOURCE_DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final List<String> RELATED_PRODUCT_FIELD_KEYS = List.of(
+            "recommend_goods", "recommendGoods", "commend_goods", "commendGoods",
+            "related_goods", "relatedGoods", "relation_goods", "relationGoods",
+            "goods_relation", "goodsRelation", "link_goods", "linkGoods",
+            "associated_goods", "associatedGoods");
+    private static final List<String> RELATED_PRODUCT_ID_KEYS = List.of(
+            "goods_id", "goodsId", "guid", "id", "sourceId", "source_id",
+            "coding", "goods_num", "goodsNo", "code", "productCode");
+    private static final TypeReference<Object> SOURCE_VALUE_TYPE = new TypeReference<>() {
+    };
     private static final ObjectMapper JSON = JsonMapper.builder()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .build();
@@ -591,17 +603,24 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         Long brandId = internalTargetId(tenantId, runId, "BRAND", value.brandSourceId());
         String imagesJson = imageKeysJson(value);
         String productCode = synchronizedProductCode(tenantId, value, entity);
+        String sourcePayloadHash = requiredHash(value.payloadHash());
+        String sourcePayloadJson = json(value.sourceFields());
+        String sourceDocumentNo = firstText(value.code(), value.sourceId());
+        String recommendProductIdsJson = json(recommendProductIds(tenantId, runId, value, null));
+        Instant sourceCreatedAt = sourceCreatedAt(value.sourceFields());
+        Instant sourceUpdatedAt = sourceUpdatedAt(value.sourceFields());
         if (created) {
             entity = new InternalProductEntity();
             entity.setTenantId(tenantId);
             entity.setProductCode(productCode);
             entity.setCreatedBy(SYSTEM_ACTOR);
-            entity.setCreatedTime(now);
+            entity.setCreatedTime(sourceTime(sourceCreatedAt, now));
             entity.setDeleted(deletedBySource ? 1 : 0);
             entity.setRevision(1);
         }
         if (created || (sourceWritable(entity.getUpdatedBy())
-                && (changed || productNeedsRepair(entity, value, categoryId, brandId, imagesJson, productCode)
+                && (changed || productNeedsRepair(entity, value, categoryId, brandId, imagesJson,
+                productCode, sourcePayloadHash, sourcePayloadJson, sourceDocumentNo, recommendProductIdsJson)
                 || value(entity.getDeleted(), 0) != (deletedBySource ? 1 : 0)))) {
             entity.setProductCode(productCode);
             entity.setProductName(value.name());
@@ -617,9 +636,16 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.setTagCodesJson(json(List.of()));
             entity.setLimitQuantity(null);
             entity.setImageKeysJson(imagesJson);
-            entity.setRecommendProductIdsJson(json(List.of()));
+            entity.setRecommendProductIdsJson(recommendProductIdsJson);
             entity.setSubmitStatusCode("SUBMITTED");
             entity.setRemark(firstText(value.subtitle(), sourceRemark(value.sourceFields())));
+            entity.setSourceSystemCode(SOURCE_SYSTEM);
+            entity.setSourceProductId(value.sourceId());
+            entity.setSourceDocumentNo(sourceDocumentNo);
+            entity.setSourceCreatedAt(sourceTime(sourceCreatedAt, entity.getSourceCreatedAt()));
+            entity.setSourceUpdatedAt(sourceTime(sourceUpdatedAt, entity.getSourceUpdatedAt()));
+            entity.setSourcePayloadHash(sourcePayloadHash);
+            entity.setSourcePayloadJson(sourcePayloadJson);
             entity.setDeleted(deletedBySource ? 1 : 0);
             entity.setUpdatedBy(SYSTEM_ACTOR);
             entity.setUpdatedTime(now);
@@ -633,6 +659,30 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 entity.getId(), value.code(), value.name(), value.sourceLifecycle(), value.putaway(),
                 value.payloadHash(), now, desiredPresence);
         return new UpsertResult(entity.getId(), importResult(binding, created, changed));
+    }
+
+    @Override
+    @Transactional
+    public ImportResult refreshProductRecommendations(String tenantId, UUID runId, List<Product> products) {
+        if (products == null || products.isEmpty()) return ImportResult.duplicate(0);
+        long changed = 0;
+        LocalDateTime now = now();
+        for (Product product : products) {
+            if (product == null || missing(product.sourceId())) continue;
+            Long productId = internalTargetId(tenantId, runId, "PRODUCT_SPU", product.sourceId());
+            if (productId == null) continue;
+            InternalProductEntity entity = productMapper.selectById(productId);
+            if (!boundProductUsable(entity, tenantId) || !sourceWritable(entity.getUpdatedBy())) continue;
+            String recommendProductIdsJson = json(recommendProductIds(tenantId, runId, product, productId));
+            if (Objects.equals(entity.getRecommendProductIdsJson(), recommendProductIdsJson)) continue;
+            entity.setRecommendProductIdsJson(recommendProductIdsJson);
+            entity.setUpdatedBy(SYSTEM_ACTOR);
+            entity.setUpdatedTime(now);
+            entity.setRevision(value(entity.getRevision(), 1) + 1);
+            productMapper.updateById(entity);
+            changed++;
+        }
+        return changed == 0 ? ImportResult.duplicate(0) : ImportResult.changed(changed);
     }
 
     private UpsertResult upsertVariant(String tenantId, UUID runId, Long productId,
@@ -1119,13 +1169,21 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
 
     private static boolean productNeedsRepair(InternalProductEntity entity, Product value,
                                               Long categoryId, Long brandId, String imagesJson,
-                                              String productCode) {
+                                              String productCode, String sourcePayloadHash,
+                                              String sourcePayloadJson, String sourceDocumentNo,
+                                              String recommendProductIdsJson) {
         return !Objects.equals(entity.getProductCode(), productCode)
                 || !Objects.equals(entity.getProductName(), value.name())
                 || !Objects.equals(entity.getCategoryId(), categoryId)
                 || !Objects.equals(entity.getBrandId(), brandId)
                 || !Objects.equals(entity.getShelfStatusCode(), internalShelfStatus(value.putaway()))
-                || !Objects.equals(entity.getImageKeysJson(), imagesJson);
+                || !Objects.equals(entity.getImageKeysJson(), imagesJson)
+                || !Objects.equals(entity.getRecommendProductIdsJson(), recommendProductIdsJson)
+                || !Objects.equals(entity.getSourceSystemCode(), SOURCE_SYSTEM)
+                || !Objects.equals(entity.getSourceProductId(), value.sourceId())
+                || !Objects.equals(entity.getSourceDocumentNo(), sourceDocumentNo)
+                || !Objects.equals(entity.getSourcePayloadHash(), sourcePayloadHash)
+                || !Objects.equals(entity.getSourcePayloadJson(), sourcePayloadJson);
     }
 
     private static boolean variantNeedsRepair(InternalProductVariantEntity entity, Long productId,
@@ -1257,6 +1315,11 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         return firstInstant(fields, "create_date", "created_at", "createdAt", "created_time");
     }
 
+    private static Instant sourceUpdatedAt(Map<String, Object> fields) {
+        if (fields == null || fields.isEmpty()) return null;
+        return firstInstant(fields, "update_date", "updated_at", "updatedAt", "updated_time", "updateLe");
+    }
+
     private static Instant firstInstant(Map<String, Object> fields, String... keys) {
         for (String key : keys) {
             Instant value = instant(fields.get(key));
@@ -1301,18 +1364,117 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
         return remark == null ? null : blank(String.valueOf(remark));
     }
 
+    private List<Long> recommendProductIds(String tenantId, UUID runId, Product product, Long currentProductId) {
+        LinkedHashSet<Long> targetIds = new LinkedHashSet<>();
+        for (String sourceKey : relatedProductSourceKeys(product.sourceFields())) {
+            if (Objects.equals(sourceKey, blank(product.sourceId()))
+                    || Objects.equals(sourceKey, blank(product.code()))) {
+                continue;
+            }
+            Long targetId = internalProductIdBySourceKey(tenantId, runId, sourceKey);
+            if (targetId == null || Objects.equals(targetId, currentProductId)) continue;
+            targetIds.add(targetId);
+        }
+        return List.copyOf(targetIds);
+    }
+
+    private Long internalProductIdBySourceKey(String tenantId, UUID runId, String sourceKey) {
+        if (missing(sourceKey)) return null;
+        Long bySourceId = internalTargetId(tenantId, runId, "PRODUCT_SPU", sourceKey);
+        if (bySourceId != null) return bySourceId;
+        InternalProductEntity bySourceCode = productFromBindingSourceCode(tenantId, runId, sourceKey);
+        return bySourceCode == null ? null : bySourceCode.getId();
+    }
+
+    private static List<String> relatedProductSourceKeys(Map<String, Object> fields) {
+        if (fields == null || fields.isEmpty()) return List.of();
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        for (String fieldKey : RELATED_PRODUCT_FIELD_KEYS) {
+            collectRelatedProductSourceKeys(fields.get(fieldKey), keys);
+        }
+        return List.copyOf(keys);
+    }
+
+    private static void collectRelatedProductSourceKeys(Object value, LinkedHashSet<String> keys) {
+        Object parsed = parseJsonLike(value);
+        if (parsed == null) return;
+        if (parsed instanceof Iterable<?> iterable) {
+            for (Object item : iterable) collectRelatedProductSourceKeys(item, keys);
+            return;
+        }
+        if (parsed instanceof Map<?, ?> map) {
+            Map<String, Object> row = stringMap(map);
+            Object nested = firstObject(row, "items", "list", "data", "rows", "goods", "products");
+            if (nested != null && nested != parsed) {
+                collectRelatedProductSourceKeys(nested, keys);
+                return;
+            }
+            for (String key : RELATED_PRODUCT_ID_KEYS) {
+                addRelatedProductSourceKey(row.get(key), keys);
+            }
+            return;
+        }
+        if (parsed instanceof CharSequence text) {
+            for (String item : text.toString().split("[,\\s，、]+")) {
+                addRelatedProductSourceKey(item, keys);
+            }
+            return;
+        }
+        addRelatedProductSourceKey(parsed, keys);
+    }
+
+    private static Object parseJsonLike(Object value) {
+        if (!(value instanceof String text)) return value;
+        String normalized = text.strip();
+        if (normalized.isEmpty() || (!normalized.startsWith("{") && !normalized.startsWith("["))) {
+            return normalized;
+        }
+        try {
+            return JSON.readValue(normalized, SOURCE_VALUE_TYPE);
+        } catch (Exception ignored) {
+            return normalized;
+        }
+    }
+
+    private static Map<String, Object> stringMap(Map<?, ?> value) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        value.forEach((key, item) -> {
+            if (key != null) result.put(String.valueOf(key), item);
+        });
+        return result;
+    }
+
+    private static Object firstObject(Map<String, Object> values, String... keys) {
+        for (String key : keys) {
+            Object value = values.get(key);
+            if (value != null) return value;
+        }
+        return null;
+    }
+
+    private static void addRelatedProductSourceKey(Object value, LinkedHashSet<String> keys) {
+        String text = value == null ? null : blank(String.valueOf(value));
+        if (text != null && !"-".equals(text)) keys.add(text);
+    }
+
     private static String internalShelfStatus(String value) {
         return "T".equalsIgnoreCase(blank(value)) ? "ON_SHELF" : "OFF_SHELF";
     }
 
     private static String internalUnitCode(String value) {
-        if (missing(value)) return "PIECE";
-        return switch (value.strip()) {
-            case "箱" -> "BOX";
-            case "桶" -> "BUCKET";
-            case "份" -> "PORTION";
-            case "套" -> "SET";
-            case "床" -> "BED";
+        String normalized = blank(value);
+        if (normalized == null) return "PIECE";
+        return switch (normalized.toUpperCase(java.util.Locale.ROOT)) {
+            case "BOX", "箱" -> "BOX";
+            case "BUCKET", "桶" -> "BUCKET";
+            case "PORTION", "份" -> "PORTION";
+            case "SET", "套" -> "SET";
+            case "BED", "床" -> "BED";
+            case "PAIR", "副" -> "PAIR";
+            case "BOTTLE", "瓶" -> "BOTTLE";
+            case "STRIP", "条" -> "STRIP";
+            case "GRAIN", "颗" -> "GRAIN";
+            case "PIECE", "PCS", "EA", "件", "个", "只", "支" -> "PIECE";
             default -> "PIECE";
         };
     }

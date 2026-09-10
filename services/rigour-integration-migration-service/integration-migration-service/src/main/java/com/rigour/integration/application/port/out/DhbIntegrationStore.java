@@ -32,6 +32,7 @@ public interface DhbIntegrationStore {
     ConnectorView updateConnector(UUID tenantId, UUID actorId, UUID id, ConnectorCommand command);
     List<SyncTaskView> syncTasks(UUID tenantId);
     List<SyncTargetView> activeSyncTargets(String objectType);
+    List<SyncTargetView> configuredSyncTargets(String objectType);
 
     default List<SyncTargetView> activeOrderSyncTargets() {
         return activeSyncTargets("ORDER");
@@ -51,6 +52,26 @@ public interface DhbIntegrationStore {
 
     default List<SyncTargetView> activeBusinessDictionarySyncTargets() {
         return activeSyncTargets("BUSINESS_DICTIONARY");
+    }
+
+    default List<SyncTargetView> configuredOrderSyncTargets() {
+        return configuredSyncTargets("ORDER");
+    }
+
+    default List<SyncTargetView> configuredProductMasterSyncTargets() {
+        return configuredSyncTargets("PRODUCT_MASTER_DATA");
+    }
+
+    default List<SyncTargetView> configuredSupplyChainSyncTargets() {
+        return configuredSyncTargets("SUPPLY_CHAIN_DATA");
+    }
+
+    default List<SyncTargetView> configuredCrmMasterSyncTargets() {
+        return configuredSyncTargets("CRM_MASTER_DATA");
+    }
+
+    default List<SyncTargetView> configuredBusinessDictionarySyncTargets() {
+        return configuredSyncTargets("BUSINESS_DICTIONARY");
     }
     SyncTaskView createSyncTask(UUID tenantId, UUID actorId, SyncTaskCommand command);
     SyncTaskView updateSyncTask(UUID tenantId, UUID actorId, UUID id, SyncTaskCommand command);

@@ -46,8 +46,8 @@ public final class ErpDataSyncService {
                 value, parsed.maxPages(), parsed.productType() != null ? "PRODUCT" : "SUPPLY");
         try {
             ErpDataSyncResult result = parsed.productType() != null
-                    ? productSync.run(parsed.productType(), parsed.maxPages())
-                    : supplySync.run(parsed.supplyType(), parsed.maxPages());
+                    ? runProduct(parsed)
+                    : runSupply(parsed);
             log.info("ERP统一数据同步请求完成 objectType={} runId={} connectorId={} fetched={} created={} changed={} duplicates={} rejected={} pages={}",
                     value, result.runId(), result.connectorId(), result.fetched(), result.created(),
                     result.changed(), result.duplicates(), result.rejected(), result.pages());
@@ -62,17 +62,26 @@ public final class ErpDataSyncService {
     /** 供 ERP 内部定时调度器调用；不依赖 HTTP 线程上下文，也不暴露为新的浏览器接口。 */
     public ErpDataSyncResult runScheduled(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
                                           ErpDataSyncCommand command) {
+        return runInternal(caller, connectorId, sourceTaskId, "SCHEDULED", command);
+    }
+
+    /** 供 Integration 编排器调用；按上游触发方式记录 ERP 本地同步批次。 */
+    public ErpDataSyncResult runInternal(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
+                                         String triggerType, ErpDataSyncCommand command) {
         requireScheduledCaller(caller);
         if (connectorId == null) throw new IllegalArgumentException("connectorId不能为空");
         if (sourceTaskId == null) throw new IllegalArgumentException("sourceTaskId不能为空");
         ParsedCommand parsed = parse(command);
-        log.info("ERP统一定时数据同步开始 tenantId={} objectType={} connectorId={} maxPages={}",
-                caller.tenantId(), parsed.objectType(), connectorId, parsed.maxPages());
+        String normalizedTriggerType = triggerType(triggerType);
+        boolean scheduled = "SCHEDULED".equals(normalizedTriggerType);
+        log.info("ERP统一内部数据同步开始 tenantId={} triggerType={} objectType={} connectorId={} maxPages={}",
+                caller.tenantId(), normalizedTriggerType, parsed.objectType(), connectorId, parsed.maxPages());
         try {
             return parsed.productType() != null
-                    ? productSync.runScheduled(caller, connectorId, parsed.productType(), parsed.maxPages())
-                    : supplySync.runScheduled(caller, connectorId, parsed.supplyType(), parsed.maxPages());
+                    ? runInternalProduct(caller, connectorId, parsed, scheduled)
+                    : runInternalSupply(caller, connectorId, parsed, scheduled);
         } catch (ErpScheduledSyncSkipException skip) {
+            if (!scheduled) throw skip;
             UUID runId = syncRunAuditStore.recordScheduledSkip(caller.tenantId(), connectorId, sourceTaskId,
                     skip.blockedObjectType(), parsed.maxPages(), skip.reason());
             log.info("ERP统一定时数据同步跳过 tenantId={} objectType={} connectorId={} sourceTaskId={} runId={} reason={}",
@@ -81,6 +90,46 @@ public final class ErpDataSyncService {
             return new ErpDataSyncResult(runId, skip.blockedObjectType(), "SKIPPED", connectorId,
                     0, 0, 0, 0, 0, 0, Map.of(), Map.of(), 0, Instant.now());
         }
+    }
+
+    private ErpDataSyncResult runProduct(ParsedCommand parsed) {
+        return parsed.hasWindow()
+                ? productSync.run(parsed.productType(), parsed.maxPages(), parsed.from(), parsed.to())
+                : productSync.run(parsed.productType(), parsed.maxPages());
+    }
+
+    private ErpDataSyncResult runSupply(ParsedCommand parsed) {
+        return parsed.hasWindow()
+                ? supplySync.run(parsed.supplyType(), parsed.maxPages(), parsed.from(), parsed.to())
+                : supplySync.run(parsed.supplyType(), parsed.maxPages());
+    }
+
+    private ErpDataSyncResult runInternalProduct(CallerIdentity caller, UUID connectorId,
+                                                 ParsedCommand parsed, boolean scheduled) {
+        if (scheduled) {
+            return parsed.hasWindow()
+                    ? productSync.runScheduled(caller, connectorId, parsed.productType(),
+                    parsed.maxPages(), parsed.from(), parsed.to())
+                    : productSync.runScheduled(caller, connectorId, parsed.productType(), parsed.maxPages());
+        }
+        return parsed.hasWindow()
+                ? productSync.runInternal(caller, connectorId, parsed.productType(),
+                parsed.maxPages(), scheduled, parsed.from(), parsed.to())
+                : productSync.runInternal(caller, connectorId, parsed.productType(), parsed.maxPages(), scheduled);
+    }
+
+    private ErpDataSyncResult runInternalSupply(CallerIdentity caller, UUID connectorId,
+                                                ParsedCommand parsed, boolean scheduled) {
+        if (scheduled) {
+            return parsed.hasWindow()
+                    ? supplySync.runScheduled(caller, connectorId, parsed.supplyType(),
+                    parsed.maxPages(), parsed.from(), parsed.to())
+                    : supplySync.runScheduled(caller, connectorId, parsed.supplyType(), parsed.maxPages());
+        }
+        return parsed.hasWindow()
+                ? supplySync.runInternal(caller, connectorId, parsed.supplyType(),
+                parsed.maxPages(), scheduled, parsed.from(), parsed.to())
+                : supplySync.runInternal(caller, connectorId, parsed.supplyType(), parsed.maxPages(), scheduled);
     }
 
     private static ParsedCommand parse(ErpDataSyncCommand command) {
@@ -93,7 +142,8 @@ public final class ErpDataSyncService {
         if (productType == null && supplyType == null) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "objectType只支持" + SUPPORTED_TYPES, List.of());
         }
-        return new ParsedCommand(value, command.effectiveMaxPages(), productType, supplyType);
+        return new ParsedCommand(value, command.effectiveMaxPages(), productType, supplyType,
+                command.from(), command.to());
     }
 
     private static void requireScheduledCaller(CallerIdentity caller) {
@@ -107,9 +157,24 @@ public final class ErpDataSyncService {
         }
     }
 
+    private static String triggerType(String value) {
+        String normalized = value == null || value.isBlank()
+                ? "SCHEDULED"
+                : value.strip().toUpperCase(Locale.ROOT);
+        if (!"SCHEDULED".equals(normalized) && !"MANUAL".equals(normalized)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "triggerType只支持MANUAL或SCHEDULED", List.of());
+        }
+        return normalized;
+    }
+
     private record ParsedCommand(String objectType, int maxPages,
                                  MasterDataObjectType productType,
-                                 SupplyDataObjectType supplyType) { }
+                                 SupplyDataObjectType supplyType,
+                                 Instant from, Instant to) {
+        private boolean hasWindow() {
+            return from != null;
+        }
+    }
 
     private static <E extends Enum<E>> E enumValue(Class<E> type, String value) {
         try {

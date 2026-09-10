@@ -7,6 +7,8 @@ public record SupplyDashboardRankingItemView(
         String rankType,
         String dimensionCode,
         String dimensionName,
+        String regionCode,
+        String regionName,
         BigDecimal salesAmount,
         BigDecimal paidAmount,
         BigDecimal unpaidAmount,

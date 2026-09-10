@@ -7,7 +7,7 @@ import com.rigour.order.api.v1.model.FundDocumentSummaryView;
 import com.rigour.order.api.v1.model.OrderPageView;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
 import com.rigour.order.application.port.out.FundAttachmentUrlResolver;
-import com.rigour.order.application.port.out.IamStaffDisplayClient;
+import com.rigour.order.application.port.out.HrEmployeeDisplayClient;
 import com.rigour.order.application.port.out.OrderFundDocumentStore;
 import com.rigour.order.application.port.out.OrderFundDocumentStore.FundDocumentSearchCriteria;
 import com.rigour.order.application.port.out.OrderFundDocumentStore.FundDocumentWrite;
@@ -51,38 +51,38 @@ public final class OrderFundDocumentService {
     private static final BigDecimal ZERO = BigDecimal.ZERO;
     private static final UUID SERVICE_PRINCIPAL_ID = UUID.nameUUIDFromBytes(
             "service:rigour-order-center-service".getBytes(StandardCharsets.UTF_8));
-    private static final Set<String> IAM_STAFF_READ_PERMISSIONS = Set.of("iam:staff:read");
+    private static final Set<String> HR_EMPLOYEE_READ_PERMISSIONS = Set.of("hr:employee:read");
 
     private final OrderFundDocumentStore store;
     private final OrderSalesOrderStore orderStore;
-    private final IamStaffDisplayClient iamStaffDisplayClient;
+    private final HrEmployeeDisplayClient hrEmployeeDisplayClient;
     private final BusinessCodeGenerator codeGenerator;
     private final FundAttachmentUrlResolver fundAttachmentUrlResolver;
 
     @Autowired
     public OrderFundDocumentService(OrderFundDocumentStore store,
                                     OrderSalesOrderStore orderStore,
-                                    IamStaffDisplayClient iamStaffDisplayClient,
+                                    HrEmployeeDisplayClient hrEmployeeDisplayClient,
                                     ObjectProvider<FundAttachmentUrlResolver> fundAttachmentUrlResolverProvider) {
-        this(store, orderStore, iamStaffDisplayClient, new BusinessCodeGenerator(),
+        this(store, orderStore, hrEmployeeDisplayClient, new BusinessCodeGenerator(),
                 fundAttachmentUrlResolverProvider.getIfAvailable(() -> FundAttachmentUrlResolver.NONE));
     }
 
     OrderFundDocumentService(OrderFundDocumentStore store,
                              OrderSalesOrderStore orderStore,
-                             IamStaffDisplayClient iamStaffDisplayClient,
+                             HrEmployeeDisplayClient hrEmployeeDisplayClient,
                              BusinessCodeGenerator codeGenerator) {
-        this(store, orderStore, iamStaffDisplayClient, codeGenerator, FundAttachmentUrlResolver.NONE);
+        this(store, orderStore, hrEmployeeDisplayClient, codeGenerator, FundAttachmentUrlResolver.NONE);
     }
 
     OrderFundDocumentService(OrderFundDocumentStore store,
                              OrderSalesOrderStore orderStore,
-                             IamStaffDisplayClient iamStaffDisplayClient,
+                             HrEmployeeDisplayClient hrEmployeeDisplayClient,
                              BusinessCodeGenerator codeGenerator,
                              FundAttachmentUrlResolver fundAttachmentUrlResolver) {
         this.store = Objects.requireNonNull(store, "store");
         this.orderStore = Objects.requireNonNull(orderStore, "orderStore");
-        this.iamStaffDisplayClient = Objects.requireNonNull(iamStaffDisplayClient, "iamStaffDisplayClient");
+        this.hrEmployeeDisplayClient = Objects.requireNonNull(hrEmployeeDisplayClient, "hrEmployeeDisplayClient");
         this.codeGenerator = Objects.requireNonNull(codeGenerator, "codeGenerator");
         this.fundAttachmentUrlResolver = Objects.requireNonNull(fundAttachmentUrlResolver,
                 "fundAttachmentUrlResolver");
@@ -352,19 +352,19 @@ public final class OrderFundDocumentService {
 
     private Map<String, String> staffNames(CallerIdentity actor, Set<String> staffCodes) {
         if (staffCodes == null || staffCodes.isEmpty()) return Map.of();
-        CallerIdentity serviceCaller = iamServiceCaller(actor.tenantId());
+        CallerIdentity serviceCaller = hrServiceCaller(actor.tenantId());
         try {
             Map<String, String> result = new LinkedHashMap<>();
-            for (IamStaffDisplayClient.StaffDisplay item : iamStaffDisplayClient.resolve(serviceCaller, staffCodes)) {
-                if (item == null || item.staffCode() == null || item.staffCode().isBlank()
-                        || item.staffName() == null || item.staffName().isBlank()) {
+            for (HrEmployeeDisplayClient.EmployeeDisplay item : hrEmployeeDisplayClient.resolve(serviceCaller, staffCodes)) {
+                if (item == null || item.employeeCode() == null || item.employeeCode().isBlank()
+                        || item.employeeName() == null || item.employeeName().isBlank()) {
                     continue;
                 }
-                result.put(item.staffCode().strip(), item.staffName().strip());
+                result.put(item.employeeCode().strip(), item.employeeName().strip());
             }
             return result;
         } catch (RuntimeException exception) {
-            log.warn("IAM人员展示名查询失败，Order返回资金单据经办人姓名快照 tenantId={} staffCount={} reason={}",
+            log.warn("HR员工展示名查询失败，Order返回资金单据经办人姓名快照 tenantId={} employeeCount={} reason={}",
                     actor.tenantId(), staffCodes.size(), exception.getMessage());
             return Map.of();
         }
@@ -507,9 +507,9 @@ public final class OrderFundDocumentService {
         return caller;
     }
 
-    private static CallerIdentity iamServiceCaller(UUID tenantId) {
+    private static CallerIdentity hrServiceCaller(UUID tenantId) {
         return new CallerIdentity("SERVICE", SERVICE_PRINCIPAL_ID, tenantId, null, null,
-                UUID.randomUUID(), 0, 0, 0, Set.of("ORDER_CENTER"), IAM_STAFF_READ_PERMISSIONS);
+                UUID.randomUUID(), 0, 0, 0, Set.of("ORDER_CENTER"), HR_EMPLOYEE_READ_PERMISSIONS);
     }
 
     private static BusinessException badRequest(String message) {

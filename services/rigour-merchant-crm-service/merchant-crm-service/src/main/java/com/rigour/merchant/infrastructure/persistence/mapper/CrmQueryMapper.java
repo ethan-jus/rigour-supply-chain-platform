@@ -29,7 +29,7 @@ public interface CrmQueryMapper {
             SELECT p.id,p.party_code,p.display_name,p.internal_status,cp.login_account,
                    COALESCE(ct.type_name,cp.customer_type_name_snapshot) AS type_name,
                    COALESCE(ca.area_name,cp.customer_area_name_snapshot) AS area_name,
-                   c.contact_name,c.phone,COALESCE(sa.iam_staff_name_snapshot,sa.source_name_snapshot)
+                   c.contact_name,c.phone,COALESCE(sa.employee_name_snapshot,sa.source_name_snapshot)
                        AS source_name_snapshot,b.source_updated_at,
                    b.synced_at,b.source_presence,b.source_status,b.source_absent_at
               FROM crm_party p
@@ -59,8 +59,8 @@ public interface CrmQueryMapper {
 
     @Select("""
             <script>
-            SELECT sa.party_id,sa.assignment_type,sa.source_staff_id,sa.iam_staff_code,
-                   COALESCE(sa.iam_staff_name_snapshot,sa.source_name_snapshot) AS staff_name
+            SELECT sa.party_id,sa.assignment_type,sa.source_staff_id,sa.employee_code,
+                   COALESCE(sa.employee_name_snapshot,sa.source_name_snapshot) AS staff_name
               FROM crm_sales_assignment sa
              WHERE sa.tenant_id=#{tenantId} AND sa.status='ACTIVE'
                AND sa.party_id IN
@@ -80,7 +80,7 @@ public interface CrmQueryMapper {
                    COALESCE(ca.area_name,cp.customer_area_name_snapshot) AS area_name,
                    cp.city_text,cp.inviter_name,cp.remark,c.contact_name,c.phone,c.email,
                    a.full_address,pol.settlement_mode,
-                   COALESCE(sa.iam_staff_name_snapshot,sa.source_name_snapshot) AS source_name_snapshot,b.source_status,
+                   COALESCE(sa.employee_name_snapshot,sa.source_name_snapshot) AS source_name_snapshot,b.source_status,
                    b.source_object_id,b.source_created_at,b.source_updated_at,b.synced_at,
                    b.source_presence,b.source_absent_at,b.source_fields_json
               FROM crm_party p
@@ -179,7 +179,7 @@ public interface CrmQueryMapper {
 
     @Select("""
             <script>
-            SELECT d.id,d.type_code AS code,d.type_name AS name,d.status,b.synced_at,
+            SELECT d.id,d.type_code AS code,d.type_name AS name,d.status,b.synced_at,d.revision,
                    b.source_presence,b.source_absent_at
               FROM crm_customer_type d
               LEFT JOIN crm_source_binding b ON b.tenant_id=d.tenant_id AND b.target_id=d.id
@@ -208,7 +208,7 @@ public interface CrmQueryMapper {
 
     @Select("""
             <script>
-            SELECT d.id,d.area_code AS code,d.area_name AS name,d.status,b.synced_at,
+            SELECT d.id,d.area_code AS code,d.area_name AS name,d.status,b.synced_at,d.revision,
                    b.source_presence,b.source_absent_at,
                    d.parent_area_code AS parent_code,p.id AS parent_id
               FROM crm_customer_area d

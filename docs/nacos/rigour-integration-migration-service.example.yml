@@ -1,6 +1,10 @@
 # DEV共享配置：非敏感连接参数写入Nacos；数据库密码和上下文密钥由本机Secret/IDEA环境变量注入。
 # 该文件对应 Nacos Data ID: rigour-integration-migration-service.yaml，Group: DEFAULT_GROUP。
 spring:
+  servlet:
+    multipart:
+      max-file-size: ${RIGOUR_FEISHU_IMPORT_MAX_FILE_SIZE:50MB}
+      max-request-size: ${RIGOUR_FEISHU_IMPORT_MAX_REQUEST_SIZE:60MB}
   datasource:
     # 共享DEV数据库；不要改成 localhost，也不要把密码写进这个文件。
     url: jdbc:mysql://82.157.4.176:13306/rigour_integration?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&useSSL=false&allowPublicKeyRetrieval=true
@@ -34,23 +38,28 @@ rigour:
   order:
     # Integration投影订货宝订单到Order自研销售订单；只调用HTTP契约，不访问Order数据库。
     base-url: ${RIGOUR_ORDER_BASE_URL:http://rigour-order-center-service:26885}
+  hr:
+    # Integration投影飞书人员到HR员工主档；IAM只保留认证授权边界。
+    base-url: ${RIGOUR_HR_BASE_URL:http://rigour-hr-payroll-service:26889}
   business-settings:
     # Integration同步批次内只通过Settings内部HTTP契约补齐已确认的白名单业务字典项。
     base-url: ${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://rigour-business-settings-service:26892}
   integration:
     domain-http:
-      # 统一编排器调用ERP/CRM/Order时允许长批次完成；领域服务内部负责分页、幂等和对账。
+      # 统一编排器调用ERP/CRM/Order时按小批次推进，单次慢请求失败后进入行级问题而不是卡住整批。
       connect-timeout: 5s
-      read-timeout: 15m
+      read-timeout: 120s
     connector-lease:
       # ERP、CRM、Order及各自多实例的一整轮同步共享同一租户连接器租约。
       ttl: 2m
     dhb:
       orchestration:
-        # 订货宝同步统一由Integration编排器触发；领域服务定时入口默认关闭。
-        enabled: true
-        cron: 0 5/30 * * * ?
-        max-pages: 100
+        # 定时统一同步默认关闭；不影响 Portal 手动统一同步入口。
+        enabled: ${RIGOUR_DHB_SYNC_ORCHESTRATION_ENABLED:false}
+        cron: ${RIGOUR_DHB_SYNC_ORCHESTRATION_CRON:0 5/30 * * * ?}
+        max-pages: ${RIGOUR_DHB_SYNC_ORCHESTRATION_MAX_PAGES:100}
+        # enabled=true 时必须配置；例如 2026-09-01 会按系统时区当天 00:00:00 作为起点。
+        scheduled-window-from: ${RIGOUR_DHB_SYNC_ORCHESTRATION_SCHEDULED_WINDOW_FROM:}
       order:
         # getOrderContent/getShipsContent 明细接口按单号调用；该值受订货宝限流和下方 client 限流共同约束。
         detail-concurrency: 4
@@ -65,6 +74,7 @@ rigour:
       worker-poll-interval-ms: 1000
       worker-max-attempts: 3
       fund-attachment-prefix: fund-attachments
+      feishu-attachment-prefix: feishu-attachments
       cos:
         object-prefix: product-images
         region: ap-beijing
@@ -80,6 +90,11 @@ rigour:
       allowed-origins: http://localhost:5200
       # 只适用于共享DEV；生产必须为false，并配置明确HTTPS来源。
       allow-insecure-lan: true
+      import-bundle:
+        enabled: ${RIGOUR_FEISHU_IMPORT_BUNDLE_ENABLED:true}
+        max-bytes: ${RIGOUR_FEISHU_IMPORT_BUNDLE_MAX_BYTES:104857600}
+        # 页面未填写飞书Base/视图地址时使用；按环境配置，不要写入App Secret。
+        default-source-url: ${RIGOUR_FEISHU_IMPORT_BUNDLE_DEFAULT_SOURCE_URL:}
   context:
     trust:
       active-key-id: v1

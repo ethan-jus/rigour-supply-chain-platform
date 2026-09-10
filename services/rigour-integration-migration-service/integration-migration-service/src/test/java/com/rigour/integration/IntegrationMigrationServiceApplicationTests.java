@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
 import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbSyncStore;
-import com.rigour.integration.application.port.out.IamDhbStaffSyncClient;
+import com.rigour.integration.application.port.out.HrDhbStaffSyncClient;
 import com.rigour.integration.application.port.out.OrderSalesOrderProjectionClient;
 import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
@@ -243,11 +243,15 @@ class IntegrationMigrationServiceApplicationTests {
         updateTask(pausedTask.id(), "task_status", "PAUSED");
 
         List<SyncTargetView> targets = store.activeOrderSyncTargets();
+        List<SyncTargetView> configuredTargets = store.configuredOrderSyncTargets();
 
         assertThat(targets).extracting(SyncTargetView::taskId).contains(activeOrderTask.id());
         assertThat(targets).extracting(SyncTargetView::taskId)
                 .doesNotContain(disabledConnectorTask.id(), disabledTask.id(), productOrderTask.id(),
                         productTask.id(), pausedTask.id());
+        assertThat(configuredTargets).extracting(SyncTargetView::taskId)
+                .contains(activeOrderTask.id(), disabledTask.id(), productOrderTask.id(), pausedTask.id())
+                .doesNotContain(disabledConnectorTask.id(), productTask.id());
     }
 
     @Test
@@ -279,7 +283,7 @@ class IntegrationMigrationServiceApplicationTests {
                 UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("integration:dhb:write"));
         FakeOrderProjectionClient orderProjection = new FakeOrderProjectionClient();
         DhbOrderSyncService worker = new DhbOrderSyncService(syncStore, client, orderProjection,
-                new FakeIamDhbStaffSyncClient());
+                new FakeHrDhbStaffSyncClient());
 
         var result = worker.runOrderPull(caller, task.id(), new SyncRunCommand(from, to, 1));
 
@@ -287,9 +291,9 @@ class IntegrationMigrationServiceApplicationTests {
         assertThat(result.fetchedCount()).isEqualTo(2);
         assertThat(result.acceptedCount()).isEqualTo(2);
         assertThat(orderProjection.created).isEqualTo(2);
-        assertThat(orderProjection.rows.values()).extracting(SalesOrderDetailView::ownerStaffCode)
+        assertThat(orderProjection.rows.values()).extracting(SalesOrderDetailView::ownerEmployeeCode)
                 .containsOnly("RY202608220001");
-        assertThat(orderProjection.rows.values()).extracting(SalesOrderDetailView::ownerStaffNameSnapshot)
+        assertThat(orderProjection.rows.values()).extracting(SalesOrderDetailView::ownerEmployeeNameSnapshot)
                 .containsOnly("刘彦");
         assertThat(rawLandingCount(tenant)).isEqualTo(4L);
         assertThat(orderMirrorCount(tenant)).isEqualTo(2L);
@@ -353,7 +357,7 @@ class IntegrationMigrationServiceApplicationTests {
         CallerIdentity caller = new CallerIdentity("TENANT", actor, tenant, actor, null,
                 UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("integration:dhb:write"));
         DhbOrderSyncService worker = new DhbOrderSyncService(syncStore, client,
-                new FakeOrderProjectionClient(), new FakeIamDhbStaffSyncClient());
+                new FakeOrderProjectionClient(), new FakeHrDhbStaffSyncClient());
 
         var result = worker.runOrderPull(caller, task.id(), null);
 
@@ -395,7 +399,7 @@ class IntegrationMigrationServiceApplicationTests {
                 UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("integration:dhb:write"));
         DhbOrderSyncService worker = new DhbOrderSyncService(
                 syncStore, client, new FakeOrderProjectionClient(),
-                new FakeIamDhbStaffSyncClient());
+                new FakeHrDhbStaffSyncClient());
 
         var first = worker.runOrderPull(caller, firstTask.id(), new SyncRunCommand(from, to, 1));
         var second = worker.runOrderPull(caller, secondTask.id(), new SyncRunCommand(from, to, 1));
@@ -436,7 +440,7 @@ class IntegrationMigrationServiceApplicationTests {
                 UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("integration:dhb:write"));
         FakeOrderProjectionClient orderProjection = new FakeOrderProjectionClient();
         DhbOrderSyncService worker = new DhbOrderSyncService(syncStore, client, orderProjection,
-                new FakeIamDhbStaffSyncClient());
+                new FakeHrDhbStaffSyncClient());
 
         var result = worker.runOrderPull(caller, task.id(), new SyncRunCommand(from, to, 1));
 
@@ -485,7 +489,7 @@ class IntegrationMigrationServiceApplicationTests {
                 UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("integration:dhb:write"));
         FakeOrderProjectionClient orderProjection = new FakeOrderProjectionClient();
         DhbOrderSyncService worker = new DhbOrderSyncService(syncStore, client, orderProjection,
-                new FakeIamDhbStaffSyncClient());
+                new FakeHrDhbStaffSyncClient());
 
         var result = worker.runOrderPull(caller, task.id(), new SyncRunCommand(from, to, 1));
 
@@ -607,6 +611,20 @@ class IntegrationMigrationServiceApplicationTests {
         }
 
         @Override
+        public Optional<SalesOrderDetailView> findSalesOrderBySource(
+                CallerIdentity caller, String sourceSystemCode, String sourceOrderNo) {
+            if (sourceSystemCode == null || sourceSystemCode.isBlank()
+                    || sourceOrderNo == null || sourceOrderNo.isBlank()) {
+                return Optional.empty();
+            }
+            String normalizedSourceOrderNo = sourceOrderNo.strip();
+            return rows.values().stream()
+                    .filter(row -> sourceSystemCode.equalsIgnoreCase(row.sourceSystemCode()))
+                    .filter(row -> normalizedSourceOrderNo.equals(row.sourceOrderNo()))
+                    .findFirst();
+        }
+
+        @Override
         public SalesOrderDetailView createSalesOrder(CallerIdentity caller, SalesOrderCommand command) {
             created++;
             SalesOrderDetailView value = detail(nextId++, "DD2026080400" + created,
@@ -634,8 +652,8 @@ class IntegrationMigrationServiceApplicationTests {
                     current.sourceCreatorId(), current.sourceCreatorStaffCode(), current.sourceCreatorName(),
                     current.customerCodeSnapshot(), current.customerNameSnapshot(),
                     current.contactNameSnapshot(), current.contactPhoneSnapshot(), current.regionCode(),
-                    current.ownerSalesUserId(), current.ownerSalesName(), current.ownerStaffCode(),
-                    current.ownerStaffNameSnapshot(), current.orderDate(), current.orderTypeCode(),
+                    current.ownerSalesUserId(), current.ownerSalesName(), current.ownerEmployeeCode(),
+                    current.ownerEmployeeNameSnapshot(), current.orderDate(), current.orderTypeCode(),
                     current.paymentMethodCode(), current.discountRate(), current.discountAmount(),
                     current.remark(), current.lines().stream()
                     .map(line -> new SalesOrderLineCommand(line.productId(), line.productVariantId(),
@@ -664,8 +682,8 @@ class IntegrationMigrationServiceApplicationTests {
                     current.contactNameSnapshot(), current.contactPhoneSnapshot(), current.regionCode(),
                     first(command.ownerSalesUserId(), current.ownerSalesUserId()),
                     first(command.ownerSalesName(), current.ownerSalesName()),
-                    first(command.ownerStaffCode(), current.ownerStaffCode()),
-                    first(command.ownerStaffNameSnapshot(), current.ownerStaffNameSnapshot()),
+                    first(command.ownerEmployeeCode(), current.ownerEmployeeCode()),
+                    first(command.ownerEmployeeNameSnapshot(), current.ownerEmployeeNameSnapshot()),
                     current.orderDate(), current.orderTypeCode(),
                     current.paymentMethodCode(), current.discountRate(), current.discountAmount(),
                     current.remark(), current.lines().stream()
@@ -703,6 +721,20 @@ class IntegrationMigrationServiceApplicationTests {
         public SalesPaymentRecordDetailView salesPayment(CallerIdentity caller, Long id) {
             return Optional.ofNullable(payments.get(id))
                     .orElseThrow(() -> new IllegalArgumentException("sales payment not found"));
+        }
+
+        @Override
+        public Optional<SalesPaymentRecordDetailView> findSalesPaymentBySource(
+                CallerIdentity caller, String sourceSystemCode, String sourceDocumentNo) {
+            if (sourceSystemCode == null || sourceSystemCode.isBlank()
+                    || sourceDocumentNo == null || sourceDocumentNo.isBlank()) {
+                return Optional.empty();
+            }
+            String normalizedSourceDocumentNo = sourceDocumentNo.strip();
+            return payments.values().stream()
+                    .filter(row -> sourceSystemCode.equalsIgnoreCase(row.sourceSystemCode()))
+                    .filter(row -> normalizedSourceDocumentNo.equals(row.sourceDocumentNo()))
+                    .findFirst();
         }
 
         @Override
@@ -822,7 +854,7 @@ class IntegrationMigrationServiceApplicationTests {
                     command.customerCodeSnapshot(), command.customerNameSnapshot(),
                     command.contactNameSnapshot(), command.contactPhoneSnapshot(),
                     command.regionCode(), command.ownerSalesUserId(), command.ownerSalesName(),
-                    command.ownerStaffCode(), command.ownerStaffNameSnapshot(),
+                    command.ownerEmployeeCode(), command.ownerEmployeeNameSnapshot(),
                     command.orderDate(), null, null, null, status, command.orderTypeCode(),
                     command.paymentMethodCode(), "UNPAID", "PENDING", totalQuantity,
                     payableAmount, command.discountRate(), command.discountAmount(),
@@ -837,7 +869,7 @@ class IntegrationMigrationServiceApplicationTests {
                     source.customerCodeSnapshot(),
                     source.customerNameSnapshot(), source.contactNameSnapshot(),
                     source.contactPhoneSnapshot(), source.regionCode(), source.ownerSalesUserId(),
-                    source.ownerSalesName(), source.ownerStaffCode(), source.ownerStaffNameSnapshot(),
+                    source.ownerSalesName(), source.ownerEmployeeCode(), source.ownerEmployeeNameSnapshot(),
                     source.orderDate(), source.orderTypeCode(),
                     source.paymentMethodCode(), source.discountRate(), source.discountAmount(),
                     source.remark(), source.lines().stream()
@@ -909,7 +941,7 @@ class IntegrationMigrationServiceApplicationTests {
         }
     }
 
-    private static final class FakeIamDhbStaffSyncClient implements IamDhbStaffSyncClient {
+    private static final class FakeHrDhbStaffSyncClient implements HrDhbStaffSyncClient {
         @Override
         public StaffSyncResult sync(CallerIdentity caller, List<DhbStaffRow> rows) {
             int received = rows == null ? 0 : rows.size();
@@ -917,14 +949,12 @@ class IntegrationMigrationServiceApplicationTests {
         }
 
         @Override
-        public List<ResolvedStaff> resolve(CallerIdentity caller, String sourceTenantKey,
-                                           List<String> sourceStaffIds,
-                                           List<String> sourceStaffNames) {
+        public List<ResolvedEmployee> resolve(CallerIdentity caller, String sourceTenantKey,
+                                              List<String> sourceStaffIds,
+                                              List<String> sourceStaffNames) {
             if (sourceStaffNames != null && sourceStaffNames.contains("刘彦")) {
-                return List.of(new ResolvedStaff(sourceTenantKey, null,
-                        UUID.fromString("019fb100-0000-7000-8000-000000000901"),
-                        "RY202608220001", "刘彦", null, null, null, null, null,
-                        null, null, "ACTIVE", null, null, "PRESENT", Instant.now()));
+                return List.of(new ResolvedEmployee(sourceTenantKey, null,
+                        "RY202608220001", "刘彦", "ACTIVE"));
             }
             return List.of();
         }

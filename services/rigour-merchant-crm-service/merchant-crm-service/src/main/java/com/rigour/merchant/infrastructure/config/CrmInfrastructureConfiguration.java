@@ -2,10 +2,10 @@ package com.rigour.merchant.infrastructure.config;
 
 import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient;
 import com.rigour.merchant.application.port.out.DhbCrmSyncTargetDiscoveryClient;
-import com.rigour.merchant.application.port.out.IamStaffDirectoryClient;
+import com.rigour.merchant.application.port.out.HrEmployeeDirectoryClient;
 import com.rigour.merchant.infrastructure.integration.HttpDhbCrmMasterDataClient;
 import com.rigour.merchant.infrastructure.integration.HttpDhbCrmSyncTargetDiscoveryClient;
-import com.rigour.merchant.infrastructure.integration.HttpIamStaffDirectoryClient;
+import com.rigour.merchant.infrastructure.integration.HttpHrEmployeeDirectoryClient;
 import com.rigour.merchant.infrastructure.persistence.mapper.AddressMapper;
 import com.rigour.merchant.infrastructure.persistence.mapper.ContactMapper;
 import com.rigour.merchant.infrastructure.persistence.mapper.CrmQueryMapper;
@@ -106,12 +106,12 @@ public class CrmInfrastructureConfiguration {
     }
 
     @Bean
-    IamStaffDirectoryClient iamStaffDirectoryClient(
+    HrEmployeeDirectoryClient hrEmployeeDirectoryClient(
             TrustedContextSigner signer,
-            @Value("${rigour.iam.base-url:http://localhost:26881}") String iamBaseUrl,
+            @Value("${rigour.hr.base-url:http://localhost:26889}") String hrBaseUrl,
             SimpleClientHttpRequestFactory requestFactory) {
-        return new HttpIamStaffDirectoryClient(
-                RestClient.builder().requestFactory(requestFactory), signer, iamBaseUrl);
+        return new HttpHrEmployeeDirectoryClient(
+                RestClient.builder().requestFactory(requestFactory), signer, hrBaseUrl);
     }
 
     @Bean

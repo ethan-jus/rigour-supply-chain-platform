@@ -35,13 +35,15 @@ rigour:
     base-url: http://rigour-business-settings-service:26892
   erp:
     base-url: http://rigour-erp-core-service:26884
-  iam:
-    base-url: http://rigour-tenant-iam-service:26881
+  hr:
+    base-url: http://rigour-hr-payroll-service:26889
   integration:
     base-url: http://rigour-integration-migration-service:26882
   order:
     fund-attachment:
       url-ttl: 10m
+      additional-object-prefixes:
+        - ${RIGOUR_ORDER_FEISHU_ATTACHMENT_COS_OBJECT_PREFIX:feishu-attachments}
       cos:
         enabled: true
         object-prefix: fund-attachments

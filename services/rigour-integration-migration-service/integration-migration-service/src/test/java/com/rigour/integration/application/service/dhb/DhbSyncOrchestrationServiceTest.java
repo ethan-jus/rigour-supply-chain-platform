@@ -1,7 +1,9 @@
 package com.rigour.integration.application.service.dhb;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
@@ -18,7 +20,7 @@ import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
 import com.rigour.integration.application.port.out.DhbOrchestrationLease;
 import com.rigour.integration.application.port.out.ErpDhbDomainSyncClient;
-import com.rigour.integration.application.port.out.IamDhbStaffSyncClient;
+import com.rigour.integration.application.port.out.HrDhbStaffSyncClient;
 import com.rigour.merchant.api.v1.model.SyncObjectResult;
 import com.rigour.merchant.api.v1.model.SyncResult;
 import com.rigour.settings.client.BusinessDictionaryBatchClient;
@@ -59,7 +61,7 @@ class DhbSyncOrchestrationServiceTest {
     @Mock
     private CrmDhbDomainSyncClient crmClient;
     @Mock
-    private IamDhbStaffSyncClient iamClient;
+    private HrDhbStaffSyncClient hrEmployeeClient;
     @Mock
     private DhbClient dhbClient;
     @Mock
@@ -72,21 +74,27 @@ class DhbSyncOrchestrationServiceTest {
     @BeforeEach
     void setUp() {
         DhbSyncOrchestrationProperties properties = new DhbSyncOrchestrationProperties();
-        service = new DhbSyncOrchestrationService(store, erpClient, crmClient, iamClient,
+        service = new DhbSyncOrchestrationService(store, erpClient, crmClient, hrEmployeeClient,
                 dhbClient, orderSyncService, dictionaryClient, passthroughLease(), properties,
                 Clock.fixed(Instant.parse("2026-08-21T08:00:00Z"), ZoneOffset.UTC),
                 JsonMapper.builder().build());
-        when(store.activeProductMasterSyncTargets()).thenReturn(List.of(target(PRODUCT_TASK_ID)));
-        when(store.activeSupplyChainSyncTargets()).thenReturn(List.of(target(SUPPLY_TASK_ID)));
-        when(store.activeCrmMasterSyncTargets()).thenReturn(List.of(target(CRM_TASK_ID)));
-        when(store.activeOrderSyncTargets()).thenReturn(List.of(target(ORDER_TASK_ID)));
-        when(store.activeBusinessDictionarySyncTargets()).thenReturn(List.of(target(DICTIONARY_TASK_ID)));
+        lenient().when(store.activeProductMasterSyncTargets()).thenReturn(List.of(target(PRODUCT_TASK_ID)));
+        lenient().when(store.activeSupplyChainSyncTargets()).thenReturn(List.of(target(SUPPLY_TASK_ID)));
+        lenient().when(store.activeCrmMasterSyncTargets()).thenReturn(List.of(target(CRM_TASK_ID)));
+        lenient().when(store.activeOrderSyncTargets()).thenReturn(List.of(target(ORDER_TASK_ID)));
+        lenient().when(store.activeBusinessDictionarySyncTargets()).thenReturn(List.of(target(DICTIONARY_TASK_ID)));
+        lenient().when(store.configuredProductMasterSyncTargets()).thenReturn(List.of(target(PRODUCT_TASK_ID)));
+        lenient().when(store.configuredSupplyChainSyncTargets()).thenReturn(List.of(target(SUPPLY_TASK_ID)));
+        lenient().when(store.configuredCrmMasterSyncTargets()).thenReturn(List.of(target(CRM_TASK_ID)));
+        lenient().when(store.configuredOrderSyncTargets()).thenReturn(List.of(target(ORDER_TASK_ID)));
+        lenient().when(store.configuredBusinessDictionarySyncTargets()).thenReturn(List.of(target(DICTIONARY_TASK_ID)));
         lenient().when(store.connector(TENANT_ID, CONNECTOR_ID)).thenReturn(new ConnectorView(CONNECTOR_ID,
                 TENANT_ID, "DHB_TEST", "订货宝测试连接", "https://dhb.example",
                 "env://DHB_TEST", "ACTIVE", 0));
         lenient().when(dhbClient.getStaff(any(), any())).thenAnswer(invocation -> {
             DhbClient.StaffQuery query = invocation.getArgument(1);
-            return new DhbClient.Page<>(query.page(), 0, List.of());
+            return new DhbClient.Page<>(query == null ? DhbClient.PageRequest.first(1_000) : query.page(),
+                    0, List.of());
         });
     }
 
@@ -95,7 +103,8 @@ class DhbSyncOrchestrationServiceTest {
         List<String> calls = new ArrayList<>();
         for (String objectType : List.of("CATEGORY", "BRAND", "SPECIFICATION", "TAG",
                 "PRODUCT_SPU")) {
-            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType), eq(100)))
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType),
+                    eq(100), eq("SCHEDULED"), isNull(), isNull()))
                     .thenAnswer(invocation -> {
                         calls.add("ERP:" + objectType);
                         return erpResult(objectType);
@@ -103,7 +112,8 @@ class DhbSyncOrchestrationServiceTest {
         }
         for (String objectType : List.of("SUPPLIER", "WAREHOUSE", "PURCHASE_ORDER",
                 "PURCHASE_RETURN", "WAREHOUSING_RECEIPT", "INVENTORY")) {
-            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(SUPPLY_TASK_ID), eq(objectType), eq(100)))
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(SUPPLY_TASK_ID), eq(objectType),
+                    eq(100), eq("SCHEDULED"), isNull(), isNull()))
                     .thenAnswer(invocation -> {
                         calls.add("ERP:" + objectType);
                         return erpResult(objectType);
@@ -142,12 +152,14 @@ class DhbSyncOrchestrationServiceTest {
     @Test
     void scheduledRunStopsDependentDomainsAfterErpFailure() {
         List<String> calls = new ArrayList<>();
-        when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq("CATEGORY"), eq(100)))
+        when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq("CATEGORY"),
+                eq(100), eq("SCHEDULED"), isNull(), isNull()))
                 .thenAnswer(invocation -> {
                     calls.add("ERP:CATEGORY");
                     return erpResult("CATEGORY");
                 });
-        when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq("BRAND"), eq(100)))
+        when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq("BRAND"),
+                eq(100), eq("SCHEDULED"), isNull(), isNull()))
                 .thenAnswer(invocation -> {
                     calls.add("ERP:BRAND");
                     throw new IllegalStateException("brand failed");
@@ -166,12 +178,14 @@ class DhbSyncOrchestrationServiceTest {
     void scheduledRunAggregatesPartialOrderAsPartial() {
         for (String objectType : List.of("CATEGORY", "BRAND", "SPECIFICATION", "TAG",
                 "PRODUCT_SPU")) {
-            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType), eq(100)))
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType),
+                    eq(100), eq("SCHEDULED"), isNull(), isNull()))
                     .thenReturn(erpResult(objectType));
         }
         for (String objectType : List.of("SUPPLIER", "WAREHOUSE", "PURCHASE_ORDER",
                 "PURCHASE_RETURN", "WAREHOUSING_RECEIPT", "INVENTORY")) {
-            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(SUPPLY_TASK_ID), eq(objectType), eq(100)))
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(SUPPLY_TASK_ID), eq(objectType),
+                    eq(100), eq("SCHEDULED"), isNull(), isNull()))
                     .thenReturn(erpResult(objectType));
         }
         when(crmClient.sync(any(), eq(CONNECTOR_ID), eq(CRM_TASK_ID), eq(100)))
@@ -191,9 +205,130 @@ class DhbSyncOrchestrationServiceTest {
     }
 
     @Test
+    void scheduledRunPassesConfiguredWindowFromToStaffAndOrderSteps() {
+        when(store.activeProductMasterSyncTargets()).thenReturn(List.of());
+        when(store.activeSupplyChainSyncTargets()).thenReturn(List.of());
+        when(store.activeCrmMasterSyncTargets()).thenReturn(List.of());
+        when(store.activeBusinessDictionarySyncTargets()).thenReturn(List.of());
+        DhbSyncOrchestrationProperties properties = new DhbSyncOrchestrationProperties();
+        properties.setScheduledWindowFrom("2026-08-01T00:00:00Z");
+        service = new DhbSyncOrchestrationService(store, erpClient, crmClient, hrEmployeeClient,
+                dhbClient, orderSyncService, dictionaryClient, passthroughLease(), properties,
+                Clock.fixed(Instant.parse("2026-08-21T08:00:00Z"), ZoneOffset.UTC),
+                JsonMapper.builder().build());
+        when(dhbClient.getStaff(any(), argThat(query ->
+                query != null
+                        && query.createdWindow() == null
+                        && query.updatedWindow() != null
+                        && Instant.parse("2026-08-01T00:00:00Z").equals(query.updatedWindow().from())
+                        && Instant.parse("2026-08-21T07:58:00Z").equals(query.updatedWindow().to()))))
+                .thenAnswer(invocation -> {
+                    DhbClient.StaffQuery query = invocation.getArgument(1);
+                    return new DhbClient.Page<>(query.page(), 0, List.of());
+                });
+        when(orderSyncService.runOrderPull(any(), eq(ORDER_TASK_ID), argThat(command ->
+                command != null
+                        && Instant.parse("2026-08-01T00:00:00Z").equals(command.from())
+                        && Instant.parse("2026-08-21T07:58:00Z").equals(command.to())
+                        && command.pageSize() == null
+                        && command.sourceObjectType() == null
+                        && command.sourceId() == null), eq(100)))
+                .thenReturn(orderResult());
+
+        DhbSyncOrchestrationResult result = service.runScheduled();
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
+        assertThat(result.tenants()).singleElement().satisfies(tenant ->
+                assertThat(tenant.steps()).extracting("objectType")
+                        .containsExactly("BUSINESS_DICTIONARY", "STAFF", "PRODUCT_MASTER_DATA",
+                                "CRM_MASTER_DATA", "SUPPLY_CHAIN_DATA", "ORDER_DOMAIN"));
+    }
+
+    @Test
+    void scheduledRunPassesConfiguredWindowToUnifiedDomainSyncSteps() {
+        DhbSyncOrchestrationProperties properties = new DhbSyncOrchestrationProperties();
+        properties.setScheduledWindowFrom("2026-09-01");
+        service = new DhbSyncOrchestrationService(store, erpClient, crmClient, hrEmployeeClient,
+                dhbClient, orderSyncService, dictionaryClient, passthroughLease(), properties,
+                Clock.fixed(Instant.parse("2026-09-02T08:00:00Z"), ZoneOffset.UTC),
+                JsonMapper.builder().build());
+        Instant from = Instant.parse("2026-08-31T16:00:00Z");
+        Instant to = Instant.parse("2026-09-02T07:58:00Z");
+        List<String> calls = new ArrayList<>();
+        for (String objectType : List.of("CATEGORY", "BRAND", "SPECIFICATION", "TAG",
+                "PRODUCT_SPU")) {
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType),
+                    eq(100), eq("SCHEDULED"), eq(from), eq(to))).thenAnswer(invocation -> {
+                calls.add("ERP:" + objectType);
+                return erpResult(objectType);
+            });
+        }
+        for (String objectType : List.of("SUPPLIER", "WAREHOUSE", "PURCHASE_ORDER",
+                "PURCHASE_RETURN", "WAREHOUSING_RECEIPT", "INVENTORY")) {
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(SUPPLY_TASK_ID), eq(objectType),
+                    eq(100), eq("SCHEDULED"), eq(from), eq(to))).thenAnswer(invocation -> {
+                calls.add("ERP:" + objectType);
+                return erpResult(objectType);
+            });
+        }
+        when(crmClient.sync(any(), eq(CONNECTOR_ID), eq(CRM_TASK_ID), eq(100), eq(from), eq(to)))
+                .thenAnswer(invocation -> {
+                    calls.add("CRM:CRM_MASTER_DATA");
+                    return crmResult();
+                });
+        when(dhbClient.getStaff(any(), argThat(query ->
+                query != null
+                        && query.updatedWindow() != null
+                        && from.equals(query.updatedWindow().from())
+                        && to.equals(query.updatedWindow().to()))))
+                .thenAnswer(invocation -> {
+                    DhbClient.StaffQuery query = invocation.getArgument(1);
+                    return new DhbClient.Page<>(query.page(), 0, List.of());
+                });
+        when(orderSyncService.runOrderPull(any(), eq(ORDER_TASK_ID), argThat(command ->
+                command != null && from.equals(command.from()) && to.equals(command.to())), eq(100)))
+                .thenAnswer(invocation -> {
+                    calls.add("ORDER:ORDER_DOMAIN");
+                    return orderResult();
+                });
+
+        DhbSyncOrchestrationResult result = service.runScheduled();
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        assertThat(calls).containsExactly(
+                "ERP:CATEGORY",
+                "ERP:BRAND",
+                "ERP:SPECIFICATION",
+                "ERP:TAG",
+                "ERP:PRODUCT_SPU",
+                "CRM:CRM_MASTER_DATA",
+                "ERP:SUPPLIER",
+                "ERP:WAREHOUSE",
+                "ERP:PURCHASE_ORDER",
+                "ERP:PURCHASE_RETURN",
+                "ERP:WAREHOUSING_RECEIPT",
+                "ERP:INVENTORY",
+                "ORDER:ORDER_DOMAIN");
+    }
+
+    @Test
+    void scheduledRunRejectsEnabledSchedulerWithoutConfiguredWindowFrom() {
+        DhbSyncOrchestrationProperties properties = new DhbSyncOrchestrationProperties();
+        properties.setEnabled(true);
+        service = new DhbSyncOrchestrationService(store, erpClient, crmClient, hrEmployeeClient,
+                dhbClient, orderSyncService, dictionaryClient, passthroughLease(), properties,
+                Clock.fixed(Instant.parse("2026-09-02T08:00:00Z"), ZoneOffset.UTC),
+                JsonMapper.builder().build());
+
+        assertThatThrownBy(service::runScheduled)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("scheduled-window-from不能为空");
+    }
+
+    @Test
     void scheduledRunSkipsTenantWhenDistributedOrchestrationLeaseIsBusy() {
         DhbSyncOrchestrationProperties properties = new DhbSyncOrchestrationProperties();
-        service = new DhbSyncOrchestrationService(store, erpClient, crmClient, iamClient,
+        service = new DhbSyncOrchestrationService(store, erpClient, crmClient, hrEmployeeClient,
                 dhbClient, orderSyncService, dictionaryClient, busyLease(), properties,
                 Clock.fixed(Instant.parse("2026-08-21T08:00:00Z"), ZoneOffset.UTC),
                 JsonMapper.builder().build());
@@ -219,12 +354,14 @@ class DhbSyncOrchestrationServiceTest {
                                 "Offline", 1))));
         for (String objectType : List.of("CATEGORY", "BRAND", "SPECIFICATION", "TAG",
                 "PRODUCT_SPU")) {
-            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType), eq(100)))
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType),
+                    eq(100), eq("SCHEDULED"), isNull(), isNull()))
                     .thenReturn(erpResult(objectType));
         }
         for (String objectType : List.of("SUPPLIER", "WAREHOUSE", "PURCHASE_ORDER",
                 "PURCHASE_RETURN", "WAREHOUSING_RECEIPT", "INVENTORY")) {
-            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(SUPPLY_TASK_ID), eq(objectType), eq(100)))
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(SUPPLY_TASK_ID), eq(objectType),
+                    eq(100), eq("SCHEDULED"), isNull(), isNull()))
                     .thenReturn(erpResult(objectType));
         }
         when(crmClient.sync(any(), eq(CONNECTOR_ID), eq(CRM_TASK_ID), eq(100)))
@@ -245,7 +382,8 @@ class DhbSyncOrchestrationServiceTest {
         List<String> calls = new ArrayList<>();
         for (String objectType : List.of("CATEGORY", "BRAND", "SPECIFICATION", "TAG",
                 "PRODUCT_SPU")) {
-            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType), eq(10)))
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType),
+                    eq(10), eq("MANUAL"), isNull(), isNull()))
                     .thenAnswer(invocation -> {
                         calls.add("ERP:" + objectType);
                         return erpResult(objectType);
@@ -266,6 +404,59 @@ class DhbSyncOrchestrationServiceTest {
         assertThat(result.tenants()).singleElement().satisfies(tenant ->
                 assertThat(tenant.steps()).extracting("objectType")
                         .containsExactly("CATEGORY", "BRAND", "SPECIFICATION", "TAG", "PRODUCT_SPU"));
+    }
+
+    @Test
+    void manualRunUsesConfiguredTargetsWhenScheduledProductTaskIsPaused() {
+        lenient().when(store.activeProductMasterSyncTargets()).thenReturn(List.of());
+        when(store.configuredProductMasterSyncTargets()).thenReturn(List.of(target(PRODUCT_TASK_ID)));
+        List<String> calls = new ArrayList<>();
+        for (String objectType : List.of("CATEGORY", "BRAND", "SPECIFICATION", "TAG",
+                "PRODUCT_SPU")) {
+            when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(PRODUCT_TASK_ID), eq(objectType),
+                    eq(10), eq("MANUAL"), isNull(), isNull()))
+                    .thenAnswer(invocation -> {
+                        calls.add("ERP:" + objectType);
+                        return erpResult(objectType);
+                    });
+        }
+
+        DhbSyncOrchestrationCommand command = new DhbSyncOrchestrationCommand(
+                10, null, false, false, false, false, true, false);
+        DhbSyncOrchestrationResult result = service.runManual(manualCaller(), command);
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        assertThat(calls).containsExactly(
+                "ERP:CATEGORY",
+                "ERP:BRAND",
+                "ERP:SPECIFICATION",
+                "ERP:TAG",
+                "ERP:PRODUCT_SPU");
+    }
+
+    @Test
+    void manualRunStillWorksWhenSchedulerIsDisabledByConfiguration() {
+        DhbSyncOrchestrationProperties properties = new DhbSyncOrchestrationProperties();
+        properties.setEnabled(false);
+        service = new DhbSyncOrchestrationService(store, erpClient, crmClient, hrEmployeeClient,
+                dhbClient, orderSyncService, dictionaryClient, passthroughLease(), properties,
+                Clock.fixed(Instant.parse("2026-08-21T08:00:00Z"), ZoneOffset.UTC),
+                JsonMapper.builder().build());
+        when(orderSyncService.runOrderPull(any(), eq(ORDER_TASK_ID), isNull(), eq(10)))
+                .thenReturn(orderResult());
+
+        DhbSyncOrchestrationCommand command = new DhbSyncOrchestrationCommand(
+                10, false, false, true, false, false);
+        DhbSyncOrchestrationResult result = service.runManual(manualCaller(), command);
+
+        assertThat(result.triggerType()).isEqualTo("MANUAL");
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        assertThat(result.tenants()).singleElement().satisfies(tenant ->
+                assertThat(tenant.steps()).singleElement().satisfies(step -> {
+                    assertThat(step.domain()).isEqualTo("ORDER");
+                    assertThat(step.objectType()).isEqualTo("ORDER_DOMAIN");
+                    assertThat(step.status()).isEqualTo("SUCCEEDED");
+                }));
     }
 
     private static SyncTargetView target(UUID taskId) {

@@ -1,5 +1,11 @@
 package com.rigour.erp.application.service.product;
 
+import com.rigour.erp.api.v1.model.ExternalProductResolveCommand;
+import com.rigour.erp.api.v1.model.ExternalProductResolveRowCommand;
+import com.rigour.erp.api.v1.model.ExternalProductResolvedView;
+import com.rigour.erp.api.v1.model.ExternalProductRowCommand;
+import com.rigour.erp.api.v1.model.ExternalProductSyncCommand;
+import com.rigour.erp.api.v1.model.ExternalProductSyncResult;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.api.v1.model.ProductImageCommand;
 import com.rigour.erp.api.v1.model.ProductManagementCommand;
@@ -23,8 +29,10 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,13 +44,18 @@ public final class ErpProductManagementService {
     private static final Logger log = LoggerFactory.getLogger(ErpProductManagementService.class);
     private static final String READ_PERMISSION = "erp:product:read";
     private static final String WRITE_PERMISSION = "erp:product:write";
+    private static final String SYNC_PERMISSION = "erp:product:sync";
+    private static final int MAX_SYNC_ROWS = 20_000;
+    private static final int MAX_RESOLVE_ROWS = 5_000;
     private static final String DRAFT = "DRAFT";
     private static final String SUBMITTED = "SUBMITTED";
     private static final String SPOT = "SPOT";
     private static final String OFF_SHELF = "OFF_SHELF";
     private static final String MAIN_IMAGE = "MAIN";
     private static final String DETAIL_IMAGE = "DETAIL";
+    private static final String SYSTEM_ACTOR = "SYSTEM";
     private static final BigDecimal ZERO = BigDecimal.ZERO;
+    private static final Pattern SOURCE_SYSTEM = Pattern.compile("[A-Z0-9_]{2,32}");
 
     private final ErpProductManagementStore store;
     private final BusinessCodeGenerator codeGenerator;
@@ -124,6 +137,35 @@ public final class ErpProductManagementService {
         store.delete(tenantId, productId, revision, actor.principalId().toString());
         log.info("ERP商品逻辑删除完成 tenantId={} productId={} revision={} actorId={}",
                 tenantId, productId, revision, actor.principalId());
+    }
+
+    public ExternalProductSyncResult syncExternalProducts(ExternalProductSyncCommand command) {
+        CallerIdentity actor = serviceActor(SYNC_PERMISSION);
+        if (command == null) throw badRequest("商品同步参数不能为空");
+        String sourceSystem = sourceSystem(command.sourceSystem());
+        List<ExternalProductRowCommand> rows = externalRows(command.rows());
+        ExternalProductSyncResult result = store.syncExternalProducts(
+                actor.tenantId().toString(), sourceSystem, rows, syncAuditActor(actor), codeGenerator);
+        log.info("ERP外部商品同步完成 tenantId={} sourceSystem={} received={} created={} updated={} unchanged={} failed={}",
+                actor.tenantId(), sourceSystem, result.received(), result.created(),
+                result.updated(), result.unchanged(), result.failed());
+        return result;
+    }
+
+    public List<ExternalProductResolvedView> resolveExternalProducts(ExternalProductResolveCommand command) {
+        CallerIdentity actor = serviceActor(SYNC_PERMISSION);
+        if (command == null) throw badRequest("商品解析参数不能为空");
+        String preferredSourceSystem = command.preferredSourceSystem() == null
+                ? null
+                : sourceSystem(command.preferredSourceSystem());
+        List<ExternalProductResolveRowCommand> rows = resolveRows(command.rows());
+        List<ExternalProductResolvedView> result = store.resolveExternalProducts(
+                actor.tenantId().toString(), preferredSourceSystem, rows);
+        log.info("ERP外部商品解析完成 tenantId={} preferredSourceSystem={} received={} matched={} waiting={}",
+                actor.tenantId(), ErpServiceValidation.value(preferredSourceSystem), rows.size(),
+                result.stream().filter(item -> "MATCHED".equals(item.status())).count(),
+                result.stream().filter(item -> !"MATCHED".equals(item.status())).count());
+        return result;
     }
 
     private ProductWrite normalize(String tenantId, Long productId, ProductManagementCommand command, boolean update) {
@@ -282,8 +324,77 @@ public final class ErpProductManagementService {
         return caller;
     }
 
+    private static CallerIdentity serviceActor(String permission) {
+        CallerIdentity caller = actor(permission);
+        if (!"SERVICE".equals(caller.principalScope())) {
+            throw new AuthorizationDeniedException("service-caller");
+        }
+        return caller;
+    }
+
+    private static String syncAuditActor(CallerIdentity caller) {
+        return "SERVICE".equals(caller.principalScope()) ? SYSTEM_ACTOR : caller.principalId().toString();
+    }
+
     private static String tenant(String permission) {
         return actor(permission).tenantId().toString();
+    }
+
+    private static String sourceSystem(String value) {
+        String normalized = ErpServiceValidation.text(value, 32, "sourceSystem");
+        if (normalized == null) throw badRequest("sourceSystem不能为空");
+        normalized = normalized.toUpperCase(Locale.ROOT);
+        if (!SOURCE_SYSTEM.matcher(normalized).matches()) throw badRequest("sourceSystem格式无效");
+        return normalized;
+    }
+
+    private static List<ExternalProductRowCommand> externalRows(List<ExternalProductRowCommand> rows) {
+        List<ExternalProductRowCommand> source = rows == null ? List.of() : rows;
+        if (source.size() > MAX_SYNC_ROWS) throw badRequest("商品同步单次不能超过" + MAX_SYNC_ROWS + "行");
+        return source.stream().map(ErpProductManagementService::externalRow).toList();
+    }
+
+    private static List<ExternalProductResolveRowCommand> resolveRows(
+            List<ExternalProductResolveRowCommand> rows) {
+        List<ExternalProductResolveRowCommand> source = rows == null ? List.of() : rows;
+        if (source.size() > MAX_RESOLVE_ROWS) {
+            throw badRequest("商品解析单次不能超过" + MAX_RESOLVE_ROWS + "行");
+        }
+        return source.stream().map(ErpProductManagementService::resolveRow).toList();
+    }
+
+    private static ExternalProductResolveRowCommand resolveRow(ExternalProductResolveRowCommand row) {
+        if (row == null) throw badRequest("商品解析行不能为空");
+        String referenceId = ErpServiceValidation.required(row.referenceId(), "referenceId不能为空", 128);
+        String productCode = ErpServiceValidation.text(row.productCode(), 128, "productCode");
+        String variantCode = ErpServiceValidation.text(row.variantCode(), 128, "variantCode");
+        String productName = ErpServiceValidation.text(row.productName(), 200, "productName");
+        String specification = ErpServiceValidation.text(row.specification(), 500, "specification");
+        return new ExternalProductResolveRowCommand(referenceId, productCode, variantCode, productName, specification);
+    }
+
+    private static ExternalProductRowCommand externalRow(ExternalProductRowCommand row) {
+        if (row == null) throw badRequest("商品同步行不能为空");
+        return new ExternalProductRowCommand(
+                row.connectorId(),
+                ErpServiceValidation.text(row.sourceTenantKey(), 128, "sourceTenantKey"),
+                ErpServiceValidation.required(row.sourceProductId(), "sourceProductId不能为空", 128),
+                ErpServiceValidation.text(row.sourceDocumentNo(), 128, "sourceDocumentNo"),
+                ErpServiceValidation.required(row.productName(), "productName不能为空", 200),
+                ErpServiceValidation.text(row.businessLineName(), 120, "businessLineName"),
+                ErpServiceValidation.text(row.brandName(), 120, "brandName"),
+                ErpServiceValidation.text(row.industryName(), 120, "industryName"),
+                ErpServiceValidation.text(row.categoryName(), 120, "categoryName"),
+                ErpServiceValidation.text(row.specification(), 500, "specification"),
+                ErpServiceValidation.code(row.unitCode(), "unitCode", false),
+                money(row.salePrice(), "salePrice", false),
+                money(row.marketPrice(), "marketPrice", false),
+                money(row.purchasePrice(), "purchasePrice", false),
+                ErpServiceValidation.text(row.statusName(), 80, "statusName"),
+                row.sourceCreatedAt(),
+                row.sourceUpdatedAt(),
+                ErpServiceValidation.text(row.sourcePayloadHash(), 64, "sourcePayloadHash"),
+                ErpServiceValidation.text(row.sourcePayloadJson(), 20_000, "sourcePayloadJson"));
     }
 
     private static BusinessException badRequest(String message) {

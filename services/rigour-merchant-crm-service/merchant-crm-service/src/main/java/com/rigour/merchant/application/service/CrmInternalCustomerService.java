@@ -1,5 +1,8 @@
 package com.rigour.merchant.application.service;
 
+import com.rigour.merchant.api.v1.model.ExternalCrmCustomerRowCommand;
+import com.rigour.merchant.api.v1.model.ExternalCrmCustomerSyncCommand;
+import com.rigour.merchant.api.v1.model.ExternalCrmCustomerSyncResult;
 import com.rigour.merchant.api.v1.model.InternalCustomerCommand;
 import com.rigour.merchant.api.v1.model.InternalCustomerDetailView;
 import com.rigour.merchant.api.v1.model.InternalCustomerSummaryView;
@@ -33,7 +36,11 @@ public class CrmInternalCustomerService {
     private static final Logger log = LoggerFactory.getLogger(CrmInternalCustomerService.class);
     private static final String READ_PERMISSION = "crm:customer:read";
     private static final String WRITE_PERMISSION = "crm:customer:write";
+    private static final String SYNC_PERMISSION = "crm:customer:sync";
+    private static final int MAX_SYNC_ROWS = 20_000;
+    private static final String SYSTEM_ACTOR = "SYSTEM";
     private static final Pattern CODE = Pattern.compile("[A-Z0-9][A-Z0-9_]{0,63}");
+    private static final Pattern SOURCE_SYSTEM = Pattern.compile("[A-Z0-9_]{2,32}");
 
     private final CrmInternalCustomerStore store;
     private final BusinessCodeGenerator codeGenerator;
@@ -55,7 +62,7 @@ public class CrmInternalCustomerService {
                                                            String customerTypeCode,
                                                            String regionCode,
                                                            String ownerSalesUserId,
-                                                           String ownerStaffCode,
+                                                           String ownerEmployeeCode,
                                                            String statusCode) {
         String tenantId = tenant(READ_PERMISSION);
         CustomerSearchCriteria criteria = new CustomerSearchCriteria(
@@ -65,14 +72,14 @@ public class CrmInternalCustomerService {
                 code(customerTypeCode, "customerTypeCode", false),
                 code(regionCode, "regionCode", false),
                 text(ownerSalesUserId, 64, "ownerSalesUserId"),
-                text(ownerStaffCode, 50, "ownerStaffCode"),
+                text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
                 customerStatus(statusCode, false));
         PageView<InternalCustomerSummaryView> result = store.customers(
                 tenantId, pageBegin(begin), pageStep(step), criteria);
-        log.debug("CRM自研客户列表查询完成 tenantId={} customerCode={} customerName={} contactPhone={} customerTypeCode={} regionCode={} ownerSalesUserId={} ownerStaffCode={} statusCode={} count={} total={}",
+        log.debug("CRM自研客户列表查询完成 tenantId={} customerCode={} customerName={} contactPhone={} customerTypeCode={} regionCode={} ownerSalesUserId={} ownerEmployeeCode={} statusCode={} count={} total={}",
                 tenantId, value(criteria.customerCode()), value(criteria.customerName()),
                 value(criteria.contactPhone()), value(criteria.customerTypeCode()), value(criteria.regionCode()),
-                value(criteria.ownerSalesUserId()), value(criteria.ownerStaffCode()), value(criteria.statusCode()),
+                value(criteria.ownerSalesUserId()), value(criteria.ownerEmployeeCode()), value(criteria.statusCode()),
                 result.items().size(), result.total());
         return result;
     }
@@ -119,6 +126,19 @@ public class CrmInternalCustomerService {
                 tenantId, id, revision, actor.principalId());
     }
 
+    public ExternalCrmCustomerSyncResult syncExternalCustomers(ExternalCrmCustomerSyncCommand command) {
+        CallerIdentity actor = serviceActor(SYNC_PERMISSION);
+        if (command == null) throw badRequest("客户同步参数不能为空");
+        String sourceSystem = sourceSystem(command.sourceSystem());
+        List<ExternalCrmCustomerRowCommand> rows = externalRows(command.rows());
+        ExternalCrmCustomerSyncResult result = store.syncExternalCustomers(
+                actor.tenantId().toString(), sourceSystem, rows, syncAuditActor(actor), codeGenerator);
+        log.info("CRM外部客户同步完成 tenantId={} sourceSystem={} received={} created={} updated={} unchanged={} failed={}",
+                actor.tenantId(), sourceSystem, result.received(), result.created(),
+                result.updated(), result.unchanged(), result.failed());
+        return result;
+    }
+
     private InternalCustomerCommand normalize(InternalCustomerCommand command, boolean update) {
         if (command == null) throw badRequest("客户参数不能为空");
         Integer revision = command.revision();
@@ -132,9 +152,9 @@ public class CrmInternalCustomerService {
                 code(command.regionCode(), "regionCode", false),
                 text(command.ownerSalesUserId(), 64, "ownerSalesUserId"),
                 text(command.ownerSalesName(), 100, "ownerSalesName"),
-                text(command.ownerStaffCode(), 50, "ownerStaffCode"),
-                text(first(command.ownerStaffNameSnapshot(), command.ownerSalesName()), 100,
-                        "ownerStaffNameSnapshot"),
+                text(command.ownerEmployeeCode(), 50, "ownerEmployeeCode"),
+                text(first(command.ownerEmployeeNameSnapshot(), command.ownerSalesName()), 100,
+                        "ownerEmployeeNameSnapshot"),
                 code(command.settlementTypeCode(), "settlementTypeCode", false),
                 text(command.address(), 1000, "address"),
                 customerStatus(command.statusCode(), true),
@@ -147,6 +167,18 @@ public class CrmInternalCustomerService {
         if (caller.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
         AuthorizationContext.requirePermission(permission);
         return caller;
+    }
+
+    private static CallerIdentity serviceActor(String permission) {
+        CallerIdentity caller = actor(permission);
+        if (!"SERVICE".equals(caller.principalScope())) {
+            throw new AuthorizationDeniedException("service-caller");
+        }
+        return caller;
+    }
+
+    private static String syncAuditActor(CallerIdentity caller) {
+        return "SERVICE".equals(caller.principalScope()) ? SYSTEM_ACTOR : caller.principalId().toString();
     }
 
     private static String tenant(String permission) {
@@ -201,6 +233,45 @@ public class CrmInternalCustomerService {
     private static String upper(String value) {
         String normalized = text(value, 64, "code");
         return normalized == null ? null : normalized.toUpperCase(Locale.ROOT);
+    }
+
+    private static String sourceSystem(String value) {
+        String normalized = text(value, 32, "sourceSystem");
+        if (normalized == null) throw badRequest("sourceSystem不能为空");
+        normalized = normalized.toUpperCase(Locale.ROOT);
+        if (!SOURCE_SYSTEM.matcher(normalized).matches()) throw badRequest("sourceSystem格式无效");
+        return normalized;
+    }
+
+    private static List<ExternalCrmCustomerRowCommand> externalRows(List<ExternalCrmCustomerRowCommand> rows) {
+        List<ExternalCrmCustomerRowCommand> source = rows == null ? List.of() : rows;
+        if (source.size() > MAX_SYNC_ROWS) throw badRequest("客户同步单次不能超过" + MAX_SYNC_ROWS + "行");
+        return source.stream().map(CrmInternalCustomerService::externalRow).toList();
+    }
+
+    private static ExternalCrmCustomerRowCommand externalRow(ExternalCrmCustomerRowCommand row) {
+        if (row == null) throw badRequest("客户同步行不能为空");
+        return new ExternalCrmCustomerRowCommand(
+                row.connectorId(),
+                text(row.sourceTenantKey(), 128, "sourceTenantKey"),
+                required(row.sourceCustomerId(), "sourceCustomerId不能为空", 128),
+                text(row.sourceDocumentNo(), 128, "sourceDocumentNo"),
+                required(row.customerName(), "customerName不能为空", 200),
+                text(row.contactName(), 100, "contactName"),
+                text(row.contactPhone(), 50, "contactPhone"),
+                text(row.customerSourceName(), 120, "customerSourceName"),
+                text(row.businessCategoryName(), 120, "businessCategoryName"),
+                text(row.regionName(), 80, "regionName"),
+                text(row.cityName(), 80, "cityName"),
+                text(row.address(), 1000, "address"),
+                text(row.ownerEmployeeCode(), 50, "ownerEmployeeCode"),
+                text(row.ownerEmployeeNameSnapshot(), 100, "ownerEmployeeNameSnapshot"),
+                code(row.settlementTypeCode(), "settlementTypeCode", false),
+                text(row.statusName(), 80, "statusName"),
+                row.sourceCreatedAt(),
+                row.sourceUpdatedAt(),
+                text(row.sourcePayloadHash(), 64, "sourcePayloadHash"),
+                text(row.sourcePayloadJson(), 20_000, "sourcePayloadJson"));
     }
 
     private static String value(String value) {

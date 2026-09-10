@@ -143,7 +143,7 @@ class TenantIamServiceApplicationTests {
 
     @Test
     void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 70);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 72);
         assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1 AND ("
                 + "(version='33' AND script='V33__iam_erp_product_master_data_permissions.sql') OR "
                 + "(version='34' AND script='V34__iam_align_erp_product_center_menu.sql') OR "
@@ -166,7 +166,9 @@ class TenantIamServiceApplicationTests {
                 + "(version='53' AND script='V53__iam_product_specification_business_page.sql') OR "
                 + "(version='54' AND script='V54__iam_delete_legacy_dhb_order_navigation.sql') OR "
                 + "(version='69' AND script='V69__iam_hide_crm_workspace_navigation.sql') OR "
-                + "(version='74' AND script='V74__iam_supply_bi_gross_profit_and_payment_risk_navigation.sql'))", 22);
+                + "(version='74' AND script='V74__iam_supply_bi_gross_profit_and_payment_risk_navigation.sql') OR "
+                + "(version='75' AND script='V75__iam_supply_bi_operating_dashboard_navigation.sql') OR "
+                + "(version='76' AND script='V76__iam_restore_supply_bi_operating_dashboard_children.sql'))", 24);
         assertCount("SELECT COUNT(*) FROM information_schema.tables "
                 + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 36);
         assertCount("SELECT COUNT(*) FROM iam_application", 6);
@@ -391,6 +393,36 @@ class TenantIamServiceApplicationTests {
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000374'),"
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000375')) "
                 + "AND visible=1", 2);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE id IN ("
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000240'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000377'),"
+                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000378')) "
+                + "AND resource_code IN ('SUPPLY_CHAIN.PAGE.BI_SALES',"
+                + "'SUPPLY_CHAIN.PAGE.BI_ACTIVITY','SUPPLY_CHAIN.PAGE.BI_PRODUCT_INVENTORY') "
+                + "AND display_name IN ('销售看板','活动看板','商品/库存看板') "
+                + "AND parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000065') "
+                + "AND status='ACTIVE'", 3);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE id=UUID_TO_BIN("
+                + "'019facf2-0000-7000-8000-000000000376')", 0);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
+                + "'supply.bi.sales','supply.bi.activity','supply.bi.product-inventory') "
+                + "AND route_path IN ('/supply-chain/bi/sales','/supply-chain/bi/activity',"
+                + "'/supply-chain/bi/product-inventory') "
+                + "AND visible=1", 3);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.bi.city-operating' "
+                + "AND route_path='/supply-chain/bi/city-operating' "
+                + "AND visible=1", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.bi.%' "
+                + "AND visible=1", 11);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
+                + "'supply.bi.product-sales','supply.bi.payment-risk','supply.bi.inventory-risk') "
+                + "AND visible=1", 3);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.bi.sales-collection' "
+                + "AND visible=0", 1);
+        assertCount("SELECT COUNT(DISTINCT resource_id) FROM iam_tenant_menu_config menu_config "
+                + "JOIN iam_resource_ui resource_ui ON resource_ui.resource_id=menu_config.resource_id "
+                + "WHERE resource_ui.route_key LIKE 'supply.bi.%' "
+                + "AND menu_config.visible=1", 11);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.integration.%'", 3);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
                 + "'supply.city.menu','supply.erp.index','supply.sales.attendance.menu',"

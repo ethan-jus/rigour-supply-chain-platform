@@ -75,6 +75,26 @@ class BusinessDictionaryBatchClientTest {
     }
 
     @Test
+    void parsesJsonBodyEvenWhenResponseContentTypeIsOctetStream() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo(BASE_URL + BusinessDictionaryInternalApi.BASE_PATH + "/items/sync"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$.dictionaryCode").value("PRODUCT_UNIT"))
+                .andRespond(withSuccess(successResponse(), MediaType.APPLICATION_OCTET_STREAM));
+        BusinessDictionaryBatchClient client = new BusinessDictionaryBatchClient(builder, signer(), BASE_URL);
+
+        var audit = client.sync(BusinessDictionaryBatchClient.serviceCaller(
+                "test-service", "TEST_DICTIONARY_SYNC", TENANT_ID), "PRODUCT", List.of(
+                new BusinessDictionaryBatchClient.Observation(
+                        "PRODUCT_UNIT", "product.unit", "BOX", "箱")));
+
+        assertThat(audit.unmapped()).isZero();
+        assertThat(audit.revisions()).containsEntry("PRODUCT_UNIT", 6L);
+        server.verify();
+    }
+
+    @Test
     void remoteFailureBecomesAuditWarningInsteadOfStoppingCaller() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

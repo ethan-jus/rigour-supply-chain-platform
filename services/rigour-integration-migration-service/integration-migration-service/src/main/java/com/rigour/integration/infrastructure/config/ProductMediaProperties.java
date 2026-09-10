@@ -15,6 +15,8 @@ public class ProductMediaProperties {
     private int workerMaxAttempts = 3;
     /** 订货宝收付款附件对象 Key 前缀；与商品图片共用 COS 桶但分目录隔离。 */
     private String fundAttachmentPrefix = "fund-attachments";
+    /** 飞书导入附件对象 Key 前缀；与订货宝附件分目录隔离，便于后续核对和迁移。 */
+    private String feishuAttachmentPrefix = "feishu-attachments";
     private final Cos cos = new Cos();
 
     public long getMaxBytes() { return maxBytes; }
@@ -29,6 +31,8 @@ public class ProductMediaProperties {
     public void setWorkerMaxAttempts(int workerMaxAttempts) { this.workerMaxAttempts = workerMaxAttempts; }
     public String getFundAttachmentPrefix() { return fundAttachmentPrefix; }
     public void setFundAttachmentPrefix(String fundAttachmentPrefix) { this.fundAttachmentPrefix = fundAttachmentPrefix; }
+    public String getFeishuAttachmentPrefix() { return feishuAttachmentPrefix; }
+    public void setFeishuAttachmentPrefix(String feishuAttachmentPrefix) { this.feishuAttachmentPrefix = feishuAttachmentPrefix; }
     public Cos getCos() { return cos; }
 
     public static class Cos {

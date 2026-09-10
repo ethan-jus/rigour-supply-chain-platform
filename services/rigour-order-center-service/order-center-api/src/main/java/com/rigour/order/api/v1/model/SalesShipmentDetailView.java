@@ -19,7 +19,7 @@ public record SalesShipmentDetailView(
         String customerNameSnapshot,
         String contactPhoneSnapshot,
         String regionCode,
-        String ownerStaffCode,
+        String ownerEmployeeCode,
         Long warehouseId,
         Long stockOutOrderId,
         String stockOutNo,
@@ -49,7 +49,7 @@ public record SalesShipmentDetailView(
             String customerNameSnapshot,
             String contactPhoneSnapshot,
             String regionCode,
-            String ownerStaffCode,
+            String ownerEmployeeCode,
             Long warehouseId,
             Long stockOutOrderId,
             String stockOutNo,
@@ -67,7 +67,7 @@ public record SalesShipmentDetailView(
             List<SalesShipmentLineView> lines) {
         this(id, shipmentNo, null, null, null, salesOrderId, salesOrderNoSnapshot,
                 customerId, customerCodeSnapshot, customerNameSnapshot, contactPhoneSnapshot,
-                regionCode, ownerStaffCode, warehouseId, stockOutOrderId, stockOutNo,
+                regionCode, ownerEmployeeCode, warehouseId, stockOutOrderId, stockOutNo,
                 shipmentStatusCode, logisticsCompany, trackingNo, shipTime, totalQuantity,
                 remark, revision, createdBy, createdTime, updatedBy, updatedTime, lines);
     }

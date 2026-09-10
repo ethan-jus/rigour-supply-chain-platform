@@ -7,6 +7,7 @@ import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFilterOptionsView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOverviewView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshRunView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardReconciliationView;
 import com.rigour.shared.core.api.ApiResponse;
@@ -38,7 +39,8 @@ public interface AnalyticsSupplyDashboardApi {
             @RequestParam(required = false) String sourceSystemCode);
 
     @PostMapping(REFRESH_RUNS_PATH)
-    ApiResponse<SupplyDashboardRefreshRunView> triggerRefreshRun();
+    ApiResponse<SupplyDashboardRefreshRunView> triggerRefreshRun(
+            @RequestBody(required = false) SupplyDashboardRefreshCommand command);
 
     @GetMapping(TRUST_PATH)
     ApiResponse<SupplyDashboardDataTrustView> trust();

@@ -8,7 +8,7 @@ public record SalesOrderSourceProjectionCommand(
         String sourceCreatorName,
         String ownerSalesUserId,
         String ownerSalesName,
-        String ownerStaffCode,
-        String ownerStaffNameSnapshot,
+        String ownerEmployeeCode,
+        String ownerEmployeeNameSnapshot,
         Integer revision) {
 }

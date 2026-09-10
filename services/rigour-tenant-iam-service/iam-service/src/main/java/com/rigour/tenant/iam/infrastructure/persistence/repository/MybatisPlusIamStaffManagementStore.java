@@ -233,8 +233,16 @@ public class MybatisPlusIamStaffManagementStore implements IamStaffManagementSto
     @Override
     @Transactional
     public StaffSyncResultView syncDinghuobaoStaff(Actor actor, DhbStaffSyncRequest request) {
-        requireTenantPermission(actor, "iam:staff:sync");
         List<DhbStaffRowCommand> rows = request == null ? List.of() : request.rows();
+        return syncExternalStaffRows(actor, DINGHUOBAO, rows, "STAFF_DHB_SYNC", "订货宝");
+    }
+
+    private StaffSyncResultView syncExternalStaffRows(Actor actor, String sourceSystem,
+                                                      List<DhbStaffRowCommand> rows,
+                                                      String auditAction,
+                                                      String sourceName) {
+        requireTenantPermission(actor, "iam:staff:sync");
+        rows = rows == null ? List.of() : rows;
         if (rows.size() > SYNC_BATCH_LIMIT) {
             throw new IllegalArgumentException("单次同步员工数量不能超过" + SYNC_BATCH_LIMIT);
         }
@@ -245,7 +253,7 @@ public class MybatisPlusIamStaffManagementStore implements IamStaffManagementSto
         List<String> failures = new ArrayList<>();
         for (DhbStaffRowCommand row : rows) {
             try {
-                SyncOutcome outcome = syncOneDhbStaff(actor, row);
+                SyncOutcome outcome = syncOneExternalStaff(actor, sourceSystem, row);
                 if (outcome == SyncOutcome.CREATED) created++;
                 else if (outcome == SyncOutcome.UPDATED) updated++;
                 else unchanged++;
@@ -253,13 +261,13 @@ public class MybatisPlusIamStaffManagementStore implements IamStaffManagementSto
                 failed++;
                 String sourceStaffId = row == null ? "" : String.valueOf(row.sourceStaffId());
                 failures.add("sourceStaffId=" + sourceStaffId + ": " + exception.getMessage());
-                log.warn("IAM订货宝员工同步单条失败 tenantId={} sourceStaffId={} reason={}",
-                        actor.tenantId(), sourceStaffId, exception.getMessage());
+                log.warn("IAM{}员工同步单条失败 tenantId={} sourceStaffId={} reason={}",
+                        sourceName, actor.tenantId(), sourceStaffId, exception.getMessage());
             }
         }
-        audit(actor, "STAFF_DHB_SYNC", "STAFF", null);
-        log.info("IAM订货宝员工同步完成 tenantId={} received={} created={} updated={} unchanged={} failed={} actorId={}",
-                actor.tenantId(), rows.size(), created, updated, unchanged, failed, actor.principalId());
+        audit(actor, auditAction, "STAFF", null);
+        log.info("IAM{}员工同步完成 tenantId={} received={} created={} updated={} unchanged={} failed={} actorId={}",
+                sourceName, actor.tenantId(), rows.size(), created, updated, unchanged, failed, actor.principalId());
         return new StaffSyncResultView(rows.size(), created, updated, unchanged, failed, failures);
     }
 
@@ -297,89 +305,124 @@ public class MybatisPlusIamStaffManagementStore implements IamStaffManagementSto
                 .toList();
     }
 
-    private SyncOutcome syncOneDhbStaff(Actor actor, DhbStaffRowCommand row) {
+    private SyncOutcome syncOneExternalStaff(Actor actor, String sourceSystem, DhbStaffRowCommand row) {
         if (row == null) throw new IllegalArgumentException("员工行不能为空");
         String sourceStaffId = required(row.sourceStaffId(), 128, "sourceStaffId");
         String sourceTenantKey = defaultText(row.sourceTenantKey(), "DEFAULT", 128, "sourceTenantKey");
+        LocalDateTime now = now();
         ExternalStaffBindingDO binding = externalStaffBindingMapper.selectOne(Wrappers.<ExternalStaffBindingDO>lambdaQuery()
                 .eq(ExternalStaffBindingDO::getTenantId, actor.tenantId())
-                .eq(ExternalStaffBindingDO::getSourceSystem, DINGHUOBAO)
+                .eq(ExternalStaffBindingDO::getSourceSystem, sourceSystem)
                 .eq(ExternalStaffBindingDO::getSourceTenantKey, sourceTenantKey)
                 .eq(ExternalStaffBindingDO::getSourceStaffId, sourceStaffId)
                 .isNull(ExternalStaffBindingDO::getDeletedAt)
                 .last("LIMIT 1"));
-        LocalDateTime now = now();
         boolean created = false;
+        boolean newBinding = false;
+        boolean staffUpdated = false;
         UUID staffId;
         if (binding == null) {
-            StaffProfileDO staff = new StaffProfileDO();
-            staff.setId(ids.nextId());
-            staff.setTenantId(actor.tenantId());
-            staff.setStaffCode(nextStaffCode(actor.tenantId()));
-            staff.setStaffName(defaultText(row.staffName(), defaultText(row.accountsName(), "未命名员工", 128, "staffName"),
-                    128, "staffName"));
-            staff.setMobile(firstText(row.mobile(), row.accountsMobile(), 32));
-            staff.setEmail(text(row.email(), 128, "email"));
-            staff.setEmploymentStatus(statusFromDhb(row.status()));
-            staff.setRecordOrigin(DINGHUOBAO);
-            staff.setRemark(text(row.about(), 500, "about"));
-            staff.setVersion(0);
-            staff.setCreatedAt(now);
-            staff.setCreatedBy(actor.principalId());
-            staff.setUpdatedAt(now);
-            staff.setUpdatedBy(actor.principalId());
-            staffProfileMapper.insert(staff);
+            StaffProfileDO staff = null;
+            if (staff == null) {
+                staff = new StaffProfileDO();
+                staff.setId(ids.nextId());
+                staff.setTenantId(actor.tenantId());
+                staff.setStaffCode(nextStaffCode(actor.tenantId()));
+                staff.setStaffName(defaultText(row.staffName(), defaultText(row.accountsName(), "未命名员工", 128, "staffName"),
+                        128, "staffName"));
+                staff.setMobile(firstText(row.mobile(), row.accountsMobile(), 32));
+                staff.setEmail(text(row.email(), 128, "email"));
+                staff.setEmploymentStatus(statusFromExternal(row.status()));
+                staff.setRecordOrigin(sourceSystem);
+                staff.setRemark(text(row.about(), 500, "about"));
+                staff.setVersion(0);
+                staff.setCreatedAt(now);
+                staff.setCreatedBy(actor.principalId());
+                staff.setUpdatedAt(now);
+                staff.setUpdatedBy(actor.principalId());
+                staffProfileMapper.insert(staff);
+                created = true;
+            } else {
+                staffUpdated = updateImportedStaffIfOwned(actor, staff, sourceSystem, row, null, now);
+            }
             staffId = staff.getId();
             binding = new ExternalStaffBindingDO();
             binding.setId(ids.nextId());
             binding.setTenantId(actor.tenantId());
             binding.setStaffId(staffId);
-            binding.setSourceSystem(DINGHUOBAO);
+            binding.setSourceSystem(sourceSystem);
             binding.setSourceTenantKey(sourceTenantKey);
             binding.setSourceStaffId(sourceStaffId);
             binding.setVersion(0);
             binding.setCreatedAt(now);
             binding.setCreatedBy(actor.principalId());
-            created = true;
+            newBinding = true;
         } else {
             staffId = binding.getStaffId();
             StaffProfileDO staff = staffById(actor.tenantId(), staffId);
-            if (DINGHUOBAO.equals(staff.getRecordOrigin())) {
-                StaffProfileDO update = new StaffProfileDO();
-                update.setStaffName(defaultText(row.staffName(), defaultText(row.accountsName(), staff.getStaffName(),
-                        128, "staffName"), 128, "staffName"));
-                update.setMobile(firstText(row.mobile(), row.accountsMobile(), 32));
-                update.setEmail(text(row.email(), 128, "email"));
-                update.setEmploymentStatus(statusFromDhb(row.status()));
-                update.setRemark(text(row.about(), 500, "about"));
-                update.setVersion(staff.getVersion() + 1);
-                update.setUpdatedAt(now);
-                update.setUpdatedBy(actor.principalId());
-                staffProfileMapper.update(update, Wrappers.<StaffProfileDO>lambdaUpdate()
-                        .eq(StaffProfileDO::getTenantId, actor.tenantId())
-                        .eq(StaffProfileDO::getId, staffId)
-                        .eq(StaffProfileDO::getVersion, staff.getVersion())
-                        .isNull(StaffProfileDO::getDeletedAt));
-            }
+            staffUpdated = updateImportedStaffIfOwned(actor, staff, sourceSystem, row, null, now);
         }
         boolean samePayload = row.sourcePayloadHash() != null
                 && row.sourcePayloadHash().equals(binding.getSourcePayloadHash());
-        fillBinding(binding, row, sourceTenantKey, sourceStaffId, now, actor.principalId());
-        if (created) {
+        fillBinding(binding, sourceSystem, row, sourceTenantKey, sourceStaffId, now, actor.principalId());
+        if (newBinding) {
             externalStaffBindingMapper.insert(binding);
-            return SyncOutcome.CREATED;
+            return created ? SyncOutcome.CREATED : SyncOutcome.UPDATED;
         }
         externalStaffBindingMapper.update(binding, Wrappers.<ExternalStaffBindingDO>lambdaUpdate()
                 .eq(ExternalStaffBindingDO::getTenantId, actor.tenantId())
                 .eq(ExternalStaffBindingDO::getId, binding.getId())
                 .isNull(ExternalStaffBindingDO::getDeletedAt));
-        return samePayload ? SyncOutcome.UNCHANGED : SyncOutcome.UPDATED;
+        return samePayload && !staffUpdated ? SyncOutcome.UNCHANGED : SyncOutcome.UPDATED;
     }
 
-    private void fillBinding(ExternalStaffBindingDO binding, DhbStaffRowCommand row, String sourceTenantKey,
+    private boolean updateImportedStaffIfOwned(Actor actor, StaffProfileDO staff, String sourceSystem,
+                                               DhbStaffRowCommand row, UUID sourcePositionId,
+                                               LocalDateTime now) {
+        if (MANUAL.equals(staff.getRecordOrigin())) return false;
+        String staffName = defaultText(row.staffName(), defaultText(row.accountsName(), staff.getStaffName(),
+                128, "staffName"), 128, "staffName");
+        String mobile = firstText(row.mobile(), row.accountsMobile(), 32);
+        String email = text(row.email(), 128, "email");
+        String employmentStatus = statusFromExternal(row.status());
+        String remark = text(row.about(), 500, "about");
+        boolean positionChanged = sourcePositionId != null && !Objects.equals(sourcePositionId, staff.getPrimaryPositionId());
+        boolean profileChanged = !Objects.equals(staffName, staff.getStaffName())
+                || !Objects.equals(mobile, staff.getMobile())
+                || !Objects.equals(email, staff.getEmail())
+                || !Objects.equals(employmentStatus, staff.getEmploymentStatus())
+                || !Objects.equals(sourceSystem, staff.getRecordOrigin())
+                || !Objects.equals(remark, staff.getRemark());
+        if (!profileChanged && !positionChanged) return false;
+        StaffProfileDO update = new StaffProfileDO();
+        update.setStaffName(staffName);
+        update.setMobile(mobile);
+        update.setEmail(email);
+        update.setEmploymentStatus(employmentStatus);
+        if (positionChanged) {
+            update.setPrimaryPositionId(sourcePositionId);
+        }
+        update.setRecordOrigin(sourceSystem);
+        update.setRemark(remark);
+        update.setVersion(staff.getVersion() + 1);
+        update.setUpdatedAt(now);
+        update.setUpdatedBy(actor.principalId());
+        int updated = staffProfileMapper.update(update, Wrappers.<StaffProfileDO>lambdaUpdate()
+                .eq(StaffProfileDO::getTenantId, actor.tenantId())
+                .eq(StaffProfileDO::getId, staff.getId())
+                .eq(StaffProfileDO::getVersion, staff.getVersion())
+                .isNull(StaffProfileDO::getDeletedAt));
+        if (updated == 1 && positionChanged && staff.getPrimaryOrganizationId() != null) {
+            savePrimaryAssignment(actor, staff.getId(), staff.getPrimaryOrganizationId(), sourcePositionId, now);
+        }
+        return updated == 1;
+    }
+
+    private void fillBinding(ExternalStaffBindingDO binding, String sourceSystem, DhbStaffRowCommand row,
+                             String sourceTenantKey,
                              String sourceStaffId, LocalDateTime now, UUID actorId) {
         binding.setConnectorId(row.connectorId());
-        binding.setSourceSystem(DINGHUOBAO);
+        binding.setSourceSystem(sourceSystem);
         binding.setSourceTenantKey(sourceTenantKey);
         binding.setSourceStaffId(sourceStaffId);
         binding.setSourceStaffType(text(row.staffType(), 32, "staffType"));
@@ -599,9 +642,12 @@ public class MybatisPlusIamStaffManagementStore implements IamStaffManagementSto
                 toInstant(row.getLastSeenAt()), row.getVersion());
     }
 
-    private static String statusFromDhb(String value) {
+    private static String statusFromExternal(String value) {
         String normalized = text(value, 32, "status");
-        if ("F".equalsIgnoreCase(normalized) || DISABLED.equalsIgnoreCase(normalized)) return DISABLED;
+        if (normalized == null) return ACTIVE;
+        if ("F".equalsIgnoreCase(normalized) || DISABLED.equalsIgnoreCase(normalized)
+                || normalized.contains("停用") || normalized.contains("禁用")) return DISABLED;
+        if (LEFT.equalsIgnoreCase(normalized) || normalized.contains("离职")) return LEFT;
         return ACTIVE;
     }
 

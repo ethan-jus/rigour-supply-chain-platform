@@ -18,10 +18,18 @@ public class InternalProductEntity {
     private String productCode;
     /** 商品名称；草稿允许为空，提交时由应用服务校验。 */
     private String productName;
+    /** 业务线名称快照，飞书导入时保留来源原文。 */
+    private String businessLineName;
     /** 商品分类ID。 */
     private Long categoryId;
+    /** 商品分类名称快照，飞书导入时保留来源原文。 */
+    private String categoryNameSnapshot;
     /** 商品品牌ID。 */
     private Long brandId;
+    /** 商品品牌名称快照，飞书导入时保留来源原文。 */
+    private String brandNameSnapshot;
+    /** 行业名称快照。 */
+    private String industryName;
     /** 商品规格说明。 */
     private String productSpecification;
     /** 商品单位，关联 PRODUCT_UNIT 字典项。 */
@@ -36,6 +44,8 @@ public class InternalProductEntity {
     private String saleTypeCode;
     /** 上架状态，关联 PRODUCT_SHELF_STATUS 字典项。 */
     private String shelfStatusCode;
+    /** 来源商品状态名称。 */
+    private String sourceStatusName;
     /** 商品标签编码数组 JSON。 */
     private String tagCodesJson;
     /** 限购量。 */
@@ -50,6 +60,22 @@ public class InternalProductEntity {
     private String submitStatusCode;
     /** 备注。 */
     private String remark;
+    /** 来源系统编码，如 FEISHU。 */
+    private String sourceSystemCode;
+    /** 来源租户/表标识。 */
+    private String sourceTenantKey;
+    /** 来源商品ID。 */
+    private String sourceProductId;
+    /** 来源单号或来源商品编码。 */
+    private String sourceDocumentNo;
+    /** 来源创建时间。 */
+    private LocalDateTime sourceCreatedAt;
+    /** 来源更新时间。 */
+    private LocalDateTime sourceUpdatedAt;
+    /** 来源字段摘要。 */
+    private String sourcePayloadHash;
+    /** 来源原始字段快照。 */
+    private String sourcePayloadJson;
     /** 乐观锁。 */
     private Integer revision;
     /** 创建人。 */
@@ -71,10 +97,18 @@ public class InternalProductEntity {
     public void setProductCode(String productCode) { this.productCode = productCode; }
     public String getProductName() { return productName; }
     public void setProductName(String productName) { this.productName = productName; }
+    public String getBusinessLineName() { return businessLineName; }
+    public void setBusinessLineName(String businessLineName) { this.businessLineName = businessLineName; }
     public Long getCategoryId() { return categoryId; }
     public void setCategoryId(Long categoryId) { this.categoryId = categoryId; }
+    public String getCategoryNameSnapshot() { return categoryNameSnapshot; }
+    public void setCategoryNameSnapshot(String categoryNameSnapshot) { this.categoryNameSnapshot = categoryNameSnapshot; }
     public Long getBrandId() { return brandId; }
     public void setBrandId(Long brandId) { this.brandId = brandId; }
+    public String getBrandNameSnapshot() { return brandNameSnapshot; }
+    public void setBrandNameSnapshot(String brandNameSnapshot) { this.brandNameSnapshot = brandNameSnapshot; }
+    public String getIndustryName() { return industryName; }
+    public void setIndustryName(String industryName) { this.industryName = industryName; }
     public String getProductSpecification() { return productSpecification; }
     public void setProductSpecification(String productSpecification) { this.productSpecification = productSpecification; }
     public String getUnitCode() { return unitCode; }
@@ -89,6 +123,8 @@ public class InternalProductEntity {
     public void setSaleTypeCode(String saleTypeCode) { this.saleTypeCode = saleTypeCode; }
     public String getShelfStatusCode() { return shelfStatusCode; }
     public void setShelfStatusCode(String shelfStatusCode) { this.shelfStatusCode = shelfStatusCode; }
+    public String getSourceStatusName() { return sourceStatusName; }
+    public void setSourceStatusName(String sourceStatusName) { this.sourceStatusName = sourceStatusName; }
     public String getTagCodesJson() { return tagCodesJson; }
     public void setTagCodesJson(String tagCodesJson) { this.tagCodesJson = tagCodesJson; }
     public BigDecimal getLimitQuantity() { return limitQuantity; }
@@ -105,6 +141,22 @@ public class InternalProductEntity {
     public void setSubmitStatusCode(String submitStatusCode) { this.submitStatusCode = submitStatusCode; }
     public String getRemark() { return remark; }
     public void setRemark(String remark) { this.remark = remark; }
+    public String getSourceSystemCode() { return sourceSystemCode; }
+    public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
+    public String getSourceTenantKey() { return sourceTenantKey; }
+    public void setSourceTenantKey(String sourceTenantKey) { this.sourceTenantKey = sourceTenantKey; }
+    public String getSourceProductId() { return sourceProductId; }
+    public void setSourceProductId(String sourceProductId) { this.sourceProductId = sourceProductId; }
+    public String getSourceDocumentNo() { return sourceDocumentNo; }
+    public void setSourceDocumentNo(String sourceDocumentNo) { this.sourceDocumentNo = sourceDocumentNo; }
+    public LocalDateTime getSourceCreatedAt() { return sourceCreatedAt; }
+    public void setSourceCreatedAt(LocalDateTime sourceCreatedAt) { this.sourceCreatedAt = sourceCreatedAt; }
+    public LocalDateTime getSourceUpdatedAt() { return sourceUpdatedAt; }
+    public void setSourceUpdatedAt(LocalDateTime sourceUpdatedAt) { this.sourceUpdatedAt = sourceUpdatedAt; }
+    public String getSourcePayloadHash() { return sourcePayloadHash; }
+    public void setSourcePayloadHash(String sourcePayloadHash) { this.sourcePayloadHash = sourcePayloadHash; }
+    public String getSourcePayloadJson() { return sourcePayloadJson; }
+    public void setSourcePayloadJson(String sourcePayloadJson) { this.sourcePayloadJson = sourcePayloadJson; }
     public Integer getRevision() { return revision; }
     public void setRevision(Integer revision) { this.revision = revision; }
     public String getCreatedBy() { return createdBy; }

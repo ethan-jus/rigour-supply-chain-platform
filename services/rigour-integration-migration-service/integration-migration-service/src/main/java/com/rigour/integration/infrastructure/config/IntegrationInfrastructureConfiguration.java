@@ -1,14 +1,19 @@
 package com.rigour.integration.infrastructure.config;
 
 import com.rigour.integration.application.port.out.CrmDhbDomainSyncClient;
+import com.rigour.integration.application.port.out.CrmCustomerProjectionClient;
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
 import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbOrchestrationLease;
 import com.rigour.integration.application.port.out.DhbSyncStore;
 import com.rigour.integration.application.port.out.ErpDhbDomainSyncClient;
+import com.rigour.integration.application.port.out.ErpProductProjectionClient;
 import com.rigour.integration.application.port.out.ErpStockOutProjectionClient;
+import com.rigour.integration.application.port.out.FeishuBitableClient;
+import com.rigour.integration.application.port.out.FeishuImportStore;
 import com.rigour.integration.application.port.out.FeishuJsapiClient;
-import com.rigour.integration.application.port.out.IamDhbStaffSyncClient;
+import com.rigour.integration.application.port.out.HrEmployeeProjectionClient;
+import com.rigour.integration.application.port.out.HrDhbStaffSyncClient;
 import com.rigour.integration.application.port.out.OrderSalesOrderProjectionClient;
 import com.rigour.integration.application.port.out.ProductMediaSyncStore;
 import com.rigour.integration.application.port.out.ProductMediaStorage;
@@ -20,13 +25,21 @@ import com.rigour.integration.application.service.dhb.DhbSyncOrchestrationSchedu
 import com.rigour.integration.application.service.dhb.DhbSyncOrchestrationService;
 import com.rigour.integration.application.service.dhb.ProductImageObjectKeyFactory;
 import com.rigour.integration.application.service.feishu.FeishuJsapiSignService;
+import com.rigour.integration.application.service.feishu.FeishuAttachmentImportService;
+import com.rigour.integration.application.service.feishu.FeishuImportAsyncRunService;
+import com.rigour.integration.application.service.feishu.FeishuImportBundleService;
+import com.rigour.integration.application.service.feishu.FeishuAttachmentObjectKeyFactory;
+import com.rigour.integration.infrastructure.feishu.FeishuBitableClientAdapter;
 import com.rigour.integration.infrastructure.dhb.DhbClientAdapter;
 import com.rigour.integration.infrastructure.dhb.DhbSecretResolver;
 import com.rigour.integration.infrastructure.dhb.EnvDhbSecretResolver;
 import com.rigour.integration.infrastructure.domain.HttpCrmDhbDomainSyncClient;
+import com.rigour.integration.infrastructure.domain.HttpCrmCustomerProjectionClient;
 import com.rigour.integration.infrastructure.domain.HttpErpDhbDomainSyncClient;
+import com.rigour.integration.infrastructure.domain.HttpErpProductProjectionClient;
 import com.rigour.integration.infrastructure.domain.HttpErpStockOutProjectionClient;
-import com.rigour.integration.infrastructure.domain.HttpIamDhbStaffSyncClient;
+import com.rigour.integration.infrastructure.domain.HttpHrEmployeeProjectionClient;
+import com.rigour.integration.infrastructure.domain.HttpHrDhbStaffSyncClient;
 import com.rigour.integration.infrastructure.domain.HttpOrderSalesOrderProjectionClient;
 import com.rigour.integration.infrastructure.feishu.FeishuJsapiClientAdapter;
 import com.rigour.integration.infrastructure.lease.DhbConnectorLeaseProperties;
@@ -34,6 +47,12 @@ import com.rigour.integration.infrastructure.media.ProductMediaSyncWorker;
 import com.rigour.integration.infrastructure.persistence.mapper.DhbConnectorMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.ExternalObjectMappingMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationDeadLetterMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportBatchMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportIssueMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportRawRowMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportTableMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportTemplateDependencyMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportTemplateMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFieldMappingMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationManualResolutionMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationOrderMirrorMapper;
@@ -48,20 +67,27 @@ import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncR
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncTaskMapper;
 import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusDhbIntegrationStore;
 import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusDhbSyncStore;
+import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusFeishuImportStore;
 import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusProductMediaSyncStore;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.settings.client.BusinessDictionaryBatchClient;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.web.client.RestClient;
@@ -71,7 +97,7 @@ import org.springframework.web.client.RestClient;
 @EnableScheduling
 @MapperScan("com.rigour.integration.infrastructure.persistence.mapper")
 @EnableConfigurationProperties({DhbClientProperties.class, FeishuClientProperties.class,
-        ProductMediaProperties.class, DhbConnectorLeaseProperties.class,
+        FeishuImportProperties.class, ProductMediaProperties.class, DhbConnectorLeaseProperties.class,
         DhbSyncOrchestrationProperties.class})
 public final class IntegrationInfrastructureConfiguration {
 
@@ -101,10 +127,78 @@ public final class IntegrationInfrastructureConfiguration {
     }
 
     @Bean
+    FeishuBitableClient feishuBitableClient(RestClient.Builder restClientBuilder,
+                                            FeishuClientProperties properties) {
+        return new FeishuBitableClientAdapter(restClientBuilder, properties);
+    }
+
+    @Bean
     FeishuJsapiSignService feishuJsapiSignService(
             FeishuJsapiClient client, FeishuClientProperties properties) {
         return new FeishuJsapiSignService(client, properties.getAppId(),
                 properties.allowedOriginValues(), properties.isAllowInsecureLan());
+    }
+
+    @Bean
+    FeishuImportStore feishuImportStore(
+            IntegrationFeishuImportBatchMapper batchMapper,
+            IntegrationFeishuImportTableMapper tableMapper,
+            IntegrationFeishuImportIssueMapper issueMapper,
+            IntegrationFeishuImportRawRowMapper rawRowMapper,
+            IntegrationFeishuImportTemplateMapper templateMapper,
+            IntegrationFeishuImportTemplateDependencyMapper templateDependencyMapper,
+            JdbcTemplate jdbcTemplate,
+            PlatformTransactionManager transactionManager,
+            tools.jackson.databind.ObjectMapper objectMapper) {
+        return new MybatisPlusFeishuImportStore(batchMapper, tableMapper, issueMapper, rawRowMapper,
+                templateMapper, templateDependencyMapper, jdbcTemplate, transactionManager, objectMapper);
+    }
+
+    @Bean
+    FeishuImportBundleService feishuImportBundleService(
+            FeishuImportStore store,
+            OrderSalesOrderProjectionClient orderSalesOrderProjectionClient,
+            HrEmployeeProjectionClient hrEmployeeProjectionClient,
+            CrmCustomerProjectionClient crmCustomerProjectionClient,
+            ErpProductProjectionClient erpProductProjectionClient,
+            BusinessDictionaryBatchClient businessDictionaryBatchClient,
+            FeishuAttachmentImportService feishuAttachmentImportService,
+            FeishuImportProperties properties,
+            Clock clock) {
+        return new FeishuImportBundleService(store, orderSalesOrderProjectionClient,
+                hrEmployeeProjectionClient, crmCustomerProjectionClient, erpProductProjectionClient,
+                businessDictionaryBatchClient, feishuAttachmentImportService, properties, clock);
+    }
+
+    @Bean(destroyMethod = "shutdown")
+    ExecutorService feishuImportExecutor(
+            @Value("${rigour.integration.feishu.import-bundle.worker-concurrency:2}") int workerConcurrency) {
+        int concurrency = Math.max(1, Math.min(workerConcurrency, 8));
+        return Executors.newFixedThreadPool(concurrency, runnable -> {
+            Thread thread = new Thread(runnable, "rigour-feishu-import-worker");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    @Bean
+    FeishuImportAsyncRunService feishuImportAsyncRunService(
+            FeishuImportBundleService service,
+            FeishuImportStore store,
+            @Qualifier("feishuImportExecutor") ExecutorService feishuImportExecutor,
+            Clock clock) {
+        return new FeishuImportAsyncRunService(service, store, feishuImportExecutor, clock);
+    }
+
+    @Bean
+    FeishuAttachmentImportService feishuAttachmentImportService(
+            FeishuImportStore store,
+            FeishuBitableClient feishuBitableClient,
+            ProductMediaStorage productMediaStorage,
+            FeishuAttachmentObjectKeyFactory feishuAttachmentObjectKeyFactory,
+            FeishuImportProperties properties) {
+        return new FeishuAttachmentImportService(store, feishuBitableClient, productMediaStorage,
+                feishuAttachmentObjectKeyFactory, properties.getDefaultSourceUrl());
     }
 
     @Bean
@@ -176,13 +270,13 @@ public final class IntegrationInfrastructureConfiguration {
             DhbSyncStore syncStore, DhbClient client,
             OrderSalesOrderProjectionClient orderSalesOrderProjectionClient,
             ErpStockOutProjectionClient erpStockOutProjectionClient,
-            IamDhbStaffSyncClient iamDhbStaffSyncClient,
+            HrDhbStaffSyncClient hrDhbStaffSyncClient,
             BusinessDictionaryBatchClient businessDictionaryBatchClient,
             ProductMediaStorage productMediaStorage,
             DhbAttachmentObjectKeyFactory dhbAttachmentObjectKeyFactory,
             @Value("${rigour.integration.dhb.order.detail-concurrency:3}") int detailConcurrency) {
         return new DhbOrderSyncService(syncStore, client, orderSalesOrderProjectionClient,
-                erpStockOutProjectionClient, iamDhbStaffSyncClient,
+                erpStockOutProjectionClient, hrDhbStaffSyncClient,
                 businessDictionaryBatchClient, detailConcurrency,
                 productMediaStorage, dhbAttachmentObjectKeyFactory);
     }
@@ -190,31 +284,43 @@ public final class IntegrationInfrastructureConfiguration {
     @Bean
     OrderSalesOrderProjectionClient orderSalesOrderProjectionClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.order.base-url:http://localhost:26885}") String orderBaseUrl) {
+            @Value("${rigour.order.base-url:http://localhost:26885}") String orderBaseUrl,
+            Environment environment) {
         return new HttpOrderSalesOrderProjectionClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, orderBaseUrl);
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
+                localLoopbackUrl(environment, orderBaseUrl, 26885));
     }
 
     @Bean
     BusinessDictionaryBatchClient businessDictionaryBatchClient(
-            SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl) {
+            TrustedContextSigner signer,
+            @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl,
+            @Value("${rigour.integration.dictionary-http.connect-timeout:3s}") Duration connectTimeout,
+            @Value("${rigour.integration.dictionary-http.read-timeout:30s}") Duration readTimeout,
+            Environment environment) {
         return new BusinessDictionaryBatchClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, baseUrl);
+                RestClient.builder().requestFactory(requestFactory(connectTimeout, readTimeout)),
+                signer, localLoopbackUrl(environment, baseUrl, 26892));
     }
 
     @Bean
     ErpStockOutProjectionClient erpStockOutProjectionClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.erp.base-url:http://localhost:26884}") String erpBaseUrl) {
+            @Value("${rigour.erp.base-url:http://localhost:26884}") String erpBaseUrl,
+            Environment environment) {
         return new HttpErpStockOutProjectionClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, erpBaseUrl);
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
+                localLoopbackUrl(environment, erpBaseUrl, 26884));
     }
 
     @Bean
     SimpleClientHttpRequestFactory domainSyncRequestFactory(
             @Value("${rigour.integration.domain-http.connect-timeout:5s}") Duration connectTimeout,
-            @Value("${rigour.integration.domain-http.read-timeout:15m}") Duration readTimeout) {
+            @Value("${rigour.integration.domain-http.read-timeout:120s}") Duration readTimeout) {
+        return requestFactory(connectTimeout, readTimeout);
+    }
+
+    private static SimpleClientHttpRequestFactory requestFactory(Duration connectTimeout, Duration readTimeout) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(connectTimeout);
         factory.setReadTimeout(readTimeout);
@@ -224,25 +330,75 @@ public final class IntegrationInfrastructureConfiguration {
     @Bean
     ErpDhbDomainSyncClient erpDhbDomainSyncClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.erp.base-url:http://localhost:26884}") String erpBaseUrl) {
+            @Value("${rigour.erp.base-url:http://localhost:26884}") String erpBaseUrl,
+            Environment environment) {
         return new HttpErpDhbDomainSyncClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, erpBaseUrl);
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
+                localLoopbackUrl(environment, erpBaseUrl, 26884));
     }
 
     @Bean
     CrmDhbDomainSyncClient crmDhbDomainSyncClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.crm.base-url:http://localhost:26883}") String crmBaseUrl) {
+            @Value("${rigour.crm.base-url:http://localhost:26883}") String crmBaseUrl,
+            Environment environment) {
         return new HttpCrmDhbDomainSyncClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, crmBaseUrl);
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
+                localLoopbackUrl(environment, crmBaseUrl, 26883));
     }
 
     @Bean
-    IamDhbStaffSyncClient iamDhbStaffSyncClient(
+    HrDhbStaffSyncClient hrDhbStaffSyncClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.iam.base-url:http://localhost:26881}") String iamBaseUrl) {
-        return new HttpIamDhbStaffSyncClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer, iamBaseUrl);
+            @Value("${rigour.hr.base-url:http://localhost:26889}") String hrBaseUrl,
+            Environment environment) {
+        return new HttpHrDhbStaffSyncClient(
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
+                localLoopbackUrl(environment, hrBaseUrl, 26889));
+    }
+
+    @Bean
+    HrEmployeeProjectionClient hrEmployeeProjectionClient(
+            SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
+            @Value("${rigour.hr.base-url:http://localhost:26889}") String hrBaseUrl,
+            Environment environment) {
+        return new HttpHrEmployeeProjectionClient(
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
+                localLoopbackUrl(environment, hrBaseUrl, 26889));
+    }
+
+    @Bean
+    CrmCustomerProjectionClient crmCustomerProjectionClient(
+            SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
+            @Value("${rigour.crm.base-url:http://localhost:26883}") String crmBaseUrl,
+            Environment environment) {
+        return new HttpCrmCustomerProjectionClient(
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
+                localLoopbackUrl(environment, crmBaseUrl, 26883));
+    }
+
+    @Bean
+    ErpProductProjectionClient erpProductProjectionClient(
+            SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
+            @Value("${rigour.erp.base-url:http://localhost:26884}") String erpBaseUrl,
+            Environment environment) {
+        return new HttpErpProductProjectionClient(
+                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
+                localLoopbackUrl(environment, erpBaseUrl, 26884));
+    }
+
+    static String localLoopbackUrl(Environment environment, String configuredUrl, int localPort) {
+        if (!environment.acceptsProfiles(Profiles.of("local")) || configuredUrl == null || configuredUrl.isBlank()) {
+            return configuredUrl;
+        }
+        try {
+            URI uri = new URI(configuredUrl);
+            String scheme = uri.getScheme() == null ? "http" : uri.getScheme();
+            return new URI(scheme, uri.getUserInfo(), "127.0.0.1",
+                    localPort, uri.getPath(), uri.getQuery(), uri.getFragment()).toString();
+        } catch (URISyntaxException ignored) {
+            return configuredUrl;
+        }
     }
 
     @Bean
@@ -255,7 +411,7 @@ public final class IntegrationInfrastructureConfiguration {
             DhbIntegrationStore store,
             ErpDhbDomainSyncClient erpClient,
             CrmDhbDomainSyncClient crmClient,
-            IamDhbStaffSyncClient iamClient,
+            HrDhbStaffSyncClient hrEmployeeClient,
             DhbClient dhbClient,
             DhbOrderSyncService orderSyncService,
             BusinessDictionaryBatchClient businessDictionaryBatchClient,
@@ -263,7 +419,7 @@ public final class IntegrationInfrastructureConfiguration {
             DhbSyncOrchestrationProperties properties,
             Clock clock,
             tools.jackson.databind.ObjectMapper objectMapper) {
-        return new DhbSyncOrchestrationService(store, erpClient, crmClient, iamClient, dhbClient,
+        return new DhbSyncOrchestrationService(store, erpClient, crmClient, hrEmployeeClient, dhbClient,
                 orderSyncService, businessDictionaryBatchClient, dhbOrchestrationLease, properties,
                 clock, objectMapper);
     }
@@ -285,6 +441,11 @@ public final class IntegrationInfrastructureConfiguration {
     }
 
     @Bean
+    FeishuAttachmentObjectKeyFactory feishuAttachmentObjectKeyFactory(ProductMediaProperties properties) {
+        return new FeishuAttachmentObjectKeyFactory(properties.getFeishuAttachmentPrefix());
+    }
+
+    @Bean
     DhbIntegrationService dhbIntegrationService(
             DhbIntegrationStore store, DhbClient client,
             DhbOrderSyncService orderSyncService, ProductMediaStorage productMediaStorage,
@@ -298,7 +459,7 @@ public final class IntegrationInfrastructureConfiguration {
     ProductMediaSyncWorker productMediaSyncWorker(
             ProductMediaSyncStore store, DhbClient client, ProductMediaStorage storage,
             ProductImageObjectKeyFactory keyFactory, ProductMediaProperties properties,
-            ExecutorService productMediaExecutor) {
+            @Qualifier("productMediaExecutor") ExecutorService productMediaExecutor) {
         return new ProductMediaSyncWorker(store, client, storage, keyFactory, properties,
                 productMediaExecutor);
     }

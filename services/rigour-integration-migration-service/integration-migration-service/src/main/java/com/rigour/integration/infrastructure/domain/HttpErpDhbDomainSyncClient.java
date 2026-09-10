@@ -7,6 +7,7 @@ import com.rigour.shared.context.RequestHeaders;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.shared.core.api.ApiResponse;
 import java.net.URI;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.http.MediaType;
@@ -33,7 +34,14 @@ public final class HttpErpDhbDomainSyncClient implements ErpDhbDomainSyncClient 
 
     @Override
     public ErpDataSyncResult sync(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
-                                  String objectType, int maxPages) {
+                                  String objectType, int maxPages, Instant from, Instant to) {
+        return sync(caller, connectorId, sourceTaskId, objectType, maxPages, "SCHEDULED", from, to);
+    }
+
+    @Override
+    public ErpDataSyncResult sync(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
+                                  String objectType, int maxPages, String triggerType,
+                                  Instant from, Instant to) {
         if (connectorId == null || sourceTaskId == null || objectType == null || objectType.isBlank()) {
             throw new IllegalArgumentException("ERP同步connectorId、sourceTaskId和objectType不能为空");
         }
@@ -48,11 +56,13 @@ public final class HttpErpDhbDomainSyncClient implements ErpDhbDomainSyncClient 
                 .headers(headers -> SignedDomainRequest.signedHeaders(signer, "POST", uri, caller)
                         .forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, SignedDomainRequest.requestId())
-                .body(new SyncCommand(connectorId, sourceTaskId, objectType, maxPages))
+                .body(new SyncCommand(connectorId, sourceTaskId, objectType, maxPages,
+                        triggerType, from, to))
                 .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
                         httpResponse, SYNC_RESULT_RESPONSE, "ERP订货宝同步"));
         return SignedDomainRequest.required(response, "ERP");
     }
 
-    private record SyncCommand(UUID connectorId, UUID sourceTaskId, String objectType, Integer maxPages) { }
+    private record SyncCommand(UUID connectorId, UUID sourceTaskId, String objectType,
+                               Integer maxPages, String triggerType, Instant from, Instant to) { }
 }

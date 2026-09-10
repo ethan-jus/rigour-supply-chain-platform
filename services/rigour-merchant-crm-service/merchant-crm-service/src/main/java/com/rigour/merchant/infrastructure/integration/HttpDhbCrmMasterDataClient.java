@@ -14,6 +14,7 @@ import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.context.RequestHeaders;
 import com.rigour.shared.context.TrustedContextSigner;
 import java.net.URI;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -57,11 +58,19 @@ public final class HttpDhbCrmMasterDataClient implements DhbCrmMasterDataClient 
     @Override
     public Collected collect(CallerIdentity caller, UUID connectorId,
                              CrmMasterDataObjectType objectType, int maxPages) {
+        return collect(caller, connectorId, objectType, maxPages, null, null);
+    }
+
+    @Override
+    public Collected collect(CallerIdentity caller, UUID connectorId,
+                             CrmMasterDataObjectType objectType, int maxPages,
+                             Instant from, Instant to) {
+        validateWindow(from, to);
         return switch (objectType) {
             case CUSTOMER_TYPE -> customerTypes(caller, connectorId);
             case CUSTOMER_AREA -> customerAreas(caller, connectorId);
-            case CUSTOMER -> customers(caller, connectorId, maxPages);
-            case ADDRESS -> addresses(caller, connectorId, maxPages);
+            case CUSTOMER -> customers(caller, connectorId, maxPages, from, to);
+            case ADDRESS -> addresses(caller, connectorId, maxPages, from, to);
         };
     }
 
@@ -94,11 +103,12 @@ public final class HttpDhbCrmMasterDataClient implements DhbCrmMasterDataClient 
         return fields;
     }
 
-    private Collected customers(CallerIdentity caller, UUID connectorId, int maxPages) {
+    private Collected customers(CallerIdentity caller, UUID connectorId, int maxPages,
+                                Instant from, Instant to) {
         return collectPages(CrmMasterDataObjectType.CUSTOMER, maxPages, begin -> {
             CustomerQueryCommand command = new CustomerQueryCommand(
                     begin, pageSize, DHB_ALL_CUSTOMER_STATUS, DHB_ALL_SYNC_DATA,
-                    null, null, null, null, null, null);
+                    from == null ? null : "update_date", from, to, null, null, null);
             return post(caller, customerPath(connectorId, "query"), command,
                     CustomerPageView.class);
         }, CustomerPageView::total, CustomerPageView::items,
@@ -106,17 +116,27 @@ public final class HttpDhbCrmMasterDataClient implements DhbCrmMasterDataClient 
                         item.createdAt(), item.updatedAt(), item.sourceFields()));
     }
 
-    private Collected addresses(CallerIdentity caller, UUID connectorId, int maxPages) {
+    private Collected addresses(CallerIdentity caller, UUID connectorId, int maxPages,
+                                Instant from, Instant to) {
         return collectPages(CrmMasterDataObjectType.ADDRESS, maxPages, begin -> {
             ShippingAddressQueryCommand command =
                     new ShippingAddressQueryCommand(
-                            begin, pageSize, null, null, null, null, null);
+                            begin, pageSize, null, null, null, from, to);
             return post(caller, customerPath(connectorId, "shipping-addresses", "query"),
                     command, ShippingAddressPageView.class);
         }, ShippingAddressPageView::total,
                 ShippingAddressPageView::items,
                 item -> source(item.sourceId(), item.addressGuid(), item.consignee(), null,
                         null, item.updatedAt(), item.sourceFields()));
+    }
+
+    private static void validateWindow(Instant from, Instant to) {
+        if ((from == null) != (to == null)) {
+            throw new IllegalArgumentException("CRM同步窗口from和to必须同时提供");
+        }
+        if (from != null && !from.isBefore(to)) {
+            throw new IllegalArgumentException("CRM同步窗口from必须早于to");
+        }
     }
 
     private <P, I> Collected collectPages(CrmMasterDataObjectType type, int maxPages,

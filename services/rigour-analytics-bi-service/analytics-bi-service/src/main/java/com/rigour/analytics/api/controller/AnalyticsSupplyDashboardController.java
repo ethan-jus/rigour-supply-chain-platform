@@ -8,6 +8,7 @@ import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFilterOptionsView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOverviewView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshRunView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardReconciliationView;
 import com.rigour.analytics.application.service.SupplyDashboardCityCostImportService;
@@ -47,8 +48,8 @@ public final class AnalyticsSupplyDashboardController implements AnalyticsSupply
     }
 
     @Override
-    public ApiResponse<SupplyDashboardRefreshRunView> triggerRefreshRun() {
-        return ApiResponse.success(refreshService.refreshCurrentTenant());
+    public ApiResponse<SupplyDashboardRefreshRunView> triggerRefreshRun(SupplyDashboardRefreshCommand command) {
+        return ApiResponse.success(refreshService.refreshCurrentTenant(command));
     }
 
     @Override

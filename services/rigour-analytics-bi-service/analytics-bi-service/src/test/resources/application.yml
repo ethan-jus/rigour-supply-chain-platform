@@ -18,7 +18,7 @@ rigour:
     supply-dashboard:
       refresh:
         enabled: false
-        fixed-delay-ms: 3600000
+        fixed-delay-ms: 1800000
         initial-delay-ms: 3600000
   context:
     trust:

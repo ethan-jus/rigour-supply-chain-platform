@@ -4,6 +4,7 @@ package com.rigour.order.domain.enums;
 public enum SalesOrderStatus {
     DRAFT("DRAFT", "草稿"),
     SUBMITTED("SUBMITTED", "已提交"),
+    COMPLETED("COMPLETED", "已完成"),
     CANCELLED("CANCELLED", "已取消");
 
     private final String code;

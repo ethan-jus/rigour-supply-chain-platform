@@ -16,6 +16,9 @@ public interface OrderSalesPaymentRecordStore {
 
     Optional<SalesPaymentRecordDetailView> payment(String tenantId, Long id);
 
+    Optional<SalesPaymentRecordDetailView> paymentBySource(
+            String tenantId, UUID connectorId, String sourceSystemCode, String sourceDocumentNo);
+
     boolean existsByNo(String tenantId, String paymentNo);
 
     SalesPaymentRecordDetailView create(String tenantId, String paymentNo,
@@ -29,6 +32,7 @@ public interface OrderSalesPaymentRecordStore {
     record SalesPaymentSearchCriteria(
             String paymentNo,
             String salesOrderNo,
+            String sourceDocumentNo,
             String customerName,
             String collectorStaffCode,
             String paymentMethodCode,

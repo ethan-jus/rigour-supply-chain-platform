@@ -1,5 +1,11 @@
 package com.rigour.erp.application.service.product;
 
+import com.rigour.erp.api.v1.model.ExternalProductResolveCommand;
+import com.rigour.erp.api.v1.model.ExternalProductResolveRowCommand;
+import com.rigour.erp.api.v1.model.ExternalProductResolvedView;
+import com.rigour.erp.api.v1.model.ExternalProductRowCommand;
+import com.rigour.erp.api.v1.model.ExternalProductSyncCommand;
+import com.rigour.erp.api.v1.model.ExternalProductSyncResult;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.api.v1.model.ProductImageCommand;
 import com.rigour.erp.api.v1.model.ProductManagementCommand;
@@ -167,6 +173,57 @@ class ErpProductManagementServiceTest {
     }
 
     @Test
+    void resolveExternalProductsDelegatesNormalizedRowsToStore() {
+        ErpProductManagementStore store = mock(ErpProductManagementStore.class);
+        ErpProductManagementService service = new ErpProductManagementService(store, fixedGenerator());
+        TestAuthorizationContext.set(serviceCaller("erp:product:sync"));
+        ExternalProductResolvedView resolved = new ExternalProductResolvedView("line-1",
+                2001L, 3001L, "PRD202609010001", "SKU202609010001",
+                "酸辣粉", "箱", "BOX", "DINGHUOBAO",
+                "PRODUCT_NAME_EXACT", 95, "MATCHED", "已匹配");
+        when(store.resolveExternalProducts(eq(TENANT), eq("DINGHUOBAO"), any()))
+                .thenReturn(List.of(resolved));
+
+        List<ExternalProductResolvedView> result = service.resolveExternalProducts(
+                new ExternalProductResolveCommand(" dinghuobao ", List.of(
+                        new ExternalProductResolveRowCommand(" line-1 ", " p1001 ",
+                                null, " 酸辣粉 ", " 箱 "))));
+
+        ArgumentCaptor<List<ExternalProductResolveRowCommand>> rows = ArgumentCaptor.forClass(List.class);
+        verify(store).resolveExternalProducts(eq(TENANT), eq("DINGHUOBAO"), rows.capture());
+        assertThat(result).containsExactly(resolved);
+        assertThat(rows.getValue()).singleElement().satisfies(row -> {
+            assertThat(row.referenceId()).isEqualTo("line-1");
+            assertThat(row.productCode()).isEqualTo("p1001");
+            assertThat(row.productName()).isEqualTo("酸辣粉");
+            assertThat(row.specification()).isEqualTo("箱");
+        });
+    }
+
+    @Test
+    void syncExternalProductsUsesSystemAuditActorForServiceCaller() {
+        ErpProductManagementStore store = mock(ErpProductManagementStore.class);
+        ErpProductManagementService service = new ErpProductManagementService(store, fixedGenerator());
+        TestAuthorizationContext.set(serviceCaller("erp:product:sync"));
+        when(store.syncExternalProducts(eq(TENANT), eq("FEISHU"), any(), eq("SYSTEM"), any()))
+                .thenReturn(new ExternalProductSyncResult(1, 0, 0, 1, 0, List.of(), List.of()));
+
+        service.syncExternalProducts(new ExternalProductSyncCommand(" feishu ", List.of(
+                new ExternalProductRowCommand(null, " default ", " source-product-1 ",
+                        " SPU-1 ", " 酸辣粉 ", null, null, null, null,
+                        null, null, null, null, null, null,
+                        Instant.parse("2026-09-01T00:00:00Z"), null, "hash-1", "{}"))));
+
+        ArgumentCaptor<List<ExternalProductRowCommand>> rows = ArgumentCaptor.forClass(List.class);
+        verify(store).syncExternalProducts(eq(TENANT), eq("FEISHU"), rows.capture(), eq("SYSTEM"), any());
+        assertThat(rows.getValue()).singleElement().satisfies(row -> {
+            assertThat(row.sourceTenantKey()).isEqualTo("default");
+            assertThat(row.sourceProductId()).isEqualTo("source-product-1");
+            assertThat(row.productName()).isEqualTo("酸辣粉");
+        });
+    }
+
+    @Test
     void updateRequiresRevision() {
         ErpProductManagementStore store = mock(ErpProductManagementStore.class);
         ErpProductManagementService service = new ErpProductManagementService(store, fixedGenerator());
@@ -196,6 +253,11 @@ class ErpProductManagementServiceTest {
 
     private static CallerIdentity caller(String permission) {
         return new CallerIdentity("TENANT", USER_ID, TENANT_ID, USER_ID, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of("erp"), Set.of(permission));
+    }
+
+    private static CallerIdentity serviceCaller(String permission) {
+        return new CallerIdentity("SERVICE", USER_ID, TENANT_ID, null, null,
                 UUID.randomUUID(), 0, 0, 0, Set.of("erp"), Set.of(permission));
     }
 }

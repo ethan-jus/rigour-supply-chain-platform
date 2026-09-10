@@ -10,14 +10,15 @@ import com.rigour.shared.context.RequestContext;
 import com.rigour.shared.context.RequestHeaders;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.shared.core.api.ApiResponse;
+import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -29,11 +30,15 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.util.UriComponentsBuilder;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * 各领域服务复用的业务字典批处理客户端。
@@ -46,6 +51,10 @@ public final class BusinessDictionaryBatchClient {
     private static final Logger log = LoggerFactory.getLogger(BusinessDictionaryBatchClient.class);
     private static final String SYNC_PERMISSION = "business-settings:dict:sync";
     private static final Pattern CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,49}");
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final int BODY_PREVIEW_LIMIT = 1_000;
+    private static final TypeReference<ApiResponse<DictSyncResult>> DICT_SYNC_RESPONSE =
+            new TypeReference<>() { };
 
     private final RestClient restClient;
     private final TrustedContextSigner signer;
@@ -125,12 +134,34 @@ public final class BusinessDictionaryBatchClient {
                 .contentType(MediaType.APPLICATION_JSON).accept(MediaType.APPLICATION_JSON)
                 .headers(headers -> context.forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command).retrieve().body(new ParameterizedTypeReference<>() { });
+                .body(command)
+                .exchange((request, httpResponse) -> readResponse(
+                        httpResponse, DICT_SYNC_RESPONSE, "公共业务字典同步"));
         if (response == null || !"OK".equals(response.code()) || response.data() == null
                 || response.data().effective() == null) {
             throw new IllegalStateException("公共业务字典返回空响应: " + key.auditCode());
         }
         return response.data();
+    }
+
+    private static <T> ApiResponse<T> readResponse(
+            ClientHttpResponse response, TypeReference<ApiResponse<T>> responseType,
+            String operation) throws IOException {
+        byte[] body = response.getBody().readAllBytes();
+        if (response.getStatusCode().isError()) {
+            throw new RestClientResponseException(operation + " failed status="
+                    + response.getStatusCode().value() + " body=" + bodyPreview(body),
+                    response.getStatusCode(), response.getStatusText(),
+                    response.getHeaders(), body, StandardCharsets.UTF_8);
+        }
+        try {
+            return JSON.readValue(body, responseType);
+        } catch (Exception error) {
+            throw new RestClientException(operation + " response is not valid JSON status="
+                    + response.getStatusCode().value()
+                    + " contentType=" + response.getHeaders().getContentType()
+                    + " body=" + bodyPreview(body), error);
+        }
     }
 
     private Map<String, String> activeMappings(DictSyncResult result) {
@@ -244,6 +275,16 @@ public final class BusinessDictionaryBatchClient {
 
     private static String oneLine(String value) {
         return value == null ? "-" : value.replace('\r', ' ').replace('\n', ' ');
+    }
+
+    private static String bodyPreview(byte[] body) {
+        if (body == null || body.length == 0) return "";
+        String value = new String(body, StandardCharsets.UTF_8)
+                .replace('\n', ' ')
+                .replace('\r', ' ')
+                .trim();
+        if (value.length() <= BODY_PREVIEW_LIMIT) return value;
+        return value.substring(0, BODY_PREVIEW_LIMIT) + "...";
     }
 
     /** 领域服务显式声明的单个白名单字段观察值。 */
