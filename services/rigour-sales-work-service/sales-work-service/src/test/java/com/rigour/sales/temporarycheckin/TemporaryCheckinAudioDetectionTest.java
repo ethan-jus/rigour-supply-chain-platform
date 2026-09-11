@@ -49,35 +49,27 @@ class TemporaryCheckinAudioDetectionTest {
 
     @Test
     void stillRejectsPicturesVideoTracksAndUnknownPayloads() {
-        assertThatThrownBy(() -> detect(new byte[] {(byte) 0xff, (byte) 0xd8, (byte) 0xff, 0}))
-                .isInstanceOf(TemporaryCheckinException.class)
-                .hasMessage("所选文件是图片，不是录音；录音为选填，可删除后继续提交");
-        assertThatThrownBy(() -> detect(concat(isoAudio("isom"), isoHandler("vide"))))
-                .isInstanceOf(TemporaryCheckinException.class)
-                .hasMessage("录音格式不支持或文件内容损坏");
-        assertThatThrownBy(() -> detect(concat(isoPrefix("isom"), isoBox("mp4a"), isoBox("dvh1"))))
-                .isInstanceOf(TemporaryCheckinException.class)
-                .hasMessage("录音格式不支持或文件内容损坏");
-        assertThatThrownBy(() -> detect(concat(isoPrefix("isom"), isoBox("mp4a"))))
-                .isInstanceOf(TemporaryCheckinException.class)
-                .hasMessage("录音格式不支持或文件内容损坏");
-        assertThatThrownBy(() -> detect(concat(
-                        isoPrefix("isom"), isoBox("hdlr"), new byte[8], bytes("soun"))))
-                .isInstanceOf(TemporaryCheckinException.class)
-                .hasMessage("录音格式不支持或文件内容损坏");
-        assertThatThrownBy(() -> detect(concat(
+        assertRejected(new byte[] {(byte) 0xff, (byte) 0xd8, (byte) 0xff, 0}, "IMAGE_FILE");
+        assertRejected(concat(isoAudio("isom"), isoHandler("vide")), "VIDEO_TRACK");
+        assertRejected(concat(isoPrefix("isom"), isoBox("mp4a"), isoBox("dvh1")), "NO_AUDIO_TRACK");
+        assertRejected(concat(isoPrefix("isom"), isoBox("mp4a")), "NO_AUDIO_TRACK");
+        assertRejected(concat(isoPrefix("isom"), isoBox("hdlr"), new byte[8], bytes("soun")), "NO_AUDIO_TRACK");
+        assertRejected(concat(
                         new byte[] {0x1a, 0x45, (byte) 0xdf, (byte) 0xa3},
-                        bytes("A_OPUS"), ebmlCodecId("V_MPEG4/ISO/AVC"))))
-                .isInstanceOf(TemporaryCheckinException.class)
-                .hasMessage("录音格式不支持或文件内容损坏");
-        assertThatThrownBy(() -> detect(concat(
+                        bytes("A_OPUS"), ebmlCodecId("V_MPEG4/ISO/AVC")), "VIDEO_TRACK");
+        assertRejected(concat(
                         new byte[] {0x1a, 0x45, (byte) 0xdf, (byte) 0xa3},
-                        bytes("A_OPUS"), ebmlCodecId("V_MPEGH/ISO/HEVC"))))
-                .isInstanceOf(TemporaryCheckinException.class)
-                .hasMessage("录音格式不支持或文件内容损坏");
-        assertThatThrownBy(() -> detect(bytes("plain text is not audio")))
-                .isInstanceOf(TemporaryCheckinException.class)
-                .hasMessage("录音格式不支持或文件内容损坏");
+                        bytes("A_OPUS"), ebmlCodecId("V_MPEGH/ISO/HEVC")), "VIDEO_TRACK");
+        assertRejected(bytes("plain text is not audio"), "UNRECOGNIZED_FORMAT");
+    }
+
+    @Test
+    void distinguishesMissingAndVideoTracksInRecognizedContainers() {
+        assertRejected(isoPrefix("isom"), "NO_AUDIO_TRACK");
+        assertRejected(bytes("OggSnot-an-audio-track"), "NO_AUDIO_TRACK");
+        assertRejected(bytes("OggSOpusHeadtheora"), "VIDEO_TRACK");
+        assertRejected(new byte[] {0x1a, 0x45, (byte) 0xdf, (byte) 0xa3}, "NO_AUDIO_TRACK");
+        assertDetected(bytes("OggSOpusHead"), "audio/ogg", ".ogg");
     }
 
     @Test
@@ -110,6 +102,16 @@ class TemporaryCheckinAudioDetectionTest {
         TemporaryCheckinService.DetectedMedia detected = detect(content);
         assertThat(detected.contentType()).isEqualTo(contentType);
         assertThat(detected.extension()).isEqualTo(extension);
+    }
+
+    private static void assertRejected(byte[] content, String reason) {
+        assertThatThrownBy(() -> detect(content)).isInstanceOfSatisfying(
+                TemporaryCheckinException.class, exception -> {
+                    assertThat(exception.status().value()).isEqualTo(400);
+                    assertThat(exception.code()).isEqualTo("TEMP_CHECKIN_BAD_REQUEST");
+                    assertThat(exception.audioRejectionReason().name()).isEqualTo(reason);
+                    assertThat(exception.getMessage()).contains("录音");
+                });
     }
 
     private static TemporaryCheckinService.DetectedMedia detect(byte[] content) {

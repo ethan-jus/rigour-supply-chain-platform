@@ -4,6 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.UUID;
+import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
@@ -31,15 +32,27 @@ class TemporaryCheckinWorkbookController {
             @RequestParam(name="status",required=false) String status,
             @RequestParam(name="visitType",required=false) String visitType,
             @RequestParam(name="q",required=false) String query,
+            @RequestParam(name="riskLevel",required=false) String riskLevel,
+            @RequestParam(name="riskFlags",required=false) List<String> riskFlags,
+            @RequestParam(name="deviceRisk",required=false) String deviceRisk,
+            @RequestParam(name="audioRisk",required=false) String audioRisk,
+            @RequestParam(name="riskQuery",required=false) String riskQuery,
+            @RequestParam(name="riskReviewStatus",required=false) String riskReviewStatus,
             @RequestParam(name="locationStatus",required=false) String locationStatus,
             @RequestParam(name="reviewStatus",required=false) String reviewStatus,
             @RequestParam(name="mediaStatus",required=false) String mediaStatus,
             @RequestParam(name="sortBy",required=false) String sortBy,
             @RequestParam(name="sortDirection",required=false) String sortDirection,
+            @RequestParam(name="sort",required=false) List<String> sorts,
             @RequestParam(name="summarySortBy",required=false) String summarySortBy,
             @RequestParam(name="summarySortDirection",required=false) String summarySortDirection) {
-        byte[] body=service.export(access.requireScope(request),from,to,city,salespersonId,status,visitType,query,
-                new TemporaryCheckinRepository.AdminReadOptions(locationStatus,reviewStatus,mediaStatus,sortBy,sortDirection),
+        var scope=access.requireScope(request);
+        String[] rawSorts=request.getParameterValues("sort");
+        sorts=rawSorts==null?null:java.util.Arrays.asList(rawSorts);
+        byte[] body=service.export(scope,from,to,city,salespersonId,status,visitType,query,
+                new TemporaryCheckinRepository.AdminReadOptions(locationStatus,reviewStatus,mediaStatus,
+                        sorts==null||sorts.isEmpty()?sortBy:null,sorts==null||sorts.isEmpty()?sortDirection:null,
+                        riskLevel,riskFlags,deviceRisk,audioRisk,riskQuery,riskReviewStatus,scope.city()).withSorts(sorts),
                 summarySortBy,summarySortDirection);
         return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .contentLength(body.length).header(HttpHeaders.CACHE_CONTROL,"no-store")

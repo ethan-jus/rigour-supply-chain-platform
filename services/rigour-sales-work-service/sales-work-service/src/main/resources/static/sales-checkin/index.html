@@ -7,7 +7,7 @@
     <meta name="description" content="销售拜访、现场证据与进度记录">
     <meta name="robots" content="noindex,nofollow,noarchive">
     <title>销售拜访打卡</title>
-    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260908-attendance-multi-photo">
+    <link rel="stylesheet" href="/sales-checkin/styles.css?v=20260910-audio-recovery-v1">
 </head>
 <body data-screen="identity">
 <header class="hero">
@@ -143,6 +143,7 @@
                                 <small data-audio-status></small>
                             </div>
                             <div class="audio-preview__actions">
+                                <a class="text-button" data-audio-download hidden>下载保留原件</a>
                                 <button class="text-button audio-retry-button" data-audio-retry type="button" hidden>重试</button>
                                 <button class="text-button audio-skip-button" data-audio-skip type="button" hidden>跳过此段</button>
                                 <button class="text-button file-remove-button" data-audio-remove type="button">移除</button>
@@ -627,15 +628,15 @@
     <section id="history-detail-page" class="page-shell history-detail-page" aria-label="打卡明细" hidden><div id="history-detail-content"></div></section>
 </main>
 <nav id="app-bottom-nav" class="app-bottom-nav" aria-label="主导航" hidden><button id="nav-visit-button" class="is-active" type="button" aria-current="page"><span class="app-icon icon-store" aria-hidden="true"></span><span>拜访</span></button><button id="nav-records-button" type="button"><span class="app-icon icon-records" aria-hidden="true"></span><span>记录</span></button></nav>
-<dialog id="history-calendar-dialog" class="history-calendar-dialog" aria-label="选择日期"><div class="sheet-heading"><h2>选择日期</h2><button class="icon-button" type="button" data-history-action="close-calendar" aria-label="关闭日期选择"><img class="dialog-close-icon" src="/sales-checkin/icons/x.svg" alt="" aria-hidden="true" width="22" height="22"></button></div><div id="history-calendar-content"></div></dialog>
-<dialog id="history-photo-dialog" class="history-photo-dialog" aria-label="现场照片"><button class="icon-button photo-dialog-close" type="button" data-history-action="close-photo" aria-label="关闭照片"><img class="dialog-close-icon" src="/sales-checkin/icons/x.svg" alt="" aria-hidden="true" width="22" height="22"></button><div id="history-photo-content"></div></dialog>
+<dialog id="history-calendar-dialog" hidden class="history-calendar-dialog" aria-label="选择日期"><div class="sheet-heading"><h2>选择日期</h2><button class="icon-button" type="button" data-history-action="close-calendar" aria-label="关闭日期选择"><img class="dialog-close-icon" src="/sales-checkin/icons/x.svg" alt="" aria-hidden="true" width="22" height="22"></button></div><div id="history-calendar-content"></div></dialog>
+<dialog id="history-photo-dialog" hidden class="history-photo-dialog" aria-label="现场照片"><button class="icon-button photo-dialog-close" type="button" data-history-action="close-photo" aria-label="关闭照片"><img class="dialog-close-icon" src="/sales-checkin/icons/x.svg" alt="" aria-hidden="true" width="22" height="22"></button><div id="history-photo-content"></div></dialog>
 
-<dialog id="local-photo-dialog" class="history-photo-dialog" aria-label="已选择的现场照片"><button id="local-photo-close" class="icon-button photo-dialog-close" type="button" aria-label="关闭照片"><img class="dialog-close-icon" src="/sales-checkin/icons/x.svg" alt="" aria-hidden="true" width="22" height="22"></button><div class="photo-dialog-content"><img id="local-photo-full" alt="本次拜访现场照片"></div></dialog>
+<dialog id="local-photo-dialog" hidden class="history-photo-dialog" aria-label="已选择的现场照片"><button id="local-photo-close" class="icon-button photo-dialog-close" type="button" aria-label="关闭照片"><img class="dialog-close-icon" src="/sales-checkin/icons/x.svg" alt="" aria-hidden="true" width="22" height="22"></button><div class="photo-dialog-content"><img id="local-photo-full" alt="本次拜访现场照片"></div></dialog>
 
-    <script src="/sales-checkin/storage.js?v=20260908-attendance-multi-photo" defer></script>
-    <script src="/sales-checkin/recording-journal.js?v=20260908-attendance-multi-photo" defer></script>
-    <script src="/sales-checkin/personal-history.js?v=20260908-attendance-multi-photo" defer></script>
-    <script src="/sales-checkin/photos.js?v=20260908-attendance-multi-photo" defer></script>
-    <script src="/sales-checkin/app.js?v=20260908-attendance-multi-photo" defer></script>
+    <script src="/sales-checkin/storage.js?v=20260910-audio-recovery-v1" defer></script>
+    <script src="/sales-checkin/recording-journal.js?v=20260910-audio-recovery-v1" defer></script>
+    <script src="/sales-checkin/personal-history.js?v=20260910-audio-recovery-v1" defer></script>
+    <script src="/sales-checkin/photos.js?v=20260910-audio-recovery-v1" defer></script>
+    <script src="/sales-checkin/app.js?v=20260910-audio-recovery-v1" defer></script>
 </body>
 </html>

@@ -28,7 +28,7 @@ const filters=url=>Object.fromEntries([...new URL(url,base).searchParams].filter
    if(url.pathname===api+'/options')return route.fulfill({json:{scope:identity,cities:cityScoped?['杭州']:['杭州','苏州'],salespersons:[{id:id(501),name:'示例销售甲',city:'杭州'},{id:id(502),name:'示例销售乙',city:'苏州'}]}});
    const filtered=!!(url.searchParams.get('from')||url.searchParams.get('q')||url.searchParams.get('salespersonId'));
    const draft=url.searchParams.get('status')==='DRAFT';const total=filtered?7:127;
-   const group=(index)=>({date:`2026-09-${String(8-Math.floor(index/12)).padStart(2,'0')}`,city:cityScoped?'杭州':index%2?'苏州':'杭州',salespersonId:index===0?id(590):id(501+index%11),salespersonName:index===0?'历史销售示例':`示例销售${index}`,visitCount:2,storeCount:1,firstCheckinAt:'2026-09-08T01:02:03Z',lastCheckinAt:'2026-09-08T09:10:11Z',pendingReviewCount:index<7?1:0});
+   const group=(index)=>({date:`2026-09-${String(8-Math.floor(index/12)).padStart(2,'0')}`,city:cityScoped?'杭州':index%2?'苏州':'杭州',salespersonId:index===0?id(590):id(501+index%11),salespersonName:index===0?'历史销售示例':`示例销售${index}`,visitCount:2,storeCount:1,audioCount:1,firstCheckinAt:'2026-09-08T01:02:03Z',lastCheckinAt:'2026-09-08T09:10:11Z',pendingReviewCount:index<7?1:0});
    if(url.pathname===api+'/submissions/attendance-summary'){
     if(state.fail)return route.fulfill({status:503,json:{message:'统计服务暂不可用'}});
     const n=Number(url.searchParams.get('summaryPage')||0);

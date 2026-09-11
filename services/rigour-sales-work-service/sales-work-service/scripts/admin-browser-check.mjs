@@ -94,8 +94,9 @@ function browserFixture() {
         }
         if (url.pathname.endsWith('/submissions')) {
             let rows=items.filter(item=>!url.searchParams.get('reviewStatus') || item.reviewStatus===url.searchParams.get('reviewStatus'));
-            const field=url.searchParams.get('sortBy')||'completedAt'; const direction=url.searchParams.get('sortDirection')==='asc'?1:-1;
-            rows.sort((a,b)=>String(a[field]).localeCompare(String(b[field]))*direction || a.id.localeCompare(b.id));
+            const sorts=url.searchParams.getAll('sort');
+            if(!sorts.length)sorts.push(`${url.searchParams.get('sortBy')||'completedAt'}:${url.searchParams.get('sortDirection')||'desc'}`);
+            rows.sort((a,b)=>{for(const entry of sorts){const [field,direction]=entry.split(':');const compared=String(a[field]).localeCompare(String(b[field]))*(direction==='asc'?1:-1);if(compared)return compared;}return a.id.localeCompare(b.id);});
             const page=Number(url.searchParams.get('page')||0); const size=Number(url.searchParams.get('size')||20);
             return response({scope:identity,items:rows.slice(page*size,(page+1)*size),page,total:rows.length,totalElements:rows.length,totalPages:Math.ceil(rows.length/size),firstVisitTotal:rows.length,revisitTotal:0,locationAttentionTotal:rows.length,reviewPendingTotal:rows.filter(item=>item.reviewStatus==='PENDING').length,missingAudioTotal:0});
         }
@@ -120,7 +121,8 @@ async function browserTests() {
     const idle=()=>!$('#search-button').disabled;
     try {
         await wait(()=>$('#submission-rows').children.length===20 && idle());
-        assert(query().get('sortBy')==='completedAt' && query().get('sortDirection')==='desc','default server sort');
+        const sortEntries=()=>query().getAll('sort');
+        assert((!sortEntries().length && query().get('sortBy')==='completedAt' && query().get('sortDirection')==='desc') || JSON.stringify(sortEntries())===JSON.stringify(['completedAt:desc']),'default server sort');
         assert($('#submission-rows').firstElementChild.querySelector('[data-field="store"]').textContent==='测试门店 23','default latest first');
         assert(document.querySelectorAll('audio').length===1 && !$('#shared-audio').getAttribute('src'),'one player with no initial audio request');
         assert($('#submission-rows').firstElementChild.querySelector('[data-field="audio"]').textContent.includes('时长待解析'),'unknown duration must not be zero');
@@ -129,16 +131,18 @@ async function browserTests() {
         $('#next-page').click(); await wait(()=>query().get('page')==='1'&&idle());
         assert($('#submission-rows').children.length===4,'pagination uses server page');
         for(const field of ['cityName','salespersonName','storeName','completedAt']) {
-            $(`[data-sort-by="${field}"]`).click(); await wait(()=>query().get('sortBy')===field&&query().get('page')==='0'&&idle());
-            assert(query().get('sortDirection')==='asc',`ascending ${field}`);
+            if(!$('#reset-sort-button').disabled){$('#reset-sort-button').click();await wait(()=>!sortEntries().length&&idle());}
+            $(`[data-sort-by="${field}"]`).click(); await wait(()=>JSON.stringify(sortEntries())===JSON.stringify([`${field}:asc`])&&query().get('page')==='0'&&idle());
+            assert(JSON.stringify(sortEntries())===JSON.stringify([`${field}:asc`]),`ascending ${field}`);
             assert($(`[data-sort-by="${field}"]`).closest('th').getAttribute('aria-sort')==='ascending','aria ascending');
-            $(`[data-sort-by="${field}"]`).click(); await wait(()=>query().get('sortDirection')==='desc'&&idle());
+            $(`[data-sort-by="${field}"]`).click(); await wait(()=>JSON.stringify(sortEntries())===JSON.stringify([`${field}:desc`])&&idle());
             assert($(`[data-sort-by="${field}"]`).closest('th').getAttribute('aria-sort')==='descending','aria descending');
         }
         $('#filter-location-status').value='STALE'; $('#filter-review-status').value='PENDING'; $('#filter-media-status').value='HAS_AUDIO';
         $('#filter-query').value='测试'; $('#filter-form').requestSubmit(); await wait(()=>query().get('q')==='测试'&&idle());
         const exported=new URL($('#export-link').href).searchParams;
-        for(const field of ['sortBy','sortDirection','locationStatus','reviewStatus','mediaStatus','q']) assert(exported.get(field)===query().get(field),`export consistency ${field}`);
+        for(const field of ['locationStatus','reviewStatus','mediaStatus','q']) assert(exported.get(field)===query().get(field),`export consistency ${field}`);
+        assert(JSON.stringify(exported.getAll('sort'))===JSON.stringify(sortEntries()),'export consistency ordered sort entries');
         assert(!exported.has('page')&&!exported.has('size'),'export covers full filtered results');
         assert(new URL(location.href).searchParams.get('mediaStatus')==='HAS_AUDIO','filters persist in URL');
         assert(window.testCalls.slice(initialCalls).every(call=>call.credentials==='same-origin'),'same origin cookie credential flow');

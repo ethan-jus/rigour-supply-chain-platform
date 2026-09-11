@@ -95,7 +95,8 @@ final class TemporaryCheckinAdminAuthenticationFilter extends OncePerRequestFilt
         return ADMIN_PREFIX.equals(path)
                 || (ADMIN_PREFIX + "index.html").equals(path)
                 || (ADMIN_PREFIX + "admin.css").equals(path)
-                || (ADMIN_PREFIX + "admin.js").equals(path);
+                || (ADMIN_PREFIX + "admin.js").equals(path)
+                || (ADMIN_PREFIX + "risk-admin.js").equals(path);
     }
 
     private static boolean requiresCsrf(HttpServletRequest request) {

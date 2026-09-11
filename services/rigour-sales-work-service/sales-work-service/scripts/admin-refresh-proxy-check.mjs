@@ -42,7 +42,7 @@ const images=Array.from({length:20},(_,i)=>new Promise(resolve=>{
 const reads=['options','submissions','submissions/attendance-summary'].map(p=>fetch(tagged('/sales-checkin/admin/api/v1/'+p)).then(r=>r.ok));
 Promise.all([...images,...reads]).then(results=>{window.fixtureReady=results.every(Boolean);document.querySelector('#status').textContent=window.fixtureReady?'20张图片和统计读取成功':'资源读取失败';});`;
 const html = `<!doctype html><html lang="zh"><meta charset="utf-8"><title>后台代理回归演示</title>
-<link rel="stylesheet" href="${tagged(admin + 'admin.css')}"><script defer src="${tagged(admin + 'admin.js')}"></script>
+<link rel="stylesheet" href="${tagged(admin + 'admin.css')}"><script defer src="${tagged(admin + 'admin.js')}"></script><script defer src="${tagged(admin + 'risk-admin.js')}"></script>
 <h1>后台代理回归演示</h1><p>仅合成路由和图片，用于验证刷新与限流。</p><a id="detail">打开演示详情</a>
 <p id="status">正在读取资源</p><div id="photos"></div></html>`;
 const upstream = createServer((incoming, outgoing) => {
@@ -133,7 +133,7 @@ async function browserWorkload(port, old = false) {
             await page.goBack({ waitUntil: 'load' }); await ready(`round ${round} back`);
         }
         check(statuses.every(item => item.status === 200), 'all normal browser responses are 200, with no 429/503');
-        for (const path of [admin + 'admin.css', admin + 'admin.js', api + 'submissions/attendance-summary'])
+        for (const path of [admin + 'admin.css', admin + 'admin.js', admin + 'risk-admin.js', api + 'submissions/attendance-summary'])
             check(statuses.filter(item => item.path === path).length >= 4, `${path}: actually requested repeatedly`);
         await page.screenshot({ path: join(output, 'new-normal.png') });
         await writeFile(join(output, 'new-responses.json'), JSON.stringify(statuses, null, 2));
@@ -154,7 +154,7 @@ async function concurrency(port, label, path, method, maximum) {
     while ((active.get(group) || 0) < maximum && Date.now() - started < 1000) await sleep(10);
     check(active.get(group) === maximum, `${label}: ${maximum} requests occupy their allowed slots`);
     check(await get(port, path, method) === 429, `${label}: next active request returns 429`);
-    check(await get(port, admin + 'admin.css') === 200 && await get(port, admin + 'admin.js') === 200, `${label}: full business slots cannot block CSS/JS`);
+    check(await get(port, admin + 'admin.css') === 200 && await get(port, admin + 'admin.js') === 200 && await get(port, admin + 'risk-admin.js') === 200, `${label}: full business slots cannot block CSS/JS/risk module`);
     check((await Promise.all(pending)).every(status => status === 200), `${label}: accepted held requests complete`);
 }
 
@@ -167,10 +167,10 @@ try {
     await proxy('old', old, port => browserWorkload(port, true)); console.log('PASS old 503 reproduction');
     await proxy('normal', current, port => browserWorkload(port)); console.log('PASS 4 browser rounds: open/20 images/refresh/detail/back');
     await proxy('write', current, async port => {
-        for (let i = 0; i < 100; i++) check(await get(port, admin + (i % 2 ? 'admin.css' : 'admin.js')) === 200, 'static does not consume write quota');
+        for (let i = 0; i < 100; i++) check(await get(port, admin + ['admin.css', 'admin.js', 'risk-admin.js'][i % 3]) === 200, 'static does not consume write quota');
         const statuses = await burst(port, api + `submissions/${submission}/review`, 'POST', 16, 429);
         check(statuses.slice(0, 11).every(status => status === 200), 'write burst remains 10 plus initial request after 100 static reads');
-        for (const [path, method] of [[photo(1), 'PUT'], [legacy, 'DELETE'], [admin + 'admin.js', 'POST'], [admin + 'index.html', 'POST']])
+        for (const [path, method] of [[photo(1), 'PUT'], [legacy, 'DELETE'], [admin + 'admin.js', 'POST'], [admin + 'risk-admin.js', 'POST'], [admin + 'index.html', 'POST']])
             check(await get(port, path, method) === 429, 'non-GET cannot bypass write quota through media or static paths');
         check(await get(port, admin + 'admin.css') === 200 && await get(port, api + 'submissions/attendance-summary') === 200 && await get(port, photo(1)) === 200, 'exhausted writes leave static/read/media quotas independent');
     });

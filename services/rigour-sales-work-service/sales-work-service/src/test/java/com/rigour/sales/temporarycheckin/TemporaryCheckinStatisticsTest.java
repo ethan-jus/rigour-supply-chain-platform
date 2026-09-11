@@ -66,6 +66,8 @@ class TemporaryCheckinStatisticsTest {
 
     @BeforeEach void prepare() {
         connect("UTC");
+        for(String table:List.of("review_member","review","assignment","audio","device"))
+            jdbc.update("DELETE FROM temp_sales_checkin_risk_"+table);
         jdbc.update("DELETE FROM temp_sales_checkin_submission");
         jdbc.update("DELETE FROM temp_sales_checkin_store");
         jdbc.update("DELETE FROM temp_sales_checkin_salesperson");
@@ -87,10 +89,12 @@ class TemporaryCheckinStatisticsTest {
         checkins = new TemporaryCheckinService(originals, null, null, null, catalog, properties,
                 null, null, null, null, null, null, null, null, null, Clock.systemUTC(),
                 beans.getBeanProvider(TemporaryCheckinAiClient.class),
-                beans.getBeanProvider(org.springframework.boot.servlet.autoconfigure.MultipartProperties.class));
+                beans.getBeanProvider(org.springframework.boot.servlet.autoconfigure.MultipartProperties.class), null);
         statistics = new TemporaryCheckinStatisticsService(checkins, new TemporaryCheckinStatisticsRepository(jdbc), properties);
         var workbook = new TemporaryCheckinWorkbookService(checkins, originals, new TemporaryCheckinStatisticsRepository(jdbc),
-                new TemporaryCheckinEvidenceRepository(jdbc), new TemporaryCheckinWorkbookWriter(), properties);
+                new TemporaryCheckinEvidenceRepository(jdbc), new TemporaryCheckinWorkbookWriter(), properties,
+                new TemporaryCheckinRiskService(new TemporaryCheckinRiskRepository(jdbc),properties,Clock.systemUTC(),
+                        new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource())));
         mvc = MockMvcBuilders.standaloneSetup(new TemporaryCheckinStatisticsController(statistics, new TemporaryCheckinAdminAccessPolicy()),
                         new TemporaryCheckinWorkbookController(workbook, new TemporaryCheckinAdminAccessPolicy()))
                 .setControllerAdvice(new TemporaryCheckinExceptionHandler()).build();
@@ -118,6 +122,87 @@ class TemporaryCheckinStatisticsTest {
         assertThat(second.items().getFirst().date()).isBefore(first.items().getLast().date());
         assertThat(statistics.exportSummary(GLOBAL, null, null, null, null, null, null, null, AdminReadOptions.defaults()).items()).hasSize(55);
         assertThat(statistics.summary(GLOBAL, null, null, null, null, null, null, null, AdminReadOptions.defaults(), Integer.MAX_VALUE, 100).items()).isEmpty();
+    }
+
+    @Test void audioCountCountsVisitsWithAnyAvailableRecordingNotSegmentsStoresOrFileHashes() throws Exception {
+        UUID multi=submission(TENANT,SALES,STORE,"北京","测试销售","多段门店","SUBMITTED",NOW);
+        UUID missingSha=submission(TENANT,SALES,STORE,"北京","测试销售","无摘要门店","SUBMITTED",NOW.plusSeconds(1));
+        UUID legacy=submission(TENANT,SALES,STORE,"北京","测试销售","历史单段","SUBMITTED",NOW.plusSeconds(2));
+        UUID sameFile=submission(TENANT,SALES,STORE_TWO,"北京","测试销售","相同原文件","SUBMITTED",NOW.plusSeconds(3));
+        UUID partlyDeleted=submission(TENANT,SALES,STORE_TWO,"北京","测试销售","部分删除","SUBMITTED",NOW.plusSeconds(4));
+        UUID deletedManifest=submission(TENANT,SALES,STORE,"北京","测试销售","清单已删除","SUBMITTED",NOW.plusSeconds(5));
+        UUID deletedLegacy=submission(TENANT,SALES,STORE,"北京","测试销售","旧单段已删除","SUBMITTED",NOW.plusSeconds(6));
+        UUID invalid=submission(TENANT,SALES,STORE,"北京","测试销售","无有效上传","SUBMITTED",NOW.plusSeconds(7));
+        UUID draft=submission(TENANT,SALES,STORE,"北京","测试销售","有录音草稿","DRAFT",NOW);
+        String sha="a".repeat(64);
+        audio(multi,sha,100,false);
+        appendAudioCopy(multi,false);appendAudioCopy(multi,false);
+        legacyAudio(multi,false); // 已有三段清单时，首段兼容投影不可再计一次。
+        audio(missingSha,null,100,false); // 有效上传不因历史 SHA 或解析时长缺失而漏计。
+        legacyAudio(legacy,false);
+        audio(sameFile,sha,100,false); // 相同原文件用于不同拜访，仍分别计为有录音的拜访。
+        audio(partlyDeleted,sha,100,true);appendAudioCopy(partlyDeleted,false);
+        audio(deletedManifest,sha,100,true);legacyAudio(deletedManifest,false);
+        legacyAudio(deletedLegacy,true);
+        audio(invalid,sha,0,false);
+        jdbc.update("UPDATE temp_sales_checkin_submission SET audio_segments_json=JSON_ARRAY_APPEND(audio_segments_json,'$',"
+                +"JSON_OBJECT('objectKey','   ','sizeBytes',100),'$',JSON_OBJECT('sizeBytes',100)) WHERE id=?",bin(invalid));
+        audio(draft,sha,100,false);appendAudioCopy(draft,false);
+
+        var page=statistics.summary(GLOBAL,null,null,null,null,null,null,null,AdminReadOptions.defaults(),0,50);
+        assertThat(page.totalVisits()).isEqualTo(9);
+        assertThat(page.items()).singleElement().satisfies(row->{
+            assertThat(row.visitCount()).isEqualTo(8);
+            assertThat(row.storeCount()).isEqualTo(2);
+            assertThat(row.audioCount()).isEqualTo(5).isLessThanOrEqualTo(row.visitCount());
+        });
+        assertThat(statistics.summary(GLOBAL,null,null,null,null,"DRAFT",null,null,AdminReadOptions.defaults(),0,50).items()).isEmpty();
+        assertThat(statistics.summary(GLOBAL,null,null,"北京",SALES,"SUBMITTED",null,"无摘要门店",AdminReadOptions.defaults(),0,50)
+                .items().getFirst().audioCount()).isEqualTo(1);
+        mvc.perform(get("/sales-checkin/admin/api/v1/submissions/attendance-summary").with(admin("北京")).param("status","SUBMITTED"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].visitCount").value(8))
+                .andExpect(jsonPath("$.items[0].audioCount").value(5));
+        byte[] bytes=mvc.perform(get("/sales-checkin/admin/export.xlsx").with(admin("北京")).param("status","SUBMITTED"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        try(var book=new XSSFWorkbook(new ByteArrayInputStream(bytes))) {
+            var sheet=book.getSheet("每日销售汇总");
+            assertThat(sheet.getRow(4).getCell(4).getStringCellValue()).isEqualTo("拜访门店数");
+            assertThat(sheet.getRow(4).getCell(5).getStringCellValue()).isEqualTo("录音数量");
+            assertThat(sheet.getRow(5).getCell(5).getNumericCellValue()).isEqualTo(5);
+            assertThat(sheet.getRow(2).getCell(0).getStringCellValue()).contains("拜访次数","多段计一次");
+        }
+    }
+
+    @Test void audioCountUsesAllMatchingVisitsBeforePaginationAndPreservesTenantCityAndDateFilters() {
+        UUID second=UUID.randomUUID();salesperson(TENANT,second,"另一销售");
+        UUID today=submission(TENANT,SALES,STORE,"北京","测试销售","目标门店","SUBMITTED",NOW);
+        UUID yesterday=submission(TENANT,SALES,STORE,"北京","测试销售","目标门店","SUBMITTED",NOW.minus(1,ChronoUnit.DAYS));
+        UUID city=submission(TENANT,SALES,STORE_TWO,"深圳","测试销售","目标门店","SUBMITTED",NOW);
+        UUID person=submission(TENANT,second,STORE,"北京","另一销售","其他门店","SUBMITTED",NOW);
+        UUID tenant=submission(OTHER,OTHER_SALES,OTHER_STORE,"北京","另租户销售","目标门店","SUBMITTED",NOW);
+        for(UUID id:List.of(today,yesterday,city,person,tenant))audio(id,null,100,false);
+        appendAudioCopy(today,false);
+        var all=statistics.exportSummary(GLOBAL,null,null,null,null,"SUBMITTED",null,null,AdminReadOptions.defaults());
+        assertThat(all.items()).hasSize(4).allSatisfy(row->assertThat(row.audioCount()).isEqualTo(1));
+        long acrossPages=0;
+        for(int page=0;page<4;page++) {
+            var result=statistics.summary(GLOBAL,null,null,null,null,"SUBMITTED",null,null,AdminReadOptions.defaults(),page,1);
+            assertThat(result.totalVisits()).isEqualTo(4);
+            assertThat(result.totalElements()).isEqualTo(4);
+            acrossPages+=result.items().getFirst().audioCount();
+        }
+        assertThat(acrossPages).isEqualTo(4);
+        jdbc.update("UPDATE temp_sales_checkin_submission SET location_quality='STALE',review_status='APPROVED' WHERE id=?",bin(today));
+        var reviewed=new AdminReadOptions("STALE","APPROVED",null,null,null);
+        assertThat(statistics.summary(GLOBAL,null,null,null,null,"SUBMITTED",null,null,reviewed,0,50).items())
+                .singleElement().satisfies(row->assertThat(row.audioCount()).isEqualTo(1));
+        var beijing=new AdminScope(UUID.randomUUID(),"北京管理员","北京");
+        LocalDate day=LocalDate.of(2026,9,8);
+        var selected=statistics.summary(beijing,day,day,null,SALES,"SUBMITTED","REVISIT","目标",AdminReadOptions.defaults(),0,50);
+        assertThat(selected.totalVisits()).isEqualTo(1);
+        assertThat(selected.items()).singleElement().satisfies(row->{
+            assertThat(row.city()).isEqualTo("北京");assertThat(row.audioCount()).isEqualTo(1);
+        });
     }
 
     @ParameterizedTest @ValueSource(strings = {"UTC", "Asia/Shanghai"})
@@ -283,6 +368,171 @@ class TemporaryCheckinStatisticsTest {
         assertThat(empty.totalElements()).isZero();
         assertThat(empty.totalPages()).isZero();
         assertThat(empty.items()).isEmpty();
+    }
+
+    @Test void adminListAndExportUseSavedFormattedAddressWithoutChangingCoordinates() {
+        UUID id=submission(TENANT,SALES,STORE,"北京","测试销售","示例门店","SUBMITTED",NOW);
+        for(String shortAddress:java.util.Arrays.asList("旧简写地址",null)) {
+            jdbc.update("UPDATE temp_sales_checkin_submission SET location_address=?,location_formatted_address=? WHERE id=?",
+                    shortAddress,"北京市测试区设备街88号",bin(id));
+            assertThat(originals.findAdminSubmission(TENANT,id,null).orElseThrow().locationAddress()).isEqualTo("北京市测试区设备街88号");
+            assertThat(originals.exportForWorkbook(TENANT,null,null,null,null,null,null,null,10,AdminReadOptions.defaults())
+                    .getFirst().locationAddress()).isEqualTo("北京市测试区设备街88号");
+            assertThat(jdbc.queryForObject("SELECT location_address FROM temp_sales_checkin_submission WHERE id=?",String.class,bin(id))).isEqualTo(shortAddress);
+        }
+    }
+
+    @Test void sharedDeviceFiltersKeepAuthorizedHistoryOutsideSelectedCityAndSalesperson() throws Exception {
+        UUID second=UUID.randomUUID();salesperson(TENANT,second,"另一销售");
+        UUID a=submission(TENANT,SALES,STORE,"北京","测试销售","北京门店","SUBMITTED",NOW);
+        UUID b=submission(TENANT,second,STORE_TWO,"深圳","另一销售","深圳门店","SUBMITTED",NOW.minus(2,ChronoUnit.DAYS));
+        UUID other=submission(OTHER,OTHER_SALES,OTHER_STORE,"北京","别租户销售","其他门店","SUBMITTED",NOW);
+        for(UUID id:List.of(a,b,other)) jdbc.update("UPDATE temp_sales_checkin_submission SET device_token_hash=? WHERE id=?","d".repeat(64),bin(id));
+        registerRiskFixtures();
+        var options=riskOptions(null,"SHARED",null,null,null);
+        assertThat(originals.findAdminSubmissions(TENANT,null,null,"北京",SALES,"SUBMITTED",null,null,0,20,options))
+                .extracting(TemporaryCheckinRepository.AdminSubmissionRow::id).containsExactly(a);
+        assertThat(originals.adminSubmissionStats(TENANT,null,null,"北京",SALES,"SUBMITTED",null,null,options).total()).isEqualTo(1);
+        assertThat(originals.exportForWorkbook(TENANT,null,null,"北京",SALES,"SUBMITTED",null,null,100,options))
+                .extracting(TemporaryCheckinRepository.ExportRow::id).containsExactly(a);
+        assertThat(statistics.summary(GLOBAL,LocalDate.of(2026,9,8),LocalDate.of(2026,9,8),"北京",SALES,
+                "SUBMITTED",null,null,options,0,50).totalVisits()).isEqualTo(1);
+        var cityAdmin=new AdminScope(UUID.randomUUID(),"北京管理员","北京");
+        assertThat(statistics.summary(cityAdmin,null,null,"北京",SALES,"SUBMITTED",null,null,options,0,50).totalVisits()).isZero();
+        mvc.perform(get("/sales-checkin/admin/api/v1/submissions/attendance-summary").with(admin(null))
+                .param("city","北京").param("deviceRisk","SHARED").param("salespersonId",SALES.toString()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalVisits").value(1));
+        mvc.perform(get("/sales-checkin/admin/api/v1/submissions/attendance-summary").with(admin("北京"))
+                .param("deviceRisk","SHARED")).andExpect(status().isOk()).andExpect(jsonPath("$.totalVisits").value(0));
+        byte[] exported=mvc.perform(get("/sales-checkin/admin/export.xlsx").with(admin(null))
+                .param("city","北京").param("salespersonId",SALES.toString()).param("deviceRisk","SHARED"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        try(var book=new XSSFWorkbook(new ByteArrayInputStream(exported))) {
+            assertThat(book.getNumberOfSheets()).isEqualTo(4);
+            assertThat(book.getSheet("打卡明细").getLastRowNum()).isEqualTo(5);
+            var related=book.getSheet("设备关联");
+            assertThat(related.getLastRowNum()).isEqualTo(6);
+            assertThat(related.getRow(5).getCell(4).getStringCellValue()).isEqualTo("另一销售");
+            assertThat(related.getRow(5).getCell(1).getStringCellValue()).isEqualTo("否");
+            assertThat(related.getRow(6).getCell(1).getStringCellValue()).isEqualTo("是");
+            assertThat(related.getRow(5).getCell(11).getNumericCellValue()).isEqualTo(2);
+            assertThat(related.getRow(5).getCell(12).getNumericCellValue()).isEqualTo(1);
+            assertThat(new DataFormatter().formatCellValue(related.getRow(6).getCell(2))).isEqualTo("2026-09-08 10:00:00");
+        }
+        byte[] scoped=mvc.perform(get("/sales-checkin/admin/export.xlsx").with(admin("北京")))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        try(var book=new XSSFWorkbook(new ByteArrayInputStream(scoped))) {
+            var related=book.getSheet("设备关联");
+            assertThat(related.getLastRowNum()).isEqualTo(5);
+            assertThat(related.getRow(5).getCell(4).getStringCellValue()).isEqualTo("测试销售");
+            assertThat(related.getRow(5).getCell(10).getNumericCellValue()).isEqualTo(1);
+        }
+    }
+
+    @Test void audioFiltersUseBytesAndDistinctVisitsRatherThanNamesOrDurations() throws Exception {
+        UUID second=UUID.randomUUID();salesperson(TENANT,second,"另一销售");
+        UUID a=submission(TENANT,SALES,STORE,"北京","测试销售","首店","SUBMITTED",NOW);
+        UUID b=submission(TENANT,second,STORE_TWO,"北京","另一销售","次店","SUBMITTED",NOW.minus(1,ChronoUnit.DAYS));
+        UUID sameName=submission(TENANT,SALES,STORE,"北京","测试销售","同名异文件","SUBMITTED",NOW.plusSeconds(30));
+        UUID wrongSize=submission(TENANT,SALES,STORE,"北京","测试销售","不同字节数","SUBMITTED",NOW.plusSeconds(60));
+        UUID removed=submission(TENANT,SALES,STORE,"北京","测试销售","已删录音","SUBMITTED",NOW.plusSeconds(90));
+        UUID draft=submission(TENANT,SALES,STORE,"北京","测试销售","草稿录音","DRAFT",NOW);
+        audio(a,"a".repeat(64),1000,false);audio(b,"a".repeat(64),1000,false);
+        audio(sameName,"b".repeat(64),1000,false);audio(wrongSize,"a".repeat(64),999,false);
+        audio(removed,"a".repeat(64),1000,true);audio(draft,"a".repeat(64),1000,false);
+        jdbc.update("UPDATE temp_sales_checkin_submission SET audio_segments_json=JSON_ARRAY_APPEND(audio_segments_json,'$',"
+                +"JSON_SET(JSON_EXTRACT(audio_segments_json,'$[0]'),'$.segmentId',?)) WHERE id=?",UUID.randomUUID().toString(),bin(a));
+        registerRiskFixtures();
+        var options=riskOptions("HIGH",null,"DUPLICATE",null,null);
+        assertThat(originals.findAdminSubmissions(TENANT,null,null,null,null,null,null,null,0,20,options))
+                .extracting(TemporaryCheckinRepository.AdminSubmissionRow::id).containsExactlyInAnyOrder(a,b);
+        assertThat(originals.adminSubmissionStats(TENANT,null,null,null,null,null,null,null,options).total()).isEqualTo(2);
+        var audioSummary=statistics.summary(GLOBAL,null,null,null,null,null,null,null,options,0,50);
+        assertThat(audioSummary.totalVisits()).isEqualTo(2);
+        assertThat(audioSummary.items().stream().mapToLong(TemporaryCheckinStatisticsRepository.DailyAttendance::audioCount).sum()).isEqualTo(2);
+        assertThat(originals.exportForWorkbook(TENANT,null,null,null,null,null,null,null,100,options)).hasSize(2);
+        byte[] exported=mvc.perform(get("/sales-checkin/admin/export.xlsx").with(admin(null)).param("riskLevel","HIGH")
+                .param("audioRisk","CROSS_SALES").param("salespersonId",SALES.toString()))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        try(var book=new XSSFWorkbook(new ByteArrayInputStream(exported))) {
+            assertThat(book.getSheet("打卡明细").getLastRowNum()).isEqualTo(5);
+            var audio=book.getSheet("录音关联");
+            assertThat(audio.getLastRowNum()).isEqualTo(6);
+            assertThat(audio.getRow(5).getCell(1).getStringCellValue()).isEqualTo("a".repeat(64));
+            assertThat(audio.getRow(5).getCell(16).getNumericCellValue()).isEqualTo(2);
+            assertThat(audio.getRow(5).getCell(17).getNumericCellValue()).isEqualTo(1);
+            assertThat(audio.getRow(6).getCell(14).getNumericCellValue()).isEqualTo(2);
+            assertThat(audio.getRow(6).getCell(18).getNumericCellValue()).isEqualTo(1);
+            assertThat(audio.getRow(6).getCell(19).getNumericCellValue()).isEqualTo(1);
+        }
+        jdbc.update("UPDATE temp_sales_checkin_submission SET risk_level='HIGH' WHERE id=?",bin(sameName));
+        assertThat(originals.adminSubmissionStats(TENANT,null,null,null,null,null,null,null,riskOptions("HIGH",null,null,null,null)).total()).isEqualTo(3);
+    }
+
+    @Test void groupReviewCannotCoverNewMembersOrOtherScopes() {
+        UUID second=UUID.randomUUID();salesperson(TENANT,second,"另一销售");
+        UUID a=submission(TENANT,SALES,STORE,"北京","测试销售","首店","SUBMITTED",NOW);
+        UUID b=submission(TENANT,second,STORE_TWO,"北京","另一销售","次店","SUBMITTED",NOW.plusSeconds(1));
+        for(UUID id:List.of(a,b))jdbc.update("UPDATE temp_sales_checkin_submission SET device_token_hash=? WHERE id=?","e".repeat(64),bin(id));
+        registerRiskFixtures();
+        Long group=jdbc.queryForObject("SELECT id FROM temp_sales_checkin_risk_device WHERE tenant_id=? AND token_hash=?",Long.class,bin(TENANT),"e".repeat(64));
+        UUID review=UUID.randomUUID();
+        jdbc.update("INSERT INTO temp_sales_checkin_risk_review(id,tenant_id,group_kind,group_id,scope_key,client_event_id,evidence_version,"
+                +"rules_version,status,note,actor,reviewed_at,member_count,request_hash) VALUES (?,?,'DEVICE',?,'ALL',?,?,?,'EXPLAINED','已核对共用','总部管理员',?,2,?)",
+                bin(review),bin(TENANT),group,bin(UUID.randomUUID()),"a".repeat(64),TemporaryCheckinRiskModels.RULES_VERSION,Timestamp.from(NOW),"f".repeat(64));
+        for(UUID id:List.of(a,b))jdbc.update("INSERT INTO temp_sales_checkin_risk_review_member VALUES (?,?,LOWER(HEX(?)))",bin(TENANT),bin(review),bin(id));
+        var pending=riskOptions(null,null,null,"PENDING",null);
+        var explained=riskOptions(null,null,null,"EXPLAINED",null);
+        assertThat(originals.adminSubmissionStats(TENANT,null,null,null,null,null,null,null,explained).total()).isEqualTo(2);
+        assertThat(originals.adminSubmissionStats(TENANT,null,null,null,null,null,null,null,pending).total()).isZero();
+        assertThat(originals.adminSubmissionStats(TENANT,null,null,"北京",null,null,null,null,pending.withScope("北京")).total()).isEqualTo(2);
+        UUID next=submission(TENANT,second,STORE,"北京","另一销售","新增拜访","SUBMITTED",NOW.plusSeconds(2));
+        jdbc.update("UPDATE temp_sales_checkin_submission SET device_token_hash=? WHERE id=?","e".repeat(64),bin(next));
+        assertThat(originals.adminSubmissionStats(TENANT,null,null,null,null,null,null,null,pending).total()).isEqualTo(3);
+        assertThat(originals.adminSubmissionStats(TENANT,null,null,null,null,null,null,null,explained).total()).isZero();
+        assertThat(jdbc.queryForObject("SELECT status FROM temp_sales_checkin_risk_review WHERE id=?",String.class,bin(review))).isEqualTo("EXPLAINED");
+    }
+
+    @Test void riskParametersAreValidatedAndSortingRunsBeforePagination() throws Exception {
+        for(String path:List.of("/sales-checkin/admin/api/v1/submissions/attendance-summary","/sales-checkin/admin/export.xlsx")) {
+            mvc.perform(get(path).with(admin(null)).param("riskLevel","HIGH OR 1=1")).andExpect(status().isBadRequest());
+            mvc.perform(get(path).with(admin(null)).param("riskFlags","arbitrary_flag")).andExpect(status().isBadRequest());
+            mvc.perform(get(path).with(admin(null)).param("riskQuery","DEV-%")).andExpect(status().isBadRequest());
+        }
+        UUID a=submission(TENANT,SALES,STORE,"北京","测试销售","单次设备","SUBMITTED",NOW);
+        UUID b=submission(TENANT,SALES,STORE_TWO,"北京","测试销售","多次设备","SUBMITTED",NOW.minusSeconds(1));
+        UUID c=submission(TENANT,SALES,STORE_TWO,"北京","测试销售","多次设备","SUBMITTED",NOW.minusSeconds(2));
+        jdbc.update("UPDATE temp_sales_checkin_submission SET device_token_hash=? WHERE id=?","a".repeat(64),bin(a));
+        for(UUID id:List.of(b,c))jdbc.update("UPDATE temp_sales_checkin_submission SET device_token_hash=? WHERE id=?","c".repeat(64),bin(id));
+        registerRiskFixtures();
+        var sorted=new AdminReadOptions(null,null,null,"deviceVisitCount","desc");
+        assertThat(originals.findAdminSubmissions(TENANT,null,null,null,null,null,null,null,0,1,sorted).getFirst().id()).isIn(b,c);
+        assertThat(originals.findAdminSubmissions(TENANT,null,null,null,null,null,null,null,2,1,sorted).getFirst().id()).isEqualTo(a);
+    }
+
+    private AdminReadOptions riskOptions(String level,String device,String audio,String review,String scope) {
+        return new AdminReadOptions(null,null,null,null,null,level,List.of(),device,audio,null,review,scope);
+    }
+    private void registerRiskFixtures() {
+        jdbc.update("INSERT IGNORE INTO temp_sales_checkin_risk_device(tenant_id,token_hash,created_at) SELECT tenant_id,device_token_hash,UTC_TIMESTAMP(6)"
+                +" FROM temp_sales_checkin_submission WHERE device_token_hash IS NOT NULL GROUP BY tenant_id,device_token_hash");
+        jdbc.update("INSERT IGNORE INTO temp_sales_checkin_risk_audio(tenant_id,sha256,size_bytes,created_at) SELECT tenant_id,sha256,size_bytes,UTC_TIMESTAMP(6)"
+                +" FROM temp_sales_checkin_risk_audio_source GROUP BY tenant_id,sha256,size_bytes");
+    }
+    private void audio(UUID id,String sha,long size,boolean deleted) {
+        jdbc.update("UPDATE temp_sales_checkin_submission SET audio_segments_json=JSON_ARRAY(JSON_OBJECT('segmentId',?,'sha256',?,'sizeBytes',?,"
+                +"'objectKey','fixture/test.mp3','originalFilename','相同文件名.mp3','contentType','audio/mpeg','clientDurationMs',20000,'deletedAt',?)) WHERE id=?",
+                UUID.randomUUID().toString(),sha,size,deleted?"2026-09-08T02:00:00Z":null,bin(id));
+    }
+    private void appendAudioCopy(UUID id,boolean deleted) {
+        jdbc.update("UPDATE temp_sales_checkin_submission SET audio_segments_json=JSON_ARRAY_APPEND(audio_segments_json,'$',"
+                +"JSON_SET(JSON_EXTRACT(audio_segments_json,'$[0]'),'$.segmentId',?,'$.deletedAt',?)) WHERE id=?",
+                UUID.randomUUID().toString(),deleted?"2026-09-08T02:00:00Z":null,bin(id));
+    }
+    private void legacyAudio(UUID id,boolean deleted) {
+        jdbc.update("UPDATE temp_sales_checkin_submission SET audio_object_key='fixture/legacy.mp3',audio_content_type='audio/mpeg',"
+                +"audio_size_bytes=100,audio_sha256=?,audio_original_filename='历史录音.mp3',audio_deleted_at=?,audio_deleted_by=?,audio_deletion_reason=? WHERE id=?",
+                "c".repeat(64),deleted?Timestamp.from(NOW):null,deleted?"统计测试管理员":null,deleted?"测试已删除录音不计入汇总":null,bin(id));
     }
 
     private RequestPostProcessor admin(String city) {

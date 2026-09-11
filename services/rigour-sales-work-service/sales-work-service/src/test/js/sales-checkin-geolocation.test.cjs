@@ -7,7 +7,14 @@ const sourcePath = path.resolve(__dirname, "../../main/resources/static/sales-ch
 const source = fs.readFileSync(sourcePath, "utf8").replace(/\n\}\)\(\);\s*$/, `
     window.__test = { locationEvidenceFromPosition, shouldReplaceLocationSample,
         normalizeUnverifiedLocationEvidence, visitSelectedStoreReady, isVisitStepReady,
-        buildSubmissionPayload, state };
+        buildSubmissionPayload, buildStorePayload, locationContextReady, state,
+        setUnverifiedLocation: (...args) => {
+            // Isolate rendering only: run the actual location transition and payload logic.
+            const old = [renderLocation, renderNearbyStores, clearFieldError, renderBusinessLock];
+            renderLocation = renderNearbyStores = clearFieldError = renderBusinessLock = () => {};
+            try { return setUnverifiedLocation(...args); }
+            finally { [renderLocation, renderNearbyStores, clearFieldError, renderBusinessLock] = old; }
+        } };
 })();`);
 const window = {};
 vm.runInNewContext(source, {
@@ -65,5 +72,32 @@ check("selected authorized store progresses without GPS or nearby membership", (
     const payload = api.buildSubmissionPayload();
     assert.equal(payload.storeId, "far-store");
     assert.equal(payload.location ?? null, null);
+});
+check("unverified samples retain address proof without becoming verified location", () => {
+    const attempt = "b3d90cf8-c3b7-47be-acd9-4421467383b5";
+    const evidence = api.locationEvidenceFromPosition(position(now - 600000, 25000), now);
+    api.setUnverifiedLocation("visit", "LOW_ACCURACY", "定位精度不足", attempt, evidence, {
+        geocodeStatus: "RESOLVED", formattedAddress: "测试路1号",
+        accuracyAccepted: false, freshnessAccepted: false,
+        locationVerificationToken: "a1.signed-address.signature"
+    });
+    assert.equal(api.state.visit.locationContext.locationVerificationStatus, "UNVERIFIED");
+    assert.equal(api.locationContextReady(api.state.visit.locationContext), false);
+    const payload = api.buildSubmissionPayload();
+    assert.equal(payload.locationVerificationToken, "a1.signed-address.signature");
+    assert.equal(payload.locationAttemptId, attempt);
+    assert.equal(payload.location.accuracyMeters, 25000);
+    assert.equal(payload.location.capturedAt, new Date(now - 600000).toISOString());
+    assert.equal(payload.location.longitude, evidence.longitude);
+});
+check("legacy location proof is discarded for unverified samples; address proof cannot authorize stores", () => {
+    api.setUnverifiedLocation("visit", "LOW_ACCURACY", "定位精度不足",
+        "b3d90cf8-c3b7-47be-acd9-4421467383b5", api.state.visit.location, {
+            locationVerificationToken: "v1.location.signature"
+        });
+    assert.equal(api.buildSubmissionPayload().locationVerificationToken, undefined);
+    api.state.store.locationContext = { ...api.state.visit.locationContext,
+        locationVerificationToken: "a1.signed-address.signature" };
+    assert.equal(api.buildStorePayload().locationVerificationToken, undefined);
 });
 console.log(`${checks} geolocation behavior checks passed`);

@@ -5,8 +5,10 @@
     const EXPORT_PATH = "/sales-checkin/admin/export.xlsx";
     const MEDIA_PATH = "/sales-checkin/admin/submissions";
     const PAGE_SIZE = 20;
-    const SORT_LABELS = { completedAt: "打卡时间", cityName: "城市", salespersonName: "销售", storeName: "门店" };
+    const SORT_LABELS = { completedAt: "打卡时间", cityName: "城市", salespersonName: "销售", storeName: "门店", deviceId: "浏览器标识", deviceVisitCount: "设备关联拜访数", deviceSalespersonCount: "关联销售人数", audioDuplicateCount: "录音关联拜访数" };
     const SUMMARY_SORT_LABELS = { date: "日期", city: "城市", salesperson: "销售" };
+    const RISK_FLAGS = ["DEVICE_MULTIPLE_SALES", "SALESPERSON_MULTIPLE_DEVICES", "SALESPERSON_IP_CHURN", "SHARED_IP_MULTIPLE_SALES", "LOCATION_UNVERIFIED"];
+    let riskAdmin = null;
     const LOCATION_LABELS = { GOOD: "定位新鲜", LOW_ACCURACY: "低精度", STALE: "位置过期", TIME_UNKNOWN: "采样时间未知", MISSING: "未取得位置", USER_REPORTED: "销售报告异常", OUT_OF_RANGE: "超出门店范围", STORE_UNLOCATED: "门店未定位", LEGACY: "历史位置" };
     const REVIEW_LABELS = { PENDING: "待复核", APPROVED: "已核实拜访", FOLLOW_UP: "需补充说明", FLAGGED: "异常已确认" };
 
@@ -25,7 +27,7 @@
         mediaStats: null,
         audioIntelligenceEnabled: false,
         filters: { q: "", from: "", to: "", city: "", salespersonId: "", status: "", visitType: "",
-            locationStatus: "", reviewStatus: "", mediaStatus: "", sortBy: "completedAt", sortDirection: "desc" },
+            locationStatus: "", reviewStatus: "", mediaStatus: "", riskLevel: "", riskFlags: [], deviceRisk: "", audioRisk: "", riskReviewStatus: "", riskQuery: "", sortBy: "completedAt", sortDirection: "desc", sorts: [] },
         page: 0,
         total: 0,
         firstVisitTotal: 0,
@@ -33,6 +35,8 @@
         totalPages: 1,
         loading: false,
         controller: null,
+        addressBusy: false,
+        addressController: null,
         bootstrapReady: false,
         bootstrapBusy: false,
         attendance: { controller: null, loading: false, page: 0, totalPages: 0, sortBy: "date", sortDirection: "desc" },
@@ -104,6 +108,22 @@
     async function init() {
         // An unfinished stylesheet is not a failed stylesheet. Keep the native recovery link until it settles.
         if (!await waitForStylesheet($("#admin-stylesheet"))) return;
+        if (!window.CheckinRiskAdmin) return;
+        riskAdmin = window.CheckinRiskAdmin.create({
+            apiBase: API_BASE, requestJson, requestAction, unwrap,
+            getFilters: () => buildFilterParams(), getSalespersons: () => state.salespersons,
+            getScope: () => state.scope, formatDateTime: formatFullDateTime,
+            onDialogChange: syncDialogState,
+            openSubmission: async (id, trigger) => {
+                let item = state.itemsById.get(id);
+                if (!item) item = unwrap(await requestJson(`${API_BASE}/submissions/${encodeURIComponent(id)}`));
+                if (!item || submissionId(item) !== id) throw new Error("拜访详情响应不完整，请重试。");
+                state.itemsById.set(id, item);
+                openSubmissionDetail(id, trigger);
+            },
+            onMutation: () => refreshActiveData(),
+            onUnauthorized: (message) => showLoginDialog(message)
+        });
         bindEvents();
         readFiltersFromUrl();
         writeFiltersToForm();
@@ -152,6 +172,7 @@
         $("#admin-main").hidden = false;
         $("#logout-button").hidden = false;
         await loadSubmissions();
+        if (state.activeView !== "records") await switchAdminView(state.activeView);
     }
 
     function bindEvents() {
@@ -171,7 +192,7 @@
             state.page = 0;
             updateBrowserUrl();
             updateExportLink();
-            await loadSubmissions();
+            await refreshActiveData();
         });
         $("#filter-city").addEventListener("change", () => {
             const currentSalesperson = $("#filter-salesperson").value;
@@ -180,6 +201,8 @@
         document.querySelectorAll("[data-attendance-range]").forEach(button => {
             button.addEventListener("click", () => applyAttendanceRange(button.dataset.attendanceRange));
         });
+        document.querySelectorAll("[data-risk-quick]").forEach(button => button.addEventListener("click", () => applyQuickRisk(button.dataset.riskQuick)));
+        $("#detail-resolve-address").addEventListener("click", resolveDetailAddress);
         $("#attendance-retry").addEventListener("click", () => loadAttendanceSummary(state.attendance.page));
         $("#attendance-previous").addEventListener("click", () => changeAttendancePage(state.attendance.page - 1));
         $("#attendance-next").addEventListener("click", () => changeAttendancePage(state.attendance.page + 1));
@@ -188,6 +211,11 @@
         });
         document.querySelectorAll("[data-sort-by]").forEach((button) => {
             button.addEventListener("click", () => changeSort(button.dataset.sortBy));
+        });
+        $("#reset-sort-button").addEventListener("click", () => applyDetailSorts([]));
+        $("#sort-controls").addEventListener("click", event => {
+            const remove = event.target.closest("[data-remove-sort]");
+            if (remove) void applyDetailSorts(state.filters.sorts.filter(sort => sort.field !== remove.dataset.removeSort));
         });
         $("#review-form").addEventListener("submit", saveReview);
         $("#shared-audio-close").addEventListener("click", stopSharedAudio);
@@ -287,6 +315,7 @@
     }
 
     function showLoginDialog(message) {
+        riskAdmin?.reset();
         state.bootstrapReady = false;
         state.attendance.controller?.abort();
         state.attendance.controller = null;
@@ -567,7 +596,8 @@
                 payload.totalElements, payload.totalPages].every(count) || payload.page !== page || !Array.isArray(payload.items)
                 || (payload.totalElements > 0 && payload.totalPages < 1)
                 || payload.items.some(item => !safeDate(item.date) || !cleanText(item.salespersonId)
-                    || ![item.visitCount, item.storeCount, item.pendingReviewCount].every(count))) {
+                    || ![item.visitCount, item.storeCount, item.pendingReviewCount].every(count)
+                    || (item.audioCount != null && (!count(item.audioCount) || item.audioCount > item.visitCount)))) {
                 throw new Error("统计响应尚未完整返回");
             }
             if (payload.totalElements > 0 && page >= payload.totalPages) return loadAttendanceSummary(payload.totalPages - 1);
@@ -624,7 +654,7 @@
                 timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
             }).format(new Date(value)) : "--";
             for (const value of [item.date, item.city || "未记录", item.salespersonName || "未记录销售",
-                formatCount(item.visitCount), formatCount(item.storeCount), time(item.firstCheckinAt), time(item.lastCheckinAt), formatCount(item.pendingReviewCount)]) {
+                formatCount(item.visitCount), formatCount(item.storeCount), optionalCount(item.audioCount), time(item.firstCheckinAt), time(item.lastCheckinAt), formatCount(item.pendingReviewCount)]) {
                 const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
             }
             const action = document.createElement("td"); const button = document.createElement("button");
@@ -666,7 +696,7 @@
         $("#filter-from").value = from; $("#filter-to").value = today;
         if (!readFiltersFromForm()) return;
         state.page = 0; updateBrowserUrl(); updateExportLink();
-        await loadSubmissions();
+        await refreshActiveData();
     }
 
     async function loadSubmissions() {
@@ -700,6 +730,7 @@
                 return loadSubmissions();
             }
             renderRows(items);
+            void riskAdmin.loadRowSummaries(items, controller.signal);
             if (state.detailId) {
                 const current = state.itemsById.get(state.detailId);
                 if (current) renderSubmissionDetail(current);
@@ -767,13 +798,20 @@
             field("result").textContent = cleanText(item.visitResult) || "未填写拜访结果";
             field("result").title = cleanText(item.visitResult);
             const readableAddress = locationAddress(item);
-            const unverifiedLocation = isUnverifiedLocation(item);
-            field("address").textContent = locationQualityLabel(item);
+            const hasCoordinates = [item.longitude, item.latitude].every(value => value !== null && value !== undefined && String(value).trim() !== "" && Number.isFinite(Number(value)))
+                && Math.abs(Number(item.longitude)) <= 180 && Math.abs(Number(item.latitude)) <= 90;
+            field("address").textContent = readableAddress || (hasCoordinates ? "仅保存坐标" : "未取得设备地址");
             field("address").title = readableAddress;
-            field("address").classList.toggle("is-missing", unverifiedLocation || !readableAddress);
+            field("address").classList.toggle("is-missing", !readableAddress);
+            field("location-detail").textContent = readableAddress ? "查看位置证据" : "查看位置";
+            field("location-detail").addEventListener("click", () => {
+                openSubmissionDetail(id, field("location-detail"));
+                $("#detail-location-heading").scrollIntoView({ block: "start" });
+            });
             renderRiskChips(field("risks"), item, { compact: true });
             renderEvidenceChips(field("evidence"), item);
-            field("location-facts").textContent = locationFacts(item, { compact: true });
+            if (field("risks").hasChildNodes()) field("risks").prepend(document.createTextNode("提交时："));
+            riskAdmin.renderRow(row, item);
             renderRowPhoto(field("photo"), item);
             renderRowAudio(field("audio"), item);
             field("review").textContent = reviewStatusLabel(item.reviewStatus);
@@ -799,10 +837,28 @@
 
     async function changeSort(sortBy) {
         if (state.loading || !Object.hasOwn(SORT_LABELS, sortBy)) return;
+        const sorts = state.filters.sorts.map(sort => ({ ...sort }));
+        const existing = sorts.find(sort => sort.field === sortBy);
+        if (existing) existing.direction = existing.direction === "asc" ? "desc" : "asc";
+        else sorts.push({ field: sortBy, direction: "asc" });
+        await applyDetailSorts(sorts);
+    }
+
+    function effectiveSorts() {
+        return state.filters.sorts.length ? state.filters.sorts : [{ field: "completedAt", direction: "desc" }];
+    }
+
+    function syncPrimarySort() {
+        const primary = effectiveSorts()[0];
+        state.filters.sortBy = primary.field;
+        state.filters.sortDirection = primary.direction;
+    }
+
+    async function applyDetailSorts(sorts) {
+        if (state.loading) return;
         if (!readFiltersFromForm()) return;
-        state.filters.sortDirection = state.filters.sortBy === sortBy && state.filters.sortDirection === "asc"
-            ? "desc" : "asc";
-        state.filters.sortBy = sortBy;
+        state.filters.sorts = sorts;
+        syncPrimarySort();
         state.page = 0;
         renderSort();
         updateBrowserUrl();
@@ -811,14 +867,43 @@
     }
 
     function renderSort() {
+        const sorts = effectiveSorts();
         document.querySelectorAll("[data-sort-by]").forEach((button) => {
-            const active = button.dataset.sortBy === state.filters.sortBy;
-            const ascending = state.filters.sortDirection === "asc";
-            button.closest("th").setAttribute("aria-sort", active ? (ascending ? "ascending" : "descending") : "none");
+            const index = sorts.findIndex(sort => sort.field === button.dataset.sortBy);
+            const active = index >= 0;
+            const ascending = active && sorts[index].direction === "asc";
+            button.closest("th").setAttribute("aria-sort", index === 0 ? (ascending ? "ascending" : "descending") : "none");
+            button.closest("th").classList.toggle("sort-column--active", active);
             $("[data-sort-indicator]", button).textContent = active ? (ascending ? "↑" : "↓") : "↕";
-            button.setAttribute("aria-label", `${SORT_LABELS[button.dataset.sortBy]}，点击按${active && ascending ? "降序" : "升序"}排列全部结果`);
+            let priority = $("[data-sort-priority]", button);
+            if (!priority) {
+                priority = document.createElement("span");
+                priority.dataset.sortPriority = "";
+                priority.className = "sort-priority";
+                priority.setAttribute("aria-hidden", "true");
+                button.append(priority);
+            }
+            priority.hidden = !active;
+            priority.textContent = active ? String(index + 1) : "";
+            button.setAttribute("aria-describedby", "sort-summary");
+            button.setAttribute("aria-label", `${SORT_LABELS[button.dataset.sortBy]}${active ? `，第${index + 1}排序，${ascending ? "升序" : "降序"}` : ""}，点击${active ? `切换为${ascending ? "降序" : "升序"}` : state.filters.sorts.length ? `添加为第${sorts.length + 1}排序，升序` : "设为第一排序，升序"}`);
         });
-        $("#sort-summary").textContent = `按${SORT_LABELS[state.filters.sortBy]}${state.filters.sortDirection === "asc" ? "升序" : "降序"}排列；排序作用于全部筛选结果，Excel 明细使用相同顺序。`;
+        const controls = $("#sort-controls");
+        controls.replaceChildren();
+        sorts.forEach((sort, index) => {
+            const chip = document.createElement("span"); chip.className = "sort-chip";
+            const label = document.createElement("span"); label.textContent = `${index + 1} ${SORT_LABELS[sort.field]} ${sort.direction === "asc" ? "↑" : "↓"}`;
+            chip.append(label);
+            if (state.filters.sorts.length) {
+                const remove = document.createElement("button"); remove.type = "button";
+                remove.dataset.removeSort = sort.field; remove.textContent = "×";
+                remove.setAttribute("aria-label", `移除${SORT_LABELS[sort.field]}排序`); chip.append(remove);
+            }
+            controls.append(chip);
+        });
+        $("#reset-sort-button").disabled = !state.filters.sorts.length || state.loading;
+        const order = sorts.map((sort, index) => `${index + 1}. ${SORT_LABELS[sort.field]}${sort.direction === "asc" ? "升序" : "降序"}`).join(" → ");
+        $("#sort-summary").textContent = `${order}。先点的列优先，再点其他列增加组内排序；分页和 Excel 明细使用相同顺序。`;
     }
 
     function locationQualityLabel(item) {
@@ -1261,6 +1346,7 @@
         $("#detail-close").focus({ preventScroll: true });
         $("#detail-body").scrollTop = 0;
         loadReviewHistory(id);
+        void loadDetailAddress(id);
     }
 
     function renderSubmissionDetail(item) {
@@ -1295,6 +1381,10 @@
         const unverifiedLocation = isUnverifiedLocation(item);
         $("#detail-address").textContent = address || "设备位置地址未取得";
         $("#detail-address").classList.toggle("is-missing", unverifiedLocation || !address);
+        $("#detail-address-source").textContent = "";
+        $("#detail-address-result").hidden = true;
+        $("#detail-resolve-address").hidden = Boolean(address) || item.longitude == null || item.latitude == null;
+        $("#detail-resolve-address").disabled = state.addressBusy;
         const locationNote = cleanText(item.locationNote);
         $("#detail-location-note").textContent = locationNote ? `位置备注：${locationNote}` : "";
         $("#detail-location-verification").textContent = `${locationFacts(item)}。${unverifiedLocation
@@ -1324,6 +1414,62 @@
         $("#detail-result").textContent = cleanText(item.visitResult) || "未填写拜访结果";
         renderMedia($("#detail-media"), item);
         renderReviewForm(item);
+    }
+
+    async function loadDetailAddress(id) {
+        state.addressController?.abort();
+        const controller = new AbortController();
+        state.addressController = controller;
+        try {
+            const result = unwrap(await requestJson(`${API_BASE}/submissions/${encodeURIComponent(id)}/address`, controller.signal));
+            if (state.detailId === id && state.addressController === controller) applyAddressResult(id, result, false);
+        } catch (error) {
+            if (error.name === "AbortError" || state.detailId !== id) return;
+            // Existing captured address remains usable if supplementary metadata is temporarily unavailable.
+            $("#detail-address-source").textContent = "补解析状态暂未读到，可稍后重开详情查看。";
+        }
+    }
+
+    function applyAddressResult(id, result, showMessage) {
+        const item = state.itemsById.get(id);
+        const address = cleanText(result.locationAddress || result.formattedAddress);
+        if (address && item) {
+            item.locationAddress = address;
+            const row = document.querySelector(`#submission-rows input[value="${CSS.escape(id)}"]`)?.closest("tr");
+            const field = row?.querySelector('[data-field="address"]');
+            if (field) { field.textContent = address; field.title = address; field.classList.remove("is-missing"); }
+            if (state.detailId === id) { $("#detail-address").textContent = address; $("#detail-address").classList.remove("is-missing"); }
+        }
+        if (state.detailId !== id) return;
+        const sources = { CAPTURE_SNAPSHOT: "提交时保存的设备报告地址", LEGACY_SNAPSHOT: "历史保存的设备报告地址",
+            HISTORICAL_COORDINATES_RESOLVED_LATER: "根据历史保存坐标补解析；不代表现在的位置" };
+        $("#detail-address-source").textContent = `${sources[result.addressSource] || ""}${result.addressResolvedAt ? ` · ${formatFullDateTime(result.addressResolvedAt)}` : ""}`;
+        $("#detail-resolve-address").hidden = Boolean(address) || result.status === "MISSING_COORDINATES";
+        const messages = { RESOLVED: "地址已更新，原始坐标、采样时间与风险证据保持原值。", MISSING_COORDINATES: "未保存可用坐标，无法补解析。",
+            FAILED: "地址暂未解析成功，可稍后重试。", RETRY_LATER: "请稍后再试", PROCESSING: "地址正在解析，请稍后查看。", QUOTA_EXCEEDED: "本次解析额度已用完，请稍后再试。" };
+        if (showMessage || ["RETRY_LATER", "PROCESSING", "QUOTA_EXCEEDED"].includes(result.status)) {
+            $("#detail-address-result").textContent = `${messages[result.status] || "地址解析结果暂未确认，请稍后重试。"}${result.retryAt ? ` 可重试时间：${formatFullDateTime(result.retryAt)}` : ""}`;
+            $("#detail-address-result").hidden = false;
+        }
+    }
+
+    async function resolveDetailAddress() {
+        const id = state.detailId;
+        if (!id || state.addressBusy) return;
+        state.addressBusy = true;
+        state.addressController?.abort();
+        $("#detail-resolve-address").disabled = true;
+        $("#detail-address-result").textContent = "正在按保存坐标解析地址…";
+        $("#detail-address-result").hidden = false;
+        try {
+            const result = unwrap(await requestAction(`${API_BASE}/submissions/${encodeURIComponent(id)}/address/resolve`, { method: "POST" }));
+            applyAddressResult(id, result, true);
+        } catch (error) {
+            if (state.detailId === id) $("#detail-address-result").textContent = errorMessage(error, "解析结果暂未确认，可稍后重试查询缓存结果。");
+        } finally {
+            state.addressBusy = false;
+            $("#detail-resolve-address").disabled = false;
+        }
     }
 
     function rawLocationTime(value, quality) {
@@ -1523,6 +1669,7 @@
         const trigger = state.detailTrigger;
         const scroll = state.detailScroll;
         if (state.reviewController) state.reviewController.abort();
+        state.addressController?.abort();
         moveAudioDock(false);
         state.detailId = null;
         state.detailTrigger = null;
@@ -2290,7 +2437,9 @@
     }
 
     async function switchAdminView(view) {
-        const nextView = view === "salespersons" && state.scope.canManageSalespersons ? "salespersons" : "records";
+        const previousView = state.activeView;
+        const nextView = ["devices", "audio-groups"].includes(view) ? view
+            : view === "salespersons" && state.scope.canManageSalespersons ? "salespersons" : "records";
         state.activeView = nextView;
         document.querySelectorAll("[data-admin-view]").forEach((tab) => {
             const active = tab.dataset.adminView === nextView;
@@ -2300,6 +2449,37 @@
         });
         $("#records-panel").hidden = nextView !== "records";
         $("#salespersons-panel").hidden = nextView !== "salespersons";
+        $("#devices-panel").hidden = nextView !== "devices";
+        $("#audio-groups-panel").hidden = nextView !== "audio-groups";
+        $("#record-filters").hidden = nextView === "salespersons";
+        const groupView = ["devices", "audio-groups"].includes(nextView);
+        const riskReviewInput = $("#filter-risk-review-status");
+        riskReviewInput.closest("label").querySelector("span").textContent = groupView ? "关联线索复核" : "包含线索状态（至少一组）";
+        const riskReviewLabels = { PENDING: "待复核", EXPLAINED: "共用已说明", FLAGGED: "确认异常", INCONCLUSIVE: "无法确认" };
+        [...riskReviewInput.options].forEach(option => {
+            if (option.value) option.textContent = groupView ? riskReviewLabels[option.value] : `含${riskReviewLabels[option.value]}线索`;
+        });
+        document.querySelector('[data-risk-quick="pending"]').textContent = groupView ? "线索待复核" : "含待复核线索";
+        ["#filter-query", "#filter-status", "#filter-visit-type", "#filter-location-status", "#filter-review-status", "#filter-media-status", "#filter-risk-level"].forEach(selector => {
+            const input = $(selector); if (input) input.closest("label").hidden = groupView;
+        });
+        $("#filter-device-risk").closest("label").hidden = nextView === "audio-groups";
+        $("#filter-audio-risk").closest("label").hidden = nextView === "devices";
+        document.querySelector(".risk-flag-filter").hidden = groupView;
+        document.querySelectorAll("[data-risk-quick]").forEach(button => {
+            button.hidden = groupView && (button.dataset.riskQuick === "high"
+                || (nextView === "devices" && ["audio", "cross"].includes(button.dataset.riskQuick))
+                || (nextView === "audio-groups" && button.dataset.riskQuick === "device"));
+        });
+        $("#export-link").hidden = groupView;
+        document.querySelector(".scope-card__total").hidden = nextView !== "records";
+        $("#filter-heading").textContent = groupView ? "查询关联档案" : "查看拜访记录";
+        document.querySelector("#record-filters > .attendance-note").textContent = groupView
+            ? "此页仅应用上方可见的条件。拜访风险级别、材料及原复核条件保留，返回拜访复核时继续使用。"
+            : "修改条件后点击“查询数据”，统计、明细与 Excel 使用同一组条件。";
+        updateBrowserUrl();
+        if (["devices", "audio-groups"].includes(nextView)) await riskAdmin.loadView(nextView);
+        if (nextView === "records" && previousView !== "records") await loadSubmissions();
         if (nextView === "salespersons") {
             const tasks = [];
             if (!state.sales.loaded) tasks.push(loadSalespersons());
@@ -2354,7 +2534,8 @@
         $("#salesperson-search-button").disabled = true;
         const params = new URLSearchParams();
         Object.entries(state.sales.filters).forEach(([name, value]) => {
-            if (value) params.set(name, value);
+            if (Array.isArray(value)) value.forEach(item => params.append(name, item));
+            else if (value) params.set(name, value);
         });
         params.set("page", String(state.sales.page));
         params.set("size", "50");
@@ -2913,6 +3094,8 @@
         $("#table-wrap").hidden = loading || empty;
         $("#empty-state").hidden = loading || !empty;
         $("#search-button").disabled = loading;
+        document.querySelectorAll("[data-sort-by], [data-remove-sort]").forEach(button => { button.disabled = loading; });
+        $("#reset-sort-button").disabled = loading || !state.filters.sorts.length;
         if (loading) $("#pagination").hidden = true;
     }
 
@@ -2938,8 +3121,10 @@
             locationStatus: "",
             reviewStatus: "",
             mediaStatus: "",
+            riskLevel: "", riskFlags: [], deviceRisk: "", audioRisk: "", riskReviewStatus: "", riskQuery: "",
             sortBy: "completedAt",
-            sortDirection: "desc"
+            sortDirection: "desc",
+            sorts: []
         };
         state.page = 0;
         state.attendance.sortBy = "date";
@@ -2949,7 +3134,7 @@
         writeFiltersToForm();
         updateBrowserUrl();
         updateExportLink();
-        await loadSubmissions();
+        await refreshActiveData();
     }
 
     function readFiltersFromForm() {
@@ -2971,14 +3156,33 @@
             locationStatus: $("#filter-location-status").value,
             reviewStatus: $("#filter-review-status").value,
             mediaStatus: $("#filter-media-status").value,
+            riskLevel: $("#filter-risk-level").value,
+            riskFlags: Array.from(document.querySelectorAll('input[name="riskFlags"]:checked')).map(input => input.value),
+            deviceRisk: $("#filter-device-risk").value,
+            audioRisk: $("#filter-audio-risk").value,
+            riskReviewStatus: $("#filter-risk-review-status").value,
+            riskQuery: cleanText($("#filter-risk-query").value),
             sortBy: state.filters.sortBy,
-            sortDirection: state.filters.sortDirection
+            sortDirection: state.filters.sortDirection,
+            sorts: state.filters.sorts
         };
         return true;
     }
 
     function readFiltersFromUrl() {
         const params = new URLSearchParams(window.location.search);
+        const legacyField = Object.hasOwn(SORT_LABELS, params.get("sortBy")) ? params.get("sortBy") : "completedAt";
+        const legacyDirection = params.get("sortDirection") === "asc" ? "asc" : "desc";
+        const rawSorts = params.getAll("sort");
+        const parsedSorts = rawSorts.map(value => {
+            const parts = value.split(":");
+            const [field, direction] = parts;
+            return parts.length === 2 && Object.hasOwn(SORT_LABELS, field) && ["asc", "desc"].includes(direction) ? { field, direction } : null;
+        });
+        const validSorts = parsedSorts.length <= 8 && parsedSorts.every(Boolean)
+            && new Set(parsedSorts.map(sort => sort.field)).size === parsedSorts.length;
+        const sorts = rawSorts.length ? (validSorts ? parsedSorts : [])
+            : legacyField !== "completedAt" || legacyDirection !== "desc" ? [{ field: legacyField, direction: legacyDirection }] : [];
         state.filters = {
             q: cleanText(params.get("q")),
             from: safeDate(params.get("from")),
@@ -2991,11 +3195,20 @@
             locationStatus: Object.hasOwn(LOCATION_LABELS, params.get("locationStatus")) ? params.get("locationStatus") : "",
             reviewStatus: Object.hasOwn(REVIEW_LABELS, params.get("reviewStatus")) ? params.get("reviewStatus") : "",
             mediaStatus: ["HAS_AUDIO", "MISSING_AUDIO", "MISSING_PHOTO"].includes(params.get("mediaStatus")) ? params.get("mediaStatus") : "",
-            sortBy: Object.hasOwn(SORT_LABELS, params.get("sortBy")) ? params.get("sortBy") : "completedAt",
-            sortDirection: params.get("sortDirection") === "asc" ? "asc" : "desc"
+            riskLevel: ["HIGH", "MEDIUM", "LOW", "NONE"].includes(params.get("riskLevel")) ? params.get("riskLevel") : "",
+            riskFlags: [...new Set(params.getAll("riskFlags").filter(flag => RISK_FLAGS.includes(flag)))],
+            deviceRisk: params.get("deviceRisk") === "SHARED" ? "SHARED" : "",
+            audioRisk: ["DUPLICATE", "CROSS_SALES"].includes(params.get("audioRisk")) ? params.get("audioRisk") : "",
+            riskReviewStatus: ["PENDING", "EXPLAINED", "FLAGGED", "INCONCLUSIVE"].includes(params.get("riskReviewStatus")) ? params.get("riskReviewStatus") : "",
+            riskQuery: cleanText(params.get("riskQuery")).slice(0, 128),
+            sortBy: legacyField,
+            sortDirection: legacyDirection,
+            sorts
         };
+        syncPrimarySort();
         state.attendance.sortBy = Object.hasOwn(SUMMARY_SORT_LABELS, params.get("summarySortBy")) ? params.get("summarySortBy") : "date";
         state.attendance.sortDirection = params.get("summarySortDirection") === "asc" ? "asc" : "desc";
+        state.activeView = ["devices", "audio-groups"].includes(params.get("view")) ? params.get("view") : "records";
         const page = Number.parseInt(params.get("page"), 10);
         state.page = Number.isInteger(page) && page > 0 ? page - 1 : 0;
     }
@@ -3009,6 +3222,13 @@
         $("#filter-location-status").value = state.filters.locationStatus;
         $("#filter-review-status").value = state.filters.reviewStatus;
         $("#filter-media-status").value = state.filters.mediaStatus;
+        $("#filter-risk-level").value = state.filters.riskLevel;
+        $("#filter-device-risk").value = state.filters.deviceRisk;
+        $("#filter-audio-risk").value = state.filters.audioRisk;
+        $("#filter-risk-review-status").value = state.filters.riskReviewStatus;
+        $("#filter-risk-query").value = state.filters.riskQuery;
+        document.querySelectorAll('input[name="riskFlags"]').forEach(input => { input.checked = state.filters.riskFlags.includes(input.value); });
+        renderQuickRisks();
         renderSort();
         renderSummarySort();
         if (Array.from($("#filter-city").options).some((item) => item.value === state.filters.city)) {
@@ -3027,6 +3247,7 @@
     function updateBrowserUrl() {
         const params = buildFilterParams(true);
         if (state.page > 0) params.set("page", String(state.page + 1));
+        if (["devices", "audio-groups"].includes(state.activeView)) params.set("view", state.activeView);
         const query = params.toString();
         window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
     }
@@ -3034,13 +3255,40 @@
     function buildFilterParams(includeSummarySort = false) {
         const params = new URLSearchParams();
         Object.entries(state.filters).forEach(([name, value]) => {
-            if (value) params.set(name, value);
+            if (name === "sorts") value.forEach(sort => params.append("sort", `${sort.field}:${sort.direction}`));
+            else if (Array.isArray(value)) value.forEach(entry => params.append(name, entry));
+            else if (value) params.set(name, value);
         });
         if (includeSummarySort) {
             params.set("summarySortBy", state.attendance.sortBy);
             params.set("summarySortDirection", state.attendance.sortDirection);
         }
         return params;
+    }
+
+    async function refreshActiveData() {
+        renderQuickRisks();
+        if (["devices", "audio-groups"].includes(state.activeView)) return riskAdmin.loadView(state.activeView);
+        return loadSubmissions();
+    }
+
+    function renderQuickRisks() {
+        const active = { device: state.filters.deviceRisk === "SHARED", high: state.filters.riskLevel === "HIGH",
+            audio: state.filters.audioRisk === "DUPLICATE", cross: state.filters.audioRisk === "CROSS_SALES",
+            pending: state.filters.riskReviewStatus === "PENDING" };
+        document.querySelectorAll("[data-risk-quick]").forEach(button => button.setAttribute("aria-pressed", String(active[button.dataset.riskQuick] === true)));
+    }
+
+    async function applyQuickRisk(kind) {
+        if (!readFiltersFromForm()) return;
+        const mapping = { device: ["deviceRisk", "SHARED"], high: ["riskLevel", "HIGH"], audio: ["audioRisk", "DUPLICATE"],
+            cross: ["audioRisk", "CROSS_SALES"], pending: ["riskReviewStatus", "PENDING"] };
+        const setting = mapping[kind];
+        if (!setting) return;
+        state.filters[setting[0]] = state.filters[setting[0]] === setting[1] ? "" : setting[1];
+        state.page = 0;
+        writeFiltersToForm(); updateBrowserUrl(); updateExportLink();
+        await refreshActiveData();
     }
 
     async function requestJson(url, signal) {
