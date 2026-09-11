@@ -43,7 +43,7 @@ public final class RequestContextFilter extends OncePerRequestFilter {
                     log.warn("下游可信上下文校验失败 requestId={} method={} path={} keyId={} reason={} ageMs={}",
                             requestId, request.getMethod(), request.getRequestURI(), verification.keyId(),
                             verification.reason(), verification.ageMillis());
-                    response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid trusted request context");
+                    rejectInvalidTrustedContext(response);
                     return;
                 }
                 CallerIdentity identity;
@@ -51,7 +51,7 @@ public final class RequestContextFilter extends OncePerRequestFilter {
                 catch (IllegalArgumentException exception) {
                     log.warn("下游可信上下文身份字段无效 requestId={} method={} path={} reason={}",
                             requestId, request.getMethod(), request.getRequestURI(), exception.getMessage());
-                    response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid trusted request context");
+                    rejectInvalidTrustedContext(response);
                     return;
                 }
                 AuthorizationContext.set(identity);
@@ -63,6 +63,11 @@ public final class RequestContextFilter extends OncePerRequestFilter {
             TenantContext.clear();
             RequestContext.clear();
         }
+    }
+
+    private static void rejectInvalidTrustedContext(HttpServletResponse response) throws IOException {
+        response.setHeader(RequestHeaders.AUTH_FAILURE, AuthenticationFailureCodes.TRUSTED_CONTEXT_INVALID);
+        response.sendError(HttpServletResponse.SC_UNAUTHORIZED, AuthenticationFailureCodes.TRUSTED_CONTEXT_INVALID);
     }
 
     private CallerIdentity callerIdentity(HttpServletRequest request) {

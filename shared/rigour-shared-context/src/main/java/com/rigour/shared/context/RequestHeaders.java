@@ -22,6 +22,8 @@ public final class RequestHeaders {
     public static final String CONTEXT_KEY_ID = "X-Rigour-Context-Key-Id";
     public static final String CONTEXT_TIMESTAMP = "X-Rigour-Context-Timestamp";
     public static final String CONTEXT_SIGNATURE = "X-Rigour-Context-Signature";
+    /** 响应侧稳定认证失败分类；客户端只能依据该值决定是否清理登录态。 */
+    public static final String AUTH_FAILURE = "X-Rigour-Auth-Failure";
     public static final String REQUEST_ID = "X-Request-Id";
     public static final String ACCEPT_LANGUAGE = "Accept-Language";
 

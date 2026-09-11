@@ -405,7 +405,7 @@ public final class JdbcOAuth2AuthorizationStore implements OAuth2AuthorizationSe
             }
             jdbcTemplate.update("""
                             UPDATE iam_auth_session
-                               SET version = version + 1, last_seen_at = ?
+                               SET last_seen_at = ?
                              WHERE id = ? AND status = 'ACTIVE' AND expires_at > ?
                             """, now, UuidBinaryCodec.encode(sessionId), now);
         }

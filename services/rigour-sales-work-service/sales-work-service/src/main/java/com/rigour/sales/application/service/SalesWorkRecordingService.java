@@ -18,6 +18,7 @@ import com.rigour.shared.audit.AuditSink;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.context.RequestContext;
+import com.rigour.shared.core.api.ApiErrorDetail;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 import com.rigour.shared.file.FileMetadata;
@@ -31,25 +32,32 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
  * 拜访录音采集用例：片段字节走 FileStorage，会话/片段事实落 Sales Work 库。
- * 录音由销售在拜访中主动开启；ADTS AAC由服务端解析真实时长，其他格式等待后续验证，不做客户端自证。
+ * 录音由销售在拜访中主动开启；只有服务端全帧实际解码成功的 AAC 才计入可信时长，
+ * 未经可信解码的合法变体保持待核验，不做客户端自证。
  */
 @Service
 public class SalesWorkRecordingService {
 
+    private static final Logger log = LoggerFactory.getLogger(SalesWorkRecordingService.class);
     private static final long MAX_CLIP_DURATION_MS = 600_000L;
     private static final long DURATION_CLOCK_TOLERANCE_MS = 5_000L;
+    /** Only absorbs codec-frame quantization and tiny timing jitter at the minimum boundary. */
+    private static final long MINIMUM_CLIP_CODEC_PADDING_TOLERANCE_MS = 250L;
 
     private static final Map<String, String> AUDIO_EXTENSIONS = Map.of(
             "audio/m4a", ".m4a",
@@ -135,14 +143,37 @@ public class SalesWorkRecordingService {
         }
         var verification = mediaVerifier.verify(contentType, bytes);
         if ("INVALID".equals(verification.status())) {
-            throw invalid("录音文件不是完整有效的AAC音频");
+            log.warn("录音媒体校验失败 requestId={} mediaType={} size={} reason={}",
+                    RequestContext.getRequestId(), contentType, bytes.length, verification.reason());
+            throw new BusinessException(ErrorCode.SALES_RECORDING_INVALID,
+                    "录音文件不是完整有效的AAC音频",
+                    List.of(new ApiErrorDetail("file", verification.reason(),
+                            "录音容器或帧结构校验失败")));
         }
-        Long verifiedDurationMs = verification.verifiedDurationMs();
+        Long decodedDurationMs = "VERIFIED".equals(verification.status())
+                ? verification.observedDurationMs() : null;
+        if (decodedDurationMs != null
+                && decodedDurationMs + MINIMUM_CLIP_CODEC_PADDING_TOLERANCE_MS
+                < minimumClipDurationMs) {
+            throw invalid("服务端核验录音片段不足 " + properties.getMinimumClipSeconds()
+                    + " 秒，不保存且不计入有效时长");
+        }
+        Long verifiedDurationMs = decodedDurationMs;
         String verifyStatus = "VERIFIED".equals(verification.status()) ? "VERIFIED" : "PENDING";
         if ("VERIFIED".equals(verifyStatus)
-                && Math.abs(verifiedDurationMs - durationMs) > durationVerificationTolerance(durationMs)) {
+                && Math.abs(decodedDurationMs - durationMs) > durationVerificationTolerance()) {
             verifyStatus = "DURATION_MISMATCH";
+            verifiedDurationMs = null;
+        } else if ("VERIFIED".equals(verifyStatus)) {
+            long recordedIntervalMs = Duration.between(recordedFrom, recordedTo).toMillis();
+            verifiedDurationMs = Math.min(decodedDurationMs,
+                    Math.min(durationMs, recordedIntervalMs));
         }
+        String decodedContentHash = verification.decodedContentHash();
+        int maximumClipGapSeconds = queryRepository
+                .findVisitPolicy(caller.tenantId(), visit.visitPolicyVersionId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_POLICY_NOT_FOUND))
+                .maximumClipGapSeconds();
         UUID sessionId = recordingRepository.ensureSession(UUID.randomUUID(), caller.tenantId(),
                 visitId, receivedAt);
         recordingRepository.lockSession(caller.tenantId(), sessionId);
@@ -151,28 +182,71 @@ public class SalesWorkRecordingService {
         if (existing.isPresent()) {
             RecordingClipRow row = existing.get();
             if (!Objects.equals(row.sha256(), sha256)
-                    || !Objects.equals(row.clientDurationMs(), durationMs)) {
+                    || !Objects.equals(row.clientDurationMs(), durationMs)
+                    || !samePersistedInstant(row.recordedFrom(), recordedFrom)
+                    || !samePersistedInstant(row.recordedTo(), recordedTo)) {
                 throw invalid("clientClipId已被不同录音内容使用");
             }
             return clipView(row);
         }
+        var duplicateAudio = recordingRepository.findClipBySha256(
+                caller.tenantId(), sessionId, sha256);
+        if (duplicateAudio.isPresent()) {
+            recordingRepository.flagSessionForReview(caller.tenantId(), sessionId, receivedAt);
+            appendAudit(caller, "SALES_RECORDING_DUPLICATE_AUDIO_DETECTED", visitId, Map.of(
+                    "reasonCode", "DUPLICATE_AUDIO_HASH",
+                    "attemptedClientClipId", normalizedClientClipId));
+            if ("CHECKED_OUT".equals(visit.status())) assessmentService.assess(caller, visitId);
+            return clipView(duplicateAudio.get());
+        }
+        if (decodedContentHash != null) {
+            var duplicateDecodedContent = recordingRepository.findClipByDecodedContentHash(
+                    caller.tenantId(), sessionId, decodedContentHash);
+            if (duplicateDecodedContent.isPresent()) {
+                recordingRepository.flagSessionForReview(caller.tenantId(), sessionId, receivedAt);
+                appendAudit(caller, "SALES_RECORDING_DUPLICATE_AUDIO_DETECTED", visitId, Map.of(
+                        "reasonCode", "DUPLICATE_DECODED_CONTENT",
+                        "attemptedClientClipId", normalizedClientClipId));
+                if ("CHECKED_OUT".equals(visit.status())) assessmentService.assess(caller, visitId);
+                return clipView(duplicateDecodedContent.get());
+            }
+            recordingRepository.findClipByDecodedContentHashOutsideSession(
+                            caller.tenantId(), sessionId, decodedContentHash)
+                    .ifPresent(previous -> {
+                        recordingRepository.flagSessionForReview(
+                                caller.tenantId(), previous.sessionId(), receivedAt);
+                        recordingRepository.flagSessionForReview(
+                                caller.tenantId(), sessionId, receivedAt);
+                        appendAudit(caller, "SALES_RECORDING_CROSS_SESSION_REUSE_DETECTED",
+                                visitId, Map.of(
+                                        "reasonCode", "DUPLICATE_DECODED_CONTENT_CROSS_SESSION",
+                                        "attemptedClientClipId", normalizedClientClipId));
+                    });
+        }
         int clipIndex = recordingRepository.nextClipIndex(caller.tenantId(), sessionId);
         UUID clipId = UUID.nameUUIDFromBytes((caller.tenantId() + ":" + visitId + ":"
                 + normalizedClientClipId).getBytes(StandardCharsets.UTF_8));
+        String storageContentType = verification.detectedMediaType() == null
+                ? contentType : verification.detectedMediaType();
         String objectKey = caller.tenantId() + "/visits/" + visitId + "/clips/" + clipId
-                + AUDIO_EXTENSIONS.get(contentType);
+                + AUDIO_EXTENSIONS.get(storageContentType);
+        String originalFilename = Objects.equals(storageContentType, contentType)
+                ? file.getOriginalFilename()
+                : normalizedClientClipId + AUDIO_EXTENSIONS.get(storageContentType);
 
         fileStorage.put(new FileMetadata(caller.tenantId().toString(), objectKey,
-                file.getOriginalFilename() == null ? objectKey : file.getOriginalFilename(),
-                contentType, bytes.length, sha256,
+                originalFilename == null ? objectKey : originalFilename,
+                storageContentType, bytes.length, sha256,
                 OffsetDateTime.ofInstant(receivedAt, ZoneOffset.UTC)), new ByteArrayInputStream(bytes));
 
         recordingRepository.insertClip(clipId, caller.tenantId(), sessionId, normalizedClientClipId,
-                clipIndex, objectKey, contentType, bytes.length, sha256, durationMs,
+                clipIndex, objectKey, storageContentType, bytes.length, sha256, decodedContentHash,
+                durationMs,
                 verifiedDurationMs, verifyStatus,
                 recordedFrom, recordedTo, receivedAt);
         recordingRepository.incrementSessionClipCount(caller.tenantId(), sessionId);
-        recordingRepository.refreshSessionVerification(caller.tenantId(), sessionId, receivedAt);
+        recordingRepository.refreshSessionVerification(
+                caller.tenantId(), sessionId, maximumClipGapSeconds, receivedAt);
         appendAudit(caller, "SALES_RECORDING_CLIP_UPLOADED", visitId, Map.of(
                 "clipIndex", Integer.toString(clipIndex),
                 "objectSizeBytes", Long.toString(bytes.length),
@@ -308,8 +382,14 @@ public class SalesWorkRecordingService {
         return properties.getMinimumClipSeconds() * 1_000L;
     }
 
-    private static long durationVerificationTolerance(long clientDurationMs) {
-        return Math.max(DURATION_CLOCK_TOLERANCE_MS, clientDurationMs / 10L);
+    private static long durationVerificationTolerance() {
+        return DURATION_CLOCK_TOLERANCE_MS;
+    }
+
+    private static boolean samePersistedInstant(Instant persisted, Instant requested) {
+        return persisted != null && requested != null
+                && persisted.truncatedTo(ChronoUnit.MICROS)
+                .equals(requested.truncatedTo(ChronoUnit.MICROS));
     }
 
     private byte[] readBytes(MultipartFile file) {

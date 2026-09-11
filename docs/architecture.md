@@ -2,13 +2,13 @@
 
 ## 定位
 
-本工程是 12 个粗粒度领域服务和一个 API Gateway 的可编译骨架。当前目标是建立稳定的代码所有权、依赖方向和跨仓库 HTTP 契约，不以空实现冒充生产基础设施。
+本工程是 13 个粗粒度领域服务（含 Collaboration 协作服务）和一个 API Gateway 的可编译骨架。当前目标是建立稳定的代码所有权、依赖方向和跨仓库 HTTP 契约，不以空实现冒充生产基础设施。
 
 多人协同开发入口是 [`TEAM_DEVELOPMENT_GUIDE.md`](TEAM_DEVELOPMENT_GUIDE.md)。它规定了服务唯一所有者、第三方集成归属、跨服务契约、README、评审和断舍离门禁；本文件负责解释架构结构，不替代协同规则。
 
 ## Reactor
 
-根reactor共51个项目：根聚合项目1个、platform 3个、shared 8个、Gateway 1个、领域聚合父模块12个、领域API模块12个、领域启动应用12个，以及2个明确复用跨服务调用策略的client模块。
+根reactor共54个项目：根聚合项目1个、platform 3个、shared 8个、Gateway 1个、领域聚合父模块13个、领域API模块13个、领域启动应用13个，以及2个明确复用跨服务调用策略的client模块。
 
 ```text
 root
@@ -23,7 +23,7 @@ root
 ├── shared-file        # 可选纯契约
 ├── platform-starter   -> context + core + logging + web + validation + actuator
 ├── api-gateway        -> platform-starter + Spring Cloud Gateway WebMVC
-├── 12 domain service parents
+├── 13 domain service parents
 │   ├── <domain>-api     # 版本化接口和DTO，不包含实现
 │   ├── <domain>-client  # 可选；只封装已确认的跨服务调用策略
 │   └── <domain>-service # 启动应用、业务、领域和持久化
@@ -80,7 +80,7 @@ domain          -> 不依赖 Spring、数据库或其他服务实现
 
 1. 所有POM都由根reactor直接或递归聚合；
 2. artifactId 不重复；
-3. 只有 `rigour-api-gateway` 和 12 个领域服务；
+3. 只有 `rigour-api-gateway` 和 13 个领域服务（含 `rigour-collaboration-service`）；
 4. 服务 POM 不直接依赖其他服务 artifact。
 
 这些静态门禁不能证明数据库账号隔离、运行时调用方向或事件兼容性，后续仍需部署和集成测试。

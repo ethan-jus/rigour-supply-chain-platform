@@ -22,6 +22,7 @@ import com.rigour.sales.application.service.SalesWorkRecordingService;
 import com.rigour.sales.application.service.SalesWorkManagementService;
 import com.rigour.sales.application.service.SalesWorkVisitService;
 import com.rigour.sales.application.service.SalesWorkVisitPlanService;
+import com.rigour.sales.testing.RecordingMediaSamples;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
@@ -390,8 +391,9 @@ class SalesWorkVisitIntegrationTests {
 
         // 录音片段：上传登记会话与片段事实，字节经 FileStorage 落盘。
         Instant firstTo = Instant.now();
-        var firstFile = new MockMultipartFile("file", "clip-0.m4a", "audio/m4a",
-                "fake-audio-bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        // 4帧固定真实夹具重复323次为1292帧，解码时长约30000ms。
+        byte[] firstBytes = RecordingMediaSamples.repeatM4a(323);
+        var firstFile = new MockMultipartFile("file", "clip-0.aac", "audio/aac", firstBytes);
 
         Instant shortTo = Instant.now();
         assertThatThrownBy(() -> recordingService.uploadClip(visit.id(), firstFile,
@@ -420,10 +422,35 @@ class SalesWorkVisitIntegrationTests {
                 "device-clip-0", 35_000L, firstTo.minusSeconds(35), firstTo);
         assertThat(replayedClip.clipId()).isEqualTo(clip.clipId());
 
-        Instant secondTo = Instant.now();
+        // 攻击重放：相同字节换 clientClipId 仍只能保留一个片段，并将会话送复核。
+        var changedIdReplay = recordingService.uploadClip(visit.id(), firstFile,
+                "device-clip-replay", 35_000L, firstTo.minusSeconds(35), firstTo);
+        assertThat(changedIdReplay.clipId()).isEqualTo(clip.clipId());
+        assertThat(count("SELECT COUNT(*) FROM sales_recording_clip WHERE tenant_id=?", tenantId))
+                .isEqualTo(1);
+
+        // 攻击重放：仅改变容器元数据时文件SHA不同，但解码PCM指纹相同，仍不得累计。
+        byte[] metadataChangedM4a = firstBytes.clone();
+        metadataChangedM4a[15] ^= 0x01;
+        var metadataReplay = recordingService.uploadClip(visit.id(),
+                new MockMultipartFile("file", "clip-metadata-replay.m4a", "audio/mp4",
+                        metadataChangedM4a),
+                "device-clip-metadata-replay", 35_000L, firstTo.minusSeconds(35), firstTo);
+        assertThat(metadataReplay.clipId()).isEqualTo(clip.clipId());
+
+        // 攻击重放：同一AAC换为ID3+ADTS后字节/容器都不同，解码PCM仍必须去重。
+        byte[] id3 = new byte[] {'I', 'D', '3', 4, 0, 0, 0, 0, 0, 3, 9, 8, 7};
+        byte[] id3Adts = concat(id3, RecordingMediaSamples.repeatAdts(323));
+        var id3Replay = recordingService.uploadClip(visit.id(),
+                new MockMultipartFile("file", "clip-id3-replay.aac", "application/octet-stream",
+                        id3Adts),
+                "device-clip-id3-replay", 35_000L, firstTo.minusSeconds(35), firstTo);
+        assertThat(id3Replay.clipId()).isEqualTo(clip.clipId());
+
+        Instant secondTo = firstTo.plusSeconds(35);
+        byte[] secondBytes = RecordingMediaSamples.repeatAlternateM4a(323);
         var second = recordingService.uploadClip(visit.id(),
-                new MockMultipartFile("file", "clip-1.m4a", "audio/m4a",
-                        "fake-audio-bytes-2".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                new MockMultipartFile("file", "clip-1.m4a", "audio/m4a", secondBytes),
                 "device-clip-1", 30_000L, secondTo.minusSeconds(30), secondTo);
         assertThat(second.clipIndex()).isEqualTo(1);
 
@@ -432,7 +459,16 @@ class SalesWorkVisitIntegrationTests {
         assertThat(session.clips()).hasSize(2);
         assertThat(session.uploadedTotalDurationMs()).isEqualTo(65_000L);
         assertThat(session.minimumClipSeconds()).isEqualTo(30);
-        assertThat(session.verifiedTotalDurationMs()).isZero();
+        assertThat(session.verifiedTotalDurationMs()).isEqualTo(60_000L);
+        assertThat(session.evidenceStatus()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(count("""
+                SELECT COUNT(*) FROM sales_recording_clip
+                 WHERE tenant_id=? AND perceptual_hash LIKE 'pcm-sha256-v1:%'
+                """, tenantId)).isEqualTo(2);
+        assertThat(count("""
+                SELECT COUNT(DISTINCT perceptual_hash) FROM sales_recording_clip
+                 WHERE tenant_id=?
+                """, tenantId)).isEqualTo(2);
 
         VisitView checkedOut = visitService.visit(visit.id());
         assertThat(checkedOut.kpName()).isEqualTo("王店长");
@@ -441,8 +477,7 @@ class SalesWorkVisitIntegrationTests {
         assertThat(managementRecordings.uploadedTotalDurationMs()).isEqualTo(65_000L);
         var recordingContent = managementService.reviewRecordingClip(visit.id(), clip.clipId());
         assertThat(recordingContent.mediaType()).isEqualTo("audio/m4a");
-        assertThat(recordingContent.bytes()).isEqualTo("fake-audio-bytes"
-                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(recordingContent.bytes()).isEqualTo(firstBytes);
 
         // 签退后补录结果仍允许。
         VisitView updated = visitService.submitVisitResult(visit.id(),
@@ -513,7 +548,7 @@ class SalesWorkVisitIntegrationTests {
     }
 
     @Test
-    void completeServerVerifiedEvidenceAutoConfirmsWhileAnomalyStaysForSupervisor() {
+    void structurallyFramedAacCannotAutoConfirmAndAnomaliesStayForSupervisor() {
         jdbc.update("""
                 UPDATE sales_visit_policy_version
                    SET recording_enabled=1, minimum_recording_seconds=30,
@@ -534,25 +569,31 @@ class SalesWorkVisitIntegrationTests {
         int frameCount = 1_508;
         long verifiedDurationMs = Math.round(frameCount * 1024d * 1_000d / 44_100d);
         Instant recordedTo = Instant.now();
-        recordingService.uploadClip(completeVisit.id(),
-                new MockMultipartFile("file", "verified.aac", "audio/aac", adtsFrames(frameCount)),
+        assertThatThrownBy(() -> recordingService.uploadClip(completeVisit.id(),
+                new MockMultipartFile("file", "forged.aac", "audio/aac", adtsFrames(frameCount)),
                 "auto-recording-1", verifiedDurationMs,
-                recordedTo.minusMillis(verifiedDurationMs), recordedTo);
+                recordedTo.minusMillis(verifiedDurationMs), recordedTo))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.getErrorCode())
+                                .isEqualTo(ErrorCode.SALES_RECORDING_INVALID));
         visitService.submitVisitResult(completeVisit.id(),
                 new VisitResultCommand("CONTACTED", "自动判定KP", "13800000002", "HIGH", "证据完整"));
-        VisitView effective = visitService.checkOutVisit(completeVisit.id(),
+        VisitView pendingRecording = visitService.checkOutVisit(completeVisit.id(),
                 new CheckOutVisitCommand("auto-check-out-1", Instant.now(),
                         location("120.1000000", "30.2000000"), "auto-device-out-1"));
-        assertThat(effective.reviewStatus()).isEqualTo("EFFECTIVE");
+        assertThat(pendingRecording.reviewStatus()).isEqualTo("PENDING_REVIEW");
+        var recordingSession = recordingService.recordings(completeVisit.id());
+        assertThat(recordingSession.evidenceStatus()).isEqualTo("PENDING");
+        assertThat(recordingSession.verifiedTotalDurationMs()).isZero();
         var managementEvidence = managementService.reviewEvidence(completeVisit.id());
         assertThat(managementEvidence.verifiedStorefrontPhotoCount()).isEqualTo(1);
         assertThat(managementService.reviewEvidencePhoto(completeVisit.id(), uploadedPhoto.evidenceId()).bytes())
                 .isEqualTo(jpeg);
         assertThat(count("SELECT COUNT(*) FROM sales_visit_review WHERE tenant_id=? "
-                + "AND review_type='AUTOMATIC_ASSESSMENT' AND review_status='DECIDED' "
-                + "AND reason_code='AUTO_EVIDENCE_COMPLETE'", tenantId)).isEqualTo(1);
+                + "AND visit_id=? AND review_type='AUTOMATIC_ASSESSMENT' AND review_status='PENDING' "
+                + "AND reason_code='RECORDING_UNVERIFIED'", tenantId, completeVisit.id())).isEqualTo(1);
         assertThat(count("SELECT COUNT(*) FROM sales_outbox_event WHERE tenant_id=? "
-                + "AND event_type='SalesVisitFinalized'", tenantId)).isEqualTo(1);
+                + "AND event_type='SalesVisitFinalized'", tenantId)).isZero();
 
         jdbc.update("""
                 UPDATE sales_visit_policy_version
@@ -703,6 +744,12 @@ class SalesWorkVisitIntegrationTests {
         } catch (java.io.IOException error) {
             throw new IllegalStateException("测试JPEG生成失败", error);
         }
+    }
+
+    private static byte[] concat(byte[]... parts) {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        for (byte[] part : parts) output.writeBytes(part);
+        return output.toByteArray();
     }
 
     private static byte[] bin(UUID value) {

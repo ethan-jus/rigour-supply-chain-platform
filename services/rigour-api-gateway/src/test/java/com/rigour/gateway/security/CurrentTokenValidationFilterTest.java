@@ -1,6 +1,8 @@
 package com.rigour.gateway.security;
 
 import com.rigour.gateway.config.GatewaySecurityProperties;
+import com.rigour.shared.context.AuthenticationFailureCodes;
+import com.rigour.shared.context.RequestHeaders;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -44,7 +46,8 @@ class CurrentTokenValidationFilterTest {
         GatewaySecurityProperties properties = new GatewaySecurityProperties();
         properties.setCurrentTokenValidationEnabled(true);
         properties.setIamCurrentTokenUri("https://iam.test/api/v1/token/current");
-        CurrentTokenValidationFilter filter = new CurrentTokenValidationFilter(builder.build(), properties);
+        CurrentTokenValidationFilter filter = new CurrentTokenValidationFilter(
+                builder.build(), properties, failureWriter());
         Jwt jwt = new Jwt("signed-token", Instant.now(), Instant.now().plusSeconds(60),
                 Map.of("alg", "RS256"), Map.of("sub", "user", "aud", List.of("rigour-api")));
         var context = SecurityContextHolder.createEmptyContext();
@@ -65,7 +68,7 @@ class CurrentTokenValidationFilterTest {
         GatewaySecurityProperties properties = new GatewaySecurityProperties();
         properties.setCurrentTokenValidationEnabled(true);
         CurrentTokenValidationFilter filter = new CurrentTokenValidationFilter(
-                RestClient.builder().build(), properties);
+                RestClient.builder().build(), properties, failureWriter());
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         filter.doFilter(new MockHttpServletRequest("POST",
@@ -81,7 +84,7 @@ class CurrentTokenValidationFilterTest {
         GatewaySecurityProperties properties = new GatewaySecurityProperties();
         properties.setCurrentTokenValidationEnabled(true);
         CurrentTokenValidationFilter filter = new CurrentTokenValidationFilter(
-                RestClient.builder().build(), properties);
+                RestClient.builder().build(), properties, failureWriter());
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         filter.doFilter(new MockHttpServletRequest("POST",
@@ -99,6 +102,18 @@ class CurrentTokenValidationFilterTest {
         fixture.filter().doFilter(new MockHttpServletRequest("GET", "/api/v1/orders"), response,
                 (request, forwardedResponse) -> { throw new AssertionError("request must not be forwarded"); });
         assertThat(response.getStatus()).isEqualTo(HttpStatus.UNAUTHORIZED.value());
+        assertFailure(response, AuthenticationFailureCodes.IAM_TOKEN_INVALID);
+        fixture.server().verify();
+    }
+
+    @Test
+    void preservesIamForbiddenInsteadOfTurningItIntoExpiredLogin() throws Exception {
+        FilterFixture fixture = fixture(withStatus(HttpStatus.FORBIDDEN));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        fixture.filter().doFilter(new MockHttpServletRequest("GET", "/api/v1/orders"), response,
+                (request, forwardedResponse) -> { throw new AssertionError("request must not be forwarded"); });
+        assertThat(response.getStatus()).isEqualTo(HttpStatus.FORBIDDEN.value());
+        assertFailure(response, AuthenticationFailureCodes.IAM_FORBIDDEN);
         fixture.server().verify();
     }
 
@@ -109,6 +124,7 @@ class CurrentTokenValidationFilterTest {
         fixture.filter().doFilter(new MockHttpServletRequest("GET", "/api/v1/orders"), response,
                 (request, forwardedResponse) -> { throw new AssertionError("request must not be forwarded"); });
         assertThat(response.getStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE.value());
+        assertFailure(response, AuthenticationFailureCodes.IAM_SESSION_CHECK_UNAVAILABLE);
         fixture.server().verify();
     }
 
@@ -124,7 +140,20 @@ class CurrentTokenValidationFilterTest {
         var context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(new JwtAuthenticationToken(jwt, AuthorityUtils.NO_AUTHORITIES));
         SecurityContextHolder.setContext(context);
-        return new FilterFixture(new CurrentTokenValidationFilter(builder.build(), properties), server);
+        return new FilterFixture(new CurrentTokenValidationFilter(
+                builder.build(), properties, failureWriter()), server);
+    }
+
+    private static GatewaySecurityFailureWriter failureWriter() {
+        return new GatewaySecurityFailureWriter(
+                tools.jackson.databind.json.JsonMapper.builder().findAndAddModules().build());
+    }
+
+    private static void assertFailure(MockHttpServletResponse response, String code) throws Exception {
+        assertThat(response.getHeader(RequestHeaders.AUTH_FAILURE)).isEqualTo(code);
+        assertThat(response.getContentType()).startsWith(MediaType.APPLICATION_JSON_VALUE);
+        assertThat(tools.jackson.databind.json.JsonMapper.builder().build()
+                .readTree(response.getContentAsByteArray()).get("code").asString()).isEqualTo(code);
     }
 
     private record FilterFixture(CurrentTokenValidationFilter filter, MockRestServiceServer server) { }
