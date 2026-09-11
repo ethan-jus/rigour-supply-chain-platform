@@ -10,6 +10,7 @@
     <dependencies>
         <dependency><groupId>com.rigour</groupId><artifactId>integration-migration-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>erp-core-api</artifactId></dependency>
+        <dependency><groupId>com.rigour</groupId><artifactId>hr-payroll-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>merchant-crm-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>order-center-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>business-settings-client</artifactId></dependency>

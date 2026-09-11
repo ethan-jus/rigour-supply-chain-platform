@@ -3,6 +3,7 @@ package com.rigour.erp.infrastructure.persistence.repository;
 import com.rigour.erp.application.port.out.ErpSyncRunAuditStore;
 import com.rigour.erp.infrastructure.persistence.entity.MasterDataSyncRunEntity;
 import com.rigour.erp.infrastructure.persistence.mapper.MasterDataSyncRunMapper;
+import com.rigour.shared.core.sync.ExternalSourceCodes;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.Objects;
@@ -13,7 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 /** 基于现有 ERP 同步批次表的调度跳过审计仓储。 */
 @Repository
 public class MybatisPlusErpSyncRunAuditStore implements ErpSyncRunAuditStore {
-    private static final String SOURCE_SYSTEM = "DINGHUOBAO";
+    private static final String SOURCE_SYSTEM = ExternalSourceCodes.DOMAIN_DINGHUOBAO;
     private final MasterDataSyncRunMapper syncRunMapper;
     private final Clock clock;
 
@@ -59,8 +60,8 @@ public class MybatisPlusErpSyncRunAuditStore implements ErpSyncRunAuditStore {
         entity.errorMessage = reason.message();
         entity.startedAt = now;
         entity.finishedAt = now;
-        entity.createdAt = now;
-        entity.updatedAt = now;
+        entity.createdTime = now;
+        entity.updatedTime = now;
         syncRunMapper.insert(entity);
         return runId;
     }

@@ -5,7 +5,9 @@ import com.rigour.merchant.application.service.CrmMasterDataSyncService;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ApiResponse;
+import java.time.Instant;
 import java.util.UUID;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -21,15 +23,18 @@ public final class InternalCrmDhbSyncController {
         this.service = service;
     }
 
-    @PostMapping("/sync")
+    @PostMapping(value = "/sync", consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE)
     public ApiResponse<SyncResult> sync(@RequestBody InternalCrmDhbSyncCommand command) {
         if (command == null || command.connectorId() == null || command.sourceTaskId() == null) {
             throw new IllegalArgumentException("connectorId和sourceTaskId不能为空");
         }
         CallerIdentity caller = AuthorizationContext.requireCurrent();
         return ApiResponse.success(service.runScheduled(caller, command.connectorId(),
-                command.sourceTaskId(), command.maxPages() == null ? 100 : command.maxPages()));
+                command.sourceTaskId(), command.maxPages() == null ? 100 : command.maxPages(),
+                command.from(), command.to()));
     }
 
-    public record InternalCrmDhbSyncCommand(UUID connectorId, UUID sourceTaskId, Integer maxPages) { }
+    public record InternalCrmDhbSyncCommand(UUID connectorId, UUID sourceTaskId, Integer maxPages,
+                                            Instant from, Instant to) { }
 }

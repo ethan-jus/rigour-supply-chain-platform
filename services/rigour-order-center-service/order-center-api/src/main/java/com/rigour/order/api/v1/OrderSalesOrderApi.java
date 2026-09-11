@@ -3,9 +3,12 @@ package com.rigour.order.api.v1;
 import com.rigour.order.api.v1.model.OrderPageView;
 import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
+import com.rigour.order.api.v1.model.SalesOrderSourceProjectionCommand;
+import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutCommand;
 import com.rigour.order.api.v1.model.SalesOrderStockOutResult;
 import com.rigour.order.api.v1.model.SalesOrderSummaryView;
+import com.rigour.order.api.v1.model.SalesOrderTotalsView;
 import com.rigour.shared.core.api.ApiResponse;
 import java.time.Instant;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -26,16 +29,47 @@ public interface OrderSalesOrderApi {
             @RequestParam(defaultValue = "20") int step,
             @RequestParam(required = false) String orderNo,
             @RequestParam(required = false) String sourceOrderNo,
+            @RequestParam(required = false) String sourceStatusCode,
+            @RequestParam(required = false) String dataQualityStatusCode,
             @RequestParam(required = false) String customerName,
             @RequestParam(required = false) String contactPhone,
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) String ownerSalesUserId,
-            @RequestParam(required = false) String ownerStaffCode,
+            @RequestParam(required = false) String ownerEmployeeCode,
             @RequestParam(required = false) String orderStatusCode,
             @RequestParam(required = false) String paymentStatusCode,
             @RequestParam(required = false) String outboundStatusCode,
             @RequestParam(required = false) Instant orderDateFrom,
-            @RequestParam(required = false) Instant orderDateTo);
+            @RequestParam(required = false) Instant orderDateTo,
+            @RequestParam(required = false) Long productId,
+            @RequestParam(required = false) Long productVariantId,
+            @RequestParam(required = false) String productCodeSnapshot,
+            @RequestParam(required = false) String skuCodeSnapshot,
+            @RequestParam(required = false) String productNameSnapshot,
+            @RequestParam(required = false) String specificationSnapshot);
+
+    @GetMapping(BASE_PATH + "/totals")
+    ApiResponse<SalesOrderTotalsView> salesOrderTotals(
+            @RequestParam(required = false) String orderNo,
+            @RequestParam(required = false) String sourceOrderNo,
+            @RequestParam(required = false) String sourceStatusCode,
+            @RequestParam(required = false) String dataQualityStatusCode,
+            @RequestParam(required = false) String customerName,
+            @RequestParam(required = false) String contactPhone,
+            @RequestParam(required = false) String regionCode,
+            @RequestParam(required = false) String ownerSalesUserId,
+            @RequestParam(required = false) String ownerEmployeeCode,
+            @RequestParam(required = false) String orderStatusCode,
+            @RequestParam(required = false) String paymentStatusCode,
+            @RequestParam(required = false) String outboundStatusCode,
+            @RequestParam(required = false) Instant orderDateFrom,
+            @RequestParam(required = false) Instant orderDateTo,
+            @RequestParam(required = false) Long productId,
+            @RequestParam(required = false) Long productVariantId,
+            @RequestParam(required = false) String productCodeSnapshot,
+            @RequestParam(required = false) String skuCodeSnapshot,
+            @RequestParam(required = false) String productNameSnapshot,
+            @RequestParam(required = false) String specificationSnapshot);
 
     @GetMapping(BASE_PATH + "/{id}")
     ApiResponse<SalesOrderDetailView> salesOrder(@PathVariable("id") Long id);
@@ -47,12 +81,24 @@ public interface OrderSalesOrderApi {
     ApiResponse<SalesOrderDetailView> updateSalesOrder(
             @PathVariable("id") Long id, @RequestBody SalesOrderCommand command);
 
+    @PutMapping(BASE_PATH + "/{id}/source-status")
+    ApiResponse<SalesOrderDetailView> updateSalesOrderSourceStatus(
+            @PathVariable("id") Long id, @RequestBody SalesOrderSourceStatusCommand command);
+
+    @PutMapping(BASE_PATH + "/{id}/source-projection")
+    ApiResponse<SalesOrderDetailView> updateSalesOrderSourceProjection(
+            @PathVariable("id") Long id, @RequestBody SalesOrderSourceProjectionCommand command);
+
     @PostMapping(BASE_PATH + "/{id}/submissions")
     ApiResponse<SalesOrderDetailView> submitSalesOrder(
             @PathVariable("id") Long id, @RequestParam int revision);
 
     @PostMapping(BASE_PATH + "/{id}/cancellations")
     ApiResponse<SalesOrderDetailView> cancelSalesOrder(
+            @PathVariable("id") Long id, @RequestParam int revision);
+
+    @PostMapping(BASE_PATH + "/{id}/source-cancellations")
+    ApiResponse<SalesOrderDetailView> cancelSalesOrderBySource(
             @PathVariable("id") Long id, @RequestParam int revision);
 
     @PostMapping(BASE_PATH + "/{id}/outbound-confirmations")

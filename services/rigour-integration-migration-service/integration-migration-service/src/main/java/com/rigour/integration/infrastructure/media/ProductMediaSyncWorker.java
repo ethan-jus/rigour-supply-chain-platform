@@ -42,9 +42,17 @@ public final class ProductMediaSyncWorker {
 
     @Scheduled(fixedDelayString = "${rigour.integration.product-media.worker-poll-interval-ms:1000}")
     public void dispatch() {
+        if (!properties.isWorkerEnabled()) return;
         int available = properties.getWorkerConcurrency() - inFlight.get();
         if (available <= 0) return;
-        List<ClaimedMediaItem> items = store.claimPending(available, properties.getWorkerMaxAttempts());
+        List<ClaimedMediaItem> items;
+        try {
+            items = store.claimPending(available, properties.getWorkerMaxAttempts());
+        } catch (RuntimeException error) {
+            log.warn("订货宝商品图片任务领取失败，本次轮询跳过 errorType={} reason={}",
+                    error.getClass().getSimpleName(), safeMessage(error));
+            return;
+        }
         for (ClaimedMediaItem item : items) {
             inFlight.incrementAndGet();
             try {

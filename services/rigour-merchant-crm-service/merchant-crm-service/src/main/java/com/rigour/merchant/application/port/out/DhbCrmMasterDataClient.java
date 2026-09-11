@@ -12,6 +12,15 @@ public interface DhbCrmMasterDataClient {
     Collected collect(CallerIdentity serviceCaller, UUID connectorId,
                       CrmMasterDataObjectType objectType, int maxPages);
 
+    default Collected collect(CallerIdentity serviceCaller, UUID connectorId,
+                              CrmMasterDataObjectType objectType, int maxPages,
+                              Instant from, Instant to) {
+        if (from == null && to == null) {
+            return collect(serviceCaller, connectorId, objectType, maxPages);
+        }
+        throw new UnsupportedOperationException("该订货宝CRM客户端尚未支持时间窗口");
+    }
+
     record Collected(CrmMasterDataObjectType objectType, long total, int pages,
                      List<SourceRecord> items) {
         public Collected {

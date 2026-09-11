@@ -1,8 +1,13 @@
 package com.rigour.erp.application.port.out;
 
+import com.rigour.erp.api.v1.model.ExternalProductResolveRowCommand;
+import com.rigour.erp.api.v1.model.ExternalProductResolvedView;
+import com.rigour.erp.api.v1.model.ExternalProductRowCommand;
+import com.rigour.erp.api.v1.model.ExternalProductSyncResult;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.api.v1.model.ProductManagementDetailView;
 import com.rigour.erp.api.v1.model.ProductManagementSummaryView;
+import com.rigour.shared.core.code.BusinessCodeGenerator;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
@@ -34,6 +39,14 @@ public interface ErpProductManagementStore {
     ProductManagementDetailView update(String tenantId, Long id, ProductWrite command, String actorId);
 
     void delete(String tenantId, Long id, int revision, String actorId);
+
+    ExternalProductSyncResult syncExternalProducts(String tenantId, String sourceSystem,
+                                                   List<ExternalProductRowCommand> rows,
+                                                   String actorId,
+                                                   BusinessCodeGenerator codeGenerator);
+
+    List<ExternalProductResolvedView> resolveExternalProducts(String tenantId, String preferredSourceSystem,
+                                                              List<ExternalProductResolveRowCommand> rows);
 
     /** 商品列表独立筛选条件；不使用 keyword 汇总多个业务字段。 */
     record ProductSearchCriteria(

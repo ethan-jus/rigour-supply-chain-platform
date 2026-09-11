@@ -20,6 +20,18 @@ public class InternalSalesOrderEntity {
     private String sourceSystemCode;
     /** 来源平台订单号，用于展示、搜索和人工对账。 */
     private String sourceOrderNo;
+    /** 来源平台订单状态原值，用于展示、筛选和对账，不驱动我方流程。 */
+    private String sourceStatusCode;
+    /** 来源平台制单人ID。 */
+    private String sourceCreatorId;
+    /** 来源平台制单人匹配到的我方员工编码。 */
+    private String sourceCreatorStaffCode;
+    /** 来源平台制单人名称。 */
+    private String sourceCreatorName;
+    /** 导入数据质量状态：COMPLETE、NEEDS_REVIEW。 */
+    private String dataQualityStatusCode;
+    /** 导入数据质量说明，提示业务人员补齐缺失映射。 */
+    private String dataQualityMessage;
     /** CRM 客户ID。 */
     private Long customerId;
     /** 客户编号快照。 */
@@ -32,22 +44,28 @@ public class InternalSalesOrderEntity {
     private String contactPhoneSnapshot;
     /** 客户归属地区。 */
     private String regionCode;
-    /** 归属销售用户ID，旧字段兼容；新流程优先使用 ownerStaffCode。 */
+    /** 归属销售用户ID，旧字段兼容；新流程优先使用 ownerEmployeeCode。 */
     private String ownerSalesUserId;
     /** 归属销售名称快照。 */
     private String ownerSalesName;
-    /** 归属销售人员员工编码，来自 IAM 员工中心。 */
-    private String ownerStaffCode;
+    /** 归属销售人员工编码，来自 HR 员工主档。 */
+    private String ownerEmployeeCode;
     /** 归属销售人员姓名快照。 */
-    private String ownerStaffNameSnapshot;
+    private String ownerEmployeeNameSnapshot;
     /** 销售日期。 */
     private LocalDateTime orderDate;
+    /** 付款时间，来自关联资金付款单。 */
+    private LocalDateTime paymentTime;
+    /** 发货时间，来自关联销售发货单或销售出库确认。 */
+    private LocalDateTime shipmentTime;
     /** 销售订单状态。 */
     private String orderStatusCode;
     /** 订单类型。 */
     private String orderTypeCode;
     /** 付款方式。 */
     private String paymentMethodCode;
+    /** 订单级付款凭证COS key数组JSON。 */
+    private String paymentVoucherKeysJson;
     /** 收款状态。 */
     private String paymentStatusCode;
     /** 出库状态。 */
@@ -66,6 +84,8 @@ public class InternalSalesOrderEntity {
     private BigDecimal paidAmount;
     /** 待收金额。 */
     private BigDecimal unpaidAmount;
+    /** 来源订单显式待收金额；飞书导入用于保留来源对账口径。 */
+    private BigDecimal sourceUnpaidAmount;
     /** 备注。 */
     private String remark;
     /** 乐观锁。 */
@@ -91,6 +111,18 @@ public class InternalSalesOrderEntity {
     public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
     public String getSourceOrderNo() { return sourceOrderNo; }
     public void setSourceOrderNo(String sourceOrderNo) { this.sourceOrderNo = sourceOrderNo; }
+    public String getSourceStatusCode() { return sourceStatusCode; }
+    public void setSourceStatusCode(String sourceStatusCode) { this.sourceStatusCode = sourceStatusCode; }
+    public String getSourceCreatorId() { return sourceCreatorId; }
+    public void setSourceCreatorId(String sourceCreatorId) { this.sourceCreatorId = sourceCreatorId; }
+    public String getSourceCreatorStaffCode() { return sourceCreatorStaffCode; }
+    public void setSourceCreatorStaffCode(String sourceCreatorStaffCode) { this.sourceCreatorStaffCode = sourceCreatorStaffCode; }
+    public String getSourceCreatorName() { return sourceCreatorName; }
+    public void setSourceCreatorName(String sourceCreatorName) { this.sourceCreatorName = sourceCreatorName; }
+    public String getDataQualityStatusCode() { return dataQualityStatusCode; }
+    public void setDataQualityStatusCode(String dataQualityStatusCode) { this.dataQualityStatusCode = dataQualityStatusCode; }
+    public String getDataQualityMessage() { return dataQualityMessage; }
+    public void setDataQualityMessage(String dataQualityMessage) { this.dataQualityMessage = dataQualityMessage; }
     public Long getCustomerId() { return customerId; }
     public void setCustomerId(Long customerId) { this.customerId = customerId; }
     public String getCustomerCodeSnapshot() { return customerCodeSnapshot; }
@@ -107,18 +139,24 @@ public class InternalSalesOrderEntity {
     public void setOwnerSalesUserId(String ownerSalesUserId) { this.ownerSalesUserId = ownerSalesUserId; }
     public String getOwnerSalesName() { return ownerSalesName; }
     public void setOwnerSalesName(String ownerSalesName) { this.ownerSalesName = ownerSalesName; }
-    public String getOwnerStaffCode() { return ownerStaffCode; }
-    public void setOwnerStaffCode(String ownerStaffCode) { this.ownerStaffCode = ownerStaffCode; }
-    public String getOwnerStaffNameSnapshot() { return ownerStaffNameSnapshot; }
-    public void setOwnerStaffNameSnapshot(String ownerStaffNameSnapshot) { this.ownerStaffNameSnapshot = ownerStaffNameSnapshot; }
+    public String getOwnerEmployeeCode() { return ownerEmployeeCode; }
+    public void setOwnerEmployeeCode(String ownerEmployeeCode) { this.ownerEmployeeCode = ownerEmployeeCode; }
+    public String getOwnerEmployeeNameSnapshot() { return ownerEmployeeNameSnapshot; }
+    public void setOwnerEmployeeNameSnapshot(String ownerEmployeeNameSnapshot) { this.ownerEmployeeNameSnapshot = ownerEmployeeNameSnapshot; }
     public LocalDateTime getOrderDate() { return orderDate; }
     public void setOrderDate(LocalDateTime orderDate) { this.orderDate = orderDate; }
+    public LocalDateTime getPaymentTime() { return paymentTime; }
+    public void setPaymentTime(LocalDateTime paymentTime) { this.paymentTime = paymentTime; }
+    public LocalDateTime getShipmentTime() { return shipmentTime; }
+    public void setShipmentTime(LocalDateTime shipmentTime) { this.shipmentTime = shipmentTime; }
     public String getOrderStatusCode() { return orderStatusCode; }
     public void setOrderStatusCode(String orderStatusCode) { this.orderStatusCode = orderStatusCode; }
     public String getOrderTypeCode() { return orderTypeCode; }
     public void setOrderTypeCode(String orderTypeCode) { this.orderTypeCode = orderTypeCode; }
     public String getPaymentMethodCode() { return paymentMethodCode; }
     public void setPaymentMethodCode(String paymentMethodCode) { this.paymentMethodCode = paymentMethodCode; }
+    public String getPaymentVoucherKeysJson() { return paymentVoucherKeysJson; }
+    public void setPaymentVoucherKeysJson(String paymentVoucherKeysJson) { this.paymentVoucherKeysJson = paymentVoucherKeysJson; }
     public String getPaymentStatusCode() { return paymentStatusCode; }
     public void setPaymentStatusCode(String paymentStatusCode) { this.paymentStatusCode = paymentStatusCode; }
     public String getOutboundStatusCode() { return outboundStatusCode; }
@@ -137,6 +175,8 @@ public class InternalSalesOrderEntity {
     public void setPaidAmount(BigDecimal paidAmount) { this.paidAmount = paidAmount; }
     public BigDecimal getUnpaidAmount() { return unpaidAmount; }
     public void setUnpaidAmount(BigDecimal unpaidAmount) { this.unpaidAmount = unpaidAmount; }
+    public BigDecimal getSourceUnpaidAmount() { return sourceUnpaidAmount; }
+    public void setSourceUnpaidAmount(BigDecimal sourceUnpaidAmount) { this.sourceUnpaidAmount = sourceUnpaidAmount; }
     public String getRemark() { return remark; }
     public void setRemark(String remark) { this.remark = remark; }
     public Integer getRevision() { return revision; }

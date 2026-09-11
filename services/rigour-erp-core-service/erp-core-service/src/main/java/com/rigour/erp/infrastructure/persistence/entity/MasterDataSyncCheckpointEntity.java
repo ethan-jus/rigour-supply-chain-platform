@@ -27,9 +27,15 @@ public class MasterDataSyncCheckpointEntity {
     /** 最近一次完整成功批次 UUID。 */
     public String lastSuccessRunId;
     /** 乐观版本号。 */
-    public Long version;
+    public Long revision;
+    /** 创建人。 */
+    public String createdBy;
     /** 游标记录创建时间，UTC。 */
-    public LocalDateTime createdAt;
+    public LocalDateTime createdTime;
+    /** 更新人。 */
+    public String updatedBy;
     /** 游标记录最近更新时间，UTC。 */
-    public LocalDateTime updatedAt;
+    public LocalDateTime updatedTime;
+    /** 删除标识：0未删除，1已删除。 */
+    public Integer deleted;
 }

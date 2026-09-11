@@ -14,6 +14,7 @@ import com.rigour.integration.infrastructure.config.ProductMediaProperties;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +32,7 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
     private final COSClient client;
     private final String bucket;
     private final String objectPrefix;
+    private final List<String> allowedObjectPrefixes;
     private final long maxBytes;
     private final boolean serverSideEncryption;
 
@@ -46,6 +48,10 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
         this.maxBytes = properties.getMaxBytes();
         this.serverSideEncryption = cos.isServerSideEncryption();
         this.objectPrefix = normalizePrefix(cos.getObjectPrefix());
+        this.allowedObjectPrefixes = List.of(
+                this.objectPrefix,
+                normalizePrefix(properties.getFundAttachmentPrefix()),
+                normalizePrefix(properties.getFeishuAttachmentPrefix()));
     }
 
     private static ProductMediaProperties.Cos validatedCos(ProductMediaProperties properties) {
@@ -77,6 +83,8 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
         ClientConfig config = new ClientConfig(new Region(normalizedCredential(cos.getRegion())));
         config.setConnectionTimeout(cos.getConnectionTimeoutMs());
         config.setSocketTimeout(cos.getSocketTimeoutMs());
+        config.setRequestTimeout(cos.getConnectionTimeoutMs() + cos.getSocketTimeoutMs());
+        config.setRequestTimeOutEnable(true);
         // 商品图片请求体使用临时文件；关闭连接复用，避免 COS/网络侧关闭空闲连接后复用到坏连接。
         config.setShortConnection();
         // 重试交给下面的应用层，避免 SDK 内外层重复重试造成重复请求。
@@ -86,31 +94,21 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
 
     @Override
     public boolean exists(String tenantId, String objectKey) {
-        validateKey(tenantId, objectKey, objectPrefix);
+        validateKey(tenantId, objectKey, allowedObjectPrefixes);
         return client.doesObjectExist(bucket, objectKey);
     }
 
     @Override
     public void put(String tenantId, String objectKey, String originalName,
                     String contentType, byte[] content) {
-        validateKey(tenantId, objectKey, objectPrefix);
+        validateKey(tenantId, objectKey, allowedObjectPrefixes);
         if (content == null || content.length == 0 || content.length > maxBytes) {
             throw new IllegalArgumentException("商品图片大小无效");
         }
-        if (client.doesObjectExist(bucket, objectKey)) {
-            log.debug("订货宝商品图片已存在，跳过重复上传 tenantId={} objectKey={} bytes={}",
-                    tenantId, objectKey, content.length);
-            return;
-        }
         for (int attempt = 1; attempt <= MAX_UPLOAD_ATTEMPTS; attempt++) {
             try {
-                if (attempt > 1 && client.doesObjectExist(bucket, objectKey)) {
-                    log.debug("订货宝商品图片已存在，重试前检测到上传已完成 tenantId={} objectKey={}",
-                            tenantId, objectKey);
-                    return;
-                }
                 uploadOnce(objectKey, contentType, content);
-                log.info("订货宝商品图片已上传私有COS tenantId={} objectKey={} bytes={} contentType={}",
+                log.debug("订货宝商品图片已上传私有COS tenantId={} objectKey={} bytes={} contentType={}",
                         tenantId, objectKey, content.length, contentType);
                 return;
             } catch (CosClientException exception) {
@@ -181,8 +179,13 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
     void shutdown() { client.shutdown(); }
 
     private static void validateKey(String tenantId, String objectKey, String objectPrefix) {
+        validateKey(tenantId, objectKey, List.of(objectPrefix));
+    }
+
+    private static void validateKey(String tenantId, String objectKey, List<String> objectPrefixes) {
         if (!StringUtils.hasText(tenantId) || !StringUtils.hasText(objectKey)
-                || !objectKey.startsWith(tenantId + "/" + objectPrefix + "/") || objectKey.contains("..")) {
+                || objectKey.contains("..") || objectPrefixes.stream().noneMatch(prefix ->
+                objectKey.startsWith(tenantId + "/" + prefix + "/"))) {
             throw new IllegalArgumentException("商品图片对象 key 无效");
         }
     }

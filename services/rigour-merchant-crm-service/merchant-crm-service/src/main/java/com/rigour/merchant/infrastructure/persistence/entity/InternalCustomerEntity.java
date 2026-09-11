@@ -25,16 +25,24 @@ public class InternalCustomerEntity {
     private String contactPhone;
     /** 客户类型编码，关联 CRM 客户类型主数据。 */
     private String customerTypeCode;
-    /** 客户归属地区，关联 REGION 字典项。 */
+    /** 客户归属区域/城市编码，关联 CRM 客户区域主数据。 */
     private String regionCode;
-    /** 归属销售用户ID，旧字段兼容；新流程优先使用 ownerStaffCode。 */
+    /** 客户业务区域名称快照，飞书导入时保留来源原文。 */
+    private String regionName;
+    /** 客户城市名称快照，飞书导入时保留来源原文。 */
+    private String cityName;
+    /** 客户来源名称快照。 */
+    private String customerSourceName;
+    /** 客户/门店业务类目或属性快照。 */
+    private String businessCategoryName;
+    /** 归属销售用户ID，旧字段兼容；新流程优先使用 ownerEmployeeCode。 */
     private String ownerSalesUserId;
-    /** 归属销售名称快照，旧字段兼容；新流程优先使用 ownerStaffNameSnapshot。 */
+    /** 归属销售名称快照，旧字段兼容；新流程优先使用 ownerEmployeeNameSnapshot。 */
     private String ownerSalesName;
-    /** 归属销售人员员工编码，来自 IAM 员工中心。 */
-    private String ownerStaffCode;
-    /** 归属销售人员名称快照。 */
-    private String ownerStaffNameSnapshot;
+    /** 归属销售员工编码，来自 HR 员工主档。 */
+    private String ownerEmployeeCode;
+    /** 归属销售员工名称快照。 */
+    private String ownerEmployeeNameSnapshot;
     /** 客户结算类型，关联 CUSTOMER_SETTLEMENT_TYPE 字典项。 */
     private String settlementTypeCode;
     /** 客户地址。 */
@@ -43,6 +51,22 @@ public class InternalCustomerEntity {
     private String statusCode;
     /** 备注。 */
     private String remark;
+    /** 来源系统编码，如 FEISHU。 */
+    private String sourceSystemCode;
+    /** 来源租户/表标识。 */
+    private String sourceTenantKey;
+    /** 来源客户或门店ID。 */
+    private String sourceCustomerId;
+    /** 来源单号或来源业务编码。 */
+    private String sourceDocumentNo;
+    /** 来源创建时间。 */
+    private LocalDateTime sourceCreatedAt;
+    /** 来源更新时间。 */
+    private LocalDateTime sourceUpdatedAt;
+    /** 来源字段摘要。 */
+    private String sourcePayloadHash;
+    /** 来源原始字段快照。 */
+    private String sourcePayloadJson;
     /** 乐观锁版本。 */
     private Integer revision;
     /** 创建人。 */
@@ -128,6 +152,38 @@ public class InternalCustomerEntity {
         this.regionCode = regionCode;
     }
 
+    public String getRegionName() {
+        return regionName;
+    }
+
+    public void setRegionName(String regionName) {
+        this.regionName = regionName;
+    }
+
+    public String getCityName() {
+        return cityName;
+    }
+
+    public void setCityName(String cityName) {
+        this.cityName = cityName;
+    }
+
+    public String getCustomerSourceName() {
+        return customerSourceName;
+    }
+
+    public void setCustomerSourceName(String customerSourceName) {
+        this.customerSourceName = customerSourceName;
+    }
+
+    public String getBusinessCategoryName() {
+        return businessCategoryName;
+    }
+
+    public void setBusinessCategoryName(String businessCategoryName) {
+        this.businessCategoryName = businessCategoryName;
+    }
+
     public String getOwnerSalesUserId() {
         return ownerSalesUserId;
     }
@@ -144,20 +200,20 @@ public class InternalCustomerEntity {
         this.ownerSalesName = ownerSalesName;
     }
 
-    public String getOwnerStaffCode() {
-        return ownerStaffCode;
+    public String getOwnerEmployeeCode() {
+        return ownerEmployeeCode;
     }
 
-    public void setOwnerStaffCode(String ownerStaffCode) {
-        this.ownerStaffCode = ownerStaffCode;
+    public void setOwnerEmployeeCode(String ownerEmployeeCode) {
+        this.ownerEmployeeCode = ownerEmployeeCode;
     }
 
-    public String getOwnerStaffNameSnapshot() {
-        return ownerStaffNameSnapshot;
+    public String getOwnerEmployeeNameSnapshot() {
+        return ownerEmployeeNameSnapshot;
     }
 
-    public void setOwnerStaffNameSnapshot(String ownerStaffNameSnapshot) {
-        this.ownerStaffNameSnapshot = ownerStaffNameSnapshot;
+    public void setOwnerEmployeeNameSnapshot(String ownerEmployeeNameSnapshot) {
+        this.ownerEmployeeNameSnapshot = ownerEmployeeNameSnapshot;
     }
 
     public String getSettlementTypeCode() {
@@ -190,6 +246,70 @@ public class InternalCustomerEntity {
 
     public void setRemark(String remark) {
         this.remark = remark;
+    }
+
+    public String getSourceSystemCode() {
+        return sourceSystemCode;
+    }
+
+    public void setSourceSystemCode(String sourceSystemCode) {
+        this.sourceSystemCode = sourceSystemCode;
+    }
+
+    public String getSourceTenantKey() {
+        return sourceTenantKey;
+    }
+
+    public void setSourceTenantKey(String sourceTenantKey) {
+        this.sourceTenantKey = sourceTenantKey;
+    }
+
+    public String getSourceCustomerId() {
+        return sourceCustomerId;
+    }
+
+    public void setSourceCustomerId(String sourceCustomerId) {
+        this.sourceCustomerId = sourceCustomerId;
+    }
+
+    public String getSourceDocumentNo() {
+        return sourceDocumentNo;
+    }
+
+    public void setSourceDocumentNo(String sourceDocumentNo) {
+        this.sourceDocumentNo = sourceDocumentNo;
+    }
+
+    public LocalDateTime getSourceCreatedAt() {
+        return sourceCreatedAt;
+    }
+
+    public void setSourceCreatedAt(LocalDateTime sourceCreatedAt) {
+        this.sourceCreatedAt = sourceCreatedAt;
+    }
+
+    public LocalDateTime getSourceUpdatedAt() {
+        return sourceUpdatedAt;
+    }
+
+    public void setSourceUpdatedAt(LocalDateTime sourceUpdatedAt) {
+        this.sourceUpdatedAt = sourceUpdatedAt;
+    }
+
+    public String getSourcePayloadHash() {
+        return sourcePayloadHash;
+    }
+
+    public void setSourcePayloadHash(String sourcePayloadHash) {
+        this.sourcePayloadHash = sourcePayloadHash;
+    }
+
+    public String getSourcePayloadJson() {
+        return sourcePayloadJson;
+    }
+
+    public void setSourcePayloadJson(String sourcePayloadJson) {
+        this.sourcePayloadJson = sourcePayloadJson;
     }
 
     public Integer getRevision() {

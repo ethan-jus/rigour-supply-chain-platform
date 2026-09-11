@@ -9,7 +9,7 @@ public record CustomerDetailView(
         UUID id, String code, String name, String internalStatus, String account,
         String typeName, String areaName, String city, String inviter, String remark,
         String contactName, String phone, String email, String address,
-        String settlementMode, String staffName, List<SalesAssignmentView> salesAssignments,
+        String settlementMode, String employeeName, List<SalesAssignmentView> salesAssignments,
         String sourceStatus,
         Instant sourceCreatedAt, Instant sourceUpdatedAt, Instant syncedAt,
         /** PRESENT=已见；ABSENT_CANDIDATE=待确认；ABSENT/DELETED=来源已删除。 */
@@ -30,12 +30,12 @@ public record CustomerDetailView(
             UUID id, String code, String name, String internalStatus, String account,
             String typeName, String areaName, String city, String inviter, String remark,
             String contactName, String phone, String email, String address,
-            String settlementMode, String staffName, List<SalesAssignmentView> salesAssignments,
+            String settlementMode, String employeeName, List<SalesAssignmentView> salesAssignments,
             String sourceStatus, Instant sourceCreatedAt, Instant sourceUpdatedAt, Instant syncedAt,
             String sourcePresence, List<AddressView> shippingAddresses,
             Map<String, Object> sourceFields, CustomerSourceView source) {
         this(id, code, name, internalStatus, account, typeName, areaName, city, inviter, remark,
-                contactName, phone, email, address, settlementMode, staffName, salesAssignments,
+                contactName, phone, email, address, settlementMode, employeeName, salesAssignments,
                 sourceStatus, sourceCreatedAt, sourceUpdatedAt, syncedAt, sourcePresence, null,
                 shippingAddresses, sourceFields, source);
     }

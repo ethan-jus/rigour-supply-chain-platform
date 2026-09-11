@@ -29,7 +29,10 @@ public class CrmSyncRunEntity {
     public String errorMessage;
     public LocalDateTime startedAt;
     public LocalDateTime finishedAt;
-    public byte[] createdBy;
-    public LocalDateTime createdAt;
-    public LocalDateTime updatedAt;
+    public Integer revision;
+    public String createdBy;
+    public LocalDateTime createdTime;
+    public String updatedBy;
+    public LocalDateTime updatedTime;
+    public Integer deleted;
 }

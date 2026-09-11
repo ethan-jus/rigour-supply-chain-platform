@@ -246,7 +246,8 @@ class TemporaryCheckinPersistenceIntegrationTests {
                 "营业中", "张店长", "13800000000", "100-300平米", "8张球桌",
                 "[\"竞技赛事\"]", "[\"高德业务\"]", "高意向", "A类", "[\"连锁\"]",
                 new BigDecimal("116.3971280"), new BigDecimal("39.9165270"), new BigDecimal("12.50"),
-                NOW.minusSeconds(30), "店门口", null, null, null, null, null,
+                NOW.minusSeconds(30), "店门口", "VERIFIED", null, null,
+                null, null, null, null, null,
                 new GeocodeWrite("KEY_MISSING", null, null, null, null, null, null, null,
                         null, null, "AMAP_WEB_KEY_MISSING", NOW), NOW);
     }

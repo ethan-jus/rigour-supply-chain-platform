@@ -14,6 +14,10 @@
     <description>Analytics BI版本化调用接口和API模型，不包含业务实现</description>
     <dependencies>
         <dependency>
+            <groupId>com.rigour</groupId>
+            <artifactId>rigour-shared-core</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-web</artifactId>
         </dependency>

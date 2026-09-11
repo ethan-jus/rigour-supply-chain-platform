@@ -21,7 +21,7 @@ public interface BusinessDictionaryApi {
     /**
      * 查询字典。
      *
-     * @param dictionaryType 可选字典类型：COMMON/ERP/CRM/ORDER
+     * @param dictionaryType 可选字典类型：COMMON/ERP/CRM/ORDER/HR
      * @param dictionaryCode 可选字典编码
      * @return 符合条件且当前身份可见的字典
      */

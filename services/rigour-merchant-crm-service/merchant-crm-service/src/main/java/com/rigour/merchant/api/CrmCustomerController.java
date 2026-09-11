@@ -3,6 +3,7 @@ package com.rigour.merchant.api;
 import com.rigour.merchant.api.v1.CrmCustomerApi;
 import com.rigour.merchant.api.v1.model.CustomerDetailView;
 import com.rigour.merchant.api.v1.model.CustomerSummaryView;
+import com.rigour.merchant.api.v1.model.CrmCustomerAreaCommand;
 import com.rigour.merchant.api.v1.model.DictionaryView;
 import com.rigour.merchant.api.v1.model.PageView;
 import com.rigour.merchant.api.v1.model.ShippingAddressSummaryView;
@@ -47,5 +48,21 @@ public final class CrmCustomerController implements CrmCustomerApi {
     public ApiResponse<PageView<DictionaryView>> customerAreas(
             int begin, int step, String query) {
         return ApiResponse.success(service.customerAreas(begin, step, query));
+    }
+
+    @Override
+    public ApiResponse<DictionaryView> createCustomerArea(CrmCustomerAreaCommand command) {
+        return ApiResponse.success(service.createCustomerArea(command));
+    }
+
+    @Override
+    public ApiResponse<DictionaryView> updateCustomerArea(UUID id, CrmCustomerAreaCommand command) {
+        return ApiResponse.success(service.updateCustomerArea(id, command));
+    }
+
+    @Override
+    public ApiResponse<Void> deleteCustomerArea(UUID id, int revision) {
+        service.deleteCustomerArea(id, revision);
+        return ApiResponse.success(null);
     }
 }

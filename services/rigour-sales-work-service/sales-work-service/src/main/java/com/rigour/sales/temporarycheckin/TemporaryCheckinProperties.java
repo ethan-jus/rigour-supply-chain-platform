@@ -13,16 +13,17 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "rigour.sales.temporary-checkin")
 public class TemporaryCheckinProperties {
 
+    private int supplementalEvidenceHours = 24;
     private boolean enabled;
     private String tenantId;
     private long maxStorefrontPhotoBytes = 10L * 1024 * 1024;
     private long maxWechatScreenshotBytes = 10L * 1024 * 1024;
-    // 匿名公网入口仍需保留可配置的基础设施安全上限，页面端不再设置业务大小门槛。
-    private long maxAudioBytes = 100L * 1024 * 1024;
+    // 手机无损录音可能超过190MB；公开有效上限供页面前检，仍按流式内容检查。
+    private long maxAudioBytes = 256L * 1024 * 1024;
     private int maxAudioSegmentsPerSubmission = 20;
     private long maxAudioTotalBytesPerSubmission = 1024L * 1024 * 1024;
     private int maxCheckinDistanceMeters = 300;
-    private int maxCheckinAccuracyMeters = 200;
+    private int maxCheckinAccuracyMeters = 300;
     private int maxLocationAgeMinutes = 60;
     private boolean identityEnforcementEnabled = true;
     private String identitySigningKeyBase64;
@@ -60,6 +61,11 @@ public class TemporaryCheckinProperties {
         }
     }
 
+    public int getSupplementalEvidenceHours() { return supplementalEvidenceHours; }
+    public void setSupplementalEvidenceHours(int value) {
+        if (value < 1 || value > 168) throw new IllegalArgumentException("补证窗口必须为1到168小时");
+        supplementalEvidenceHours = value;
+    }
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public String getTenantId() { return tenantId; }

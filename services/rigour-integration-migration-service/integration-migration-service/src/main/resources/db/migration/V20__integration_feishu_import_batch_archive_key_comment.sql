@@ -1,0 +1,4 @@
+-- This version already exists in the shared development database history from
+-- an earlier local iteration. Keep a no-op migration here so Flyway can resolve
+-- the applied version consistently; current Feishu import schema backfill lives
+-- in V21.

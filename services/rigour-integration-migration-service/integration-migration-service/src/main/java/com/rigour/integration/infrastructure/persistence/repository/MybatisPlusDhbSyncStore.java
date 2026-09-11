@@ -9,6 +9,7 @@ import com.rigour.integration.infrastructure.persistence.IntegrationUuidCodec;
 import com.rigour.integration.infrastructure.persistence.entity.DhbConnectorEntity;
 import com.rigour.integration.infrastructure.persistence.entity.ExternalObjectMappingEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationDeadLetterEntity;
+import com.rigour.integration.infrastructure.persistence.entity.IntegrationManualResolutionEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationOrderMirrorEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationOutboxEventEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationRawLandingEntity;
@@ -20,6 +21,7 @@ import com.rigour.integration.infrastructure.persistence.entity.IntegrationSyncT
 import com.rigour.integration.infrastructure.persistence.mapper.DhbConnectorMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.ExternalObjectMappingMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationDeadLetterMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationManualResolutionMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationOrderMirrorMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationOutboxEventMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationRawLandingMapper;
@@ -30,6 +32,7 @@ import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncR
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncTaskMapper;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
+import com.rigour.shared.core.sync.ExternalSourceCodes;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -39,6 +42,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -49,7 +53,7 @@ import tools.jackson.databind.ObjectMapper;
 
 /** 订货宝订单同步的 MyBatis-Plus 持久化适配器。 */
 public class MybatisPlusDhbSyncStore implements DhbSyncStore {
-    private static final String SOURCE_SYSTEM = "DHB";
+    private static final String SOURCE_SYSTEM = ExternalSourceCodes.INTEGRATION_DHB;
     private static final String SOURCE_OBJECT_TYPE = "ORDER";
 
     private final DhbConnectorMapper connectorMapper;
@@ -62,6 +66,7 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
     private final ExternalObjectMappingMapper externalObjectMappingMapper;
     private final IntegrationDeadLetterMapper deadLetterMapper;
     private final IntegrationReconciliationCaseMapper reconciliationCaseMapper;
+    private final IntegrationManualResolutionMapper manualResolutionMapper;
     private final IntegrationSyncLogMapper syncLogMapper;
     private final TransactionTemplate transaction;
     private final ObjectMapper objectMapper;
@@ -77,6 +82,7 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
             ExternalObjectMappingMapper externalObjectMappingMapper,
             IntegrationDeadLetterMapper deadLetterMapper,
             IntegrationReconciliationCaseMapper reconciliationCaseMapper,
+            IntegrationManualResolutionMapper manualResolutionMapper,
             IntegrationSyncLogMapper syncLogMapper,
             PlatformTransactionManager transactionManager,
             ObjectMapper objectMapper) {
@@ -90,6 +96,7 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
         this.externalObjectMappingMapper = externalObjectMappingMapper;
         this.deadLetterMapper = deadLetterMapper;
         this.reconciliationCaseMapper = reconciliationCaseMapper;
+        this.manualResolutionMapper = manualResolutionMapper;
         this.syncLogMapper = syncLogMapper;
         this.transaction = new TransactionTemplate(transactionManager);
         this.objectMapper = objectMapper;
@@ -188,9 +195,14 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
                 IntegrationRawLandingEntity raw = raw(rawId, tenantId, connectorId, runId,
                         SOURCE_OBJECT_TYPE, order.sourceId(), sourceVersion(order),
                         order.updatedAt(), payloadJson, payloadChecksum, received);
-                boolean inserted = insertRaw(raw);
                 UUID persistedRawId = findRawLanding(tenantId, connectorId,
                         SOURCE_OBJECT_TYPE, order.sourceId(), payloadChecksum);
+                boolean inserted = false;
+                if (persistedRawId == null) {
+                    inserted = insertRaw(raw);
+                    persistedRawId = inserted ? rawId : findRawLanding(tenantId, connectorId,
+                            SOURCE_OBJECT_TYPE, order.sourceId(), payloadChecksum);
+                }
                 if (persistedRawId == null) {
                     throw new IllegalStateException("订货宝 Raw Landing 写入后无法回读");
                 }
@@ -221,9 +233,14 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
         IntegrationRawLandingEntity raw = raw(rawId, tenantId, connectorId, runId,
                 objectType, sourceKey, sourceVersion, sourceUpdatedAt, payloadJson,
                 payloadChecksum, receivedAt == null ? Instant.now() : receivedAt);
-        boolean inserted = insertRaw(raw);
         UUID persistedRawId = findRawLanding(tenantId, connectorId, objectType,
                 sourceKey, payloadChecksum);
+        boolean inserted = false;
+        if (persistedRawId == null) {
+            inserted = insertRaw(raw);
+            persistedRawId = inserted ? rawId : findRawLanding(tenantId, connectorId, objectType,
+                    sourceKey, payloadChecksum);
+        }
         if (persistedRawId == null) {
             throw new IllegalStateException("订货宝 Raw Landing 写入后无法回读");
         }
@@ -248,6 +265,57 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
             row = findActiveMappingBySourceNo(tenantId, null, objectType, sourceKey);
         }
         return row == null ? null : mapping(row);
+    }
+
+    @Override
+    public List<TransferInboundReceiptCandidate> findTransferInboundReceiptCandidates(
+            UUID tenantId, UUID connectorId, int limit) {
+        int queryLimit = limit < 1 ? 500 : Math.min(limit, 5000);
+        QueryWrapper<IntegrationRawLandingEntity> query = Wrappers.<IntegrationRawLandingEntity>query()
+                .select("id", "source_id", "source_updated_at", "payload_json", "received_at")
+                .eq("tenant_id", bin(tenantId))
+                .eq(connectorId != null, "connector_id", bin(connectorId))
+                .isNull(connectorId == null, "connector_id")
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("source_object_type", "WAREHOUSING_RECEIPT")
+                .orderByDesc("received_at")
+                .last("LIMIT " + queryLimit);
+        return rawLandingMapper.selectList(query).stream()
+                .map(row -> new TransferInboundReceiptCandidate(
+                        IntegrationUuidCodec.decode(row.id),
+                        row.sourceId,
+                        firstNonBlank(sourceNo(readJsonMap(row.payloadJson)), row.sourceId),
+                        instant(row.sourceUpdatedAt),
+                        instant(row.receivedAt),
+                        readJsonMap(row.payloadJson)))
+                .toList();
+    }
+
+    @Override
+    public ManualResolution findActiveManualResolution(UUID tenantId, UUID connectorId,
+                                                       String resolutionType,
+                                                       String sourceObjectType,
+                                                       String sourceId) {
+        String type = required(resolutionType, "resolutionType").toUpperCase(Locale.ROOT);
+        String objectType = required(sourceObjectType, "sourceObjectType").toUpperCase(Locale.ROOT);
+        String sourceKey = required(sourceId, "sourceId");
+        UUID scopedConnectorId = require(connectorId, "connectorId");
+        IntegrationManualResolutionEntity row = first(manualResolutionMapper.selectList(
+                Wrappers.<IntegrationManualResolutionEntity>query()
+                        .eq("tenant_id", bin(tenantId))
+                        .eq("source_system", SOURCE_SYSTEM)
+                        .eq("connector_id", bin(scopedConnectorId))
+                        .eq("resolution_type", type)
+                        .eq("source_object_type", objectType)
+                        .eq("source_id", sourceKey)
+                        .eq("status", "ACTIVE")
+                        .orderByDesc("updated_at", "created_at")
+                        .last("LIMIT 1")));
+        if (row == null) return null;
+        return new ManualResolution(IntegrationUuidCodec.decode(row.id), row.resolutionType,
+                row.sourceObjectType, row.sourceId, row.selectedSourceObjectType,
+                row.selectedSourceId, row.selectedInternalObjectType,
+                row.selectedInternalObjectId, readJsonMap(row.evidenceJson), row.reason);
     }
 
     @Override
@@ -316,23 +384,28 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
     public void recordDeadLetter(UUID tenantId, UUID actorId, DeadLetterWrite value) {
         if (value == null) throw new IllegalArgumentException("dead letter is required");
         LocalDateTime now = now();
+        byte[] tenant = bin(require(tenantId, "tenantId"));
+        byte[] actor = bin(actorId);
+        String objectType = required(value.sourceObjectType(), "sourceObjectType");
+        String businessKey = required(value.sourceId(), "sourceId");
+        resolveOpenDeadLetters(tenant, actor, objectType, businessKey, now);
         IntegrationDeadLetterEntity row = new IntegrationDeadLetterEntity();
         row.id = bin(UUID.randomUUID());
-        row.tenantId = bin(tenantId);
+        row.tenantId = tenant;
         row.runId = bin(value.runId());
         row.rawLandingId = bin(value.rawLandingId());
         row.sourceSystem = SOURCE_SYSTEM;
-        row.sourceObjectType = required(value.sourceObjectType(), "sourceObjectType");
-        row.sourceId = required(value.sourceId(), "sourceId");
+        row.sourceObjectType = objectType;
+        row.sourceId = businessKey;
         row.status = "OPEN";
         row.attempts = 1;
         row.lastErrorCode = blankToNull(value.errorCode());
         row.lastErrorMessage = truncate(value.errorMessage());
         row.version = 0L;
         row.createdAt = now;
-        row.createdBy = bin(actorId);
+        row.createdBy = actor;
         row.updatedAt = now;
-        row.updatedBy = bin(actorId);
+        row.updatedBy = actor;
         deadLetterMapper.insert(row);
     }
 
@@ -341,13 +414,18 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
                                          ReconciliationCaseWrite value) {
         if (value == null) throw new IllegalArgumentException("reconciliation case is required");
         LocalDateTime now = now();
+        byte[] tenant = bin(require(tenantId, "tenantId"));
+        byte[] actor = bin(actorId);
+        String objectType = required(value.sourceObjectType(), "sourceObjectType");
+        String businessKey = required(value.businessKey(), "businessKey");
+        resolveOpenReconciliationCases(tenant, actor, objectType, businessKey, now);
         IntegrationReconciliationCaseEntity row = new IntegrationReconciliationCaseEntity();
         row.id = bin(UUID.randomUUID());
-        row.tenantId = bin(tenantId);
+        row.tenantId = tenant;
         row.runId = bin(value.runId());
         row.sourceSystem = SOURCE_SYSTEM;
-        row.sourceObjectType = required(value.sourceObjectType(), "sourceObjectType");
-        row.businessKey = required(value.businessKey(), "businessKey");
+        row.sourceObjectType = objectType;
+        row.businessKey = businessKey;
         row.checkType = required(value.checkType(), "checkType");
         row.expectedValueJson = writeJson(value.expectedValue() == null ? Map.of() : value.expectedValue());
         row.actualValueJson = writeJson(value.actualValue() == null ? Map.of() : value.actualValue());
@@ -356,10 +434,134 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
         row.message = truncate(required(value.message(), "message"));
         row.version = 0L;
         row.createdAt = now;
-        row.createdBy = bin(actorId);
+        row.createdBy = actor;
         row.updatedAt = now;
-        row.updatedBy = bin(actorId);
+        row.updatedBy = actor;
         reconciliationCaseMapper.insert(row);
+    }
+
+    @Override
+    public void resolveProjectionIssues(UUID tenantId, UUID actorId,
+                                        String sourceObjectType, String sourceId) {
+        if (blank(sourceObjectType) || blank(sourceId)) return;
+        LocalDateTime current = now();
+        byte[] tenant = bin(require(tenantId, "tenantId"));
+        byte[] actor = bin(actorId);
+        String objectType = sourceObjectType.strip();
+        String businessKey = sourceId.strip();
+        deadLetterMapper.update(null, Wrappers.<IntegrationDeadLetterEntity>update()
+                .set("status", "RESOLVED")
+                .set("resolved_at", current)
+                .set("resolved_by", actor)
+                .set("updated_at", current)
+                .set("updated_by", actor)
+                .setSql("version=version+1")
+                .eq("tenant_id", tenant)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("source_object_type", objectType)
+                .eq("source_id", businessKey)
+                .in("status", "OPEN", "REPLAYING"));
+        reconciliationCaseMapper.update(null, Wrappers.<IntegrationReconciliationCaseEntity>update()
+                .set("status", "RESOLVED")
+                .set("resolved_at", current)
+                .set("resolved_by", actor)
+                .set("updated_at", current)
+                .set("updated_by", actor)
+                .setSql("version=version+1")
+                .eq("tenant_id", tenant)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("source_object_type", objectType)
+                .eq("business_key", businessKey)
+                .in("status", "OPEN", "ACKNOWLEDGED"));
+    }
+
+    @Override
+    public void resolveRecoveredProjectionIssues(UUID tenantId, UUID actorId) {
+        LocalDateTime current = now();
+        byte[] tenant = bin(require(tenantId, "tenantId"));
+        byte[] actor = bin(actorId);
+        deadLetterMapper.update(null, Wrappers.<IntegrationDeadLetterEntity>update()
+                .set("status", "RESOLVED")
+                .set("resolved_at", current)
+                .set("resolved_by", actor)
+                .set("updated_at", current)
+                .set("updated_by", actor)
+                .setSql("version=version+1")
+                .eq("tenant_id", tenant)
+                .eq("source_system", SOURCE_SYSTEM)
+                .in("status", "OPEN", "REPLAYING")
+                .exists("""
+                        select 1
+                        from integration_external_object_mapping m
+                        where m.tenant_id = integration_dead_letter.tenant_id
+                          and m.source_system = integration_dead_letter.source_system
+                          and m.source_object_type = integration_dead_letter.source_object_type
+                          and (m.source_object_id = integration_dead_letter.source_id
+                               or m.source_object_no = integration_dead_letter.source_id)
+                          and m.mapping_status = 'ACTIVE'
+                          and m.deleted_at is null
+                          and m.internal_object_id is not null
+                          and m.last_seen_at is not null
+                          and m.last_seen_at > integration_dead_letter.updated_at
+                        """));
+        reconciliationCaseMapper.update(null, Wrappers.<IntegrationReconciliationCaseEntity>update()
+                .set("status", "RESOLVED")
+                .set("resolved_at", current)
+                .set("resolved_by", actor)
+                .set("updated_at", current)
+                .set("updated_by", actor)
+                .setSql("version=version+1")
+                .eq("tenant_id", tenant)
+                .eq("source_system", SOURCE_SYSTEM)
+                .in("status", "OPEN", "ACKNOWLEDGED")
+                .exists("""
+                        select 1
+                        from integration_external_object_mapping m
+                        where m.tenant_id = integration_reconciliation_case.tenant_id
+                          and m.source_system = integration_reconciliation_case.source_system
+                          and m.source_object_type = integration_reconciliation_case.source_object_type
+                          and (m.source_object_id = integration_reconciliation_case.business_key
+                               or m.source_object_no = integration_reconciliation_case.business_key)
+                          and m.mapping_status = 'ACTIVE'
+                          and m.deleted_at is null
+                          and m.internal_object_id is not null
+                          and m.last_seen_at is not null
+                          and m.last_seen_at > integration_reconciliation_case.updated_at
+                        """));
+    }
+
+    private void resolveOpenDeadLetters(byte[] tenant, byte[] actor,
+                                        String sourceObjectType, String sourceId,
+                                        LocalDateTime resolvedAt) {
+        deadLetterMapper.update(null, Wrappers.<IntegrationDeadLetterEntity>update()
+                .set("status", "RESOLVED")
+                .set("resolved_at", resolvedAt)
+                .set("resolved_by", actor)
+                .set("updated_at", resolvedAt)
+                .set("updated_by", actor)
+                .setSql("version=version+1")
+                .eq("tenant_id", tenant)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("source_object_type", sourceObjectType)
+                .eq("source_id", sourceId)
+                .in("status", "OPEN", "REPLAYING"));
+    }
+
+    private void resolveOpenReconciliationCases(byte[] tenant, byte[] actor,
+                                                String sourceObjectType, String businessKey,
+                                                LocalDateTime resolvedAt) {
+        reconciliationCaseMapper.update(null, Wrappers.<IntegrationReconciliationCaseEntity>update()
+                .set("status", "RESOLVED")
+                .set("resolved_at", resolvedAt)
+                .set("resolved_by", actor)
+                .set("updated_at", resolvedAt)
+                .set("updated_by", actor)
+                .setSql("version=version+1")
+                .eq("tenant_id", tenant)
+                .eq("source_system", SOURCE_SYSTEM)
+                .eq("source_object_type", sourceObjectType)
+                .eq("business_key", businessKey)
+                .in("status", "OPEN", "ACKNOWLEDGED"));
     }
 
     @Override
@@ -747,6 +949,33 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readJsonMap(String value) {
+        if (blank(value)) return Map.of();
+        try {
+            Object parsed = objectMapper.readValue(value, Map.class);
+            if (parsed instanceof Map<?, ?> map) {
+                Map<String, Object> result = new LinkedHashMap<>();
+                map.forEach((key, item) -> {
+                    if (key != null) result.put(String.valueOf(key), item);
+                });
+                return result;
+            }
+            return Map.of();
+        } catch (RuntimeException error) {
+            throw new IllegalStateException("订货宝 Raw Landing payload 解析失败", error);
+        }
+    }
+
+    private static String sourceNo(Map<String, Object> payload) {
+        return firstNonBlank(text(payload.get("warehousing_num")),
+                text(payload.get("WarehousingNum")),
+                text(payload.get("storage_num")),
+                text(payload.get("StorageNum")),
+                text(payload.get("receipt_no")),
+                text(payload.get("ReceiptNo")));
+    }
+
     private static String sha256(String value) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
@@ -802,6 +1031,19 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
 
     private static String string(Instant value) {
         return value == null ? null : value.toString();
+    }
+
+    private static String text(Object value) {
+        if (value == null) return null;
+        String text = String.valueOf(value).strip();
+        return text.isEmpty() || "null".equalsIgnoreCase(text) ? null : text;
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (!blank(value)) return value.strip();
+        }
+        return null;
     }
 
     private static byte[] bin(UUID value) {

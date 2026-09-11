@@ -1,0 +1,30 @@
+-- 派生文件只改善后台读取，不替代原件；生成状态和时长跨请求复用。
+CREATE TABLE temp_sales_checkin_media_derivative (
+    id BINARY(16) NOT NULL,
+    tenant_id BINARY(16) NOT NULL,
+    submission_id BINARY(16) NOT NULL,
+    media_id VARCHAR(64) NOT NULL,
+    kind VARCHAR(16) NOT NULL,
+    source_object_key VARCHAR(1024) NOT NULL,
+    source_sha256 VARCHAR(64) NOT NULL,
+    source_content_type VARCHAR(128) NULL,
+    source_filename VARCHAR(256) NULL,
+    source_size_bytes BIGINT NOT NULL,
+    lease_token BINARY(16) NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    attempts INT NOT NULL DEFAULT 0,
+    duration_ms BIGINT NULL,
+    thumbnail_bytes MEDIUMBLOB NULL,
+    derived_object_key VARCHAR(1024) NULL,
+    derived_size_bytes BIGINT NULL,
+    error_code VARCHAR(64) NULL,
+    created_at DATETIME(6) NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_temp_media_derivative (tenant_id,submission_id,media_id,source_sha256),
+    KEY idx_temp_media_derivative_jobs (tenant_id,status,updated_at),
+    CONSTRAINT fk_temp_derivative_submission FOREIGN KEY (tenant_id,submission_id)
+        REFERENCES temp_sales_checkin_submission (tenant_id,id) ON DELETE CASCADE,
+    CONSTRAINT ck_temp_derivative_status CHECK (status IN ('PENDING','PROCESSING','READY','FAILED')),
+    CONSTRAINT ck_temp_derivative_kind CHECK (kind IN ('IMAGE','AUDIO'))
+);

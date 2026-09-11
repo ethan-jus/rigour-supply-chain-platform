@@ -36,7 +36,8 @@ class RestAmapPoiClientTest {
                         {"status":"1","info":"OK","count":"2","pois":[
                           {"id":"B001","name":"测试便利店A","type":"购物服务",
                            "typecode":"060100","address":"科技园路1号",
-                           "location":"120.100000,30.200000","distance":"120"},
+                           "location":"120.100000,30.200000","distance":"120",
+                           "cityname":"杭州市","adcode":"330106"},
                           {"id":"B002","name":"测试便利店B","type":"购物服务",
                            "typecode":"060100","address":"科技园路2号",
                            "location":"120.101000,30.201000","distance":"260"}
@@ -51,10 +52,44 @@ class RestAmapPoiClientTest {
         assertThat(page.items().get(0).poiId()).isEqualTo("B001");
         assertThat(page.items().get(0).name()).isEqualTo("测试便利店A");
         assertThat(page.items().get(0).distanceMeters()).isEqualByComparingTo("120");
+        assertThat(page.items().get(0).cityName()).isEqualTo("杭州市");
+        assertThat(page.items().get(0).adcode()).isEqualTo("330106");
         assertThat(page.items().get(1).longitude()).isEqualByComparingTo("120.101000");
         NearbyPoiPage cached = client.searchAround("便利店", new BigDecimal("120.10004"),
                 new BigDecimal("30.20004"), 3000, 1, 20);
         assertThat(cached).isEqualTo(page);
+        server.verify();
+    }
+
+    @Test
+    void searchesTextInsideCityWithoutASelectionRadiusAndCachesTheKeyword() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RestAmapPoiClient client = new RestAmapPoiClient(builder.build(), properties, JsonMapper.builder().build());
+        server.expect(requestTo(containsString("/place/text")))
+                .andExpect(queryParam("key", "test-amap-key"))
+                .andExpect(queryParam("keywords", "%E5%8F%B0%E7%90%83%E4%BF%B1%E4%B9%90%E9%83%A8"))
+                .andExpect(queryParam("city", "%E5%8C%97%E4%BA%AC"))
+                .andExpect(queryParam("citylimit", "true"))
+                .andExpect(queryParam("offset", "25"))
+                .andExpect(queryParam("page", "1"))
+                .andRespond(withSuccess("""
+                        {"status":"1","info":"OK","count":"1","pois":[
+                          {"id":"B201","name":"城市内远距台球俱乐部","type":"体育休闲服务",
+                           "typecode":"080000","address":"北京市海淀区远距路1号",
+                           "location":"116.500000,39.990000",
+                           "cityname":"北京市","adcode":"110108"}
+                        ]}
+                        """, MediaType.APPLICATION_JSON));
+
+        NearbyPoiPage page = client.searchText("台球俱乐部", "北京", 1, 25);
+
+        assertThat(page.items()).singleElement().satisfies(poi -> {
+            assertThat(poi.poiId()).isEqualTo("B201");
+            assertThat(poi.distanceMeters()).isNull();
+            assertThat(poi.cityName()).isEqualTo("北京市");
+        });
+        assertThat(client.searchText("台球俱乐部", "北京", 1, 25)).isEqualTo(page);
         server.verify();
     }
 

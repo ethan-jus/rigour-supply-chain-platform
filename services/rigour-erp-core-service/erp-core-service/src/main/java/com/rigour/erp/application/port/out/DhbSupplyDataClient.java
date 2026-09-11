@@ -8,6 +8,7 @@ import com.rigour.erp.domain.model.supply.SupplyDataObjectType;
 import com.rigour.erp.domain.model.supply.Warehouse;
 import com.rigour.erp.domain.model.supply.WarehousingReceipt;
 import com.rigour.shared.context.CallerIdentity;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -15,6 +16,15 @@ import java.util.UUID;
 public interface DhbSupplyDataClient {
     Collected collect(CallerIdentity caller, UUID connectorId, SupplyDataObjectType objectType,
                       int maxPages, List<String> inventoryGoodsCodes);
+
+    default Collected collect(CallerIdentity caller, UUID connectorId, SupplyDataObjectType objectType,
+                              int maxPages, List<String> inventoryGoodsCodes, Instant from,
+                              Instant to) {
+        if (from == null && to == null) {
+            return collect(caller, connectorId, objectType, maxPages, inventoryGoodsCodes);
+        }
+        throw new UnsupportedOperationException("该订货宝供应链客户端尚未支持时间窗口");
+    }
 
     record Collected(SupplyDataObjectType objectType, long total, int pages,
                      List<Supplier> suppliers, List<PurchaseOrder> purchaseOrders,

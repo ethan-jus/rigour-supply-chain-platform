@@ -2,17 +2,19 @@ package com.rigour.erp.application.service.supply;
 
 import com.rigour.erp.api.v1.model.ErpDataSyncResult;
 import com.rigour.erp.application.model.DictionaryMappingAudit;
-import com.rigour.erp.application.port.out.DhbSupplySyncTargetDiscoveryClient;
+import com.rigour.erp.application.model.DictionaryMappingAudit.MappingIssue;
 import com.rigour.erp.application.port.out.DhbSupplyDataClient;
+import com.rigour.erp.application.port.out.DhbSupplySyncTargetDiscoveryClient;
 import com.rigour.erp.application.port.out.SupplyDataStore;
 import com.rigour.erp.application.port.out.SupplyDataStore.ImportResult;
 import com.rigour.erp.application.port.out.SupplyDataStore.RunStatistics;
+import com.rigour.erp.application.service.sync.BusinessDictionaryCoverageService;
+import com.rigour.erp.application.service.sync.ErpScheduledSyncSkipException;
 import com.rigour.erp.domain.model.supply.SupplyDataObjectType;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.client.ConnectorSyncLeaseClient;
 import com.rigour.integration.client.ConnectorSyncLeaseClient.LeaseGuard;
-import com.rigour.erp.application.service.sync.BusinessDictionaryCoverageService;
-import com.rigour.erp.application.service.sync.ErpScheduledSyncSkipException;
+import com.rigour.integration.client.ExternalObjectMappingClient;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
@@ -21,6 +23,7 @@ import com.rigour.shared.core.exception.BusinessException;
 import com.rigour.shared.core.sync.SyncConflictClassifier;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,42 +47,74 @@ public final class SupplyDataSyncService {
     private final SupplyDataStore store;
     private final BusinessDictionaryCoverageService dictionaryCoverage;
     private final ConnectorSyncLeaseClient connectorLease;
+    private final ExternalObjectMappingClient mappingClient;
 
     public SupplyDataSyncService(DhbSupplyDataClient client,
                                  DhbSupplySyncTargetDiscoveryClient discovery,
                                  SupplyDataStore store,
                                  BusinessDictionaryCoverageService dictionaryCoverage,
-                                 ConnectorSyncLeaseClient connectorLease) {
+                                 ConnectorSyncLeaseClient connectorLease,
+                                 ExternalObjectMappingClient mappingClient) {
         this.client = client; this.discovery = discovery; this.store = store;
         this.dictionaryCoverage = dictionaryCoverage;
         this.connectorLease = connectorLease;
+        this.mappingClient = mappingClient;
     }
 
     public ErpDataSyncResult run(SupplyDataObjectType type, int maxPages) {
+        return run(type, maxPages, null, null);
+    }
+
+    public ErpDataSyncResult run(SupplyDataObjectType type, int maxPages,
+                                 Instant from, Instant to) {
         CallerIdentity caller = AuthorizationContext.requireCurrent();
         if (caller.tenantId() == null || caller.userId() == null) throw new AuthorizationDeniedException("tenant-caller");
         AuthorizationContext.requirePermission("erp:supply:write");
         if (maxPages < 1 || maxPages > 100) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "maxPages必须在1到100之间", List.of());
         }
+        validateWindow(from, to);
         SyncTargetView target = uniqueTarget(caller);
-        return runWithCaller(caller, target.connectorId(), caller.userId(), type, maxPages, false);
+        return runWithCaller(caller, target.connectorId(), caller.userId(), type, maxPages,
+                false, from, to);
     }
 
     /** 供 ERP 内部定时编排器调用；目标连接器已经由调度器完成发现和校验。 */
     public ErpDataSyncResult runScheduled(CallerIdentity caller, UUID connectorId,
                                           SupplyDataObjectType type, int maxPages) {
+        return runInternal(caller, connectorId, type, maxPages, true);
+    }
+
+    /** 供 ERP 内部定时编排器调用；目标连接器已经由调度器完成发现和校验。 */
+    public ErpDataSyncResult runScheduled(CallerIdentity caller, UUID connectorId,
+                                          SupplyDataObjectType type, int maxPages,
+                                          Instant from, Instant to) {
+        return runInternal(caller, connectorId, type, maxPages, true, from, to);
+    }
+
+    /** 供 Integration 统一编排器调用；目标连接器已经由 Integration 完成发现和校验。 */
+    public ErpDataSyncResult runInternal(CallerIdentity caller, UUID connectorId,
+                                         SupplyDataObjectType type, int maxPages,
+                                         boolean scheduled) {
+        return runInternal(caller, connectorId, type, maxPages, scheduled, null, null);
+    }
+
+    /** 供 Integration 统一编排器调用；目标连接器已经由 Integration 完成发现和校验。 */
+    public ErpDataSyncResult runInternal(CallerIdentity caller, UUID connectorId,
+                                         SupplyDataObjectType type, int maxPages,
+                                         boolean scheduled, Instant from, Instant to) {
         requireScheduledCaller(caller);
         if (connectorId == null) throw new IllegalArgumentException("connectorId不能为空");
         if (maxPages < 1 || maxPages > 100) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "maxPages必须在1到100之间", List.of());
         }
-        return runWithCaller(caller, connectorId, null, type, maxPages, true);
+        validateWindow(from, to);
+        return runWithCaller(caller, connectorId, null, type, maxPages, scheduled, from, to);
     }
 
     private ErpDataSyncResult runWithCaller(CallerIdentity caller, UUID connectorId, UUID actorId,
                                              SupplyDataObjectType type, int maxPages,
-                                             boolean scheduled) {
+                                             boolean scheduled, Instant from, Instant to) {
         String tenantId = caller.tenantId().toString();
         AtomicBoolean actionStarted = new AtomicBoolean(false);
         SyncAttempt attempt = new SyncAttempt();
@@ -87,7 +122,7 @@ public final class SupplyDataSyncService {
             return connectorLease.executeWithLeaseGuard(caller.tenantId(), connectorId, guard -> {
                 actionStarted.set(true);
                 return runUnderLease(caller, connectorId, actorId, type, maxPages,
-                        scheduled, attempt, guard);
+                        scheduled, from, to, attempt, guard);
             });
         } catch (RuntimeException error) {
             if (scheduled && !actionStarted.get() && SyncConflictClassifier.isAlreadyRunning(error)) {
@@ -105,7 +140,8 @@ public final class SupplyDataSyncService {
 
     private ErpDataSyncResult runUnderLease(CallerIdentity caller, UUID connectorId, UUID actorId,
                                              SupplyDataObjectType type, int maxPages,
-                                             boolean scheduled, SyncAttempt attempt, LeaseGuard guard) {
+                                             boolean scheduled, Instant from, Instant to,
+                                             SyncAttempt attempt, LeaseGuard guard) {
         String tenantId = caller.tenantId().toString();
         try {
             attempt.runId = scheduled
@@ -117,31 +153,48 @@ public final class SupplyDataSyncService {
             }
             throw error;
         }
-        log.info("ERP供应链数据同步批次已创建 tenantId={} userId={} objectType={} connectorId={} runId={} maxPages={}",
-                tenantId, actorId, type, connectorId, attempt.runId, maxPages);
+        log.info("ERP供应链数据同步批次已创建 tenantId={} userId={} objectType={} connectorId={} runId={} maxPages={} windowFrom={} windowTo={}",
+                tenantId, actorId, type, connectorId, attempt.runId, maxPages, from, to);
         List<String> codes = type == SupplyDataObjectType.INVENTORY
-                ? store.sourceProductCodes(tenantId) : List.of();
-        DhbSupplyDataClient.Collected collected = client.collect(dataCaller(caller.tenantId()),
-                connectorId, type, maxPages, codes);
+                ? store.sourceProductCodes(tenantId, connectorId) : List.of();
+        boolean windowRequested = from != null;
+        boolean windowApplied = windowRequested && supportsWindow(type);
+        DhbSupplyDataClient.Collected collected = windowApplied
+                ? client.collect(dataCaller(caller.tenantId()), connectorId, type, maxPages, codes, from, to)
+                : client.collect(dataCaller(caller.tenantId()), connectorId, type, maxPages, codes);
         store.heartbeatRun(tenantId, attempt.runId);
         attempt.counts.pages = collected.pages();
+        attempt.counts.sourceDetails = sourceDetails(type, collected, windowRequested, windowApplied);
         importCollected(tenantId, attempt.runId, collected, attempt.counts);
         store.heartbeatRun(tenantId, attempt.runId);
         attempt.counts.dictionaryAudit = dictionaryCoverage.inspect(caller.tenantId(), collected);
         store.heartbeatRun(tenantId, attempt.runId);
         RunStatistics stats = attempt.counts.statistics();
+        int mappingAccepted = registerExternalObjectMappings(
+                tenantId, connectorId, attempt.runId, type);
+        store.heartbeatRun(tenantId, attempt.runId);
         guard.ensureActive();
         store.completeRunWithSourcePresence(tenantId, attempt.runId,
                 attempt.counts.rejected == 0 ? seenSourceIds(type, collected) : Map.of(), stats);
-        log.info("ERP供应链数据同步批次完成 tenantId={} objectType={} connectorId={} runId={} fetched={} created={} changed={} duplicates={} rejected={} pages={}",
+        log.info("ERP供应链数据同步批次完成 tenantId={} objectType={} connectorId={} runId={} fetched={} created={} changed={} duplicates={} rejected={} pages={} mappingAccepted={}",
                 tenantId, type, connectorId, attempt.runId, stats.fetched(), stats.created(),
-                stats.changed(), stats.duplicates(), stats.rejected(), stats.pages());
-        String status = stats.dictionaryAudit().unmapped() == 0
+                stats.changed(), stats.duplicates(), stats.rejected(), stats.pages(), mappingAccepted);
+        String status = stats.rejected() == 0 && stats.dictionaryAudit().unmapped() == 0
+                && (windowApplied || !windowRequested)
                 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
         return new ErpDataSyncResult(attempt.runId, type.name(), status, connectorId,
                 stats.fetched(), stats.created(), stats.changed(), stats.duplicates(),
                 stats.rejected(), stats.dictionaryAudit().unmapped(),
-                stats.dictionaryAudit().revisions(), stats.pages(), Instant.now());
+                stats.dictionaryAudit().revisions(), attempt.counts.sourceDetails,
+                stats.pages(), Instant.now());
+    }
+
+    private int registerExternalObjectMappings(String tenantId, UUID connectorId, UUID runId,
+                                               SupplyDataObjectType objectType) {
+        var mappings = store.externalObjectMappings(tenantId, connectorId, runId, objectType);
+        if (mappings == null || mappings.isEmpty()) return 0;
+        var result = mappingClient.upsert(UUID.fromString(tenantId), mappings);
+        return result == null ? 0 : result.accepted();
     }
 
     private void importCollected(String tenantId, UUID runId, DhbSupplyDataClient.Collected collected,
@@ -167,9 +220,10 @@ public final class SupplyDataSyncService {
             counts.add(store.importWarehouse(tenantId, runId, item));
             imported = heartbeatEvery(tenantId, runId, imported);
         }
-        for (var item : collected.inventoryBalances()) {
-            counts.add(store.importInventory(tenantId, runId, item));
-            imported = heartbeatEvery(tenantId, runId, imported);
+        if (!collected.inventoryBalances().isEmpty()) {
+            counts.add(store.importInventories(tenantId, runId, collected.inventoryBalances()));
+            imported += collected.inventoryBalances().size();
+            store.heartbeatRun(tenantId, runId);
         }
     }
 
@@ -204,6 +258,35 @@ public final class SupplyDataSyncService {
             throw new AuthorizationDeniedException("integration:dhb:read");
         }
     }
+    private static void validateWindow(Instant from, Instant to) {
+        if ((from == null) != (to == null)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "同步窗口from和to必须同时提供", List.of());
+        }
+        if (from != null && !from.isBefore(to)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "同步窗口from必须早于to", List.of());
+        }
+    }
+
+    private static boolean supportsWindow(SupplyDataObjectType type) {
+        return false;
+    }
+
+    private static Map<String, Long> sourceDetails(SupplyDataObjectType type,
+                                                   DhbSupplyDataClient.Collected collected,
+                                                   boolean windowRequested,
+                                                   boolean windowApplied) {
+        Map<String, Long> details = new LinkedHashMap<>();
+        details.put(type.name(), collected.total());
+        if (windowRequested) {
+            details.put("DHB_SYNC_WINDOW_REQUESTED", 1L);
+            details.put("DHB_SYNC_WINDOW_APPLIED", windowApplied ? 1L : 0L);
+            if (!windowApplied) {
+                details.put("DHB_SYNC_WINDOW_UNSUPPORTED_BY_SOURCE_API", 1L);
+            }
+        }
+        return java.util.Collections.unmodifiableMap(details);
+    }
+
     private static CallerIdentity dataCaller(UUID tenantId) {
         return serviceCaller(tenantId, Set.of("integration:dhb:read"));
     }
@@ -214,15 +297,24 @@ public final class SupplyDataSyncService {
 
     private static final class Counts {
         long fetched; long created; long changed; long duplicates; long rejected; int pages;
+        Map<String, Long> sourceDetails = Map.of();
         DictionaryMappingAudit dictionaryAudit = DictionaryMappingAudit.empty();
+        List<MappingIssue> issues = new ArrayList<>();
         void add(ImportResult value) {
             created += value.created(); changed += value.changed();
             duplicates += value.duplicates(); rejected += value.rejected();
             fetched += value.created() + value.changed() + value.duplicates() + value.rejected();
+            issues.addAll(value.issues());
         }
         RunStatistics statistics() {
+            DictionaryMappingAudit audit = dictionaryAudit;
+            if (!issues.isEmpty()) {
+                List<MappingIssue> combined = new ArrayList<>(audit.issues());
+                combined.addAll(issues);
+                audit = new DictionaryMappingAudit(audit.unmapped(), audit.revisions(), combined);
+            }
             return new RunStatistics(fetched, created, changed, duplicates, rejected, pages,
-                    dictionaryAudit);
+                    audit);
         }
     }
 

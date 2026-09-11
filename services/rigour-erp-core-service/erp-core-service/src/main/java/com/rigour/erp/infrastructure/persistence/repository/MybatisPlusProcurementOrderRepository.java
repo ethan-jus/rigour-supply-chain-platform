@@ -49,6 +49,7 @@ public class MybatisPlusProcurementOrderRepository
     private static final String ACTIVE = "ACTIVE";
     private static final String SUBMITTED = "SUBMITTED";
     private static final String DRAFT = "DRAFT";
+    private static final String SYSTEM_ACTOR = "SYSTEM";
     private static final BigDecimal ZERO = BigDecimal.ZERO;
 
     private final InternalProcurementOrderLineMapper lineMapper;
@@ -81,7 +82,7 @@ public class MybatisPlusProcurementOrderRepository
         InternalProcurementOrderMapper mapper = getBaseMapper();
         long total = mapper.selectCount(query(tenantId, criteria));
         List<InternalProcurementOrderEntity> page = mapper.selectList(query(tenantId, criteria)
-                .orderByDesc(InternalProcurementOrderEntity::getUpdatedTime)
+                .orderByDesc(InternalProcurementOrderEntity::getCreatedTime)
                 .orderByDesc(InternalProcurementOrderEntity::getId)
                 .last("LIMIT " + step + " OFFSET " + begin));
         Set<Long> orderIds = ids(page);
@@ -157,7 +158,7 @@ public class MybatisPlusProcurementOrderRepository
         InternalProcurementOrderEntity entity = orderEntity(tenantId, procurementNo, command, actorId, now);
         try {
             getBaseMapper().insert(entity);
-            insertLines(tenantId, entity.getId(), command.lines(), now);
+            insertLines(tenantId, entity.getId(), command.lines(), actorId, now);
         } catch (DataIntegrityViolationException exception) {
             throw conflict("采购订单号已存在或采购订单引用数据无效");
         }
@@ -179,7 +180,7 @@ public class MybatisPlusProcurementOrderRepository
                 .set(InternalProcurementOrderEntity::getTotalAmount, command.totalAmount())
                 .set(InternalProcurementOrderEntity::getRemark, command.remark())
                 .set(InternalProcurementOrderEntity::getRevision, command.revision() + 1)
-                .set(InternalProcurementOrderEntity::getUpdatedBy, actorId)
+                .set(InternalProcurementOrderEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalProcurementOrderEntity::getUpdatedTime, now)
                 .eq(InternalProcurementOrderEntity::getTenantId, tenantId)
                 .eq(InternalProcurementOrderEntity::getId, id)
@@ -187,8 +188,8 @@ public class MybatisPlusProcurementOrderRepository
                 .eq(InternalProcurementOrderEntity::getStatusCode, existing.getStatusCode())
                 .eq(InternalProcurementOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("采购订单已被其他人修改，请刷新后重试");
-        logicDeleteLines(tenantId, id, now);
-        insertLines(tenantId, id, command.lines(), now);
+        logicDeleteLines(tenantId, id, actorId, now);
+        insertLines(tenantId, id, command.lines(), actorId, now);
         return procurementOrder(tenantId, id).orElseThrow(() -> notFound("采购订单不存在"));
     }
 
@@ -200,7 +201,7 @@ public class MybatisPlusProcurementOrderRepository
         int updated = getBaseMapper().update(null, Wrappers.<InternalProcurementOrderEntity>lambdaUpdate()
                 .set(InternalProcurementOrderEntity::getDeleted, 1)
                 .set(InternalProcurementOrderEntity::getRevision, revision + 1)
-                .set(InternalProcurementOrderEntity::getUpdatedBy, actorId)
+                .set(InternalProcurementOrderEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalProcurementOrderEntity::getUpdatedTime, now)
                 .eq(InternalProcurementOrderEntity::getTenantId, tenantId)
                 .eq(InternalProcurementOrderEntity::getId, id)
@@ -208,12 +209,15 @@ public class MybatisPlusProcurementOrderRepository
                 .eq(InternalProcurementOrderEntity::getStatusCode, existing.getStatusCode())
                 .eq(InternalProcurementOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("采购订单已被其他人修改，请刷新后重试");
-        logicDeleteLines(tenantId, id, now);
+        logicDeleteLines(tenantId, id, actorId, now);
     }
 
     private InternalProcurementOrderEntity requireEditable(String tenantId, Long id) {
         InternalProcurementOrderEntity existing = selectActive(tenantId, id)
                 .orElseThrow(() -> notFound("采购订单不存在"));
+        if (externalSource(existing.getSourceSystemCode())) {
+            throw conflict("外部来源采购订单不能编辑或删除");
+        }
         if (!DRAFT.equals(existing.getStatusCode()) && !SUBMITTED.equals(existing.getStatusCode())) {
             throw conflict("采购订单已入库，不能直接修改或删除");
         }
@@ -235,7 +239,12 @@ public class MybatisPlusProcurementOrderRepository
                         .eq(InternalProcurementOrderEntity::getTenantId, tenantId)
                         .eq(InternalProcurementOrderEntity::getDeleted, 0);
         if (criteria.procurementNo() != null) {
-            query.like(InternalProcurementOrderEntity::getProcurementNo, criteria.procurementNo());
+            query.and(value -> value
+                    .like(InternalProcurementOrderEntity::getProcurementNo, criteria.procurementNo())
+                    .or()
+                    .like(InternalProcurementOrderEntity::getSourceDocumentNo, criteria.procurementNo())
+                    .or()
+                    .like(InternalProcurementOrderEntity::getRemark, criteria.procurementNo()));
         }
         if (criteria.supplierId() != null) {
             query.eq(InternalProcurementOrderEntity::getSupplierId, criteria.supplierId());
@@ -269,16 +278,16 @@ public class MybatisPlusProcurementOrderRepository
         entity.setTotalAmount(command.totalAmount());
         entity.setRemark(command.remark());
         entity.setRevision(1);
-        entity.setCreatedBy(actorId);
+        entity.setCreatedBy(auditActor(actorId));
         entity.setCreatedTime(now);
-        entity.setUpdatedBy(actorId);
+        entity.setUpdatedBy(auditActor(actorId));
         entity.setUpdatedTime(now);
         entity.setDeleted(0);
         return entity;
     }
 
     private void insertLines(String tenantId, Long orderId, List<ProcurementOrderLineWrite> lines,
-                             LocalDateTime now) {
+                             String actorId, LocalDateTime now) {
         for (ProcurementOrderLineWrite line : lines) {
             InternalProcurementOrderLineEntity entity = new InternalProcurementOrderLineEntity();
             entity.setTenantId(tenantId);
@@ -295,16 +304,21 @@ public class MybatisPlusProcurementOrderRepository
             entity.setLineAmount(line.lineAmount());
             entity.setReceivedQuantity(ZERO);
             entity.setRemark(line.remark());
+            entity.setRevision(1);
+            entity.setCreatedBy(auditActor(actorId));
             entity.setCreatedTime(now);
+            entity.setUpdatedBy(auditActor(actorId));
             entity.setUpdatedTime(now);
             entity.setDeleted(0);
             lineMapper.insert(entity);
         }
     }
 
-    private void logicDeleteLines(String tenantId, Long orderId, LocalDateTime now) {
+    private void logicDeleteLines(String tenantId, Long orderId, String actorId, LocalDateTime now) {
         lineMapper.update(null, Wrappers.<InternalProcurementOrderLineEntity>lambdaUpdate()
                 .set(InternalProcurementOrderLineEntity::getDeleted, 1)
+                .setSql("revision = revision + 1")
+                .set(InternalProcurementOrderLineEntity::getUpdatedBy, auditActor(actorId))
                 .set(InternalProcurementOrderLineEntity::getUpdatedTime, now)
                 .eq(InternalProcurementOrderLineEntity::getTenantId, tenantId)
                 .eq(InternalProcurementOrderLineEntity::getProcurementOrderId, orderId)
@@ -314,6 +328,7 @@ public class MybatisPlusProcurementOrderRepository
     private InternalProcurementOrderDetailView detail(String tenantId, InternalProcurementOrderEntity order,
                                                      List<InternalProcurementOrderLineEntity> lines) {
         return new InternalProcurementOrderDetailView(order.getId(), order.getProcurementNo(),
+                order.getSourceSystemCode(), order.getSourceDocumentNo(),
                 order.getSupplierId(), supplierNames(tenantId, Set.of(order.getSupplierId())).get(order.getSupplierId()),
                 order.getTargetWarehouseId(),
                 warehouseNames(tenantId, Set.of(order.getTargetWarehouseId())).get(order.getTargetWarehouseId()),
@@ -329,6 +344,7 @@ public class MybatisPlusProcurementOrderRepository
             InternalProcurementOrderEntity order, Map<Long, String> suppliers, Map<Long, String> warehouses,
             Map<Long, Long> lineCounts) {
         return new InternalProcurementOrderSummaryView(order.getId(), order.getProcurementNo(),
+                order.getSourceSystemCode(), order.getSourceDocumentNo(),
                 order.getSupplierId(), suppliers.get(order.getSupplierId()), order.getTargetWarehouseId(),
                 warehouses.get(order.getTargetWarehouseId()), order.getStatusCode(),
                 instant(order.getExpectedArrivalTime()), order.getTotalQuantity(), order.getTotalAmount(),
@@ -408,6 +424,14 @@ public class MybatisPlusProcurementOrderRepository
 
     private static Instant instant(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC);
+    }
+
+    private static String auditActor(String actorId) {
+        return actorId == null || actorId.isBlank() ? SYSTEM_ACTOR : actorId;
+    }
+
+    private static boolean externalSource(String sourceSystemCode) {
+        return sourceSystemCode != null && !sourceSystemCode.isBlank();
     }
 
     private static BusinessException conflict(String message) {

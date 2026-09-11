@@ -14,7 +14,7 @@ public class DictEntity {
     public String dictionaryCode;
     /** 字典名称。 */
     public String dictionaryName;
-    /** 字典类型：COMMON/ERP/CRM/ORDER。 */
+    /** 字典类型：COMMON/ERP/CRM/ORDER/HR。 */
     public String dictionaryType;
     /** 维护说明。 */
     public String remark;

@@ -12,6 +12,8 @@ public class MasterSourceBindingEntity {
     @TableId(type = IdType.INPUT) public String id;
     /** 租户主键。 */
     public String tenantId;
+    /** Integration 连接器 UUID。 */
+    public String connectorId;
     /** 来源系统编码，例如 DINGHUOBAO。 */
     public String sourceSystem;
     /** 来源对象类型，例如 PRODUCT_SPU、PRODUCT_SKU 或 BRAND。 */
@@ -43,9 +45,15 @@ public class MasterSourceBindingEntity {
     /** 最近一次成功处理来源对象的时间，UTC。 */
     public LocalDateTime syncedAt;
     /** 乐观版本号。 */
-    public Long version;
+    public Long revision;
+    /** 创建人。 */
+    public String createdBy;
     /** 来源绑定创建时间，UTC。 */
-    public LocalDateTime createdAt;
+    public LocalDateTime createdTime;
+    /** 更新人。 */
+    public String updatedBy;
     /** 来源绑定最近更新时间，UTC。 */
-    public LocalDateTime updatedAt;
+    public LocalDateTime updatedTime;
+    /** 删除标识：0未删除，1已删除。 */
+    public Integer deleted;
 }

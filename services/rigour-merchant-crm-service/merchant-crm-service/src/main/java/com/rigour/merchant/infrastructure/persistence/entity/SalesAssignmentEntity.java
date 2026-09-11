@@ -14,8 +14,8 @@ public class SalesAssignmentEntity {
     public String assignmentType;
     public String assigneeType;
     public String sourceStaffId;
-    public String iamStaffCode;
-    public String iamStaffNameSnapshot;
+    public String employeeCode;
+    public String employeeNameSnapshot;
     public byte[] salesProfileId;
     public byte[] salesTeamId;
     public byte[] cityId;
@@ -25,9 +25,10 @@ public class SalesAssignmentEntity {
     public LocalDateTime effectiveTo;
     public String status;
     public String reason;
-    public Long version;
-    public byte[] createdBy;
-    public byte[] updatedBy;
-    public LocalDateTime createdAt;
-    public LocalDateTime updatedAt;
+    public Long revision;
+    public String createdBy;
+    public String updatedBy;
+    public LocalDateTime createdTime;
+    public LocalDateTime updatedTime;
+    public Integer deleted;
 }

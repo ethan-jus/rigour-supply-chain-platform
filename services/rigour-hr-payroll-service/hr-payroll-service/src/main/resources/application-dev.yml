@@ -1,12 +1,18 @@
+# DEV配置：连接共享Nacos并读取HR数据库参数；真实密码仍由进程环境Secret注入。
 spring:
   config:
-    import: optional:nacos:${spring.application.name}.yaml?refreshEnabled=true
+    # DEV必须读取共享Nacos；鉴权或配置缺失时直接停止启动，避免服务“端口已起但配置不完整”。
+    # refreshEnabled只用于刷新非敏感运行参数；HMAC和数据库密码不放入Nacos。
+    import: nacos:${spring.application.name}.yaml?refreshEnabled=true
   cloud:
     nacos:
-      server-addr: 82.157.4.176:18848
+      # Nacos HTTP/API端口；客户端会自动使用派生的gRPC端口，不要手动改成19848。
+      server-addr: ${NACOS_SERVER_ADDR:82.157.4.176:18848}
       username: ${NACOS_USERNAME:nacos}
       password: ${NACOS_PASSWORD}
       config:
         namespace: ${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}
+        group: ${NACOS_CONFIG_GROUP:DEFAULT_GROUP}
       discovery:
         namespace: ${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}
+        group: ${NACOS_DISCOVERY_GROUP:DEFAULT_GROUP}

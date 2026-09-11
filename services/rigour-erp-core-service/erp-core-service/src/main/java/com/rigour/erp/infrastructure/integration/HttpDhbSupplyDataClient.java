@@ -22,6 +22,7 @@ import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.context.RequestHeaders;
 import com.rigour.shared.context.TrustedContextSigner;
 import java.net.URI;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -55,28 +56,39 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
     @Override
     public Collected collect(CallerIdentity caller, UUID connectorId, SupplyDataObjectType type,
                              int maxPages, List<String> inventoryGoodsCodes) {
+        return collect(caller, connectorId, type, maxPages, inventoryGoodsCodes, null, null);
+    }
+
+    @Override
+    public Collected collect(CallerIdentity caller, UUID connectorId, SupplyDataObjectType type,
+                             int maxPages, List<String> inventoryGoodsCodes,
+                             Instant from, Instant to) {
+        validateWindow(from, to);
         return switch (type) {
-            case SUPPLIER -> suppliers(caller, connectorId, maxPages);
-            case PURCHASE_ORDER -> purchaseOrders(caller, connectorId, maxPages);
-            case PURCHASE_RETURN -> purchaseReturns(caller, connectorId, maxPages);
-            case WAREHOUSING_RECEIPT -> warehousing(caller, connectorId, maxPages);
-            case WAREHOUSE -> warehouses(caller, connectorId, maxPages);
+            case SUPPLIER -> suppliers(caller, connectorId, maxPages, from, to);
+            case PURCHASE_ORDER -> purchaseOrders(caller, connectorId, maxPages, from, to);
+            case PURCHASE_RETURN -> purchaseReturns(caller, connectorId, maxPages, from, to);
+            case WAREHOUSING_RECEIPT -> warehousing(caller, connectorId, maxPages, from, to);
+            case WAREHOUSE -> warehouses(caller, connectorId, maxPages, from, to);
             case INVENTORY -> inventory(caller, connectorId, maxPages, inventoryGoodsCodes);
         };
     }
 
-    private Collected suppliers(CallerIdentity caller, UUID id, int maxPages) {
+    private Collected suppliers(CallerIdentity caller, UUID id, int maxPages,
+                                Instant from, Instant to) {
         List<Supplier> result = collectPages(caller, id, "suppliers", maxPages, PAGE_SIZE,
                 new ParameterizedTypeReference<DhbSupplyPageView<DhbSupplierView>>() { },
                 item -> new Supplier(item.sourceId(), item.sourceGuid(), item.code(), item.name(),
                         item.areaName(), item.address(), item.contactName(), item.mobile(), item.phone(), item.email(),
                         item.accountName(), item.bankName(), item.bankAccount(), item.invoiceTitle(), item.taxpayerNumber(),
-                        item.remark(), item.sourceUpdatedAt(), item.sourceFields(), hash(item)));
+                        item.remark(), item.sourceUpdatedAt(), item.sourceFields(), hash(item)),
+                from, to);
         return collected(SupplyDataObjectType.SUPPLIER, result.size(), pages(result.size()), result,
                 null, null, null, null, null);
     }
 
-    private Collected purchaseOrders(CallerIdentity caller, UUID id, int maxPages) {
+    private Collected purchaseOrders(CallerIdentity caller, UUID id, int maxPages,
+                                     Instant from, Instant to) {
         List<PurchaseOrder> result = collectPages(caller, id, "purchase-orders", maxPages, PAGE_SIZE,
                 new ParameterizedTypeReference<DhbSupplyPageView<DhbPurchaseOrderView>>() { },
                 item -> new PurchaseOrder(item.sourceId(), item.number(), item.supplierSourceId(),
@@ -90,12 +102,14 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
                         line.goodsName(), line.optionsId(), line.optionsGoodsCode(), line.optionsSummary(),
                         line.baseQuantity(), line.unitPrice(), line.purchaseUnitCode(), line.purchaseUnitName(),
                         line.purchaseUnitQuantity(), line.warehousedQuantity(), line.returnedQuantity(),
-                        line.remark(), line.sourceFields(), hash(line))).toList(), item.sourceFields(), hash(item)));
+                        line.remark(), line.sourceFields(), hash(line))).toList(), item.sourceFields(), hash(item)),
+                from, to);
         return collected(SupplyDataObjectType.PURCHASE_ORDER, result.size(), pages(result.size()), null,
                 result, null, null, null, null);
     }
 
-    private Collected purchaseReturns(CallerIdentity caller, UUID id, int maxPages) {
+    private Collected purchaseReturns(CallerIdentity caller, UUID id, int maxPages,
+                                      Instant from, Instant to) {
         List<PurchaseReturn> result = collectPages(caller, id, "purchase-returns", maxPages,
                 PURCHASE_RETURN_PAGE_SIZE,
                 new ParameterizedTypeReference<DhbSupplyPageView<DhbPurchaseReturnView>>() { },
@@ -113,13 +127,15 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
                         line.confirmedPrice(), line.unitCode(), line.unitName(), line.unitQuantity(),
                         line.confirmedUnitQuantity(), line.conversionNumber(), line.amount(), line.costPrice(),
                         line.purchaseOrderNo(), line.categoryName(), line.brandName(), line.remark(),
-                        line.sourceFields(), hash(line))).toList(), item.sourceFields(), hash(item)));
+                        line.sourceFields(), hash(line))).toList(), item.sourceFields(), hash(item)),
+                from, to);
         return collected(SupplyDataObjectType.PURCHASE_RETURN, result.size(),
                 pages(result.size(), PURCHASE_RETURN_PAGE_SIZE), null,
                 null, result, null, null, null);
     }
 
-    private Collected warehousing(CallerIdentity caller, UUID id, int maxPages) {
+    private Collected warehousing(CallerIdentity caller, UUID id, int maxPages,
+                                  Instant from, Instant to) {
         List<WarehousingReceipt> result = collectPages(caller, id, "warehousing-receipts", maxPages, PAGE_SIZE,
                 new ParameterizedTypeReference<DhbSupplyPageView<DhbWarehousingReceiptView>>() { },
                 item -> new WarehousingReceipt(item.sourceId(), item.number(), item.warehouseSourceId(),
@@ -137,17 +153,20 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
                         line.sourceRealQuantity(), line.sourceAvailableQuantity(), line.collaboratorSourceId(),
                         line.collaboratorName(), line.remark(), line.sourceFields(), hash(line))).toList(), item.purchaseLinks().stream()
                         .map(link -> new WarehousingReceipt.PurchaseLink(
-                                link.sourcePurchaseId(), link.purchaseOrderNo())).toList(), item.sourceFields(), hash(item)));
+                                link.sourcePurchaseId(), link.purchaseOrderNo())).toList(), item.sourceFields(), hash(item)),
+                from, to);
         return collected(SupplyDataObjectType.WAREHOUSING_RECEIPT, result.size(), pages(result.size()), null,
                 null, null, result, null, null);
     }
 
-    private Collected warehouses(CallerIdentity caller, UUID id, int maxPages) {
+    private Collected warehouses(CallerIdentity caller, UUID id, int maxPages,
+                                 Instant from, Instant to) {
         List<Warehouse> result = collectPages(caller, id, "warehouses", maxPages, PAGE_SIZE,
                 new ParameterizedTypeReference<DhbSupplyPageView<DhbWarehouseView>>() { },
                 item -> new Warehouse(item.sourceId(), item.sourceGuid(), item.code(), item.name(),
                         item.sourceStatus(), item.defaultFlag(), item.acreage(), item.phone(),
-                        item.address(), item.collaboratorSourceId(), item.remark(), item.sourceFields(), hash(item)));
+                        item.address(), item.collaboratorSourceId(), item.remark(), item.sourceFields(), hash(item)),
+                from, to);
         return collected(SupplyDataObjectType.WAREHOUSE, result.size(), pages(result.size()), null,
                 null, null, null, result, null);
     }
@@ -177,13 +196,14 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
     private <S, T> List<T> collectPages(CallerIdentity caller, UUID connectorId, String segment,
                                         int maxPages, int pageSize,
                                         ParameterizedTypeReference<DhbSupplyPageView<S>> type,
-                                        java.util.function.Function<S, T> mapper) {
+                                        java.util.function.Function<S, T> mapper,
+                                        Instant from, Instant to) {
         List<T> result = new ArrayList<>();
         long total = -1;
         for (int pageNumber = 0; pageNumber < maxPages; pageNumber++) {
             int begin = pageNumber * pageSize;
             DhbSupplyPageView<S> page = post(caller, path(connectorId, segment, "query"),
-                    new DhbSupplyPageQueryCommand(begin, pageSize), type);
+                    new DhbSupplyPageQueryCommand(begin, pageSize, from, to), type);
             if (pageNumber == 0) total = page.total();
             List<S> items = page.items() == null ? List.of() : page.items();
             items.stream().map(mapper).forEach(result::add);
@@ -199,6 +219,15 @@ public final class HttpDhbSupplyDataClient implements DhbSupplyDataClient {
 
     private int pages(int size, int pageSize) {
         return Math.max(1, (size + pageSize - 1) / pageSize);
+    }
+
+    private static void validateWindow(Instant from, Instant to) {
+        if ((from == null) != (to == null)) {
+            throw new IllegalArgumentException("供应链同步窗口from和to必须同时提供");
+        }
+        if (from != null && !from.isBefore(to)) {
+            throw new IllegalArgumentException("供应链同步窗口from必须早于to");
+        }
     }
 
     private URI path(UUID connectorId, String... suffix) {

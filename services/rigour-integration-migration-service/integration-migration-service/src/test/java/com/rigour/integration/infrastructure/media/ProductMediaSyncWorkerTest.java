@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.rigour.integration.application.port.out.DhbClient;
@@ -65,5 +66,28 @@ class ProductMediaSyncWorkerTest {
         verify(store).markSucceeded(eq(ITEM_ID),
                 argThat(key -> key.contains("/product-images/P-1/IMG-1/")), eq("image/jpeg"));
         executor.shutdownNow();
+    }
+
+    @Test
+    void skipsPollWhenClaimingMediaItemsFails() {
+        ProductMediaSyncStore store = mock(ProductMediaSyncStore.class);
+        DhbClient client = mock(DhbClient.class);
+        ProductMediaStorage storage = mock(ProductMediaStorage.class);
+        ProductMediaProperties properties = new ProductMediaProperties();
+        properties.setWorkerConcurrency(1);
+        properties.setWorkerMaxAttempts(3);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        when(store.claimPending(1, 3)).thenThrow(new IllegalStateException("database unavailable"));
+
+        try {
+            ProductMediaSyncWorker worker = new ProductMediaSyncWorker(store, client, storage,
+                    new ProductImageObjectKeyFactory("product-images"), properties, executor);
+            worker.dispatch();
+
+            verify(store).claimPending(1, 3);
+            verifyNoInteractions(client, storage);
+        } finally {
+            executor.shutdownNow();
+        }
     }
 }

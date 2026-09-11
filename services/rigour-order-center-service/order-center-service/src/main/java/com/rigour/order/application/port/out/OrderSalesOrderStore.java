@@ -3,6 +3,7 @@ package com.rigour.order.application.port.out;
 import com.rigour.order.api.v1.model.OrderPageView;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
 import com.rigour.order.api.v1.model.SalesOrderSummaryView;
+import com.rigour.order.api.v1.model.SalesOrderTotalsView;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -13,6 +14,8 @@ public interface OrderSalesOrderStore {
     OrderPageView<SalesOrderSummaryView> salesOrders(
             String tenantId, int begin, int step, SalesOrderSearchCriteria criteria);
 
+    SalesOrderTotalsView salesOrderTotals(String tenantId, SalesOrderSearchCriteria criteria);
+
     Optional<SalesOrderDetailView> salesOrder(String tenantId, Long id);
 
     boolean existsByNo(String tenantId, String orderNo);
@@ -21,36 +24,54 @@ public interface OrderSalesOrderStore {
 
     SalesOrderDetailView update(String tenantId, Long id, SalesOrderWrite command, String actorId);
 
+    SalesOrderDetailView updateExternalProjection(String tenantId, Long id, SalesOrderWrite command, String actorId);
+
+    SalesOrderDetailView updateSourceStatus(
+            String tenantId, Long id, String sourceStatusCode, int revision, String actorId);
+
+    SalesOrderDetailView updateSourceProjection(
+            String tenantId, Long id, SalesOrderSourceProjectionWrite command, String actorId);
+
     SalesOrderDetailView submit(String tenantId, Long id, int revision, String actorId);
 
     SalesOrderDetailView cancel(String tenantId, Long id, int revision, String actorId);
 
-    SalesOrderDetailView confirmOutbound(String tenantId, Long id, int revision, String actorId);
+    SalesOrderDetailView cancelBySource(String tenantId, Long id, int revision, String actorId);
+
+    SalesOrderDetailView confirmOutbound(String tenantId, Long id, int revision, Instant shipmentTime, String actorId);
 
     void delete(String tenantId, Long id, int revision, String actorId);
 
     record SalesOrderSearchCriteria(
             String orderNo,
             String sourceOrderNo,
+            String sourceStatusCode,
+            String dataQualityStatusCode,
             String customerName,
             String contactPhone,
             String regionCode,
             String ownerSalesUserId,
-            String ownerStaffCode,
+            String ownerEmployeeCode,
             String orderStatusCode,
             String paymentStatusCode,
             String outboundStatusCode,
             Instant orderDateFrom,
-            Instant orderDateTo) {
+            Instant orderDateTo,
+            Long productId,
+            Long productVariantId,
+            String productCodeSnapshot,
+            String skuCodeSnapshot,
+            String productNameSnapshot,
+            String specificationSnapshot) {
         public SalesOrderSearchCriteria(String orderNo, String customerName,
                                         String contactPhone, String regionCode,
-                                        String ownerSalesUserId, String ownerStaffCode,
+                                        String ownerSalesUserId, String ownerEmployeeCode,
                                         String orderStatusCode, String paymentStatusCode,
                                         String outboundStatusCode, Instant orderDateFrom,
                                         Instant orderDateTo) {
-            this(orderNo, null, customerName, contactPhone, regionCode, ownerSalesUserId,
-                    ownerStaffCode, orderStatusCode, paymentStatusCode, outboundStatusCode,
-                    orderDateFrom, orderDateTo);
+            this(orderNo, null, null, null, customerName, contactPhone, regionCode, ownerSalesUserId,
+                    ownerEmployeeCode, orderStatusCode, paymentStatusCode, outboundStatusCode,
+                    orderDateFrom, orderDateTo, null, null, null, null, null, null);
         }
 
         public SalesOrderSearchCriteria(String orderNo, String customerName,
@@ -58,9 +79,9 @@ public interface OrderSalesOrderStore {
                                         String ownerSalesUserId, String orderStatusCode,
                                         String paymentStatusCode, String outboundStatusCode,
                                         Instant orderDateFrom, Instant orderDateTo) {
-            this(orderNo, null, customerName, contactPhone, regionCode, ownerSalesUserId,
+            this(orderNo, null, null, null, customerName, contactPhone, regionCode, ownerSalesUserId,
                     null, orderStatusCode, paymentStatusCode, outboundStatusCode,
-                    orderDateFrom, orderDateTo);
+                    orderDateFrom, orderDateTo, null, null, null, null, null, null);
         }
     }
 
@@ -68,6 +89,12 @@ public interface OrderSalesOrderStore {
             Long customerId,
             String sourceSystemCode,
             String sourceOrderNo,
+            String sourceStatusCode,
+            String sourceCreatorId,
+            String sourceCreatorStaffCode,
+            String sourceCreatorName,
+            String dataQualityStatusCode,
+            String dataQualityMessage,
             String customerCodeSnapshot,
             String customerNameSnapshot,
             String contactNameSnapshot,
@@ -75,12 +102,14 @@ public interface OrderSalesOrderStore {
             String regionCode,
             String ownerSalesUserId,
             String ownerSalesName,
-            String ownerStaffCode,
-            String ownerStaffNameSnapshot,
+            String ownerEmployeeCode,
+            String ownerEmployeeNameSnapshot,
             Instant orderDate,
             String orderStatusCode,
             String orderTypeCode,
             String paymentMethodCode,
+            List<String> paymentVoucherKeys,
+            BigDecimal sourceUnpaidAmount,
             BigDecimal totalQuantity,
             BigDecimal originalAmount,
             BigDecimal discountRate,
@@ -89,22 +118,69 @@ public interface OrderSalesOrderStore {
             List<SalesOrderLineWrite> lines,
             String remark,
             Integer revision) {
+        public SalesOrderWrite {
+            paymentVoucherKeys = paymentVoucherKeys == null ? List.of() : List.copyOf(paymentVoucherKeys);
+            lines = lines == null ? List.of() : List.copyOf(lines);
+        }
+
+        public SalesOrderWrite(
+                Long customerId,
+                String sourceSystemCode,
+                String sourceOrderNo,
+                String sourceStatusCode,
+                String sourceCreatorId,
+                String sourceCreatorStaffCode,
+                String sourceCreatorName,
+                String dataQualityStatusCode,
+                String dataQualityMessage,
+                String customerCodeSnapshot,
+                String customerNameSnapshot,
+                String contactNameSnapshot,
+                String contactPhoneSnapshot,
+                String regionCode,
+                String ownerSalesUserId,
+                String ownerSalesName,
+                String ownerEmployeeCode,
+                String ownerEmployeeNameSnapshot,
+                Instant orderDate,
+                String orderStatusCode,
+                String orderTypeCode,
+                String paymentMethodCode,
+                BigDecimal totalQuantity,
+                BigDecimal originalAmount,
+                BigDecimal discountRate,
+                BigDecimal discountAmount,
+                BigDecimal payableAmount,
+                List<SalesOrderLineWrite> lines,
+                String remark,
+                Integer revision) {
+            this(customerId, sourceSystemCode, sourceOrderNo, sourceStatusCode,
+                    sourceCreatorId, sourceCreatorStaffCode, sourceCreatorName,
+                    dataQualityStatusCode, dataQualityMessage, customerCodeSnapshot,
+                    customerNameSnapshot, contactNameSnapshot, contactPhoneSnapshot,
+                    regionCode, ownerSalesUserId, ownerSalesName, ownerEmployeeCode,
+                    ownerEmployeeNameSnapshot, orderDate, orderStatusCode,
+                    orderTypeCode, paymentMethodCode, List.of(), null, totalQuantity,
+                    originalAmount, discountRate, discountAmount, payableAmount,
+                    lines, remark, revision);
+        }
+
         public SalesOrderWrite(Long customerId, String customerCodeSnapshot,
                                String customerNameSnapshot, String contactNameSnapshot,
                                String contactPhoneSnapshot, String regionCode,
                                String ownerSalesUserId, String ownerSalesName,
-                               String ownerStaffCode, String ownerStaffNameSnapshot,
+                               String ownerEmployeeCode, String ownerEmployeeNameSnapshot,
                                Instant orderDate, String orderStatusCode,
                                String orderTypeCode, String paymentMethodCode,
                                BigDecimal totalQuantity, BigDecimal originalAmount,
                                BigDecimal discountRate, BigDecimal discountAmount,
                                BigDecimal payableAmount, List<SalesOrderLineWrite> lines,
                                String remark, Integer revision) {
-            this(customerId, null, null, customerCodeSnapshot, customerNameSnapshot,
-                    contactNameSnapshot, contactPhoneSnapshot, regionCode,
-                    ownerSalesUserId, ownerSalesName, ownerStaffCode, ownerStaffNameSnapshot,
-                    orderDate, orderStatusCode, orderTypeCode, paymentMethodCode,
-                    totalQuantity, originalAmount, discountRate, discountAmount,
+            this(customerId, null, null, null, null, null, null, null, null, customerCodeSnapshot,
+                    customerNameSnapshot, contactNameSnapshot, contactPhoneSnapshot, regionCode,
+                    ownerSalesUserId, ownerSalesName, ownerEmployeeCode, ownerEmployeeNameSnapshot,
+                    orderDate, orderStatusCode, orderTypeCode, paymentMethodCode, List.of(),
+                    null, totalQuantity, originalAmount, discountRate, discountAmount,
                     payableAmount, lines, remark, revision);
         }
 
@@ -118,13 +194,25 @@ public interface OrderSalesOrderStore {
                                BigDecimal discountRate, BigDecimal discountAmount,
                                BigDecimal payableAmount, List<SalesOrderLineWrite> lines,
                                String remark, Integer revision) {
-            this(customerId, null, null, customerCodeSnapshot, customerNameSnapshot,
-                    contactNameSnapshot, contactPhoneSnapshot, regionCode,
+            this(customerId, null, null, null, null, null, null, null, null, customerCodeSnapshot,
+                    customerNameSnapshot, contactNameSnapshot, contactPhoneSnapshot, regionCode,
                     ownerSalesUserId, ownerSalesName, null, null, orderDate,
-                    orderStatusCode, orderTypeCode, paymentMethodCode, totalQuantity,
+                    orderStatusCode, orderTypeCode, paymentMethodCode, List.of(), null, totalQuantity,
                     originalAmount, discountRate, discountAmount, payableAmount,
                     lines, remark, revision);
         }
+    }
+
+    record SalesOrderSourceProjectionWrite(
+            String sourceStatusCode,
+            String sourceCreatorId,
+            String sourceCreatorStaffCode,
+            String sourceCreatorName,
+            String ownerSalesUserId,
+            String ownerSalesName,
+            String ownerEmployeeCode,
+            String ownerEmployeeNameSnapshot,
+            Integer revision) {
     }
 
     record SalesOrderLineWrite(

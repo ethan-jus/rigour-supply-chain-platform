@@ -27,6 +27,11 @@ public interface ProductMasterDataStore {
 
     ImportResult importProduct(String tenantId, UUID runId, Product product);
 
+    /** 商品本体与来源绑定落库后，刷新订货宝关联商品到本系统商品关联。 */
+    default ImportResult refreshProductRecommendations(String tenantId, UUID runId, List<Product> products) {
+        return ImportResult.duplicate(0);
+    }
+
     ImportResult importCategory(String tenantId, UUID runId, Category category);
 
     ImportResult importBrand(String tenantId, UUID runId, Brand brand);
@@ -78,7 +83,7 @@ public interface ProductMasterDataStore {
 
     /** 一个 ERP 商品主数据同步批次的持久化统计。 */
     record RunStatistics(
-            /** 本批次交给 ERP 导入流程并完成统计的记录总数，商品同步包含 SKU。 */
+            /** 本批次来源根对象数量；商品同步为 SPU 数，不把 SKU 计为商品。 */
             long fetched,
             /** 首次创建的 ERP 主数据和子记录数量。 */
             long created,

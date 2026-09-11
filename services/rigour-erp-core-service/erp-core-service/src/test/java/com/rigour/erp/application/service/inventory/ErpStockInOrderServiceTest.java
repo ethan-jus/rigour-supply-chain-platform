@@ -151,9 +151,29 @@ class ErpStockInOrderServiceTest {
         verify(store, never()).confirmProcurementStockIn(eq(TENANT), any(), any(), eq(ACTOR));
     }
 
+    @Test
+    void confirmRejectsExternalProcurementOrder() {
+        ErpStockInOrderStore store = mock(ErpStockInOrderStore.class);
+        ErpStockInOrderService service = new ErpStockInOrderService(store, fixedGenerator());
+        TestAuthorizationContext.set(caller("erp:supply:write"));
+        when(store.procurementOrderForStockIn(TENANT, 1L)).thenReturn(Optional.of(new ProcurementOrderSnapshot(
+                1L, "PO202608200001", "DINGHUOBAO", "JH.20260820.0001", 3L, 2L,
+                "SUBMITTED", 1, List.of(line(11L, 1, "10", "0")))));
+
+        assertThatThrownBy(() -> service.confirmProcurementStockIn(new InternalProcurementStockInCommand(
+                1L, 1, STOCK_IN_TIME,
+                List.of(new InternalProcurementStockInLineCommand(11L, BigDecimal.ONE, null)),
+                null)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("外部来源采购订单已按来源入库凭证同步，无需在ERP重复确认入库")
+                .extracting("errorCode").isEqualTo(ErrorCode.CONFLICT);
+        verify(store, never()).confirmProcurementStockIn(eq(TENANT), any(), any(), eq(ACTOR));
+    }
+
     private static ProcurementOrderSnapshot procurementOrder(
             String statusCode, int revision, ProcurementOrderLineSnapshot... lines) {
-        return new ProcurementOrderSnapshot(1L, "PO202608200001", 3L, 2L, statusCode, revision, List.of(lines));
+        return new ProcurementOrderSnapshot(1L, "PO202608200001", null, null, 3L, 2L, statusCode,
+                revision, List.of(lines));
     }
 
     private static ProcurementOrderLineSnapshot line(Long id, int lineNo, String quantity, String receivedQuantity) {
@@ -164,7 +184,7 @@ class ErpStockInOrderServiceTest {
     }
 
     private static InternalStockInOrderDetailView detail(Long id, String stockInNo) {
-        return new InternalStockInOrderDetailView(id, stockInNo, "PURCHASE", 1L, "PO202608200001",
+        return new InternalStockInOrderDetailView(id, stockInNo, null, null, "PURCHASE", 1L, "PO202608200001",
                 null, null, 2L, "默认仓", 3L, "供应商一", "CONFIRMED", STOCK_IN_TIME, new BigDecimal("3"),
                 new BigDecimal("25.50"), List.of(new InternalStockInOrderLineView(1L, 1, 11L, null,
                 11L, 21L, "PRD-1", "SKU-1", "商品1", "BOX", new BigDecimal("3"),

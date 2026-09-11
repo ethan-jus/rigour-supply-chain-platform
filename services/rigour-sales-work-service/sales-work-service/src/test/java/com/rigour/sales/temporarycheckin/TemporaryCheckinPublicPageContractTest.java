@@ -6,218 +6,161 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ClassPathResource;
 
-/** 固化临时打卡页的 iPhone 定位、录音选择和新门店回填兼容契约。 */
+/** 静态资源接缝与手机兼容约束。行为由 Node 浏览器用例和数据库集成测试验证。 */
 class TemporaryCheckinPublicPageContractTest {
+    @Test
+    void allInteractiveElementIdsAreUnique() throws IOException {
+        for (String path : new String[]{"static/sales-checkin/index.html", "static/sales-checkin/admin/index.html"}) {
+            var matcher = Pattern.compile("\\bid=\"([^\"]+)\"").matcher(resource(path));
+            Set<String> ids = new HashSet<>();
+            while (matcher.find()) assertThat(ids.add(matcher.group(1))).as(path + " duplicate: " + matcher.group(1)).isTrue();
+        }
+    }
 
     @Test
-    void letsMobileFilePickersShowAudioWithoutUnreliableAcceptFiltering() throws IOException {
+    void loadsDurableStorageBeforeApplicationAndUsesOneResourceVersion() throws IOException {
         String html = resource("static/sales-checkin/index.html");
-
-        assertThat(html)
-                .contains("<input id=\"audio-file\" type=\"file\" multiple>")
-                .doesNotContain("accept=\"audio/*\"", "audio/x-m4a");
+        assertThat(html.indexOf("/sales-checkin/storage.js?")).isGreaterThan(0)
+                .isLessThan(html.indexOf("/sales-checkin/app.js?"));
+        assertThat(html.indexOf("/sales-checkin/personal-history.js?")).isGreaterThan(html.indexOf("/sales-checkin/storage.js?"))
+                .isLessThan(html.indexOf("/sales-checkin/app.js?"));
+        var matcher = Pattern.compile("/sales-checkin/(?:styles.css|storage.js|personal-history.js|app.js)\\?v=([^\"]+)").matcher(html);
+        Set<String> versions = new HashSet<>();
+        int count = 0;
+        while (matcher.find()) { versions.add(matcher.group(1)); count++; }
+        assertThat(count).isEqualTo(4);
+        assertThat(versions).hasSize(1);
+        assertThat(html).contains("id=\"draft-save-status\"", "id=\"records-panel\"", "id=\"records-retry-button\"");
     }
 
     @Test
-    void keepsFailedUploadsRetryableAndUsesLegacyCompatibleXhr() throws IOException {
-        String script = resource("static/sales-checkin/app.js");
-
-        assertThat(script)
-                .doesNotContain("function isSupportedAudioFile")
-                .contains("function uploadMedia(kind, file, progressTitle)")
-                .contains("function uploadAudioSegment(segment, file, index, total)")
-                .contains("audio/${encodeURIComponent(segment.segmentId)}")
-                .contains("const xhr = new XMLHttpRequest()")
-                .contains("return state.submission.uploadedMedia.includes(mediaKind);")
-                .contains("function mayHaveRemoteMediaState(mediaKind)")
-                .contains("上次上传结果未确认。请重新选择原文件继续重试")
-                .doesNotContain("await deleteUploadedMedia(upload.step)")
-                .contains("function createRequestController()")
-                .doesNotContain("const controller = new AbortController()")
-                .contains("可重新选择并重试");
-    }
-
-    @Test
-    void keepsHeadquartersIdentityButRequiresAnActualWorkCity() throws IOException {
+    void keepsCameraAndAlbumSeparateAndOnlyPreviewsHeaderVerifiedSmallImages() throws IOException {
         String html = resource("static/sales-checkin/index.html");
+        assertThat(element(html, "storefront-photo")).contains("type=\"file\"", "accept=\"image/*\"", "capture=\"environment\"");
+        assertThat(element(html, "photo-album-input")).contains("type=\"file\"", "accept=\"image/*\"", "multiple").doesNotContain("capture=");
+        assertThat(html).contains("id=\"photo-camera-button\"", "id=\"photo-grid\"", "data-photo-remove", "至少 1 张，最多 9 张")
+                .doesNotContain("id=\"photo-preview\"", "id=\"wechat-preview\"");
         String script = resource("static/sales-checkin/app.js");
-
-        assertThat(html).contains("本次拜访城市", "选择已有音频文件（可多选）");
-        assertThat(script)
-                .contains("const HEADQUARTERS_CITY = \"总部\"")
-                .contains("state.options.cities.filter((city) => city !== HEADQUARTERS_CITY)")
-                .contains("const lockWorkCity = !isHeadquartersIdentity() || isBusinessLocked()")
-                .contains("所属：${state.identity.city}")
-                .contains("isEnabledHeadquartersWorkCity")
-                .doesNotContain("cityMatch(\"总部\")");
+        int previewStart = script.indexOf("function renderImagePreview(");
+        String preview = script.substring(previewStart, script.indexOf("function imageHeaderDimensions(",previewStart));
+        assertThat(preview).doesNotContain("URL.createObjectURL", ".src =", "createImageBitmap", "readAsDataURL");
+        String safePreview = resource("static/sales-checkin/photos.js");
+        assertThat(safePreview).contains("readPrefix(file, 256 * 1024)","dimensions(bytes)",
+                "dimensions.width * dimensions.height > MAX_PREVIEW_PIXELS", "bitmap.close()", "revokeObjectURL")
+                .doesNotContain("readAsDataURL");
+        assertThat(safePreview.indexOf("dimensions.width * dimensions.height >"))
+                .isLessThan(safePreview.indexOf("env.createImageBitmap(file"));
+        String dimensions = script.substring(script.indexOf("function imageHeaderDimensions("),
+                script.indexOf("function handleAudioFileSelection", previewStart));
+        assertThat(dimensions).contains("if (type === 0x6163544c) return null;",
+                "if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;");
     }
 
     @Test
-    void removesClientSideAudioDurationAndSizeGatesButKeepsConfigurableServerCeiling() throws IOException {
+    void exposesThreeStepsAndAVisibleEscapeFromLocationProblems() throws IOException {
         String html = resource("static/sales-checkin/index.html");
-        String script = resource("static/sales-checkin/app.js");
-        String configuration = Files.readString(
-                Path.of("src/main/resources/application.yml"), StandardCharsets.UTF_8);
-        String nginx = Files.readString(
-                Path.of("deploy/nginx/sales-checkin-locations.conf"), StandardCharsets.UTF_8);
-
-        assertThat(html).doesNotContain("最长 20 分钟", "00:00 / 20:00");
-        assertThat(script).doesNotContain("MAX_AUDIO_BYTES", "MAX_RECORDING_MS");
-        assertThat(script).contains("xhr.timeout = 0;");
-        assertThat(configuration)
-                .contains("max-file-size: 100MB")
-                .contains("RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_BYTES:104857600");
-        assertThat(nginx)
-                .contains("client_max_body_size 110m;")
-                .contains("client_body_timeout 20m;");
+        for (String flow : new String[]{"visit", "store"}) {
+            for (int step = 1; step <= 3; step++) {
+                assertThat(html).contains("data-flow-step-panel=\"" + flow + "\" data-step-value=\"" + step + "\"");
+            }
+        }
+        assertThat(element(html, "visit-location-button")).contains("type=\"button\"").doesNotContain("disabled");
+        assertThat(element(html, "create-store-link")).contains("type=\"button\"").doesNotContain("disabled");
+        assertThat(element(html, "visit-city")).doesNotContain("disabled");
+        assertThat(element(html, "submit-visit-button")).contains("type=\"submit\"");
     }
 
     @Test
-    void streamsLargeMediaAndShowsThatAutomaticTranscriptionIsPaused() throws IOException {
-        String service = Files.readString(Path.of(
-                "src/main/java/com/rigour/sales/temporarycheckin/TemporaryCheckinService.java"),
-                StandardCharsets.UTF_8);
-        String publicScript = resource("static/sales-checkin/app.js");
-        String adminScript = resource("static/sales-checkin/admin/admin.js");
-
-        assertThat(service)
-                .contains("MediaSignatureProbe", "validated.file().getInputStream()")
-                .doesNotContain("file.getBytes()");
-        assertThat(publicScript).contains("自动转文字与摘要当前已暂停");
-        assertThat(adminScript)
-                .contains("audioIntelligenceEnabled")
-                .contains("录音转写与摘要（已暂停）")
-                .contains("当前未开通腾讯语音识别权限");
-    }
-
-    @Test
-    void resetsAnotherSalespersonsLocalDraftWithoutLeavingTheCurrentFormLocked() throws IOException {
-        String script = resource("static/sales-checkin/app.js");
-
-        assertThat(script)
-                .contains("startNewSubmission();")
-                .contains("showIdentityDraftResetNotice(hadServerDraft)")
-                .contains("已为当前销售打开新表单")
-                .doesNotContain("本机恢复的草稿属于另一销售");
-    }
-
-    @Test
-    void retriesMobileGeolocationAndRepairsBrokenBrowserTimestamps() throws IOException {
-        String script = resource("static/sales-checkin/app.js");
-
-        assertThat(script)
-                .contains("APPLE_REFERENCE_EPOCH_OFFSET_MS = 978307200000")
-                .contains("GEOLOCATION_TIMEOUT_MS = 30000")
-                .contains("GEOLOCATION_FALLBACK_MAX_AGE_MS = 5 * 60 * 1000")
-                .contains("enableHighAccuracy: false")
-                .contains("status.textContent = \"兼容定位中\"")
-                .contains("capturedAt: normalizeGeolocationCapturedAt(position.timestamp)")
-                .contains("return new Date(resolved ?? reference).toISOString()")
-                .contains("geocodeStatus: \"CAPTURING\"")
-                .contains("if (repaired === null)")
-                .contains("state[scope].location = null")
-                .contains("if (!state.visit.location || !state.visit.locationContext")
-                .contains("function cancelLocationCapture(scope)")
-                .doesNotContain("repaired ?? savedAtMs")
-                .doesNotContain("timeout: 15000");
-    }
-
-    @Test
-    void returnsToVisitWithTheSavedStoreSelectedAndClearsStaleSearchState() throws IOException {
-        String script = resource("static/sales-checkin/app.js");
-
-        assertThat(script)
-                .contains("source: \"REGISTERED\"")
-                .contains("nextAction: \"CHECK_IN\"")
-                .contains("function completeStoreSaveTransition(createdStore, payload)")
-                .contains("abortStoreSearch();", "abortPoiSearch();")
-                .contains("state.visit.nearbyStores = [createdStore")
-                .contains("state.visit.nearbySearchResults = null;")
-                .contains("state.visit.selectedStore = {")
-                .contains("resetStoreDraft(payload.city, payload.salespersonId);")
-                .contains("state.activeTab = \"visit\";")
-                .contains("renderTab(\"visit\");")
-                .contains("clearAllErrors();")
-                .contains("当前表单已保留")
-                .doesNotContain("switchTab(\"visit\");\n            selectStore(createdStore);");
-    }
-
-    @Test
-    void keepsOneLocationScopedPickerForRegisteredStoresAndNewAmapPlaces() throws IOException {
+    void browserRecordingHasAnUncollapsedWorkspaceAndExplicitUserStart() throws IOException {
         String html = resource("static/sales-checkin/index.html");
-        String script = resource("static/sales-checkin/app.js");
-        String styles = resource("static/sales-checkin/styles.css");
-
-        assertThat(html)
-                .contains("附近门店 / 高德地点")
-                .contains("id=\"nearby-stores-scope\"")
-                .contains("新门店建档", "本次拜访草稿已保留");
-        assertThat(script)
-                .contains("function visitNearbyOptions()")
-                .contains("function visitPoiLookupStatus()")
-                .contains("function storePoiLookupStatus()")
-                .contains("? state.visit.nearbySearchResults", ": state.visit.nearbyStores")
-                .contains(".filter(isUsableNearbyStore)")
-                .contains("body: { city: state[scope].city, location: locationRequestValue(scope), q: query }")
-                .contains("if (registered) selectStore(store);")
-                .contains("else prepareNewStore(store);")
-                .contains("abortStoreSearch();\n        state.visit.nearbySearchResults = null;")
-                .contains("function visitRadiusLabel(context = state.visit.locationContext)")
-                .contains("context?.maxCheckinDistanceMeters")
-                .doesNotContain("/stores?city=");
-        assertThat(styles)
-                .contains("body.is-store-page")
-                .contains(".visit-store-result.is-registered")
-                .contains(".visit-store-result.is-new-poi");
+        assertThat(html).containsOnlyOnce("id=\"visit-recording-workspace\"")
+                .contains("id=\"visit-recording-step-2-slot\"", "id=\"visit-recording-step-3-slot\"");
+        assertThat(element(html, "visit-recording-workspace")).startsWith("<section ")
+                .contains("aria-labelledby=\"recording-workspace-title\"");
+        assertThat(element(html, "record-audio-button")).startsWith("<button ").contains("type=\"button\"");
+        assertThat(html).contains("现场录音", "直接在浏览器录制", "上传已有录音");
+        assertThat(element(html, "audio-file")).contains("type=\"file\"", "multiple").doesNotContain("accept=", "required");
+        assertThat(html).doesNotContain("autoplay", "最长 20 分钟");
     }
 
     @Test
-    void pinsOnlyTheExistingColoredPageHeaderWhileFormContentScrolls() throws IOException {
-        String styles = resource("static/sales-checkin/styles.css");
-
-        assertThat(styles)
-                .contains("固定现有 Logo 与页面标题色块")
-                .contains(".hero {\n    position: sticky;\n    z-index: 40;\n    top: 0;")
-                .contains(".workflow-tabs {\n    display: none;");
+    void offersHistoryAndDateSelectionAlongsideClearSubmissionAndAttachmentStates() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        for (String id : new String[]{"nav-visit-button", "nav-records-button", "success-view-record-button"}) {
+            assertThat(element(html, id)).startsWith("<button ").contains("type=\"button\"");
+        }
+        assertThat(element(html, "app-bottom-nav")).contains("aria-label=\"主导航\"");
+        assertThat(element(html, "personal-history-page")).contains("aria-label=\"我的打卡记录\"");
+        assertThat(element(html, "history-detail-page")).contains("aria-label=\"打卡明细\"");
+        assertThat(element(html, "history-calendar-dialog")).startsWith("<dialog ").contains("aria-label=\"选择日期\"");
+        assertThat(element(html, "history-photo-dialog")).startsWith("<dialog ").contains("aria-label=\"现场照片\"");
+        assertThat(html).contains("服务器确认后显示打卡成功", "附件状态", "id=\"success-photo-status\"",
+                "id=\"success-audio-list\"", "id=\"success-retry-button\"", "id=\"success-supplement-until\"");
+        String history = resource("static/sales-checkin/personal-history.js");
+        assertThat(history).contains("Asia/Shanghai", "dateFrom:", "dateTo:", "sortDir:", "status: \"SUBMITTED\"",
+                "时长待解析", "audio.preload = \"none\"");
     }
 
     @Test
-    void allowsManualStoreProfileWhenAmapSearchIsUnavailable() throws IOException {
-        String script = resource("static/sales-checkin/app.js");
-
-        assertThat(script)
-                .contains("function manualStoreFallbackAvailable")
-                .contains("poiLookupStatus === \"UNAVAILABLE\"")
-                .contains("state.visit.nearbySearchPoiLookupStatus = poiLookupStatus;")
-                .contains("state.store.poiSearchLookupStatus = poiLookupStatus;")
-                .contains("高德搜索暂不可用，可点击下方手工录入继续；保存时仍校验当前位置。")
-                .contains("state.store.manualEntryAllowed = true;")
-                .contains("state.store.sourceMode = \"MANUAL\";")
-                .contains("高德搜索暂不可用，可点击下方手工录入继续")
-                .contains("保存时服务端仍会校验当前位置");
+    void keepsIdentityAndRecoveryWithoutForcedPrivacyAcceptance() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        assertThat(element(html, "identity-code")).contains("type=\"password\"", "autocomplete=\"current-password\"", "required");
+        assertThat(html).doesNotContain("id=\"privacy-accepted\"", "id=\"recording-consent\"");
+        assertThat(html).contains("id=\"identity-switch\"", "id=\"my-records-button\"", "id=\"success-location-note\"");
     }
 
     @Test
-    void routesStoreEntryThroughOneTransitionAndLocksAsyncWorkWhileSaving() throws IOException {
-        String script = resource("static/sales-checkin/app.js");
-
-        assertThat(script)
-                .contains("button.dataset.tab === \"store\" && state.activeTab !== \"store\"")
-                .contains("prepareNewStore();")
-                .contains("if (state.submitting) return;")
-                .contains("state.submitting = true;\n        setFormsDisabled(true);")
-                .contains("Object.values(state.locationControllers).forEach((controller) => controller?.abort());")
-                .contains("cancelLocationCapture(\"visit\");")
-                .contains("cancelLocationCapture(\"store\");")
-                .contains("!state.visit.location || !locationContextReady(state.visit.locationContext)")
-                .contains("state.visit.locationContext = state.store.locationContext")
-                .contains("state.submitting = false;\n            setFormsDisabled(false);");
+    void supportsSafeAreasZoomAndKeyboardResize() throws IOException {
+        String html = resource("static/sales-checkin/index.html");
+        assertThat(html).contains("width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content")
+                .doesNotContain("maximum-scale", "user-scalable=no");
+        String styles = resource("static/sales-checkin/styles.css").replaceAll("\\s+", "");
+        assertThat(styles).contains("min-height:100svh", "env(safe-area-inset-bottom", "touch-action:manipulation",
+                "body.has-mobile-input-focus.step-actions");
     }
 
+    @Test
+    void adminOffersSeparateSortableDimensionsReviewAndOneAudioPlayer() throws IOException {
+        String html = resource("static/sales-checkin/admin/index.html");
+        for (String sort : new String[]{"completedAt", "cityName", "salespersonName", "storeName"}) {
+            assertThat(html).containsOnlyOnce("data-sort-by=\"" + sort + "\"");
+        }
+        assertThat(html).contains("aria-sort=\"descending\"", "id=\"filter-location-status\"", "id=\"filter-review-status\"", "id=\"filter-media-status\"");
+        assertThat(element(html, "shared-audio")).contains("controls", "preload=\"none\"").doesNotContain("autoplay");
+        assertThat(element(html, "review-note")).contains("required");
+        assertThat(html).contains("id=\"review-history\"", "id=\"result-location-attention\"", "id=\"result-review-pending\"");
+    }
+
+    @Test
+    void preservesStreamingAndConfigurableServerAudioLimit() throws IOException {
+        String service = Files.readString(Path.of("src/main/java/com/rigour/sales/temporarycheckin/TemporaryCheckinService.java"));
+        assertThat(service).contains("MediaSignatureProbe", "validated.file().getInputStream()").doesNotContain("file.getBytes()");
+        assertThat(resource("static/sales-checkin/app.js")).doesNotContain("MAX_RECORDING_MS");
+        assertThat(Files.readString(Path.of("src/main/resources/application.yml"))).contains("max-file-size: 256MB", "max-request-size: 260MB", "RIGOUR_SALES_TEMPORARY_CHECKIN_MAX_AUDIO_BYTES:268435456");
+        assertThat(Files.readString(Path.of("deploy/nginx/sales-checkin-locations.conf"))).contains("client_max_body_size 270m;", "client_body_timeout 20m;");
+    }
+
+    @Test
+    void dedicatedResolverPreservesTrustedProxyBoundary() throws IOException {
+        String nginx = Files.readString(Path.of("deploy/nginx/sales-checkin-locations.conf"));
+        String resolver = nginx.substring(nginx.indexOf("location = /sales-checkin/api/v1/locations/resolve {"), nginx.indexOf("# 个人码验证独立限速"));
+        assertThat(resolver).contains("proxy_set_header X-Sales-Checkin-Client-IP $remote_addr;", "include /etc/nginx/snippets/sales-checkin-proxy-marker.conf;");
+    }
+
+    private static String element(String html, String id) {
+        var matcher = Pattern.compile("<[^>]+\\bid=\"" + Pattern.quote(id) + "\"[^>]*>").matcher(html);
+        assertThat(matcher.find()).as("element " + id).isTrue();
+        return matcher.group();
+    }
     private static String resource(String path) throws IOException {
-        return new String(new ClassPathResource(path).getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        try (var stream = new ClassPathResource(path).getInputStream()) {
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 }

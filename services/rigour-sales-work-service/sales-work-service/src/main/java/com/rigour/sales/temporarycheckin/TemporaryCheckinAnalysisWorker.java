@@ -61,7 +61,8 @@ public class TemporaryCheckinAnalysisWorker {
 
     @Scheduled(
             initialDelayString = "${rigour.sales.temporary-checkin.ai.initial-delay:10s}",
-            fixedDelayString = "${rigour.sales.temporary-checkin.ai.poll-interval:15s}")
+            fixedDelayString = "${rigour.sales.temporary-checkin.ai.poll-interval:15s}",
+            scheduler = "temporaryCheckinAnalysisScheduler")
     public synchronized void process() {
         Instant now = clock.instant();
         repository.recoverStuckAnalysis(tenantId, now.minus(STUCK_AFTER), now);

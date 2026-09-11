@@ -114,9 +114,10 @@ class TemporaryCheckinSalesIdentityService {
 
     SalesIdentityView current(TemporaryCheckinRequestFacts requestFacts) {
         if (!properties.isIdentityEnforcementEnabled()) {
-            return new SalesIdentityView(false, null, null, null, null, false);
+            return new SalesIdentityView(false, null, null, null, null, false, tenantId);
         }
-        return requireCurrent(requestFacts).view();
+        AuthorizedRequest current = requireCurrent(requestFacts);
+        return identityView(current.salesperson(), current.expiresAt(), "PERSONAL_CODE".equals(current.identityMethod()));
     }
 
     AuthorizedRequest requireSalesperson(UUID requestedSalespersonId, TemporaryCheckinRequestFacts requestFacts) {
@@ -148,6 +149,15 @@ class TemporaryCheckinSalesIdentityService {
             throw TemporaryCheckinException.forbiddenIdentity("该草稿已绑定另一台设备，请回到原设备继续提交");
         }
         return authorized;
+    }
+
+    /** 历史读取始终要求真实身份会话，不能通过兼容开关和请求中的销售编号匿名访问。 */
+    AuthorizedRequest requireHistoryIdentity(UUID requestedSalespersonId, TemporaryCheckinRequestFacts facts) {
+        AuthorizedRequest identity = requireCurrent(facts);
+        if (requestedSalespersonId != null && !requestedSalespersonId.equals(identity.salesperson().id())) {
+            throw TemporaryCheckinException.forbiddenIdentity("只能查看本人拜访记录");
+        }
+        return identity;
     }
 
     RiskSnapshot evaluateRisk(AuthorizedRequest authorized) {
@@ -550,8 +560,8 @@ class TemporaryCheckinSalesIdentityService {
         return limited(value, 64, message);
     }
 
-    private static SalesIdentityView identityView(SalespersonRow row, Instant expiresAt, boolean enabled) {
-        return new SalesIdentityView(true, row.id(), row.name(), row.city(), expiresAt, enabled);
+    private SalesIdentityView identityView(SalespersonRow row, Instant expiresAt, boolean enabled) {
+        return new SalesIdentityView(true, row.id(), row.name(), row.city(), expiresAt, enabled, tenantId);
     }
 
     private static String maxRisk(String first, String second) {
@@ -592,11 +602,7 @@ class TemporaryCheckinSalesIdentityService {
             Instant verifiedAt,
             Instant expiresAt,
             String deviceTokenHash,
-            RequestRiskFacts requestFacts) {
-        SalesIdentityView view() {
-            return identityView(salesperson, expiresAt, "PERSONAL_CODE".equals(identityMethod));
-        }
-    }
+            RequestRiskFacts requestFacts) { }
 
     record RequestRiskFacts(
             String ipHash,

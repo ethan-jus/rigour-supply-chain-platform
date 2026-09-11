@@ -42,13 +42,14 @@ public final class EnvDhbSecretResolver implements DhbSecretResolver {
         }
         String serialNumber = valueSource.apply(prefix + "_SERIAL_NUMBER");
         String password = valueSource.apply(prefix + "_PASSWORD");
+        String adminCookie = valueSource.apply(prefix + "_ADMIN_COOKIE");
         if (serialNumber == null || serialNumber.isBlank() || password == null || password.isBlank()) {
             throw new DhbClientException(
                     "DHB_SECRET_NOT_CONFIGURED",
                     "订货宝 Secret 尚未配置接口账号和密码", false, null, null);
         }
         try {
-            return new Credentials(serialNumber, password);
+            return new Credentials(serialNumber, password, adminCookie);
         } catch (IllegalArgumentException exception) {
             throw new DhbClientException(
                     "DHB_SECRET_NOT_CONFIGURED", "订货宝 Secret 尚未配置完整", false, null, null);

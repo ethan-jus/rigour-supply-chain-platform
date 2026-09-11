@@ -1,6 +1,7 @@
 package com.rigour.integration.application.service.dhb;
 
 import com.rigour.erp.api.v1.model.ErpDataSyncResult;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunView;
 import com.rigour.integration.api.v1.model.DhbSyncOrchestrationCommand;
@@ -13,20 +14,28 @@ import com.rigour.integration.application.port.out.DhbClient.Page;
 import com.rigour.integration.application.port.out.DhbClient.PageRequest;
 import com.rigour.integration.application.port.out.DhbClient.Staff;
 import com.rigour.integration.application.port.out.DhbClient.StaffQuery;
+import com.rigour.integration.application.port.out.DhbClient.TimeWindow;
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
 import com.rigour.integration.application.port.out.DhbIntegrationStore.RawLanding;
+import com.rigour.integration.application.port.out.DhbOrchestrationLease;
 import com.rigour.integration.application.port.out.ErpDhbDomainSyncClient;
-import com.rigour.integration.application.port.out.IamDhbStaffSyncClient;
-import com.rigour.integration.application.port.out.IamDhbStaffSyncClient.DhbStaffRow;
-import com.rigour.integration.application.port.out.IamDhbStaffSyncClient.StaffSyncResult;
+import com.rigour.integration.application.port.out.HrDhbStaffSyncClient;
+import com.rigour.integration.application.port.out.HrDhbStaffSyncClient.DhbStaffRow;
+import com.rigour.integration.application.port.out.HrDhbStaffSyncClient.StaffSyncResult;
 import com.rigour.merchant.api.v1.model.SyncObjectResult;
 import com.rigour.merchant.api.v1.model.SyncResult;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.settings.client.BusinessDictionaryBatchClient;
+import com.rigour.settings.client.BusinessDictionaryBatchClient.Audit;
+import com.rigour.settings.client.BusinessDictionaryBatchClient.MappingIssue;
+import com.rigour.settings.client.BusinessDictionaryBatchClient.Observation;
+import com.rigour.shared.core.sync.SyncConflictClassifier;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -45,23 +54,87 @@ import tools.jackson.databind.ObjectMapper;
 /** 订货宝统一同步编排器；按新业务表依赖顺序调用各领域同步能力。 */
 public final class DhbSyncOrchestrationService {
     private static final Logger log = LoggerFactory.getLogger(DhbSyncOrchestrationService.class);
+    private static final Duration SCHEDULED_WINDOW_SAFETY_LAG = Duration.ofMinutes(2);
+    private static final String ORCHESTRATION_LEASE_OWNER =
+            "rigour-integration-migration-service:DHB_ORCHESTRATION";
     private static final UUID SERVICE_PRINCIPAL_ID = UUID.nameUUIDFromBytes(
             "service:rigour-dhb-sync-orchestrator".getBytes(StandardCharsets.UTF_8));
     private static final Set<String> SERVICE_PERMISSIONS = Set.of(
             "integration:dhb:read", "integration:dhb:write", "integration:dhb:sync-discovery",
-            "business-settings:dict:sync", "iam:staff:read", "iam:staff:sync");
+            "business-settings:dict:sync", "hr:employee:read", "hr:employee:sync");
     private static final List<String> PRODUCT_OBJECTS = List.of(
             "CATEGORY", "BRAND", "SPECIFICATION", "TAG", "PRODUCT_SPU");
     private static final List<String> SUPPLY_OBJECTS = List.of(
             "SUPPLIER", "WAREHOUSE", "PURCHASE_ORDER", "PURCHASE_RETURN",
             "WAREHOUSING_RECEIPT", "INVENTORY");
+    private static final List<Observation> BASELINE_DICTIONARY_OBSERVATIONS = List.of(
+            new Observation("PRODUCT_UNIT", "unit.internalCode", "BOX", "箱"),
+            new Observation("PRODUCT_UNIT", "unit.internalCode", "BUCKET", "桶"),
+            new Observation("PRODUCT_UNIT", "unit.internalCode", "PORTION", "份"),
+            new Observation("PRODUCT_UNIT", "unit.internalCode", "SET", "套"),
+            new Observation("PRODUCT_UNIT", "unit.internalCode", "BED", "床"),
+            new Observation("PRODUCT_UNIT", "unit.internalCode", "PAIR", "副"),
+            new Observation("PRODUCT_UNIT", "unit.internalCode", "BOTTLE", "瓶"),
+            new Observation("PRODUCT_UNIT", "unit.internalCode", "STRIP", "条"),
+            new Observation("PRODUCT_UNIT", "unit.internalCode", "GRAIN", "颗"),
+            new Observation("PRODUCT_UNIT", "unit.internalCode", "PIECE", "件"),
+            new Observation("DHB_UNIT", "sourceUnit.name", "箱", "箱"),
+            new Observation("DHB_UNIT", "sourceUnit.name", "桶", "桶"),
+            new Observation("DHB_UNIT", "sourceUnit.name", "份", "份"),
+            new Observation("DHB_UNIT", "sourceUnit.name", "套", "套"),
+            new Observation("DHB_UNIT", "sourceUnit.name", "床", "床"),
+            new Observation("DHB_UNIT", "sourceUnit.name", "副", "副"),
+            new Observation("DHB_UNIT", "sourceUnit.name", "瓶", "瓶"),
+            new Observation("DHB_UNIT", "sourceUnit.name", "条", "条"),
+            new Observation("DHB_UNIT", "sourceUnit.name", "颗", "颗"),
+            new Observation("DHB_UNIT", "sourceUnit.name", "件", "件"),
+            new Observation("DHB_PRODUCT_STATUS", "product.status", "T", "正常"),
+            new Observation("DHB_PRODUCT_STATUS", "product.status", "F", "回收站"),
+            new Observation("DHB_PRODUCT_PUTAWAY", "product.putaway", "T", "上架"),
+            new Observation("DHB_PRODUCT_PUTAWAY", "product.putaway", "F", "下架"),
+            new Observation("DHB_PURCHASE_ORDER_STATUS", "purchaseOrder.status", "pending", "待审核"),
+            new Observation("DHB_PURCHASE_ORDER_STATUS", "purchaseOrder.status", "wh_up", "待入库"),
+            new Observation("DHB_PURCHASE_ORDER_STATUS", "purchaseOrder.status", "wh_half", "部分入库"),
+            new Observation("DHB_PURCHASE_ORDER_STATUS", "purchaseOrder.status", "cancelled", "已取消"),
+            new Observation("DHB_PURCHASE_ORDER_STATUS", "purchaseOrder.status", "finished", "已完成"),
+            new Observation("DHB_PURCHASE_PAYMENT_STATUS", "purchaseOrder.paymentStatus", "oblig", "待付款"),
+            new Observation("DHB_PURCHASE_PAYMENT_STATUS", "purchaseOrder.paymentStatus", "uncollect", "部分付款"),
+            new Observation("DHB_PURCHASE_PAYMENT_STATUS", "purchaseOrder.paymentStatus", "paided", "已付款"),
+            new Observation("DHB_PURCHASE_RETURN_STATUS", "purchaseReturn.status", "stock_up", "待出库"),
+            new Observation("DHB_PURCHASE_RETURN_STATUS", "purchaseReturn.status", "cancelled", "已取消"),
+            new Observation("DHB_PURCHASE_RETURN_STATUS", "purchaseReturn.status", "refunds", "待退款"),
+            new Observation("DHB_PURCHASE_RETURN_STATUS", "purchaseReturn.status", "finished", "已完成"),
+            new Observation("DHB_WAREHOUSE_STATUS", "warehouse.status", "T", "正常"),
+            new Observation("DHB_WAREHOUSE_STATUS", "warehouse.status", "F", "停用"),
+            new Observation("DHB_CUSTOMER_STATUS", "customer.status", "T", "正常"),
+            new Observation("DHB_CUSTOMER_STATUS", "customer.status", "F", "停用"),
+            new Observation("DHB_CUSTOMER_STATUS", "customer.status", "A", "待激活"),
+            new Observation("DHB_CUSTOMER_STATUS", "customer.status", "C", "待审核"),
+            new Observation("DHB_CUSTOMER_CLEARING_FORM", "customer.clearingForm", "prepaid", "预付"),
+            new Observation("DHB_CUSTOMER_CLEARING_FORM", "customer.clearingForm", "forward", "现付"),
+            new Observation("DHB_CUSTOMER_CLEARING_FORM", "customer.clearingForm", "postpaid", "后付"),
+            new Observation("DHB_FINANCIAL_BUSINESS_TYPE", "fund.incexpId", "1", "普通充值"),
+            new Observation("DHB_FINANCIAL_BUSINESS_TYPE", "fund.incexpId", "19", "预付款充值"),
+            new Observation("DHB_FINANCIAL_BUSINESS_TYPE", "fund.incexpId", "13", "订单收款"),
+            new Observation("DHB_FINANCIAL_BUSINESS_TYPE", "fund.incexpId", "8", "期初充值"),
+            new Observation("DHB_FINANCIAL_BUSINESS_TYPE", "fund.incexpId", "2", "退货退款"),
+            new Observation("DHB_FINANCIAL_BUSINESS_TYPE", "fund.incexpId", "10", "退款失败回冲"),
+            new Observation("DHB_FINANCIAL_BUSINESS_TYPE", "fund.incexpId", "9", "退款红冲"),
+            new Observation("DHB_FINANCIAL_BUSINESS_TYPE", "fund.incexpId", "5", "预存款扣款"),
+            new Observation("DHB_PAYMENT_METHOD", "fund.typeId", "Offline", "转账支付"),
+            new Observation("DHB_PAYMENT_METHOD", "fund.typeId", "Deposit", "预存款支付"),
+            new Observation("DHB_PAYMENT_METHOD", "fund.typeId", "Alipay", "支付宝支付"),
+            new Observation("DHB_PAYMENT_METHOD", "fund.typeId", "Micro", "微信支付"),
+            new Observation("DHB_PAYMENT_METHOD", "fund.typeId", "Quick", "快捷支付"));
 
     private final DhbIntegrationStore store;
     private final ErpDhbDomainSyncClient erpClient;
     private final CrmDhbDomainSyncClient crmClient;
-    private final IamDhbStaffSyncClient iamClient;
+    private final HrDhbStaffSyncClient hrEmployeeClient;
     private final DhbClient dhbClient;
     private final DhbOrderSyncService orderSyncService;
+    private final BusinessDictionaryBatchClient dictionaryClient;
+    private final DhbOrchestrationLease orchestrationLease;
     private final DhbSyncOrchestrationProperties properties;
     private final Clock clock;
     private final ObjectMapper objectMapper;
@@ -70,18 +143,22 @@ public final class DhbSyncOrchestrationService {
     public DhbSyncOrchestrationService(DhbIntegrationStore store,
                                        ErpDhbDomainSyncClient erpClient,
                                        CrmDhbDomainSyncClient crmClient,
-                                       IamDhbStaffSyncClient iamClient,
+                                       HrDhbStaffSyncClient hrEmployeeClient,
                                        DhbClient dhbClient,
                                        DhbOrderSyncService orderSyncService,
+                                       BusinessDictionaryBatchClient dictionaryClient,
+                                       DhbOrchestrationLease orchestrationLease,
                                        DhbSyncOrchestrationProperties properties,
                                        Clock clock,
                                        ObjectMapper objectMapper) {
         this.store = store;
         this.erpClient = erpClient;
         this.crmClient = crmClient;
-        this.iamClient = iamClient;
+        this.hrEmployeeClient = hrEmployeeClient;
         this.dhbClient = dhbClient;
         this.orderSyncService = orderSyncService;
+        this.dictionaryClient = dictionaryClient;
+        this.orchestrationLease = orchestrationLease;
         this.properties = properties;
         this.clock = clock;
         this.objectMapper = objectMapper;
@@ -89,7 +166,8 @@ public final class DhbSyncOrchestrationService {
 
     public DhbSyncOrchestrationResult runScheduled() {
         properties.validate();
-        return run(null, "SCHEDULED", null, properties.getMaxPages(), true, true, true, true, true);
+        return run(null, "SCHEDULED", null, properties.getMaxPages(),
+                TargetSelection.ACTIVE, true, true, true, true, true, true, scheduledWindow());
     }
 
     public DhbSyncOrchestrationResult runManual(CallerIdentity caller,
@@ -97,39 +175,47 @@ public final class DhbSyncOrchestrationService {
         requireManualCaller(caller);
         int maxPages = maxPages(command == null ? null : command.maxPages());
         boolean includeErp = enabled(command == null ? null : command.includeErp());
+        boolean includeErpProduct = enabled(command == null ? null : command.includeErpProduct(), includeErp);
+        boolean includeErpSupply = enabled(command == null ? null : command.includeErpSupply(), includeErp);
         boolean includeCrm = enabled(command == null ? null : command.includeCrm());
         boolean includeOrder = enabled(command == null ? null : command.includeOrder());
         boolean includeIam = enabled(command == null ? null : command.includeIam());
         boolean includeDictionary = enabled(command == null ? null : command.includeDictionary());
         return run(caller.tenantId(), "MANUAL", caller.principalId(), maxPages,
-                includeErp, includeCrm, includeOrder, includeIam, includeDictionary);
+                TargetSelection.CONFIGURED, includeErpProduct, includeErpSupply, includeCrm,
+                includeOrder, includeIam, includeDictionary, manualWindow(command));
     }
 
     private DhbSyncOrchestrationResult run(UUID tenantFilter, String triggerType, UUID actorId,
-                                           int maxPages, boolean includeErp, boolean includeCrm,
-                                           boolean includeOrder, boolean includeIam,
-                                           boolean includeDictionary) {
+                                           int maxPages, TargetSelection targetSelection,
+                                           boolean includeErpProduct, boolean includeErpSupply,
+                                           boolean includeCrm, boolean includeOrder,
+                                           boolean includeIam, boolean includeDictionary,
+                                           SyncWindow syncWindow) {
         UUID batchId = UUID.randomUUID();
         Instant startedAt = clock.instant();
-        Map<TenantConnector, TargetBucket> targets = targets(tenantFilter);
+        Map<TenantConnector, TargetBucket> targets = targets(tenantFilter, targetSelection);
         List<DhbSyncOrchestrationTenantView> tenantResults = new ArrayList<>();
         for (TargetBucket bucket : targets.values()) {
-            tenantResults.add(runTenant(bucket, maxPages, includeErp, includeCrm, includeOrder,
-                    includeIam, includeDictionary));
+            tenantResults.add(runTenant(bucket, maxPages, includeErpProduct, includeErpSupply,
+                    includeCrm, includeOrder, includeIam, includeDictionary, triggerType, syncWindow));
         }
         String status = aggregateTenantStatus(tenantResults);
         DhbSyncOrchestrationResult result = new DhbSyncOrchestrationResult(
                 batchId, status, triggerType, startedAt, clock.instant(), tenantResults);
         logStepFailures(batchId, tenantResults);
-        log.info("订货宝统一同步编排完成 batchId={} triggerType={} tenantCount={} status={}",
-                batchId, triggerType, tenantResults.size(), status);
+        log.info("订货宝统一同步编排完成 batchId={} triggerType={} targetSelection={} tenantCount={} status={}",
+                batchId, triggerType, targetSelection, tenantResults.size(), status);
         return result;
     }
 
     private DhbSyncOrchestrationTenantView runTenant(TargetBucket bucket, int maxPages,
-                                                     boolean includeErp, boolean includeCrm,
-                                                     boolean includeOrder, boolean includeIam,
-                                                     boolean includeDictionary) {
+                                                     boolean includeErpProduct, boolean includeErpSupply,
+                                                     boolean includeCrm, boolean includeOrder,
+                                                     boolean includeIam,
+                                                     boolean includeDictionary,
+                                                     String triggerType,
+                                                     SyncWindow syncWindow) {
         ReentrantLock lock = tenantConnectorLocks.computeIfAbsent(bucket.key, ignored -> new ReentrantLock());
         if (!lock.tryLock()) {
             return new DhbSyncOrchestrationTenantView(bucket.key.tenantId(), bucket.key.connectorId(),
@@ -137,17 +223,31 @@ public final class DhbSyncOrchestrationService {
                     "当前租户订货宝连接器已有统一同步编排批次运行中")));
         }
         try {
-            return runTenantUnderLock(bucket, maxPages, includeErp, includeCrm, includeOrder,
-                    includeIam, includeDictionary);
+            return orchestrationLease.execute(bucket.key.tenantId(), bucket.key.connectorId(),
+                    ORCHESTRATION_LEASE_OWNER,
+                    () -> runTenantUnderLock(bucket, maxPages, includeErpProduct, includeErpSupply,
+                            includeCrm, includeOrder, includeIam, includeDictionary, triggerType, syncWindow));
+        } catch (RuntimeException error) {
+            if (SyncConflictClassifier.isAlreadyRunning(error)) {
+                return new DhbSyncOrchestrationTenantView(bucket.key.tenantId(), bucket.key.connectorId(),
+                        "SKIPPED", List.of(skipped("INTEGRATION", "DHB_ORCHESTRATION",
+                        "当前租户订货宝连接器已有统一同步编排批次运行中")));
+            }
+            throw error;
         } finally {
             lock.unlock();
         }
     }
 
     private DhbSyncOrchestrationTenantView runTenantUnderLock(TargetBucket bucket, int maxPages,
-                                                             boolean includeErp, boolean includeCrm,
-                                                             boolean includeOrder, boolean includeIam,
-                                                             boolean includeDictionary) {
+                                                             boolean includeErpProduct,
+                                                             boolean includeErpSupply,
+                                                             boolean includeCrm,
+                                                             boolean includeOrder,
+                                                             boolean includeIam,
+                                                             boolean includeDictionary,
+                                                             String triggerType,
+                                                             SyncWindow syncWindow) {
         List<DhbSyncOrchestrationStepView> steps = new ArrayList<>();
         CallerIdentity caller = serviceCaller(bucket.key.tenantId());
         boolean failed = false;
@@ -155,19 +255,19 @@ public final class DhbSyncOrchestrationService {
             failed = runDictionaryStep(bucket, steps);
         }
         if (!failed && includeIam) {
-            failed = runIamStaffStep(bucket, caller, maxPages, steps);
+            failed = runIamStaffStep(bucket, caller, maxPages, syncWindow, steps);
         }
-        if (!failed && includeErp) {
-            failed = runErpSteps(bucket, caller, maxPages, steps);
+        if (!failed && includeErpProduct) {
+            failed = runErpSteps(bucket, caller, maxPages, triggerType, syncWindow, steps);
         }
         if (!failed && includeCrm) {
-            failed = runCrmStep(bucket, caller, maxPages, steps);
+            failed = runCrmStep(bucket, caller, maxPages, syncWindow, steps);
         }
-        if (!failed && includeErp) {
-            failed = runSupplySteps(bucket, caller, maxPages, steps);
+        if (!failed && includeErpSupply) {
+            failed = runSupplySteps(bucket, caller, maxPages, triggerType, syncWindow, steps);
         }
         if (!failed && includeOrder) {
-            runOrderStep(bucket, caller, maxPages, steps);
+            runOrderStep(bucket, caller, maxPages, orderCommand(syncWindow), steps);
         }
         return new DhbSyncOrchestrationTenantView(bucket.key.tenantId(),
                 bucket.key.connectorId(), aggregateStepStatus(steps), steps);
@@ -179,13 +279,20 @@ public final class DhbSyncOrchestrationService {
             steps.add(skipped("DICTIONARY", "BUSINESS_DICTIONARY", "未配置启用的业务字典同步任务"));
             return false;
         }
+        Audit audit = dictionaryClient.sync(BusinessDictionaryBatchClient.serviceCaller(
+                        "rigour-integration-migration-service", "DHB_DICTIONARY_BOOTSTRAP",
+                        bucket.key.tenantId()),
+                "DHB_ORCHESTRATION_BASELINE", BASELINE_DICTIONARY_OBSERVATIONS);
+        if (audit == null) audit = Audit.empty();
+        String status = audit.unmapped() == 0 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
         steps.add(new DhbSyncOrchestrationStepView("DICTIONARY", "BUSINESS_DICTIONARY",
-                "SUCCEEDED", null, 0, 0, 0, Map.of(),
-                "业务字典采用我方 dictionaryCode/dictionaryItemCode；ERP/CRM 同步批次按字段白名单批量补齐来源值"));
+                status, null, BASELINE_DICTIONARY_OBSERVATIONS.size(), audit.revisions().size(),
+                audit.unmapped(), audit.revisions(), dictionaryMessage(audit)));
         return false;
     }
 
     private boolean runIamStaffStep(TargetBucket bucket, CallerIdentity caller, int maxPages,
+                                    SyncWindow syncWindow,
                                     List<DhbSyncOrchestrationStepView> steps) {
         try {
             DhbClient.Connector connector = connector(bucket);
@@ -198,7 +305,7 @@ public final class DhbSyncOrchestrationService {
             List<String> failures = new ArrayList<>();
             for (int pageNo = 0; pageNo < maxPages; pageNo++) {
                 Page<Staff> page = dhbClient.getStaff(connector,
-                        new StaffQuery(request, null, null, null, null, null));
+                        new StaffQuery(request, null, null, null, null, timeWindow(syncWindow)));
                 List<Staff> items = page.items();
                 fetched += items.size();
                 List<RawLanding> raw = new ArrayList<>();
@@ -222,7 +329,7 @@ public final class DhbSyncOrchestrationService {
                 }
                 store.persistRawLandings(caller.tenantId(), bucket.key.connectorId(), raw);
                 if (!rows.isEmpty()) {
-                    StaffSyncResult result = iamClient.sync(caller, rows);
+                    StaffSyncResult result = hrEmployeeClient.sync(caller, rows);
                     created += result.created();
                     updated += result.updated();
                     unchanged += result.unchanged();
@@ -246,15 +353,19 @@ public final class DhbSyncOrchestrationService {
     }
 
     private boolean runErpSteps(TargetBucket bucket, CallerIdentity caller, int maxPages,
+                                String triggerType,
+                                SyncWindow syncWindow,
                                 List<DhbSyncOrchestrationStepView> steps) {
         if (bucket.productTarget == null) {
-            steps.add(skipped("ERP", "PRODUCT_MASTER_DATA", "未配置启用的商品主数据同步任务"));
+            steps.add(skipped("ERP", "PRODUCT_MASTER_DATA", "未找到商品主数据同步任务"));
             return false;
         }
         for (String objectType : PRODUCT_OBJECTS) {
             try {
                 ErpDataSyncResult result = erpClient.sync(caller, bucket.key.connectorId(),
-                        bucket.productTarget.taskId(), objectType, maxPages);
+                        bucket.productTarget.taskId(), objectType, maxPages, triggerType,
+                        syncWindow == null ? null : syncWindow.from(),
+                        syncWindow == null ? null : syncWindow.to());
                 steps.add(erpStep(result));
             } catch (RuntimeException error) {
                 steps.add(failed("ERP", objectType, error));
@@ -265,15 +376,19 @@ public final class DhbSyncOrchestrationService {
     }
 
     private boolean runSupplySteps(TargetBucket bucket, CallerIdentity caller, int maxPages,
+                                   String triggerType,
+                                   SyncWindow syncWindow,
                                    List<DhbSyncOrchestrationStepView> steps) {
         if (bucket.supplyTarget == null) {
-            steps.add(skipped("ERP", "SUPPLY_CHAIN_DATA", "未配置启用的供应链同步任务"));
+            steps.add(skipped("ERP", "SUPPLY_CHAIN_DATA", "未找到供应链同步任务"));
             return false;
         }
         for (String objectType : SUPPLY_OBJECTS) {
             try {
                 ErpDataSyncResult result = erpClient.sync(caller, bucket.key.connectorId(),
-                        bucket.supplyTarget.taskId(), objectType, maxPages);
+                        bucket.supplyTarget.taskId(), objectType, maxPages, triggerType,
+                        syncWindow == null ? null : syncWindow.from(),
+                        syncWindow == null ? null : syncWindow.to());
                 steps.add(erpStep(result));
             } catch (RuntimeException error) {
                 steps.add(failed("ERP", objectType, error));
@@ -284,14 +399,18 @@ public final class DhbSyncOrchestrationService {
     }
 
     private boolean runCrmStep(TargetBucket bucket, CallerIdentity caller, int maxPages,
+                               SyncWindow syncWindow,
                                List<DhbSyncOrchestrationStepView> steps) {
         if (bucket.crmTarget == null) {
-            steps.add(skipped("CRM", "CRM_MASTER_DATA", "未配置启用的CRM同步任务"));
+            steps.add(skipped("CRM", "CRM_MASTER_DATA", "未找到CRM同步任务"));
             return false;
         }
         try {
-            SyncResult result = crmClient.sync(caller, bucket.key.connectorId(),
-                    bucket.crmTarget.taskId(), maxPages);
+            SyncResult result = syncWindow == null
+                    ? crmClient.sync(serviceCaller(bucket.key.tenantId()), bucket.key.connectorId(),
+                    bucket.crmTarget.taskId(), maxPages)
+                    : crmClient.sync(serviceCaller(bucket.key.tenantId()), bucket.key.connectorId(),
+                    bucket.crmTarget.taskId(), maxPages, syncWindow.from(), syncWindow.to());
             for (SyncObjectResult object : result.objects()) steps.add(crmStep(object));
             return false;
         } catch (RuntimeException error) {
@@ -301,33 +420,92 @@ public final class DhbSyncOrchestrationService {
     }
 
     private void runOrderStep(TargetBucket bucket, CallerIdentity caller, int maxPages,
+                              SyncRunCommand orderCommand,
                               List<DhbSyncOrchestrationStepView> steps) {
         if (bucket.orderTarget == null) {
-            steps.add(skipped("ORDER", "ORDER_DOMAIN", "未配置启用的Order同步任务"));
+            steps.add(skipped("ORDER", "ORDER_DOMAIN", "未找到Order同步任务"));
             return;
         }
         try {
             SyncRunView result = orderSyncService.runOrderPull(caller, bucket.orderTarget.taskId(),
-                    null, maxPages);
+                    orderCommand, maxPages);
             steps.add(orderStep(result));
         } catch (RuntimeException error) {
             steps.add(failed("ORDER", "ORDER_DOMAIN", error));
         }
     }
 
-    private Map<TenantConnector, TargetBucket> targets(UUID tenantFilter) {
+    private SyncWindow scheduledWindow() {
+        Instant from = properties.scheduledWindowFromInstant();
+        if (from == null) {
+            if (properties.isEnabled()) {
+                throw new IllegalStateException("订货宝统一同步scheduled-window-from不能为空");
+            }
+            return null;
+        }
+        Instant to = clock.instant().minus(SCHEDULED_WINDOW_SAFETY_LAG);
+        if (!from.isBefore(to)) {
+            throw new IllegalStateException("订货宝统一同步scheduled-window-from必须早于当前调度窗口结束时间");
+        }
+        return new SyncWindow(from, to);
+    }
+
+    private static SyncWindow manualWindow(DhbSyncOrchestrationCommand command) {
+        if (command == null || command.from() == null) return null;
+        return new SyncWindow(command.from(), command.to());
+    }
+
+    private static SyncRunCommand orderCommand(SyncWindow syncWindow) {
+        return syncWindow == null ? null : new SyncRunCommand(syncWindow.from(), syncWindow.to(), null);
+    }
+
+    private static TimeWindow timeWindow(SyncWindow syncWindow) {
+        return syncWindow == null ? null : new TimeWindow(syncWindow.from(), syncWindow.to());
+    }
+
+    private Map<TenantConnector, TargetBucket> targets(UUID tenantFilter, TargetSelection targetSelection) {
         Map<TenantConnector, TargetBucket> result = new LinkedHashMap<>();
-        addTargets(result, store.activeProductMasterSyncTargets(), tenantFilter, (bucket, target) ->
+        addTargets(result, productMasterTargets(targetSelection), tenantFilter, (bucket, target) ->
                 bucket.productTarget = target);
-        addTargets(result, store.activeSupplyChainSyncTargets(), tenantFilter, (bucket, target) ->
+        addTargets(result, supplyChainTargets(targetSelection), tenantFilter, (bucket, target) ->
                 bucket.supplyTarget = target);
-        addTargets(result, store.activeCrmMasterSyncTargets(), tenantFilter, (bucket, target) ->
+        addTargets(result, crmMasterTargets(targetSelection), tenantFilter, (bucket, target) ->
                 bucket.crmTarget = target);
-        addTargets(result, store.activeOrderSyncTargets(), tenantFilter, (bucket, target) ->
+        addTargets(result, orderTargets(targetSelection), tenantFilter, (bucket, target) ->
                 bucket.orderTarget = target);
-        addTargets(result, store.activeBusinessDictionarySyncTargets(), tenantFilter, (bucket, target) ->
+        addTargets(result, businessDictionaryTargets(targetSelection), tenantFilter, (bucket, target) ->
                 bucket.dictionaryTarget = target);
         return result;
+    }
+
+    private List<SyncTargetView> productMasterTargets(TargetSelection targetSelection) {
+        return targetSelection == TargetSelection.ACTIVE
+                ? store.activeProductMasterSyncTargets()
+                : store.configuredProductMasterSyncTargets();
+    }
+
+    private List<SyncTargetView> supplyChainTargets(TargetSelection targetSelection) {
+        return targetSelection == TargetSelection.ACTIVE
+                ? store.activeSupplyChainSyncTargets()
+                : store.configuredSupplyChainSyncTargets();
+    }
+
+    private List<SyncTargetView> crmMasterTargets(TargetSelection targetSelection) {
+        return targetSelection == TargetSelection.ACTIVE
+                ? store.activeCrmMasterSyncTargets()
+                : store.configuredCrmMasterSyncTargets();
+    }
+
+    private List<SyncTargetView> orderTargets(TargetSelection targetSelection) {
+        return targetSelection == TargetSelection.ACTIVE
+                ? store.activeOrderSyncTargets()
+                : store.configuredOrderSyncTargets();
+    }
+
+    private List<SyncTargetView> businessDictionaryTargets(TargetSelection targetSelection) {
+        return targetSelection == TargetSelection.ACTIVE
+                ? store.activeBusinessDictionarySyncTargets()
+                : store.configuredBusinessDictionarySyncTargets();
     }
 
     private void addTargets(Map<TenantConnector, TargetBucket> buckets, List<SyncTargetView> values,
@@ -346,7 +524,32 @@ public final class DhbSyncOrchestrationService {
     private static DhbSyncOrchestrationStepView erpStep(ErpDataSyncResult result) {
         return new DhbSyncOrchestrationStepView("ERP", result.objectType(), result.status(),
                 result.runId(), result.fetched(), result.created() + result.changed(),
-                result.unmapped(), result.dictionaryRevisions(), null);
+                result.unmapped(), result.dictionaryRevisions(), erpMessage(result));
+    }
+
+    private static String erpMessage(ErpDataSyncResult result) {
+        if (result.sourceDetails().isEmpty()) return null;
+        String details = result.sourceDetails().entrySet().stream()
+                .map(entry -> entry.getKey() + "=" + entry.getValue())
+                .collect(java.util.stream.Collectors.joining("；"));
+        return "来源明细：" + details + "；未变化" + result.duplicates()
+                + "条；拒绝" + result.rejected() + "条";
+    }
+
+    private static String dictionaryMessage(Audit audit) {
+        if (audit == null || audit.unmapped() == 0) {
+            return "基础来源枚举已补齐；领域同步批次仍会按实际来源值继续审计";
+        }
+        String issues = audit.issues().stream()
+                .limit(8)
+                .map(DhbSyncOrchestrationService::dictionaryIssue)
+                .collect(java.util.stream.Collectors.joining("；"));
+        return "基础来源枚举存在未解析值" + audit.unmapped() + "条：" + issues;
+    }
+
+    private static String dictionaryIssue(MappingIssue issue) {
+        return issue.dictionaryCode() + "." + issue.fieldCode() + "=" + issue.sourceValue()
+                + "x" + issue.count();
     }
 
     private static DhbSyncOrchestrationStepView crmStep(SyncObjectResult result) {
@@ -456,6 +659,10 @@ public final class DhbSyncOrchestrationService {
         return value == null || value;
     }
 
+    private static boolean enabled(Boolean value, boolean fallback) {
+        return value == null ? fallback : value;
+    }
+
     private static void requireManualCaller(CallerIdentity caller) {
         if (caller == null || caller.tenantId() == null || caller.userId() == null) {
             throw new AuthorizationDeniedException("tenant-user-caller");
@@ -476,7 +683,20 @@ public final class DhbSyncOrchestrationService {
         return value == null ? "-" : value.replace('\r', ' ').replace('\n', ' ');
     }
 
+    private enum TargetSelection {
+        ACTIVE,
+        CONFIGURED
+    }
+
     private record TenantConnector(UUID tenantId, UUID connectorId) { }
+
+    private record SyncWindow(Instant from, Instant to) {
+        private SyncWindow {
+            if (from == null || to == null || !from.isBefore(to)) {
+                throw new IllegalArgumentException("订货宝统一同步窗口from必须早于to");
+            }
+        }
+    }
 
     private static final class TargetBucket {
         private final TenantConnector key;

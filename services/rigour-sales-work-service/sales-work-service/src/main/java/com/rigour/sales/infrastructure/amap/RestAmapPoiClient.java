@@ -23,7 +23,7 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-/** 高德 Web 服务 place/around 适配器；key 只出现在请求参数，永不进入日志。 */
+/** 高德 Web 服务 POI 搜索适配器；key 只出现在请求参数，永不进入日志。 */
 @Component
 public class RestAmapPoiClient implements AmapPoiClient {
 
@@ -35,6 +35,7 @@ public class RestAmapPoiClient implements AmapPoiClient {
     private final AmapProperties properties;
     private final ObjectMapper objectMapper;
     private final ConcurrentMap<CacheKey, CacheEntry> nearbyCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<TextCacheKey, CacheEntry> textCache = new ConcurrentHashMap<>();
 
     @Autowired
     public RestAmapPoiClient(RestClient.Builder builder, AmapProperties properties, ObjectMapper objectMapper) {
@@ -113,6 +114,64 @@ public class RestAmapPoiClient implements AmapPoiClient {
         }
     }
 
+    @Override
+    public NearbyPoiPage searchText(String keyword, String city, int page, int pageSize) {
+        if (!StringUtils.hasText(properties.getWebKey())) {
+            throw new AmapPoiException("高德 Web 服务 key 未配置");
+        }
+        if (!StringUtils.hasText(keyword) || !StringUtils.hasText(city)) {
+            throw new AmapPoiException("高德门店关键词或城市不能为空");
+        }
+        TextCacheKey cacheKey = new TextCacheKey(
+                keyword.trim().toLowerCase(Locale.ROOT), city.trim().toLowerCase(Locale.ROOT),
+                page, pageSize);
+        long now = System.nanoTime();
+        CacheEntry cached = textCache.get(cacheKey);
+        if (cached != null && cached.expiresAtNanos() > now) {
+            return cached.page();
+        }
+        if (cached != null) textCache.remove(cacheKey, cached);
+        long startedAt = System.nanoTime();
+        try {
+            String body = restClient.get().uri(uriBuilder -> uriBuilder.path("/place/text")
+                    .queryParam("key", properties.getWebKey())
+                    .queryParam("keywords", keyword.trim())
+                    .queryParam("city", city.trim())
+                    .queryParam("citylimit", true)
+                    .queryParam("offset", pageSize)
+                    .queryParam("page", page)
+                    .queryParam("extensions", "base")
+                    .build()).retrieve().body(String.class);
+            JsonNode response = objectMapper.readTree(body);
+            if (response == null || !"1".equals(scalarText(response.get("status")))) {
+                String info = response == null ? "empty" : scalarText(response.get("info"));
+                log.warn("高德城市门店返回失败 endpoint=/place/text info={}", info);
+                throw new AmapPoiException("高德城市门店返回失败");
+            }
+            List<NearbyPoi> pois = pois(response.get("pois"));
+            long total = parseCount(scalarText(response.get("count")));
+            log.info("高德城市门店查询成功 endpoint=/place/text city={} items={} elapsedMs={}",
+                    city.trim(), pois.size(), (System.nanoTime() - startedAt) / 1_000_000);
+            NearbyPoiPage result = new NearbyPoiPage(pois, page, pageSize, total);
+            cacheText(cacheKey, result, now);
+            return result;
+        } catch (RestClientResponseException exception) {
+            log.warn("高德城市门店HTTP失败 endpoint=/place/text httpStatus={}",
+                    exception.getStatusCode().value());
+            throw new AmapPoiException("高德城市门店HTTP失败");
+        } catch (RestClientException exception) {
+            log.warn("高德城市门店连接失败 endpoint=/place/text reason={}",
+                    exception.getClass().getSimpleName());
+            throw new AmapPoiException("高德城市门店连接失败");
+        } catch (AmapPoiException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            log.warn("高德城市门店响应解析失败 endpoint=/place/text reason={}",
+                    exception.getClass().getSimpleName());
+            throw new AmapPoiException("高德城市门店响应解析失败");
+        }
+    }
+
     private static List<NearbyPoi> pois(JsonNode values) {
         if (values == null || !values.isArray()) {
             throw new IllegalArgumentException("pois must be an array");
@@ -136,7 +195,8 @@ public class RestAmapPoiClient implements AmapPoiClient {
         }
         return new NearbyPoi(id, name, scalarText(source.get("address")), scalarText(source.get("type")),
                 scalarText(source.get("typecode")), coordinates[0], coordinates[1],
-                distance(scalarText(source.get("distance"))));
+                distance(scalarText(source.get("distance"))), scalarText(source.get("cityname")),
+                scalarText(source.get("adcode")));
     }
 
     /** 高德空字段有时会返回 []；对预期标量的非标量值按缺失处理。 */
@@ -189,6 +249,17 @@ public class RestAmapPoiClient implements AmapPoiClient {
         nearbyCache.put(key, new CacheEntry(page, nowNanos + ttl.toNanos()));
     }
 
+    private void cacheText(TextCacheKey key, NearbyPoiPage page, long nowNanos) {
+        Duration ttl = properties.getNearbyCacheTtl();
+        int maxEntries = properties.getNearbyCacheMaxEntries();
+        if (ttl == null || ttl.isZero() || ttl.isNegative() || maxEntries <= 0) return;
+        textCache.entrySet().removeIf(entry -> entry.getValue().expiresAtNanos() <= nowNanos);
+        if (textCache.size() >= maxEntries) {
+            textCache.keySet().stream().findFirst().ifPresent(textCache::remove);
+        }
+        textCache.put(key, new CacheEntry(page, nowNanos + ttl.toNanos()));
+    }
+
     private static CacheKey cacheKey(String keyword, BigDecimal longitude, BigDecimal latitude,
                                      int radiusMeters, int page, int pageSize) {
         return new CacheKey(normalizeCoordinate(longitude), normalizeCoordinate(latitude),
@@ -207,6 +278,9 @@ public class RestAmapPoiClient implements AmapPoiClient {
 
     private record CacheKey(BigDecimal longitude, BigDecimal latitude, String keyword,
                             int radiusMeters, int page, int pageSize) {
+    }
+
+    private record TextCacheKey(String keyword, String city, int page, int pageSize) {
     }
 
     private record CacheEntry(NearbyPoiPage page, long expiresAtNanos) {

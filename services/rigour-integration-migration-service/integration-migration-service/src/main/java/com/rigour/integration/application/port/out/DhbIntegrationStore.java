@@ -11,6 +11,8 @@ import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.api.v1.model.DhbExternalObjectMappingPageView;
+import com.rigour.integration.api.v1.model.DhbManualResolutionCommand;
+import com.rigour.integration.api.v1.model.DhbManualResolutionView;
 import com.rigour.integration.api.v1.model.DhbSyncExceptionView;
 import com.rigour.integration.api.v1.model.DhbSyncLogDetailView;
 import com.rigour.integration.api.v1.model.DhbSyncReconciliationCaseView;
@@ -30,6 +32,7 @@ public interface DhbIntegrationStore {
     ConnectorView updateConnector(UUID tenantId, UUID actorId, UUID id, ConnectorCommand command);
     List<SyncTaskView> syncTasks(UUID tenantId);
     List<SyncTargetView> activeSyncTargets(String objectType);
+    List<SyncTargetView> configuredSyncTargets(String objectType);
 
     default List<SyncTargetView> activeOrderSyncTargets() {
         return activeSyncTargets("ORDER");
@@ -50,6 +53,26 @@ public interface DhbIntegrationStore {
     default List<SyncTargetView> activeBusinessDictionarySyncTargets() {
         return activeSyncTargets("BUSINESS_DICTIONARY");
     }
+
+    default List<SyncTargetView> configuredOrderSyncTargets() {
+        return configuredSyncTargets("ORDER");
+    }
+
+    default List<SyncTargetView> configuredProductMasterSyncTargets() {
+        return configuredSyncTargets("PRODUCT_MASTER_DATA");
+    }
+
+    default List<SyncTargetView> configuredSupplyChainSyncTargets() {
+        return configuredSyncTargets("SUPPLY_CHAIN_DATA");
+    }
+
+    default List<SyncTargetView> configuredCrmMasterSyncTargets() {
+        return configuredSyncTargets("CRM_MASTER_DATA");
+    }
+
+    default List<SyncTargetView> configuredBusinessDictionarySyncTargets() {
+        return configuredSyncTargets("BUSINESS_DICTIONARY");
+    }
     SyncTaskView createSyncTask(UUID tenantId, UUID actorId, SyncTaskCommand command);
     SyncTaskView updateSyncTask(UUID tenantId, UUID actorId, UUID id, SyncTaskCommand command);
     List<OrderMirrorView> orderMirrors(UUID tenantId, int limit, int offset);
@@ -66,6 +89,11 @@ public interface DhbIntegrationStore {
     List<DhbSyncExceptionView> syncExceptions(UUID tenantId, String status, int limit);
     List<DhbSyncReconciliationCaseView> syncReconciliationCases(
             UUID tenantId, String status, String severity, int limit);
+    List<DhbManualResolutionView> manualResolutions(
+            UUID tenantId, String resolutionType, String sourceObjectType,
+            String sourceId, String status, int limit);
+    DhbManualResolutionView createManualResolution(
+            UUID tenantId, UUID actorId, DhbManualResolutionCommand command);
 
     /** 保存订货宝技术原始业务字段；不得传入sKey、账号、密码或Token。 */
     void persistRawLanding(UUID tenantId, UUID connectorId, String sourceObjectType,

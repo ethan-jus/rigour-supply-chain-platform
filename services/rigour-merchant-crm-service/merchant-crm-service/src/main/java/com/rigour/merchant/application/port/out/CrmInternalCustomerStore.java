@@ -1,9 +1,13 @@
 package com.rigour.merchant.application.port.out;
 
+import com.rigour.merchant.api.v1.model.ExternalCrmCustomerRowCommand;
+import com.rigour.merchant.api.v1.model.ExternalCrmCustomerSyncResult;
 import com.rigour.merchant.api.v1.model.InternalCustomerCommand;
 import com.rigour.merchant.api.v1.model.InternalCustomerDetailView;
 import com.rigour.merchant.api.v1.model.InternalCustomerSummaryView;
 import com.rigour.merchant.api.v1.model.PageView;
+import com.rigour.shared.core.code.BusinessCodeGenerator;
+import java.util.List;
 import java.util.Optional;
 
 /** CRM 自研客户表持久化端口；只操作 `crm_customer`，不访问旧 Party/订货宝投影表。 */
@@ -24,6 +28,11 @@ public interface CrmInternalCustomerStore {
 
     void delete(String tenantId, Long id, int revision, String actorId);
 
+    ExternalCrmCustomerSyncResult syncExternalCustomers(String tenantId, String sourceSystem,
+                                                        List<ExternalCrmCustomerRowCommand> rows,
+                                                        String actorId,
+                                                        BusinessCodeGenerator codeGenerator);
+
     /** 列表页独立筛选条件；避免 keyword 式 OR 查询失控。 */
     record CustomerSearchCriteria(
             String customerCode,
@@ -32,7 +41,7 @@ public interface CrmInternalCustomerStore {
             String customerTypeCode,
             String regionCode,
             String ownerSalesUserId,
-            String ownerStaffCode,
+            String ownerEmployeeCode,
             String statusCode) {
     }
 }

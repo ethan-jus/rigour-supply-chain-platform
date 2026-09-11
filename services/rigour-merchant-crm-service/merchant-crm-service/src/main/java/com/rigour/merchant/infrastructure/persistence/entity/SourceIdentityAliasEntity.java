@@ -18,6 +18,10 @@ public class SourceIdentityAliasEntity {
     public Boolean isPrimary;
     public LocalDateTime firstSeenAt;
     public LocalDateTime lastSeenAt;
-    public LocalDateTime createdAt;
-    public LocalDateTime updatedAt;
+    public Integer revision;
+    public String createdBy;
+    public LocalDateTime createdTime;
+    public String updatedBy;
+    public LocalDateTime updatedTime;
+    public Integer deleted;
 }

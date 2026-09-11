@@ -10,6 +10,7 @@ import com.rigour.order.application.port.out.OrderSalesRefundRecordStore;
 import com.rigour.order.application.port.out.OrderSalesRefundRecordStore.SalesRefundSearchCriteria;
 import com.rigour.order.application.port.out.OrderSalesRefundRecordStore.SalesRefundWrite;
 import com.rigour.order.domain.enums.SalesOrderPaymentStatus;
+import com.rigour.order.domain.enums.SalesOrderStatus;
 import com.rigour.order.domain.enums.SalesRefundStatus;
 import com.rigour.order.infrastructure.persistence.entity.InternalSalesOrderEntity;
 import com.rigour.order.infrastructure.persistence.entity.InternalSalesPaymentRecordEntity;
@@ -241,9 +242,12 @@ public class MybatisPlusSalesRefundRecordRepository
         BigDecimal netPaidAmount = paidAmount.subtract(refundAmount);
         if (netPaidAmount.compareTo(ZERO) < 0) netPaidAmount = ZERO;
         BigDecimal payableAmount = nz(order.getPayableAmount());
-        BigDecimal unpaidAmount = payableAmount.subtract(netPaidAmount);
+        boolean cancelledOrder = SalesOrderStatus.CANCELLED.code().equals(order.getOrderStatusCode());
+        BigDecimal unpaidAmount = cancelledOrder ? ZERO : payableAmount.subtract(netPaidAmount);
         if (unpaidAmount.compareTo(ZERO) < 0) unpaidAmount = ZERO;
-        String status = paymentStatus(payableAmount, netPaidAmount);
+        String status = cancelledOrder
+                ? SalesOrderPaymentStatus.CANCELLED.code()
+                : paymentStatus(payableAmount, netPaidAmount);
         orderMapper.update(null, Wrappers.<InternalSalesOrderEntity>lambdaUpdate()
                 .set(InternalSalesOrderEntity::getPaidAmount, netPaidAmount)
                 .set(InternalSalesOrderEntity::getUnpaidAmount, unpaidAmount)

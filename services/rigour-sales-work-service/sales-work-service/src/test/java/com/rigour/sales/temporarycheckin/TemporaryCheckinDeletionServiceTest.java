@@ -107,6 +107,26 @@ class TemporaryCheckinDeletionServiceTest {
     }
 
     @Test
+    void hardDeleteRemovesAllPhotosAndOwnedDerivedFilesWithoutDeletingProjectionTwice() {
+        String base = TENANT_ID + "/temporary-sales-checkin/" + SUBMISSION_ID + "/";
+        String first = base + "photos/storefront/segments/first/photo.jpg";
+        String second = base + "photos/storefront/segments/second/photo.jpg";
+        String playback = base + "derived/audio/playback.mp3";
+        when(repository.findCandidates(TENANT_ID, List.of(SUBMISSION_ID), "北京"))
+                .thenReturn(List.of(new DeletionCandidateRow(SUBMISSION_ID, "北京", "NONE", first, null, null)));
+        when(repository.photoObjectKeys(TENANT_ID, SUBMISSION_ID)).thenReturn(List.of(first, second));
+        when(repository.derivedObjectKeys(TENANT_ID, SUBMISSION_ID)).thenReturn(List.of(playback));
+        when(repository.hardDelete(TENANT_ID, SUBMISSION_ID)).thenReturn(1);
+
+        assertThat(service.delete("city-beijing", "北京", request()).status()).isEqualTo("COMPLETED");
+
+        verify(fileStorage).delete(TENANT_ID.toString(), first);
+        verify(fileStorage).delete(TENANT_ID.toString(), second);
+        verify(fileStorage).delete(TENANT_ID.toString(), playback);
+        verify(repository).hardDelete(TENANT_ID, SUBMISSION_ID);
+    }
+
+    @Test
     void refusesUnexpectedObjectDirectoryAndKeepsFailedRowForRetry() {
         String foreign = TENANT_ID + "/temporary-sales-checkin/" + SUBMISSION_ID
                 + "/../another-submission/secret.m4a";

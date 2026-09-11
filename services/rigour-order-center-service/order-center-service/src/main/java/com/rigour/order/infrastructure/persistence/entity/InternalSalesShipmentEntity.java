@@ -13,6 +13,9 @@ public class InternalSalesShipmentEntity {
     private Long id;
     private String tenantId;
     private String shipmentNo;
+    private String connectorId;
+    private String sourceSystemCode;
+    private String sourceDocumentNo;
     private Long salesOrderId;
     private String salesOrderNoSnapshot;
     private Long customerId;
@@ -20,7 +23,7 @@ public class InternalSalesShipmentEntity {
     private String customerNameSnapshot;
     private String contactPhoneSnapshot;
     private String regionCode;
-    private String ownerStaffCode;
+    private String ownerEmployeeCode;
     private Long warehouseId;
     private Long stockOutOrderId;
     private String stockOutNo;
@@ -43,6 +46,12 @@ public class InternalSalesShipmentEntity {
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getShipmentNo() { return shipmentNo; }
     public void setShipmentNo(String shipmentNo) { this.shipmentNo = shipmentNo; }
+    public String getConnectorId() { return connectorId; }
+    public void setConnectorId(String connectorId) { this.connectorId = connectorId; }
+    public String getSourceSystemCode() { return sourceSystemCode; }
+    public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
+    public String getSourceDocumentNo() { return sourceDocumentNo; }
+    public void setSourceDocumentNo(String sourceDocumentNo) { this.sourceDocumentNo = sourceDocumentNo; }
     public Long getSalesOrderId() { return salesOrderId; }
     public void setSalesOrderId(Long salesOrderId) { this.salesOrderId = salesOrderId; }
     public String getSalesOrderNoSnapshot() { return salesOrderNoSnapshot; }
@@ -57,8 +66,8 @@ public class InternalSalesShipmentEntity {
     public void setContactPhoneSnapshot(String contactPhoneSnapshot) { this.contactPhoneSnapshot = contactPhoneSnapshot; }
     public String getRegionCode() { return regionCode; }
     public void setRegionCode(String regionCode) { this.regionCode = regionCode; }
-    public String getOwnerStaffCode() { return ownerStaffCode; }
-    public void setOwnerStaffCode(String ownerStaffCode) { this.ownerStaffCode = ownerStaffCode; }
+    public String getOwnerEmployeeCode() { return ownerEmployeeCode; }
+    public void setOwnerEmployeeCode(String ownerEmployeeCode) { this.ownerEmployeeCode = ownerEmployeeCode; }
     public Long getWarehouseId() { return warehouseId; }
     public void setWarehouseId(Long warehouseId) { this.warehouseId = warehouseId; }
     public Long getStockOutOrderId() { return stockOutOrderId; }

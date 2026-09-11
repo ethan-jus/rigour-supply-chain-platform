@@ -7,15 +7,19 @@ import com.rigour.shared.context.RequestHeaders;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.shared.core.api.ApiResponse;
 import java.net.URI;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
-import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
+import tools.jackson.core.type.TypeReference;
 
 /** Integration 到 ERP 内部订货宝同步接口的 HTTP 客户端。 */
 public final class HttpErpDhbDomainSyncClient implements ErpDhbDomainSyncClient {
+    private static final TypeReference<ApiResponse<ErpDataSyncResult>> SYNC_RESULT_RESPONSE =
+            new TypeReference<>() { };
+
     private final RestClient restClient;
     private final TrustedContextSigner signer;
     private final URI baseUri;
@@ -30,7 +34,14 @@ public final class HttpErpDhbDomainSyncClient implements ErpDhbDomainSyncClient 
 
     @Override
     public ErpDataSyncResult sync(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
-                                  String objectType, int maxPages) {
+                                  String objectType, int maxPages, Instant from, Instant to) {
+        return sync(caller, connectorId, sourceTaskId, objectType, maxPages, "SCHEDULED", from, to);
+    }
+
+    @Override
+    public ErpDataSyncResult sync(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
+                                  String objectType, int maxPages, String triggerType,
+                                  Instant from, Instant to) {
         if (connectorId == null || sourceTaskId == null || objectType == null || objectType.isBlank()) {
             throw new IllegalArgumentException("ERP同步connectorId、sourceTaskId和objectType不能为空");
         }
@@ -45,11 +56,13 @@ public final class HttpErpDhbDomainSyncClient implements ErpDhbDomainSyncClient 
                 .headers(headers -> SignedDomainRequest.signedHeaders(signer, "POST", uri, caller)
                         .forEach(headers::set))
                 .header(RequestHeaders.REQUEST_ID, SignedDomainRequest.requestId())
-                .body(new SyncCommand(connectorId, sourceTaskId, objectType, maxPages))
-                .retrieve()
-                .body(new ParameterizedTypeReference<>() { });
+                .body(new SyncCommand(connectorId, sourceTaskId, objectType, maxPages,
+                        triggerType, from, to))
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
+                        httpResponse, SYNC_RESULT_RESPONSE, "ERP订货宝同步"));
         return SignedDomainRequest.required(response, "ERP");
     }
 
-    private record SyncCommand(UUID connectorId, UUID sourceTaskId, String objectType, Integer maxPages) { }
+    private record SyncCommand(UUID connectorId, UUID sourceTaskId, String objectType,
+                               Integer maxPages, String triggerType, Instant from, Instant to) { }
 }

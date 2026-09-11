@@ -38,29 +38,7 @@ class HttpDhbProductMasterDataClientTest {
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         String base = "https://integration.test";
 
-        server.expect(requestTo(base + DhbProductApi.BASE_PATH + "/" + CONNECTOR_ID + "/media-sync"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header(RequestHeaders.PRINCIPAL_SCOPE, "SERVICE"))
-                .andExpect(jsonPath("$.begin").value(0))
-                .andExpect(jsonPath("$.step").value(50))
-                .andExpect(jsonPath("$.status").value("C"))
-                .andExpect(jsonPath("$.putaway").value("A"))
-                .andRespond(withSuccess("""
-                        {
-                          "jobId": "%s",
-                          "connectorId": "%s",
-                          "status": "SUCCEEDED",
-                          "totalImages": 1,
-                          "completedImages": 1,
-                          "failedImages": 0
-                        }
-                        """.formatted(JOB_ID, CONNECTOR_ID), MediaType.APPLICATION_JSON));
-        server.expect(requestTo(base + DhbProductApi.BASE_PATH + "/" + CONNECTOR_ID + "/query"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(jsonPath("$.status").value("C"))
-                .andExpect(jsonPath("$.putaway").value("A"))
-                .andExpect(jsonPath("$.mediaJobId").value(JOB_ID.toString()))
-                .andRespond(withSuccess("""
+        expectProductBucket(server, base, "T", """
                         {
                           "total": 1,
                           "items": [{
@@ -68,6 +46,7 @@ class HttpDhbProductMasterDataClientTest {
                             "code": "SPU-1",
                             "name": "商品一",
                             "putaway": "F",
+                            "sourceLifecycle": "NORMAL",
                             "images": [{
                               "sourceResourceId": "IMG-1",
                               "sourceGoodsId": "P-1",
@@ -84,19 +63,85 @@ class HttpDhbProductMasterDataClientTest {
                           }
                           }]
                         }
-                        """, MediaType.APPLICATION_JSON));
+                        """);
+        expectProductBucket(server, base, "A", emptyProductPage());
+        expectProductBucket(server, base, "N", emptyProductPage());
+        expectProductBucket(server, base, "R", emptyProductPage());
+        expectProductBucket(server, base, "F", """
+                        {
+                          "total": 1,
+                          "items": [{
+                            "sourceId": "P-1",
+                            "code": "SPU-1",
+                            "name": "商品一",
+                            "putaway": "F",
+                            "sourceLifecycle": "SOURCE_DELETED",
+                            "images": [{
+                              "sourceResourceId": "IMG-1",
+                              "sourceGoodsId": "P-1",
+                              "originalName": "主图.png",
+                              "fileName": "main.png",
+                              "sortOrder": 1,
+                              "objectKey": "tenant/product-images/P-1/IMG-1/hash.png"
+                            }],
+                            "customFields": {},
+                            "skus": [],
+                          "sourceFields": {
+                            "units": "件",
+                            "goods_tag": ["TAG-1"]
+                          }
+                          }]
+                        }
+                        """);
 
         var client = new HttpDhbProductMasterDataClient(builder, signer(), JsonMapper.builder().build(), base);
         var collected = client.collect(caller(), CONNECTOR_ID, MasterDataObjectType.PRODUCT_SPU, 1);
 
         assertThat(collected.products()).singleElement().satisfies(product -> {
             assertThat(product.sourceId()).isEqualTo("P-1");
+            assertThat(product.sourceLifecycle()).isEqualTo("SOURCE_DELETED");
             assertThat(product.sourceFields()).containsEntry("units", "件");
             assertThat(product.sourceFields()).containsKey("goods_tag");
             assertThat(product.images()).singleElement().satisfies(image ->
                     assertThat(image.objectKey()).isEqualTo("tenant/product-images/P-1/IMG-1/hash.png"));
         });
         server.verify();
+    }
+
+    private static void expectProductBucket(MockRestServiceServer server, String base,
+                                            String status, String queryResponse) {
+        server.expect(requestTo(base + DhbProductApi.BASE_PATH + "/" + CONNECTOR_ID + "/media-sync"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header(RequestHeaders.PRINCIPAL_SCOPE, "SERVICE"))
+                .andExpect(jsonPath("$.begin").value(0))
+                .andExpect(jsonPath("$.step").value(50))
+                .andExpect(jsonPath("$.status").value(status))
+                .andExpect(jsonPath("$.putaway").value("A"))
+                .andRespond(withSuccess("""
+                        {
+                          "jobId": "%s",
+                          "connectorId": "%s",
+                          "status": "SUCCEEDED",
+                          "totalImages": 1,
+                          "completedImages": 1,
+                          "failedImages": 0
+                        }
+                        """.formatted(JOB_ID, CONNECTOR_ID), MediaType.APPLICATION_JSON));
+        server.expect(requestTo(base + DhbProductApi.BASE_PATH + "/" + CONNECTOR_ID + "/query"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$.status").value(status))
+                .andExpect(jsonPath("$.putaway").value("A"))
+                .andExpect(jsonPath("$.mediaJobId").value(JOB_ID.toString()))
+                .andRespond(withSuccess(queryResponse, MediaType.APPLICATION_JSON));
+    }
+
+    private static String emptyProductPage() {
+        return """
+                {
+                  "total": 0,
+                  "items": []
+                }
+                """;
     }
 
     private static CallerIdentity caller() {

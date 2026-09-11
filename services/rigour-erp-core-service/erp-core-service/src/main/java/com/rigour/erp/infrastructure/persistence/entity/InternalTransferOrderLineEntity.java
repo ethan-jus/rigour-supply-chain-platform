@@ -34,8 +34,14 @@ public class InternalTransferOrderLineEntity {
     private BigDecimal quantity;
     /** 备注。 */
     private String remark;
+    /** 乐观锁。 */
+    private Integer revision;
+    /** 创建人。 */
+    private String createdBy;
     /** 创建时间。 */
     private LocalDateTime createdTime;
+    /** 更新人。 */
+    private String updatedBy;
     /** 更新时间。 */
     private LocalDateTime updatedTime;
     /** 删除标识：0未删除，1已删除。 */
@@ -65,8 +71,14 @@ public class InternalTransferOrderLineEntity {
     public void setQuantity(BigDecimal quantity) { this.quantity = quantity; }
     public String getRemark() { return remark; }
     public void setRemark(String remark) { this.remark = remark; }
+    public Integer getRevision() { return revision; }
+    public void setRevision(Integer revision) { this.revision = revision; }
+    public String getCreatedBy() { return createdBy; }
+    public void setCreatedBy(String createdBy) { this.createdBy = createdBy; }
     public LocalDateTime getCreatedTime() { return createdTime; }
     public void setCreatedTime(LocalDateTime createdTime) { this.createdTime = createdTime; }
+    public String getUpdatedBy() { return updatedBy; }
+    public void setUpdatedBy(String updatedBy) { this.updatedBy = updatedBy; }
     public LocalDateTime getUpdatedTime() { return updatedTime; }
     public void setUpdatedTime(LocalDateTime updatedTime) { this.updatedTime = updatedTime; }
     public Integer getDeleted() { return deleted; }

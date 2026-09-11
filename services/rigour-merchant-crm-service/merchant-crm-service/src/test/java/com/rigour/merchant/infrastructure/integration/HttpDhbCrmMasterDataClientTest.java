@@ -41,20 +41,34 @@ class HttpDhbCrmMasterDataClientTest {
                 .andExpect(jsonPath("$.status").value(3))
                 .andExpect(jsonPath("$.dataType").value(3))
                 .andRespond(withSuccess("""
-                        {"total":1,"items":[{
+                        {"total":4,"items":[{
                           "sourceId":"CLIENT-GUID-1","clientGuid":"CLIENT-GUID-1",
                           "account":"customer001","companyName":"示例客户","number":"C-001",
                           "status":"T","updatedAt":"2026-08-01T00:00:00Z",
                           "sourceFields":{"clientGUID":"CLIENT-GUID-1","clientNO":"C-001","futureField":42}
+                        },{
+                          "sourceId":"CLIENT-GUID-2","clientGuid":"CLIENT-GUID-2",
+                          "companyName":"停用客户","number":"C-002","status":"F",
+                          "sourceFields":{"clientGUID":"CLIENT-GUID-2","clientNO":"C-002"}
+                        },{
+                          "sourceId":"CLIENT-GUID-3","clientGuid":"CLIENT-GUID-3",
+                          "companyName":"待激活客户","number":"C-003","status":"A",
+                          "sourceFields":{"clientGUID":"CLIENT-GUID-3","clientNO":"C-003"}
+                        },{
+                          "sourceId":"CLIENT-GUID-4","clientGuid":"CLIENT-GUID-4",
+                          "companyName":"待审核客户","number":"C-004","status":"C",
+                          "sourceFields":{"clientGUID":"CLIENT-GUID-4","clientNO":"C-004"}
                         }]}
                         """, MediaType.APPLICATION_JSON));
 
         var client = new HttpDhbCrmMasterDataClient(builder, signer(), "https://integration.test");
         var result = client.collect(caller(), CONNECTOR_ID, CrmMasterDataObjectType.CUSTOMER, 1);
 
-        assertThat(result.total()).isEqualTo(1);
+        assertThat(result.total()).isEqualTo(4);
         assertThat(result.pages()).isEqualTo(1);
-        assertThat(result.items()).singleElement().satisfies(item -> {
+        assertThat(result.items()).hasSize(4);
+        assertThat(result.items()).extracting("sourceStatus").containsExactly("T", "F", "A", "C");
+        assertThat(result.items().getFirst()).satisfies(item -> {
             assertThat(item.sourceId()).isEqualTo("CLIENT-GUID-1");
             assertThat(item.sourceCode()).isEqualTo("C-001");
             assertThat(item.sourceFields()).containsEntry("futureField", 42);

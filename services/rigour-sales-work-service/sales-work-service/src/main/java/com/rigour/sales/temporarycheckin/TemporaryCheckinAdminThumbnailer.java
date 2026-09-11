@@ -7,7 +7,11 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.FilterInputStream;
 import java.util.Iterator;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import org.springframework.http.HttpStatus;
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageReadParam;
@@ -25,24 +29,56 @@ final class TemporaryCheckinAdminThumbnailer {
 
     private static final int MAX_EDGE = 320;
     private static final long MAX_SOURCE_PIXELS = 100_000_000L;
+    private static final int MAX_SOURCE_EDGE = 20_000;
+    private static final long MAX_SOURCE_BYTES = 16L * 1024 * 1024;
+    private final Semaphore decodingSlot = new Semaphore(1, true);
 
     Thumbnail create(TemporaryCheckinService.AdminMedia media) {
+        return create(media, () -> { });
+    }
+
+    /** 同页多图公平等候最多五秒；领取任务和读取原件只在唯一解码槽内执行。 */
+    Thumbnail create(TemporaryCheckinService.AdminMedia media, Runnable beforeDecode) {
+        try {
+            if (!decodingSlot.tryAcquire(5, TimeUnit.SECONDS)) throw busy();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw busy();
+        }
+        try {
+            beforeDecode.run();
+            return decode(media);
+        } finally { decodingSlot.release(); }
+    }
+
+    private static TemporaryCheckinException busy() {
+        return new TemporaryCheckinException(HttpStatus.CONFLICT,
+                "TEMP_CHECKIN_IMAGE_BUSY", "缩略图正在生成，请稍后重试");
+    }
+
+    private Thumbnail decode(TemporaryCheckinService.AdminMedia media) {
+        if (media.sizeBytes() < 1 || media.sizeBytes() > MAX_SOURCE_BYTES)
+            throw new TemporaryCheckinException(HttpStatus.BAD_REQUEST,"TEMP_CHECKIN_IMAGE_LIMIT",
+                    "原图较大，请通过原图入口查看");
         if (media.contentType() == null || !media.contentType().startsWith("image/")) {
             throw TemporaryCheckinException.badRequest("仅图片支持缩略图预览");
         }
-        try (InputStream original = media.open();
+        try (InputStream original = new SizeLimitedInputStream(media.open(),MAX_SOURCE_BYTES);
                 ImageInputStream input = new MemoryCacheImageInputStream(original)) {
             Iterator<ImageReader> readers = ImageIO.getImageReaders(input);
             if (!readers.hasNext()) {
-                throw TemporaryCheckinException.badRequest("当前图片格式暂不支持缩略图，请下载原图查看");
+                throw new TemporaryCheckinException(HttpStatus.BAD_REQUEST,"TEMP_CHECKIN_IMAGE_UNSUPPORTED",
+                        "当前图片格式暂不支持缩略图，请通过原图入口查看");
             }
             ImageReader reader = readers.next();
             try {
                 reader.setInput(input, true, true);
                 int width = reader.getWidth(0);
                 int height = reader.getHeight(0);
-                if (width <= 0 || height <= 0 || (long) width * height > MAX_SOURCE_PIXELS) {
-                    throw TemporaryCheckinException.badRequest("图片尺寸过大，无法生成安全缩略图");
+                if (width <= 0 || height <= 0 || width>MAX_SOURCE_EDGE || height>MAX_SOURCE_EDGE
+                        || (long) width * height > MAX_SOURCE_PIXELS) {
+                    throw new TemporaryCheckinException(HttpStatus.BAD_REQUEST,"TEMP_CHECKIN_IMAGE_LIMIT",
+                            "图片尺寸过大，请通过原图入口查看");
                 }
                 int sample = Math.max(1, (int) Math.ceil(Math.max(width, height) / (double) MAX_EDGE));
                 ImageReadParam readParam = reader.getDefaultReadParam();
@@ -56,6 +92,28 @@ final class TemporaryCheckinAdminThumbnailer {
             throw exception;
         } catch (IOException | RuntimeException exception) {
             throw TemporaryCheckinException.storage("图片缩略图生成失败");
+        }
+    }
+
+    /** 除声明大小外同时限制实际读取，防止异常对象填满内存缓存。 */
+    private static final class SizeLimitedInputStream extends FilterInputStream {
+        private final long limit;
+        private long consumed;
+        SizeLimitedInputStream(InputStream input,long limit) { super(input);this.limit=limit; }
+        @Override public int read() throws IOException {
+            int value=in.read();
+            if(value>=0 && ++consumed>limit) throw new IOException("IMAGE_SOURCE_LIMIT");
+            return value;
+        }
+        @Override public int read(byte[] bytes,int offset,int length) throws IOException {
+            int count=in.read(bytes,offset,(int)Math.min(length,Math.max(1,limit-consumed+1)));
+            if(count>0 && (consumed+=count)>limit) throw new IOException("IMAGE_SOURCE_LIMIT");
+            return count;
+        }
+        @Override public long skip(long count) throws IOException {
+            long skipped=0;byte[] buffer=new byte[(int)Math.min(8192,Math.max(1,count))];
+            while(skipped<count) { int read=read(buffer,0,(int)Math.min(buffer.length,count-skipped));if(read<0)break;skipped+=read; }
+            return skipped;
         }
     }
 

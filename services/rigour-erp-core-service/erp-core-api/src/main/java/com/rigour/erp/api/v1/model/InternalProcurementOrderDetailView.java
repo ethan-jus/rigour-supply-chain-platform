@@ -4,10 +4,12 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 
-/** ERP 自研采购订单详情视图；不暴露订货宝来源字段。 */
+/** ERP 自研采购订单详情视图；外部来源字段用于区分同步投影和内部可操作单据。 */
 public record InternalProcurementOrderDetailView(
         Long id,
         String procurementNo,
+        String sourceSystemCode,
+        String sourceDocumentNo,
         Long supplierId,
         String supplierName,
         Long targetWarehouseId,

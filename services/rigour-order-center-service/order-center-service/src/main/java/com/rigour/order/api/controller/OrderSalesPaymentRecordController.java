@@ -8,6 +8,7 @@ import com.rigour.order.api.v1.model.SalesPaymentRecordSummaryView;
 import com.rigour.order.application.service.sales.OrderSalesPaymentRecordService;
 import com.rigour.shared.core.api.ApiResponse;
 import java.time.Instant;
+import java.util.UUID;
 import org.springframework.web.bind.annotation.RestController;
 
 /** Order 销售回款记录 HTTP 边界。 */
@@ -21,16 +22,22 @@ public final class OrderSalesPaymentRecordController implements OrderSalesPaymen
 
     @Override
     public ApiResponse<OrderPageView<SalesPaymentRecordSummaryView>> payments(
-            int begin, int step, String paymentNo, String salesOrderNo, String customerName,
+            int begin, int step, String paymentNo, String salesOrderNo, String sourceDocumentNo, String customerName,
             String collectorStaffCode, String paymentMethodCode,
             Instant paymentTimeFrom, Instant paymentTimeTo) {
-        return ApiResponse.success(service.payments(begin, step, paymentNo, salesOrderNo, customerName,
+        return ApiResponse.success(service.payments(begin, step, paymentNo, salesOrderNo, sourceDocumentNo, customerName,
                 collectorStaffCode, paymentMethodCode, paymentTimeFrom, paymentTimeTo));
     }
 
     @Override
     public ApiResponse<SalesPaymentRecordDetailView> payment(Long id) {
         return ApiResponse.success(service.payment(id));
+    }
+
+    @Override
+    public ApiResponse<SalesPaymentRecordDetailView> paymentBySource(
+            UUID connectorId, String sourceSystemCode, String sourceDocumentNo) {
+        return ApiResponse.success(service.paymentBySource(connectorId, sourceSystemCode, sourceDocumentNo));
     }
 
     @Override

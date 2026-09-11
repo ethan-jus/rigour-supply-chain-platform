@@ -1,12 +1,15 @@
 package com.rigour.merchant;
 
+import com.rigour.merchant.api.v1.model.ExternalCrmCustomerRowCommand;
 import com.rigour.merchant.application.port.out.CrmCustomerQueryStore;
+import com.rigour.merchant.application.port.out.CrmInternalCustomerStore;
 import com.rigour.merchant.application.port.out.CrmMasterDataStore;
 import com.rigour.merchant.application.port.out.CrmMasterDataStore.ImportResult;
 import com.rigour.merchant.application.port.out.CrmMasterDataStore.RunStatistics;
 import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient.SourceRecord;
 import com.rigour.merchant.domain.model.CrmMasterDataObjectType;
 import com.rigour.merchant.infrastructure.persistence.CrmUuidCodec;
+import com.rigour.shared.core.code.BusinessCodeGenerator;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -54,6 +57,9 @@ class MerchantCrmServiceApplicationTests {
 
     @Autowired
     private CrmCustomerQueryStore queryStore;
+
+    @Autowired
+    private CrmInternalCustomerStore internalCustomerStore;
 
     @Test
     void contextLoadsAndMigratesAllCrmTables() {
@@ -245,21 +251,77 @@ class MerchantCrmServiceApplicationTests {
         byte[] partyId = customerTargetId(tenantId, connectorId);
 
         assertThat(jdbcTemplate.queryForList("""
-                SELECT assignment_type,source_staff_id,iam_staff_code,iam_staff_name_snapshot,source_name_snapshot
+                SELECT assignment_type,source_staff_id,employee_code,employee_name_snapshot,source_name_snapshot
                   FROM crm_sales_assignment
                  WHERE tenant_id=? AND party_id=? AND status='ACTIVE'
                  ORDER BY assignment_type,source_staff_id
                 """, CrmUuidCodec.encode(tenantId), partyId))
                 .extracting(row -> row.get("assignment_type"), row -> row.get("source_staff_id"),
-                        row -> row.get("iam_staff_code"), row -> row.get("iam_staff_name_snapshot"),
+                        row -> row.get("employee_code"), row -> row.get("employee_name_snapshot"),
                         row -> row.get("source_name_snapshot"))
                 .containsExactly(
                         org.assertj.core.groups.Tuple.tuple("PRIMARY", "STAFF-PRIMARY", "RY202608220001", "张三", "张三"),
                         org.assertj.core.groups.Tuple.tuple("SECONDARY", "STAFF-SECONDARY", "RY202608220002", "李四", "李四"));
         assertThat(queryStore.customer(tenantId, CrmUuidCodec.decode(partyId)).salesAssignments())
                 .extracting(assignment -> assignment.assignmentType() + ":"
-                        + assignment.staffCode() + ":" + assignment.staffName())
+                        + assignment.employeeCode() + ":" + assignment.employeeName())
                 .containsExactly("PRIMARY:RY202608220001:张三", "SECONDARY:RY202608220002:李四");
+    }
+
+    @Test
+    void syncExternalStoreRowCreatesCustomerTypeProfileAndShippingAddress() {
+        UUID tenantId = UUID.randomUUID();
+        UUID actorId = UUID.randomUUID();
+        Instant sourceCreatedAt = Instant.parse("2026-10-28T02:00:00Z");
+        ExternalCrmCustomerRowCommand row = new ExternalCrmCustomerRowCommand(
+                null, "FEISHU_STORE", "SP1909", "SP1909", "BF台球俱乐部",
+                "樊明亚", "17608432425", "🏪门店信息库", "商业球房",
+                null, "长沙", "芙蓉区万家丽中路一段3号建安新商汇",
+                null, "樊明亚", null, "营业", sourceCreatedAt, sourceCreatedAt,
+                "hash-feishu-store-1", "{\"门店属性\":\"商业球房\"}");
+
+        var created = internalCustomerStore.syncExternalCustomers(
+                tenantId.toString(), "FEISHU", List.of(row), actorId.toString(), new BusinessCodeGenerator());
+
+        assertThat(created.created()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT customer_code FROM crm_customer
+                 WHERE tenant_id=? AND source_system_code='FEISHU'
+                   AND source_tenant_key='FEISHU_STORE' AND source_customer_id='SP1909'
+                """, String.class, tenantId.toString())).startsWith("CUS20261028");
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM crm_customer_type
+                 WHERE tenant_id=? AND type_name='商业球房' AND record_origin='FEISHU' AND deleted=0
+                """, Integer.class, CrmUuidCodec.encode(tenantId))).isEqualTo(1);
+        byte[] partyId = jdbcTemplate.queryForObject("""
+                SELECT party_id FROM crm_customer
+                 WHERE tenant_id=? AND source_system_code='FEISHU'
+                   AND source_tenant_key='FEISHU_STORE' AND source_customer_id='SP1909'
+                """, byte[].class, tenantId.toString());
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                  FROM crm_customer_profile cp
+                  JOIN crm_customer_type ct ON ct.tenant_id=cp.tenant_id AND ct.id=cp.customer_type_id
+                 WHERE cp.tenant_id=? AND cp.party_id=? AND ct.type_name='商业球房'
+                   AND cp.city_text='长沙' AND cp.deleted=0
+                """, Integer.class, CrmUuidCodec.encode(tenantId), partyId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                  FROM crm_address a
+                  JOIN crm_contact c ON c.tenant_id=a.tenant_id AND c.id=a.contact_id
+                 WHERE a.tenant_id=? AND a.party_id=? AND a.address_type='SHIPPING'
+                   AND a.record_origin='FEISHU' AND a.full_address='芙蓉区万家丽中路一段3号建安新商汇'
+                   AND c.phone='17608432425' AND a.deleted=0
+                """, Integer.class, CrmUuidCodec.encode(tenantId), partyId)).isEqualTo(1);
+
+        var unchanged = internalCustomerStore.syncExternalCustomers(
+                tenantId.toString(), "FEISHU", List.of(row), actorId.toString(), new BusinessCodeGenerator());
+
+        assertThat(unchanged.unchanged()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM crm_address
+                 WHERE tenant_id=? AND party_id=? AND address_type='SHIPPING' AND record_origin='FEISHU'
+                """, Integer.class, CrmUuidCodec.encode(tenantId), partyId)).isEqualTo(1);
     }
 
     @Test
@@ -341,13 +403,52 @@ class MerchantCrmServiceApplicationTests {
 
         UUID absentRun1 = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.ADDRESS);
         finish(tenantId, connectorId, absentRun1, CrmMasterDataObjectType.ADDRESS,
-                new ImportResult(0, 0, 0, 0, 0));
+                new ImportResult(0, 0, 0, 0, 0, 0));
         assertThat(sourcePresence(tenantId, connectorId)).isEqualTo("ABSENT_CANDIDATE");
 
         UUID absentRun2 = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.ADDRESS);
         finish(tenantId, connectorId, absentRun2, CrmMasterDataObjectType.ADDRESS,
-                new ImportResult(0, 0, 0, 0, 0));
+                new ImportResult(0, 0, 0, 0, 0, 0));
         assertThat(sourcePresence(tenantId, connectorId)).isEqualTo("ABSENT");
+    }
+
+    @Test
+    void batchImportsDuplicateAddressWithPrefetchedProjectionSnapshot() {
+        UUID tenantId = UUID.randomUUID();
+        UUID connectorId = UUID.randomUUID();
+        UUID actorId = UUID.randomUUID();
+
+        UUID customerRun = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.CUSTOMER);
+        ImportResult customer = store.importRecord(tenantId, connectorId, customerRun,
+                CrmMasterDataObjectType.CUSTOMER, customerRecord("地址所属客户"));
+        finish(tenantId, connectorId, customerRun, CrmMasterDataObjectType.CUSTOMER, customer);
+
+        SourceRecord address = addressRecord("ADDR-GUID-2", "ADDR-2");
+        UUID firstRun = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.ADDRESS);
+        ImportResult created = store.importRecords(tenantId, connectorId, firstRun,
+                CrmMasterDataObjectType.ADDRESS, List.of(address)).get(0);
+        finish(tenantId, connectorId, firstRun, CrmMasterDataObjectType.ADDRESS, created);
+        byte[] addressId = jdbcTemplate.queryForObject("""
+                SELECT target_id FROM crm_source_binding
+                 WHERE tenant_id=? AND connector_id=? AND source_object_type='ADDRESS'
+                   AND source_object_id='ADDR-GUID-2'
+                """, byte[].class, CrmUuidCodec.encode(tenantId), CrmUuidCodec.encode(connectorId));
+
+        UUID duplicateRun = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.ADDRESS);
+        ImportResult duplicate = store.importRecords(tenantId, connectorId, duplicateRun,
+                CrmMasterDataObjectType.ADDRESS, List.of(address)).get(0);
+        finish(tenantId, connectorId, duplicateRun, CrmMasterDataObjectType.ADDRESS, duplicate);
+
+        assertThat(created.created()).isEqualTo(1);
+        assertThat(duplicate.duplicates()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT version FROM crm_address WHERE tenant_id=? AND id=?
+                """, Long.class, CrmUuidCodec.encode(tenantId), addressId)).isZero();
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM crm_contact c
+                  JOIN crm_address a ON a.tenant_id=c.tenant_id AND a.contact_id=c.id
+                 WHERE a.tenant_id=? AND a.id=?
+                """, Integer.class, CrmUuidCodec.encode(tenantId), addressId)).isEqualTo(1);
     }
 
     private UUID start(UUID tenantId, UUID connectorId, UUID actorId,
@@ -358,7 +459,7 @@ class MerchantCrmServiceApplicationTests {
     private void finish(UUID tenantId, UUID connectorId, UUID runId,
                         CrmMasterDataObjectType type, ImportResult result) {
         long fetched = result.created() + result.changed() + result.repaired()
-                + result.duplicates() + result.rejected();
+                + result.duplicates() + result.rejected() + result.unmapped();
         store.completeRun(tenantId, connectorId, runId, type,
                 new RunStatistics(fetched, result.created(), result.changed(), result.repaired(),
                         result.duplicates(), 0, result.rejected(), 1), true);
@@ -419,11 +520,21 @@ class MerchantCrmServiceApplicationTests {
         Map<String, Object> fields = new LinkedHashMap<>(base.sourceFields());
         fields.put("staffID", "STAFF-PRIMARY,STAFF-SECONDARY");
         fields.put("staffName", "张三,李四");
-        fields.put("_iamStaffBySourceId", Map.of(
-                "STAFF-PRIMARY", Map.of("staffCode", "RY202608220001", "staffName", "张三"),
-                "STAFF-SECONDARY", Map.of("staffCode", "RY202608220002", "staffName", "李四")));
+        fields.put("_employeeBySourceId", Map.of(
+                "STAFF-PRIMARY", Map.of("employeeCode", "RY202608220001", "employeeName", "张三"),
+                "STAFF-SECONDARY", Map.of("employeeCode", "RY202608220002", "employeeName", "李四")));
         return new SourceRecord(base.sourceId(), base.sourceCode(), base.sourceName(), base.sourceStatus(),
                 base.sourceCreatedAt(), base.sourceUpdatedAt(), fields);
+    }
+
+    private static SourceRecord addressRecord(String sourceId, String addressId) {
+        return new SourceRecord(sourceId, addressId, "上海仓", "T", null,
+                Instant.parse("2026-08-01T00:30:00Z"), mapOf(
+                "addressId", addressId, "addressGuid", sourceId,
+                "clientGuid", "CLIENT-GUID-1", "clientNum", "C-001",
+                "consignee", "上海仓", "contact", "张三", "phone", "13800000000",
+                "address", "上海市浦东新区", "addressDetail", "世纪大道1号",
+                "isDefault", "T"));
     }
 
     private static Map<String, Object> mapOf(Object... values) {

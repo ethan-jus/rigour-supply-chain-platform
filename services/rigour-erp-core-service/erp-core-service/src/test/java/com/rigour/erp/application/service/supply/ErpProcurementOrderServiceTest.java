@@ -166,7 +166,7 @@ class ErpProcurementOrderServiceTest {
 
     private static InternalProcurementOrderDetailView detail(
             Long id, String procurementNo, String statusCode, int revision) {
-        return new InternalProcurementOrderDetailView(id, procurementNo, 1L, "供应商一",
+        return new InternalProcurementOrderDetailView(id, procurementNo, null, null, 1L, "供应商一",
                 2L, "默认仓", statusCode, ETA, BigDecimal.ONE, BigDecimal.TEN,
                 List.of(new InternalProcurementOrderLineView(1L, 1, 10L, 11L, "PRD-1", "SKU-1",
                         "咖啡豆", "BOX", BigDecimal.ONE, BigDecimal.TEN, BigDecimal.TEN,

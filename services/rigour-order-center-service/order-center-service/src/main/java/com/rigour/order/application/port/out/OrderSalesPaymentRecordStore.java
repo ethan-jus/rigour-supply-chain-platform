@@ -7,6 +7,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 /** Order 销售回款记录持久化端口；只操作自研回款业务表。 */
 public interface OrderSalesPaymentRecordStore {
@@ -14,6 +15,9 @@ public interface OrderSalesPaymentRecordStore {
             String tenantId, int begin, int step, SalesPaymentSearchCriteria criteria);
 
     Optional<SalesPaymentRecordDetailView> payment(String tenantId, Long id);
+
+    Optional<SalesPaymentRecordDetailView> paymentBySource(
+            String tenantId, UUID connectorId, String sourceSystemCode, String sourceDocumentNo);
 
     boolean existsByNo(String tenantId, String paymentNo);
 
@@ -28,6 +32,7 @@ public interface OrderSalesPaymentRecordStore {
     record SalesPaymentSearchCriteria(
             String paymentNo,
             String salesOrderNo,
+            String sourceDocumentNo,
             String customerName,
             String collectorStaffCode,
             String paymentMethodCode,
@@ -36,6 +41,9 @@ public interface OrderSalesPaymentRecordStore {
     }
 
     record SalesPaymentWrite(
+            UUID connectorId,
+            String sourceSystemCode,
+            String sourceDocumentNo,
             Long orderId,
             String salesOrderNoSnapshot,
             Long customerId,
@@ -51,6 +59,26 @@ public interface OrderSalesPaymentRecordStore {
             Integer revision) {
         public SalesPaymentWrite {
             voucherKeys = voucherKeys == null ? List.of() : List.copyOf(voucherKeys);
+        }
+
+        public SalesPaymentWrite(
+                Long orderId,
+                String salesOrderNoSnapshot,
+                Long customerId,
+                String customerCodeSnapshot,
+                String customerNameSnapshot,
+                String collectorStaffCode,
+                String collectorNameSnapshot,
+                Instant paymentTime,
+                String paymentMethodCode,
+                BigDecimal paidAmount,
+                List<String> voucherKeys,
+                String remark,
+                Integer revision) {
+            this(null, null, null, orderId, salesOrderNoSnapshot, customerId,
+                    customerCodeSnapshot, customerNameSnapshot, collectorStaffCode,
+                    collectorNameSnapshot, paymentTime, paymentMethodCode, paidAmount,
+                    voucherKeys, remark, revision);
         }
     }
 }

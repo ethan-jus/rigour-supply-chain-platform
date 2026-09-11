@@ -8,6 +8,8 @@ import java.util.List;
 public record InternalStockOutOrderDetailView(
         Long id,
         String stockOutNo,
+        String sourceSystemCode,
+        String sourceDocumentNo,
         String stockOutTypeCode,
         Long warehouseId,
         String warehouseName,

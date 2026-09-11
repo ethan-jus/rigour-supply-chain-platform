@@ -9,9 +9,12 @@ import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
 import com.rigour.integration.api.v1.model.DhbConnectionTestResult;
 import com.rigour.integration.api.v1.model.DhbExternalObjectMappingPageView;
+import com.rigour.integration.api.v1.model.DhbManualResolutionCommand;
+import com.rigour.integration.api.v1.model.DhbManualResolutionView;
 import com.rigour.integration.api.v1.model.DhbSyncExceptionView;
 import com.rigour.integration.api.v1.model.DhbSyncFieldDescriptionView;
 import com.rigour.integration.api.v1.model.DhbSyncLogDetailView;
+import com.rigour.integration.api.v1.model.DhbSyncOpenIssueGroupView;
 import com.rigour.integration.api.v1.model.DhbSyncReconciliationCaseView;
 import com.rigour.integration.api.v1.model.DhbSyncRunAuditView;
 import java.util.List;
@@ -108,4 +111,20 @@ public interface DhbIntegrationApi {
             @RequestParam(name = "status", required = false) String status,
             @RequestParam(name = "severity", required = false) String severity,
             @RequestParam(name = "limit", defaultValue = "100") int limit);
+
+    @GetMapping(SYNC_CENTER_PATH + "/open-issues")
+    List<DhbSyncOpenIssueGroupView> openIssues(
+            @RequestParam(name = "limit", defaultValue = "500") int limit);
+
+    @GetMapping(SYNC_CENTER_PATH + "/manual-resolutions")
+    List<DhbManualResolutionView> manualResolutions(
+            @RequestParam(name = "resolutionType", required = false) String resolutionType,
+            @RequestParam(name = "sourceObjectType", required = false) String sourceObjectType,
+            @RequestParam(name = "sourceId", required = false) String sourceId,
+            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "limit", defaultValue = "100") int limit);
+
+    @PostMapping(SYNC_CENTER_PATH + "/manual-resolutions")
+    DhbManualResolutionView createManualResolution(
+            @RequestBody DhbManualResolutionCommand command);
 }

@@ -56,10 +56,16 @@ public class MasterDataSyncRunEntity {
     public LocalDateTime startedAt;
     /** 批次结束时间，UTC；运行中为空。 */
     public LocalDateTime finishedAt;
+    /** 乐观锁版本。 */
+    public Integer revision;
     /** 触发同步的用户或服务 UUID。 */
     public String createdBy;
     /** 批次记录创建时间，UTC。 */
-    public LocalDateTime createdAt;
+    public LocalDateTime createdTime;
+    /** 更新人。 */
+    public String updatedBy;
     /** 批次记录最近更新时间，UTC。 */
-    public LocalDateTime updatedAt;
+    public LocalDateTime updatedTime;
+    /** 删除标识：0未删除，1已删除。 */
+    public Integer deleted;
 }

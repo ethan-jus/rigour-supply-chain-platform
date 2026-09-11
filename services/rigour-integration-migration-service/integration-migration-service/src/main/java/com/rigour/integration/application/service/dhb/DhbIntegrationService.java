@@ -104,20 +104,32 @@ import com.rigour.integration.api.v1.model.DhbApiModels.WaitShipsView;
 import com.rigour.integration.api.v1.model.DhbApiModels.WaitStockView;
 import com.rigour.integration.api.v1.model.DhbConnectionTestResult;
 import com.rigour.integration.api.v1.model.DhbExternalObjectMappingPageView;
+import com.rigour.integration.api.v1.model.DhbManualResolutionCommand;
+import com.rigour.integration.api.v1.model.DhbManualResolutionView;
 import com.rigour.integration.api.v1.model.DhbSyncExceptionView;
 import com.rigour.integration.api.v1.model.DhbSyncFieldDescriptionView;
 import com.rigour.integration.api.v1.model.DhbSyncLogDetailView;
+import com.rigour.integration.api.v1.model.DhbSyncOpenIssueGroupView;
+import com.rigour.integration.api.v1.model.DhbSyncOpenIssueItemView;
 import com.rigour.integration.api.v1.model.DhbSyncReconciliationCaseView;
 import com.rigour.integration.api.v1.model.DhbSyncRunAuditView;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import tools.jackson.databind.ObjectMapper;
 
 /** 订货宝数据同步用例；租户和权限只取Gateway签名上下文，不接受客户端传入。 */
 public final class DhbIntegrationService {
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     private static final List<DhbSyncFieldDescriptionView> SYNC_CENTER_FIELDS = List.of(
             field("MAPPING", "sourceObjectType", "外部对象类型",
                     "订货宝来源对象分类，用于区分商品、客户、销售订单、采购单和字典等同步对象。", "PRODUCT", false),
@@ -261,6 +273,7 @@ public final class DhbIntegrationService {
                 .toList();
         String mainImageKey = images.stream().findFirst().map(ProductImageView::objectKey).orElse(null);
         return new ProductView(item.sourceId(), item.code(), item.name(), item.putaway(),
+                        item.sourceLifecycle(),
                         item.barcode(), item.unit(), item.categorySourceId(), item.brandSourceId(),
                         item.model(), item.subtitle(), item.keywords(), item.allocation(),
                         mainImageKey, item.multiId(), item.orderPrice(), item.marketPrice(),
@@ -529,19 +542,16 @@ public final class DhbIntegrationService {
     }
 
     /**
-     * 获取订单明细。订货宝文档说明该接口可能标记订单已获取/审核，因此必须具备写权限，
-     * 且调用方必须显式传入两个副作用开关。
+     * 获取订单明细。订货宝文档中的自动下载标记和自动审核开关在本系统中强制关闭，
+     * 历史请求体仅为兼容旧调用保留，不再触发第三方状态变更。
      */
     public OrderContentView orderContent(UUID connectorId, String orderNumber,
                                          OrderContentCommand command) {
-        CallerIdentity caller = requireWriteOrServiceCaller();
+        CallerIdentity caller = requireReadCaller();
         if (orderNumber == null || orderNumber.isBlank()) {
             throw new IllegalArgumentException("orderNumber is required");
         }
-        boolean autoMarkDownloaded = command != null && Boolean.TRUE.equals(command.autoMarkDownloaded());
-        boolean autoAudit = command != null && Boolean.TRUE.equals(command.autoAudit());
-        OrderDetail detail = client.getOrderContent(connector(caller, connectorId), orderNumber,
-                autoMarkDownloaded, autoAudit);
+        OrderDetail detail = client.getOrderContent(connector(caller, connectorId), orderNumber);
         store.persistRawLanding(caller.tenantId(), connectorId, "ORDER_DETAIL",
                 firstNonBlank(detail.orderNumber(), orderNumber), null, detail.attributes());
         return new OrderContentView(detail.orderNumber(), detail.status(), detail.amount(), detail.attributes());
@@ -805,6 +815,156 @@ public final class DhbIntegrationService {
         return store.syncReconciliationCases(caller.tenantId(), status, severity, limit(limit, 500));
     }
 
+    public List<DhbSyncOpenIssueGroupView> openIssues(int limit) {
+        CallerIdentity caller = requireReadCaller();
+        int cappedLimit = limit(limit, 500);
+        List<DhbSyncExceptionView> exceptions = store.syncExceptions(caller.tenantId(), "OPEN", cappedLimit);
+        Map<IssueSourceKey, DhbSyncReconciliationCaseView> reconciliations =
+                latestOpenErrorReconciliations(caller.tenantId(), cappedLimit);
+        Map<UUID, DhbSyncRunAuditView> runsById = latestRunsById(caller.tenantId(), cappedLimit);
+        Map<IssueGroupKey, IssueGroupAccumulator> groups = new LinkedHashMap<>();
+        for (DhbSyncExceptionView exception : exceptions) {
+            IssueSourceKey sourceKey = new IssueSourceKey(
+                    exception.sourceObjectType(), exception.sourceId());
+            DhbSyncReconciliationCaseView reconciliation = reconciliations.get(sourceKey);
+            List<String> candidateSourceIds = candidateReceipts(
+                    reconciliation == null ? null : reconciliation.actualValueJson());
+            OpenIssueClassification classification = classifyOpenIssue(
+                    exception.sourceObjectType(), exception.lastErrorCode(), candidateSourceIds);
+            IssueGroupKey groupKey = new IssueGroupKey(classification.category(),
+                    exception.sourceObjectType(), exception.lastErrorCode());
+            IssueGroupAccumulator group = groups.computeIfAbsent(groupKey,
+                    ignored -> new IssueGroupAccumulator(classification, exception));
+            group.add(exception, reconciliation, runsById.get(exception.runId()), candidateSourceIds);
+        }
+        return groups.values().stream()
+                .map(IssueGroupAccumulator::view)
+                .sorted(Comparator
+                        .comparingInt((DhbSyncOpenIssueGroupView group) -> actionPriority(group.actionType()))
+                        .thenComparing(DhbSyncOpenIssueGroupView::sourceObjectType)
+                        .thenComparing(DhbSyncOpenIssueGroupView::errorCode,
+                                Comparator.nullsLast(String::compareTo)))
+                .toList();
+    }
+
+    public List<DhbManualResolutionView> manualResolutions(
+            String resolutionType, String sourceObjectType, String sourceId, String status, int limit) {
+        CallerIdentity caller = requireReadCaller();
+        return store.manualResolutions(caller.tenantId(), resolutionType, sourceObjectType,
+                sourceId, status, limit(limit, 500));
+    }
+
+    public DhbManualResolutionView createManualResolution(DhbManualResolutionCommand command) {
+        CallerIdentity caller = requireWriteCaller();
+        return store.createManualResolution(caller.tenantId(), caller.userId(), command);
+    }
+
+    private Map<IssueSourceKey, DhbSyncReconciliationCaseView> latestOpenErrorReconciliations(
+            UUID tenantId, int limit) {
+        Map<IssueSourceKey, DhbSyncReconciliationCaseView> result = new LinkedHashMap<>();
+        for (DhbSyncReconciliationCaseView row
+                : store.syncReconciliationCases(tenantId, "OPEN", "ERROR", limit)) {
+            IssueSourceKey key = new IssueSourceKey(row.sourceObjectType(), row.businessKey());
+            result.putIfAbsent(key, row);
+        }
+        return result;
+    }
+
+    private Map<UUID, DhbSyncRunAuditView> latestRunsById(UUID tenantId, int limit) {
+        Map<UUID, DhbSyncRunAuditView> result = new LinkedHashMap<>();
+        for (DhbSyncRunAuditView row : store.syncRuns(tenantId, null, null, limit)) {
+            result.putIfAbsent(row.runId(), row);
+        }
+        return result;
+    }
+
+    static List<String> candidateReceipts(String actualValueJson) {
+        if (actualValueJson == null || actualValueJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            Object value = OBJECT_MAPPER.readValue(actualValueJson, Map.class)
+                    .get("candidateReceipts");
+            if (!(value instanceof List<?> rows)) {
+                return List.of();
+            }
+            Set<String> unique = new LinkedHashSet<>();
+            for (Object row : rows) {
+                if (row == null) continue;
+                String text = row.toString().strip();
+                if (!text.isBlank()) unique.add(text);
+            }
+            return List.copyOf(unique);
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
+    static OpenIssueClassification classifyOpenIssue(
+            String sourceObjectType, String errorCode, List<String> candidateSourceIds) {
+        String normalizedCode = errorCode == null ? "" : errorCode;
+        int candidateCount = candidateSourceIds == null ? 0 : candidateSourceIds.size();
+        if ("DHB_TRANSFER_INBOUND_AMBIGUOUS".equals(normalizedCode)) {
+            if (candidateCount > 1) {
+                return new OpenIssueClassification("MANUAL_TRANSFER_INBOUND",
+                        "调拨入库真歧义", "MANUAL_RESOLUTION",
+                        "从候选入库单中人工确认正确单据，保存裁决后单对象重放。",
+                        true, true, "WAREHOUSING_RECEIPT");
+            }
+            return new OpenIssueClassification("REPLAY_READY",
+                    "调拨候选已可确定", "REPLAY_AFTER_CODE_FIX",
+                    "候选入库单已唯一，直接单对象重放收敛历史死信。",
+                    false, true, "WAREHOUSING_RECEIPT");
+        }
+        if (normalizedCode.contains("WAREHOUSE_MAPPING_MISSING")) {
+            return new OpenIssueClassification("MAPPING_REQUIRED",
+                    "仓库映射缺失", "FIX_MAPPING",
+                    "先补齐订货宝仓库到我方仓库映射，再按来源单号重放。",
+                    false, replaySupported(sourceObjectType), null);
+        }
+        if ("DHB_ORDER_BUSINESS_TIME_MISSING".equals(normalizedCode)) {
+            return new OpenIssueClassification("SOURCE_TIME_REQUIRED",
+                    "来源业务时间缺失", "FIX_SOURCE_TIME",
+                    "回查订货宝 Raw 或接口补稳定业务时间；不能用系统当前时间兜底。",
+                    false, replaySupported(sourceObjectType), null);
+        }
+        if ("DHB_ORDER_MAPPING_MISSING".equals(normalizedCode)
+                || "DHB_SHIPMENT_ORDER_MAPPING_MISSING".equals(normalizedCode)
+                || "DHB_RECEIPT_ORDER_MAPPING_PENDING".equals(normalizedCode)) {
+            return new OpenIssueClassification("ORDER_MAPPING_REQUIRED",
+                    "订单映射待恢复", "REPLAY_AFTER_MAPPING",
+                    "先恢复销售订单映射，再重放发货或回款以补齐业务关联。",
+                    false, replaySupported(sourceObjectType), null);
+        }
+        if ("DHB_SHIPMENT_ORDER_NO_MISSING".equals(normalizedCode)
+                || "DHB_SHIPMENT_PROJECTION_FAILED".equals(normalizedCode)) {
+            return new OpenIssueClassification("SOURCE_OR_CODE_REPAIR",
+                    "发货源字段或投影失败", "CODE_REPAIR",
+                    "逐条核对 Raw 和目标服务校验；确认稳定字段后修解析或领域校验再重放。",
+                    false, replaySupported(sourceObjectType), null);
+        }
+        return new OpenIssueClassification("UNKNOWN",
+                "待排查同步异常", "INVESTIGATE",
+                "先查看 Raw、对账差异和最近运行日志，确认归因后再处理。",
+                false, replaySupported(sourceObjectType), null);
+    }
+
+    private static boolean replaySupported(String sourceObjectType) {
+        return "ERP_STOCK_OUT".equals(sourceObjectType)
+                || "SALES_SHIPMENT".equals(sourceObjectType);
+    }
+
+    private static int actionPriority(String actionType) {
+        return switch (actionType == null ? "" : actionType) {
+            case "MANUAL_RESOLUTION" -> 10;
+            case "FIX_MAPPING" -> 20;
+            case "FIX_SOURCE_TIME" -> 30;
+            case "REPLAY_AFTER_MAPPING", "REPLAY_AFTER_CODE_FIX" -> 40;
+            case "CODE_REPAIR" -> 50;
+            default -> 90;
+        };
+    }
+
     private DhbClient.Connector connector(CallerIdentity caller, UUID connectorId) {
         ConnectorView connector = store.connector(caller.tenantId(), connectorId);
         return new DhbClient.Connector(caller.tenantId(), connector.id(), connector.baseUrl(),
@@ -878,6 +1038,70 @@ public final class DhbIntegrationService {
         if (value == null) return null;
         String text = String.valueOf(value).strip();
         return text.isEmpty() || "null".equalsIgnoreCase(text) ? null : text;
+    }
+
+    record OpenIssueClassification(
+            String category, String title, String actionType, String handlingAdvice,
+            boolean manualResolutionRequired, boolean replaySupported,
+            String candidateSourceObjectType) {
+    }
+
+    private record IssueSourceKey(String sourceObjectType, String sourceId) {
+    }
+
+    private record IssueGroupKey(String category, String sourceObjectType, String errorCode) {
+    }
+
+    private static final class IssueGroupAccumulator {
+        private final OpenIssueClassification classification;
+        private final String sourceObjectType;
+        private final String errorCode;
+        private final Map<String, DhbSyncOpenIssueItemView> items = new LinkedHashMap<>();
+        private long recordCount;
+
+        IssueGroupAccumulator(OpenIssueClassification classification, DhbSyncExceptionView first) {
+            this.classification = classification;
+            this.sourceObjectType = first.sourceObjectType();
+            this.errorCode = first.lastErrorCode();
+        }
+
+        void add(DhbSyncExceptionView exception, DhbSyncReconciliationCaseView reconciliation,
+                 DhbSyncRunAuditView run, List<String> candidateSourceIds) {
+            recordCount++;
+            String sourceId = exception.sourceId();
+            if (items.containsKey(sourceId)) {
+                return;
+            }
+            items.put(sourceId, new DhbSyncOpenIssueItemView(
+                    exception.sourceObjectType(),
+                    sourceId,
+                    run == null ? null : run.connectorId(),
+                    exception.runId(),
+                    exception.lastErrorCode(),
+                    exception.lastErrorMessage(),
+                    reconciliation == null ? null : reconciliation.checkType(),
+                    classification.candidateSourceObjectType(),
+                    candidateSourceIds,
+                    classification.manualResolutionRequired(),
+                    classification.replaySupported(),
+                    classification.handlingAdvice(),
+                    exception.updatedAt()));
+        }
+
+        DhbSyncOpenIssueGroupView view() {
+            List<DhbSyncOpenIssueItemView> sortedItems = new ArrayList<>(items.values());
+            sortedItems.sort((left, right) -> {
+                if (left.updatedAt() == null && right.updatedAt() == null) return 0;
+                if (left.updatedAt() == null) return 1;
+                if (right.updatedAt() == null) return -1;
+                return right.updatedAt().compareTo(left.updatedAt());
+            });
+            return new DhbSyncOpenIssueGroupView(
+                    classification.category(), sourceObjectType, errorCode,
+                    classification.title(), classification.actionType(),
+                    recordCount, sortedItems.size(), classification.handlingAdvice(),
+                    sortedItems);
+        }
     }
 
     private static CallerIdentity requireReadCaller() {

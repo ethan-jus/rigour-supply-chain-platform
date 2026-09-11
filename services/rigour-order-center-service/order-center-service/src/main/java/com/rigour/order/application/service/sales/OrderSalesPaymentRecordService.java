@@ -1,11 +1,13 @@
 package com.rigour.order.application.service.sales;
 
 import com.rigour.order.api.v1.model.OrderPageView;
+import com.rigour.order.api.v1.model.FundDocumentAttachmentView;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
 import com.rigour.order.api.v1.model.SalesPaymentRecordCommand;
 import com.rigour.order.api.v1.model.SalesPaymentRecordDetailView;
 import com.rigour.order.api.v1.model.SalesPaymentRecordSummaryView;
-import com.rigour.order.application.port.out.IamStaffDisplayClient;
+import com.rigour.order.application.port.out.FundAttachmentUrlResolver;
+import com.rigour.order.application.port.out.HrEmployeeDisplayClient;
 import com.rigour.order.application.port.out.OrderSalesOrderStore;
 import com.rigour.order.application.port.out.OrderSalesPaymentRecordStore;
 import com.rigour.order.application.port.out.OrderSalesPaymentRecordStore.SalesPaymentSearchCriteria;
@@ -20,6 +22,7 @@ import com.rigour.shared.core.exception.BusinessException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -32,6 +35,7 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 /** Order 销售回款记录用例；回款记录维护销售订单收款汇总。 */
@@ -44,32 +48,45 @@ public final class OrderSalesPaymentRecordService {
     private static final BigDecimal ZERO = BigDecimal.ZERO;
     private static final UUID SERVICE_PRINCIPAL_ID = UUID.nameUUIDFromBytes(
             "service:rigour-order-center-service".getBytes(StandardCharsets.UTF_8));
-    private static final Set<String> IAM_STAFF_READ_PERMISSIONS = Set.of("iam:staff:read");
+    private static final Set<String> HR_EMPLOYEE_READ_PERMISSIONS = Set.of("hr:employee:read");
 
     private final OrderSalesPaymentRecordStore store;
     private final OrderSalesOrderStore orderStore;
-    private final IamStaffDisplayClient iamStaffDisplayClient;
+    private final HrEmployeeDisplayClient hrEmployeeDisplayClient;
     private final BusinessCodeGenerator codeGenerator;
+    private final FundAttachmentUrlResolver fundAttachmentUrlResolver;
 
     @Autowired
     public OrderSalesPaymentRecordService(OrderSalesPaymentRecordStore store,
                                           OrderSalesOrderStore orderStore,
-                                          IamStaffDisplayClient iamStaffDisplayClient) {
-        this(store, orderStore, iamStaffDisplayClient, new BusinessCodeGenerator());
+                                          HrEmployeeDisplayClient hrEmployeeDisplayClient,
+                                          ObjectProvider<FundAttachmentUrlResolver> fundAttachmentUrlResolverProvider) {
+        this(store, orderStore, hrEmployeeDisplayClient, new BusinessCodeGenerator(),
+                fundAttachmentUrlResolverProvider.getIfAvailable(() -> FundAttachmentUrlResolver.NONE));
     }
 
     OrderSalesPaymentRecordService(OrderSalesPaymentRecordStore store,
                                    OrderSalesOrderStore orderStore,
-                                   IamStaffDisplayClient iamStaffDisplayClient,
+                                   HrEmployeeDisplayClient hrEmployeeDisplayClient,
                                    BusinessCodeGenerator codeGenerator) {
+        this(store, orderStore, hrEmployeeDisplayClient, codeGenerator, FundAttachmentUrlResolver.NONE);
+    }
+
+    OrderSalesPaymentRecordService(OrderSalesPaymentRecordStore store,
+                                   OrderSalesOrderStore orderStore,
+                                   HrEmployeeDisplayClient hrEmployeeDisplayClient,
+                                   BusinessCodeGenerator codeGenerator,
+                                   FundAttachmentUrlResolver fundAttachmentUrlResolver) {
         this.store = Objects.requireNonNull(store, "store");
         this.orderStore = Objects.requireNonNull(orderStore, "orderStore");
-        this.iamStaffDisplayClient = Objects.requireNonNull(iamStaffDisplayClient, "iamStaffDisplayClient");
+        this.hrEmployeeDisplayClient = Objects.requireNonNull(hrEmployeeDisplayClient, "hrEmployeeDisplayClient");
         this.codeGenerator = Objects.requireNonNull(codeGenerator, "codeGenerator");
+        this.fundAttachmentUrlResolver = Objects.requireNonNull(fundAttachmentUrlResolver,
+                "fundAttachmentUrlResolver");
     }
 
     public OrderPageView<SalesPaymentRecordSummaryView> payments(
-            int begin, int step, String paymentNo, String salesOrderNo, String customerName,
+            int begin, int step, String paymentNo, String salesOrderNo, String sourceDocumentNo, String customerName,
             String collectorStaffCode, String paymentMethodCode,
             Instant paymentTimeFrom, Instant paymentTimeTo) {
         CallerIdentity actor = actor(READ_PERMISSION);
@@ -80,6 +97,7 @@ public final class OrderSalesPaymentRecordService {
         SalesPaymentSearchCriteria criteria = new SalesPaymentSearchCriteria(
                 text(paymentNo, 50, "paymentNo"),
                 text(salesOrderNo, 50, "salesOrderNo"),
+                text(sourceDocumentNo, 128, "sourceDocumentNo"),
                 text(customerName, 200, "customerName"),
                 text(collectorStaffCode, 50, "collectorStaffCode"),
                 code(paymentMethodCode, "paymentMethodCode", false),
@@ -88,9 +106,10 @@ public final class OrderSalesPaymentRecordService {
         OrderPageView<SalesPaymentRecordSummaryView> result =
                 store.payments(tenantId, pageBegin(begin), pageStep(step), criteria);
         result = withStaffNames(actor, result);
-        log.debug("Order销售回款记录列表查询完成 tenantId={} paymentNo={} salesOrderNo={} customerName={} count={} total={}",
+        log.debug("Order销售回款记录列表查询完成 tenantId={} paymentNo={} salesOrderNo={} sourceDocumentNo={} customerName={} count={} total={}",
                 tenantId, value(criteria.paymentNo()), value(criteria.salesOrderNo()),
-                value(criteria.customerName()), result.items().size(), result.total());
+                value(criteria.sourceDocumentNo()), value(criteria.customerName()), result.items().size(),
+                result.total());
         return result;
     }
 
@@ -100,20 +119,40 @@ public final class OrderSalesPaymentRecordService {
         SalesPaymentRecordDetailView result = store.payment(tenantId, requireId(id, "销售回款记录ID无效"))
                 .orElseThrow(() -> notFound("销售回款记录不存在"));
         result = withStaffName(actor, result);
+        result = withResolvedAttachments(actor, result);
         log.debug("Order销售回款记录详情查询完成 tenantId={} paymentId={} paymentNo={}",
                 tenantId, result.id(), result.paymentNo());
+        return result;
+    }
+
+    public SalesPaymentRecordDetailView paymentBySource(
+            UUID connectorId, String sourceSystemCode, String sourceDocumentNo) {
+        CallerIdentity actor = actor(READ_PERMISSION);
+        String tenantId = actor.tenantId().toString();
+        String normalizedSourceSystem = sourceSystemCode(sourceSystemCode);
+        String normalizedSourceDocumentNo = text(sourceDocumentNo, 128, "sourceDocumentNo");
+        if (!hasText(normalizedSourceSystem)) throw badRequest("sourceSystemCode不能为空");
+        if (!hasText(normalizedSourceDocumentNo)) throw badRequest("sourceDocumentNo不能为空");
+        SalesPaymentRecordDetailView result = store.paymentBySource(
+                        tenantId, connectorId, normalizedSourceSystem, normalizedSourceDocumentNo)
+                .orElseThrow(() -> notFound("销售回款记录不存在"));
+        result = withStaffName(actor, result);
+        result = withResolvedAttachments(actor, result);
+        log.debug("Order销售回款记录来源查询完成 tenantId={} sourceSystemCode={} sourceDocumentNo={} paymentId={}",
+                tenantId, normalizedSourceSystem, normalizedSourceDocumentNo, result.id());
         return result;
     }
 
     public SalesPaymentRecordDetailView create(SalesPaymentRecordCommand command) {
         CallerIdentity actor = actor(WRITE_PERMISSION);
         String tenantId = actor.tenantId().toString();
-        SalesPaymentWrite normalized = normalize(tenantId, command, false);
+        SalesPaymentWrite normalized = normalize(tenantId, command, false, actor, null);
         String paymentNo = codeGenerator.generateUnique(OrderBusinessCodeRules.PAYMENT_RECORD,
-                candidate -> !store.existsByNo(tenantId, candidate));
+                normalized.paymentTime(), candidate -> !store.existsByNo(tenantId, candidate));
         SalesPaymentRecordDetailView created =
-                store.create(tenantId, paymentNo, normalized, actor.principalId().toString());
+                store.create(tenantId, paymentNo, normalized, OrderAuditActors.writeActor(actor));
         created = withStaffName(actor, created);
+        created = withResolvedAttachments(actor, created);
         log.info("Order销售回款记录创建完成 tenantId={} paymentId={} paymentNo={} salesOrderId={} paidAmount={} actorId={}",
                 tenantId, created.id(), created.paymentNo(), created.orderId(),
                 created.paidAmount(), actor.principalId());
@@ -123,10 +162,16 @@ public final class OrderSalesPaymentRecordService {
     public SalesPaymentRecordDetailView update(Long id, SalesPaymentRecordCommand command) {
         CallerIdentity actor = actor(WRITE_PERMISSION);
         String tenantId = actor.tenantId().toString();
-        SalesPaymentWrite normalized = normalize(tenantId, command, true);
+        Long paymentId = requireId(id, "销售回款记录ID无效");
+        SalesPaymentRecordDetailView existing = store.payment(tenantId, paymentId)
+                .orElseThrow(() -> notFound("销售回款记录不存在"));
+        requireExternalMutationAllowed(actor, existing.sourceSystemCode(), "销售回款记录");
+        SalesPaymentWrite normalized = normalize(tenantId, command, true, actor, existing.sourceSystemCode());
         SalesPaymentRecordDetailView updated = store.update(
-                tenantId, requireId(id, "销售回款记录ID无效"), normalized, actor.principalId().toString());
+                tenantId, paymentId, normalized,
+                OrderAuditActors.writeActor(actor));
         updated = withStaffName(actor, updated);
+        updated = withResolvedAttachments(actor, updated);
         log.info("Order销售回款记录修改完成 tenantId={} paymentId={} paymentNo={} revision={} actorId={}",
                 tenantId, updated.id(), updated.paymentNo(), updated.revision(), actor.principalId());
         return updated;
@@ -137,20 +182,37 @@ public final class OrderSalesPaymentRecordService {
         requireRevision(revision);
         String tenantId = actor.tenantId().toString();
         Long paymentId = requireId(id, "销售回款记录ID无效");
-        store.delete(tenantId, paymentId, revision, actor.principalId().toString());
+        SalesPaymentRecordDetailView existing = store.payment(tenantId, paymentId)
+                .orElseThrow(() -> notFound("销售回款记录不存在"));
+        requireExternalMutationAllowed(actor, existing.sourceSystemCode(), "销售回款记录");
+        store.delete(tenantId, paymentId, revision, OrderAuditActors.writeActor(actor));
         log.info("Order销售回款记录逻辑删除完成 tenantId={} paymentId={} revision={} actorId={}",
                 tenantId, paymentId, revision, actor.principalId());
     }
 
-    private SalesPaymentWrite normalize(String tenantId, SalesPaymentRecordCommand command, boolean update) {
+    private SalesPaymentWrite normalize(String tenantId, SalesPaymentRecordCommand command, boolean update,
+                                        CallerIdentity actor, String existingSourceSystemCode) {
         if (command == null) throw badRequest("销售回款记录参数不能为空");
         checkRevision(command.revision(), update);
+        String sourceSystemCode = sourceSystemCode(command.sourceSystemCode());
+        String sourceDocumentNo = text(command.sourceDocumentNo(), 128, "sourceDocumentNo");
+        requireSourceFieldsAllowed(actor, command.connectorId(), sourceSystemCode, sourceDocumentNo);
+        if (hasText(existingSourceSystemCode) && !hasText(sourceSystemCode)) {
+            throw badRequest("外部来源销售回款记录更新必须保留sourceSystemCode");
+        }
+        if (hasText(sourceSystemCode)) {
+            if (!hasText(sourceDocumentNo)) throw badRequest("外部来源销售回款记录sourceDocumentNo不能为空");
+            if (command.paymentTime() == null) throw badRequest("外部来源销售回款记录paymentTime必须使用来源交易时间");
+        }
         Long orderId = requireId(command.orderId(), "orderId无效");
         SalesOrderDetailView order = orderStore.salesOrder(tenantId, orderId)
                 .orElseThrow(() -> notFound("销售订单不存在"));
         BigDecimal paidAmount = money(command.paidAmount(), "paidAmount");
         String collectorStaffCode = text(command.collectorStaffCode(), 50, "collectorStaffCode");
         return new SalesPaymentWrite(
+                command.connectorId(),
+                sourceSystemCode,
+                sourceDocumentNo,
                 order.id(),
                 order.orderNo(),
                 order.customerId(),
@@ -195,12 +257,73 @@ public final class OrderSalesPaymentRecordService {
         String staffName = staffNames(actor, Set.of(detail.collectorStaffCode().strip()))
                 .get(detail.collectorStaffCode().strip());
         if (staffName == null || staffName.isBlank()) return detail;
-        return new SalesPaymentRecordDetailView(detail.id(), detail.paymentNo(), detail.orderId(),
+        return copySalesPaymentDetail(detail, staffName, detail.attachments());
+    }
+
+    private SalesPaymentRecordDetailView withResolvedAttachments(CallerIdentity actor,
+                                                                 SalesPaymentRecordDetailView detail) {
+        List<FundDocumentAttachmentView> attachments = attachmentViews(actor.tenantId().toString(), detail);
+        if (attachments.equals(detail.attachments())) return detail;
+        return copySalesPaymentDetail(detail, detail.collectorNameSnapshot(), attachments);
+    }
+
+    private SalesPaymentRecordDetailView copySalesPaymentDetail(
+            SalesPaymentRecordDetailView detail, String collectorName,
+            List<FundDocumentAttachmentView> attachments) {
+        return new SalesPaymentRecordDetailView(detail.id(), detail.paymentNo(), detail.connectorId(),
+                detail.sourceSystemCode(), detail.sourceDocumentNo(), detail.orderId(),
                 detail.salesOrderNoSnapshot(), detail.customerId(), detail.customerCodeSnapshot(),
-                detail.customerNameSnapshot(), detail.collectorStaffCode(), staffName, detail.paymentTime(),
-                detail.paymentMethodCode(), detail.paidAmount(), detail.voucherKeys(), detail.remark(),
-                detail.revision(), detail.createdBy(), detail.createdTime(), detail.updatedBy(),
-                detail.updatedTime());
+                detail.customerNameSnapshot(), detail.collectorStaffCode(), collectorName, detail.paymentTime(),
+                detail.paymentMethodCode(), detail.paidAmount(), detail.voucherKeys(), attachments,
+                detail.remark(), detail.revision(), detail.createdBy(), detail.createdTime(),
+                detail.updatedBy(), detail.updatedTime());
+    }
+
+    private List<FundDocumentAttachmentView> attachmentViews(String tenantId, SalesPaymentRecordDetailView detail) {
+        List<FundDocumentAttachmentView> result = new ArrayList<>();
+        Set<String> keys = new LinkedHashSet<>();
+        if (detail.voucherKeys() != null) keys.addAll(detail.voucherKeys());
+        for (String key : keys) {
+            String objectKey = plainAttachmentKey(key);
+            if (objectKey == null) continue;
+            result.add(new FundDocumentAttachmentView(
+                    objectKey, attachmentFileName(objectKey), temporaryFundAttachmentUrl(tenantId, objectKey)));
+        }
+        return List.copyOf(result);
+    }
+
+    private String temporaryFundAttachmentUrl(String tenantId, String objectKey) {
+        if (!objectKey.startsWith(tenantId + "/")) return null;
+        try {
+            return fundAttachmentUrlResolver.temporaryUrl(tenantId, objectKey);
+        } catch (RuntimeException exception) {
+            log.debug("销售回款凭证临时URL生成失败 tenantId={} objectKey={} errorType={}",
+                    tenantId, safeLogObjectKey(objectKey), exception.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    private static String plainAttachmentKey(String value) {
+        if (value == null || value.isBlank()) return null;
+        String normalized = value.strip();
+        if (normalized.startsWith("http://") || normalized.startsWith("https://")
+                || normalized.startsWith("file:")) {
+            return null;
+        }
+        return normalized;
+    }
+
+    private static String attachmentFileName(String objectKey) {
+        String value = objectKey == null ? "" : objectKey.strip();
+        int query = value.indexOf('?');
+        if (query >= 0) value = value.substring(0, query);
+        int slash = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+        return slash >= 0 && slash < value.length() - 1 ? value.substring(slash + 1) : value;
+    }
+
+    private static String safeLogObjectKey(String objectKey) {
+        if (objectKey == null) return "-";
+        return objectKey.length() <= 96 ? objectKey : objectKey.substring(0, 96) + "...";
     }
 
     private SalesPaymentRecordSummaryView withStaffName(
@@ -208,7 +331,8 @@ public final class OrderSalesPaymentRecordService {
         if (item.collectorStaffCode() == null || item.collectorStaffCode().isBlank()) return item;
         String staffName = staffNames.get(item.collectorStaffCode().strip());
         if (staffName == null || staffName.isBlank()) return item;
-        return new SalesPaymentRecordSummaryView(item.id(), item.paymentNo(), item.orderId(),
+        return new SalesPaymentRecordSummaryView(item.id(), item.paymentNo(), item.connectorId(),
+                item.sourceSystemCode(), item.sourceDocumentNo(), item.orderId(),
                 item.salesOrderNoSnapshot(), item.customerId(), item.customerCodeSnapshot(),
                 item.customerNameSnapshot(), item.collectorStaffCode(), staffName, item.paymentTime(),
                 item.paymentMethodCode(), item.paidAmount(), item.revision(), item.updatedTime());
@@ -226,19 +350,19 @@ public final class OrderSalesPaymentRecordService {
 
     private Map<String, String> staffNames(CallerIdentity actor, Set<String> staffCodes) {
         if (staffCodes == null || staffCodes.isEmpty()) return Map.of();
-        CallerIdentity serviceCaller = iamServiceCaller(actor.tenantId());
+        CallerIdentity serviceCaller = hrServiceCaller(actor.tenantId());
         try {
             Map<String, String> result = new LinkedHashMap<>();
-            for (IamStaffDisplayClient.StaffDisplay item : iamStaffDisplayClient.resolve(serviceCaller, staffCodes)) {
-                if (item == null || item.staffCode() == null || item.staffCode().isBlank()
-                        || item.staffName() == null || item.staffName().isBlank()) {
+            for (HrEmployeeDisplayClient.EmployeeDisplay item : hrEmployeeDisplayClient.resolve(serviceCaller, staffCodes)) {
+                if (item == null || item.employeeCode() == null || item.employeeCode().isBlank()
+                        || item.employeeName() == null || item.employeeName().isBlank()) {
                     continue;
                 }
-                result.put(item.staffCode().strip(), item.staffName().strip());
+                result.put(item.employeeCode().strip(), item.employeeName().strip());
             }
             return result;
         } catch (RuntimeException exception) {
-            log.warn("IAM人员展示名查询失败，Order返回回款人姓名快照 tenantId={} staffCount={} reason={}",
+            log.warn("HR员工展示名查询失败，Order返回回款人姓名快照 tenantId={} employeeCount={} reason={}",
                     actor.tenantId(), staffCodes.size(), exception.getMessage());
             return Map.of();
         }
@@ -300,6 +424,35 @@ public final class OrderSalesPaymentRecordService {
         return normalized == null ? null : normalized.toUpperCase(Locale.ROOT);
     }
 
+    private static String sourceSystemCode(String value) {
+        String normalized = upper(value);
+        if (normalized == null) return null;
+        if (normalized.length() > 64) throw badRequest("sourceSystemCode长度不能超过64");
+        return normalized;
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static void requireSourceFieldsAllowed(
+            CallerIdentity actor, UUID connectorId, String sourceSystemCode, String sourceDocumentNo) {
+        if (!isServiceActor(actor) && (connectorId != null || hasText(sourceSystemCode) || hasText(sourceDocumentNo))) {
+            throw new AuthorizationDeniedException("external-source-write");
+        }
+    }
+
+    private static void requireExternalMutationAllowed(
+            CallerIdentity actor, String sourceSystemCode, String documentName) {
+        if (hasText(sourceSystemCode) && !isServiceActor(actor)) {
+            throw new AuthorizationDeniedException(documentName + "-external-readonly");
+        }
+    }
+
+    private static boolean isServiceActor(CallerIdentity actor) {
+        return actor != null && "SERVICE".equals(actor.principalScope());
+    }
+
     private static String value(String value) {
         return value == null || value.isBlank() ? "-" : value;
     }
@@ -315,9 +468,9 @@ public final class OrderSalesPaymentRecordService {
         return caller;
     }
 
-    private static CallerIdentity iamServiceCaller(UUID tenantId) {
+    private static CallerIdentity hrServiceCaller(UUID tenantId) {
         return new CallerIdentity("SERVICE", SERVICE_PRINCIPAL_ID, tenantId, null, null,
-                UUID.randomUUID(), 0, 0, 0, Set.of("ORDER_CENTER"), IAM_STAFF_READ_PERMISSIONS);
+                UUID.randomUUID(), 0, 0, 0, Set.of("ORDER_CENTER"), HR_EMPLOYEE_READ_PERMISSIONS);
     }
 
     private static BusinessException badRequest(String message) {

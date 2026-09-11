@@ -8,6 +8,7 @@
     <name>sales-work-service</name>
     <description>Sales Work业务实现和启动应用</description>
     <dependencies>
+        <dependency><groupId>org.apache.poi</groupId><artifactId>poi-ooxml</artifactId><version>5.5.1</version></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>sales-work-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>rigour-platform-starter</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>rigour-shared-audit</artifactId></dependency>

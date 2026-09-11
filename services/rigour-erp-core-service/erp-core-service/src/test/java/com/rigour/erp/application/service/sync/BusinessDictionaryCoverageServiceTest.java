@@ -51,9 +51,15 @@ class BusinessDictionaryCoverageServiceTest {
     void supplySyncIncludesBusinessEnumsButNotBooleanFlags() {
         List<Observation> observed = new ArrayList<>();
         BusinessDictionaryCoverageService service = service(observed);
+        PurchaseOrder.Line orderLine = new PurchaseOrder.Line("L-1", "G-1", null,
+                "100001", "测试商品", null, null, null,
+                java.math.BigDecimal.ONE, java.math.BigDecimal.ONE,
+                "base_units", "颗", java.math.BigDecimal.ONE,
+                java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO,
+                null, Map.of(), "hash-line");
         PurchaseOrder order = mock(PurchaseOrder.class);
         when(order.downloaded()).thenReturn(true);
-        when(order.lines()).thenReturn(List.of());
+        when(order.lines()).thenReturn(List.of(orderLine));
         PurchaseReturn purchaseReturn = mock(PurchaseReturn.class);
         when(purchaseReturn.sourceDevice()).thenReturn("APP");
         when(purchaseReturn.downloaded()).thenReturn(false);
@@ -73,7 +79,8 @@ class BusinessDictionaryCoverageServiceTest {
 
         assertThat(observed).extracting(Observation::dictionaryCode, Observation::fieldCode,
                         Observation::sourceValue)
-                .contains(tuple("DHB_WAREHOUSE_STATUS", "warehouse.sourceStatus", "T"));
+                .contains(tuple("DHB_WAREHOUSE_STATUS", "warehouse.sourceStatus", "T"),
+                        tuple("DHB_UNIT", "purchaseOrderLine.unit", "颗"));
         assertThat(observed).extracting(Observation::dictionaryCode)
                 .doesNotContain("DHB_PURCHASE_RETURN_DEVICE", "DHB_WAREHOUSING_SPLIT_TYPE")
                 .noneMatch(code -> code.endsWith("_FLAG"));

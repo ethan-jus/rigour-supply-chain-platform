@@ -11,6 +11,10 @@ public class PartyRoleEntity {
     public String status;
     public LocalDateTime effectiveFrom;
     public LocalDateTime effectiveTo;
-    public LocalDateTime createdAt;
-    public LocalDateTime updatedAt;
+    public Integer revision;
+    public String createdBy;
+    public LocalDateTime createdTime;
+    public String updatedBy;
+    public LocalDateTime updatedTime;
+    public Integer deleted;
 }

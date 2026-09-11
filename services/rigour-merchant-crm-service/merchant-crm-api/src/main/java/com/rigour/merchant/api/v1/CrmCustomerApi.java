@@ -2,13 +2,18 @@ package com.rigour.merchant.api.v1;
 
 import com.rigour.merchant.api.v1.model.CustomerDetailView;
 import com.rigour.merchant.api.v1.model.CustomerSummaryView;
+import com.rigour.merchant.api.v1.model.CrmCustomerAreaCommand;
 import com.rigour.merchant.api.v1.model.DictionaryView;
 import com.rigour.merchant.api.v1.model.PageView;
 import com.rigour.merchant.api.v1.model.ShippingAddressSummaryView;
 import com.rigour.shared.core.api.ApiResponse;
 import java.util.UUID;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 
 /** CRM 本地客户查询契约；查询链路不实时访问订货宝。 */
@@ -42,4 +47,17 @@ public interface CrmCustomerApi {
             @RequestParam(defaultValue = "0") int begin,
             @RequestParam(defaultValue = "100") int step,
             @RequestParam(name = "q", required = false) String query);
+
+    @PostMapping(BASE_PATH + "/customer-areas")
+    ApiResponse<DictionaryView> createCustomerArea(@RequestBody CrmCustomerAreaCommand command);
+
+    @PutMapping(BASE_PATH + "/customer-areas/{id}")
+    ApiResponse<DictionaryView> updateCustomerArea(
+            @PathVariable("id") UUID id,
+            @RequestBody CrmCustomerAreaCommand command);
+
+    @DeleteMapping(BASE_PATH + "/customer-areas/{id}")
+    ApiResponse<Void> deleteCustomerArea(
+            @PathVariable("id") UUID id,
+            @RequestParam int revision);
 }
