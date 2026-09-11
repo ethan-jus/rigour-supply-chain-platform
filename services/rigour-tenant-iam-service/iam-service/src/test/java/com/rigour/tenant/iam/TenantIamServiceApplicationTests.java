@@ -841,7 +841,7 @@ class TenantIamServiceApplicationTests {
     }
 
     @Test
-    void rotatesHashedRefreshTokenAndRevokesSessionOnReplay() {
+    void rotatesHashedRefreshTokenWithoutInvalidatingSessionAndRevokesSessionOnReplay() {
         RegisteredClient client = portalClient();
         registeredClientRepository.save(client);
         SessionFixture session = insertActiveSession();
@@ -875,6 +875,9 @@ class TenantIamServiceApplicationTests {
         assertThat(loadedByRefresh).isNotNull();
         assertThat(loadedByRefresh.getRefreshToken().getToken().getTokenValue())
                 .isEqualTo(firstRawRefreshToken);
+        Long sessionVersionBeforeRotation = jdbcTemplate.queryForObject(
+                "SELECT version FROM iam_auth_session WHERE id = ?",
+                Long.class, uuidBytes(session.sessionId()));
 
         String secondRawRefreshToken = "second-refresh-token-that-must-not-be-stored";
         Instant rotatedAt = Instant.now();
@@ -886,6 +889,12 @@ class TenantIamServiceApplicationTests {
                         secondRawRefreshToken, rotatedAt, rotatedAt.plusSeconds(604800)))
                 .build();
         authorizationService.save(rotated);
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT version FROM iam_auth_session WHERE id = ?",
+                Long.class, uuidBytes(session.sessionId())))
+                .as("normal refresh rotation must not make its newly-issued access token stale")
+                .isEqualTo(sessionVersionBeforeRotation);
 
         assertThat(jdbcTemplate.queryForObject("""
                         SELECT COUNT(*) FROM iam_refresh_token old_token
