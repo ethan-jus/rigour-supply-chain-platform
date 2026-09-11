@@ -2726,6 +2726,92 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     @Test
+    void acceptsValidAudioFromKnownSourcesWhenOptionalClientMetadataIsMalformed() throws Exception {
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submission(
+                                UUID.randomUUID(), SUBMISSION_KEY, "可选录音元数据降级", true, location()))))
+                .andExpect(status().isOk()).andReturn();
+        UUID submissionId = UUID.fromString(objectMapper.readTree(
+                created.getResponse().getContentAsByteArray()).path("id").asText());
+
+        int sample = 0;
+        for (String source : List.of("BROWSER_RECORDER", "FILE_UPLOAD")) {
+            byte[] wav = pcmWav();
+            wav[wav.length - 1] = (byte) ++sample;
+            mockMvc.perform(multipart(
+                            "/sales-checkin/api/v1/submissions/{id}/media/audio/{segmentId}",
+                            submissionId, UUID.randomUUID())
+                            .file(new MockMultipartFile("file", "recording.wav", "audio/wav", wav))
+                            .param("captureSource", source)
+                            .param("clientStartedAt", "not-an-instant")
+                            .param("clientDurationMs", "not-a-number")
+                            .param("fileLastModifiedAt", "not-an-instant")
+                            .header("X-Submission-Key", SUBMISSION_KEY)
+                            .with(request -> { request.setMethod("PUT"); return request; }))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.sizeBytes").value(wav.length));
+        }
+        var manifest = objectMapper.readTree(jdbc.queryForObject("""
+                SELECT audio_segments_json FROM temp_sales_checkin_submission WHERE tenant_id=? AND id=?
+                """, String.class, bin(TENANT_ID), bin(submissionId)));
+        assertThat(manifest).hasSize(2);
+        for (var segment : manifest) {
+            assertThat(segment.path("clientStartedAt").isNull()).isTrue();
+            assertThat(segment.path("clientDurationMs").isNull()).isTrue();
+            assertThat(segment.path("fileLastModifiedAt").isNull()).isTrue();
+        }
+        assertThat(manifest.get(0).path("captureSource").asText()).isEqualTo("BROWSER_RECORDER");
+        assertThat(manifest.get(0).path("timingStatus").asText()).isEqualTo("MISSING");
+        assertThat(manifest.get(1).path("captureSource").asText()).isEqualTo("FILE_UPLOAD");
+        assertThat(manifest.get(1).path("timingStatus").asText()).isEqualTo("UNVERIFIED_FILE");
+        verify(fileStorage, times(2)).put(any(FileMetadata.class), any(InputStream.class));
+    }
+
+    @Test
+    void reportsAudioInputFailuresWithoutStoringRejectedFiles() throws Exception {
+        MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(submission(
+                                UUID.randomUUID(), SUBMISSION_KEY, "录音拒绝诊断", true, location()))))
+                .andExpect(status().isOk()).andReturn();
+        UUID submissionId = UUID.fromString(objectMapper.readTree(
+                created.getResponse().getContentAsByteArray()).path("id").asText());
+
+        uploadAudioSegment(submissionId, UUID.randomUUID(), new MockMultipartFile(
+                "file", "empty.wav", "audio/wav", new byte[0]))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("TEMP_CHECKIN_BAD_REQUEST"))
+                .andExpect(jsonPath("$.reason").value("EMPTY_FILE"));
+        uploadAudioSegment(submissionId, UUID.randomUUID(), new MockMultipartFile(
+                "file", "unreadable.wav", "audio/wav", pcmWav()) {
+                    @Override public InputStream getInputStream() throws java.io.IOException {
+                        throw new java.io.IOException("test-only-sensitive-storage-detail");
+                    }
+                })
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("READ_FAILED"))
+                .andExpect(jsonPath("$.message").value(
+                        "录音文件读取失败，请保留原文件并重新选择后上传；可先提交拜访"));
+        uploadAudioSegment(submissionId, UUID.randomUUID(), new MockMultipartFile(
+                "file", "unknown.wav", "audio/wav", "not audio".getBytes(StandardCharsets.US_ASCII)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("UNRECOGNIZED_FORMAT"));
+        uploadAudioSegment(submissionId, UUID.randomUUID(), new MockMultipartFile(
+                "file", "oversized.wav", "audio/wav", pcmWav()) {
+                    @Override public long getSize() { return checkinProperties.getMaxAudioBytes() + 1; }
+                })
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("FILE_TOO_LARGE"));
+        mockMvc.perform(multipart("/sales-checkin/api/v1/submissions/{id}/media/audio/{segmentId}",
+                        submissionId, UUID.randomUUID()).header("X-Submission-Key", SUBMISSION_KEY)
+                        .with(request -> { request.setMethod("PUT"); return request; }))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("EMPTY_FILE"));
+        verify(fileStorage, never()).put(any(FileMetadata.class), any(InputStream.class));
+    }
+
+    @Test
     void acceptsAudioAboveTheFormerTwentyFiveMegabyteCeiling() throws Exception {
         MvcResult created = mockMvc.perform(post("/sales-checkin/api/v1/submissions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -2770,13 +2856,15 @@ class TemporaryCheckinApiIntegrationTests {
                 "file", "voice.m4a", "audio/mp4",
                 selectedPhoto))
                 .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("IMAGE_FILE"))
                 .andExpect(jsonPath("$.message")
                         .value("所选文件是图片，不是录音；录音为选填，可删除后继续提交"));
 
         upload(submissionId, "audio", new MockMultipartFile(
                 "file", "voice.m4a", "audio/mp4", realVideoMp4()))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("录音格式不支持或文件内容损坏"));
+                .andExpect(jsonPath("$.reason").value("VIDEO_TRACK"))
+                .andExpect(jsonPath("$.message").value("所选文件含视频轨道，请选择纯录音文件；可先提交拜访"));
 
         upload(submissionId, "audio", new MockMultipartFile(
                 "file", "voice.m4a", "audio/mp4", new byte[0]))
@@ -3388,8 +3476,18 @@ class TemporaryCheckinApiIntegrationTests {
                 default -> java.util.Map.of(a,"Bravo",b,"Alpha",c,"Alpha");
             };
             for(String direction:List.of("asc","desc")) {
-                java.util.Comparator<UUID> comparator=java.util.Comparator.<UUID,String>comparing(values::get).thenComparing(UUID::toString);
+                java.util.Comparator<UUID> comparator=java.util.Comparator.<UUID,String>comparing(values::get);
+                if("salespersonName".equals(field)) {
+                    java.util.Map<UUID,String> people=java.util.Map.of(a,VISITOR_ID.toString(),b,SHENZHEN_SALESPERSON_ID.toString(),c,VISITOR_ID.toString());
+                    comparator=comparator.thenComparing(people::get);
+                }
                 if("desc".equals(direction)) comparator=comparator.reversed();
+                if(!"completedAt".equals(field)) {
+                    java.util.Map<UUID,Instant> times=java.util.Map.of(a,common.minusSeconds(10),b,common,c,common);
+                    comparator=comparator.thenComparing(times::get,java.util.Comparator.reverseOrder());
+                }
+                comparator=comparator.thenComparing(UUID::toString,"completedAt".equals(field)&&"asc".equals(direction)
+                        ?java.util.Comparator.naturalOrder():java.util.Comparator.reverseOrder());
                 List<String> expected=List.of(a,b,c).stream().sorted(comparator).map(UUID::toString).toList();
                 List<String> actual=new java.util.ArrayList<>();
                 for(int page=0;page<3;page++) {
@@ -4288,6 +4386,60 @@ class TemporaryCheckinApiIntegrationTests {
                 salesIdentityService.encodePersonalCode(code), bin(TENANT_ID), bin(person));
         return salesIdentityService.verify(new TemporaryCheckinModels.IdentityVerifyRequest(person, city, code),
                 new TemporaryCheckinRequestFacts("192.0.2.11", historyProxyMarker(), "History Integration Test", null, null));
+    }
+
+    @Test
+    void preservesSignedAddressForOldLowAccuracyAndUnknownTimeWithoutUpgradingLocationQuality() throws Exception {
+        var samples=List.of(
+                new LocationCommand(location().longitude(),location().latitude(),new BigDecimal("900"),Instant.now().minusSeconds(10),"低精度"),
+                new LocationCommand(location().longitude(),location().latitude(),new BigDecimal("8"),Instant.now().minusSeconds(7200),"旧样本"),
+                new LocationCommand(location().longitude(),location().latitude(),null,null,"时间精度未知"));
+        var expected=List.of("LOW_ACCURACY","STALE","TIME_UNKNOWN");
+        for (int index=0;index<samples.size();index++) {
+            LocationCommand sample=samples.get(index);
+            var response=mockMvc.perform(post("/sales-checkin/api/v1/locations/resolve")
+                            .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsBytes(resolveRequest("北京",VISITOR_ID,sample))))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.locationVerificationToken").isNotEmpty()).andReturn();
+            String token=objectMapper.readTree(response.getResponse().getContentAsByteArray()).path("locationVerificationToken").asText();
+            assertThat(token).startsWith("a1.");
+            UUID client=UUID.randomUUID();
+            var body=new CreateSubmissionRequest(client,SUBMISSION_KEY,"北京",VISITOR_ID,STORE_ID,
+                    "测试客户",null,"地址保存但保留定位质量",sample,false,TemporaryCheckinService.PRIVACY_NOTICE_VERSION,token);
+            mockMvc.perform(post("/sales-checkin/api/v1/submissions").contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsBytes(body))).andExpect(status().isOk());
+            var stored=jdbc.queryForMap("SELECT location_address,location_quality,location_verification_status,risk_flags_json,"
+                    +"address_source,address_conversion_version,address_resolved_at,longitude,latitude FROM temp_sales_checkin_submission WHERE tenant_id=? AND client_submission_id=?",
+                    bin(TENANT_ID),bin(client));
+            assertThat(stored.get("location_address")).isEqualTo("东城区龙潭路与夕照寺街交叉口东南60米");
+            assertThat(stored.get("location_quality")).isEqualTo(expected.get(index));
+            assertThat(stored.get("location_verification_status")).isEqualTo("UNVERIFIED");
+            assertThat(stored.get("risk_flags_json").toString()).contains("LOCATION_"+expected.get(index));
+            assertThat(stored.get("address_source")).isEqualTo("CAPTURE_SNAPSHOT");
+            assertThat(stored.get("address_conversion_version")).isEqualTo(TemporaryCheckinAddressRepository.CONVERSION_VERSION);
+            assertThat(stored.get("address_resolved_at")).isNotNull();
+            assertThat((BigDecimal)stored.get("longitude")).isEqualByComparingTo(sample.longitude());
+            assertThat((BigDecimal)stored.get("latitude")).isEqualByComparingTo(sample.latitude());
+        }
+    }
+
+    @Test
+    void cannotAttachSignedAddressToDifferentCoordinatesOrAnotherSalesperson() throws Exception {
+        var sample=new LocationCommand(location().longitude(),location().latitude(),null,null,"未知精度时间");
+        String token=locationVerificationTokenService.issueAddress(VISITOR_ID,"北京",sample.longitude(),sample.latitude(),null,null,resolvedLocation("北京"));
+        var changed=new LocationCommand(sample.longitude().add(new BigDecimal("0.01")),sample.latitude(),null,null,"另一坐标");
+        for (int index=0;index<2;index++) {
+            UUID client=UUID.randomUUID();
+            var body=new CreateSubmissionRequest(client,SUBMISSION_KEY,"北京",index==0 ? VISITOR_ID : CREATOR_ID,STORE_ID,
+                    "测试客户",null,"篡改地址绑定仍只保留原始事实",index==0 ? changed : sample,false,
+                    TemporaryCheckinService.PRIVACY_NOTICE_VERSION,token);
+            mockMvc.perform(post("/sales-checkin/api/v1/submissions").contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsBytes(body))).andExpect(status().isOk());
+            var stored=jdbc.queryForMap("SELECT location_address,geocode_status,address_source FROM temp_sales_checkin_submission WHERE tenant_id=? AND client_submission_id=?",
+                    bin(TENANT_ID),bin(client));
+            assertThat(stored.get("location_address")).isNull();
+            assertThat(stored.get("geocode_status")).isEqualTo("SKIPPED");
+            assertThat(stored.get("address_source")).isNull();
+        }
     }
 
     private static String historyProxyMarker() {

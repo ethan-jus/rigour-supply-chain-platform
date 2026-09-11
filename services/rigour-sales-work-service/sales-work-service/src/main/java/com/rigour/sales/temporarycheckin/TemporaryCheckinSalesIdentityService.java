@@ -58,14 +58,22 @@ class TemporaryCheckinSalesIdentityService {
     private final byte[] riskKey;
     private final byte[] proxyMarker;
     private final String dummyCredentialHash;
+    private final TemporaryCheckinIdentityEventRecorder identityEvents;
 
     TemporaryCheckinSalesIdentityService(
             TemporaryCheckinRepository repository,
             TemporaryCheckinProperties properties,
             Clock clock) {
+        this(repository,properties,clock,null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    TemporaryCheckinSalesIdentityService(TemporaryCheckinRepository repository,
+            TemporaryCheckinProperties properties,Clock clock,TemporaryCheckinIdentityEventRecorder identityEvents) {
         this.repository = repository;
         this.properties = properties;
         this.clock = clock;
+        this.identityEvents=identityEvents;
         this.tenantId = properties.requireTenantId();
         validateNumbers(properties);
         this.signingKey = configuredKey(properties.getIdentitySigningKeyBase64(),
@@ -108,8 +116,16 @@ class TemporaryCheckinSalesIdentityService {
         String identityToken = issueIdentityToken(
                 salesperson.id(), salesperson.credentialVersion(), deviceHash, now, expiresAt);
         SalesIdentityView view = identityView(salesperson, expiresAt, true);
-        return new IdentityVerification(view, deviceCookie(device), identityCookie(identityToken),
-                new AuthorizedRequest(salesperson, "PERSONAL_CODE", now, expiresAt, deviceHash, riskFacts));
+        AuthorizedRequest authorized=new AuthorizedRequest(salesperson,"PERSONAL_CODE",now,expiresAt,deviceHash,riskFacts);
+        IdentityVerification result=new IdentityVerification(view,deviceCookie(device),identityCookie(identityToken),authorized);
+        if(identityEvents!=null) {
+            try {identityEvents.record(authorized);}
+            catch(RuntimeException unavailable) {
+                org.slf4j.LoggerFactory.getLogger(TemporaryCheckinSalesIdentityService.class)
+                        .warn("成功身份验证的审计调度失败，验证仍正常返回；不记录请求内容");
+            }
+        }
+        return result;
     }
 
     SalesIdentityView current(TemporaryCheckinRequestFacts requestFacts) {

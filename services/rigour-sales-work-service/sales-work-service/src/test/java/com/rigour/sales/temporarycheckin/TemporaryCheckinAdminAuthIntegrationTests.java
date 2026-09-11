@@ -92,6 +92,18 @@ class TemporaryCheckinAdminAuthIntegrationTests {
     }
 
     @Test
+    void riskScriptLoadsWithoutSessionButItsApisRemainProtected() throws Exception {
+        var script = mockMvc.perform(get("/sales-checkin/admin/risk-admin.js?v=local-validation"))
+                .andExpect(status().isOk()).andReturn().getResponse();
+        assertThat(script.getContentType()).contains("javascript");
+        assertThat(script.getContentAsString()).contains("window.CheckinRiskAdmin =");
+        mockMvc.perform(get("/sales-checkin/admin/api/v1/risk/devices"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/sales-checkin/admin/risk-admin.js"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void bootstrapsUniquePasswordsThenRequiresChangeAndRotatesSessionOnLogout() throws Exception {
         JsonNode bootstrap = bootstrap();
         String globalTemporary = bootstrap.get("createdAccounts").get(0).get("temporaryPassword").asText();

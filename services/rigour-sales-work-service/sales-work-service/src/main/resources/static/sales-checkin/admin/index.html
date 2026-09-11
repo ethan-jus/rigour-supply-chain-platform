@@ -7,7 +7,7 @@
     <meta name="robots" content="noindex,nofollow,noarchive">
     <meta name="description" content="销售拜访临时采集数据管理与导出">
     <title>销售拜访数据管理</title>
-    <link id="admin-stylesheet" rel="stylesheet" href="/sales-checkin/admin/admin.css?v=20260908-admin-recovery-sort-multi-photo">
+    <link id="admin-stylesheet" rel="stylesheet" href="/sales-checkin/admin/admin.css?v=20260909-attendance-multisort">
 </head>
 <body>
 <div id="admin-resource-status" class="resource-status" role="status">
@@ -71,46 +71,14 @@
 
     <nav class="admin-tabs" role="tablist" aria-label="后台管理功能">
         <button id="records-tab" class="admin-tab is-active" type="button" role="tab"
-                aria-selected="true" aria-controls="records-panel" data-admin-view="records">拜访记录</button>
+                aria-selected="true" aria-controls="records-panel" data-admin-view="records">拜访复核</button>
+        <button id="devices-tab" class="admin-tab" type="button" role="tab" aria-selected="false" aria-controls="devices-panel" data-admin-view="devices" tabindex="-1">设备档案</button>
+        <button id="audio-groups-tab" class="admin-tab" type="button" role="tab" aria-selected="false" aria-controls="audio-groups-panel" data-admin-view="audio-groups" tabindex="-1">录音查重</button>
         <button id="salespersons-tab" class="admin-tab" type="button" role="tab"
                 aria-selected="false" aria-controls="salespersons-panel" data-admin-view="salespersons" hidden>销售目录</button>
     </nav>
 
-    <div id="records-panel" role="tabpanel" aria-labelledby="records-tab">
-
-    <section id="media-storage-card" class="storage-card" aria-labelledby="storage-heading" hidden>
-        <div class="storage-card__heading">
-            <div>
-                <p class="section-kicker">媒体管理</p>
-                <h2 id="storage-heading">私有 COS 存储概览</h2>
-            </div>
-            <p id="storage-scope-note">仅统计当前账号可见范围，不执行自动清理。</p>
-        </div>
-        <dl class="storage-metrics">
-            <div>
-                <dt>有效文件</dt>
-                <dd id="storage-active-files">--</dd>
-            </div>
-            <div>
-                <dt>总容量</dt>
-                <dd id="storage-total-bytes">--</dd>
-            </div>
-            <div>
-                <dt>图片</dt>
-                <dd id="storage-image-bytes">--</dd>
-            </div>
-            <div>
-                <dt>录音</dt>
-                <dd id="storage-audio-bytes">--</dd>
-            </div>
-            <div>
-                <dt>最早文件</dt>
-                <dd id="storage-oldest-created-at">--</dd>
-            </div>
-        </dl>
-    </section>
-
-    <section class="filter-card" aria-labelledby="filter-heading">
+    <section id="record-filters" class="filter-card" aria-labelledby="filter-heading">
         <div class="section-heading">
             <div>
                 <p class="section-kicker">筛选与导出</p>
@@ -202,6 +170,20 @@
                     <option value="MISSING_PHOTO">现场照片缺失</option>
                 </select>
             </label>
+            <div class="risk-filter-fields">
+                <label class="field"><span>风险级别</span><select id="filter-risk-level" name="riskLevel"><option value="">全部级别</option><option value="HIGH">高风险</option><option value="MEDIUM">中风险</option><option value="LOW">低风险</option><option value="NONE">未标记风险</option></select></label>
+                <label class="field"><span>设备关联</span><select id="filter-device-risk" name="deviceRisk"><option value="">全部浏览器标识</option><option value="SHARED">同设备异常（关联多销售）</option></select></label>
+                <label class="field"><span>录音关联</span><select id="filter-audio-risk" name="audioRisk"><option value="">全部录音</option><option value="DUPLICATE">相同录音文件</option><option value="CROSS_SALES">跨销售相同录音</option></select></label>
+                <label class="field"><span>包含线索状态（至少一组）</span><select id="filter-risk-review-status" name="riskReviewStatus"><option value="">全部线索状态</option><option value="PENDING">含待复核线索</option><option value="EXPLAINED">含共用已说明线索</option><option value="FLAGGED">含确认异常线索</option><option value="INCONCLUSIVE">含无法确认线索</option></select></label>
+                <label class="field"><span>设备 / 录音编号</span><input id="filter-risk-query" name="riskQuery" type="search" maxlength="128" placeholder="输入设备或录音编号"></label>
+                <details class="risk-flag-filter"><summary>提交时风险标记</summary><div>
+                    <label><input type="checkbox" name="riskFlags" value="DEVICE_MULTIPLE_SALES">同标识切换销售</label>
+                    <label><input type="checkbox" name="riskFlags" value="SALESPERSON_MULTIPLE_DEVICES">销售多标识</label>
+                    <label><input type="checkbox" name="riskFlags" value="SALESPERSON_IP_CHURN">IP频繁切换</label>
+                    <label><input type="checkbox" name="riskFlags" value="SHARED_IP_MULTIPLE_SALES">多人共享IP</label>
+                    <label><input type="checkbox" name="riskFlags" value="LOCATION_UNVERIFIED">定位未核验</label>
+                </div></details>
+            </div>
             <div class="filter-actions">
                 <button id="search-button" class="primary-button" type="submit">
                     查询数据
@@ -211,8 +193,44 @@
                 </a>
             </div>
         </form>
+        <div class="risk-quick-filters" role="group" aria-label="快速筛选风险线索"><span>快速关注</span><button type="button" data-risk-quick="device" aria-pressed="false">同设备异常</button><button type="button" data-risk-quick="high" aria-pressed="false">高风险</button><button type="button" data-risk-quick="audio" aria-pressed="false">相同录音</button><button type="button" data-risk-quick="cross" aria-pressed="false">跨销售录音</button><button type="button" data-risk-quick="pending" aria-pressed="false">含待复核线索</button><small>关联线索不等于人工确认异常，不拦截销售提交。</small></div>
         <p class="attendance-note">修改条件后点击“查询数据”，统计、明细与 Excel 使用同一组条件。</p>
     </section>
+
+    <div id="records-panel" role="tabpanel" aria-labelledby="records-tab">
+
+    <section id="media-storage-card" class="storage-card" aria-labelledby="storage-heading" hidden>
+        <div class="storage-card__heading">
+            <div>
+                <p class="section-kicker">媒体管理</p>
+                <h2 id="storage-heading">私有 COS 存储概览</h2>
+            </div>
+            <p id="storage-scope-note">仅统计当前账号可见范围，不执行自动清理。</p>
+        </div>
+        <dl class="storage-metrics">
+            <div>
+                <dt>有效文件</dt>
+                <dd id="storage-active-files">--</dd>
+            </div>
+            <div>
+                <dt>总容量</dt>
+                <dd id="storage-total-bytes">--</dd>
+            </div>
+            <div>
+                <dt>图片</dt>
+                <dd id="storage-image-bytes">--</dd>
+            </div>
+            <div>
+                <dt>录音</dt>
+                <dd id="storage-audio-bytes">--</dd>
+            </div>
+            <div>
+                <dt>最早文件</dt>
+                <dd id="storage-oldest-created-at">--</dd>
+            </div>
+        </dl>
+    </section>
+
 
     <section id="attendance-card" class="attendance-card" aria-labelledby="attendance-heading">
         <div class="section-heading">
@@ -228,7 +246,7 @@
         <p class="attendance-note">日期按北京时间统计。每日汇总仅包含已提交拜访；没有记录不等于旷工，不能替代排班或考勤判定。</p>
         <div id="attendance-table-wrap" class="table-wrap attendance-table-wrap" role="region" aria-label="每日销售打卡汇总，可横向滚动" tabindex="0" hidden>
             <table class="attendance-table">
-                <thead><tr><th scope="col" aria-sort="descending"><button type="button" class="sort-button" data-summary-sort-by="date">日期 <span data-summary-sort-indicator aria-hidden="true">↓</span></button></th><th scope="col" aria-sort="none"><button type="button" class="sort-button" data-summary-sort-by="city">城市 <span data-summary-sort-indicator aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button type="button" class="sort-button" data-summary-sort-by="salesperson">销售 <span data-summary-sort-indicator aria-hidden="true">↕</span></button></th><th scope="col">拜访次数</th><th scope="col">门店数</th><th scope="col">首次打卡</th><th scope="col">末次打卡</th><th scope="col">待复核</th><th scope="col">明细</th></tr></thead>
+                <thead><tr><th scope="col" aria-sort="descending"><button type="button" class="sort-button" data-summary-sort-by="date">日期 <span data-summary-sort-indicator aria-hidden="true">↓</span></button></th><th scope="col" aria-sort="none"><button type="button" class="sort-button" data-summary-sort-by="city">城市 <span data-summary-sort-indicator aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button type="button" class="sort-button" data-summary-sort-by="salesperson">销售 <span data-summary-sort-indicator aria-hidden="true">↕</span></button></th><th scope="col">拜访次数</th><th scope="col">门店数</th><th scope="col" title="有录音的拜访次数；同一次拜访多段录音只计1次">录音数量</th><th scope="col">首次打卡</th><th scope="col">末次打卡</th><th scope="col">待复核</th><th scope="col">明细</th></tr></thead>
                 <tbody id="attendance-rows"></tbody>
             </table>
         </div>
@@ -252,7 +270,12 @@
             <div><dt>待复核</dt><dd id="result-review-pending">--</dd></div>
             <div><dt>未附录音</dt><dd id="result-missing-audio">--</dd></div>
         </dl>
-        <p class="sort-summary" id="sort-summary" aria-live="polite">按打卡时间降序排列；排序作用于全部筛选结果。</p>
+        <div class="sort-toolbar">
+            <span class="sort-toolbar__label">排序顺序</span>
+            <div id="sort-controls" class="sort-controls" role="group" aria-label="按优先级排列的排序条件"></div>
+            <button id="reset-sort-button" class="text-button" type="button">恢复时间排序</button>
+        </div>
+        <p class="sort-summary" id="sort-summary" aria-live="polite">默认按打卡时间降序；点击表头设置排序顺序。</p>
 
         <div id="bulk-toolbar" class="bulk-toolbar" role="region" aria-label="批量操作" aria-live="polite" hidden>
             <p>已选 <strong id="selected-count">0</strong> 条</p>
@@ -278,6 +301,8 @@
                     <col class="records-col records-col--audio">
                     <col class="records-col records-col--visit">
                     <col class="records-col records-col--location">
+                    <col class="records-col records-col--device">
+                    <col class="records-col records-col--device-people">
                     <col class="records-col records-col--review">
                     <col class="records-col records-col--action">
                 </colgroup>
@@ -291,9 +316,11 @@
                     <th scope="col" aria-sort="none"><button type="button" class="sort-button" data-sort-by="salespersonName">销售 <span data-sort-indicator aria-hidden="true">↕</span></button></th>
                     <th scope="col" aria-sort="none"><button type="button" class="sort-button" data-sort-by="storeName">门店 <span data-sort-indicator aria-hidden="true">↕</span></button></th>
                     <th scope="col">现场照片</th>
-                    <th scope="col">拜访录音</th>
+                    <th scope="col">拜访录音 <button type="button" class="sort-button risk-sort-subtitle" data-sort-by="audioDuplicateCount">关联数 <span data-sort-indicator aria-hidden="true">↕</span></button></th>
                     <th scope="col">拜访结果</th>
-                    <th scope="col">设备位置 / 异常</th>
+                    <th scope="col">打卡地址 <small>设备报告</small></th>
+                    <th scope="col" aria-sort="none"><button type="button" class="sort-button" data-sort-by="deviceId">浏览器标识 <span data-sort-indicator aria-hidden="true">↕</span></button></th>
+                    <th scope="col" aria-sort="none"><button type="button" class="sort-button" data-sort-by="deviceSalespersonCount">关联销售 <span data-sort-indicator aria-hidden="true">↕</span></button></th>
                     <th scope="col">复核 / 材料</th>
                     <th scope="col">操作</th>
                 </tr>
@@ -330,6 +357,8 @@
     </aside>
     </div>
 
+    <section id="devices-panel" class="risk-registry-panel" role="tabpanel" aria-labelledby="devices-tab" hidden><div id="risk-devices-content"></div></section>
+    <section id="audio-groups-panel" class="risk-registry-panel" role="tabpanel" aria-labelledby="audio-groups-tab" hidden><div id="risk-audios-content"></div></section>
     <section id="salespersons-panel" class="salespersons-panel" role="tabpanel"
              aria-labelledby="salespersons-tab" hidden>
         <section class="city-directory-card" aria-labelledby="city-directory-heading">
@@ -502,6 +531,9 @@
             <section class="detail-section" aria-labelledby="detail-location-heading">
                 <h3 id="detail-location-heading">设备报告位置</h3>
                 <p id="detail-address" class="detail-address"></p>
+                <p id="detail-address-source" class="detail-muted"></p>
+                <button id="detail-resolve-address" type="button" class="secondary-button" hidden>按保存坐标解析地址</button>
+                <p id="detail-address-result" class="detail-muted" role="status" hidden></p>
                 <p id="detail-location-note" class="detail-muted"></p>
                 <p id="detail-location-verification" class="detail-muted"></p>
                 <div id="detail-risk-chips" class="risk-chips"></div>
@@ -718,6 +750,10 @@
     </form>
 </dialog>
 
+<dialog id="risk-detail-dialog" class="risk-detail-drawer" aria-labelledby="risk-detail-title">
+    <article class="risk-detail-panel"><header class="risk-detail-header"><div><p id="risk-detail-kicker" class="section-kicker">关联证据</p><h2 id="risk-detail-title"></h2></div><button id="risk-detail-close" class="detail-close" type="button" aria-label="关闭关联详情">关闭</button></header><div id="risk-detail-body" class="risk-detail-body"></div></article>
+</dialog>
+
 <template id="submission-row-template">
     <tr>
         <td data-label="选择" class="selection-cell">
@@ -740,16 +776,19 @@
             <a data-field="phone" class="inline-link" hidden></a>
         </td>
         <td data-label="现场照片"><div data-field="photo" class="row-photo"></div></td>
-        <td data-label="拜访录音"><div data-field="audio" class="row-audio"></div></td>
+        <td data-label="拜访录音"><div data-field="audio" class="row-audio"></div><div data-field="audio-risk" class="row-risk-audio"></div></td>
         <td data-label="拜访结果">
             <p data-field="result" class="visit-result"></p>
         </td>
-        <td data-label="设备位置 / 异常" class="location-cell">
+        <td data-label="打卡地址（设备报告）" class="location-cell">
             <strong data-field="address"></strong>
-            <span data-field="location-facts" class="row-location-facts"></span>
-            <div data-field="risks" class="risk-chips"></div>
+            <button data-field="location-detail" class="text-button row-location-link" type="button">查看位置证据</button>
         </td>
+        <td data-label="浏览器标识"><div data-field="device-risk" class="row-risk-device"></div></td>
+        <td data-label="关联销售"><div data-field="device-people" class="row-risk-people"></div></td>
         <td data-label="复核 / 材料">
+            <div data-field="current-risk" class="row-current-risk" aria-label="当前关联风险"></div>
+            <div data-field="risks" class="risk-chips row-submission-risks" aria-label="提交时风险线索"></div>
             <span data-field="review" class="review-state"></span>
             <div data-field="evidence" class="evidence-chips"></div>
         </td>
@@ -776,6 +815,7 @@
     </tr>
 </template>
 
-<script src="/sales-checkin/admin/admin.js?v=20260908-admin-recovery-sort-multi-photo" defer></script>
+<script src="/sales-checkin/admin/risk-admin.js?v=20260909-attendance-multisort" defer></script>
+<script src="/sales-checkin/admin/admin.js?v=20260909-attendance-multisort" defer></script>
 </body>
 </html>

@@ -17,14 +17,15 @@ class TemporaryCheckinWorkbookService {
     private final TemporaryCheckinStatisticsRepository statistics;
     private final TemporaryCheckinEvidenceRepository evidence;
     private final TemporaryCheckinWorkbookWriter writer;
+    private final TemporaryCheckinRiskService riskService;
     private final UUID tenant;
     private final java.util.concurrent.Semaphore exportSlot=new java.util.concurrent.Semaphore(1);
 
     TemporaryCheckinWorkbookService(TemporaryCheckinService service, TemporaryCheckinRepository repository,
             TemporaryCheckinStatisticsRepository statistics, TemporaryCheckinEvidenceRepository evidence,
-            TemporaryCheckinWorkbookWriter writer, TemporaryCheckinProperties properties) {
+            TemporaryCheckinWorkbookWriter writer, TemporaryCheckinProperties properties, TemporaryCheckinRiskService riskService) {
         this.service=service; this.repository=repository; this.statistics=statistics;
-        this.evidence=evidence; this.writer=writer; this.tenant=properties.requireTenantId();
+        this.evidence=evidence; this.writer=writer; this.tenant=properties.requireTenantId();this.riskService=riskService;
     }
 
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
@@ -37,6 +38,7 @@ class TemporaryCheckinWorkbookService {
     public byte[] export(AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId,
             String status, String visitType, String query, TemporaryCheckinRepository.AdminReadOptions options,
             String summarySortBy, String summarySortDirection) {
+        options=options.withScope(scope.city());
         var filter=service.normalizeAdminQuery(scope,from,to,city,salespersonId,status,visitType,query);
         var summarySort=new TemporaryCheckinStatisticsRepository.SummarySort(summarySortBy,summarySortDirection);
         if(!exportSlot.tryAcquire()) throw TemporaryCheckinException.conflict("正在生成另一份报表，请稍后重试");
@@ -46,6 +48,8 @@ class TemporaryCheckinWorkbookService {
         if(rows.size()>20000) throw TemporaryCheckinException.badRequest("导出超过20000条，请缩小日期或城市范围");
         var ids=rows.stream().map(TemporaryCheckinRepository.ExportRow::id).toList();
         var summary=statistics.aggregate(tenant,filter,options,summarySort);
+        var risk=TemporaryCheckinRiskWorkbookEvidence.from(
+                riskService.exportEvidencePrepared(scope,ids,from,to,city,salespersonId),ids,scope.city());
         String criteria="日期："+(from==null?"不限":from)+" 至 "+(to==null?"不限":to)
                 +"  ｜  城市："+(filter.city()==null?"权限内全部":filter.city())
                 +"  ｜  销售："+(salespersonId==null?"全部":rows.stream().map(TemporaryCheckinRepository.ExportRow::salespersonName).findFirst().orElse("指定销售"))
@@ -55,8 +59,16 @@ class TemporaryCheckinWorkbookService {
                 +"  ｜  拜访类型："+(visitType==null||visitType.isBlank()?"全部":("REVISIT".equals(visitType)?"回访":"首次拜访"))
                 +"  ｜  媒体："+(options.mediaStatus()==null?"全部":switch(options.mediaStatus()){case "HAS_AUDIO"->"有录音";case "MISSING_AUDIO"->"无录音";default->"无现场照片";})
                 +"  ｜  关键词："+(query==null||query.isBlank()?"无":query)+"  ｜  匹配记录："+rows.size()+" 条"
-                +"  ｜  每日汇总排序："+summarySort.description();
-        return writer.write(rows,summary.items(),evidence.evidenceBatch(tenant,ids),repository.photoCounts(tenant,ids),criteria);
+                +"  ｜  每日汇总排序："+summarySort.description()
+                +"  ｜  拜访明细排序："+options.sortDescription()
+                +"  ｜  当前风险："+(options.riskLevel()==null?"全部":TemporaryCheckinWorkbookWriter.label(options.riskLevel()))
+                +"  ｜  异常类型："+(options.riskFlags().isEmpty()?"全部":options.riskFlags().stream()
+                        .map(TemporaryCheckinWorkbookWriter::label).collect(java.util.stream.Collectors.joining("、")))
+                +"  ｜  设备关联："+(options.deviceRisk()==null?"全部":"关联多名销售")
+                +"  ｜  录音关联："+(options.audioRisk()==null?"全部":TemporaryCheckinWorkbookWriter.label(options.audioRisk()))
+                +"  ｜  风控编号："+(options.riskQuery()==null?"无":options.riskQuery())
+                +"  ｜  关联复核："+(options.riskReviewStatus()==null?"全部":TemporaryCheckinWorkbookWriter.label(options.riskReviewStatus()));
+        return writer.write(rows,summary.items(),evidence.evidenceBatch(tenant,ids),repository.photoCounts(tenant,ids),criteria,risk);
         } finally { exportSlot.release(); }
     }
 }

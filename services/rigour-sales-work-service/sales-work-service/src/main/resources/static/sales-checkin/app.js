@@ -706,7 +706,7 @@
         $("#success-retry-button")?.addEventListener("click", () => {
             if (state.submission.photos.some(photo => [413, 415].includes(photo.uploadErrorStatus) || photo.uploadState === "NEEDS_FILE")
                     || state.submission.wechatUploadErrorStatus === 413 || state.submission.audioSegments.some(segment =>
-                    ["TOO_LARGE", "NEEDS_FILE"].includes(segment.uploadState))) openEvidenceEditor();
+                    audioFileMustBeReplaced(segment) || segment.uploadState === "NEEDS_FILE")) openEvidenceEditor();
             else void supplementCurrentEvidence();
         });
         $("#photo-grid")?.addEventListener("click", (event) => {
@@ -715,8 +715,10 @@
             if (event.target.closest("[data-photo-remove]")) void removePhoto(card.dataset.photoId);
             else if (event.target.closest("[data-photo-open]")) openPhotoPreview(card.dataset.photoId);
         });
-        $("#local-photo-close")?.addEventListener("click", () => $("#local-photo-dialog").close());
-        $("#local-photo-dialog")?.addEventListener("close", () => $("#local-photo-full").removeAttribute("src"));
+        $("#local-photo-close")?.addEventListener("click", closePhotoPreview);
+        $("#local-photo-dialog")?.addEventListener("close", () => {
+            if (!$("#local-photo-dialog").hasAttribute("open")) $("#local-photo-full").removeAttribute("src");
+        });
         $("#remove-wechat-button").addEventListener("click", async () => clearFile("wechat"));
         $("#delete-uploaded-wechat-button").addEventListener("click", async () => clearFile("wechat"));
 
@@ -2323,7 +2325,9 @@
             locationVerificationStatus: "UNVERIFIED",
             locationFailureReason: normalizedReason,
             locationAttemptId: normalizedAttemptId,
-            locationVerificationToken: "",
+            // a1 仅证明地址与采样点的对应关系，不把未核验定位升级为合格到店凭据。
+            locationVerificationToken: scope === "visit" && cleanText(extra.locationVerificationToken).startsWith("a1.")
+                ? cleanText(extra.locationVerificationToken) : "",
             errorMessage: message,
             locationMessage: message,
             canContinueWithoutLocation: false
@@ -2892,6 +2896,10 @@
     }
 
     function openPhotoPreview(photoId) {
+        if (!window.SalesCheckinHistory?.dialogs) {
+            photoSelectionNote("照片预览暂未加载，可继续提交，稍后在记录中查看。");
+            return;
+        }
         const photo = findPhoto(photoId);
         const url = photoPreviewQueue?.get(photoId) || safePhotoMediaUrl(photo?.thumbnailUrl);
         if (!photo || !url) {
@@ -2900,7 +2908,17 @@
             return;
         }
         $("#local-photo-full").src = url;
-        $("#local-photo-dialog").showModal();
+        window.SalesCheckinHistory.dialogs.open($("#local-photo-dialog"));
+    }
+
+    function closePhotoPreview() {
+        const dialog = $("#local-photo-dialog");
+        if (window.SalesCheckinHistory?.dialogs) window.SalesCheckinHistory.dialogs.close(dialog);
+        else if (dialog) {
+            if (dialog.open && typeof dialog.close === "function") dialog.close();
+            dialog.hidden = true;
+        }
+        $("#local-photo-full")?.removeAttribute("src");
     }
 
     function mergePhotoReceipt(receipt) {
@@ -3276,8 +3294,12 @@
         segment.fileLastModifiedAt = audioFileLastModifiedAt(file);
         segment.uploadState = "LOCAL";
         segment.uploadErrorStatus = null;
+        segment.uploadErrorReason = null;
+        segment.uploadErrorRequestId = null;
         segment.errorMessage = "";
-        state.files.audio.push({ segmentId, file });
+        // A replacement may have the same name/size as the old file. Tie its durable Blob to this exact selection.
+        segment.mediaGeneration = secureUuid();
+        state.files.audio.push({ segmentId, file, generation: segment.mediaGeneration });
         ensureAudioObjectUrl(segmentId, file);
         void saveLocalMedia(`audio:${segmentId}`, file);
         return segmentId;
@@ -4057,6 +4079,8 @@
                 if (existing?.uploadState === "UPLOADED") {
                     await window.SalesCheckinRecordingJournal.remove(owner, draftId, entry.sessionId); continue;
                 }
+                // This session predates the replacement; it cannot stand in for the newly selected file.
+                if (existing?.mediaGeneration) continue;
                 const filename = `恢复录音${entry.interrupted || entry.backgrounded ? "-请回放检查" : ""}-${entry.sessionId}.${audioExtension(entry.mimeType)}`;
                 const file = new File([entry.blob], filename, {type: entry.mimeType || entry.blob.type});
                 if (existing && !localAudioFile(entry.sessionId)) {
@@ -4104,24 +4128,37 @@
             card.querySelector("[data-audio-name]").textContent =
                 `第${index + 1}段 · ${segment.originalFilename || "现场录音"}`;
             card.querySelector("[data-audio-size]").textContent = audioSegmentDetail(segment);
-            const status = card.querySelector("[data-audio-status]");
-            status.textContent = audioSegmentStatusText(segment);
-            status.className = `audio-segment-status is-${String(segment.uploadState || "LOCAL").toLowerCase()}`;
-
-            const retry = card.querySelector("[data-audio-retry]");
-            retry.hidden = !audioSegmentNeedsRetry(segment);
-            retry.textContent = segment.uploadErrorStatus === 413 || segment.uploadState === "TOO_LARGE" ? "换小文件"
-                : local && state.submission.serverId ? "重试上传" : "重新选择";
-            retry.addEventListener("click", () => retryAudioSegment(segment.segmentId));
-            const skip = card.querySelector("[data-audio-skip]");
-            skip.hidden = !audioSegmentCanSkip(segment);
-            skip.addEventListener("click", () => skipAudioSegment(segment.segmentId));
-            const remove = card.querySelector("[data-audio-remove]");
-            remove.textContent = segment.uploadState === "DELETING" ? "删除中…" : "移除";
-            remove.disabled = segment.uploadState === "UPLOADING" || segment.uploadState === "DELETING";
-            remove.addEventListener("click", () => removeAudioSegment(segment.segmentId));
+            updateAudioSegmentCard(card, segment);
+            card.querySelector("[data-audio-retry]").addEventListener("click", () => retryAudioSegment(segment.segmentId));
+            card.querySelector("[data-audio-skip]").addEventListener("click", () => skipAudioSegment(segment.segmentId));
+            card.querySelector("[data-audio-remove]").addEventListener("click", () => removeAudioSegment(segment.segmentId));
             root.appendChild(card);
         });
+    }
+
+    function updateAudioSegmentCard(card, segment) {
+        // Passive receipt checks update controls without replacing an audio node being played.
+        const local = localAudioFile(segment.segmentId);
+        const status = card.querySelector("[data-audio-status]");
+        status.textContent = audioSegmentStatusText(segment);
+        status.className = `audio-segment-status is-${String(segment.uploadState || "LOCAL").toLowerCase()}`;
+        const retry = card.querySelector("[data-audio-retry]");
+        retry.hidden = !audioSegmentNeedsRetry(segment);
+        retry.textContent = audioFileMustBeReplaced(segment) ? "更换文件"
+            : local && state.submission.serverId ? "重试上传" : "重新选择";
+        const download = card.querySelector("[data-audio-download]");
+        if (download) {
+            download.hidden = !local || !(audioSegmentNeedsRetry(segment)
+                || state.unsavedMedia.has(localMediaStorageKey(`audio:${segment.segmentId}`)));
+            if (!download.hidden) {
+                download.href = ensureAudioObjectUrl(segment.segmentId, local.file);
+                download.download = segment.originalFilename || "现场录音";
+            } else { download.removeAttribute("href"); download.removeAttribute("download"); }
+        }
+        card.querySelector("[data-audio-skip]").hidden = !audioSegmentCanSkip(segment);
+        const remove = card.querySelector("[data-audio-remove]");
+        remove.textContent = segment.uploadState === "DELETING" ? "删除中…" : "移除";
+        remove.disabled = segment.uploadState === "UPLOADING" || segment.uploadState === "DELETING";
     }
 
     function audioSegmentDetail(segment) {
@@ -4155,6 +4192,7 @@
         if (segment.uploadState === "SKIPPED") {
             return segment.errorMessage || "已跳过此段，不影响本次打卡";
         }
+        if (audioFileMustBeReplaced(segment)) return segment.errorMessage || "录音未被接收，请先回放或下载保留，再更换文件";
         if (segment.uploadState === "UNKNOWN") return "上次上传结果待确认，可重选原文件重试或移除";
         if (segment.uploadState === "NEEDS_FILE") return "刷新后需重新选择原文件";
         if (segment.uploadState === "ERROR") return segment.errorMessage || "上传失败，可重试";
@@ -4162,7 +4200,33 @@
     }
 
     function audioSegmentNeedsRetry(segment) {
-        return ["UNKNOWN", "NEEDS_FILE", "ERROR", "SKIPPED", "TOO_LARGE"].includes(segment.uploadState);
+        return ["UNKNOWN", "NEEDS_FILE", "ERROR", "SKIPPED", "TOO_LARGE"].includes(segment.uploadState)
+            || (segment.uploadState === "LOCAL" && Boolean(segment.uploadErrorStatus || segment.uploadErrorReason));
+    }
+
+    function normalizeAudioErrorReason(value) {
+        const reason = cleanText(value).toUpperCase();
+        if (!reason) return null;
+        return ["EMPTY_FILE", "READ_FAILED", "FILE_TOO_LARGE", "IMAGE_FILE", "NO_AUDIO_TRACK",
+            "VIDEO_TRACK", "UNRECOGNIZED_FORMAT", "SEGMENT_LIMIT", "TOTAL_SIZE_LIMIT", "BUSINESS_RULE"].includes(reason)
+            ? reason : "BUSINESS_RULE";
+    }
+
+    function audioErrorMetadata(error) {
+        const status = Number(error?.status);
+        const requestId = cleanText(error?.payload?.requestId || error?.requestId);
+        return {
+            uploadErrorStatus: Number.isInteger(status) && status >= 400 && status <= 599 ? status : null,
+            uploadErrorReason: normalizeAudioErrorReason(error?.payload?.reason || error?.reason),
+            uploadErrorRequestId: /^[A-Za-z0-9._-]{1,100}$/.test(requestId) ? requestId : null
+        };
+    }
+
+    function audioFileMustBeReplaced(segment) {
+        return segment.uploadState !== "UPLOADED" && (segment.uploadState === "TOO_LARGE"
+            || [413, 415].includes(segment.uploadErrorStatus)
+            || ["EMPTY_FILE", "FILE_TOO_LARGE", "IMAGE_FILE", "NO_AUDIO_TRACK", "VIDEO_TRACK", "UNRECOGNIZED_FORMAT"]
+                .includes(segment.uploadErrorReason));
     }
 
     function audioSegmentCanSkip(segment) {
@@ -4186,21 +4250,29 @@
 
     async function retryAudioSegment(segmentId) {
         if (state.submitting) return;
+        const owner = currentStorageOwner(), draftId = state.submission.clientSubmissionId;
+        if (!owner || state.evidenceSyncIds.has(draftId)) return;
         const segment = findAudioSegment(segmentId);
         if (!segment) return;
         const local = localAudioFile(segmentId);
-        if (local && state.submission.serverId && segment.uploadState !== "TOO_LARGE" && segment.uploadErrorStatus !== 413) {
+        if (local && state.submission.serverId && !audioFileMustBeReplaced(segment)) {
+            if (state.completed) {
+                if (segment.uploadState === "SKIPPED") { segment.uploadState = "LOCAL"; segment.errorMessage = ""; }
+                await supplementCurrentEvidence(); return;
+            }
+            const stillCurrent = () => currentStorageOwner() === owner && state.submission.clientSubmissionId === draftId;
+            state.evidenceSyncIds.add(draftId);
             clearFieldError("audio-file");
             try {
                 await uploadAudioSegment(segment, local.file, 1, 1,
                     Date.now() + OPTIONAL_MEDIA_UPLOAD_MAX_MS);
-                renderAudioSegments();
-                renderUploadedBadges();
+                if (stillCurrent()) { renderAudioSegments(); renderUploadedBadges(); }
             } catch (error) {
-                renderAudioSegments();
-                setFieldError("audio-file", segment.errorMessage);
+                if (stillCurrent()) { renderAudioSegments(); setFieldError("audio-file", segment.errorMessage); }
+            } finally {
+                state.evidenceSyncIds.delete(draftId);
             }
-            persistDraft();
+            if (stillCurrent()) persistDraft();
             return;
         }
         state.audioRetrySegmentId = segmentId;
@@ -4338,8 +4410,7 @@
             $("#storefront-photo").value = "";
             $("#photo-album-input").value = "";
             $("#photo-grid")?.replaceChildren();
-            const dialog = $("#local-photo-dialog");
-            if (dialog?.open) dialog.close();
+            closePhotoPreview();
             photoSelectionNote();
         } else if (kind === "wechat") {
             state.files[kind] = null;
@@ -4759,6 +4830,20 @@
     }
 
     async function uploadAudioSegment(segment, file, index, total, optionalMediaDeadlineMs) {
+        const owner = currentStorageOwner(), snapshot = snapshotDraft();
+        const draftId = snapshot.submission.clientSubmissionId;
+        const uploadOptions = {submissionId: snapshot.submission.serverId,
+            submissionKey: snapshot.submission.submissionKey, optionalDeadlineMs: optionalMediaDeadlineMs};
+        const stillCurrent = () => currentStorageOwner() === owner && state.submission.clientSubmissionId === draftId;
+        const saveResult = () => {
+            if (stillCurrent()) { renderAudioSegments(); renderUploadedBadges(); void persistDraft(); }
+            else if (window.SalesCheckinDraftStore) {
+                snapshot.submission.audioSegments = snapshot.submission.audioSegments.map(item => item.segmentId === segment.segmentId ? {...segment} : item);
+                void window.SalesCheckinDraftStore.save(owner, snapshot).catch(() => {
+                    state.unsavedMedia.add(localMediaStorageKey(`audio:${segment.segmentId}`, owner, draftId));
+                });
+            }
+        };
         const metadataPromise = localAudioFile(segment.segmentId)?.metadataPromise;
         if (metadataPromise) {
             try {
@@ -4767,6 +4852,8 @@
                 // 可选证据读取失败不阻断录音上传。
             }
         }
+        // A file chooser/metadata read can outlive the visit that initiated retry.
+        if (!stillCurrent() || localAudioFile(segment.segmentId)?.file !== file) return;
         const mayExistBeforeUpload = segment.mayExistRemotely === true;
         segment.uploadState = "UPLOADING";
         segment.mayExistRemotely = true;
@@ -4783,7 +4870,7 @@
                     clientDurationMs: normalizePositiveDurationMs(
                         segment.clientDurationMs ?? segment.durationMs),
                     fileLastModifiedAt: normalizeOptionalInstant(segment.fileLastModifiedAt)
-                }, { optionalDeadlineMs: optionalMediaDeadlineMs })) || {};
+                }, uploadOptions)) || {};
             if (response.segmentId && String(response.segmentId) !== String(segment.segmentId)) {
                 throw new Error("服务端返回的录音分段编号不一致，已停止提交。");
             }
@@ -4800,23 +4887,24 @@
             segment.fileLastModifiedAt = normalizeOptionalInstant(
                 response.fileLastModifiedAt || segment.fileLastModifiedAt);
             segment.errorMessage = "";
-            renderAudioSegments();
-            renderUploadedBadges();
-            persistDraft();
+            segment.uploadErrorStatus = null;
+            segment.uploadErrorReason = null;
+            segment.uploadErrorRequestId = null;
+            saveResult();
             return response;
         } catch (error) {
             const outcome = optionalUploadOutcome(error);
             segment.mayExistRemotely = mayExistBeforeUpload || outcome === "UNKNOWN";
             segment.uploadState = error.status === 413 ? "TOO_LARGE"
                 : segment.mayExistRemotely ? "UNKNOWN" : "ERROR";
-            segment.uploadErrorStatus = error.status || null;
+            Object.assign(segment, audioErrorMetadata(error));
             segment.errorMessage = optionalUploadFailureMessage(
                 error, "录音", segment.mayExistRemotely);
-            setProgressStep(MEDIA.audio, "error", error.status === 413 ? "录音文件过大" : "录音待补传");
-            $("#progress-detail").textContent = segment.errorMessage;
-            renderAudioSegments();
-            renderUploadedBadges();
-            persistDraft();
+            if (stillCurrent()) {
+                setProgressStep(MEDIA.audio, "error", error.status === 413 ? "录音文件过大" : "录音待补传");
+                $("#progress-detail").textContent = segment.errorMessage;
+            }
+            saveResult();
             throw error;
         }
     }
@@ -4961,6 +5049,9 @@
     function optionalUploadFailureMessage(error, label, mayExistRemotely = false) {
         if (error?.status === 413) return `${label}文件过大，请换较小文件；重试同一文件无效，不影响打卡`;
         const detail = errorMessage(error, `${label}上传失败`);
+        if (label === "录音" && audioFileMustBeReplaced(audioErrorMetadata(error))) {
+            return `${detail}；请先回放或下载保留原件，再更换文件，不影响打卡`;
+        }
         const outcome = optionalUploadOutcome(error);
         if (mayExistRemotely || outcome === "UNKNOWN") {
             return `${detail}；上传结果未确认，服务端可能已收到，已继续打卡`;
@@ -5041,8 +5132,7 @@
             customerPhone: optionalText(state.visit.customerPhone),
             visitResult: state.visit.visitResult.trim(),
             location: withCurrentLocationNote("visit"),
-            locationVerificationToken: unverified ? undefined : optionalText(
-                state.visit.locationContext?.locationVerificationToken),
+            locationVerificationToken: optionalText(state.visit.locationContext?.locationVerificationToken),
             locationFailureReason: unverified
                 ? state.visit.locationContext.locationFailureReason : undefined,
             locationAttemptId: unverified
@@ -5296,7 +5386,7 @@
                 status.textContent = segment.uploadState === "UPLOADED" ? "已收到"
                     : segment.uploadState === "UPLOADING" ? "上传中"
                         : segment.uploadState === "UNKNOWN" ? "结果待核对"
-                            : segment.uploadState === "TOO_LARGE" ? "文件过大，请更换" : "待补传";
+                            : audioFileMustBeReplaced(segment) ? "检查录音并更换文件" : "待补传";
                 status.className = segment.uploadState === "UPLOADED" ? "is-success" : "is-warning";
                 row.append(title, status); list.appendChild(row);
             });
@@ -5309,14 +5399,33 @@
             retry.textContent = retry.disabled ? "正在核对与同步…"
                 : state.submission.photos.some(photo => [413, 415].includes(photo.uploadErrorStatus) || photo.uploadState === "NEEDS_FILE")
                     || state.submission.wechatUploadErrorStatus === 413 || state.submission.audioSegments.some(segment =>
-                    ["TOO_LARGE", "NEEDS_FILE"].includes(segment.uploadState)) ? "处理待补附件"
+                    audioFileMustBeReplaced(segment) || segment.uploadState === "NEEDS_FILE") ? "处理待补附件"
                     : state.submission.audioSegments.some(segment => segment.uploadState === "UNKNOWN") ? "核对录音结果" : "重试附件";
             if (state.submission.supplementUntil && Date.parse(state.submission.supplementUntil) <= Date.now()) {
                 retry.hidden = true;
             }
         }
         const note = $("#success-media-note");
-        if (note && !hasPendingEvidence()) { note.hidden = true; note.textContent = ""; }
+        if (note) {
+            if (!hasPendingEvidence()) { note.hidden = true; note.textContent = ""; }
+            else {
+                const issues = [state.submission.evidenceSyncError, state.submission.localEvidenceWarning];
+                if (state.submission.supplementUntil && Date.parse(state.submission.supplementUntil) <= Date.now()) {
+                    issues.push("补传时间已结束，请联系管理员；已收到的打卡和附件不受影响");
+                }
+                state.submission.audioSegments.forEach((segment, index) => {
+                    if (audioFileMustBeReplaced(segment)) issues.push(`第 ${index + 1} 段录音：${segment.errorMessage || "请检查录音并更换文件"}`);
+                    else if (segment.uploadState === "NEEDS_FILE") issues.push(`第 ${index + 1} 段录音原文件未在本机找到，请重新选择手机原文件`);
+                    else if (["ERROR", "UNKNOWN", "TOO_LARGE"].includes(segment.uploadState) && segment.errorMessage) {
+                        issues.push(`第 ${index + 1} 段录音：${segment.errorMessage}`);
+                    }
+                });
+                if (state.submission.photos.some(photo => photo.uploadState === "NEEDS_FILE")) issues.push("部分照片原文件未在本机找到，请重新选择原文件");
+                if (state.submission.pendingWechat && !state.files.wechat) issues.push("截图原文件未在本机找到，请重新选择原文件");
+                const messages = [...new Set(issues.filter(Boolean))];
+                if (messages.length) { note.hidden = false; note.textContent = `打卡已完成。${messages.join("；")}`; }
+            }
+        }
         const wechat = $("#success-wechat-status");
         if (wechat) {
             wechat.hidden = !state.submission.pendingWechat && !state.submission.uploadedMedia.includes(MEDIA.wechat);
@@ -5364,6 +5473,33 @@
             || Boolean(state.submission.attemptedPayload);
     }
 
+    const legacyFormDisabledStates = new WeakMap();
+    const legacyFormBusyEvents = ["click", "keydown", "beforeinput", "input", "change", "submit"];
+
+    function setLegacyFormBusy(form, disabled) {
+        if ("inert" in form) return;
+        let saved = legacyFormDisabledStates.get(form);
+        if (disabled) {
+            if (!saved) {
+                saved = { controls: new Map(), block(event) {
+                    if (event.cancelable) event.preventDefault();
+                    event.stopImmediatePropagation();
+                } };
+                legacyFormDisabledStates.set(form, saved);
+                legacyFormBusyEvents.forEach(type => form.addEventListener(type, saved.block, true));
+            }
+            form.querySelectorAll("input, select, textarea, button").forEach(control => {
+                // A repeated lock must not replace the pre-submit state with our temporary disabled value.
+                if (!saved.controls.has(control)) saved.controls.set(control, control.disabled);
+                control.disabled = true;
+            });
+        } else if (saved) {
+            legacyFormBusyEvents.forEach(type => form.removeEventListener(type, saved.block, true));
+            legacyFormDisabledStates.delete(form);
+            saved.controls.forEach((wasDisabled, control) => { control.disabled = wasDisabled; });
+        }
+    }
+
     function setFormsDisabled(disabled) {
         setStableText($("#submit-visit-button"), disabled
             ? state.preparingSubmission ? "正在定位并保存…" : "正在保存…"
@@ -5372,13 +5508,16 @@
             cancelLocationCapture("visit");
             cancelLocationCapture("store");
         }
-        $("#submit-visit-button").disabled = disabled;
-        $("#submit-store-button").disabled = disabled;
         [$("#visit-form"), $("#store-form")].forEach((form) => {
             form.setAttribute("aria-busy", String(disabled));
             if (disabled) form.setAttribute("inert", "");
             else form.removeAttribute("inert");
+            setLegacyFormBusy(form, disabled);
         });
+        $("#submit-visit-button").disabled = disabled;
+        $("#submit-store-button").disabled = disabled;
+        // Restore the temporary lock before rebuilding current business/media restrictions.
+        // Otherwise a newly locked field looks pre-disabled and loses its businessLocked marker.
         if (!disabled) renderBusinessLock();
     }
 
@@ -5519,6 +5658,7 @@
     }
 
     function persistFromForm() {
+        if (state.submitting) return;
         syncStateFromForm();
         renderFlowActions();
         persistDraft();
@@ -5626,26 +5766,42 @@
         return `${owner}/${draftId}/${mediaId}`;
     }
 
+    function localStorageFailureMessage(error) {
+        if (error?.code === "LOCAL_DRAFT_LIMIT") return "本机待处理记录已达 20 条，请先处理待提交或待补传记录。";
+        if (error?.code === "LOCAL_MEDIA_LIMIT") return "本机附件缓存已达上限，尚未保存这个附件。";
+        if (error?.name === "QuotaExceededError") return "浏览器可用存储额度不足，本机保存未完成。";
+        if (error?.code === "LOCAL_STORAGE_TIMEOUT" || error?.name === "TimeoutError") return "本机保存或读取超时，结果尚未确认。";
+        if (error?.code === "LOCAL_STORAGE_BLOCKED") return "旧打卡页面占用了本机存储，请关闭旧页面后重试保存。";
+        if (error?.code === "LOCAL_STORAGE_UNAVAILABLE" || ["SecurityError", "NotAllowedError"].includes(error?.name)) {
+            return "当前浏览器的本机保存不可用。";
+        }
+        return "本机保存未完成，原因暂未确定。";
+    }
+
     function saveLocalMedia(mediaId, file) {
         const owner = currentStorageOwner();
         const draftId = state.submission.clientSubmissionId;
         if (!owner || !window.SalesCheckinDraftStore) return Promise.resolve(false);
         const snapshot = snapshotDraft();
+        const generation = mediaId.startsWith("audio:")
+            ? snapshot.submission.audioSegments.find(segment => segment.segmentId === mediaId.slice(6))?.mediaGeneration || null
+            : null;
         const mediaKey = localMediaStorageKey(mediaId, owner, draftId);
         const operation = state.persistence.then(async () => {
             await window.SalesCheckinDraftStore.save(owner, snapshot);
-            await window.SalesCheckinDraftStore.saveMedia(owner, draftId, mediaId, file);
+            await window.SalesCheckinDraftStore.saveMedia(owner, draftId, mediaId, file, {generation});
             state.unsavedMedia.delete(mediaKey);
             if (currentStorageOwner() === owner && state.submission.clientSubmissionId === draftId) {
                 renderDraftSaveStatus("本机已保存");
             }
             return true;
-        }).catch(() => {
+        }).catch((error) => {
             state.unsavedMedia.add(mediaKey);
             if (currentStorageOwner() === owner && state.submission.clientSubmissionId === draftId) {
                 renderDraftSaveStatus("附件未在本机保存 · 请保留手机原件", true);
-                const message = "本机空间不足或浏览器禁止保存。请保留手机原文件；当前页面仍可上传，不影响先提交拜访。";
-                if (mediaId.startsWith("audio:")) showAudioSelectionNotice(message);
+                const message = localStorageFailureMessage(error)
+                    + "请保留手机原文件和当前页面；页面中的附件仍可直接上传，不影响先提交拜访。";
+                if (mediaId.startsWith("audio:")) { showAudioSelectionNotice(message); renderAudioSegments(); }
                 else showError(message);
             }
             return false;
@@ -5693,19 +5849,40 @@
             && !state.submitting && !recordingBusy() && current === draftFingerprint(snapshotDraft());
         await state.persistence;
         if (!stillAllowed()) return false;
-        const media = await window.SalesCheckinDraftStore.mediaFor(owner, record.snapshot.submission.clientSubmissionId);
+        const sameDraft = record.snapshot.submission.clientSubmissionId === state.submission.clientSubmissionId;
+        let media, readError, unmatchedAudio = false;
+        try { media = await window.SalesCheckinDraftStore.mediaFor(owner, record.snapshot.submission.clientSubmissionId); }
+        catch (error) {
+            if (!sameDraft) throw error;
+            // The current visit can remain usable even when its durable copy cannot be read.
+            media = []; readError = error;
+        }
         if (!stillAllowed()) return false;
+        // A local record may predate a failed Blob save or a replacement file. For the same visit,
+        // keep the live metadata and File objects; an older IndexedDB row must never replace them.
+        const snapshot = sameDraft ? snapshotDraft() : record.snapshot;
+        if (sameDraft) {
+            const retained = new Map([
+                ...state.files.photos.map(item => [`photo:${item.photoId}`, item.file]),
+                ...state.files.audio.map(item => [`audio:${item.segmentId}`, item.file]),
+                ...(state.files.wechat ? [["wechat", state.files.wechat]] : [])
+            ]);
+            media = [...retained].map(([mediaId, file]) => ({mediaId, file, filename: file.name || "附件",
+                lastModified: file.lastModified || 0, retained: true,
+                generation: mediaId.startsWith("audio:") ? localAudioFile(mediaId.slice(6))?.generation || null : null}))
+                .concat(media.filter(item => !retained.has(item.mediaId)));
+        }
         ["visit", "store"].forEach(scope => {
             cancelLocationCapture(scope);
             state.locationControllers[scope]?.abort();
             state.locationControllers[scope] = null;
         });
         Object.keys(state.files).forEach(resetLocalFile);
-        restoreDraft(record.snapshot);
+        restoreDraft(snapshot);
         renderRecordingRecoveries();
         state.completed = ["SUBMITTED", "COMPLETED"].includes(state.submission.status);
         for (const item of media) {
-            const file = typeof window.File === "function"
+            const file = item.retained ? item.file : typeof window.File === "function"
                 ? new File([item.file], item.filename, { type: item.file.type, lastModified: item.lastModified || 0 })
                 : Object.assign(item.file, { name: item.filename, lastModified: item.lastModified || 0 });
             if (item.mediaId === "photo" || item.mediaId.startsWith("photo:")) {
@@ -5717,7 +5894,19 @@
                 const segmentId = item.mediaId.slice(6);
                 const segment = findAudioSegment(segmentId);
                 if (!segment) continue;
-                state.files.audio.push({ segmentId, file });
+                const expectedGeneration = segment.mediaGeneration || null;
+                const actualGeneration = item.generation || null;
+                if (expectedGeneration !== actualGeneration) {
+                    // Metadata can commit while a replacement Blob fails. Never pair it with an older Blob.
+                    if (segment.uploadState !== "UPLOADED") {
+                        segment.uploadState = "NEEDS_FILE";
+                        segment.errorMessage = "本机录音版本不一致，请重新选择原文件";
+                        state.unsavedMedia.add(localMediaStorageKey(`audio:${segmentId}`, owner, state.submission.clientSubmissionId));
+                        unmatchedAudio = true;
+                    }
+                    continue;
+                }
+                state.files.audio.push({ segmentId, file, generation: actualGeneration });
                 if (["NEEDS_FILE", "ERROR"].includes(segment.uploadState)) segment.uploadState = "LOCAL";
                 ensureAudioObjectUrl(segmentId, file);
             }
@@ -5725,7 +5914,9 @@
         renderRestoredValues(); renderSelectedStore(); renderLocation("visit"); renderLocation("store");
         renderAudioSegments(); renderUploadedBadges(); renderBusinessLock();
         renderTab(state.activeTab);
-        renderDraftSaveStatus(state.completed ? "已提交" : "已恢复本机记录");
+        renderDraftSaveStatus(unmatchedAudio ? "部分录音需重新选择原文件"
+            : readError ? localStorageFailureMessage(readError) + "当前页面附件已保留。"
+            : state.completed ? "已提交" : "已恢复本机记录", Boolean(readError) || unmatchedAudio);
         if (display) {
             $("#records-panel").hidden = true;
             $("#success-panel").hidden = true;
@@ -5804,7 +5995,10 @@
                 if (!await openSavedDraft(record)) return false;
                 if (context.receipt) mergeSubmissionReceipt(context.receipt);
                 historyView.close();
-                await recoverInterruptedSubmission();
+                if (context.mode === "supplement" && context.receipt?.status === "SUBMITTED") {
+                    showSuccess(context.receipt);
+                    if (hasPendingEvidence()) { openEvidenceEditor(); void supplementCurrentEvidence(); }
+                } else await recoverInterruptedSubmission();
                 return true;
             },
             onBack: () => syncAppScreen(),
@@ -5853,6 +6047,7 @@
         pauseAllAudioPreviews();
         renderSuccessEvidence();
         const submission = snapshot.submission;
+        submission.evidenceSyncError = "";
         // 捕获原拜访的文件和凭据。销售点“下一家”后绝不能把补证写入新拜访。
         const files = { wechat: state.files.wechat,
             photos: new Map(state.files.photos.map(item => [item.photoId, item.file])),
@@ -5874,11 +6069,36 @@
                 state.submission.uploadedMedia = submission.uploadedMedia;
                 state.submission.pendingWechat = submission.pendingWechat;
                 state.submission.wechatUploadErrorStatus = submission.wechatUploadErrorStatus;
+                state.submission.evidenceSyncError = submission.evidenceSyncError;
+                state.submission.localEvidenceWarning = submission.localEvidenceWarning;
+                state.submission.supplementUntil = submission.supplementUntil;
                 renderAudioSegments(); renderUploadedBadges();
                 renderSuccessEvidence();
                 toSave = snapshotDraft();
             }
-            if (window.SalesCheckinDraftStore) await window.SalesCheckinDraftStore.save(owner, toSave);
+            if (window.SalesCheckinDraftStore) {
+                try { await window.SalesCheckinDraftStore.save(owner, toSave); }
+                catch (_) {
+                    // Local persistence is recoverability evidence, never a prerequisite for sending a retained Blob.
+                    submission.localEvidenceWarning = "本机保存未完成，请保持当前页面并保留手机原文件；仍会尝试上传";
+                    submission.audioSegments.filter(segment => segment.uploadState !== "UPLOADED" && files.audio.has(segment.segmentId))
+                        .forEach(segment => state.unsavedMedia.add(localMediaStorageKey(`audio:${segment.segmentId}`, owner, id)));
+                    (submission.photos || []).filter(photo => photo.uploadState !== "UPLOADED" && files.photos.has(photo.photoId))
+                        .forEach(photo => state.unsavedMedia.add(localMediaStorageKey(`photo:${photo.photoId}`, owner, id)));
+                    if (submission.pendingWechat && files.wechat) state.unsavedMedia.add(localMediaStorageKey("wechat", owner, id));
+                    if (stillCurrent()) { state.submission.localEvidenceWarning = submission.localEvidenceWarning; renderSuccessEvidence(); }
+                }
+            }
+        };
+        const cleanupReceived = async mediaId => {
+            if (!window.SalesCheckinDraftStore) return;
+            try {
+                await window.SalesCheckinDraftStore.removeMedia(owner, id, mediaId);
+                state.unsavedMedia.delete(localMediaStorageKey(mediaId, owner, id));
+            } catch (_) {
+                // A confirmed server receipt stays confirmed even if browser cleanup fails.
+                // Keep the in-memory original and any unsaved marker for this exact owner/visit.
+            }
         };
         const confirmReceived = async (kind, segmentId = null) => {
             if (!sameOwner() || navigator.onLine === false) return false;
@@ -5898,14 +6118,17 @@
             if (String(receipt?.id) !== String(submission.serverId) || receipt.status !== "SUBMITTED"
                     || (receipt.clientSubmissionId && receipt.clientSubmissionId !== id)) throw new Error("未查询到本次拜访的完成回执");
             submission.uploadedMedia = Array.isArray(receipt.uploadedMedia) ? receipt.uploadedMedia : submission.uploadedMedia;
+            submission.supplementUntil = receipt.supplementUntil || submission.supplementUntil;
             submission.photos = window.SalesCheckinPhotos.merge(submission.photos || [], receipt);
             submission.audioSegments.forEach((segment) => {
                 if ((receipt.audioSegmentIds || []).includes(segment.segmentId)) {
                     segment.uploadState = "UPLOADED"; segment.uploadErrorStatus = null; segment.errorMessage = "";
+                    segment.uploadErrorReason = null; segment.uploadErrorRequestId = null;
                 }
             });
             if (submission.uploadedMedia.includes(MEDIA.wechat)) submission.pendingWechat = false;
             await save();
+            if (!sameOwner()) return;
             // 补传已到期仍允许只读核对已经收到的附件，绝不再次上传。
             if (receipt.supplementUntil && Date.parse(receipt.supplementUntil) <= Date.now()) {
                 if (hasPendingEvidence(snapshot)) throw new Error("补传时间已结束，请联系管理员");
@@ -5921,14 +6144,16 @@
                 const mayExistBefore = photo.mayExistRemotely === true;
                 photo.uploadState = "UPLOADING"; photo.mayExistRemotely = true;
                 await save();
+                if (!sameOwner()) return;
                 try {
                     const response = normalizeResponse(await uploadMedia(`photos/${encodeURIComponent(photo.photoId)}`,
                         file, "补传现场照片", { captureSource: photo.captureSource }, options));
                     Object.assign(photo, response, { uploadState: "UPLOADED", mayExistRemotely: true, errorMessage: "" });
-                    if (window.SalesCheckinDraftStore) await window.SalesCheckinDraftStore.removeMedia(owner, id, `photo:${photo.photoId}`);
+                    await cleanupReceived(`photo:${photo.photoId}`);
                 } catch (error) {
                     if (optionalUploadOutcome(error) === "UNKNOWN" && await confirmReceived(MEDIA.photo, photo.photoId)) {
                         photo.uploadState = "UPLOADED"; photo.errorMessage = "";
+                        await cleanupReceived(`photo:${photo.photoId}`);
                     } else {
                         photo.uploadState = optionalUploadOutcome(error) === "UNKNOWN" ? "UNKNOWN" : "ERROR";
                         photo.mayExistRemotely = mayExistBefore || optionalUploadOutcome(error) === "UNKNOWN";
@@ -5938,6 +6163,7 @@
                 }
                 await save();
             }
+            if (!sameOwner()) return;
             if (files.wechat && !submission.uploadedMedia.includes(MEDIA.wechat) && submission.wechatUploadErrorStatus !== 413) {
                 try {
                     await uploadMedia(MEDIA.wechat, files.wechat, "补传截图", {},
@@ -5945,13 +6171,13 @@
                     submission.uploadedMedia.push(MEDIA.wechat);
                     submission.pendingWechat = false;
                     submission.wechatUploadErrorStatus = null;
-                    state.unsavedMedia.delete(localMediaStorageKey("wechat", owner, id));
-                    if (window.SalesCheckinDraftStore) await window.SalesCheckinDraftStore.removeMedia(owner, id, "wechat");
+                    await cleanupReceived("wechat");
                 } catch (error) {
                     if (optionalUploadOutcome(error) === "UNKNOWN" && await confirmReceived(MEDIA.wechat)) {
                         submission.uploadedMedia.push(MEDIA.wechat);
                         submission.pendingWechat = false;
                         submission.wechatUploadErrorStatus = null;
+                        await cleanupReceived("wechat");
                     } else {
                         submission.pendingWechat = true;
                         submission.wechatUploadErrorStatus = error.status || null;
@@ -5961,12 +6187,14 @@
             }
             for (const segment of submission.audioSegments) {
                 if (!sameOwner()) return;
-                if (["UPLOADED", "SKIPPED", "DISCARDED", "TOO_LARGE"].includes(segment.uploadState)) continue;
+                if (["UPLOADED", "SKIPPED", "DISCARDED", "TOO_LARGE"].includes(segment.uploadState)
+                    || audioFileMustBeReplaced(segment)) continue;
                 const file = files.audio.get(segment.segmentId);
                 if (!file) { segment.uploadState = "NEEDS_FILE"; continue; }
                 segment.uploadState = "UPLOADING";
                 segment.mayExistRemotely = true;
                 await save();
+                if (!sameOwner()) return;
                 try {
                     const response = normalizeResponse(await uploadMedia(`audio/${encodeURIComponent(segment.segmentId)}`,
                         file, "补传录音", {
@@ -5977,18 +6205,20 @@
                         }, {...options, optionalDeadlineMs: Date.now() + OPTIONAL_MEDIA_UPLOAD_MAX_MS}));
                     if (response?.segmentId && response.segmentId !== segment.segmentId) throw new Error("录音回执不一致");
                     segment.uploadState = "UPLOADED"; segment.mayExistRemotely = true; segment.errorMessage = "";
-                    state.unsavedMedia.delete(localMediaStorageKey(`audio:${segment.segmentId}`, owner, id));
-                    if (window.SalesCheckinDraftStore) await window.SalesCheckinDraftStore.removeMedia(owner, id, `audio:${segment.segmentId}`);
+                    segment.uploadErrorStatus = null;
+                    segment.uploadErrorReason = null; segment.uploadErrorRequestId = null;
+                    await cleanupReceived(`audio:${segment.segmentId}`);
                 } catch (error) {
                     if (optionalUploadOutcome(error) === "UNKNOWN" && await confirmReceived(MEDIA.audio, segment.segmentId)) {
                         segment.uploadState = "UPLOADED";
                         segment.uploadErrorStatus = null;
+                        segment.uploadErrorReason = null; segment.uploadErrorRequestId = null;
                         segment.errorMessage = "";
-                        if (window.SalesCheckinDraftStore) await window.SalesCheckinDraftStore.removeMedia(owner, id, `audio:${segment.segmentId}`);
+                        await cleanupReceived(`audio:${segment.segmentId}`);
                     } else {
                         segment.uploadState = error.status === 413 ? "TOO_LARGE"
                             : optionalUploadOutcome(error) === "UNKNOWN" ? "UNKNOWN" : "ERROR";
-                        segment.uploadErrorStatus = error.status || null;
+                        Object.assign(segment, audioErrorMetadata(error));
                         if (error.status === 413) segment.mayExistRemotely = false;
                         segment.errorMessage = segment.uploadState === "UNKNOWN"
                             ? "尚未核实录音结果，原文件已保留；点击核对结果" : optionalUploadFailureMessage(error, "录音");
@@ -6009,7 +6239,9 @@
                 }
             }
         } catch (error) {
-            if (stillCurrent()) renderDraftSaveStatus(errorMessage(error, "已提交 · 证据待补传"), true);
+            submission.evidenceSyncError = errorMessage(error, "已提交 · 证据待补传");
+            await save();
+            if (stillCurrent()) renderDraftSaveStatus(submission.evidenceSyncError, true);
         } finally {
             state.evidenceSyncIds.delete(id);
             historyView?.invalidateList();
@@ -6070,8 +6302,18 @@
                 const receipt = await lookupSubmissionReceipt();
                 if (owner !== currentStorageOwner() || id !== state.submission.clientSubmissionId) return;
                 if (receipt?.status === "SUBMITTED") {
-                    showSuccess(receipt);
-                    if (hasPendingEvidence()) void supplementCurrentEvidence();
+                    if (state.editingEvidence) {
+                        $("#audio-preview-list").querySelectorAll("[data-audio-segment]").forEach(card => {
+                            const segment = findAudioSegment(card.dataset.segmentId);
+                            if (segment) updateAudioSegmentCard(card, segment);
+                        });
+                        renderUploadedBadges(); renderSuccessEvidence();
+                        // A delayed lifecycle check must not navigate away or restart transfers while
+                        // the salesperson is replaying/replacing files. Explicit and active transfers continue.
+                    } else {
+                        showSuccess(receipt);
+                        if (hasPendingEvidence()) void supplementCurrentEvidence();
+                    }
                 } else if (state.submission.syncRequested && !state.completed) {
                     // 仅续传用户已经明确点过提交的记录，不自动提交普通草稿。
                     await submitVisit({ preventDefault() {} });
@@ -6103,7 +6345,12 @@
                     : payload.submission.syncRequested ? "本机已保存 · 待同步" : "本机已保存");
             }
             return true;
-        }).catch(() => { renderDraftSaveStatus("本机未保存 · 请保留页面并提交", true); return false; });
+        }).catch((error) => {
+            if (owner === currentStorageOwner() && state.submission.clientSubmissionId === payload.submission.clientSubmissionId) {
+                renderDraftSaveStatus("本机未保存 · " + localStorageFailureMessage(error) + "请保留页面并提交。", true);
+            }
+            return false;
+        });
         return state.persistence;
     }
 
@@ -6167,15 +6414,18 @@
                 clientDurationMs: normalizePositiveDurationMs(
                     rawSegment.clientDurationMs ?? rawSegment.durationMs),
                 fileLastModifiedAt: normalizeOptionalInstant(rawSegment.fileLastModifiedAt),
+                mediaGeneration: isUuidValue(rawSegment.mediaGeneration) ? rawSegment.mediaGeneration : null,
                 uploadState,
-                uploadErrorStatus: rawSegment.uploadErrorStatus === 413 ? 413 : null,
+                ...audioErrorMetadata({status: rawSegment.uploadErrorStatus, reason: rawSegment.uploadErrorReason,
+                    requestId: rawSegment.uploadErrorRequestId}),
                 mayExistRemotely,
-                errorMessage: uploadState === "TOO_LARGE" ? optionalUploadFailureMessage({status: 413}, "录音")
+                errorMessage: extractApiMessage({message: rawSegment.errorMessage})
+                    || (uploadState === "TOO_LARGE" ? optionalUploadFailureMessage({status: 413}, "录音")
                     : uploadState === "SKIPPED"
                     ? mayExistRemotely
                         ? "上传结果未确认，服务端可能已收到；不影响本次打卡"
                         : "已跳过此段，不影响本次打卡"
-                    : ""
+                    : "")
             });
         });
         const legacySegmentId = cleanText(state.submission.serverId);

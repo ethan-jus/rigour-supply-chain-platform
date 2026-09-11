@@ -19,29 +19,72 @@ const local = (extra = {}, owner = 'tenant1:sales1') => ({owner, updatedAt: NOW,
 
 function harness(options = {}) {
     const elements = new Map(); const timers = [];
-    let activeElement = null;
+    let activeElement = null; let document;
+    class DomEvent {
+        constructor(type, init = {}) { this.type = type; this.bubbles = !!init.bubbles; this.cancelable = !!init.cancelable; this.defaultPrevented = false; }
+        preventDefault() { if (this.cancelable) this.defaultPrevented = true; }
+        stopPropagation() { this.propagationStopped = true; }
+    }
     class Element {
         constructor(tag = 'div') { this.tagName = tag.toUpperCase(); this.children = []; this.attributes = new Map(); this.listeners = new Map();
-            this.className = ''; this.dataset = {}; this.hidden = false; this.disabled = false; this.value = ''; this.paused = true; this.pauseCount = 0; this.text = ''; }
+            this.className = ''; this.dataset = {}; this.hidden = false; this.disabled = false; this.value = ''; this.paused = true; this.pauseCount = 0; this.text = '';
+            this.style = {position: '', top: '', left: '', right: '', width: '', overflow: ''}; }
+        get ownerDocument() { return document; }
+        get isConnected() { let node = this; while (node) { if (node === document) return true; node = node.parentElement; } return false; }
+        get open() { return this.hasAttribute('open'); }
+        set open(value) { if (value) this.attributes.set('open', ''); else this.attributes.delete('open'); }
+        get tabIndex() { return this.hasAttribute('tabindex') ? Number(this.getAttribute('tabindex')) : /^(BUTTON|INPUT|SELECT|TEXTAREA)$/.test(this.tagName) || this.matches('a[href]') ? 0 : -1; }
+        set tabIndex(value) { this.setAttribute('tabindex', value); }
+        get classList() {
+            const node = this;
+            return {contains: value => node.className.split(/\s+/).includes(value),
+                add(...values) { node.className = [...new Set([...node.className.split(/\s+/).filter(Boolean), ...values])].join(' '); },
+                remove(...values) { node.className = node.className.split(/\s+/).filter(value => value && !values.includes(value)).join(' '); }};
+        }
         get textContent() { return this.text + this.children.map((child) => child.textContent || '').join(''); }
-        set textContent(value) { this.text = String(value); this.children = []; }
-        append(...nodes) { nodes.forEach((node) => { this.children.push(node); node.parentElement = this; }); }
-        prepend(...nodes) { this.children.unshift(...nodes); }
-        replaceChildren(...nodes) { this.text = ''; this.children = []; this.append(...nodes); }
-        setAttribute(name, value) { this.attributes.set(name, String(value)); if (name === 'open') this.open = true; }
+        set textContent(value) { this.text = String(value); this.children.forEach(child => { child.parentElement = null; }); this.children = []; }
+        append(...nodes) { nodes.forEach((node) => { node.remove(); this.children.push(node); node.parentElement = this; }); }
+        appendChild(node) { this.append(node); return node; }
+        prepend(...nodes) { nodes.forEach(node => node.remove()); this.children.unshift(...nodes); nodes.forEach(node => { node.parentElement = this; }); }
+        replaceChildren(...nodes) { this.textContent = ''; this.append(...nodes); }
+        remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; }
+        contains(node) { while (node) { if (node === this) return true; node = node.parentElement; } return false; }
+        getClientRects() {
+            for (let node = this; node; node = node.parentElement) if (node.hidden || node.style.display === 'none' || (node.tagName === 'DIALOG' && !node.open)) return [];
+            return this.isConnected ? [{x: 0, y: 0, width: 100, height: 30}] : [];
+        }
+        setAttribute(name, value) { this.attributes.set(name, String(value)); }
+        hasAttribute(name) { return this.attributes.has(name); }
         getAttribute(name) { return this.attributes.get(name) ?? null; }
-        removeAttribute(name) { this.attributes.delete(name); if (name === 'src') this.src = ''; if (name === 'open') this.open = false; }
+        removeAttribute(name) { this.attributes.delete(name); if (name === 'src') this.src = ''; }
         addEventListener(name, fn) { if (!this.listeners.has(name)) this.listeners.set(name, []); this.listeners.get(name).push(fn); }
         removeEventListener(name, fn) { this.listeners.set(name, (this.listeners.get(name) || []).filter((item) => item !== fn)); }
-        dispatch(name, extra = {}) { const event = {target: this, currentTarget: this, preventDefault() {}, ...extra}; (this.listeners.get(name) || []).forEach((fn) => fn(event)); }
-        focus() { activeElement = this; }
-        close() { this.open = false; }
-        showModal() { this.open = true; }
+        dispatchEvent(event) {
+            if (!event.target) event.target = this;
+            for (let node = this; node; node = event.bubbles && !event.propagationStopped ? node.parentElement : null) {
+                event.currentTarget = node;
+                [...(node.listeners.get(event.type) || [])].forEach(fn => fn(event));
+            }
+            event.currentTarget = null; return !event.defaultPrevented;
+        }
+        dispatch(name, extra = {}) { const event = Object.assign(new DomEvent(name, {bubbles: ['click', 'keydown', 'focusin'].includes(name), cancelable: true}), extra); this.dispatchEvent(event); return event; }
+        focus() { if (activeElement === this || this.disabled || !this.isConnected) return; activeElement = this; this.dispatchEvent(new DomEvent('focusin', {bubbles: true})); }
+        close(value) {
+            if (!this.open) return;
+            if (value !== undefined) this.returnValue = String(value);
+            this.removeAttribute('open');
+            // Native dialog.close() updates open synchronously and queues a non-bubbling close event.
+            setImmediate(() => this.dispatchEvent(new DomEvent('close')));
+        }
+        showModal() { if (!this.isConnected) throw new Error('dialog must be connected'); this.setAttribute('open', ''); }
+        requestClose() { if (this.open && this.dispatchEvent(new DomEvent('cancel', {cancelable: true}))) this.close(); }
         pause() { this.paused = true; this.pauseCount += 1; }
         load() {}
         matches(selector) {
+            if (selector.includes('>')) { const [parent, child] = selector.split('>').map(value => value.trim()); return this.matches(child) && !!this.parentElement?.matches(parent); }
             if (selector.startsWith('.')) return this.className.split(' ').includes(selector.slice(1));
             if (selector === '[data-history-action]') return !!this.dataset.historyAction;
+            if (selector === '[tabindex]') return this.hasAttribute('tabindex');
             if (selector === 'a[href]') return this.tagName === 'A' && !!this.href;
             return this.tagName.toLowerCase() === selector;
         }
@@ -59,11 +102,18 @@ function harness(options = {}) {
     elements.get('history-detail-page').append(elements.get('history-detail-content'));
     elements.get('history-calendar-dialog').append(elements.get('history-calendar-content'));
     elements.get('history-photo-dialog').append(elements.get('history-photo-content'));
-    const document = {getElementById: (id) => elements.get(id), createElement: (tag) => new Element(tag), get activeElement() { return activeElement; }};
+    document = new Element('#document');
+    document.body = new Element('body'); document.append(document.body);
+    const main = new Element('main'); document.body.append(main);
+    main.append(elements.get('personal-history-page'), elements.get('history-detail-page'));
+    document.body.append(elements.get('history-calendar-dialog'), elements.get('history-photo-dialog'));
+    document.getElementById = id => elements.get(id); document.createElement = tag => new Element(tag);
+    Object.defineProperty(document, 'activeElement', {get: () => activeElement});
     const requests = []; const views = []; const resumes = []; const supplements = [];
-    const window = {document, location: {origin: 'https://sales.example.test'}, AbortController, scrollY: 0,
+    const window = {document, Event: DomEvent, location: {origin: 'https://sales.example.test'}, AbortController, scrollX: 0, scrollY: 0,
         setTimeout(fn, ms) { timers.push({fn, ms}); return timers.length; },
-        scrollTo(x, y) { window.scrollY = y; }, requestAnimationFrame(fn) { fn(); }};
+        scrollTo(x, y) { window.scrollX = x; window.scrollY = y; }, requestAnimationFrame(fn) { fn(); }};
+    document.defaultView = window;
     vm.runInNewContext(source, {window, URL, URLSearchParams, Intl, Date, Set, Map, console});
     let identity = {authenticated: true, tenantId: 'tenant1', salespersonId: 'sales1', salespersonName: '王销售'};
     let records = options.records || [];
@@ -223,6 +273,30 @@ test('detail hides the entire supplement entry even with server permission and a
     h.setRequest(async (url) => url.includes('/mine?') ? page([receipt()]) : detail('record1', {canSupplement: false}));
     await h.controller.refresh();
     assert.doesNotMatch(h.text('history-detail-content'), /补充证据|补传期限/);
+});
+
+test('a submitted pending-evidence card confirms its receipt and resumes the original local visit for supplement', async () => {
+    const record=local({status:'SUBMITTED',serverId:'record1',audioSegments:[{segmentId:'audio1',uploadState:'ERROR'}]});
+    const h=harness({records:[record],request:async url=>url.includes('/by-client/')?receipt():page([])});
+    await h.controller.open({pendingOnly:true});h.click('.history-record-card');await tick();
+    assert.equal(h.resumes.length,1);assert.equal(h.resumes[0][0],record);
+    assert.equal(h.resumes[0][1].mode,'supplement');assert.equal(h.resumes[0][1].receipt.id,'record1');
+    assert.notEqual(h.controller.getState().view,'detail');
+    assert.equal(h.requests.filter(request=>request.url.includes('/by-client/')).length,1);
+    assert.equal(h.requests.find(request=>request.url.includes('/by-client/')).args.headers['X-Submission-Key'],'local-private-key');
+});
+
+test('pending submitted evidence cannot enter the editor with missing credentials, a missing receipt, or a mismatched receipt', async () => {
+    for(const failure of ['key','missing','mismatch']){
+        const record=local({status:'SUBMITTED',serverId:'record1',pendingWechat:true,...(failure==='key'?{submissionKey:null}:{})});
+        const h=harness({records:[record],request:async url=>{
+            if(!url.includes('/by-client/'))return page([]);
+            if(failure==='missing')throw Object.assign(new Error('not found'),{status:404});
+            return receipt('wrong-record');
+        }});
+        await h.controller.open({pendingOnly:true});h.click('.history-record-card');await tick();
+        assert.equal(h.resumes.length,0,failure);assert.match(h.text(),/暂时无法确认/,failure);
+    }
 });
 
 test('audio duration uses server values first and labels client values without inferring elapsed time', () => {

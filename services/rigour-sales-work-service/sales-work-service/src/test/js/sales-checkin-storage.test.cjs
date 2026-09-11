@@ -147,6 +147,29 @@ test('a normal read retains owner scope and clears timers on transaction complet
     assert.equal(outcome.value[0].mediaId, 'audio:one'); assert.equal(h.timers.size, 0); assert.equal(db.closed, false);
 });
 
+test('Blob and replacement generation become durable in the same transaction', async () => {
+    const h = harness(), file = new Blob(['replacement']);
+    const outcome = observed(h.api.saveMedia(owner, 'visit-one', 'audio:one', file, {generation: 'replacement-one'}));
+    const db = h.openLatest(); await tick(); const tx = db.transactions[0];
+    h.succeed(tx.requests[0], null);
+    assert.equal(tx.puts[0].generation, 'replacement-one'); assert.equal(tx.puts[0].file, file);
+    assert.equal(h.committed.size, 0); assert.equal(outcome.settled, false);
+    tx.commit(); await outcome.done;
+    const row = h.committed.get(owner + '|visit-one|audio:one');
+    assert.equal(row.generation, 'replacement-one'); assert.equal(row.file, file);
+});
+
+test('a failed replacement transaction cannot pair a new generation with the old durable Blob', async () => {
+    const h = harness(), key = owner + '|visit-one|audio:one';
+    const old = {key, file: new Blob(['old']), generation: 'old-generation'};
+    h.committed.set(key, old);
+    const outcome = observed(h.api.saveMedia(owner, 'visit-one', 'audio:one', new Blob(['new']), {generation: 'new-generation'}));
+    const db = h.openLatest(); await tick(); const tx = db.transactions[0]; h.succeed(tx.requests[0], null);
+    h.advance(60000); await outcome.done; tx.commit();
+    assert.equal(outcome.error.code, 'LOCAL_STORAGE_TIMEOUT');
+    assert.equal(h.committed.get(key), old);
+});
+
 test('Blob writes receive 60s, then abort and suppress late cursor put', async () => {
     const h = harness(); const outcome = observed(h.api.saveMedia(owner, 'visit-one', 'photo', new Blob(['image'])));
     const db = h.openLatest(); await tick(); const tx = db.transactions[0];
@@ -190,4 +213,51 @@ test('version change closes the cached connection and the next operation reopens
 test('unavailable IndexedDB rejects immediately without starting a deadline', async () => {
     const h = harness(); h.removeIndexedDB(); const outcome = observed(h.api.list(owner)); await outcome.done;
     assert.match(outcome.error.message, /不支持/); assert.equal(h.timers.size, 0); assert.equal(h.openRequests.length, 0);
+});
+
+test('twenty pending visits reject a new draft with a draft-limit reason without deleting evidence', async () => {
+    const h=harness(),{outcome,tx}=await beginSave(h,'new-visit');
+    const records=Array.from({length:20},(_,i)=>({key:owner+'|old-'+i,updatedAt:i,snapshot:snapshot('old-'+i)}));
+    h.succeed(tx.requests[0],records);await outcome.done;
+    assert.equal(outcome.error.code,'LOCAL_DRAFT_LIMIT');assert.equal(tx.aborted,true);
+    assert.equal(tx.deletes.length,0);assert.equal(tx.puts.length,0);assert.equal(h.timers.size,0);
+});
+
+test('completed visits with pending photos, audio, or screenshots are never chosen for capacity eviction', async () => {
+    for (const kind of ['photo','audio','screenshot','screenshot-before-flag']) {
+        const h=harness(),{outcome,tx}=await beginSave(h,'new-visit');
+        const records=Array.from({length:20},(_,i)=>{
+            const saved=snapshot('old-'+i);saved.submission.status='SUBMITTED';
+            if(kind==='photo')saved.submission.photos=[{photoId:'pending',uploadState:'UNKNOWN'}];
+            if(kind==='audio')saved.submission.audioSegments=[{segmentId:'pending',uploadState:'LOCAL'}];
+            if(kind==='screenshot')saved.submission.pendingWechat=true;
+            if(kind==='screenshot-before-flag')saved.localMediaIds=['wechat'];
+            return {key:owner+'|old-'+i,updatedAt:i,snapshot:saved};
+        });
+        h.succeed(tx.requests[0],records);await outcome.done;
+        assert.equal(outcome.error.code,'LOCAL_DRAFT_LIMIT',kind);assert.equal(tx.deletes.length,0,kind);
+        assert.equal(tx.requests.some(item=>item.kind==='media.draft.cursor'),false,kind);
+    }
+});
+
+test('capacity eviction removes only an older fully confirmed visit and preserves pending photo records', async () => {
+    const h=harness(),{outcome,tx}=await beginSave(h,'new-visit');
+    const records=Array.from({length:20},(_,i)=>{
+        const saved=snapshot('old-'+i);saved.submission.status='SUBMITTED';
+        saved.submission.photos=[{photoId:'photo-'+i,uploadState:i===4?'UPLOADED':'LOCAL'}];
+        return {key:owner+'|old-'+i,updatedAt:i,snapshot:saved};
+    });
+    h.succeed(tx.requests[0],records);
+    assert.deepEqual(tx.deletes,[owner+'|old-4']);assert.equal(tx.requests[1].value,owner+'|old-4');
+    h.succeed(tx.requests[1],null);tx.commit();await outcome.done;
+    assert.equal(outcome.error,undefined);assert.equal(h.committed.has(owner+'|new-visit'),true);
+});
+
+test('application media capacity rejection has its own reason and never claims device quota failure', async () => {
+    const h=harness(),outcome=observed(h.api.saveMedia(owner,'visit-one','audio:one',new Blob(['audio'])));
+    const db=h.openLatest();await tick();const tx=db.transactions[0],request=tx.requests[0];
+    h.succeed(request,{key:'existing',value:{size:512*1024*1024},continue(){h.succeed(request,null);}});
+    await outcome.done;
+    assert.equal(outcome.error.code,'LOCAL_MEDIA_LIMIT');assert.equal(tx.puts.length,0);
+    assert.equal(tx.aborted,true);assert.equal(h.timers.size,0);
 });

@@ -42,16 +42,31 @@ class TemporaryCheckinStatisticsRepository {
                     FROM temp_sales_checkin_submission WHERE tenant_id=? AND status='SUBMITTED'
                 )
                 SELECT s.id,s.status,s.city,s.salesperson_id,s.salesperson_name_snapshot,
-                       s.store_id,s.submitted_at,s.review_status
+                       s.store_id,s.submitted_at,s.review_status,
+                       CASE WHEN s.status<>'SUBMITTED' THEN 0
+                            WHEN JSON_LENGTH(s.audio_segments_json)>0 THEN EXISTS (
+                                SELECT 1 FROM JSON_TABLE(s.audio_segments_json,'$[*]' COLUMNS (
+                                    object_key VARCHAR(1024) PATH '$.objectKey' NULL ON EMPTY NULL ON ERROR,
+                                    size_bytes BIGINT PATH '$.sizeBytes' NULL ON EMPTY NULL ON ERROR,
+                                    deleted_at VARCHAR(128) PATH '$.deletedAt' NULL ON EMPTY NULL ON ERROR
+                                )) audio_segment
+                                WHERE audio_segment.deleted_at IS NULL AND audio_segment.size_bytes>0
+                                  AND NULLIF(TRIM(audio_segment.object_key),'') IS NOT NULL
+                            )
+                            WHEN s.audio_deleted_at IS NULL AND s.audio_size_bytes>0
+                                 AND NULLIF(TRIM(s.audio_object_key),'') IS NOT NULL THEN 1
+                            ELSE 0 END AS audio_count
                 FROM temp_sales_checkin_submission s LEFT JOIN visit_ranks r ON r.id=s.id
                 WHERE s.tenant_id=?
                 """);
         List<Object> arguments = new ArrayList<>(List.of(SalesUuidCodec.encode(tenantId), SalesUuidCodec.encode(tenantId)));
+        sql=TemporaryCheckinRiskSql.prepare(sql,arguments,tenantId,options);
         TemporaryCheckinRepository.appendAdminFilters(sql, arguments, filters.from(), filters.toExclusive(),
                 filters.city(), filters.salespersonId(), filters.status(), filters.visitType(), filters.escapedQuery(), options);
+        final String querySql=sql.toString();
         Accumulator result = new Accumulator();
         jdbc.query(connection -> {
-            var statement = connection.prepareStatement(sql.toString(), ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+            var statement = connection.prepareStatement(querySql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
             // MySQL 的前向流避免把完整明细缓存在驱动；其他测试驱动使用普通读取提示。
             statement.setFetchSize(connection.getMetaData().getDatabaseProductName().equalsIgnoreCase("MySQL")
                     ? Integer.MIN_VALUE : 256);
@@ -96,6 +111,7 @@ class TemporaryCheckinStatisticsRepository {
         private final DayKey key;
         private final Set<UUID> stores = new HashSet<>();
         private long visits;
+        private long audios;
         private long pendingReviews;
         private Instant first;
         private Instant last;
@@ -106,6 +122,8 @@ class TemporaryCheckinStatisticsRepository {
 
         void accept(ResultSet row, Instant at, boolean pending) throws SQLException {
             visits++;
+            // 每次拜访存在有效原录音即计一次，不依赖 SHA 或时长解析；多段和首段投影不重复累计。
+            audios+=row.getLong("audio_count");
             if (pending) pendingReviews++;
             byte[] storeId = row.getBytes("store_id");
             if (storeId != null) stores.add(SalesUuidCodec.decode(storeId));
@@ -120,7 +138,7 @@ class TemporaryCheckinStatisticsRepository {
 
         DailyAttendance finish() {
             return new DailyAttendance(key.date(), key.city(), key.salespersonId(), salespersonName,
-                    visits, stores.size(), first, last, pendingReviews);
+                    visits, stores.size(), audios, first, last, pendingReviews);
         }
     }
 
@@ -161,6 +179,6 @@ class TemporaryCheckinStatisticsRepository {
     }
 
     record DailyAttendance(LocalDate date, String city, UUID salespersonId, String salespersonName,
-            long visitCount, long storeCount, Instant firstCheckinAt, Instant lastCheckinAt,
+            long visitCount, long storeCount, long audioCount, Instant firstCheckinAt, Instant lastCheckinAt,
             long pendingReviewCount) { }
 }

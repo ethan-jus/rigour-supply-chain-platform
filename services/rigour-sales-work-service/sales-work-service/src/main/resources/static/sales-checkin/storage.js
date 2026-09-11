@@ -21,7 +21,7 @@
     }
 
     function open() {
-        if (!root.indexedDB) return Promise.reject(new Error("当前浏览器不支持本机保存"));
+        if (!root.indexedDB) return Promise.reject(Object.assign(new Error("当前浏览器不支持本机保存"), {code: "LOCAL_STORAGE_UNAVAILABLE"}));
         if (connection) return Promise.resolve(connection);
         if (opening) return opening.promise;
         // Store the attempt before invoking IndexedDB: synchronous failures must not cache a rejected promise.
@@ -63,7 +63,7 @@
                     }
                 };
                 request.onerror = () => finish(request.error || new Error("无法打开本机存储"));
-                request.onblocked = () => finish(new Error("请关闭旧打卡页面后重试保存"));
+                request.onblocked = () => finish(Object.assign(new Error("请关闭旧打卡页面后重试保存"), {code: "LOCAL_STORAGE_BLOCKED"}));
                 request.onsuccess = () => finish(null, request.result);
             } catch (error) { finish(error); }
         });
@@ -124,10 +124,13 @@
                 if (records.length >= MAX_DRAFTS && !records.some((item) => item.key === id)) {
                     const disposable = records.filter((item) =>
                         item.snapshot.submission.status === "SUBMITTED" && !item.snapshot.submission.pendingWechat
+                        && !((item.snapshot.localMediaIds || []).includes("wechat")
+                            && !(item.snapshot.submission.uploadedMedia || []).includes("wechat-screenshot"))
+                        && !(item.snapshot.submission.photos || []).some(photo => photo.uploadState !== "UPLOADED")
                         && !(item.snapshot.submission.audioSegments || []).some((segment) =>
                             !["UPLOADED", "SKIPPED", "DISCARDED"].includes(segment.uploadState)))
                         .sort((left, right) => left.updatedAt - right.updatedAt)[0];
-                    if (!disposable) { tx.abort(); return; }
+                    if (!disposable) throw Object.assign(new Error("本机待处理记录已达 20 条，请先处理待提交或待补传记录"), {code: "LOCAL_DRAFT_LIMIT"});
                     drafts.delete(disposable.key);
                     const cursor = tx.objectStore("media").index("draft").openCursor(disposable.key);
                     onSuccess(cursor, (current) => {
@@ -140,8 +143,10 @@
         });
     }
 
-    async function saveMedia(owner, draftId, mediaId, file) {
+    async function saveMedia(owner, draftId, mediaId, file, metadata = {}) {
         if (!owner || !draftId || !(file instanceof Blob)) throw new Error("文件无法在本机保存");
+        const generation = typeof metadata.generation === "string" && metadata.generation.length <= 128
+            ? metadata.generation : null;
         return transact(["media"], "readwrite", (tx, result, onSuccess) => {
             const media = tx.objectStore("media");
             const draft = key(owner, draftId);
@@ -155,8 +160,8 @@
                     cursor.continue();
                     return;
                 }
-                if (used + file.size > MAX_BYTES) { tx.abort(); return; }
-                media.put({ key: id, draft, owner, mediaId, file, size: file.size,
+                if (used + file.size > MAX_BYTES) throw Object.assign(new Error("本机附件缓存已达上限"), {code: "LOCAL_MEDIA_LIMIT"});
+                media.put({ key: id, draft, owner, mediaId, file, size: file.size, generation,
                     filename: file.name || "附件", lastModified: file.lastModified || null,
                     updatedAt: Date.now() });
             });

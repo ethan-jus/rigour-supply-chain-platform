@@ -157,6 +157,7 @@ public class TemporaryCheckinService {
     private final UUID tenantId;
     private final boolean aiEnabled;
     private final ObjectProvider<org.springframework.boot.servlet.autoconfigure.MultipartProperties> multipartProperties;
+    private final TemporaryCheckinAddressRepository addressRepository;
 
     public TemporaryCheckinService(
             TemporaryCheckinRepository repository,
@@ -176,7 +177,8 @@ public class TemporaryCheckinService {
             TransactionTemplate transactions,
             Clock clock,
             ObjectProvider<TemporaryCheckinAiClient> aiClientProvider,
-            ObjectProvider<org.springframework.boot.servlet.autoconfigure.MultipartProperties> multipartProperties) {
+            ObjectProvider<org.springframework.boot.servlet.autoconfigure.MultipartProperties> multipartProperties,
+            TemporaryCheckinAddressRepository addressRepository) {
         this.repository = repository;
         this.evidenceRepository = evidenceRepository;
         this.derivativeRepository = derivativeRepository;
@@ -196,6 +198,7 @@ public class TemporaryCheckinService {
         this.tenantId = properties.requireTenantId();
         this.aiEnabled = aiClientProvider.getIfAvailable() != null;
         this.multipartProperties = multipartProperties;
+        this.addressRepository = addressRepository;
         validateConfiguration(properties);
     }
 
@@ -490,9 +493,11 @@ public class TemporaryCheckinService {
         String locationMessage = !accuracyAccepted ? accuracyMessage(location.accuracyMeters())
                 : !freshnessAccepted ? freshnessMessage(location)
                 : physicalLocationMessage(city, geocode, cityMatch, maxDistanceMeters);
-        String locationVerificationToken = city == null || !accuracyAccepted || !freshnessAccepted ? null : locationVerificationTokenService.issue(
-                identity.salesperson().id(), city, location.longitude(), location.latitude(),
-                location.accuracyMeters(), location.capturedAt(), geocode);
+        String locationVerificationToken = city != null && accuracyAccepted && freshnessAccepted
+                ? locationVerificationTokenService.issue(identity.salesperson().id(), city,
+                    location.longitude(), location.latitude(), location.accuracyMeters(), location.capturedAt(), geocode)
+                : locationVerificationTokenService.issueAddress(identity.salesperson().id(), city,
+                    location.longitude(), location.latitude(), location.accuracyMeters(), location.capturedAt(), geocode);
 
         List<StoreRow> registeredStores = repository.findActiveStores(tenantId);
         Map<UUID, StoreCheckinAnchorRow> fallbackAnchors = repository
@@ -803,11 +808,11 @@ public class TemporaryCheckinService {
                 facts == null ? null : facts.userAgentHash(), facts == null ? null : facts.userAgentSummary(),
                 risk.level(), writeJson(risk.flags()), risk.evaluatedAt());
         GeocodeWrite geocode = unverifiedGeocodeWrite(location, verification, now);
-        if (location != null && location.capturedAt() != null && location.accuracyMeters() != null
-                && hasText(request.locationVerificationToken())) {
+        if (location != null && hasText(request.locationVerificationToken())) {
             try {
-                geocode = geocodeWrite(verifyLocationProof(request.locationVerificationToken(),
-                        salesperson.id(),city,location),now);
+                geocode = geocodeWrite(locationVerificationTokenService.verifyAddress(
+                        request.locationVerificationToken(), salesperson.id(), city, location.longitude(),
+                        location.latitude(), location.accuracyMeters(), location.capturedAt()), now);
             } catch (TemporaryCheckinException ignored) {
                 // 地址凭证过期只影响地址来源，不阻断业务留档。
             }
@@ -836,6 +841,9 @@ public class TemporaryCheckinService {
                     request.location() == null ? null : optional(request.location().source(), "location.source", 64),
                     objectMapper.writeValueAsString(request.location()), anchor == null ? null : anchor.longitude(),
                     anchor == null ? null : anchor.latitude(), distance == null ? null : BigDecimal.valueOf(distance), now);
+        if ("RESOLVED".equals(geocode.status()) && hasText(geocode.address())) {
+            addressRepository.recordCaptureSnapshot(tenantId, id, now);
+        }
         return new DraftSubmissionView(id, "DRAFT", now);
     }
 
@@ -1133,12 +1141,12 @@ public class TemporaryCheckinService {
         }
         long activeCount = segments.stream().filter(AudioSegment::available).count();
         if (activeCount >= properties.getMaxAudioSegmentsPerSubmission()) {
-            throw TemporaryCheckinException.badRequest("本次拜访录音分段过多，请删除无效片段后重试");
+            throw TemporaryCheckinException.audioRejected(TemporaryCheckinException.AudioRejectionReason.SEGMENT_LIMIT);
         }
         long activeBytes = segments.stream().filter(AudioSegment::available)
                 .mapToLong(AudioSegment::sizeBytes).sum();
         if (validated.sizeBytes() > properties.getMaxAudioTotalBytesPerSubmission() - activeBytes) {
-            throw TemporaryCheckinException.badRequest("本次拜访录音总量过大，请删除无效片段后重试");
+            throw TemporaryCheckinException.audioRejected(TemporaryCheckinException.AudioRejectionReason.TOTAL_SIZE_LIMIT);
         }
 
         String objectKey = optionalMediaObjectKey(submissionId, MediaKind.AUDIO, validated, segmentId);
@@ -1205,12 +1213,12 @@ public class TemporaryCheckinService {
         }
         long activeCount = segments.stream().filter(AudioSegment::available).count();
         if (activeCount >= properties.getMaxAudioSegmentsPerSubmission()) {
-            throw TemporaryCheckinException.badRequest("本次拜访录音分段过多，请删除无效片段后重试");
+            throw TemporaryCheckinException.audioRejected(TemporaryCheckinException.AudioRejectionReason.SEGMENT_LIMIT);
         }
         long activeBytes = segments.stream().filter(AudioSegment::available)
                 .mapToLong(AudioSegment::sizeBytes).sum();
         if (validated.sizeBytes() > properties.getMaxAudioTotalBytesPerSubmission() - activeBytes) {
-            throw TemporaryCheckinException.badRequest("本次拜访录音总量过大，请删除无效片段后重试");
+            throw TemporaryCheckinException.audioRejected(TemporaryCheckinException.AudioRejectionReason.TOTAL_SIZE_LIMIT);
         }
         Instant now = clock.instant();
         AudioSegment added = new AudioSegment(segmentId, objectKey, validated.contentType(),
@@ -1528,6 +1536,7 @@ public class TemporaryCheckinService {
     public AdminSubmissionPage findAdminSubmissions(
             AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId,
             String status, String visitType, String query, Integer requestedPage, Integer requestedSize, TemporaryCheckinRepository.AdminReadOptions readOptions) {
+        readOptions=readOptions.withScope(requireConfiguredScope(scope));
         AdminQuery filters = normalizeAdminQuery(
                 scope, from, to, city, salespersonId, status, visitType, query);
         int page = requestedPage == null ? 0 : requestedPage;
@@ -1572,6 +1581,7 @@ public class TemporaryCheckinService {
     public String exportCsv(
             AdminScope scope, LocalDate from, LocalDate to, String city, UUID salespersonId,
             String status, String visitType, String query, TemporaryCheckinRepository.AdminReadOptions readOptions) {
+        readOptions=readOptions.withScope(requireConfiguredScope(scope));
         AdminQuery filters = normalizeAdminQuery(
                 scope, from, to, city, salespersonId, status, visitType, query);
         List<ExportRow> rows = repository.export(tenantId, filters.from(), filters.toExclusive(), filters.city(),
@@ -1616,6 +1626,17 @@ public class TemporaryCheckinService {
                     value(detail.reviewedBy()),csvTime(detail.reviewedAt())));
         }
         return csv.toString();
+    }
+
+    /** 风险关联流水可以打开当前分页之外的具体拜访，仍执行相同城市权限与媒体可用性规则。 */
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
+    public AdminSubmissionView findAdminSubmission(AdminScope scope,UUID id) {
+        String city=requireConfiguredScope(scope);
+        AdminSubmissionRow row=repository.findAdminSubmission(tenantId,id,city)
+                .orElseThrow(()->TemporaryCheckinException.notFound("打卡记录不存在"));
+        List<UUID> ids=List.of(id);
+        return adminSubmissionView(row,evidenceRepository.evidenceBatch(tenantId,ids).get(id),
+                derivativeRepository.forSubmissions(tenantId,ids),repository.photosBatch(tenantId,ids).getOrDefault(id,List.of()));
     }
 
     @Transactional
@@ -2521,10 +2542,14 @@ public class TemporaryCheckinService {
     }
 
     private ValidatedMedia validateMedia(MediaKind kind, MultipartFile file) {
-        if (file == null || file.isEmpty()) throw TemporaryCheckinException.badRequest("媒体文件不能为空");
+        if (file == null || file.isEmpty()) {
+            throw mediaRejected(kind, TemporaryCheckinException.AudioRejectionReason.EMPTY_FILE, "媒体文件不能为空");
+        }
         long limit = kind.maxBytes(properties);
         if (limit <= 0 || file.getSize() <= 0 || file.getSize() > limit) {
-            throw TemporaryCheckinException.badRequest("媒体文件超过大小限制");
+            throw mediaRejected(kind, file.getSize() <= 0
+                    ? TemporaryCheckinException.AudioRejectionReason.EMPTY_FILE
+                    : TemporaryCheckinException.AudioRejectionReason.FILE_TOO_LARGE, "媒体文件超过大小限制");
         }
         MessageDigest digest = sha256Digest();
         MediaSignatureProbe probe = new MediaSignatureProbe(!kind.image);
@@ -2536,16 +2561,17 @@ public class TemporaryCheckinService {
                 if (read == 0) continue;
                 observedSize += read;
                 if (observedSize > limit) {
-                    throw TemporaryCheckinException.badRequest("媒体文件超过大小限制");
+                    throw mediaRejected(kind, TemporaryCheckinException.AudioRejectionReason.FILE_TOO_LARGE,
+                            "媒体文件超过大小限制");
                 }
                 digest.update(buffer, 0, read);
                 probe.accept(buffer, read);
             }
         } catch (IOException exception) {
-            throw TemporaryCheckinException.badRequest("媒体文件读取失败");
+            throw mediaRejected(kind, TemporaryCheckinException.AudioRejectionReason.READ_FAILED, "媒体文件读取失败");
         }
         if (observedSize == 0) {
-            throw TemporaryCheckinException.badRequest("媒体文件超过大小限制");
+            throw mediaRejected(kind, TemporaryCheckinException.AudioRejectionReason.EMPTY_FILE, "媒体文件超过大小限制");
         }
         // 手机文件选择器经常返回空、vendor、自相矛盾的 MIME 和临时文件名；这些值可由客户端伪造，
         // 不能作为安全边界。按接口种类检查实际文件特征，并始终使用探测出的规范 MIME/扩展名存储。
@@ -2555,6 +2581,12 @@ public class TemporaryCheckinService {
                 detected.extension());
         return new ValidatedMedia(file, observedSize, detected.contentType(), detected.extension(),
                 HexFormat.of().formatHex(digest.digest()), original);
+    }
+
+    private static TemporaryCheckinException mediaRejected(
+            MediaKind kind, TemporaryCheckinException.AudioRejectionReason reason, String imageMessage) {
+        return kind == MediaKind.AUDIO ? TemporaryCheckinException.audioRejected(reason)
+                : TemporaryCheckinException.badRequest(imageMessage);
     }
 
     private NormalizedLocation normalizeLocation(LocationCommand location) {
@@ -2623,8 +2655,7 @@ public class TemporaryCheckinService {
     static DetectedMedia detectAudio(MediaSignatureProbe probe) {
         byte[] bytes = probe.prefix();
         if (isKnownImage(bytes)) {
-            throw TemporaryCheckinException.badRequest(
-                    "所选文件是图片，不是录音；录音为选填，可删除后继续提交");
+            throw TemporaryCheckinException.audioRejected(TemporaryCheckinException.AudioRejectionReason.IMAGE_FILE);
         }
         if (bytes.length >= 4 && ascii(bytes, 0, "OggS")
                 && probe.oggAudio && !probe.oggVideo) {
@@ -2683,7 +2714,25 @@ public class TemporaryCheckinService {
                 && ascii(bytes, 1, "#!SILK_V3"))) {
             return new DetectedMedia("audio/silk", ".silk");
         }
-        throw TemporaryCheckinException.badRequest("录音格式不支持或文件内容损坏");
+        // 先完整执行既有接受规则；仅对原本会拒绝的内容分类，不改变成功上传条件。
+        if (bytes.length >= 4 && ascii(bytes, 0, "OggS")) {
+            requireAudioOnlyTracks(probe.oggAudio, probe.oggVideo);
+        } else if (bytes.length >= 12 && ascii(bytes, 4, "ftyp")) {
+            requireAudioOnlyTracks(probe.mp4Audio, probe.mp4Video);
+        } else if (bytes.length >= 4 && unsigned(bytes[0]) == 0x1a && unsigned(bytes[1]) == 0x45
+                && unsigned(bytes[2]) == 0xdf && unsigned(bytes[3]) == 0xa3) {
+            requireAudioOnlyTracks(probe.webmAudio, probe.webmVideo);
+        }
+        throw TemporaryCheckinException.audioRejected(TemporaryCheckinException.AudioRejectionReason.UNRECOGNIZED_FORMAT);
+    }
+
+    private static void requireAudioOnlyTracks(boolean hasAudio, boolean hasVideo) {
+        if (hasVideo) {
+            throw TemporaryCheckinException.audioRejected(TemporaryCheckinException.AudioRejectionReason.VIDEO_TRACK);
+        }
+        if (!hasAudio) {
+            throw TemporaryCheckinException.audioRejected(TemporaryCheckinException.AudioRejectionReason.NO_AUDIO_TRACK);
+        }
     }
 
     private static boolean isKnownImage(byte[] bytes) {
