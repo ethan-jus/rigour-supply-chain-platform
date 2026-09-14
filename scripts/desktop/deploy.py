@@ -65,6 +65,7 @@ state.mkdir(parents=True,exist_ok=True)
 log_path = state / (release_id + '.log')
 print('开始发布：' + release_id + '；构建日志：' + str(log_path), flush=True)
 with log_path.open('w') as log:
+    run(['python3','-m','unittest','discover','-s',str(SOURCE),'-p','test_*.py'],stdout=log,stderr=subprocess.STDOUT)
     settings = Path('/mnt/d/RigourDev/config/maven-settings.xml')
     run(['./mvnw','verify',*(['-s',str(settings)] if settings.exists() else []),'-B','-T','2'],cwd=PLATFORM,stdout=log,stderr=subprocess.STDOUT)
     for command in [['pnpm','install','--frozen-lockfile'],['pnpm','lint'],['pnpm','typecheck'],['pnpm','test:run']]:
@@ -77,7 +78,7 @@ with log_path.open('w') as log:
 (ROOT / 'cache').mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='rigour-release-',dir=ROOT / 'cache') as staging:
     folder = Path(staging)
-    for name in ['compose.yaml','Dockerfile.iam','Dockerfile.gateway','Dockerfile.portal','nginx.conf','prepare-config.py','server.py','migrate-iam-compat.py','IamCompatibilityMigration.java']:
+    for name in ['compose.yaml','Dockerfile.iam','Dockerfile.gateway','Dockerfile.portal','nginx.conf','prepare-config.py','server.py','portal_health.py','migrate-iam-compat.py','IamCompatibilityMigration.java']:
         shutil.copy2(SOURCE / name,folder / name)
     shutil.copy2(PLATFORM / 'services/rigour-tenant-iam-service/iam-service/target/iam-service-1.0.0-SNAPSHOT.jar',folder / 'iam.jar')
     shutil.copy2(PLATFORM / 'services/rigour-api-gateway/target/rigour-api-gateway-1.0.0-SNAPSHOT.jar',folder / 'gateway.jar')

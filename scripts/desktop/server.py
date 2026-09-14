@@ -13,6 +13,7 @@ import subprocess
 import tarfile
 import time
 from urllib.request import urlopen
+from portal_health import check_portal
 
 ROOT = Path('/srv/rigour-dev/apps')
 ROOT.mkdir(parents=True, exist_ok=True)
@@ -76,6 +77,7 @@ with (ROOT / 'deploy.lock').open('w') as lock:
         for port in [26881,26880]:
             wait_health(f'http://127.0.0.1:{port}/actuator/health')
         wait_health('http://127.0.0.1:5100/')
+        check_portal()
         switch_current(release)
         print('应用已回退到：' + release.name)
     else:
@@ -121,6 +123,7 @@ with (ROOT / 'deploy.lock').open('w') as lock:
             compose(release,'up','-d','--no-build','--pull','never','gateway','portal')
             wait_health('http://127.0.0.1:26880/actuator/health')
             wait_health('http://127.0.0.1:5100/')
+            check_portal()
         except Exception:
             print('部署未通过验收，保留旧版本记录和备份；未自动修改或回退数据库。', flush=True)
             compose(release,'ps')

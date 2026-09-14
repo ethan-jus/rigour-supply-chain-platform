@@ -55,6 +55,7 @@ node_modules/
 dist/
 
 # Temp
+__pycache__/
 tmp/
 temp/
 .cache/
