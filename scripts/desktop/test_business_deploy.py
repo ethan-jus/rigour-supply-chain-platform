@@ -9,6 +9,15 @@ from service_catalog import CORE, DOMAINS, PORTS, business_compose, schemas_for,
 
 
 class BusinessDeployTest(unittest.TestCase):
+    def test_mysql_keeps_stdin_open_and_returns_query_result(self):
+        with patch.object(business_config.subprocess, 'run') as command:
+            command.return_value.stdout = 'rigour_iam\n'
+            self.assertEqual('rigour_iam\n', business_config.mysql('SELECT schema_name FROM information_schema.schemata;'))
+            args, kwargs = command.call_args
+            self.assertEqual(['docker', 'exec', '-i'], args[0][:3])
+            self.assertEqual('SELECT schema_name FROM information_schema.schemata;', kwargs['input'])
+            self.assertTrue(kwargs['check'])
+
     def test_all_modules_and_ports_are_unique(self):
         self.assertEqual(12, len(DOMAINS))
         self.assertEqual(14, len(set(PORTS.values())))

@@ -15,7 +15,7 @@ import time
 from urllib.request import urlopen
 from portal_health import check_portal
 from service_catalog import CORE, DOMAINS, PORTS, schemas_for, select_services
-from business_config import prepare as prepare_business
+from business_config import prepare as prepare_business, mysql
 
 ROOT = Path('/srv/rigour-dev/apps')
 ROOT.mkdir(parents=True, exist_ok=True)
@@ -32,10 +32,7 @@ def compose(release, *args):
     return run(['docker','compose',*files,*args],env=env,cwd=release)
 
 def query(sql):
-    result = run(['docker','exec','rigour-dev-desktop-mysql-1','sh','-c',
-        'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N'],
-        input=sql,capture_output=True,text=True)
-    return result.stdout
+    return mysql(sql)
 
 def release_services(release):
     return json.loads((release / '发布记录.json').read_text()).get('部署服务', CORE)
