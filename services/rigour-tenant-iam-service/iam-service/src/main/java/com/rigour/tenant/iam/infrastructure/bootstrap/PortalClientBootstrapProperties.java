@@ -12,6 +12,8 @@ public final class PortalClientBootstrapProperties {
     private String redirectUri;
     private String postLogoutRedirectUri;
     private boolean allowInsecureLoopback;
+    /** 台式机 DEV 显式允许精确的 HTTP 回调，仍不允许通配符和任意回调。 */
+    private boolean allowInsecureHttp;
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -25,6 +27,8 @@ public final class PortalClientBootstrapProperties {
     public void setPostLogoutRedirectUri(String value) { this.postLogoutRedirectUri = value; }
     public boolean isAllowInsecureLoopback() { return allowInsecureLoopback; }
     public void setAllowInsecureLoopback(boolean value) { this.allowInsecureLoopback = value; }
+    public boolean isAllowInsecureHttp() { return allowInsecureHttp; }
+    public void setAllowInsecureHttp(boolean value) { this.allowInsecureHttp = value; }
 
     public void validate() {
         if (clientId == null || clientId.isBlank() || clientName == null || clientName.isBlank()) {
@@ -45,7 +49,8 @@ public final class PortalClientBootstrapProperties {
         boolean loopback = allowInsecureLoopback && "http".equalsIgnoreCase(uri.getScheme())
                 && ("localhost".equalsIgnoreCase(uri.getHost()) || "127.0.0.1".equals(uri.getHost())
                 || "::1".equals(uri.getHost()));
-        if (!(secure || loopback) || uri.getHost() == null
+        boolean developmentHttp = allowInsecureHttp && "http".equalsIgnoreCase(uri.getScheme());
+        if (!(secure || loopback || developmentHttp) || uri.getHost() == null
                 || uri.getFragment() != null || uri.getUserInfo() != null
                 || !allowRoot && (uri.getPath() == null || uri.getPath().equals("/"))) {
             throw new IllegalStateException("Portal " + field + " must be exact HTTPS or approved loopback HTTP URI");

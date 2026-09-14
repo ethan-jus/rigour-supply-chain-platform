@@ -1,0 +1,40 @@
+# 应用与中间件分开管理：更新应用不会重建或删除数据库。
+name: rigour-dev-apps
+services:
+  iam:
+    image: rigour-desktop-iam:${RELEASE_ID:?未设置发布版本}
+    build:
+      context: .
+      dockerfile: Dockerfile.iam
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 1g
+    env_file: /srv/rigour-dev/apps/config/app.env
+    environment:
+      JAVA_TOOL_OPTIONS: '-Xms128m -Xmx512m -Dfile.encoding=UTF-8'
+    volumes:
+      - /srv/rigour-dev/apps/config/iam.properties:/config/iam.properties:ro
+      - /srv/rigour-dev/apps/keys:/keys
+    command: ['java', '-jar', '/app/service.jar', '--spring.profiles.active=desktop', '--spring.config.additional-location=file:/config/iam.properties']
+  gateway:
+    image: rigour-desktop-gateway:${RELEASE_ID:?未设置发布版本}
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 768m
+    env_file: /srv/rigour-dev/apps/config/app.env
+    environment:
+      JAVA_TOOL_OPTIONS: '-Xms64m -Xmx384m -Dfile.encoding=UTF-8'
+    volumes:
+      - /srv/rigour-dev/apps/config/gateway.properties:/config/gateway.properties:ro
+    command: ['java', '-jar', '/app/service.jar', '--spring.profiles.active=desktop', '--spring.config.additional-location=file:/config/gateway.properties']
+  portal:
+    image: rigour-desktop-portal:${RELEASE_ID:?未设置发布版本}
+    build:
+      context: .
+      dockerfile: Dockerfile.portal
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 128m
