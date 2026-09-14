@@ -14,6 +14,8 @@ import tarfile
 import time
 from urllib.request import urlopen
 from portal_health import check_portal
+from service_catalog import CORE, DOMAINS, PORTS, schemas_for, select_services
+from business_config import prepare as prepare_business
 
 ROOT = Path('/srv/rigour-dev/apps')
 ROOT.mkdir(parents=True, exist_ok=True)
@@ -24,13 +26,66 @@ def run(args, **kwargs):
 
 def compose(release, *args):
     env = dict(os.environ, RELEASE_ID=release.name)
-    return run(['docker','compose','-f',str(release / 'compose.yaml'),*args],env=env,cwd=release)
+    files = ['-f',str(release / 'compose.yaml')]
+    if (release / 'compose.business.json').exists():
+        files += ['-f',str(release / 'compose.business.json')]
+    return run(['docker','compose',*files,*args],env=env,cwd=release)
 
-def schema_state():
+def query(sql):
     result = run(['docker','exec','rigour-dev-desktop-mysql-1','sh','-c',
-        'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -Nse "SELECT version,checksum,success FROM rigour_iam.flyway_schema_history ORDER BY installed_rank"'],
-        capture_output=True,text=True)
+        'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N'],
+        input=sql,capture_output=True,text=True)
     return result.stdout
+
+def release_services(release):
+    return json.loads((release / '发布记录.json').read_text()).get('部署服务', CORE)
+
+def schema_state(selected):
+    state = {}
+    for schema in schemas_for(selected):
+        exists = query(f"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='{schema}' AND table_name='flyway_schema_history';").strip()
+        state[schema] = query(f'SELECT version,checksum,success FROM {schema}.flyway_schema_history ORDER BY installed_rank;') if exists == '1' else None
+    return state
+
+def backup_before_deploy(release_id):
+    """在生成配置、授权或执行任何迁移之前备份所有现有业务库与本机配置。"""
+    backup = ROOT / 'backups' / release_id
+    backup.mkdir(parents=True, exist_ok=False)
+    for name in ['config','keys']:
+        if (ROOT / name).exists():
+            shutil.copytree(ROOT / name, backup / name)
+    shutil.copy2(ROOT.parent / '.env',backup / 'middleware.env')
+    known = schemas_for(select_services())
+    existing = set(query('SELECT schema_name FROM information_schema.schemata;').splitlines())
+    schemas = [name for name in known if name in existing]
+    if 'rigour_iam' not in schemas:
+        raise RuntimeError('未找到IAM业务库，停止发布。')
+    partial = backup / 'business.sql.gz.partial'
+    with gzip.open(partial,'wb') as stream:
+        result = subprocess.Popen(['docker','exec','rigour-dev-desktop-mysql-1','sh','-c',
+            'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction --routines --events --triggers --set-gtid-purged=OFF --no-tablespaces --databases ' + ' '.join(schemas)],stdout=subprocess.PIPE)
+        with result.stdout:
+            shutil.copyfileobj(result.stdout,stream)
+        if result.wait() != 0:
+            raise RuntimeError('数据库备份失败，未更新应用。')
+    # 完整读到EOF以验证gzip CRC，防止只记录了半截备份。
+    with gzip.open(partial,'rb') as stream:
+        while stream.read(1024*1024):
+            pass
+    final = backup / 'business.sql.gz'
+    partial.replace(final)
+    with final.open('rb') as stream:
+        digest = hashlib.file_digest(stream,'sha256').hexdigest()
+    (backup / '备份记录.json').write_text(json.dumps({'数据库': schemas,'文件':final.name,'SHA256':digest},ensure_ascii=False,indent=2))
+    print('已备份本机业务库、配置与密钥：' + str(backup),flush=True)
+    return backup
+
+def check_release(release):
+    for service in release_services(release):
+        if service in PORTS:
+            wait_health(f'http://127.0.0.1:{PORTS[service]}/actuator/health',240)
+    wait_health('http://127.0.0.1:5100/')
+    check_portal()
 
 def wait_health(url, seconds=150):
     deadline = time.monotonic() + seconds
@@ -68,16 +123,17 @@ with (ROOT / 'deploy.lock').open('w') as lock:
         if not args.value or not re.fullmatch(r'[0-9]{14}-[0-9a-f]{12}', args.value):
             raise SystemExit('请填写部署记录中的完整旧版本号。')
         release = ROOT / 'releases' / args.value
-        if not (release / 'schema-after.txt').exists() or schema_state() != (release / 'schema-after.txt').read_text():
+        if not release.is_dir() or not (release / 'schema-after.json').exists():
+            raise SystemExit('目标版本缺少完整业务库快照，不能自动回退到旧的仅IAM发布流程。')
+        if set(release_services(release)) != set(release_services(current.resolve())):
+            raise SystemExit('回退目标服务范围不同，停止自动回退，避免遗留新服务容器。')
+        if schema_state(release_services(release)) != json.loads((release / 'schema-after.json').read_text()):
             raise SystemExit('数据库版本与旧应用发布时不同，停止自动回退；不能自动回退数据库。')
         live_hashes = {path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in (ROOT / 'config').iterdir() if path.is_file()}
         if json.loads((release / 'config-hashes.json').read_text()) != live_hashes:
             raise SystemExit('配置快照不同，需人工核对后回退，未覆盖运行配置。')
         compose(release,'up','-d','--no-build','--pull','never')
-        for port in [26881,26880]:
-            wait_health(f'http://127.0.0.1:{port}/actuator/health')
-        wait_health('http://127.0.0.1:5100/')
-        check_portal()
+        check_release(release)
         switch_current(release)
         print('应用已回退到：' + release.name)
     else:
@@ -102,33 +158,33 @@ with (ROOT / 'deploy.lock').open('w') as lock:
             if not path.is_relative_to(release) or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
                 raise SystemExit('发布文件完整性校验失败：' + name)
         print('发布包校验通过：' + release_id, flush=True)
+        selected = release_services(release)
+        if selected != select_services(','.join(selected)):
+            raise SystemExit('发布包服务清单无效。')
+        if current.exists() and not set(release_services(current.resolve())).issubset(selected):
+            raise SystemExit('本次服务范围少于当前版本，停止发布，避免遗漏运行中的服务。')
+        backup_before_deploy(release_id)
         run(['python3',str(release / 'prepare-config.py')])
+        prepare_business(selected)
         compose(release,'config','--quiet')
         compose(release,'build','--pull=false')
-        backup = Path('/srv/rigour-dev/apps/backups') / release_id
-        backup.mkdir(parents=True)
-        shutil.copytree(ROOT / 'config', backup / 'config')
-        shutil.copytree(ROOT / 'keys', backup / 'keys')
-        with gzip.open(backup / 'iam.sql.gz','wb') as stream:
-            result = subprocess.Popen(['docker','exec','rigour-dev-desktop-mysql-1','sh','-c',
-                'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction --set-gtid-purged=OFF --no-tablespaces rigour_iam'],stdout=subprocess.PIPE)
-            shutil.copyfileobj(result.stdout,stream)
-            if result.wait() != 0:
-                raise SystemExit('数据库备份失败，未更新应用。')
-        print('已备份本机 IAM 数据库及配置，开始启动应用。', flush=True)
+        print('配置与镜像准备完成，开始按依赖顺序启动应用。', flush=True)
         try:
             run(['python3',str(release / 'migrate-iam-compat.py')])
             compose(release,'up','-d','--no-build','--pull','never','iam')
             wait_health('http://127.0.0.1:26881/actuator/health')
+            for name, title, module, port, suffix, prefix in DOMAINS:
+                if name in selected:
+                    print('启动并检查：' + title,flush=True)
+                    compose(release,'up','-d','--no-build','--pull','never',name)
+                    wait_health(f'http://127.0.0.1:{port}/actuator/health',240)
             compose(release,'up','-d','--no-build','--pull','never','gateway','portal')
-            wait_health('http://127.0.0.1:26880/actuator/health')
-            wait_health('http://127.0.0.1:5100/')
-            check_portal()
+            check_release(release)
         except Exception:
             print('部署未通过验收，保留旧版本记录和备份；未自动修改或回退数据库。', flush=True)
             compose(release,'ps')
             raise
-        (release / 'schema-after.txt').write_text(schema_state())
+        (release / 'schema-after.json').write_text(json.dumps(schema_state(selected),sort_keys=True))
         hashes = {path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in (ROOT / 'config').iterdir() if path.is_file()}
         (release / 'config-hashes.json').write_text(json.dumps(hashes,sort_keys=True))
         switch_current(release)

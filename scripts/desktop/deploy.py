@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import sys
 import fcntl
+from service_catalog import DOMAINS, business_compose, select_services
 
 PLATFORM = Path(__file__).resolve().parents[2]
 PORTAL = PLATFORM.parent / 'rigour-supply-chain-portal'
@@ -31,10 +32,12 @@ def run(args, **kwargs):
 def git(repo, *args):
     return subprocess.check_output(['git','-C',str(repo),*args],text=True).strip()
 
-parser = argparse.ArgumentParser(description='中文一键部署 IAM、Gateway、门户到 D 盘开发环境')
+parser = argparse.ArgumentParser(description='中文一键部署全部微服务与门户到 D 盘开发环境')
 parser.add_argument('action', nargs='?',default='deploy',choices=['deploy','build','status','logs','rollback'])
 parser.add_argument('--version',help='回退版本号，见发布记录')
+parser.add_argument('--services',help='本次部署的业务服务简称，逗号分隔；默认全部，始终包含IAM、Gateway和门户')
 args = parser.parse_args()
+selected = select_services(args.services)
 if sys.platform != 'linux' or not PLATFORM.is_relative_to(ROOT / 'src') or not Path('/mnt/d/RigourDev').is_dir():
     raise SystemExit('请在台式机 D:\\RigourDev 运行中文部署入口；本脚本不在 Mac 构建。')
 if args.action not in ('deploy','build'):
@@ -78,12 +81,16 @@ with log_path.open('w') as log:
 (ROOT / 'cache').mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='rigour-release-',dir=ROOT / 'cache') as staging:
     folder = Path(staging)
-    for name in ['compose.yaml','Dockerfile.iam','Dockerfile.gateway','Dockerfile.portal','nginx.conf','prepare-config.py','server.py','portal_health.py','migrate-iam-compat.py','IamCompatibilityMigration.java']:
+    for name in ['compose.yaml','Dockerfile.iam','Dockerfile.gateway','Dockerfile.portal','Dockerfile.service','nginx.conf','prepare-config.py','business_config.py','service_catalog.py','server.py','portal_health.py','migrate-iam-compat.py','IamCompatibilityMigration.java']:
         shutil.copy2(SOURCE / name,folder / name)
     shutil.copy2(PLATFORM / 'services/rigour-tenant-iam-service/iam-service/target/iam-service-1.0.0-SNAPSHOT.jar',folder / 'iam.jar')
     shutil.copy2(PLATFORM / 'services/rigour-api-gateway/target/rigour-api-gateway-1.0.0-SNAPSHOT.jar',folder / 'gateway.jar')
+    for name, title, module, port, suffix, prefix in DOMAINS:
+        artifact = module.split('/')[-1]
+        shutil.copy2(PLATFORM / 'services' / module / 'target' / (artifact + '-1.0.0-SNAPSHOT.jar'),folder / (name + '.jar'))
+    (folder / 'compose.business.json').write_text(json.dumps({'services': {k: v for k, v in business_compose().items() if k in selected}},ensure_ascii=False,indent=2))
     shutil.copytree(PORTAL / 'dist',folder / 'portal')
-    (folder / '发布记录.json').write_text(json.dumps({'版本':release_id,'Git提交':commits,'开发入口':'http://192.168.12.7:5100'},ensure_ascii=False,indent=2))
+    (folder / '发布记录.json').write_text(json.dumps({'版本':release_id,'Git提交':commits,'部署服务':selected,'开发入口':'http://192.168.12.7:5100'},ensure_ascii=False,indent=2))
     hashes = {str(path.relative_to(folder)):hashlib.sha256(path.read_bytes()).hexdigest() for path in folder.rglob('*') if path.is_file()}
     (folder / 'sha256.json').write_text(json.dumps(hashes,ensure_ascii=False,indent=2))
     archive = Path('/mnt/d/RigourDev/downloads') / (release_id + '.tar.gz')

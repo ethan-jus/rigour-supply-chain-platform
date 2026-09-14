@@ -69,6 +69,10 @@ spring:
               uri: ${BUSINESS_SETTINGS_SERVICE_URL:http://localhost:26892}
               predicates:
                 - Path=/api/v1/business-settings/**
+            - id: collaboration
+              uri: ${COLLABORATION_SERVICE_URL:http://localhost:26893}
+              predicates:
+                - Path=/api/v1/collaboration/**,/api/v1/conversations/**,/api/v1/messages/**,/api/v1/attachments/**,/api/v1/meetings/**,/api/v1/devices
 
 management:
   endpoints:
