@@ -10,6 +10,9 @@ import java.util.Optional;
 public interface SupplyDashboardStore {
     SupplyDashboardData overview(String tenantId, SupplyDashboardFilter filter);
 
+    OperatingAnalysisData operatingAnalysis(
+            String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter);
+
     default Optional<Instant> latestSalesOrderDate(String tenantId) {
         return Optional.empty();
     }
@@ -69,6 +72,34 @@ public interface SupplyDashboardStore {
     FeishuArchiveRow registerFeishuArchive(String tenantId, FeishuArchiveWrite command, Instant registeredAt);
 
     List<FeishuArchiveRow> feishuArchives(String tenantId);
+
+    /** 仅来自 BI 本地事实的经营分析聚合。 */
+    record OperatingAnalysisData(
+            List<RankingItem> previousSalesRanking,
+            List<CityProductItem> cityProducts,
+            List<CityCustomerItem> cityCustomers,
+            List<SalesReceiptItem> salesReceipts) {
+        public OperatingAnalysisData {
+            previousSalesRanking = List.copyOf(previousSalesRanking == null ? List.of() : previousSalesRanking);
+            cityProducts = List.copyOf(cityProducts == null ? List.of() : cityProducts);
+            cityCustomers = List.copyOf(cityCustomers == null ? List.of() : cityCustomers);
+            salesReceipts = List.copyOf(salesReceipts == null ? List.of() : salesReceipts);
+        }
+    }
+
+    /** 城市分类金额及去重订单、客户数，不含数量单位。 */
+    record CityProductItem(
+            String regionCode, String regionName, String categoryCode, String categoryName,
+            BigDecimal salesAmount, Long orderCount, Long customerCount) { }
+
+    /** 同一期间、同一城市内的下单客户和复购客户数。 */
+    record CityCustomerItem(
+            String regionCode, String regionName, Long orderingCustomerCount, Long repeatCustomerCount) { }
+
+    /** 回款时间期间内按归属销售汇总的回款事实。 */
+    record SalesReceiptItem(
+            String ownerStaffCode, String ownerStaffName, BigDecimal paidAmount,
+            Long paymentCount, Long customerCount) { }
 
     record SupplyDashboardData(
             SalesSummary sales,
@@ -281,7 +312,15 @@ public interface SupplyDashboardStore {
             String metricName,
             BigDecimal targetValue,
             BigDecimal actualValue,
-            BigDecimal achievementRate) {
+            BigDecimal achievementRate,
+            Long configuredMonthCount,
+            Long periodMonthCount) {
+        public TargetCompletionItem(String dimensionType, String dimensionCode, String dimensionName,
+                String metricCode, String metricName, BigDecimal targetValue, BigDecimal actualValue,
+                BigDecimal achievementRate) {
+            this(dimensionType, dimensionCode, dimensionName, metricCode, metricName, targetValue,
+                    actualValue, achievementRate, null, null);
+        }
     }
 
     record CustomerSegmentItem(

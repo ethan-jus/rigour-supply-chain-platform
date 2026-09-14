@@ -8,6 +8,7 @@ import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFilterOptionsView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOverviewView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardOperatingAnalysisView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshRunView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardReconciliationView;
@@ -15,6 +16,7 @@ import com.rigour.analytics.application.service.SupplyDashboardCityCostImportSer
 import com.rigour.analytics.application.service.SupplyDashboardGovernanceService;
 import com.rigour.analytics.application.service.SupplyDashboardQueryService;
 import com.rigour.analytics.application.service.SupplyDashboardRefreshService;
+import com.rigour.analytics.application.service.BiDataScopeService;
 import com.rigour.shared.core.api.ApiResponse;
 import java.time.Instant;
 import java.util.List;
@@ -27,16 +29,19 @@ public final class AnalyticsSupplyDashboardController implements AnalyticsSupply
     private final SupplyDashboardRefreshService refreshService;
     private final SupplyDashboardCityCostImportService cityCostImportService;
     private final SupplyDashboardGovernanceService governanceService;
+    private final BiDataScopeService scopes;
 
     public AnalyticsSupplyDashboardController(
             SupplyDashboardQueryService queryService,
             SupplyDashboardRefreshService refreshService,
             SupplyDashboardCityCostImportService cityCostImportService,
-            SupplyDashboardGovernanceService governanceService) {
+            SupplyDashboardGovernanceService governanceService,
+            BiDataScopeService scopes) {
         this.queryService = queryService;
         this.refreshService = refreshService;
         this.cityCostImportService = cityCostImportService;
         this.governanceService = governanceService;
+        this.scopes = scopes;
     }
 
     @Override
@@ -48,12 +53,22 @@ public final class AnalyticsSupplyDashboardController implements AnalyticsSupply
     }
 
     @Override
+    public ApiResponse<SupplyDashboardOperatingAnalysisView> operatingAnalysis(
+            Instant from, Instant to, String regionCode, String ownerStaffCode,
+            String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
+        return ApiResponse.success(queryService.operatingAnalysis(
+                from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId, sourceSystemCode));
+    }
+
+    @Override
     public ApiResponse<SupplyDashboardRefreshRunView> triggerRefreshRun(SupplyDashboardRefreshCommand command) {
+        scopes.requireGlobalGovernance();
         return ApiResponse.success(refreshService.refreshCurrentTenant(command));
     }
 
     @Override
     public ApiResponse<SupplyDashboardDataTrustView> trust() {
+        scopes.requireGlobalGovernance();
         return ApiResponse.success(governanceService.trust());
     }
 
@@ -61,29 +76,34 @@ public final class AnalyticsSupplyDashboardController implements AnalyticsSupply
     public ApiResponse<SupplyDashboardReconciliationView> reconciliation(
             Instant from, Instant to, String regionCode, String ownerStaffCode,
             String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
+        scopes.requireGlobalGovernance();
         return ApiResponse.success(governanceService.reconciliation(
                 from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId, sourceSystemCode));
     }
 
     @Override
     public ApiResponse<SupplyDashboardFilterOptionsView> filterOptions() {
+        if (!scopes.effective().globalGovernance()) return ApiResponse.success(scopes.restrictedFilterOptions());
         return ApiResponse.success(governanceService.filterOptions());
     }
 
     @Override
     public ApiResponse<SupplyDashboardCityCostImportResultView> importCityCosts(
             SupplyDashboardCityCostImportCommand command) {
+        scopes.requireGlobalGovernance();
         return ApiResponse.success(cityCostImportService.importRecords(command));
     }
 
     @Override
     public ApiResponse<List<SupplyDashboardFeishuArchiveView>> feishuArchives() {
+        scopes.requireGlobalGovernance();
         return ApiResponse.success(governanceService.feishuArchives());
     }
 
     @Override
     public ApiResponse<SupplyDashboardFeishuArchiveView> registerFeishuArchive(
             SupplyDashboardFeishuArchiveCommand command) {
+        scopes.requireGlobalGovernance();
         return ApiResponse.success(governanceService.registerFeishuArchive(command));
     }
 }

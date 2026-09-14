@@ -2,16 +2,21 @@ package com.rigour.integration.infrastructure.feishu;
 
 import com.rigour.integration.application.port.out.FeishuBitableClient;
 import com.rigour.integration.application.port.out.FeishuBitableClientException;
+import com.rigour.integration.application.port.out.FeishuCaptureBudget;
 import com.rigour.integration.infrastructure.config.FeishuClientProperties;
+import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
@@ -26,6 +31,9 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.util.UriComponentsBuilder;
 import org.springframework.web.util.UriUtils;
+import tools.jackson.core.StreamReadFeature;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 /** 飞书 Base/Drive 服务端 API 适配器；只返回业务需要的记录字段和附件字节。 */
 public final class FeishuBitableClientAdapter implements FeishuBitableClient {
@@ -41,16 +49,28 @@ public final class FeishuBitableClientAdapter implements FeishuBitableClient {
 
     private final RestClient restClient;
     private final FeishuClientProperties properties;
+    private final Function<Duration, RestClient> captureClients;
+    private static final JsonMapper CAPTURE_JSON = JsonMapper.builder()
+            .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+            .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+            .enable(DeserializationFeature.USE_BIG_INTEGER_FOR_INTS).build();
     private final Object cacheLock = new Object();
     private volatile CachedToken tenantToken;
 
     public FeishuBitableClientAdapter(RestClient.Builder builder, FeishuClientProperties properties) {
-        this(createRestClient(builder, properties), properties);
+        this(createRestClient(builder, properties), properties,
+                remaining -> createCaptureRestClient(builder, properties, remaining));
     }
 
     FeishuBitableClientAdapter(RestClient restClient, FeishuClientProperties properties) {
+        this(restClient, properties, remaining -> restClient);
+    }
+
+    private FeishuBitableClientAdapter(RestClient restClient, FeishuClientProperties properties,
+                                       Function<Duration, RestClient> captureClients) {
         this.restClient = Objects.requireNonNull(restClient, "restClient cannot be null");
         this.properties = Objects.requireNonNull(properties, "properties cannot be null");
+        this.captureClients = captureClients;
     }
 
     @Override
@@ -129,6 +149,152 @@ public final class FeishuBitableClientAdapter implements FeishuBitableClient {
                     : null;
         } while (StringUtils.hasText(pageToken));
         return List.copyOf(result);
+    }
+
+    @Override
+    public CaptureResult captureRecords(String appToken, String tableId, String viewId,
+                                        FeishuCaptureBudget budget) {
+        properties.validateForServerApi();
+        Objects.requireNonNull(budget, "capture budget");
+        budget.checkTime();
+        String token = captureAccessToken(budget);
+        List<CapturedRecord> result = new ArrayList<>();
+        Set<String> seenRecords = new HashSet<>();
+        Set<String> seenCursors = new HashSet<>();
+        String cursor = null;
+        int pages = 0;
+        Long expectedTotal = null;
+        while (true) {
+            budget.beginPage();
+            Map<String, Object> body = new LinkedHashMap<>();
+            if (StringUtils.hasText(viewId)) body.put("view_id", viewId);
+            body.put("automatic_fields", true);
+            Map<?, ?> response = capturePost(recordSearchUri(appToken, tableId, cursor), body, token, budget);
+            assertCaptureSuccess(response);
+            if (!(response.get("data") instanceof Map<?, ?> data)
+                    || !(data.get("has_more") instanceof Boolean hasMore)
+                    || !(data.get("items") instanceof List<?> items)) {
+                throw FeishuCaptureBudget.failure("INVALID_PAGE", "飞书分页结果缺少完整性字段");
+            }
+            if (items.size() > RECORD_PAGE_SIZE) {
+                throw FeishuCaptureBudget.failure("INVALID_PAGE", "飞书返回记录数超过请求页大小");
+            }
+            if (data.get("total") != null) {
+                Long reportedTotal = captureTimestamp(data.get("total"));
+                if (expectedTotal != null && !expectedTotal.equals(reportedTotal)) {
+                    throw FeishuCaptureBudget.failure("CHANGED_TOTAL", "飞书分页期间记录总数发生变化，请重新采集");
+                }
+                expectedTotal = reportedTotal;
+            }
+            for (Object item : items) {
+                if (!(item instanceof Map<?, ?> record)
+                        || !(record.get("record_id") instanceof String recordId) || recordId.isBlank()
+                        || !(record.get("fields") instanceof Map<?, ?> fields)) {
+                    throw FeishuCaptureBudget.failure("INVALID_RECORD", "飞书记录标识或原始字段缺失");
+                }
+                if (!seenRecords.add(recordId)) {
+                    throw FeishuCaptureBudget.failure("DUPLICATE_RECORD", "飞书分页存在重复记录，请重新采集");
+                }
+                budget.addRecord();
+                Map<String, Object> rawFields = new LinkedHashMap<>();
+                for (var field : fields.entrySet()) rawFields.put((String) field.getKey(), field.getValue());
+                result.add(new CapturedRecord(recordId, rawFields, captureTimestamp(record.get("created_time")),
+                        captureTimestamp(record.get("last_modified_time"))));
+            }
+            pages++;
+            budget.checkTime();
+            if (!hasMore) {
+                if (expectedTotal != null && expectedTotal != result.size()) {
+                    throw FeishuCaptureBudget.failure("INCOMPLETE", "飞书分页记录数与总数不一致，未保存对账证据");
+                }
+                return new CaptureResult(result, pages, true);
+            }
+            if (!(data.get("page_token") instanceof String next) || next.isBlank()
+                    || !seenCursors.add(next) || items.isEmpty()) {
+                throw FeishuCaptureBudget.failure("INVALID_CURSOR", "飞书分页游标缺失、重复或未推进");
+            }
+            cursor = next;
+        }
+    }
+
+    private String captureAccessToken(FeishuCaptureBudget budget) {
+        CachedToken cached = tenantToken;
+        if (cached != null && cached.validAt(Instant.now(), properties.getTokenSafetyWindow())) return cached.value();
+        // 不等待历史导入客户端的 token 锁，避免其无关长请求耗尽本次只读采集预算。
+        Map<?, ?> response = capturePost(TENANT_TOKEN_URI,
+                Map.of("app_id", properties.getAppId(), "app_secret", properties.getAppSecret()), null, budget);
+        assertCaptureSuccess(response);
+        String token = text(response.get("tenant_access_token"));
+        long expiresIn = positiveLong(response.get("expire"), 0L);
+        if (!StringUtils.hasText(token) || expiresIn <= 0 || expiresIn > 86400) {
+            throw FeishuCaptureBudget.failure("TOKEN_INVALID", "飞书采集授权失败");
+        }
+        tenantToken = new CachedToken(token, Instant.now().plusSeconds(expiresIn));
+        return token;
+    }
+
+    private Map<?, ?> capturePost(URI uri, Object body, String bearerToken, FeishuCaptureBudget budget) {
+        try {
+            RestClient.RequestBodySpec request = captureClients.apply(budget.remainingTime()).post().uri(uri)
+                    .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE).contentType(MediaType.APPLICATION_JSON);
+            if (bearerToken != null) request.header(HttpHeaders.AUTHORIZATION, "Bearer " + bearerToken);
+            return request.body(body).exchange((sent, response) -> {
+                budget.checkTime();
+                if (!response.getStatusCode().is2xxSuccessful()) {
+                    throw FeishuCaptureBudget.failure("HTTP_" + response.getStatusCode().value(),
+                            "飞书只读采集请求失败，未保存对账证据");
+                }
+                long declaredSize = response.getHeaders().getContentLength();
+                if (declaredSize > FeishuCaptureBudget.MAX_RESPONSE_BYTES - budget.responseBytes()) {
+                    throw FeishuCaptureBudget.failure("SIZE_LIMIT", "飞书响应超过大小上限");
+                }
+                try (var input = response.getBody(); var output = new ByteArrayOutputStream()) {
+                    byte[] buffer = new byte[8192];
+                    int read;
+                    while ((read = input.read(buffer)) != -1) {
+                        budget.addBytes(read);
+                        output.write(buffer, 0, read);
+                    }
+                    budget.checkTime();
+                    Map<?, ?> result = CAPTURE_JSON.readValue(output.toByteArray(), Map.class);
+                    if (result == null) throw FeishuCaptureBudget.failure("EMPTY_RESPONSE", "飞书响应为空");
+                    budget.checkTime();
+                    return result;
+                }
+            });
+        } catch (FeishuBitableClientException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            // 不透传外部响应体、URL或SDK异常，避免原始业务字段、令牌出现在日志或API错误中。
+            throw FeishuCaptureBudget.failure("REQUEST_FAILED", "飞书只读采集失败或中断，未保存对账证据");
+        }
+    }
+
+    private static void assertCaptureSuccess(Map<?, ?> response) {
+        if (!(response.get("code") instanceof Number number) || !"0".equals(number.toString())) {
+            throw FeishuCaptureBudget.failure("PROVIDER_REJECTED", "飞书拒绝只读采集，请检查应用授权及来源配置");
+        }
+    }
+
+    private static Long captureTimestamp(Object value) {
+        if (value == null) return null;
+        try {
+            long timestamp = new java.math.BigDecimal(value.toString()).longValueExact();
+            if (timestamp < 0) throw new ArithmeticException();
+            return timestamp;
+        } catch (RuntimeException exception) {
+            throw FeishuCaptureBudget.failure("INVALID_TIMESTAMP", "飞书记录元数据时间戳无效");
+        }
+    }
+
+    private static RestClient createCaptureRestClient(RestClient.Builder builder, FeishuClientProperties properties,
+                                                       Duration remaining) {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        // 每个请求使用独立工厂，超时不超过剩余预算；不改变历史导入客户端超时及调用行为。
+        long millis = Math.max(1, Math.min(5000, remaining.toMillis()));
+        factory.setConnectTimeout(Duration.ofMillis(Math.max(1, Math.min(millis, properties.getConnectTimeout().toMillis()))));
+        factory.setReadTimeout(Duration.ofMillis(Math.max(1, Math.min(millis, properties.getReadTimeout().toMillis()))));
+        return builder.clone().requestFactory(factory).build();
     }
 
     @Override

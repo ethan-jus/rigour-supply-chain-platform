@@ -48,9 +48,12 @@ public final class JdbcPortalAccessReader implements PortalAccessReader {
                         SELECT DISTINCT a.id, a.app_code, a.app_name, a.icon_key,
                                a.launch_mode, a.target_uri, a.sort_order
                           FROM iam_user_role ur
+                          JOIN iam_user active_user
+                            ON active_user.tenant_id = ur.tenant_id AND active_user.id = ur.user_id
+                           AND active_user.status = 'ACTIVE' AND active_user.deleted_at IS NULL
                           JOIN iam_role role_record
                             ON role_record.tenant_id = ur.tenant_id AND role_record.id = ur.role_id
-                          JOIN iam_role_resource rr
+                          JOIN iam_effective_tenant_role_resource rr
                             ON rr.tenant_id = ur.tenant_id AND rr.role_id = ur.role_id
                           JOIN iam_resource resource_record
                             ON resource_record.id = rr.resource_id
@@ -117,6 +120,7 @@ public final class JdbcPortalAccessReader implements PortalAccessReader {
                          WHERE ur.tenant_id = ? AND ur.user_id = ? AND ur.status = 'ACTIVE'
                            AND ur.effective_from <= ? AND (ur.effective_to IS NULL OR ur.effective_to > ?)
                            AND role_record.status = 'ACTIVE' AND role_record.deleted_at IS NULL
+                           AND (role_record.role_code <> 'TENANT_SUPER_ADMIN' OR role_record.role_type = 'SYSTEM')
                          ORDER BY role_record.role_code
                         """, String.class, tenantId, userId, now, now));
     }
@@ -128,7 +132,7 @@ public final class JdbcPortalAccessReader implements PortalAccessReader {
                           FROM iam_user_role ur
                           JOIN iam_role role_record
                             ON role_record.tenant_id = ur.tenant_id AND role_record.id = ur.role_id
-                          JOIN iam_role_resource rr
+                          JOIN iam_effective_tenant_role_resource rr
                             ON rr.tenant_id = ur.tenant_id AND rr.role_id = ur.role_id
                           JOIN iam_resource resource_record ON resource_record.id = rr.resource_id
                           JOIN iam_tenant_subscription subscription

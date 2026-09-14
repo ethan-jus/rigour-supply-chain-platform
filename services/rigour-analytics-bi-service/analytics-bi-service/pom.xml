@@ -9,6 +9,7 @@
     <description>Analytics BI业务实现和启动应用</description>
     <dependencies>
         <dependency><groupId>com.rigour</groupId><artifactId>analytics-bi-api</artifactId></dependency>
+        <dependency><groupId>com.rigour</groupId><artifactId>order-center-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>rigour-platform-starter</artifactId></dependency>
         <dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId></dependency>
         <dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId></dependency>

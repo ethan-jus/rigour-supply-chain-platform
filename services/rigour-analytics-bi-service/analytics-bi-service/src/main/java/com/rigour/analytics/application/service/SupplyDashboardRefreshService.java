@@ -13,8 +13,7 @@ import com.rigour.shared.core.exception.BusinessException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
+import com.rigour.analytics.application.model.BiBusinessTime;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -274,8 +273,7 @@ public final class SupplyDashboardRefreshService {
     }
 
     private static Instant monthStart(Instant instant) {
-        LocalDate date = instant.atZone(ZoneOffset.UTC).toLocalDate().withDayOfMonth(1);
-        return date.atStartOfDay().toInstant(ZoneOffset.UTC);
+        return BiBusinessTime.monthStart(instant);
     }
 
     private record SourceMeta(String code, String name) {

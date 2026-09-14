@@ -194,13 +194,13 @@ class SupplyDashboardQueryServiceTest {
     void overviewIncludesCityCostSection() {
         FakeStore store = new FakeStore();
         SupplyDashboardQueryService service = new SupplyDashboardQueryService(
-                store, Clock.fixed(NOW, ZoneOffset.UTC));
+                store, Clock.fixed(NOW, ZoneOffset.UTC), scopes());
         TestAuthorizationContext.set(caller("analytics:dashboard:read"));
 
         SupplyDashboardOverviewView result = service.overview(null, null,
                 " bj ", " RY202608220001 ", " store ", 10L, " dinghuobao ");
 
-        assertThat(result.from()).isEqualTo(Instant.parse("2026-08-01T00:00:00Z"));
+        assertThat(result.from()).isEqualTo(Instant.parse("2026-07-31T16:00:00Z"));
         assertThat(result.to()).isEqualTo(NOW);
         assertThat(store.filter.regionCode()).isEqualTo("BJ");
         assertThat(store.filter.ownerStaffCode()).isEqualTo("RY202608220001");
@@ -285,21 +285,32 @@ class SupplyDashboardQueryServiceTest {
         FakeStore store = new FakeStore();
         store.latestSalesOrderDate = Optional.of(Instant.parse("2026-08-27T09:27:06Z"));
         SupplyDashboardQueryService service = new SupplyDashboardQueryService(
-                store, Clock.fixed(Instant.parse("2026-09-01T02:00:00Z"), ZoneOffset.UTC));
+                store, Clock.fixed(Instant.parse("2026-09-01T02:00:00Z"), ZoneOffset.UTC), scopes());
         TestAuthorizationContext.set(caller("analytics:dashboard:read"));
 
         SupplyDashboardOverviewView result = service.overview(null, null, null, null, null, null, null);
 
-        assertThat(result.from()).isEqualTo(Instant.parse("2026-08-01T00:00:00Z"));
+        assertThat(result.from()).isEqualTo(Instant.parse("2026-07-31T16:00:00Z"));
         assertThat(result.to()).isEqualTo(Instant.parse("2026-08-27T09:27:06Z"));
-        assertThat(store.filter.from()).isEqualTo(Instant.parse("2026-08-01T00:00:00Z"));
+        assertThat(store.filter.from()).isEqualTo(Instant.parse("2026-07-31T16:00:00Z"));
         assertThat(store.filter.to()).isEqualTo(Instant.parse("2026-08-27T09:27:06Z"));
+    }
+
+    @Test
+    void latestOrderAtShanghaiMonthStartDoesNotSelectPreviousMonth() {
+        FakeStore store = new FakeStore();
+        store.latestSalesOrderDate = Optional.of(Instant.parse("2026-08-31T16:00:00Z"));
+        var service = new SupplyDashboardQueryService(store, Clock.fixed(NOW, ZoneOffset.UTC), scopes());
+        TestAuthorizationContext.set(caller("analytics:dashboard:read"));
+        var result = service.overview(null, null, null, null, null, null, null);
+        assertThat(result.from()).isEqualTo(Instant.parse("2026-08-31T16:00:00Z"));
+        assertThat(result.to()).isEqualTo(result.from());
     }
 
     @Test
     void rejectsInvalidDateRange() {
         SupplyDashboardQueryService service = new SupplyDashboardQueryService(
-                new FakeStore(), Clock.fixed(NOW, ZoneOffset.UTC));
+                new FakeStore(), Clock.fixed(NOW, ZoneOffset.UTC), scopes());
         TestAuthorizationContext.set(caller("analytics:dashboard:read"));
 
         assertThatThrownBy(() -> service.overview(NOW, NOW.minusSeconds(1),
@@ -313,7 +324,7 @@ class SupplyDashboardQueryServiceTest {
         FakeStore store = new FakeStore();
         store.sourceSystemBreakdown = null;
         SupplyDashboardQueryService service = new SupplyDashboardQueryService(
-                store, Clock.fixed(NOW, ZoneOffset.UTC));
+                store, Clock.fixed(NOW, ZoneOffset.UTC), scopes());
         TestAuthorizationContext.set(caller("analytics:dashboard:read"));
 
         SupplyDashboardOverviewView result = service.overview(null, null,
@@ -325,7 +336,7 @@ class SupplyDashboardQueryServiceTest {
     @Test
     void overviewRequiresAnalyticsReadPermission() {
         SupplyDashboardQueryService service = new SupplyDashboardQueryService(
-                new FakeStore(), Clock.fixed(NOW, ZoneOffset.UTC));
+                new FakeStore(), Clock.fixed(NOW, ZoneOffset.UTC), scopes());
         TestAuthorizationContext.set(caller("order:read"));
 
         assertThatThrownBy(() -> service.overview(null, null, null, null, null, null, null))
@@ -530,7 +541,12 @@ class SupplyDashboardQueryServiceTest {
 
     private static CallerIdentity caller(String... permissions) {
         return new CallerIdentity("TENANT", USER_ID, TENANT_ID, USER_ID, null,
-                UUID.randomUUID(), 0, 0, 0, Set.of("order"), Set.of(permissions));
+                UUID.randomUUID(), 0, 0, 0, Set.of("TENANT_SUPER_ADMIN"), Set.of(permissions));
+    }
+
+    private static BiDataScopeService scopes() {
+        return new BiDataScopeService(org.mockito.Mockito.mock(com.rigour.analytics.application.port.out.BiDataScopeStore.class),
+                Clock.fixed(NOW, ZoneOffset.UTC), org.mockito.Mockito.mock(BiDataScopeRenewer.class));
     }
 
     private static String mapperSql(String methodName, Class<?>... parameterTypes) throws NoSuchMethodException {
@@ -551,6 +567,12 @@ class SupplyDashboardQueryServiceTest {
     }
 
     private static final class FakeStore implements SupplyDashboardStore {
+        @Override
+        public OperatingAnalysisData operatingAnalysis(
+                String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter) {
+            return new OperatingAnalysisData(List.of(), List.of(), List.of(), List.of());
+        }
+
         private SupplyDashboardFilter filter;
         private final Map<String, Instant> watermarks = new HashMap<>();
         private Instant customerFrom;

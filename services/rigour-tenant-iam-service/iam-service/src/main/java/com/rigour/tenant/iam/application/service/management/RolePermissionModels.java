@@ -10,10 +10,10 @@ public final class RolePermissionModels {
     private RolePermissionModels() {
     }
 
-    /** 租户角色视图，resourceIds 表示当前启用的资源授权集合。 */
+    /** 租户角色视图，自动管理员返回当前可授予资源；其他角色保持显式授权。 */
     public record RolePermissionView(UUID id, String code, String name, String description,
                                      String type, String status, long version,
-                                     Instant updatedAt, List<UUID> resourceIds) {
+                                     Instant updatedAt, List<UUID> resourceIds, String permissionMode) {
         public RolePermissionView {
             resourceIds = resourceIds == null ? List.of() : List.copyOf(resourceIds);
         }

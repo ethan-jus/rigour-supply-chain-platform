@@ -32,6 +32,8 @@ public class MybatisPlusSupplyDashboardRepository
         LocalDateTime from = local(filter.from());
         LocalDateTime to = local(filter.to());
         SupplyDashboardQueryMapper mapper = getBaseMapper();
+        boolean comparableTargets = filter.productCategoryId() == null
+                && filter.customerTypeCode() == null && filter.sourceSystemCode() == null;
         SalesSummary sales = sales(mapper.salesSummary(tenantId, from, to,
                 filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode()));
         CustomerSummary customers = customers(mapper.customerSummary(tenantId,
@@ -100,12 +102,12 @@ public class MybatisPlusSupplyDashboardRepository
                 mapper.paymentAgingBuckets(tenantId, from, to,
                         filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
                         .stream().map(MybatisPlusSupplyDashboardRepository::paymentAgingBucket).toList(),
-                mapper.cityTargetCompletions(tenantId, from, to,
+                comparableTargets && filter.ownerStaffCode() == null ? mapper.cityTargetCompletions(tenantId, from, to,
                         filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
-                        .stream().map(MybatisPlusSupplyDashboardRepository::targetCompletion).toList(),
-                mapper.salesTargetCompletions(tenantId, from, to,
+                        .stream().map(MybatisPlusSupplyDashboardRepository::targetCompletion).toList() : List.of(),
+                comparableTargets ? mapper.salesTargetCompletions(tenantId, from, to,
                         filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
-                        .stream().map(MybatisPlusSupplyDashboardRepository::targetCompletion).toList(),
+                        .stream().map(MybatisPlusSupplyDashboardRepository::targetCompletion).toList() : List.of(),
                 mapper.customerSegmentSummary(tenantId, from, to,
                         filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
                         .stream().map(MybatisPlusSupplyDashboardRepository::customerSegment).toList(),
@@ -127,6 +129,38 @@ public class MybatisPlusSupplyDashboardRepository
                 mapper.inventoryRisks(tenantId, filter.regionCode(), filter.productCategoryId())
                         .stream().map(MybatisPlusSupplyDashboardRepository::risk).toList(),
                 mapper.dataFreshness(tenantId).stream().map(MybatisPlusSupplyDashboardRepository::freshness).toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public OperatingAnalysisData operatingAnalysis(
+            String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter) {
+        SupplyDashboardQueryMapper mapper = getBaseMapper();
+        LocalDateTime from = local(filter.from());
+        LocalDateTime to = local(filter.to());
+        return new OperatingAnalysisData(
+                mapper.salesRanking(tenantId, local(previousFilter.from()), local(previousFilter.to()),
+                        previousFilter.regionCode(), previousFilter.ownerStaffCode(),
+                        previousFilter.customerTypeCode(), previousFilter.sourceSystemCode())
+                        .stream().map(MybatisPlusSupplyDashboardRepository::ranking).toList(),
+                mapper.cityProducts(tenantId, from, to, filter.regionCode(), filter.ownerStaffCode(),
+                        filter.customerTypeCode(), filter.sourceSystemCode())
+                        .stream().map(row -> new CityProductItem(
+                                text(row, "regionCode"), text(row, "regionName"),
+                                text(row, "categoryCode"), text(row, "categoryName"),
+                                decimal(row, "salesAmount"), number(row, "orderCount"), number(row, "customerCount")))
+                        .toList(),
+                mapper.cityCustomers(tenantId, from, to, filter.regionCode(), filter.ownerStaffCode(),
+                        filter.customerTypeCode(), filter.sourceSystemCode())
+                        .stream().map(row -> new CityCustomerItem(
+                                text(row, "regionCode"), text(row, "regionName"),
+                                number(row, "orderingCustomerCount"), number(row, "repeatCustomerCount"))).toList(),
+                mapper.salesReceipts(tenantId, from, to, filter.regionCode(), filter.ownerStaffCode(),
+                        filter.customerTypeCode(), filter.sourceSystemCode())
+                        .stream().map(row -> new SalesReceiptItem(
+                                text(row, "ownerStaffCode"), text(row, "ownerStaffName"),
+                                decimal(row, "paidAmount"), number(row, "paymentCount"), number(row, "customerCount")))
+                        .toList());
     }
 
     @Override
@@ -318,6 +352,15 @@ public class MybatisPlusSupplyDashboardRepository
         LocalDateTime localTo = local(to);
         Map<String, Object> summary = mapper.productSourceSummary(tenantId, localFrom, localTo);
         int affected = mapper.upsertProductDimFromSource(tenantId, localFrom, localTo, local(syncedAt));
+        mapper.retireCategorySnapshot(tenantId);
+        affected += mapper.refreshCategorySnapshot(tenantId, local(syncedAt));
+        var closure = com.rigour.analytics.application.model.ProductCategoryHierarchy.closure(mapper.categoryHierarchy(tenantId));
+        mapper.clearCategoryClosure(tenantId);
+        for (int index = 0; index < closure.size(); index += 500)
+            affected += mapper.insertCategoryClosure(tenantId, closure.subList(index, Math.min(index + 500, closure.size())));
+        affected += mapper.alignOrderLineProductDimensions(tenantId);
+        affected += mapper.alignInventoryProductDimensions(tenantId);
+        affected += mapper.alignOperationProductDimensions(tenantId);
         return sourceResult("ERP_PRODUCT", "ERP商品", summary, affected);
     }
 
@@ -622,7 +665,9 @@ public class MybatisPlusSupplyDashboardRepository
                 text(row, "metricName"),
                 decimal(row, "targetValue"),
                 decimal(row, "actualValue"),
-                decimal(row, "achievementRate"));
+                decimal(row, "achievementRate"),
+                nullableNumber(row, "configuredMonthCount"),
+                nullableNumber(row, "periodMonthCount"));
     }
 
     private static CustomerSegmentItem customerSegment(Map<String, Object> row) {

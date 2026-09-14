@@ -1,6 +1,8 @@
 package com.rigour.analytics.application.service;
 
 import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostItemView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardCityCustomerItemView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardCityProductItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardCustomerActivityItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardCustomerSegmentItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardDataFreshnessView;
@@ -9,12 +11,14 @@ import com.rigour.analytics.api.v1.model.SupplyDashboardInventoryReplenishmentIt
 import com.rigour.analytics.api.v1.model.SupplyDashboardMetricCardView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardMetricDefinitionView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOverviewView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardOperatingAnalysisView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardPaymentAgingBucketView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardProductSalesItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRankingItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRiskItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRolePerspectiveView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardSalesMonthlyPerformanceView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardSalesReceiptItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardTargetCompletionItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardTrendPointView;
 import com.rigour.analytics.application.model.SupplyDashboardFilter;
@@ -28,9 +32,11 @@ import com.rigour.shared.core.exception.BusinessException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
+import java.time.DateTimeException;
+import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
+import com.rigour.analytics.application.model.BiBusinessTime;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -46,30 +52,26 @@ public final class SupplyDashboardQueryService {
 
     private final SupplyDashboardStore store;
     private final Clock clock;
+    private final BiDataScopeService scopes;
 
-    public SupplyDashboardQueryService(SupplyDashboardStore store, Clock analyticsClock) {
+    public SupplyDashboardQueryService(SupplyDashboardStore store, Clock analyticsClock, BiDataScopeService scopes) {
         this.store = Objects.requireNonNull(store, "store");
         this.clock = Objects.requireNonNull(analyticsClock, "analyticsClock");
+        this.scopes = Objects.requireNonNull(scopes, "scopes");
     }
 
     public SupplyDashboardOverviewView overview(
             Instant from, Instant to, String regionCode, String ownerStaffCode,
             String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
         CallerIdentity actor = actor();
+        var scope = scopes.resolve(regionCode, ownerStaffCode);
         String tenantId = actor.tenantId().toString();
         Instant now = Instant.now(clock);
-        Instant normalizedTo = to == null ? defaultDashboardTo(tenantId, now) : to;
-        Instant normalizedFrom = from == null ? monthStart(normalizedTo) : from;
-        if (normalizedFrom.isAfter(normalizedTo)) throw badRequest("from不能晚于to");
-        SupplyDashboardFilter filter = new SupplyDashboardFilter(
-                normalizedFrom,
-                normalizedTo,
-                code(regionCode, "regionCode"),
-                text(ownerStaffCode, 50, "ownerStaffCode"),
-                code(customerTypeCode, "customerTypeCode"),
-                positiveId(productCategoryId, "productCategoryId"),
-                sourceSystemCode(sourceSystemCode));
+        SupplyDashboardFilter filter = filter(tenantId, now, from, to == null && !scope.fullTenant() ? now : to,
+                scope.regionCode(), scope.ownerStaffCode(),
+                customerTypeCode, productCategoryId, sourceSystemCode);
         SupplyDashboardData data = store.overview(tenantId, filter);
+        if (!scope.fullTenant()) return restrictedOverview(filter, now, data);
         Instant cutoff = cutoff(data);
         return new SupplyDashboardOverviewView(
                 filter.from(),
@@ -103,6 +105,132 @@ public final class SupplyDashboardQueryService {
                 data.freshness().stream().map(SupplyDashboardQueryService::freshness).toList(),
                 rolePerspectives(),
                 definitions(now, cutoff));
+    }
+
+    public SupplyDashboardOperatingAnalysisView operatingAnalysis(
+            Instant from, Instant to, String regionCode, String ownerStaffCode,
+            String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
+        String tenantId = actor().tenantId().toString();
+        var scope = scopes.resolve(regionCode, ownerStaffCode);
+        if (productCategoryId != null) {
+            throw badRequest("operating-analysis不支持productCategoryId全局筛选");
+        }
+        Instant now = Instant.now(clock);
+        SupplyDashboardFilter requested = filter(tenantId, now, from, to == null && !scope.fullTenant() ? now : to,
+                scope.regionCode(), scope.ownerStaffCode(),
+                customerTypeCode, null, sourceSystemCode);
+        // DATETIME(6) 上的闭区间：下界向上、上界向下取微秒，前期恰好紧邻且不重叠。
+        Instant currentFrom = requested.from().truncatedTo(ChronoUnit.MICROS);
+        if (currentFrom.isBefore(requested.from())) currentFrom = currentFrom.plus(1, ChronoUnit.MICROS);
+        Instant currentTo = requested.to().truncatedTo(ChronoUnit.MICROS);
+        if (currentFrom.isAfter(currentTo)) throw badRequest("时间窗口内没有有效微秒");
+        SupplyDashboardFilter current = withWindow(requested, currentFrom, currentTo);
+        Instant previousTo;
+        Instant previousFrom;
+        try {
+            previousTo = currentFrom.minus(1, ChronoUnit.MICROS);
+            previousFrom = previousTo.minus(Duration.between(currentFrom, currentTo));
+        } catch (DateTimeException | ArithmeticException exception) {
+            throw badRequest("前期时间窗口超出支持范围");
+        }
+        SupplyDashboardStore.OperatingAnalysisData data = store.operatingAnalysis(
+                tenantId, current, withWindow(current, previousFrom, previousTo));
+        return new SupplyDashboardOperatingAnalysisView(
+                currentFrom, currentTo, now, previousFrom, previousTo,
+                data.previousSalesRanking().stream()
+                        .filter(item -> realDimension(item.dimensionCode()))
+                        .map(SupplyDashboardQueryService::operatingRanking).toList(),
+                data.cityProducts().stream().map(item -> new SupplyDashboardCityProductItemView(
+                        item.regionCode(), item.regionName(), item.categoryCode(), item.categoryName(),
+                        money(item.salesAmount()), number(item.orderCount()), number(item.customerCount()))).toList(),
+                data.cityCustomers().stream().map(item -> new SupplyDashboardCityCustomerItemView(
+                        item.regionCode(), item.regionName(),
+                        number(item.orderingCustomerCount()), number(item.repeatCustomerCount()))).toList(),
+                data.salesReceipts().stream()
+                        .filter(item -> scope.fullTenant() || scope.ownerStaffCode() == null
+                                || scope.ownerStaffCode().equals(item.ownerStaffCode()))
+                        .map(item -> new SupplyDashboardSalesReceiptItemView(
+                        item.ownerStaffCode(), item.ownerStaffName(), money(item.paidAmount()),
+                        number(item.paymentCount()), number(item.customerCount()))).toList());
+    }
+
+    /** 旧仓储包含未分区的附属聚合，受限响应使用白名单，避免新增字段意外穿透。 */
+    private static SupplyDashboardOverviewView restrictedOverview(SupplyDashboardFilter filter, Instant now, SupplyDashboardData data) {
+        // 只有城市总范围且没有更细的业务筛选时，城市全量成本/目标与销售分母才同口径。
+        boolean wholeCity = filter.ownerStaffCode() == null && filter.customerTypeCode() == null
+                && filter.productCategoryId() == null && filter.sourceSystemCode() == null;
+        boolean cityReceipts = filter.ownerStaffCode() == null && filter.productCategoryId() == null;
+        boolean comparableTargets = filter.customerTypeCode() == null && filter.productCategoryId() == null
+                && filter.sourceSystemCode() == null;
+        boolean customerAnalysis = filter.productCategoryId() == null;
+        var permitted = java.util.Set.of("sales_amount", "paid_amount", "unpaid_amount", "refund_amount", "order_count",
+                "contacted_customer_count", "cooperated_customer_count", "repeat_customer_count", "ordering_customer_count",
+                "active_customer_count", "sales_net_amount", "estimated_cost_amount", "estimated_gross_profit",
+                "estimated_gross_profit_rate", "cost_coverage_rate", "payment_risk_amount", "payment_risk_customer_count",
+                "payment_high_risk_customer_count", "payment_avg_overdue_days", "payment_risk_amount_rate", "payment_aging_bucket_count");
+        var cards = metrics(data).stream().filter(item -> permitted.contains(item.metricCode())
+                || (wholeCity && java.util.Set.of("city_cost_amount", "city_cost_rate", "target_achievement_rate").contains(item.metricCode()))
+                || (comparableTargets && !data.salesTargetCompletions().isEmpty() && "target_achievement_rate".equals(item.metricCode()))
+                || (customerAnalysis && java.util.Set.of("customer_activity_score", "customer_churn_risk_count").contains(item.metricCode()))
+                || (cityReceipts && "receipt_amount".equals(item.metricCode())))
+                .map(item -> !wholeCity && "target_achievement_rate".equals(item.metricCode())
+                        ? metric("target_achievement_rate", "目标达成率", averageTargetAchievement(data.salesTargetCompletions()),
+                                "PERCENT", "完整归属于当前城市和销售范围的月度目标平均完成率") : item).toList();
+        return new SupplyDashboardOverviewView(filter.from(), filter.to(), now, cards,
+                data.salesTrend().stream().map(SupplyDashboardQueryService::trend).toList(),
+                cityReceipts ? data.collectionTrend().stream().map(SupplyDashboardQueryService::trend).toList() : List.of(),
+                wholeCity ? data.cityCostTrend().stream().map(SupplyDashboardQueryService::trend).toList() : List.of(),
+                data.citySalesRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
+                data.salesRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
+                data.salesMonthlyPerformance().stream().map(SupplyDashboardQueryService::salesMonthlyPerformance).toList(),
+                data.cityCollectionRateRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
+                data.sourceSystemBreakdown().stream().map(SupplyDashboardQueryService::ranking).toList(),
+                data.productSalesRanking().stream().map(SupplyDashboardQueryService::productSales).toList(),
+                data.skuSalesRanking().stream().map(SupplyDashboardQueryService::productSales).toList(),
+                data.categorySalesRanking().stream().map(SupplyDashboardQueryService::productSales).toList(),
+                data.brandSalesRanking().stream().map(SupplyDashboardQueryService::productSales).toList(),
+                data.paymentRiskCityRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
+                data.paymentRiskSalesRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
+                data.paymentAgingBuckets().stream().map(SupplyDashboardQueryService::paymentAgingBucket).toList(),
+                wholeCity ? data.cityTargetCompletions().stream().map(SupplyDashboardQueryService::targetCompletion).toList() : List.of(),
+                comparableTargets ? data.salesTargetCompletions().stream().map(SupplyDashboardQueryService::targetCompletion).toList() : List.of(),
+                customerAnalysis ? data.customerSegments().stream().map(SupplyDashboardQueryService::customerSegment).toList() : List.of(),
+                customerAnalysis ? data.customerActivityRanking().stream().map(SupplyDashboardQueryService::customerActivity).toList() : List.of(),
+                customerAnalysis ? data.customerChurnRiskRanking().stream().map(SupplyDashboardQueryService::customerActivity).toList() : List.of(),
+                List.of(), List.of(),
+                wholeCity ? data.cityCostRanking().stream().map(SupplyDashboardQueryService::cityCost).toList() : List.of(), List.of(),
+                List.of(), List.of(), definitions(now, data.sales().latestUpdatedTime()));
+    }
+
+    private SupplyDashboardFilter filter(
+            String tenantId, Instant now, Instant from, Instant to, String regionCode, String ownerStaffCode,
+            String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
+        Instant normalizedTo = to == null ? defaultDashboardTo(tenantId, now) : to;
+        Instant normalizedFrom = from == null ? monthStart(normalizedTo) : from;
+        if (normalizedFrom.isAfter(normalizedTo)) throw badRequest("from不能晚于to");
+        return new SupplyDashboardFilter(normalizedFrom, normalizedTo,
+                code(regionCode, "regionCode"), text(ownerStaffCode, 50, "ownerStaffCode"),
+                code(customerTypeCode, "customerTypeCode"), positiveId(productCategoryId, "productCategoryId"),
+                sourceSystemCode(sourceSystemCode));
+    }
+
+    private static SupplyDashboardFilter withWindow(SupplyDashboardFilter filter, Instant from, Instant to) {
+        return new SupplyDashboardFilter(from, to, filter.regionCode(), filter.ownerStaffCode(),
+                filter.customerTypeCode(), filter.productCategoryId(), filter.sourceSystemCode());
+    }
+
+    private static boolean realDimension(String code) {
+        return code != null && !code.isBlank()
+                && !"UNKNOWN".equalsIgnoreCase(code.strip()) && !"MULTI".equalsIgnoreCase(code.strip());
+    }
+
+    private static SupplyDashboardRankingItemView operatingRanking(SupplyDashboardStore.RankingItem item) {
+        SupplyDashboardRankingItemView ranked = ranking(item);
+        if (realDimension(ranked.regionCode())) return ranked;
+        return new SupplyDashboardRankingItemView(
+                ranked.rankType(), ranked.dimensionCode(), ranked.dimensionName(), null, null,
+                ranked.salesAmount(), ranked.paidAmount(), ranked.unpaidAmount(),
+                ranked.orderCount(), ranked.customerCount(), ranked.rate());
     }
 
     private static CallerIdentity actor() {
@@ -273,7 +401,8 @@ public final class SupplyDashboardQueryService {
                 item.metricName(),
                 money(item.targetValue()),
                 money(item.actualValue()),
-                ratioValue(item.achievementRate()));
+                ratioValue(item.achievementRate()),
+                item.configuredMonthCount(), item.periodMonthCount());
     }
 
     private static SupplyDashboardInventoryItemSummaryView inventoryItemSummary(
@@ -472,8 +601,8 @@ public final class SupplyDashboardQueryService {
                         "Analytics BI / bi_customer_dim + bi_sales_order_fact", "仅用于业务跟进优先级，不等同客户真实流失判定",
                         updatedAt, cutoff),
                 definition("target_achievement_rate", "目标达成率",
-                        "实际值 / BI 目标配置表目标值；跨月份自动累加目标",
-                        "Analytics BI / bi_business_target + BI 事实表", "目标值为0或未配置时不参与平均完成率",
+                        "实际值 / BI 目标值；订单实际值限同指标已配置月份与查询期间交集，建联存量仅支持单月比较",
+                        "Analytics BI / bi_business_target + BI 事实表", "目标值为0、未配置或期间月份配置不完整时不参与平均完成率",
                         updatedAt, cutoff),
                 definition("inventory_item_summary", "库存/采购品项汇总",
                         "采购量、销售出库量按 ERP 单据汇总；留存量取当前库存快照",
@@ -513,8 +642,7 @@ public final class SupplyDashboardQueryService {
     }
 
     private static Instant monthStart(Instant instant) {
-        LocalDate date = instant.atZone(ZoneOffset.UTC).toLocalDate().withDayOfMonth(1);
-        return date.atStartOfDay().toInstant(ZoneOffset.UTC);
+        return BiBusinessTime.monthStart(instant);
     }
 
     private static String code(String value, String name) {
@@ -570,6 +698,9 @@ public final class SupplyDashboardQueryService {
 
     private static BigDecimal averageTargetAchievement(List<SupplyDashboardStore.TargetCompletionItem> items) {
         List<BigDecimal> rates = items.stream()
+                .filter(item -> item.targetValue() != null && item.targetValue().signum() > 0)
+                .filter(item -> item.configuredMonthCount() == null || item.periodMonthCount() == null
+                        || item.configuredMonthCount().equals(item.periodMonthCount()))
                 .map(SupplyDashboardStore.TargetCompletionItem::achievementRate)
                 .filter(Objects::nonNull)
                 .toList();

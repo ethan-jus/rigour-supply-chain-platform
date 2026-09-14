@@ -12,6 +12,25 @@ public interface FeishuBitableClient {
 
     List<BitableRecord> records(String appToken, String tableId, String viewId);
 
+    /** 对账专用有界分页；不回退到历史无边界 records 实现。 */
+    default CaptureResult captureRecords(String appToken, String tableId, String viewId,
+                                         FeishuCaptureBudget budget) {
+        throw FeishuCaptureBudget.failure("UNSUPPORTED", "当前飞书客户端不支持完整分页采集");
+    }
+
+    record CapturedRecord(String recordId, Map<String, Object> fields, Long createdTime, Long lastModifiedTime) {
+        public CapturedRecord(String recordId, Map<String, Object> fields) {
+            this(recordId, fields, null, null);
+        }
+        public CapturedRecord {
+            fields = java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(fields));
+        }
+    }
+
+    record CaptureResult(List<CapturedRecord> rows, int pageCount, boolean complete) {
+        public CaptureResult { rows = List.copyOf(rows); }
+    }
+
     default DownloadedAttachment downloadAttachment(String fileToken, String fallbackFileName) {
         return downloadAttachment(fileToken, fallbackFileName, null, null, null);
     }

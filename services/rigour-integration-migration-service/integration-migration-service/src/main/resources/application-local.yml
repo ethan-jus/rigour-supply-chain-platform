@@ -1,4 +1,7 @@
 spring:
+  config:
+    # 仅local加载本机来源白名单；dev文档的Nacos import仍独立加载，不在这里重定义或替换它。
+    import: optional:file:${user.home}/.config/rigour/feishu-reconciliation.properties
   cloud:
     nacos:
       discovery:

@@ -260,7 +260,9 @@ public final class JdbcIamManagementStore implements IamManagementStore {
                            ui.visible * menu_config.visible visible, ui.keep_alive
                       FROM iam_user_role ur
                       JOIN iam_role role_record ON role_record.tenant_id=ur.tenant_id AND role_record.id=ur.role_id
-                      JOIN iam_role_resource rr ON rr.tenant_id=ur.tenant_id AND rr.role_id=ur.role_id
+                      JOIN iam_effective_tenant_role_resource rr ON rr.tenant_id=ur.tenant_id AND rr.role_id=ur.role_id
+                      JOIN iam_user active_user ON active_user.tenant_id=ur.tenant_id AND active_user.id=ur.user_id
+                       AND active_user.status='ACTIVE' AND active_user.deleted_at IS NULL
                       JOIN iam_resource r ON r.id=rr.resource_id
                       JOIN iam_resource_ui ui ON ui.resource_id=r.id
                       JOIN iam_tenant_menu_config menu_config
@@ -908,6 +910,9 @@ public final class JdbcIamManagementStore implements IamManagementStore {
         if (!"CUSTOM".equalsIgnoreCase(command.type())) {
             throw new AccessDeniedException("System roles can only be created by IAM bootstrap or migrations");
         }
+        if ("TENANT_SUPER_ADMIN".equals(normalizedCode(command.code()))) {
+            throw new AccessDeniedException("System administrator role code is reserved");
+        }
         UUID id = ids.nextId();
         transaction.executeWithoutResult(status -> {
             jdbc.update("""
@@ -1215,7 +1220,9 @@ public final class JdbcIamManagementStore implements IamManagementStore {
                 SELECT COUNT(DISTINCT r.id)
                   FROM iam_user_role ur
                   JOIN iam_role role_record ON role_record.tenant_id=ur.tenant_id AND role_record.id=ur.role_id
-                  JOIN iam_role_resource rr ON rr.tenant_id=ur.tenant_id AND rr.role_id=ur.role_id
+                  JOIN iam_effective_tenant_role_resource rr ON rr.tenant_id=ur.tenant_id AND rr.role_id=ur.role_id
+                  JOIN iam_user active_user ON active_user.tenant_id=ur.tenant_id AND active_user.id=ur.user_id
+                   AND active_user.status='ACTIVE' AND active_user.deleted_at IS NULL
                   JOIN iam_resource r ON r.id=rr.resource_id
                   JOIN iam_tenant_subscription subscription ON subscription.tenant_id=ur.tenant_id
                     AND subscription.status IN ('ACTIVE','SCHEDULED') AND subscription.effective_from<=UTC_TIMESTAMP(6)

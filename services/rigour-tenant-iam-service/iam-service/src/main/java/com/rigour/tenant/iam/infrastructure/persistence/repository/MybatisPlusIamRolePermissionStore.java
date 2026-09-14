@@ -60,13 +60,14 @@ public class MybatisPlusIamRolePermissionStore implements IamRolePermissionStore
     public List<RolePermissionView> roles(Actor actor) {
         requireTenantPermission(actor, "iam:role:read");
         Map<UUID, List<UUID>> grants = activeResourceIdsByRole(actor.tenantId());
+        List<UUID> entitled = visibleGrantableRows(actor.tenantId()).stream().map(GrantableResourceRow::getId).toList();
         return roleMapper.selectList(Wrappers.<RoleDO>lambdaQuery()
                         .eq(RoleDO::getTenantId, actor.tenantId())
                         .isNull(RoleDO::getDeletedAt)
                         .orderByDesc(RoleDO::getRoleType)
                         .orderByAsc(RoleDO::getRoleCode))
                 .stream()
-                .map(role -> roleView(role, grants.getOrDefault(role.getId(), List.of())))
+                .map(role -> roleView(role, automaticAdministrator(role) ? entitled : grants.getOrDefault(role.getId(), List.of())))
                 .toList();
     }
 
@@ -157,7 +158,9 @@ public class MybatisPlusIamRolePermissionStore implements IamRolePermissionStore
                 .isNull(RoleDO::getDeletedAt)
                 .last("LIMIT 1"));
         if (role == null) throw new AccessDeniedException("角色不属于当前租户");
-        return roleView(role, activeResourceIdsByRole(tenantId).getOrDefault(id, List.of()));
+        return roleView(role, automaticAdministrator(role)
+                ? visibleGrantableRows(tenantId).stream().map(GrantableResourceRow::getId).toList()
+                : activeResourceIdsByRole(tenantId).getOrDefault(id, List.of()));
     }
 
     private void assignRoleResources(Actor actor, UUID roleId, List<UUID> resourceIds) {
@@ -259,7 +262,12 @@ public class MybatisPlusIamRolePermissionStore implements IamRolePermissionStore
 
     private static RolePermissionView roleView(RoleDO role, List<UUID> resourceIds) {
         return new RolePermissionView(role.getId(), role.getRoleCode(), role.getRoleName(), role.getDescription(),
-                role.getRoleType(), role.getStatus(), role.getVersion(), toInstant(role.getUpdatedAt()), resourceIds);
+                role.getRoleType(), role.getStatus(), role.getVersion(), toInstant(role.getUpdatedAt()), resourceIds,
+                automaticAdministrator(role) ? "ALL_ENTITLED" : "EXPLICIT");
+    }
+
+    private static boolean automaticAdministrator(RoleDO role) {
+        return "SYSTEM".equals(role.getRoleType()) && "TENANT_SUPER_ADMIN".equals(role.getRoleCode());
     }
 
     private static GrantableResourceView resourceView(GrantableResourceRow row) {

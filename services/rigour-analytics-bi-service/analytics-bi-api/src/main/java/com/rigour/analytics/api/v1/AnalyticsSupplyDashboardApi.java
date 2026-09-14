@@ -7,6 +7,7 @@ import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFilterOptionsView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOverviewView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardOperatingAnalysisView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshRunView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardReconciliationView;
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 /** 供应链 BI 看板接口；只暴露分析口径，不承载业务写入流程。 */
 public interface AnalyticsSupplyDashboardApi {
     String OVERVIEW_PATH = "/api/v1/analytics/supply/dashboard/overview";
+    String OPERATING_ANALYSIS_PATH = "/api/v1/analytics/supply/dashboard/operating-analysis";
     String REFRESH_RUNS_PATH = "/api/v1/analytics/supply/dashboard/refresh-runs";
     String TRUST_PATH = "/api/v1/analytics/supply/dashboard/trust";
     String RECONCILIATION_PATH = "/api/v1/analytics/supply/dashboard/reconciliation";
@@ -30,6 +32,17 @@ public interface AnalyticsSupplyDashboardApi {
 
     @GetMapping(OVERVIEW_PATH)
     ApiResponse<SupplyDashboardOverviewView> overview(
+            @RequestParam(required = false) Instant from,
+            @RequestParam(required = false) Instant to,
+            @RequestParam(required = false) String regionCode,
+            @RequestParam(required = false) String ownerStaffCode,
+            @RequestParam(required = false) String customerTypeCode,
+            @RequestParam(required = false) Long productCategoryId,
+            @RequestParam(required = false) String sourceSystemCode);
+
+    /** 沿用 overview 查询参数及读取权限；不支持全局商品分类过滤，非 null productCategoryId 返回 BAD_REQUEST。 */
+    @GetMapping(OPERATING_ANALYSIS_PATH)
+    ApiResponse<SupplyDashboardOperatingAnalysisView> operatingAnalysis(
             @RequestParam(required = false) Instant from,
             @RequestParam(required = false) Instant to,
             @RequestParam(required = false) String regionCode,

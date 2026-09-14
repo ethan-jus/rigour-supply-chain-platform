@@ -25,10 +25,13 @@
     <select id="countTenantPermission" resultType="int">
         SELECT COUNT(DISTINCT resource_record.id)
           FROM iam_user_role user_role
+          JOIN iam_user active_user
+            ON active_user.tenant_id = user_role.tenant_id AND active_user.id = user_role.user_id
+           AND active_user.status = 'ACTIVE' AND active_user.deleted_at IS NULL
           JOIN iam_role role_record
             ON role_record.tenant_id = user_role.tenant_id
            AND role_record.id = user_role.role_id
-          JOIN iam_role_resource role_resource
+          JOIN iam_effective_tenant_role_resource role_resource
             ON role_resource.tenant_id = user_role.tenant_id
            AND role_resource.role_id = user_role.role_id
           JOIN iam_resource resource_record
@@ -74,6 +77,7 @@
                resource_record.application_id,
                application_record.app_code AS application_code,
                application_record.app_name AS application_name,
+               application_record.sort_order AS application_sort_order,
                resource_record.parent_id,
                resource_record.resource_code AS code,
                resource_record.resource_type AS type,
@@ -103,12 +107,14 @@
          WHERE subscription.tenant_id =
                #{tenantId,typeHandler=com.rigour.tenant.iam.infrastructure.persistence.typehandler.UuidBinaryTypeHandler}
            AND subscription.status IN ('ACTIVE', 'SCHEDULED')
+           AND subscription.deleted_at IS NULL
            AND subscription.effective_from &lt;= UTC_TIMESTAMP(6)
            AND subscription.effective_to &gt; UTC_TIMESTAMP(6)
            AND resource_record.status = 'ACTIVE'
            AND resource_record.deleted_at IS NULL
            AND application_record.status = 'ACTIVE'
            AND application_record.deleted_at IS NULL
+           AND application_record.app_scope = 'TENANT'
          ORDER BY application_record.sort_order, resource_record.sort_order, resource_record.resource_code
     </select>
 

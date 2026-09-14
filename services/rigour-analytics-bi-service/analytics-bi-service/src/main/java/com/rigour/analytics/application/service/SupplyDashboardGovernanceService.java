@@ -25,8 +25,7 @@ import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
+import com.rigour.analytics.application.model.BiBusinessTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -242,12 +241,10 @@ public final class SupplyDashboardGovernanceService {
     }
 
     private static SupplyDashboardReconciliationItemView reconciliationItem(ReconciliationItem item) {
-        long sourceBusinessDiff = number(item.sourceRowCount()) == 0L
-                ? 0L : number(item.businessRowCount()) - number(item.sourceRowCount());
         long businessBiDiff = number(item.biRowCount()) - number(item.businessRowCount());
-        BigDecimal sourceAmountDiff = money(item.businessAmount()).subtract(money(item.sourceAmount()));
         BigDecimal amountDiff = money(item.biAmount()).subtract(money(item.businessAmount()));
-        String status = reconciliationStatus(item, sourceBusinessDiff, sourceAmountDiff, businessBiDiff, amountDiff);
+        // 旧摘要没有来源版本、完整性及排除项证据；不能把零哨兵或 Raw 总量当作可比业务来源。
+        String status = reconciliationStatus(item, businessBiDiff, amountDiff);
         return new SupplyDashboardReconciliationItemView(
                 item.subjectCode(),
                 item.subjectName(),
@@ -257,8 +254,8 @@ public final class SupplyDashboardGovernanceService {
                 money(item.sourceAmount()),
                 money(item.businessAmount()),
                 money(item.biAmount()),
-                sourceBusinessDiff,
-                sourceAmountDiff,
+                null,
+                null,
                 businessBiDiff,
                 amountDiff,
                 status,
@@ -266,33 +263,29 @@ public final class SupplyDashboardGovernanceService {
     }
 
     private static String reconciliationStatus(
-            ReconciliationItem item, long sourceBusinessDiff, BigDecimal sourceAmountDiff,
-            long businessBiDiff, BigDecimal amountDiff) {
+            ReconciliationItem item, long businessBiDiff, BigDecimal amountDiff) {
         if (number(item.sourceRowCount()) == 0L && number(item.businessRowCount()) == 0L && number(item.biRowCount()) == 0L) {
             return "EMPTY";
         }
-        boolean sourceAmountComparable = money(item.sourceAmount()).abs().compareTo(MONEY_TOLERANCE) > 0;
-        if (sourceBusinessDiff != 0L
-                || (sourceAmountComparable && sourceAmountDiff.abs().compareTo(MONEY_TOLERANCE) > 0)
-                || businessBiDiff != 0L
+        if (businessBiDiff != 0L
                 || amountDiff.abs().compareTo(MONEY_TOLERANCE) > 0) {
             return "DIFF";
         }
-        return "PASS";
+        return "UNVERIFIED";
     }
 
     private static String reconciliationDescription(ReconciliationItem item, String status) {
         return switch (status) {
             case "EMPTY" -> item.subjectName() + "在当前筛选范围内暂无可对账数据";
-            case "DIFF" -> item.subjectName() + "存在来源/业务/BI 数量或金额差异，仅提示定位，不自动修正";
-            default -> item.subjectName() + "来源、业务表和 BI 表口径一致";
+            case "DIFF" -> item.subjectName() + "存在业务与 BI 数量或金额差异；来源版本及范围未验证，请进入对账中心复核";
+            default -> item.subjectName() + "业务与 BI 汇总一致；来源仅为历史 Raw 摘要，缺少版本、范围及退款排除证据，当前在线未验证";
         };
     }
 
     private static String overallReconciliationStatus(List<SupplyDashboardReconciliationItemView> items) {
         if (items.stream().anyMatch(item -> "DIFF".equals(item.status()))) return "DIFF";
         if (items.stream().allMatch(item -> "EMPTY".equals(item.status()))) return "EMPTY";
-        return "PASS";
+        return "UNVERIFIED";
     }
 
     private static List<SupplyDashboardFilterOptionView> optionViews(List<FilterOption> items) {
@@ -344,8 +337,7 @@ public final class SupplyDashboardGovernanceService {
     }
 
     private static Instant monthStart(Instant instant) {
-        LocalDate date = instant.atZone(ZoneOffset.UTC).toLocalDate().withDayOfMonth(1);
-        return date.atStartOfDay().toInstant(ZoneOffset.UTC);
+        return BiBusinessTime.monthStart(instant);
     }
 
     private static String code(String value, String name) {

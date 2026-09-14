@@ -12,6 +12,8 @@ GRANT SELECT ON rigour_order.order_refund_record TO 'rigour_bi_app'@'%';
 
 GRANT SELECT ON rigour_integration.integration_raw_landing TO 'rigour_bi_app'@'%';
 GRANT SELECT ON rigour_integration.integration_feishu_import_raw_row TO 'rigour_bi_app'@'%';
+-- Integration V22 完成后执行；仅在用户主动生成复核时读取在线证据，历史查询只读 BI 快照。
+GRANT SELECT ON rigour_integration.integration_feishu_online_capture TO 'rigour_bi_app'@'%';
 
 GRANT SELECT ON rigour_erp.erp_stock_balance TO 'rigour_bi_app'@'%';
 GRANT SELECT ON rigour_erp.erp_inventory_warehouse TO 'rigour_bi_app'@'%';

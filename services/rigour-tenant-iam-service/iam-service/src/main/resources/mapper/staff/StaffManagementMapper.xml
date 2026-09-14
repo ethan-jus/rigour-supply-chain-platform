@@ -23,10 +23,13 @@
     <select id="countTenantPermission" resultType="int">
         SELECT COUNT(DISTINCT resource_record.id)
           FROM iam_user_role user_role
+          JOIN iam_user active_user
+            ON active_user.tenant_id = user_role.tenant_id AND active_user.id = user_role.user_id
+           AND active_user.status = 'ACTIVE' AND active_user.deleted_at IS NULL
           JOIN iam_role role_record
             ON role_record.tenant_id = user_role.tenant_id
            AND role_record.id = user_role.role_id
-          JOIN iam_role_resource role_resource
+          JOIN iam_effective_tenant_role_resource role_resource
             ON role_resource.tenant_id = user_role.tenant_id
            AND role_resource.role_id = user_role.role_id
           JOIN iam_resource resource_record

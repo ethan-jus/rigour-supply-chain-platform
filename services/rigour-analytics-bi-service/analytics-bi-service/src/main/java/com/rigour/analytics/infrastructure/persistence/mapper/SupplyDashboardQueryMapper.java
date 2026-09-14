@@ -10,9 +10,78 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+import org.apache.ibatis.annotations.Delete;
+import com.rigour.analytics.application.model.ProductCategoryHierarchy;
 
-/** 供应链 BI 聚合和刷新 Mapper。 */
+/**
+ * 供应链 BI 聚合和刷新 Mapper。
+ * DATETIME 与查询参数均保持 UTC；现代业务日期分组及天数运算仅在表达式内转换为北京时间。
+ * TIMESTAMPADD 避免依赖 MySQL 时区表；不得将转换结果写回事实时间或同步水位。
+ */
 public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSourceMarkerEntity> {
+    @Delete("DELETE FROM bi_product_category_closure WHERE tenant_id = #{tenantId}")
+    int clearCategoryClosure(@Param("tenantId") String tenantId);
+
+    @Update("UPDATE bi_product_category_dim SET deleted = 1 WHERE tenant_id = #{tenantId}")
+    int retireCategorySnapshot(@Param("tenantId") String tenantId);
+
+    @Insert("""
+            INSERT INTO bi_product_category_dim
+                (tenant_id, category_id, category_code, category_name, parent_id, category_level,
+                 ordinal, deleted, source_updated_time, synced_time)
+            SELECT tenant_id, id, category_code, category_name, parent_id, category_level,
+                   ordinal, deleted, updated_time, #{syncedAt}
+              FROM rigour_erp.erp_product_category WHERE tenant_id = #{tenantId}
+            ON DUPLICATE KEY UPDATE category_code=VALUES(category_code), category_name=VALUES(category_name),
+                parent_id=VALUES(parent_id), category_level=VALUES(category_level), ordinal=VALUES(ordinal),
+                deleted=VALUES(deleted), source_updated_time=VALUES(source_updated_time), synced_time=VALUES(synced_time)
+            """)
+    int refreshCategorySnapshot(@Param("tenantId") String tenantId, @Param("syncedAt") LocalDateTime syncedAt);
+
+    @Select("SELECT category_id AS id, parent_id AS parentId FROM bi_product_category_dim WHERE tenant_id = #{tenantId} AND deleted = 0 ORDER BY category_id")
+    List<ProductCategoryHierarchy.Node> categoryHierarchy(@Param("tenantId") String tenantId);
+
+    @Insert("""
+            <script>
+            INSERT INTO bi_product_category_closure (tenant_id, ancestor_id, descendant_id, depth) VALUES
+            <foreach collection="edges" item="edge" separator=",">
+                (#{tenantId}, #{edge.ancestorId}, #{edge.descendantId}, #{edge.depth})
+            </foreach>
+            </script>
+            """)
+    int insertCategoryClosure(@Param("tenantId") String tenantId, @Param("edges") List<ProductCategoryHierarchy.Edge> edges);
+
+    @Update("""
+            UPDATE bi_sales_order_line_fact l
+               SET product_category_id = (SELECT p.product_category_id FROM bi_product_dim p WHERE p.tenant_id=l.tenant_id AND p.product_id=l.product_id),
+                   product_category_code = (SELECT p.product_category_code FROM bi_product_dim p WHERE p.tenant_id=l.tenant_id AND p.product_id=l.product_id),
+                   product_category_name = (SELECT p.product_category_name FROM bi_product_dim p WHERE p.tenant_id=l.tenant_id AND p.product_id=l.product_id),
+                   brand_id = (SELECT p.brand_id FROM bi_product_dim p WHERE p.tenant_id=l.tenant_id AND p.product_id=l.product_id),
+                   brand_code = (SELECT p.brand_code FROM bi_product_dim p WHERE p.tenant_id=l.tenant_id AND p.product_id=l.product_id),
+                   brand_name = (SELECT p.brand_name FROM bi_product_dim p WHERE p.tenant_id=l.tenant_id AND p.product_id=l.product_id)
+             WHERE l.tenant_id = #{tenantId}
+               AND EXISTS (SELECT 1 FROM bi_product_dim p WHERE p.tenant_id=l.tenant_id AND p.product_id=l.product_id)
+            """)
+    int alignOrderLineProductDimensions(@Param("tenantId") String tenantId);
+
+    @Update("""
+            UPDATE bi_inventory_balance_current b
+               SET product_category_id = (SELECT p.product_category_id FROM bi_product_dim p WHERE p.tenant_id=b.tenant_id AND p.product_id=b.product_id)
+             WHERE b.tenant_id = #{tenantId}
+               AND EXISTS (SELECT 1 FROM bi_product_dim p WHERE p.tenant_id=b.tenant_id AND p.product_id=b.product_id)
+            """)
+    int alignInventoryProductDimensions(@Param("tenantId") String tenantId);
+
+    @Update("""
+            UPDATE bi_inventory_operation_fact b
+               SET product_category_id = (SELECT p.product_category_id FROM bi_product_dim p WHERE p.tenant_id=b.tenant_id AND p.product_id=b.product_id),
+                   product_category_code = (SELECT p.product_category_code FROM bi_product_dim p WHERE p.tenant_id=b.tenant_id AND p.product_id=b.product_id),
+                   product_category_name = (SELECT p.product_category_name FROM bi_product_dim p WHERE p.tenant_id=b.tenant_id AND p.product_id=b.product_id)
+             WHERE b.tenant_id = #{tenantId}
+               AND EXISTS (SELECT 1 FROM bi_product_dim p WHERE p.tenant_id=b.tenant_id AND p.product_id=b.product_id)
+            """)
+    int alignOperationProductDimensions(@Param("tenantId") String tenantId);
+
     @Select("""
             SELECT MAX(order_date)
               FROM bi_sales_order_fact
@@ -150,6 +219,12 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    AND o.order_status_code &lt;&gt; 'CANCELLED'
                    AND o.order_date &gt;= #{from}
                    AND o.order_date &lt;= #{to}
+            <if test="regionCode != null">
+                   AND o.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+                   AND o.owner_staff_code = #{ownerStaffCode}
+            </if>
             <if test="sourceSystemCode != null">
                    AND o.source_system_code = #{sourceSystemCode}
             </if>
@@ -164,6 +239,12 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    AND o.deleted = 0
                    AND o.order_status_code &lt;&gt; 'CANCELLED'
                    AND o.order_date &lt;= #{to}
+            <if test="regionCode != null">
+                   AND o.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+                   AND o.owner_staff_code = #{ownerStaffCode}
+            </if>
             <if test="sourceSystemCode != null">
                    AND o.source_system_code = #{sourceSystemCode}
             </if>
@@ -179,6 +260,12 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    AND p.deleted = 0
                    AND p.payment_time &gt;= #{from}
                    AND p.payment_time &lt;= #{to}
+            <if test="regionCode != null">
+                   AND p.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+                   AND p.owner_staff_code = #{ownerStaffCode}
+            </if>
             <if test="sourceSystemCode != null">
                    AND p.source_system_code = #{sourceSystemCode}
             </if>
@@ -202,7 +289,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                        ho.lastOrderTime,
                        pp.lastPaymentTime,
                        CASE WHEN ho.lastOrderTime IS NULL THEN 9999
-                            ELSE GREATEST(DATEDIFF(#{to}, ho.lastOrderTime), 0) END AS inactiveDays
+                            ELSE GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, ho.lastOrderTime)), 0) END AS inactiveDays
                   FROM base_customers c
                   LEFT JOIN period_orders po ON po.customerId = c.customerId
                   LEFT JOIN history_orders ho ON ho.customerId = c.customerId
@@ -306,6 +393,12 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    AND o.order_status_code &lt;&gt; 'CANCELLED'
                    AND o.order_date &gt;= #{from}
                    AND o.order_date &lt;= #{to}
+            <if test="regionCode != null">
+                   AND o.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+                   AND o.owner_staff_code = #{ownerStaffCode}
+            </if>
             <if test="sourceSystemCode != null">
                    AND o.source_system_code = #{sourceSystemCode}
             </if>
@@ -320,6 +413,12 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    AND o.deleted = 0
                    AND o.order_status_code &lt;&gt; 'CANCELLED'
                    AND o.order_date &lt;= #{to}
+            <if test="regionCode != null">
+                   AND o.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+                   AND o.owner_staff_code = #{ownerStaffCode}
+            </if>
             <if test="sourceSystemCode != null">
                    AND o.source_system_code = #{sourceSystemCode}
             </if>
@@ -335,6 +434,12 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    AND p.deleted = 0
                    AND p.payment_time &gt;= #{from}
                    AND p.payment_time &lt;= #{to}
+            <if test="regionCode != null">
+                   AND p.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+                   AND p.owner_staff_code = #{ownerStaffCode}
+            </if>
             <if test="sourceSystemCode != null">
                    AND p.source_system_code = #{sourceSystemCode}
             </if>
@@ -358,7 +463,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                        ho.lastOrderTime,
                        pp.lastPaymentTime,
                        CASE WHEN ho.lastOrderTime IS NULL THEN 9999
-                            ELSE GREATEST(DATEDIFF(#{to}, ho.lastOrderTime), 0) END AS inactiveDays
+                            ELSE GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, ho.lastOrderTime)), 0) END AS inactiveDays
                   FROM base_customers c
                   LEFT JOIN period_orders po ON po.customerId = c.customerId
                   LEFT JOIN history_orders ho ON ho.customerId = c.customerId
@@ -473,6 +578,12 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    AND o.order_status_code &lt;&gt; 'CANCELLED'
                    AND o.order_date &gt;= #{from}
                    AND o.order_date &lt;= #{to}
+            <if test="regionCode != null">
+                   AND o.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+                   AND o.owner_staff_code = #{ownerStaffCode}
+            </if>
             <if test="sourceSystemCode != null">
                    AND o.source_system_code = #{sourceSystemCode}
             </if>
@@ -487,6 +598,12 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    AND o.deleted = 0
                    AND o.order_status_code &lt;&gt; 'CANCELLED'
                    AND o.order_date &lt;= #{to}
+            <if test="regionCode != null">
+                   AND o.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+                   AND o.owner_staff_code = #{ownerStaffCode}
+            </if>
             <if test="sourceSystemCode != null">
                    AND o.source_system_code = #{sourceSystemCode}
             </if>
@@ -502,6 +619,12 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    AND p.deleted = 0
                    AND p.payment_time &gt;= #{from}
                    AND p.payment_time &lt;= #{to}
+            <if test="regionCode != null">
+                   AND p.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+                   AND p.owner_staff_code = #{ownerStaffCode}
+            </if>
             <if test="sourceSystemCode != null">
                    AND p.source_system_code = #{sourceSystemCode}
             </if>
@@ -525,7 +648,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                        ho.lastOrderTime,
                        pp.lastPaymentTime,
                        CASE WHEN ho.lastOrderTime IS NULL THEN 9999
-                            ELSE GREATEST(DATEDIFF(#{to}, ho.lastOrderTime), 0) END AS inactiveDays
+                            ELSE GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, ho.lastOrderTime)), 0) END AS inactiveDays
                   FROM base_customers c
                   LEFT JOIN period_orders po ON po.customerId = c.customerId
                   LEFT JOIN history_orders ho ON ho.customerId = c.customerId
@@ -689,7 +812,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                AND l.customer_type_code = #{customerTypeCode}
             </if>
             <if test="productCategoryId != null">
-               AND l.product_category_id = #{productCategoryId}
+               AND (l.product_category_id = #{productCategoryId} OR l.product_category_id IN (SELECT descendant_id FROM bi_product_category_closure WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId}))
             </if>
             <if test="sourceSystemCode != null">
                AND l.source_system_code = #{sourceSystemCode}
@@ -712,11 +835,11 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    COUNT(DISTINCT CASE WHEN o.unpaid_amount &gt; 0 THEN o.customer_id END) AS riskCustomerCount,
                    COUNT(DISTINCT CASE
                        WHEN o.unpaid_amount &gt; 0
-                            AND GREATEST(DATEDIFF(#{to}, o.payment_due_date), 0) &gt; 0
+                            AND GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, o.payment_due_date)), 0) &gt; 0
                             AND CASE WHEN COALESCE(o.payable_amount, 0) = 0 THEN 0
                                      ELSE COALESCE(o.paid_amount, 0) / COALESCE(o.payable_amount, 0) * 100 END &lt;= 20
                        THEN o.customer_id END) AS highRiskCustomerCount,
-                   COALESCE(AVG(CASE WHEN o.unpaid_amount &gt; 0 THEN GREATEST(DATEDIFF(#{to}, o.payment_due_date), 0) END), 0)
+                   COALESCE(AVG(CASE WHEN o.unpaid_amount &gt; 0 THEN GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, o.payment_due_date)), 0) END), 0)
                        AS averageOverdueDays,
                    CASE WHEN COALESCE(MAX(total_sales.salesAmount), 0) = 0 THEN 0
                         ELSE COALESCE(SUM(o.unpaid_amount), 0) / COALESCE(MAX(total_sales.salesAmount), 0) * 100 END
@@ -777,7 +900,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
     @Select("""
             <script>
             SELECT 'sales_amount' AS metricCode,
-                   DATE_FORMAT(o.order_date, '%Y-%m-%d') AS period,
+                   DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-%d') AS period,
                    COALESCE(SUM(o.payable_amount), 0) AS value,
                    COALESCE(SUM(o.paid_amount), 0) AS secondaryValue
               FROM bi_sales_order_fact o
@@ -798,7 +921,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
             <if test="sourceSystemCode != null">
                    AND o.source_system_code = #{sourceSystemCode}
             </if>
-             GROUP BY DATE_FORMAT(o.order_date, '%Y-%m-%d')
+             GROUP BY DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-%d')
              ORDER BY period
             </script>
             """)
@@ -814,7 +937,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
     @Select("""
             <script>
             SELECT 'receipt_amount' AS metricCode,
-                   DATE_FORMAT(p.payment_time, '%Y-%m-%d') AS period,
+                   DATE_FORMAT(TIMESTAMPADD(HOUR, 8, p.payment_time), '%Y-%m-%d') AS period,
                    COALESCE(SUM(p.paid_amount), 0) AS value,
                    COUNT(*) AS secondaryValue
               FROM bi_sales_payment_fact p
@@ -834,7 +957,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
             <if test="sourceSystemCode != null">
                AND p.source_system_code = #{sourceSystemCode}
             </if>
-             GROUP BY DATE_FORMAT(p.payment_time, '%Y-%m-%d')
+             GROUP BY DATE_FORMAT(TIMESTAMPADD(HOUR, 8, p.payment_time), '%Y-%m-%d')
              ORDER BY period
             </script>
             """)
@@ -847,10 +970,143 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
             @Param("customerTypeCode") String customerTypeCode,
             @Param("sourceSystemCode") String sourceSystemCode);
 
+    /** 城市分类矩阵沿用分类榜的行金额口径，只查询本地订单行事实。 */
+    @Select("""
+            <script>
+            SELECT l.region_code AS regionCode,
+                   COALESCE(MAX(NULLIF(TRIM(l.region_name), '')), l.region_code) AS regionName,
+                   CONCAT('', l.product_category_id) AS categoryCode,
+                   COALESCE(MAX(NULLIF(TRIM(l.product_category_name), '')),
+                            CONCAT('', l.product_category_id)) AS categoryName,
+                   COALESCE(SUM(l.line_amount), 0) AS salesAmount,
+                   COUNT(DISTINCT l.order_id) AS orderCount,
+                   COUNT(DISTINCT l.customer_id) AS customerCount
+              FROM bi_sales_order_line_fact l
+             WHERE l.tenant_id = #{tenantId}
+               AND l.deleted = 0
+               AND l.order_status_code &lt;&gt; 'CANCELLED'
+               AND l.order_date &gt;= #{from}
+               AND l.order_date &lt;= #{to}
+               AND NULLIF(TRIM(l.region_code), '') IS NOT NULL
+               AND UPPER(TRIM(l.region_code)) NOT IN ('UNKNOWN', 'MULTI')
+               AND l.product_category_id &gt; 0
+            <if test="regionCode != null">
+               AND l.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+               AND l.owner_staff_code = #{ownerStaffCode}
+            </if>
+            <if test="customerTypeCode != null">
+               AND l.customer_type_code = #{customerTypeCode}
+            </if>
+            <if test="sourceSystemCode != null">
+               AND l.source_system_code = #{sourceSystemCode}
+            </if>
+             GROUP BY l.region_code, l.product_category_id
+             ORDER BY regionCode, salesAmount DESC, categoryCode
+            </script>
+            """)
+    List<Map<String, Object>> cityProducts(
+            @Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode,
+            @Param("ownerStaffCode") String ownerStaffCode,
+            @Param("customerTypeCode") String customerTypeCode,
+            @Param("sourceSystemCode") String sourceSystemCode);
+
+    /** 先按同城同客户去重订单，再统计下单客户及至少两单的复购客户。 */
+    @Select("""
+            <script>
+            SELECT c.regionCode AS regionCode,
+                   COALESCE(MAX(c.regionName), c.regionCode) AS regionName,
+                   COUNT(*) AS orderingCustomerCount,
+                   SUM(CASE WHEN c.orderCount &gt;= 2 THEN 1 ELSE 0 END) AS repeatCustomerCount
+              FROM (
+                    SELECT o.region_code AS regionCode,
+                           MAX(NULLIF(TRIM(o.region_name), '')) AS regionName,
+                           o.customer_id AS customerId,
+                           COUNT(DISTINCT o.order_id) AS orderCount
+                      FROM bi_sales_order_fact o
+                     WHERE o.tenant_id = #{tenantId}
+                       AND o.deleted = 0
+                       AND o.order_status_code &lt;&gt; 'CANCELLED'
+                       AND o.order_date &gt;= #{from}
+                       AND o.order_date &lt;= #{to}
+                       AND NULLIF(TRIM(o.region_code), '') IS NOT NULL
+                       AND UPPER(TRIM(o.region_code)) NOT IN ('UNKNOWN', 'MULTI')
+                       AND o.customer_id IS NOT NULL
+            <if test="regionCode != null">
+                       AND o.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+                       AND o.owner_staff_code = #{ownerStaffCode}
+            </if>
+            <if test="customerTypeCode != null">
+                       AND o.customer_type_code = #{customerTypeCode}
+            </if>
+            <if test="sourceSystemCode != null">
+                       AND o.source_system_code = #{sourceSystemCode}
+            </if>
+                     GROUP BY o.region_code, o.customer_id
+              ) c
+             GROUP BY c.regionCode
+             ORDER BY c.regionCode
+            </script>
+            """)
+    List<Map<String, Object>> cityCustomers(
+            @Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode,
+            @Param("ownerStaffCode") String ownerStaffCode,
+            @Param("customerTypeCode") String customerTypeCode,
+            @Param("sourceSystemCode") String sourceSystemCode);
+
+    /** 人员条件保留 collectionTrend 的归属销售或回款人匹配规则，按归属销售汇总。 */
+    @Select("""
+            <script>
+            SELECT p.owner_staff_code AS ownerStaffCode,
+                   COALESCE(MAX(NULLIF(TRIM(p.owner_staff_name), '')), p.owner_staff_code) AS ownerStaffName,
+                   COALESCE(SUM(p.paid_amount), 0) AS paidAmount,
+                   COUNT(*) AS paymentCount,
+                   COUNT(DISTINCT p.customer_id) AS customerCount
+              FROM bi_sales_payment_fact p
+             WHERE p.tenant_id = #{tenantId}
+               AND p.deleted = 0
+               AND p.payment_time &gt;= #{from}
+               AND p.payment_time &lt;= #{to}
+               AND NULLIF(TRIM(p.owner_staff_code), '') IS NOT NULL
+               AND UPPER(TRIM(p.owner_staff_code)) NOT IN ('UNKNOWN', 'MULTI')
+            <if test="regionCode != null">
+               AND p.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+               AND (p.owner_staff_code = #{ownerStaffCode} OR p.collector_staff_code = #{ownerStaffCode})
+            </if>
+            <if test="customerTypeCode != null">
+               AND p.customer_type_code = #{customerTypeCode}
+            </if>
+            <if test="sourceSystemCode != null">
+               AND p.source_system_code = #{sourceSystemCode}
+            </if>
+             GROUP BY p.owner_staff_code
+             ORDER BY paidAmount DESC, ownerStaffCode
+            </script>
+            """)
+    List<Map<String, Object>> salesReceipts(
+            @Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode,
+            @Param("ownerStaffCode") String ownerStaffCode,
+            @Param("customerTypeCode") String customerTypeCode,
+            @Param("sourceSystemCode") String sourceSystemCode);
+
     @Select("""
             <script>
             SELECT 'city_cost_amount' AS metricCode,
-                   DATE_FORMAT(cost_date, '%Y-%m-%d') AS period,
+                   DATE_FORMAT(TIMESTAMPADD(HOUR, 8, cost_date), '%Y-%m-%d') AS period,
                    COALESCE(SUM(cost_amount), 0) AS value,
                    COALESCE(SUM(budget_amount), 0) AS secondaryValue
               FROM bi_city_cost_record
@@ -861,7 +1117,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
             <if test="regionCode != null">
                AND region_code = #{regionCode}
             </if>
-             GROUP BY DATE_FORMAT(cost_date, '%Y-%m-%d')
+             GROUP BY DATE_FORMAT(TIMESTAMPADD(HOUR, 8, cost_date), '%Y-%m-%d')
              ORDER BY period
             </script>
             """)
@@ -1015,7 +1271,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
 
     @Select("""
             <script>
-            SELECT DATE_FORMAT(o.order_date, '%Y-%m') AS period,
+            SELECT DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m') AS period,
                    COALESCE(o.owner_staff_code, 'UNKNOWN') AS ownerStaffCode,
                    COALESCE(MAX(o.owner_staff_name), MAX(o.owner_staff_code), '未分配销售') AS ownerStaffName,
                    CASE WHEN COUNT(DISTINCT NULLIF(o.region_code, '')) = 1 THEN MAX(NULLIF(o.region_code, ''))
@@ -1050,7 +1306,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
             <if test="sourceSystemCode != null">
                    AND o.source_system_code = #{sourceSystemCode}
             </if>
-             GROUP BY DATE_FORMAT(o.order_date, '%Y-%m'), COALESCE(o.owner_staff_code, 'UNKNOWN')
+             GROUP BY DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m'), COALESCE(o.owner_staff_code, 'UNKNOWN')
              ORDER BY period, salesAmount DESC, orderCount DESC
              LIMIT 300
             </script>
@@ -1234,20 +1490,20 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                            o.unpaid_amount AS unpaidAmount,
                            CASE
                                WHEN o.payment_due_date IS NULL OR o.payment_due_date &gt;= #{to} THEN 'CURRENT'
-                               WHEN DATEDIFF(#{to}, o.payment_due_date) BETWEEN 1 AND 30 THEN 'DAYS_1_30'
-                               WHEN DATEDIFF(#{to}, o.payment_due_date) BETWEEN 31 AND 60 THEN 'DAYS_31_60'
+                               WHEN DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, o.payment_due_date)) BETWEEN 1 AND 30 THEN 'DAYS_1_30'
+                               WHEN DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, o.payment_due_date)) BETWEEN 31 AND 60 THEN 'DAYS_31_60'
                                ELSE 'DAYS_61_PLUS'
                            END AS bucketCode,
                            CASE
                                WHEN o.payment_due_date IS NULL OR o.payment_due_date &gt;= #{to} THEN '未逾期'
-                               WHEN DATEDIFF(#{to}, o.payment_due_date) BETWEEN 1 AND 30 THEN '逾期1-30天'
-                               WHEN DATEDIFF(#{to}, o.payment_due_date) BETWEEN 31 AND 60 THEN '逾期31-60天'
+                               WHEN DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, o.payment_due_date)) BETWEEN 1 AND 30 THEN '逾期1-30天'
+                               WHEN DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, o.payment_due_date)) BETWEEN 31 AND 60 THEN '逾期31-60天'
                                ELSE '逾期60天以上'
                            END AS bucketName,
                            CASE
                                WHEN o.payment_due_date IS NULL OR o.payment_due_date &gt;= #{to} THEN 0
-                               WHEN DATEDIFF(#{to}, o.payment_due_date) BETWEEN 1 AND 30 THEN 1
-                               WHEN DATEDIFF(#{to}, o.payment_due_date) BETWEEN 31 AND 60 THEN 2
+                               WHEN DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, o.payment_due_date)) BETWEEN 1 AND 30 THEN 1
+                               WHEN DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, o.payment_due_date)) BETWEEN 31 AND 60 THEN 2
                                ELSE 3
                            END AS bucketSort
                       FROM bi_sales_order_fact o
@@ -1285,6 +1541,38 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
 
     @Select("""
             <script>
+            WITH scoped_lines AS (
+                SELECT l.*, CASE WHEN current_product.deleted = 0 THEN current_product.product_id
+                                 ELSE NULL END AS ranking_product_id
+                  FROM bi_sales_order_line_fact l
+                  LEFT JOIN bi_product_dim current_product
+                    ON current_product.tenant_id = l.tenant_id AND current_product.product_id = l.product_id
+                 WHERE l.tenant_id = #{tenantId} AND l.deleted = 0
+                   AND l.order_status_code &lt;&gt; 'CANCELLED'
+                   AND l.order_date &gt;= #{from}
+                   AND l.order_date &lt;= #{to}
+                <if test="regionCode != null">AND l.region_code = #{regionCode}</if>
+                <if test="ownerStaffCode != null">AND l.owner_staff_code = #{ownerStaffCode}</if>
+                <if test="customerTypeCode != null">AND l.customer_type_code = #{customerTypeCode}</if>
+                <if test="sourceSystemCode != null">AND l.source_system_code = #{sourceSystemCode}</if>
+                <if test="productCategoryId != null">
+                   AND (CASE WHEN current_product.product_id IS NOT NULL THEN current_product.product_category_id
+                             ELSE l.product_category_id END)
+                       IN (SELECT descendant_id FROM bi_product_category_closure
+                            WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId})
+                </if>
+            ), product_dimensions AS (
+                SELECT tenant_id, product_id, product_code, product_name,
+                       product_category_id, product_category_code, product_category_name
+                  FROM bi_product_dim WHERE tenant_id = #{tenantId} AND deleted = 0
+                <if test="productCategoryId != null">
+                   AND product_category_id IN (SELECT descendant_id FROM bi_product_category_closure
+                        WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId})
+                </if>
+                UNION ALL
+                SELECT #{tenantId}, NULL, NULL, '商品关联待核对', NULL, NULL, '分类关联待核对'
+                 WHERE EXISTS (SELECT 1 FROM scoped_lines missing WHERE missing.ranking_product_id IS NULL)
+            )
             SELECT 'PRODUCT' AS rankType,
                    COALESCE(CAST(p.product_id AS CHAR), p.product_code, 'UNKNOWN') AS dimensionCode,
                    COALESCE(p.product_name, p.product_code, '未知商品') AS dimensionName,
@@ -1305,35 +1593,13 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                              / COALESCE(SUM(l.line_amount), 0) * 100 END AS costCoverageRate,
                    COUNT(DISTINCT l.order_id) AS orderCount,
                    COUNT(DISTINCT l.customer_id) AS customerCount
-              FROM bi_product_dim p
-              LEFT JOIN bi_sales_order_line_fact l
+              FROM product_dimensions p
+              LEFT JOIN scoped_lines l
                 ON l.tenant_id = p.tenant_id
-               AND l.product_id = p.product_id
-               AND l.deleted = 0
-               AND l.order_status_code &lt;&gt; 'CANCELLED'
-               AND l.order_date &gt;= #{from}
-               AND l.order_date &lt;= #{to}
-            <if test="regionCode != null">
-               AND l.region_code = #{regionCode}
-            </if>
-            <if test="ownerStaffCode != null">
-               AND l.owner_staff_code = #{ownerStaffCode}
-            </if>
-            <if test="customerTypeCode != null">
-               AND l.customer_type_code = #{customerTypeCode}
-            </if>
-            <if test="sourceSystemCode != null">
-               AND l.source_system_code = #{sourceSystemCode}
-            </if>
-             WHERE p.tenant_id = #{tenantId}
-               AND p.deleted = 0
-            <if test="productCategoryId != null">
-               AND p.product_category_id = #{productCategoryId}
-            </if>
+               AND (l.ranking_product_id = p.product_id OR (p.product_id IS NULL AND l.ranking_product_id IS NULL))
              GROUP BY p.product_id, p.product_code, p.product_name,
                       p.product_category_id, p.product_category_code, p.product_category_name
              ORDER BY salesAmount DESC, salesQuantity DESC, p.product_id
-             LIMIT 500
             </script>
             """)
     List<Map<String, Object>> productSalesRanking(
@@ -1393,7 +1659,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                AND l.customer_type_code = #{customerTypeCode}
             </if>
             <if test="productCategoryId != null">
-               AND l.product_category_id = #{productCategoryId}
+               AND (l.product_category_id = #{productCategoryId} OR l.product_category_id IN (SELECT descendant_id FROM bi_product_category_closure WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId}))
             </if>
             <if test="sourceSystemCode != null">
                AND l.source_system_code = #{sourceSystemCode}
@@ -1415,11 +1681,25 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
 
     @Select("""
             <script>
+            WITH scoped_lines AS (
+                SELECT l.*, CASE WHEN p.product_id IS NOT NULL THEN p.product_category_id
+                                 ELSE l.product_category_id END AS effective_category_id
+                  FROM bi_sales_order_line_fact l
+                  LEFT JOIN bi_product_dim p ON p.tenant_id = l.tenant_id AND p.product_id = l.product_id
+                 WHERE l.tenant_id = #{tenantId} AND l.deleted = 0
+                   AND l.order_status_code &lt;&gt; 'CANCELLED'
+                   AND l.order_date &gt;= #{from}
+                   AND l.order_date &lt;= #{to}
+                <if test="regionCode != null">AND l.region_code = #{regionCode}</if>
+                <if test="ownerStaffCode != null">AND l.owner_staff_code = #{ownerStaffCode}</if>
+                <if test="customerTypeCode != null">AND l.customer_type_code = #{customerTypeCode}</if>
+                <if test="sourceSystemCode != null">AND l.source_system_code = #{sourceSystemCode}</if>
+            )
             SELECT 'CATEGORY' AS rankType,
-                   COALESCE(CAST(MAX(l.product_category_id) AS CHAR), 'UNKNOWN') AS dimensionCode,
-                   COALESCE(MAX(l.product_category_name), CAST(MAX(l.product_category_id) AS CHAR), '未分配分类') AS dimensionName,
-                   COALESCE(CAST(MAX(l.product_category_id) AS CHAR), 'UNKNOWN') AS categoryCode,
-                   COALESCE(MAX(l.product_category_name), CAST(MAX(l.product_category_id) AS CHAR), '未分配分类') AS categoryName,
+                   TRIM(CAST(pc.category_id AS CHAR(64))) AS dimensionCode,
+                   pc.category_name AS dimensionName,
+                   TRIM(CAST(pc.category_id AS CHAR(64))) AS categoryCode,
+                   pc.category_name AS categoryName,
                    COALESCE(SUM(l.quantity), 0) AS salesQuantity,
                    COALESCE(SUM(l.line_amount), 0) AS salesAmount,
                    COALESCE(SUM(l.discount_amount), 0) AS discountAmount,
@@ -1435,30 +1715,26 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                              / COALESCE(SUM(l.line_amount), 0) * 100 END AS costCoverageRate,
                    COUNT(DISTINCT l.order_id) AS orderCount,
                    COUNT(DISTINCT l.customer_id) AS customerCount
-              FROM bi_sales_order_line_fact l
-             WHERE l.tenant_id = #{tenantId}
-               AND l.deleted = 0
-               AND l.order_status_code &lt;&gt; 'CANCELLED'
-               AND l.order_date &gt;= #{from}
-               AND l.order_date &lt;= #{to}
-            <if test="regionCode != null">
-               AND l.region_code = #{regionCode}
-            </if>
-            <if test="ownerStaffCode != null">
-               AND l.owner_staff_code = #{ownerStaffCode}
-            </if>
-            <if test="customerTypeCode != null">
-               AND l.customer_type_code = #{customerTypeCode}
-            </if>
+              FROM (
+                    SELECT tenant_id, category_id, category_name, deleted FROM bi_product_category_dim
+                     WHERE tenant_id = #{tenantId} AND deleted = 0
+                    UNION ALL
+                    SELECT DISTINCT missing.tenant_id, COALESCE(missing.effective_category_id, 0), '分类关联待核对', 0
+                      FROM scoped_lines missing
+                     WHERE NOT EXISTS (SELECT 1 FROM bi_product_category_dim known WHERE known.tenant_id = missing.tenant_id
+                           AND known.category_id = missing.effective_category_id AND known.deleted = 0)
+              ) pc
+              LEFT JOIN scoped_lines l
+                ON l.tenant_id = pc.tenant_id AND COALESCE(l.effective_category_id, 0) = pc.category_id
+             WHERE pc.tenant_id = #{tenantId} AND pc.deleted = 0
+               AND (NOT EXISTS (SELECT 1 FROM bi_product_category_dim child WHERE child.tenant_id = pc.tenant_id AND child.parent_id = pc.category_id AND child.deleted = 0)
+                    OR EXISTS (SELECT 1 FROM bi_product_dim product WHERE product.tenant_id = pc.tenant_id AND product.product_category_id = pc.category_id AND product.deleted = 0)
+                    OR EXISTS (SELECT 1 FROM scoped_lines fact WHERE fact.tenant_id = pc.tenant_id AND fact.effective_category_id = pc.category_id))
             <if test="productCategoryId != null">
-               AND l.product_category_id = #{productCategoryId}
+               AND pc.category_id IN (SELECT descendant_id FROM bi_product_category_closure WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId})
             </if>
-            <if test="sourceSystemCode != null">
-               AND l.source_system_code = #{sourceSystemCode}
-            </if>
-             GROUP BY COALESCE(CAST(l.product_category_id AS CHAR), 'UNKNOWN')
+             GROUP BY pc.category_id, pc.category_name
              ORDER BY salesAmount DESC, salesQuantity DESC
-             LIMIT 20
             </script>
             """)
     List<Map<String, Object>> categorySalesRanking(
@@ -1509,7 +1785,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                AND l.customer_type_code = #{customerTypeCode}
             </if>
             <if test="productCategoryId != null">
-               AND l.product_category_id = #{productCategoryId}
+               AND (l.product_category_id = #{productCategoryId} OR l.product_category_id IN (SELECT descendant_id FROM bi_product_category_closure WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId}))
             </if>
             <if test="sourceSystemCode != null">
                AND l.source_system_code = #{sourceSystemCode}
@@ -1542,6 +1818,9 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                        WHEN 'PAID_AMOUNT' THEN '回款额'
                        ELSE t.metric_code
                    END AS metricName,
+                   COUNT(DISTINCT t.target_month) AS configuredMonthCount,
+                   TIMESTAMPDIFF(MONTH, CAST(DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{from}), '%Y-%m-01') AS DATE),
+                       CAST(DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{to}), '%Y-%m-01') AS DATE)) + 1 AS periodMonthCount,
                    COALESCE(SUM(t.target_value), 0) AS targetValue,
                    COALESCE(MAX(actuals.actualValue), 0) AS actualValue,
                    CASE WHEN COALESCE(SUM(t.target_value), 0) = 0 THEN 0
@@ -1575,6 +1854,14 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                                    COUNT(DISTINCT o.customer_id)
                               FROM bi_sales_order_fact o
                              WHERE o.tenant_id = #{tenantId}
+                               AND EXISTS (
+                                   SELECT 1 FROM bi_business_target configured
+                                    WHERE configured.tenant_id = o.tenant_id AND configured.deleted = 0
+                                      AND configured.dimension_type = 'CITY'
+                                      AND configured.dimension_code = COALESCE(o.region_code, 'UNKNOWN')
+                                      AND configured.metric_code = 'COOPERATED_CUSTOMER'
+                                      AND configured.target_month = DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-01')
+                               )
                                AND o.deleted = 0
                                AND o.order_status_code &lt;&gt; 'CANCELLED'
                                AND o.order_date &gt;= #{from}
@@ -1598,6 +1885,14 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                                    COALESCE(SUM(o.payable_amount), 0)
                               FROM bi_sales_order_fact o
                              WHERE o.tenant_id = #{tenantId}
+                               AND EXISTS (
+                                   SELECT 1 FROM bi_business_target configured
+                                    WHERE configured.tenant_id = o.tenant_id AND configured.deleted = 0
+                                      AND configured.dimension_type = 'CITY'
+                                      AND configured.dimension_code = COALESCE(o.region_code, 'UNKNOWN')
+                                      AND configured.metric_code = 'SALES_AMOUNT'
+                                      AND configured.target_month = DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-01')
+                               )
                                AND o.deleted = 0
                                AND o.order_status_code &lt;&gt; 'CANCELLED'
                                AND o.order_date &gt;= #{from}
@@ -1621,6 +1916,14 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                                    COALESCE(SUM(o.paid_amount), 0)
                               FROM bi_sales_order_fact o
                              WHERE o.tenant_id = #{tenantId}
+                               AND EXISTS (
+                                   SELECT 1 FROM bi_business_target configured
+                                    WHERE configured.tenant_id = o.tenant_id AND configured.deleted = 0
+                                      AND configured.dimension_type = 'CITY'
+                                      AND configured.dimension_code = COALESCE(o.region_code, 'UNKNOWN')
+                                      AND configured.metric_code = 'PAID_AMOUNT'
+                                      AND configured.target_month = DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-01')
+                               )
                                AND o.deleted = 0
                                AND o.order_status_code &lt;&gt; 'CANCELLED'
                                AND o.order_date &gt;= #{from}
@@ -1644,14 +1947,18 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
              WHERE t.tenant_id = #{tenantId}
                AND t.deleted = 0
                AND t.dimension_type = 'CITY'
-               AND t.target_month &gt;= DATE_FORMAT(#{from}, '%Y-%m-01')
-               AND t.target_month &lt;= DATE_FORMAT(#{to}, '%Y-%m-01')
+               AND (t.metric_code &lt;&gt; 'CONTACTED_CUSTOMER'
+                    OR DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{from}), '%Y-%m-01') = DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{to}), '%Y-%m-01'))
+               AND t.target_month &gt;= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{from}), '%Y-%m-01')
+               AND t.target_month &lt;= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{to}), '%Y-%m-01')
+            <if test="ownerStaffCode != null or customerTypeCode != null or sourceSystemCode != null">
+               AND 1 = 0
+            </if>
             <if test="regionCode != null">
                AND t.dimension_code = #{regionCode}
             </if>
              GROUP BY t.dimension_type, t.dimension_code, t.metric_code
-             ORDER BY achievementRate ASC, targetValue DESC
-             LIMIT 80
+             ORDER BY achievementRate ASC, targetValue DESC, t.dimension_code, t.metric_code
             </script>
             """)
     List<Map<String, Object>> cityTargetCompletions(
@@ -1672,9 +1979,13 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    CASE t.metric_code
                        WHEN 'SALES_AMOUNT' THEN '销售额'
                        WHEN 'PAID_AMOUNT' THEN '回款额'
+                       WHEN 'CONTACTED_CUSTOMER' THEN '建联客户数'
                        WHEN 'COOPERATED_CUSTOMER' THEN '合作客户数'
                        ELSE t.metric_code
                    END AS metricName,
+                   COUNT(DISTINCT t.target_month) AS configuredMonthCount,
+                   TIMESTAMPDIFF(MONTH, CAST(DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{from}), '%Y-%m-01') AS DATE),
+                       CAST(DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{to}), '%Y-%m-01') AS DATE)) + 1 AS periodMonthCount,
                    COALESCE(SUM(t.target_value), 0) AS targetValue,
                    COALESCE(MAX(actuals.actualValue), 0) AS actualValue,
                    CASE WHEN COALESCE(SUM(t.target_value), 0) = 0 THEN 0
@@ -1684,11 +1995,35 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
               LEFT JOIN (
                     SELECT metricCode, dimensionCode, COALESCE(SUM(actualValue), 0) AS actualValue
                       FROM (
+                            SELECT 'CONTACTED_CUSTOMER' AS metricCode,
+                                   COALESCE(c.owner_staff_code, 'UNKNOWN') AS dimensionCode,
+                                   COUNT(*) AS actualValue
+                              FROM bi_customer_dim c
+                             WHERE c.tenant_id = #{tenantId}
+                               AND c.deleted = 0
+                               AND c.status_code = 'ACTIVE'
+                               AND c.has_contact = 1
+            <if test="regionCode != null">
+                               AND c.region_code = #{regionCode}
+            </if>
+            <if test="ownerStaffCode != null">
+                               AND c.owner_staff_code = #{ownerStaffCode}
+            </if>
+                             GROUP BY COALESCE(c.owner_staff_code, 'UNKNOWN')
+                            UNION ALL
                             SELECT 'COOPERATED_CUSTOMER' AS metricCode,
                                    COALESCE(o.owner_staff_code, 'UNKNOWN') AS dimensionCode,
                                    COUNT(DISTINCT o.customer_id) AS actualValue
                               FROM bi_sales_order_fact o
                              WHERE o.tenant_id = #{tenantId}
+                               AND EXISTS (
+                                   SELECT 1 FROM bi_business_target configured
+                                    WHERE configured.tenant_id = o.tenant_id AND configured.deleted = 0
+                                      AND configured.dimension_type = 'SALES_OWNER'
+                                      AND configured.dimension_code = COALESCE(o.owner_staff_code, 'UNKNOWN')
+                                      AND configured.metric_code = 'COOPERATED_CUSTOMER'
+                                      AND configured.target_month = DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-01')
+                               )
                                AND o.deleted = 0
                                AND o.order_status_code &lt;&gt; 'CANCELLED'
                                AND o.order_date &gt;= #{from}
@@ -1712,6 +2047,14 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                                    COALESCE(SUM(o.payable_amount), 0)
                               FROM bi_sales_order_fact o
                              WHERE o.tenant_id = #{tenantId}
+                               AND EXISTS (
+                                   SELECT 1 FROM bi_business_target configured
+                                    WHERE configured.tenant_id = o.tenant_id AND configured.deleted = 0
+                                      AND configured.dimension_type = 'SALES_OWNER'
+                                      AND configured.dimension_code = COALESCE(o.owner_staff_code, 'UNKNOWN')
+                                      AND configured.metric_code = 'SALES_AMOUNT'
+                                      AND configured.target_month = DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-01')
+                               )
                                AND o.deleted = 0
                                AND o.order_status_code &lt;&gt; 'CANCELLED'
                                AND o.order_date &gt;= #{from}
@@ -1735,6 +2078,14 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                                    COALESCE(SUM(o.paid_amount), 0)
                               FROM bi_sales_order_fact o
                              WHERE o.tenant_id = #{tenantId}
+                               AND EXISTS (
+                                   SELECT 1 FROM bi_business_target configured
+                                    WHERE configured.tenant_id = o.tenant_id AND configured.deleted = 0
+                                      AND configured.dimension_type = 'SALES_OWNER'
+                                      AND configured.dimension_code = COALESCE(o.owner_staff_code, 'UNKNOWN')
+                                      AND configured.metric_code = 'PAID_AMOUNT'
+                                      AND configured.target_month = DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-01')
+                               )
                                AND o.deleted = 0
                                AND o.order_status_code &lt;&gt; 'CANCELLED'
                                AND o.order_date &gt;= #{from}
@@ -1758,14 +2109,36 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
              WHERE t.tenant_id = #{tenantId}
                AND t.deleted = 0
                AND t.dimension_type = 'SALES_OWNER'
-               AND t.target_month &gt;= DATE_FORMAT(#{from}, '%Y-%m-01')
-               AND t.target_month &lt;= DATE_FORMAT(#{to}, '%Y-%m-01')
+               AND (t.metric_code &lt;&gt; 'CONTACTED_CUSTOMER'
+                    OR DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{from}), '%Y-%m-01') = DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{to}), '%Y-%m-01'))
+               AND t.target_month &gt;= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{from}), '%Y-%m-01')
+               AND t.target_month &lt;= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{to}), '%Y-%m-01')
+            <if test="customerTypeCode != null or sourceSystemCode != null">
+               AND 1 = 0
+            </if>
+            <if test="regionCode != null">
+               AND t.dimension_code IN (
+                   SELECT owner_staff_code FROM bi_customer_dim
+                    WHERE tenant_id = #{tenantId} AND deleted = 0 AND region_code = #{regionCode}
+                   UNION
+                   SELECT owner_staff_code FROM bi_sales_order_fact
+                    WHERE tenant_id = #{tenantId} AND deleted = 0 AND region_code = #{regionCode}
+               )
+               AND t.dimension_code NOT IN (
+                   SELECT owner_staff_code FROM bi_customer_dim
+                    WHERE tenant_id = #{tenantId} AND deleted = 0 AND owner_staff_code IS NOT NULL
+                      AND (region_code IS NULL OR region_code &lt;&gt; #{regionCode})
+                   UNION
+                   SELECT owner_staff_code FROM bi_sales_order_fact
+                    WHERE tenant_id = #{tenantId} AND deleted = 0 AND owner_staff_code IS NOT NULL
+                      AND (region_code IS NULL OR region_code &lt;&gt; #{regionCode})
+               )
+            </if>
             <if test="ownerStaffCode != null">
                AND t.dimension_code = #{ownerStaffCode}
             </if>
              GROUP BY t.dimension_type, t.dimension_code, t.metric_code
-             ORDER BY achievementRate ASC, targetValue DESC
-             LIMIT 80
+             ORDER BY achievementRate ASC, targetValue DESC, t.dimension_code, t.metric_code
             </script>
             """)
     List<Map<String, Object>> salesTargetCompletions(
@@ -1802,7 +2175,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                        AND operation_time &gt;= #{from}
                        AND operation_time &lt;= #{to}
             <if test="productCategoryId != null">
-                       AND product_category_id = #{productCategoryId}
+                       AND (product_category_id = #{productCategoryId} OR product_category_id IN (SELECT descendant_id FROM bi_product_category_closure WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId}))
             </if>
                      GROUP BY COALESCE(product_category_code, CAST(product_category_id AS CHAR), 'UNKNOWN'),
                               COALESCE(product_category_name, CAST(product_category_id AS CHAR), '未分配分类'),
@@ -1828,7 +2201,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                             OR b.in_transit_quantity &lt;&gt; 0
                        )
             <if test="productCategoryId != null">
-                       AND b.product_category_id = #{productCategoryId}
+                       AND (b.product_category_id = #{productCategoryId} OR b.product_category_id IN (SELECT descendant_id FROM bi_product_category_closure WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId}))
             </if>
                      GROUP BY COALESCE(p.product_category_code, CAST(b.product_category_id AS CHAR), 'UNKNOWN'),
                               COALESCE(p.product_category_name, CAST(b.product_category_id AS CHAR), '未分配分类'),
@@ -1875,7 +2248,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    AND l.customer_type_code = #{customerTypeCode}
             </if>
             <if test="productCategoryId != null">
-                   AND l.product_category_id = #{productCategoryId}
+                   AND (l.product_category_id = #{productCategoryId} OR l.product_category_id IN (SELECT descendant_id FROM bi_product_category_closure WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId}))
             </if>
             <if test="sourceSystemCode != null">
                    AND l.source_system_code = #{sourceSystemCode}
@@ -1909,7 +2282,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    AND b.region_code = #{regionCode}
             </if>
             <if test="productCategoryId != null">
-                   AND b.product_category_id = #{productCategoryId}
+                   AND (b.product_category_id = #{productCategoryId} OR b.product_category_id IN (SELECT descendant_id FROM bi_product_category_closure WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId}))
             </if>
                  GROUP BY b.product_id, COALESCE(b.unit_code, 'UNKNOWN')
             ),
@@ -1925,17 +2298,17 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    k.unitCode AS unitCode,
                    COALESCE(s.salesQuantity, 0) AS salesQuantity,
                    CASE WHEN COALESCE(s.salesQuantity, 0) = 0 THEN 0
-                        ELSE COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(#{to}, #{from}) + 1, 1) END
+                        ELSE COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, #{from})) + 1, 1) END
                         AS dailySalesQuantity,
                    COALESCE(i.availableQuantity, 0) AS availableQuantity,
                    COALESCE(i.inTransitQuantity, 0) AS inTransitQuantity,
                    CASE WHEN COALESCE(s.salesQuantity, 0) = 0 THEN 0
                         ELSE COALESCE(i.availableQuantity, 0)
-                            / (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(#{to}, #{from}) + 1, 1)) END
+                            / (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, #{from})) + 1, 1)) END
                         AS coverageDays,
                    CASE WHEN COALESCE(s.salesQuantity, 0) = 0 THEN 0
                         ELSE GREATEST(
-                            30 * (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(#{to}, #{from}) + 1, 1))
+                            30 * (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, #{from})) + 1, 1))
                             - COALESCE(i.availableQuantity, 0)
                             - COALESCE(i.inTransitQuantity, 0),
                             0
@@ -1944,10 +2317,10 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                        WHEN COALESCE(s.salesQuantity, 0) &gt; 0 AND COALESCE(i.availableQuantity, 0) &lt;= 0 THEN 'HIGH'
                        WHEN COALESCE(s.salesQuantity, 0) &gt; 0
                             AND COALESCE(i.availableQuantity, 0)
-                                / (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(#{to}, #{from}) + 1, 1)) &lt;= 7 THEN 'HIGH'
+                                / (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, #{from})) + 1, 1)) &lt;= 7 THEN 'HIGH'
                        WHEN COALESCE(s.salesQuantity, 0) &gt; 0
                             AND COALESCE(i.availableQuantity, 0)
-                                / (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(#{to}, #{from}) + 1, 1)) &lt;= 15 THEN 'MEDIUM'
+                                / (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, #{from})) + 1, 1)) &lt;= 15 THEN 'MEDIUM'
                        WHEN COALESCE(s.salesQuantity, 0) = 0 AND COALESCE(i.availableQuantity, 0) &gt; 0 THEN 'SLOW'
                        ELSE 'NORMAL'
                    END AS riskLevel,
@@ -1964,10 +2337,10 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                     WHEN COALESCE(s.salesQuantity, 0) &gt; 0 AND COALESCE(i.availableQuantity, 0) &lt;= 0 THEN 0
                     WHEN COALESCE(s.salesQuantity, 0) &gt; 0
                          AND COALESCE(i.availableQuantity, 0)
-                             / (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(#{to}, #{from}) + 1, 1)) &lt;= 7 THEN 0
+                             / (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, #{from})) + 1, 1)) &lt;= 7 THEN 0
                     WHEN COALESCE(s.salesQuantity, 0) &gt; 0
                          AND COALESCE(i.availableQuantity, 0)
-                             / (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(#{to}, #{from}) + 1, 1)) &lt;= 15 THEN 1
+                             / (COALESCE(s.salesQuantity, 0) / GREATEST(DATEDIFF(TIMESTAMPADD(HOUR, 8, #{to}), TIMESTAMPADD(HOUR, 8, #{from})) + 1, 1)) &lt;= 15 THEN 1
                     WHEN COALESCE(s.salesQuantity, 0) = 0 AND COALESCE(i.availableQuantity, 0) &gt; 0 THEN 3
                     ELSE 2
                 END,
@@ -2086,7 +2459,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                AND b.region_code = #{regionCode}
             </if>
             <if test="productCategoryId != null">
-               AND b.product_category_id = #{productCategoryId}
+               AND (b.product_category_id = #{productCategoryId} OR b.product_category_id IN (SELECT descendant_id FROM bi_product_category_closure WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId}))
             </if>
              ORDER BY b.available_quantity ASC, b.source_updated_time DESC
              LIMIT 20
@@ -2240,13 +2613,13 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
 
     @Select("""
             SELECT 'PRODUCT_CATEGORY' AS optionType,
-                   CAST(pc.id AS CHAR) AS optionValue,
+                   TRIM(CAST(pc.category_id AS CHAR(64))) AS optionValue,
                    pc.category_name AS optionLabel,
                    COALESCE(usage_rows.usageCount, 0) AS usageCount,
-                   CAST(pc.parent_id AS CHAR) AS parentOptionValue,
+                   TRIM(CAST(pc.parent_id AS CHAR(64))) AS parentOptionValue,
                    pc.category_level AS categoryLevel,
                    pc.ordinal AS ordinal
-              FROM rigour_erp.erp_product_category pc
+              FROM bi_product_category_dim pc
               LEFT JOIN (
                     SELECT product_category_id, SUM(usageCount) AS usageCount
                       FROM (
@@ -2265,11 +2638,10 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                              GROUP BY product_category_id
                       ) usage_options
                      GROUP BY product_category_id
-              ) usage_rows ON usage_rows.product_category_id = pc.id
+              ) usage_rows ON usage_rows.product_category_id = pc.category_id
              WHERE pc.tenant_id = #{tenantId}
                AND pc.deleted = 0
-             ORDER BY pc.category_level, pc.ordinal, pc.category_code, pc.id
-             LIMIT 500
+             ORDER BY pc.category_level, pc.ordinal, pc.category_code, pc.category_id
             """)
     List<Map<String, Object>> productCategoryOptions(@Param("tenantId") String tenantId);
 
@@ -3536,27 +3908,27 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                       FROM bi_business_target t
                      WHERE t.tenant_id = #{tenantId}
                        AND t.deleted = 0
-                       AND t.target_month >= DATE_FORMAT(#{from}, '%Y-%m-01')
-                       AND t.target_month <= DATE_FORMAT(#{to}, '%Y-%m-01')) AS businessRowCount,
+                       AND t.target_month >= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{from}), '%Y-%m-01')
+                       AND t.target_month <= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{to}), '%Y-%m-01')) AS businessRowCount,
                    (SELECT COUNT(*)
                       FROM bi_business_target t
                      WHERE t.tenant_id = #{tenantId}
                        AND t.deleted = 0
-                       AND t.target_month >= DATE_FORMAT(#{from}, '%Y-%m-01')
-                       AND t.target_month <= DATE_FORMAT(#{to}, '%Y-%m-01')) AS biRowCount,
+                       AND t.target_month >= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{from}), '%Y-%m-01')
+                       AND t.target_month <= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{to}), '%Y-%m-01')) AS biRowCount,
                    0 AS sourceAmount,
                    (SELECT COALESCE(SUM(t.target_value), 0)
                       FROM bi_business_target t
                      WHERE t.tenant_id = #{tenantId}
                        AND t.deleted = 0
-                       AND t.target_month >= DATE_FORMAT(#{from}, '%Y-%m-01')
-                       AND t.target_month <= DATE_FORMAT(#{to}, '%Y-%m-01')) AS businessAmount,
+                       AND t.target_month >= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{from}), '%Y-%m-01')
+                       AND t.target_month <= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{to}), '%Y-%m-01')) AS businessAmount,
                    (SELECT COALESCE(SUM(t.target_value), 0)
                       FROM bi_business_target t
                      WHERE t.tenant_id = #{tenantId}
                        AND t.deleted = 0
-                       AND t.target_month >= DATE_FORMAT(#{from}, '%Y-%m-01')
-                       AND t.target_month <= DATE_FORMAT(#{to}, '%Y-%m-01')) AS biAmount
+                       AND t.target_month >= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{from}), '%Y-%m-01')
+                       AND t.target_month <= DATE_FORMAT(TIMESTAMPADD(HOUR, 8, #{to}), '%Y-%m-01')) AS biAmount
             """)
     Map<String, Object> businessTargetReconciliation(
             @Param("tenantId") String tenantId,
@@ -4008,7 +4380,8 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                        p.id,
                        p.order_id,
                        COALESCE(NULLIF(o.region_code, ''), NULLIF(c.region_code, ''), ''),
-                       COALESCE(NULLIF(o.owner_employee_code, ''), NULLIF(c.owner_employee_code, ''), ''),
+                       COALESCE(NULLIF(o.owner_employee_code, ''), NULLIF(c.owner_employee_code, ''),
+                                NULLIF(p.collector_staff_code, ''), ''),
                        COALESCE(p.collector_staff_code, ''),
                        COALESCE(p.customer_id, o.customer_id, 0),
                        FORMAT(COALESCE(p.paid_amount, 0), 6),
@@ -4037,7 +4410,7 @@ public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSo
                    COUNT(DISTINCT NULLIF(region_code, '')) AS regionCount,
                    COUNT(DISTINCT NULLIF(COALESCE(owner_staff_code, collector_staff_code), '')) AS ownerCount,
                    COALESCE(SUM(CRC32(CONCAT_WS('|',
-                       payment_record_id,
+                       payment_id,
                        order_id,
                        COALESCE(region_code, ''),
                        COALESCE(owner_staff_code, ''),
