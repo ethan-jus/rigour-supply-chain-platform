@@ -77,7 +77,7 @@ with log_path.open('w') as log:
 (ROOT / 'cache').mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='rigour-release-',dir=ROOT / 'cache') as staging:
     folder = Path(staging)
-    for name in ['compose.yaml','Dockerfile.iam','Dockerfile.gateway','Dockerfile.portal','nginx.conf','prepare-config.py','server.py']:
+    for name in ['compose.yaml','Dockerfile.iam','Dockerfile.gateway','Dockerfile.portal','nginx.conf','prepare-config.py','server.py','migrate-iam-compat.py','IamCompatibilityMigration.java']:
         shutil.copy2(SOURCE / name,folder / name)
     shutil.copy2(PLATFORM / 'services/rigour-tenant-iam-service/iam-service/target/iam-service-1.0.0-SNAPSHOT.jar',folder / 'iam.jar')
     shutil.copy2(PLATFORM / 'services/rigour-api-gateway/target/rigour-api-gateway-1.0.0-SNAPSHOT.jar',folder / 'gateway.jar')

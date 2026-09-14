@@ -227,7 +227,8 @@ public class SalesWorkManagementService {
             }
             throw invalid("拜访已形成最终结论，不能覆盖历史决定");
         }
-        var decidedAt = clock.instant();
+        // 首次响应与后续从 DATETIME(6) 读取的幂等响应使用同一精度。
+        var decidedAt = clock.instant().plusNanos(500).truncatedTo(ChronoUnit.MICROS);
         if (repository.finalizeVisit(caller.tenantId(), visitId, decision, reasonCode, decidedAt) != 1) {
             throw invalid("拜访复核状态已变化，请刷新后重试");
         }

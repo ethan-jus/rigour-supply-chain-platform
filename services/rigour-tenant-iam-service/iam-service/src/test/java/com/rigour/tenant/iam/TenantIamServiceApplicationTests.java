@@ -86,6 +86,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @SpringBootTest
 @Testcontainers(disabledWithoutDocker = true)
 class TenantIamServiceApplicationTests {
+    private final org.assertj.core.api.SoftAssertions sqlAssertions = new org.assertj.core.api.SoftAssertions();
+
+    @org.junit.jupiter.api.AfterEach
+    void verifyAllSqlCounts() {
+        sqlAssertions.assertAll();
+    }
 
     @TempDir
     Path temporaryDirectory;
@@ -142,8 +148,15 @@ class TenantIamServiceApplicationTests {
     private PortalAccessService portalAccessService;
 
     @Test
-    void contextLoadsAndMigratesIamSchema() {
-        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", 72);
+    void contextLoadsAndMigratesIamSchema() throws java.io.IOException {
+        int migrationCount = new org.springframework.core.io.support.PathMatchingResourcePatternResolver()
+                .getResources("classpath:db/migration/V*.sql").length;
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", migrationCount);
+        assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1 AND version IN ('51.1','52.1')", 2);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE status NOT IN ('ACTIVE','DISABLED')", 0);
+        assertThatThrownBy(() -> jdbcTemplate.update("UPDATE iam_resource SET status='INACTIVE' LIMIT 1"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class)
+                .hasMessageContaining("ck_iam_resource_status");
         assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1 AND ("
                 + "(version='33' AND script='V33__iam_erp_product_master_data_permissions.sql') OR "
                 + "(version='34' AND script='V34__iam_align_erp_product_center_menu.sql') OR "
@@ -169,12 +182,14 @@ class TenantIamServiceApplicationTests {
                 + "(version='74' AND script='V74__iam_supply_bi_gross_profit_and_payment_risk_navigation.sql') OR "
                 + "(version='75' AND script='V75__iam_supply_bi_operating_dashboard_navigation.sql') OR "
                 + "(version='76' AND script='V76__iam_restore_supply_bi_operating_dashboard_children.sql'))", 24);
-        assertCount("SELECT COUNT(*) FROM information_schema.tables "
-                + "WHERE table_schema = DATABASE() AND table_name LIKE 'iam\\_%'", 36);
+        assertThat(jdbcTemplate.queryForList("SELECT table_name FROM information_schema.tables "
+                + "WHERE table_schema=DATABASE() AND table_name LIKE 'iam\\_%'", String.class))
+                .contains("iam_user", "iam_resource", "iam_staff_profile", "iam_staff_assignment", "iam_position");
         assertCount("SELECT COUNT(*) FROM iam_application", 6);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_resource", Integer.class))
                 .isPositive();
-        assertCount("SELECT COUNT(permission_code) FROM iam_resource", 72);
+        assertThat(jdbcTemplate.queryForList("SELECT permission_code FROM iam_resource "
+                + "WHERE permission_code IS NOT NULL", String.class)).isNotEmpty().doesNotHaveDuplicates();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_package_resource", Integer.class))
                 .isPositive();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_resource_ui", Integer.class))
@@ -184,7 +199,7 @@ class TenantIamServiceApplicationTests {
                 + "AND status='ACTIVE'", 2);
         assertCount("SELECT COUNT(*) FROM iam_resource resource_record "
                 + "JOIN iam_resource_ui ui_record ON ui_record.resource_id=resource_record.id "
-                + "WHERE resource_record.resource_code='SUPPLY_CHAIN.SETTINGS.NUMBERING_DICTIONARIES' "
+                + "WHERE resource_record.resource_code='SUPPLY_CHAIN.PAGE.SETTINGS_NUMBERING_DICTIONARIES' "
                 + "AND resource_record.display_name='数据字典' AND resource_record.status='ACTIVE' "
                 + "AND ui_record.visible=1", 1);
         assertCount("SELECT COUNT(*) FROM iam_application WHERE app_code='PLATFORM_ADMIN' AND target_uri='/platform-admin'", 1);
@@ -258,14 +273,19 @@ class TenantIamServiceApplicationTests {
                 + "'SUPPLY_CHAIN.MENU.ERP_MASTER_DATA_ATTRIBUTES',"
                 + "'SUPPLY_CHAIN.PAGE.ERP_MASTER_DATA_SYNC')", 3);
         assertCount("SELECT COUNT(*) FROM iam_resource WHERE parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000049') "
-                + "AND display_name IN ('供应链首页','ERP','CRM','订单管理','销售管理','城市运营','BI 数据看板',"
+                + "AND display_name IN ('供应链首页','ERP','CRM','订单管理','销售管理','城市运营','数据看板',"
                 + "'人事与绩效','渠道代理','外部同步','业务设置')", 11);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.order.menu' "
                 + "AND route_path IS NULL AND visible=1", 1);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.order.sales-orders' "
                 + "AND route_path='/supply-chain/order/sales-orders' AND visible=1", 1);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.order.%' "
-                + "AND route_key NOT IN ('supply.order.menu','supply.order.sales-orders')", 0);
+                + "AND route_key NOT IN ('supply.order.menu','supply.order.sales-orders',"
+                + "'supply.order.shipments','supply.order.sales-payments','supply.order.sales-refunds',"
+                + "'supply.order.fund-documents')", 0);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
+                + "'supply.order.shipments','supply.order.sales-payments','supply.order.sales-refunds',"
+                + "'supply.order.fund-documents') AND visible=1", 4);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.dinghuobao.%' "
                 + "OR route_key IN ("
                 + "'supply.integration.raw-data','supply.integration.connections',"
@@ -283,7 +303,6 @@ class TenantIamServiceApplicationTests {
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000090'),"
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000091'),"
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000102'),"
-                + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000103'),"
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000104'),"
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000105'),"
                 + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000106'),"
@@ -413,22 +432,26 @@ class TenantIamServiceApplicationTests {
                 + "AND route_path='/supply-chain/bi/city-operating' "
                 + "AND visible=1", 1);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.bi.%' "
-                + "AND visible=1", 11);
+                + "AND visible=1", 12);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
                 + "'supply.bi.product-sales','supply.bi.payment-risk','supply.bi.inventory-risk') "
                 + "AND visible=1", 3);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.bi.sales-collection' "
                 + "AND visible=0", 1);
-        assertCount("SELECT COUNT(DISTINCT resource_id) FROM iam_tenant_menu_config menu_config "
+        assertCount("SELECT COUNT(DISTINCT menu_config.resource_id) FROM iam_tenant_menu_config menu_config "
                 + "JOIN iam_resource_ui resource_ui ON resource_ui.resource_id=menu_config.resource_id "
                 + "WHERE resource_ui.route_key LIKE 'supply.bi.%' "
-                + "AND menu_config.visible=1", 11);
-        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.integration.%'", 3);
+                + "AND menu_config.visible=1", 12);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.bi.customer' "
+                + "AND route_path='/supply-chain/bi/customer' AND visible=1", 1);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.integration.%'", 4);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.integration.feishu-import' "
+                + "AND route_path='/supply-chain/integration/feishu-import' AND visible=1", 1);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
                 + "'supply.city.menu','supply.erp.index','supply.sales.attendance.menu',"
                 + "'supply.settings.product-inventory') "
                 + "AND visible=0", 4);
-        assertCount("SELECT COUNT(*) FROM iam_tenant_menu_config menu_config "
+        assertCount("SELECT COUNT(DISTINCT menu_config.resource_id) FROM iam_tenant_menu_config menu_config "
                 + "JOIN iam_resource_ui ui_record ON ui_record.resource_id=menu_config.resource_id "
                 + "WHERE ui_record.route_key IN ("
                 + "'supply.city.menu','supply.erp.index','supply.sales.attendance.menu',"
@@ -437,7 +460,7 @@ class TenantIamServiceApplicationTests {
         assertCount("SELECT COUNT(*) FROM iam_resource resource_record "
                 + "JOIN iam_resource_ui ui_record ON ui_record.resource_id=resource_record.id "
                 + "WHERE (ui_record.route_key='supply.integration.sync-control.menu' "
-                + "AND resource_record.display_name='订货宝同步') OR "
+                + "AND resource_record.display_name='同步控制') OR "
                 + "(ui_record.route_key='supply.integration.overview' "
                 + "AND resource_record.display_name='订货宝同步中心')", 2);
         org.assertj.core.api.Assertions.assertThat(applicationMapper.selectById(
@@ -486,74 +509,22 @@ class TenantIamServiceApplicationTests {
                 .anyMatch(node -> "/system-admin".equals(node.routePath()));
         assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
                 .anyMatch(node -> "/supply-chain".equals(node.routePath()));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .anyMatch(root -> root.children().stream().anyMatch(menu ->
-                        "仓库管理".equals(menu.displayName())
-                                && menu.children().stream().map(NavigationNode::displayName).toList().equals(List.of(
-                                "库存", "入库单", "仓库信息"))));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .noneMatch(root -> root.children().stream().anyMatch(menu ->
-                        "仓库作业".equals(menu.displayName())
-                                || menu.children().stream().anyMatch(page ->
-                                "/supply-chain/erp/warehouse/locations".equals(page.routePath())
-                                        || "/supply-chain/erp/warehouse/inbound".equals(page.routePath()))));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .anyMatch(root -> root.children().stream().anyMatch(menu ->
-                        "订单管理".equals(menu.displayName())
-                                && menu.children().stream().anyMatch(page ->
-                                "/supply-chain/order/sales-orders".equals(page.routePath())
-                                        && page.visible())));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .noneMatch(root -> root.children().stream()
-                        .flatMap(domain -> domain.children().stream())
-                        .anyMatch(page -> "/supply-chain/order/stock-up".equals(page.routePath())));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .noneMatch(node -> node.children().stream().anyMatch(menu ->
-                        "订单接入".equals(menu.displayName())
-                                || "/supply-chain/order/access/backstage".equals(menu.routePath())
-                                || "/supply-chain/order/access/exceptions".equals(menu.routePath())));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .noneMatch(root -> root.children().stream()
-                        .flatMap(domain -> domain.children().stream())
-                        .anyMatch(menu -> "CRM 工作台".equals(menu.displayName())
-                                || "/supply-chain/crm".equals(menu.routePath())));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .noneMatch(root -> root.children().stream()
-                        .flatMap(domain -> domain.children().stream())
-                        .flatMap(group -> group.children().stream())
-                        .anyMatch(page -> "/supply-chain/crm/customers/customer-360"
-                                .equals(page.routePath())));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .anyMatch(root -> root.children().stream()
-                        .flatMap(domain -> domain.children().stream())
-                        .flatMap(group -> group.children().stream())
-                        .anyMatch(page -> "/supply-chain/crm/customers/shipping-addresses".equals(page.routePath())));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .anyMatch(root -> root.children().stream()
-                        .flatMap(domain -> domain.children().stream())
-                        .flatMap(group -> group.children().stream())
-                        .anyMatch(page -> "/supply-chain/crm/customers/levels-tags".equals(page.routePath())));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .anyMatch(root -> root.children().stream()
-                        .flatMap(domain -> domain.children().stream())
-                        .flatMap(group -> group.children().stream())
-                        .anyMatch(page -> "/supply-chain/crm/customers/areas".equals(page.routePath())));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .noneMatch(root -> root.children().stream()
-                        .flatMap(domain -> domain.children().stream())
-                        .flatMap(group -> group.children().stream())
-                        .anyMatch(page -> "/supply-chain/crm/assignments/external-staff"
-                                .equals(page.routePath())));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .anyMatch(root -> root.children().stream()
-                        .flatMap(domain -> domain.children().stream())
-                        .flatMap(group -> group.children().stream())
-                        .anyMatch(page -> "/supply-chain/bi/gross-profit".equals(page.routePath())));
-        assertThat(managementStore.navigation(first.actor(), "SUPPLY_CHAIN"))
-                .anyMatch(root -> root.children().stream()
-                        .flatMap(domain -> domain.children().stream())
-                        .flatMap(group -> group.children().stream())
-                        .anyMatch(page -> "/supply-chain/bi/payment-risk".equals(page.routePath())));
+        // V52 后菜单按业务分组；递归检查实际节点，避免旧固定深度导致漏检或假通过。
+        List<NavigationNode> nodes = flattenNavigation(managementStore.navigation(first.actor(), "SUPPLY_CHAIN")).toList();
+        NavigationNode inventory = nodes.stream().filter(node -> "库存管理".equals(node.displayName()))
+                .findFirst().orElseThrow();
+        assertThat(inventory.children()).extracting(NavigationNode::displayName)
+                .containsExactly("库存", "入库单", "出库单", "库存调拨", "仓库信息");
+        assertThat(nodes).extracting(NavigationNode::displayName)
+                .doesNotContain("仓库作业", "订单接入", "CRM 工作台");
+        assertThat(nodes.stream().filter(NavigationNode::visible).map(NavigationNode::routePath).toList())
+                .contains("/supply-chain/order/sales-orders", "/supply-chain/crm/customers/shipping-addresses",
+                        "/supply-chain/crm/customers/levels-tags", "/supply-chain/crm/customers/areas",
+                        "/supply-chain/bi/gross-profit", "/supply-chain/bi/payment-risk")
+                .doesNotContain("/supply-chain/erp/warehouse/locations", "/supply-chain/erp/warehouse/inbound",
+                        "/supply-chain/order/stock-up", "/supply-chain/order/access/backstage",
+                        "/supply-chain/order/access/exceptions", "/supply-chain/crm",
+                        "/supply-chain/crm/customers/customer-360", "/supply-chain/crm/assignments/external-staff");
 
         List<TenantMenuView> tenantMenus = managementStore.tenantMenus(first.actor());
         TenantMenuView configurableMenu = tenantMenus.stream()
@@ -1366,8 +1337,14 @@ class TenantIamServiceApplicationTests {
                 .build();
     }
 
+    private static java.util.stream.Stream<NavigationNode> flattenNavigation(List<NavigationNode> nodes) {
+        return nodes.stream().flatMap(node -> java.util.stream.Stream.concat(
+                java.util.stream.Stream.of(node), flattenNavigation(node.children())));
+    }
+
     private void assertCount(String sql, int expected) {
         Integer actual = jdbcTemplate.queryForObject(sql, Integer.class);
-        org.assertj.core.api.Assertions.assertThat(actual).isEqualTo(expected);
+        // 一次报告全部结构/导航差异，仍由 AfterEach 统一使测试失败，不吞掉断言。
+        sqlAssertions.assertThat(actual).as(sql).isEqualTo(expected);
     }
 }

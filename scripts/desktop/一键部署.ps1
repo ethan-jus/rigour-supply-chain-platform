@@ -1,6 +1,8 @@
 ﻿# 复制到 D:\RigourDev 后可右键使用 PowerShell 运行。
 param([ValidateSet('deploy','build','status','logs','rollback')][string]$Action='deploy', [string]$Version='')
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = [Console]::OutputEncoding
 chcp.com 65001 | Out-Null
 $commandArgs = @('-d','RigourDev','-u','root','--exec','bash','/mnt/d/RigourDev/scripts/app-entry.sh',$Action)
 if ($Version) { $commandArgs += @('--version',$Version) }

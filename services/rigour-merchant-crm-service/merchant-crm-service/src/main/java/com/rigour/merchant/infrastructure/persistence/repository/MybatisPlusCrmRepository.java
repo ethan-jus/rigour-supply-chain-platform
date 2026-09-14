@@ -154,7 +154,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         LocalDateTime staleBefore = now.minusMinutes(RUN_STALE_MINUTES);
         syncRunMapper.recoverStaleRuns(bytes(tenantId), bytes(connectorId), objectType.name(),
                 staleBefore, now);
-        releaseRecoverableLocks(tenantId, connectorId, objectType, staleBefore, now);
+        releaseRecoverableLocks(tenantId, connectorId, objectType, now);
         UUID runId = CrmUuidCodec.next();
         CrmSyncLockEntity lock = new CrmSyncLockEntity();
         lock.id = bytes(CrmUuidCodec.next()); lock.tenantId = bytes(tenantId);
@@ -283,7 +283,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
 
     private void releaseRecoverableLocks(UUID tenantId, UUID connectorId,
                                          CrmMasterDataObjectType type,
-                                         LocalDateTime staleBefore,
                                          LocalDateTime now) {
         List<CrmSyncLockEntity> locks = lockMapper.selectList(Wrappers.<CrmSyncLockEntity>query()
                 .eq("tenant_id", bytes(tenantId)).eq("connector_id", bytes(connectorId))
@@ -292,21 +291,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             CrmSyncRunEntity run = syncRunMapper.selectOne(Wrappers.<CrmSyncRunEntity>query()
                     .eq("tenant_id", bytes(tenantId)).eq("id", lock.runId));
             boolean expired = lock.expiresAt == null || !lock.expiresAt.isAfter(now);
-            boolean staleRunning = run != null && "RUNNING".equals(run.status)
-                    && run.updatedTime != null && !run.updatedTime.isAfter(staleBefore);
-            if (staleRunning) {
-                syncRunMapper.update(null, Wrappers.<CrmSyncRunEntity>update()
-                        .eq("tenant_id", bytes(tenantId)).eq("id", lock.runId)
-                        .eq("status", "RUNNING")
-                        .set("status", "FAILED")
-                        .set("error_code", "STALE_RUN_RECOVERED")
-                        .set("error_message", "同步运行超过心跳阈值，已在后续批次启动前终结")
-                        .set("finished_at", now)
-                        .set("updated_by", SYSTEM_ACTOR)
-                        .set("updated_time", now)
-                        .setSql("revision=revision+1"));
-            }
-            if (expired || staleRunning || run == null || !"RUNNING".equals(run.status)) {
+            // 过期任务由 recoverStaleRuns 按租约所有权统一终结；旧心跳不能覆盖有效租约。
+            if (expired || run == null || !"RUNNING".equals(run.status)) {
                 lockMapper.delete(Wrappers.<CrmSyncLockEntity>query()
                         .eq("tenant_id", bytes(tenantId)).eq("id", lock.id)
                         .eq("run_id", lock.runId));

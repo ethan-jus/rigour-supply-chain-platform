@@ -115,6 +115,7 @@ with (ROOT / 'deploy.lock').open('w') as lock:
                 raise SystemExit('数据库备份失败，未更新应用。')
         print('已备份本机 IAM 数据库及配置，开始启动应用。', flush=True)
         try:
+            run(['python3',str(release / 'migrate-iam-compat.py')])
             compose(release,'up','-d','--no-build','--pull','never','iam')
             wait_health('http://127.0.0.1:26881/actuator/health')
             compose(release,'up','-d','--no-build','--pull','never','gateway','portal')

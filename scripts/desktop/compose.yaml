@@ -11,7 +11,7 @@ services:
     mem_limit: 1g
     env_file: /srv/rigour-dev/apps/config/app.env
     environment:
-      JAVA_TOOL_OPTIONS: '-Xms128m -Xmx512m -Dfile.encoding=UTF-8'
+      JAVA_TOOL_OPTIONS: '-Xms128m -Xmx512m -Dfile.encoding=UTF-8 -Duser.home=/keys'
     volumes:
       - /srv/rigour-dev/apps/config/iam.properties:/config/iam.properties:ro
       - /srv/rigour-dev/apps/keys:/keys
