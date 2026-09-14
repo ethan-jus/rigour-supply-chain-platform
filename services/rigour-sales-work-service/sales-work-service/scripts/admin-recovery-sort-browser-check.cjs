@@ -10,11 +10,12 @@ if(!['127.0.0.1','localhost'].includes(new URL(base).hostname))throw Error('Loca
 const engine=process.env.BROWSER||'chromium';
 const output=path.resolve(process.env.QA_DIR||'/tmp/checkin-admin-recovery-sort-'+engine);
 const api='/sales-checkin/admin/api/v1';
+const staticRoot=path.resolve(__dirname,'../src/main/resources/static');
 const checks=[],requests=[],errors=[];
 const check=(value,name)=>{checks.push({name,passed:!!value});assert.ok(value,name);};
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const id=n=>'50000000-0000-4000-8000-'+String(n).padStart(12,'0');
-const groups=Array.from({length:53},(_,i)=>({date:'2026-09-'+String(8-i%5).padStart(2,'0'),city:i%2?'苏州':'杭州',salespersonId:id(i+1),salespersonName:'示例销售'+String(53-i).padStart(2,'0'),visitCount:2,storeCount:1,pendingReviewCount:0,firstCheckinAt:'2026-09-08T01:02:03Z',lastCheckinAt:'2026-09-08T02:03:04Z'}));
+const groups=Array.from({length:53},(_,i)=>({date:'2026-09-'+String(8-i%5).padStart(2,'0'),city:i%2?'苏州':'杭州',salespersonId:id(i+1),salespersonName:'示例销售'+String(53-i).padStart(2,'0'),visitCount:2,storeCount:1,audioCount:1,pendingReviewCount:0,firstCheckinAt:'2026-09-08T01:02:03Z',lastCheckinAt:'2026-09-08T02:03:04Z'}));
 function sorted(by='date',direction='desc'){const key={date:'date',city:'city',salesperson:'salespersonName'}[by];return [...groups].sort((a,b)=>(a[key].localeCompare(b[key])*(direction==='asc'?1:-1))||a.salespersonId.localeCompare(b.salespersonId));}
 (async()=>{
  await fs.mkdir(output,{recursive:true});const browser=await (engine==='webkit'?webkit:chromium).launch({headless:true,...(engine==='webkit'?{}:{channel:'chrome'})});let page;
@@ -26,11 +27,17 @@ function sorted(by='date',direction='desc'){const key={date:'date',city:'city',s
   await context.route('**/*',async route=>{
    const req=route.request(),url=new URL(req.url());if(url.origin!==new URL(base).origin)return route.abort();
    if(url.pathname==='/sales-checkin/admin/'){
-    const response=await route.fetch();return route.fulfill({response,headers:{...response.headers(),'content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self'"}});
+    return route.fulfill({path:path.join(staticRoot,'sales-checkin/admin/index.html'),headers:{'content-type':'text/html','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self'"}});
    }
-   if(fixture.failResource&&url.pathname.endsWith('/admin.'+fixture.failResource))return route.fulfill({status:503,contentType:'text/html',body:'<h1>503 Service Unavailable</h1>'});
+   if(fixture.failResource&&url.pathname.endsWith(fixture.failResource==='risk-js'?'/risk-admin.js':'/admin.'+fixture.failResource))return route.fulfill({status:503,contentType:'text/html',body:'<h1>503 Service Unavailable</h1>'});
    if(url.pathname.endsWith('/admin.css')&&fixture.stylesheetDelay)await sleep(fixture.stylesheetDelay);
-   if(!url.pathname.startsWith(api))return route.continue();
+   if(!url.pathname.startsWith(api)){
+    if(url.pathname==='/favicon.ico')return route.fulfill({status:204,body:''});
+    const relative=url.pathname.endsWith('/')?url.pathname+'index.html':url.pathname;
+    const filename=path.resolve(staticRoot,'.'+relative);
+    if(!filename.startsWith(staticRoot+path.sep)||!relative.startsWith('/sales-checkin/'))return route.abort();
+    try{return await route.fulfill({path:filename});}catch{return route.fulfill({status:404,body:'Unknown local static path'});}
+   }
    requests.push({method:req.method(),path:url.pathname,query:Object.fromEntries(url.searchParams)});
    if(req.method()!=='GET')return route.fulfill({status:503,json:{message:'模拟写操作失败'}});
    if(fixture.bootstrapPath&&url.pathname===api+fixture.bootstrapPath&&fixture.bootstrapRemaining>0){fixture.bootstrapRemaining--;return route.fulfill({status:503,contentType:'text/html',body:'<h1>503</h1>'});}
@@ -76,7 +83,7 @@ function sorted(by='date',direction='desc'){const key={date:'date',city:'city',s
   check(requests.filter(r=>r.path===api+'/submissions').length===detailCount,'summary sort does not reload or reorder detail records');
   check(requests.filter(r=>r.path===api+'/submissions').every(r=>!Object.hasOwn(r.query,'summarySortBy')),'detail API stays independent from summary sorting parameters');
   let exported=new URL(await page.locator('#export-link').getAttribute('href'),base);
-  check(exported.searchParams.get('summarySortBy')==='salesperson'&&exported.searchParams.get('summarySortDirection')==='desc'&&exported.searchParams.get('sortBy')==='completedAt','Excel receives independent daily-summary and detail sort parameters');
+  check(exported.searchParams.get('summarySortBy')==='salesperson'&&exported.searchParams.get('summarySortDirection')==='desc'&&((!exported.searchParams.has('sort')&&exported.searchParams.get('sortBy')==='completedAt'&&exported.searchParams.get('sortDirection')==='desc')||JSON.stringify(exported.searchParams.getAll('sort'))===JSON.stringify(['completedAt:desc'])),'Excel receives independent daily-summary and detail sort parameters');
   check(new URL(page.url()).searchParams.get('summarySortBy')==='salesperson','summary sort is persisted in the browser URL');
   await page.reload();await waitReady(page);
   check(summaryRequests().at(-1).query.summarySortBy==='salesperson'&&await page.locator('[data-summary-sort-by="salesperson"]').locator('..').getAttribute('aria-sort')==='descending','reload restores sort direction and server query');
@@ -106,7 +113,7 @@ function sorted(by='date',direction='desc'){const key={date:'date',city:'city',s
   check(summaryRequests().filter(r=>r.query.q==='obsolete-retry').length===1,'changing filters aborts a pending retry before any old request is replayed');
   check(await page.locator('#attendance-total').innerText()==='106','aborted retry cannot replace the current result');
   await t.context.close();
-  for(const extension of ['css','js']){
+  for(const extension of ['css','js','risk-js']){
    const r=await setup({failResource:extension});page=r.page;const before=requests.length;
    await page.goto(base+'/sales-checkin/admin/?city='+encodeURIComponent('杭州'));
    check(await page.locator('#admin-resource-status').isVisible()&&await page.locator('#admin-resource-status a').isVisible(),extension+' resource 503 leaves a real HTML recovery link available');

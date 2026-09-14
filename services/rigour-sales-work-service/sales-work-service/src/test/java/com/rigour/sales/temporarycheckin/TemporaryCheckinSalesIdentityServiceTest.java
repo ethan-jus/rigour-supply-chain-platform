@@ -37,11 +37,12 @@ class TemporaryCheckinSalesIdentityServiceTest {
 
     private TemporaryCheckinRepository repository;
     private TemporaryCheckinSalesIdentityService service;
+    private TemporaryCheckinProperties properties;
 
     @BeforeEach
     void setUp() {
         repository = mock(TemporaryCheckinRepository.class);
-        TemporaryCheckinProperties properties = new TemporaryCheckinProperties();
+        properties = new TemporaryCheckinProperties();
         properties.setEnabled(true);
         properties.setTenantId(TENANT_ID.toString());
         properties.setIdentityEnforcementEnabled(true);
@@ -180,6 +181,48 @@ class TemporaryCheckinSalesIdentityServiceTest {
                 "SALESPERSON_IP_CHURN",
                 "SHARED_IP_MULTIPLE_SALES");
         assertThat(snapshot.requestFacts().ipMasked()).isEqualTo("203.0.113.*");
+    }
+
+    @Test
+    void recordsOnlySuccessfulExplicitPersonalCodeVerificationAndNeverCookieReuse() {
+        var events=mock(TemporaryCheckinIdentityEventRecorder.class);
+        service=new TemporaryCheckinSalesIdentityService(repository,properties,Clock.fixed(NOW,ZoneOffset.UTC),events);
+        when(repository.findSalesperson(TENANT_ID,SALESPERSON_ID))
+                .thenReturn(Optional.of(salesperson(service.encodePersonalCode(PERSONAL_CODE),1)));
+        assertThatThrownBy(()->service.verify(new IdentityVerifyRequest(SALESPERSON_ID,"北京","WRONG234"),requestFacts(null,null)))
+                .isInstanceOf(TemporaryCheckinException.class);
+        assertThatThrownBy(()->service.verify(new IdentityVerifyRequest(SALESPERSON_ID,"深圳",PERSONAL_CODE),requestFacts(null,null)))
+                .isInstanceOf(TemporaryCheckinException.class);
+        assertThatThrownBy(()->service.verify(new IdentityVerifyRequest(SALESPERSON_ID,"北京",PERSONAL_CODE),
+                new TemporaryCheckinRequestFacts("203.0.113.28","untrusted","test",null,null)))
+                .isInstanceOf(TemporaryCheckinException.class);
+        org.mockito.Mockito.verifyNoInteractions(events);
+
+        var verified=service.verify(new IdentityVerifyRequest(SALESPERSON_ID,"北京",PERSONAL_CODE),requestFacts(null,null));
+        var reused=requestFacts(verified.deviceCookie().getValue(),verified.identityCookie().getValue());
+        service.current(reused);service.requireSalesperson(SALESPERSON_ID,reused);
+        var fact=ArgumentCaptor.forClass(AuthorizedRequest.class);
+        verify(events).record(fact.capture());
+        assertThat(fact.getValue().salesperson().id()).isEqualTo(SALESPERSON_ID);
+        assertThat(fact.getValue().salesperson().city()).isEqualTo("北京");
+        assertThat(fact.getValue().identityMethod()).isEqualTo("PERSONAL_CODE");
+        assertThat(fact.getValue().verifiedAt()).isEqualTo(NOW);
+        assertThat(fact.getValue().deviceTokenHash()).matches("[a-f0-9]{64}")
+                .isNotEqualTo(verified.deviceCookie().getValue());
+        org.mockito.Mockito.verifyNoMoreInteractions(events);
+    }
+
+    @Test
+    void auditSchedulingFailureCannotTurnSuccessfulVerificationIntoFailure() {
+        var events=mock(TemporaryCheckinIdentityEventRecorder.class);
+        org.mockito.Mockito.doThrow(new IllegalStateException("synthetic unavailable")).when(events).record(any());
+        service=new TemporaryCheckinSalesIdentityService(repository,properties,Clock.fixed(NOW,ZoneOffset.UTC),events);
+        when(repository.findSalesperson(TENANT_ID,SALESPERSON_ID))
+                .thenReturn(Optional.of(salesperson(service.encodePersonalCode(PERSONAL_CODE),1)));
+        var verified=service.verify(new IdentityVerifyRequest(SALESPERSON_ID,"北京",PERSONAL_CODE),requestFacts(null,null));
+        assertThat(verified.view().authenticated()).isTrue();
+        assertThat(service.current(requestFacts(verified.deviceCookie().getValue(),verified.identityCookie().getValue())).authenticated()).isTrue();
+        verify(events).record(any());
     }
 
     private static TemporaryCheckinRequestFacts requestFacts(String deviceCookie, String identityCookie) {

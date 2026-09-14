@@ -12,7 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
-/** 复用后台城市权限及筛选，汇总匹配记录；未打卡不等同于旷工或缺勤。 */
+/** 复用后台城市权限及筛选，汇总匹配记录及有有效上传录音的拜访次数；未打卡不等同于旷工或缺勤。 */
 @Service
 @ConditionalOnProperty(prefix = "rigour.sales.temporary-checkin", name = "enabled", havingValue = "true")
 class TemporaryCheckinStatisticsService {
@@ -63,7 +63,7 @@ class TemporaryCheckinStatisticsService {
             String summarySortBy, String summarySortDirection) {
         var filters = checkins.normalizeAdminQuery(scope, from, to, city, salespersonId, status, visitType, query);
         var sort = new TemporaryCheckinStatisticsRepository.SummarySort(summarySortBy, summarySortDirection);
-        return repository.aggregate(properties.requireTenantId(), filters, options, sort);
+        return repository.aggregate(properties.requireTenantId(), filters, options.withScope(scope.city()), sort);
     }
 
     record AttendancePage(long totalVisits, long checkedInSalespeople, long pendingReviewTotal,

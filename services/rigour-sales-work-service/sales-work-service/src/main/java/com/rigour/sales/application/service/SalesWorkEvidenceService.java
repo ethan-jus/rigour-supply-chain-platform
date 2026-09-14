@@ -54,7 +54,7 @@ import org.springframework.web.multipart.MultipartFile;
 public class SalesWorkEvidenceService {
 
     private static final Logger log = LoggerFactory.getLogger(SalesWorkEvidenceService.class);
-    private static final String CAMERA_SOURCE = "FEISHU_CAMERA";
+    private static final Set<String> ALLOWED_CAMERA_SOURCES = Set.of("APP_CAMERA", "FEISHU_CAMERA");
     private static final Set<String> SUPPORTED_IMAGE_TYPES = Set.of("image/jpeg", "image/png");
 
     private final SalesWorkEvidenceRepository evidenceRepository;
@@ -94,8 +94,8 @@ public class SalesWorkEvidenceService {
             Instant capturedAt, BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters) {
         CallerIdentity caller = requireCaller("sales:evidence:own:write");
         String normalizedClientId = required(clientEvidenceId, "clientEvidenceId", 128);
-        if (!CAMERA_SOURCE.equals(captureSource)) {
-            throw invalid("门头照只允许通过飞书手机相机现场拍摄");
+        if (!ALLOWED_CAMERA_SOURCES.contains(captureSource)) {
+            throw invalid("门头照只允许通过App原生相机现场拍摄");
         }
         if (visitId == null || file == null || file.isEmpty()) throw invalid("门头照片不能为空");
         if (properties.getMaxPhotoBytes() <= 0 || file.getSize() > properties.getMaxPhotoBytes()) {
@@ -152,7 +152,7 @@ public class SalesWorkEvidenceService {
         }
         try {
             evidenceRepository.insertStorefrontPhoto(evidenceId, caller.tenantId(), visitId,
-                    normalizedClientId, objectKey, mediaType, bytes.length, hash, CAMERA_SOURCE,
+                    normalizedClientId, objectKey, mediaType, bytes.length, hash, captureSource,
                     capturedAt, longitude, latitude, accuracyMeters, BigDecimal.valueOf(distance),
                     caller.userId(), receivedAt);
         } catch (DataIntegrityViolationException duplicate) {

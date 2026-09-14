@@ -26,10 +26,15 @@ public final class CurrentTokenValidationFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(CurrentTokenValidationFilter.class);
     private final RestClient restClient;
     private final GatewaySecurityProperties properties;
+    private final GatewaySecurityFailureWriter failureWriter;
 
-    public CurrentTokenValidationFilter(RestClient restClient, GatewaySecurityProperties properties) {
+    public CurrentTokenValidationFilter(
+            RestClient restClient,
+            GatewaySecurityProperties properties,
+            GatewaySecurityFailureWriter failureWriter) {
         this.restClient = restClient;
         this.properties = properties;
+        this.failureWriter = failureWriter;
     }
 
     @Override
@@ -56,7 +61,7 @@ public final class CurrentTokenValidationFilter extends OncePerRequestFilter {
         if (!(authentication instanceof JwtAuthenticationToken jwt) || !authentication.isAuthenticated()) {
             log.warn("当前请求缺少有效登录身份 requestId={} path={}",
                     RequestContext.getRequestId(), request.getRequestURI());
-            response.sendError(HttpServletResponse.SC_UNAUTHORIZED);
+            failureWriter.tokenInvalid(response);
             return;
         }
         long startedAt = System.nanoTime();
@@ -69,7 +74,7 @@ public final class CurrentTokenValidationFilter extends OncePerRequestFilter {
             if (snapshot == null) {
                 log.warn("IAM返回空的会话校验结果 requestId={} path={} elapsedMs={}",
                         RequestContext.getRequestId(), request.getRequestURI(), elapsedMillis(startedAt));
-                response.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE, "IAM returned an empty token snapshot");
+                failureWriter.sessionCheckUnavailable(response);
                 return;
             }
             request.setAttribute(CurrentTokenValidationFilter.class.getName() + ".roles", snapshot.roles());
@@ -80,23 +85,26 @@ public final class CurrentTokenValidationFilter extends OncePerRequestFilter {
             filterChain.doFilter(request, response);
         } catch (RestClientResponseException exception) {
             int status = exception.getStatusCode().value();
-            if (exception.getStatusCode().value() == HttpServletResponse.SC_UNAUTHORIZED
-                    || exception.getStatusCode().value() == HttpServletResponse.SC_FORBIDDEN) {
+            if (status == HttpServletResponse.SC_UNAUTHORIZED) {
                 log.warn("IAM拒绝当前会话 requestId={} path={} iamStatus={} elapsedMs={}",
                         RequestContext.getRequestId(), request.getRequestURI(), status, elapsedMillis(startedAt));
-                response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "IAM rejected the current access token");
+                failureWriter.tokenInvalid(response);
+                return;
+            }
+            if (status == HttpServletResponse.SC_FORBIDDEN) {
+                log.warn("IAM拒绝当前请求权限 requestId={} path={} iamStatus={} elapsedMs={}",
+                        RequestContext.getRequestId(), request.getRequestURI(), status, elapsedMillis(startedAt));
+                failureWriter.forbidden(response);
                 return;
             }
             log.warn("IAM会话校验返回异常 requestId={} path={} iamStatus={} elapsedMs={}",
                     RequestContext.getRequestId(), request.getRequestURI(), status, elapsedMillis(startedAt));
-            response.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE,
-                    "IAM current-token validation is temporarily unavailable");
+            failureWriter.sessionCheckUnavailable(response);
         } catch (RestClientException exception) {
             log.warn("IAM会话校验服务不可用 requestId={} path={} elapsedMs={} reason={}",
                     RequestContext.getRequestId(), request.getRequestURI(), elapsedMillis(startedAt),
                     exception.getMessage());
-            response.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE,
-                    "IAM current-token validation is temporarily unavailable");
+            failureWriter.sessionCheckUnavailable(response);
         }
     }
 

@@ -8,6 +8,93 @@
     const pad = (value) => String(value).padStart(2, "0");
     const unwrap = (value) => value && Object.prototype.hasOwnProperty.call(value, "data") ? value.data : value;
 
+    // Safari before 15.4 treats <dialog> as an ordinary element. Keep visibility and dismissal explicit.
+    let activeDialog = null;
+    function openModal(dialog) {
+        if (!dialog || activeDialog?.dialog === dialog) return;
+        if (activeDialog) closeModal(activeDialog.dialog);
+        const document = dialog.ownerDocument;
+        const view = document.defaultView;
+        const native = typeof dialog.showModal === "function" && typeof dialog.close === "function";
+        const session = { dialog, focus: document.activeElement, native, backdrop: null, background: [] };
+        const focusable = () => Array.from(dialog.querySelectorAll("button,input,select,textarea,a[href],[tabindex]"))
+            .filter(node => !node.disabled && node.tabIndex >= 0 && node.getClientRects().length);
+        const focusFirst = () => (focusable()[0] || dialog).focus();
+        const onKeys = event => {
+            if (event.key === "Escape") { event.preventDefault(); closeModal(dialog); return; }
+            if (event.key !== "Tab") return;
+            const nodes = focusable(), index = nodes.indexOf(document.activeElement);
+            if (!nodes.length) { event.preventDefault(); dialog.focus(); }
+            else if (event.shiftKey && index <= 0) { event.preventDefault(); nodes[nodes.length - 1].focus(); }
+            else if (!event.shiftKey && (index < 0 || index === nodes.length - 1)) { event.preventDefault(); nodes[0].focus(); }
+        };
+        const onCancel = event => { event.preventDefault(); closeModal(dialog); };
+        const onFocus = event => { if (!dialog.contains(event.target)) focusFirst(); };
+        const finish = () => {
+            if (dialog.hasAttribute("open")) return;
+            dialog.hidden = true;
+            dialog.classList.remove("dialog--fallback");
+            dialog.removeEventListener("keydown", onKeys);
+            dialog.removeEventListener("cancel", onCancel);
+            dialog.removeEventListener("close", finish);
+            document.removeEventListener("focusin", onFocus);
+            if (session.backdrop) {
+                session.backdrop.remove();
+                for (const [node, previous] of session.background) {
+                    if (previous === null) node.removeAttribute("aria-hidden");
+                    else node.setAttribute("aria-hidden", previous);
+                }
+                Object.assign(document.body.style, session.bodyStyle);
+                view.scrollTo(session.scrollX, session.scrollY);
+            }
+            if (activeDialog === session) activeDialog = null;
+            if (session.focus?.isConnected) session.focus.focus({ preventScroll: true });
+        };
+        session.finish = finish;
+        activeDialog = session;
+        dialog.hidden = false;
+        dialog.setAttribute("tabindex", "-1");
+        dialog.addEventListener("keydown", onKeys);
+        dialog.addEventListener("cancel", onCancel);
+        dialog.addEventListener("close", finish);
+        if (native) {
+            try { dialog.showModal(); }
+            catch (error) { dialog.removeAttribute("open"); finish(); throw error; }
+        } else {
+            const backdrop = document.createElement("div");
+            backdrop.className = "dialog-fallback-backdrop";
+            backdrop.setAttribute("aria-hidden", "true");
+            backdrop.addEventListener("click", () => closeModal(dialog));
+            document.body.appendChild(backdrop);
+            session.backdrop = backdrop;
+            session.scrollX = view.scrollX; session.scrollY = view.scrollY;
+            session.bodyStyle = {};
+            for (const property of ["position", "top", "left", "right", "width", "overflow"])
+                session.bodyStyle[property] = document.body.style[property];
+            Object.assign(document.body.style, { position: "fixed", top: -session.scrollY + "px", left: "0", right: "0", width: "100%", overflow: "hidden" });
+            for (const node of document.querySelectorAll("body > header, body > main, body > nav")) {
+                session.background.push([node, node.getAttribute("aria-hidden")]);
+                node.setAttribute("aria-hidden", "true");
+            }
+            dialog.setAttribute("open", "");
+            dialog.setAttribute("role", "dialog");
+            dialog.setAttribute("aria-modal", "true");
+            dialog.classList.add("dialog--fallback");
+            document.addEventListener("focusin", onFocus);
+        }
+        focusFirst();
+    }
+    function closeModal(dialog) {
+        if (!dialog) return;
+        const session = activeDialog?.dialog === dialog ? activeDialog : null;
+        const native = typeof dialog.close === "function";
+        if (native && dialog.hasAttribute("open")) dialog.close();
+        else dialog.removeAttribute("open");
+        dialog.hidden = true;
+        session?.finish();
+        if (session && !session.native) dialog.dispatchEvent(new dialog.ownerDocument.defaultView.Event("close"));
+    }
+
     // All calendar boundaries are business days in Shanghai, independent of the phone's timezone.
     function shanghaiParts(value) {
         if (value === undefined || value === null || value === "") return null;
@@ -127,7 +214,7 @@
             locals: [], localLoading: false, localError: "", actionError: "", actionBusy: false, actionRecordId: "",
             detailId: "", detail: null, detailLoading: false, detailError: "",
             listEpoch: 0, localEpoch: 0, detailEpoch: 0, listAbort: null, detailAbort: null,
-            scrollY: 0, calendar: null, activeAudio: null, dialogFocus: null };
+            scrollY: 0, calendar: null, activeAudio: null };
 
         function element(tag, className, text) {
             const node = document.createElement(tag);
@@ -165,17 +252,10 @@
             state.activeAudio = null;
         }
         function closeDialog(dialog) {
-            if (dialog.open && typeof dialog.close === "function") dialog.close();
-            dialog.removeAttribute("open"); dialog.hidden = true;
-            state.dialogFocus?.focus?.();
-            state.dialogFocus = null;
+            closeModal(dialog);
         }
         function openDialog(dialog) {
-            state.dialogFocus = document.activeElement;
-            dialog.hidden = false;
-            if (typeof dialog.showModal === "function") { if (!dialog.open) dialog.showModal(); }
-            else { dialog.setAttribute("open", ""); dialog.setAttribute("role", "dialog"); dialog.setAttribute("aria-modal", "true"); }
-            dialog.querySelector("button, input, select")?.focus();
+            openModal(dialog);
         }
         function invalidate() {
             state.listEpoch += 1; state.detailEpoch += 1; state.localEpoch += 1;
@@ -398,7 +478,7 @@
                     } else if (state.loaded && state.total > 0) body.append(element("p", "history-end", state.filters.from === state.filters.to ? "已显示当日全部记录" : "已显示所选日期全部记录"));
                 }
             } else {
-                body.append(element("p", "history-pending-note", "这里是本机保存的草稿、待同步和证据待补传记录，不计入已提交拜访数。"));
+                body.append(element("p", "history-pending-note", "这里包含本机草稿和附件待补传记录。标记“已提交”的拜访已计入统计，补传不会重复计数。"));
                 if (state.localError) body.append(retryNotice(state.localError, () => { void loadLocals(); }));
                 else if (state.localLoading && !state.locals.length) body.append(notice("正在读取本机记录…", "history-loading"));
                 else if (!pendingRecords().length) body.append(notice("本机暂无待处理记录。"));
@@ -587,7 +667,8 @@
         async function resumeLocal(record) {
             if (!ensureOwner() || !state.open || state.actionBusy || !state.locals.includes(record)) return;
             const owner = state.owner; const submission = record.snapshot.submission;
-            if (submission.status === "SUBMITTED" && submission.serverId) { await showDetail(submission.serverId); return; }
+            const needsEvidence = pendingEvidence(record.snapshot);
+            if (submission.status === "SUBMITTED" && submission.serverId && !needsEvidence) { await showDetail(submission.serverId); return; }
             state.actionBusy = true; state.actionError = ""; state.actionRecordId = submission.clientSubmissionId; renderList();
             try {
                 let receipt = null;
@@ -597,10 +678,15 @@
                         { headers: { "X-Submission-Key": submission.submissionKey } })); }
                     catch (error) { if (error.status !== 404) throw error; }
                     if (ownerKey(adapters.getIdentity()) !== owner || state.owner !== owner || !state.open) return;
-                    if (receipt?.status === "SUBMITTED" && receipt.id) { await showDetail(receipt.id); return; }
+                    if (receipt && ((submission.serverId && String(receipt.id) !== String(submission.serverId))
+                        || (receipt.clientSubmissionId && receipt.clientSubmissionId !== submission.clientSubmissionId))) {
+                        throw new Error("回执与本机记录不一致");
+                    }
+                    if (submission.status === "SUBMITTED" && receipt?.status !== "SUBMITTED") throw new Error("原提交回执尚未确认");
+                    if (receipt?.status === "SUBMITTED" && receipt.id && !needsEvidence) { await showDetail(receipt.id); return; }
                 }
                 if (typeof adapters.onResumeLocal !== "function") throw new Error("恢复入口暂不可用");
-                if (await adapters.onResumeLocal(record, { receipt, mode: "resume" }) === false) {
+                if (await adapters.onResumeLocal(record, { receipt, mode: receipt?.status === "SUBMITTED" && needsEvidence ? "supplement" : "resume" }) === false) {
                     state.actionError = "当前还有操作未结束，请稍后重试恢复这条记录。";
                 }
             } catch (_) {
@@ -693,20 +779,6 @@
             };
             shell.addEventListener("click", handler); bindings.push([shell, "click", handler]);
         }
-        for (const dialog of [refs.calendar, refs.photo]) {
-            const cancel = (event) => { event.preventDefault(); closeDialog(dialog); };
-            const keys = (event) => {
-                if (event.key === "Escape") { event.preventDefault(); closeDialog(dialog); }
-                if (event.key !== "Tab") return;
-                const nodes = [...dialog.querySelectorAll("button, input, select, a[href]")].filter((node) => !node.disabled && !node.hidden);
-                if (!nodes.length) return;
-                const index = nodes.indexOf(document.activeElement);
-                if (event.shiftKey && index <= 0) { event.preventDefault(); nodes[nodes.length - 1].focus(); }
-                else if (!event.shiftKey && (index === nodes.length - 1 || index < 0)) { event.preventDefault(); nodes[0].focus(); }
-            };
-            dialog.addEventListener("cancel", cancel); dialog.addEventListener("keydown", keys);
-            bindings.push([dialog, "cancel", cancel], [dialog, "keydown", keys]);
-        }
         return Object.freeze({ open, close, refresh, invalidateList, resetIdentity, showDetail, backToList, setDateRange, setSort, setTab,
             getState: () => ({ owner: state.owner, open: state.open, view: state.view, tab: state.tab, filters: { ...state.filters },
                 ids: state.items.map((item) => item.id), totalElements: state.total, page: state.page, totalPages: state.pages,
@@ -716,7 +788,7 @@
         });
     }
 
-    root.SalesCheckinHistory = Object.freeze({ init });
+    root.SalesCheckinHistory = Object.freeze({ init, dialogs: Object.freeze({ open: openModal, close: closeModal }) });
     if (typeof module !== "undefined" && module.exports) module.exports = { init, dayKey, timestamp, validDay, shiftDay,
         validRange, duration, audioDuration, firstPhoto, ownerKey, pendingEvidence, ownLocalRecords, mediaUrl, safeMediaUrl };
 })(typeof window !== "undefined" ? window : globalThis);

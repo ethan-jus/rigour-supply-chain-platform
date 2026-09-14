@@ -34,6 +34,7 @@
         <module>services/rigour-hr-payroll-service</module>
         <module>services/rigour-city-operations-service</module>
         <module>services/rigour-channel-agent-service</module>
+        <module>services/rigour-collaboration-service</module>
         <module>services/rigour-business-settings-service</module>
         <module>platform/rigour-architecture-tests</module>
     </modules>
@@ -53,6 +54,7 @@
         <testcontainers.version>2.0.5</testcontainers.version>
         <bouncycastle.version>1.81.1</bouncycastle.version>
         <tencent-cos.version>5.6.245</tencent-cos.version>
+        <jcodec.version>0.2.5</jcodec.version>
     </properties>
 
     <dependencyManagement>
@@ -87,6 +89,11 @@
                 <groupId>com.qcloud</groupId>
                 <artifactId>cos_api</artifactId>
                 <version>${tencent-cos.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jcodec</groupId>
+                <artifactId>jcodec</artifactId>
+                <version>${jcodec.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
@@ -151,6 +158,11 @@
             <dependency>
                 <groupId>com.rigour</groupId>
                 <artifactId>channel-agent-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>collaboration-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

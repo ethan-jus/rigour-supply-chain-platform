@@ -51,6 +51,12 @@ public class TemporaryCheckinAdminController {
         return service.adminOptions(accessPolicy.requireScope(request));
     }
 
+    @GetMapping("/api/v1/submissions/{id}")
+    public TemporaryCheckinAdminModels.AdminSubmissionView submission(HttpServletRequest request,
+            @PathVariable("id") UUID id) {
+        return service.findAdminSubmission(accessPolicy.requireScope(request),id);
+    }
+
     @GetMapping("/api/v1/submissions")
     public AdminSubmissionPage submissions(
             HttpServletRequest request,
@@ -61,17 +67,28 @@ public class TemporaryCheckinAdminController {
             @RequestParam(name = "status", required = false) String status,
             @RequestParam(name = "visitType", required = false) String visitType,
             @RequestParam(name = "q", required = false) String query,
+            @RequestParam(name="riskLevel",required=false) String riskLevel,
+            @RequestParam(name="riskFlags",required=false) List<String> riskFlags,
+            @RequestParam(name="deviceRisk",required=false) String deviceRisk,
+            @RequestParam(name="audioRisk",required=false) String audioRisk,
+            @RequestParam(name="riskQuery",required=false) String riskQuery,
+            @RequestParam(name="riskReviewStatus",required=false) String riskReviewStatus,
             @RequestParam(name = "locationStatus", required = false) String locationStatus,
             @RequestParam(name = "reviewStatus", required = false) String reviewStatus,
             @RequestParam(name = "mediaStatus", required = false) String mediaStatus,
             @RequestParam(name = "sortBy", required = false) String sortBy,
             @RequestParam(name = "sortDirection", required = false) String sortDirection,
+            @RequestParam(name = "sort", required = false) List<String> sorts,
             @RequestParam(name = "page", required = false) Integer page,
             @RequestParam(name = "size", required = false) Integer size) {
         AdminScope scope = accessPolicy.requireScope(request);
+        String[] rawSorts=request.getParameterValues("sort");
+        sorts=rawSorts==null?null:java.util.Arrays.asList(rawSorts);
         return service.findAdminSubmissions(
                 scope, from, to, city, salespersonId, status, visitType, query, page, size,
-                new TemporaryCheckinRepository.AdminReadOptions(locationStatus,reviewStatus,mediaStatus,sortBy,sortDirection));
+                new TemporaryCheckinRepository.AdminReadOptions(locationStatus,reviewStatus,mediaStatus,
+                        sorts==null||sorts.isEmpty()?sortBy:null,sorts==null||sorts.isEmpty()?sortDirection:null,
+                        riskLevel,riskFlags,deviceRisk,audioRisk,riskQuery,riskReviewStatus,scope.city()).withSorts(sorts));
     }
 
     @GetMapping(value = "/export.csv", produces = "text/csv;charset=UTF-8")
@@ -83,15 +100,26 @@ public class TemporaryCheckinAdminController {
             @RequestParam(name = "salespersonId", required = false) UUID salespersonId,
             @RequestParam(name = "status", required = false) String status,
             @RequestParam(name = "visitType", required = false) String visitType,
+            @RequestParam(name="riskLevel",required=false) String riskLevel,
+            @RequestParam(name="riskFlags",required=false) List<String> riskFlags,
+            @RequestParam(name="deviceRisk",required=false) String deviceRisk,
+            @RequestParam(name="audioRisk",required=false) String audioRisk,
+            @RequestParam(name="riskQuery",required=false) String riskQuery,
+            @RequestParam(name="riskReviewStatus",required=false) String riskReviewStatus,
             @RequestParam(name = "locationStatus", required = false) String locationStatus,
             @RequestParam(name = "reviewStatus", required = false) String reviewStatus,
             @RequestParam(name = "mediaStatus", required = false) String mediaStatus,
             @RequestParam(name = "sortBy", required = false) String sortBy,
             @RequestParam(name = "sortDirection", required = false) String sortDirection,
+            @RequestParam(name = "sort", required = false) List<String> sorts,
             @RequestParam(name = "q", required = false) String query) {
         AdminScope scope = accessPolicy.requireScope(request);
+        String[] rawSorts=request.getParameterValues("sort");
+        sorts=rawSorts==null?null:java.util.Arrays.asList(rawSorts);
         byte[] bytes = service.exportCsv(scope, from, to, city, salespersonId, status, visitType, query,
-                new TemporaryCheckinRepository.AdminReadOptions(locationStatus,reviewStatus,mediaStatus,sortBy,sortDirection))
+                new TemporaryCheckinRepository.AdminReadOptions(locationStatus,reviewStatus,mediaStatus,
+                        sorts==null||sorts.isEmpty()?sortBy:null,sorts==null||sorts.isEmpty()?sortDirection:null,
+                        riskLevel,riskFlags,deviceRisk,audioRisk,riskQuery,riskReviewStatus,scope.city()).withSorts(sorts))
                 .getBytes(StandardCharsets.UTF_8);
         return ResponseEntity.ok()
                 .contentType(CSV)

@@ -73,6 +73,8 @@ class RequestContextFilterTest {
         filter.doFilter(unsigned, unsignedResponse,
                 (request, response) -> { throw new AssertionError("unsigned request must not pass"); });
         assertThat(unsignedResponse.getStatus()).isEqualTo(401);
+        assertThat(unsignedResponse.getHeader(RequestHeaders.AUTH_FAILURE))
+                .isEqualTo(AuthenticationFailureCodes.TRUSTED_CONTEXT_INVALID);
 
         MockHttpServletRequest tampered = signedTenantRequest();
         tampered.removeHeader(RequestHeaders.PERMISSIONS);
@@ -81,6 +83,8 @@ class RequestContextFilterTest {
         filter.doFilter(tampered, tamperedResponse,
                 (request, response) -> { throw new AssertionError("tampered request must not pass"); });
         assertThat(tamperedResponse.getStatus()).isEqualTo(401);
+        assertThat(tamperedResponse.getHeader(RequestHeaders.AUTH_FAILURE))
+                .isEqualTo(AuthenticationFailureCodes.TRUSTED_CONTEXT_INVALID);
     }
 
     @Test

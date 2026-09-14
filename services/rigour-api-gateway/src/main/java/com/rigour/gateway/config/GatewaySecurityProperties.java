@@ -15,6 +15,8 @@ public final class GatewaySecurityProperties {
     private String jwkSetUri;
     private List<String> audience = new ArrayList<>(List.of("rigour-api"));
     private boolean allowInsecureLoopback;
+    /** 台式机 DEV 显式允许 HTTP 信任地址；正式配置保持关闭。 */
+    private boolean allowInsecureHttp;
     private boolean currentTokenValidationEnabled;
     private String iamCurrentTokenUri;
     private Duration currentTokenConnectTimeout = Duration.ofSeconds(2);
@@ -54,6 +56,8 @@ public final class GatewaySecurityProperties {
 
     public boolean isAllowInsecureLoopback() { return allowInsecureLoopback; }
     public void setAllowInsecureLoopback(boolean value) { this.allowInsecureLoopback = value; }
+    public boolean isAllowInsecureHttp() { return allowInsecureHttp; }
+    public void setAllowInsecureHttp(boolean value) { this.allowInsecureHttp = value; }
     public boolean isCurrentTokenValidationEnabled() { return currentTokenValidationEnabled; }
     public void setCurrentTokenValidationEnabled(boolean value) { this.currentTokenValidationEnabled = value; }
     public String getIamCurrentTokenUri() { return iamCurrentTokenUri; }
@@ -102,7 +106,8 @@ public final class GatewaySecurityProperties {
         boolean loopback = allowInsecureLoopback && "http".equalsIgnoreCase(uri.getScheme())
                 && ("localhost".equalsIgnoreCase(uri.getHost()) || "127.0.0.1".equals(uri.getHost())
                 || "::1".equals(uri.getHost()));
-        if (!(secure || loopback) || uri.getHost() == null
+        boolean developmentHttp = allowInsecureHttp && "http".equalsIgnoreCase(uri.getScheme());
+        if (!(secure || loopback || developmentHttp) || uri.getHost() == null
                 || uri.getUserInfo() != null || uri.getFragment() != null
                 || (!allowPath && uri.getPath() != null && !uri.getPath().isEmpty())
                 || value.endsWith("/")) {

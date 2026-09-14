@@ -16,18 +16,30 @@ public interface SalesWorkRecordingRepository {
 
     Optional<RecordingClipRow> findClipByClientId(UUID tenantId, UUID sessionId, String clientClipId);
 
+    Optional<RecordingClipRow> findClipBySha256(UUID tenantId, UUID sessionId, String sha256);
+
+    Optional<RecordingClipRow> findClipByDecodedContentHash(
+            UUID tenantId, UUID sessionId, String decodedContentHash);
+
+    Optional<RecordingClipRow> findClipByDecodedContentHashOutsideSession(
+            UUID tenantId, UUID sessionId, String decodedContentHash);
+
     int nextClipIndex(UUID tenantId, UUID sessionId);
 
     void insertClip(UUID id, UUID tenantId, UUID sessionId, String clientClipId,
                     int clipIndex, String objectKey,
-                    String mediaType, long objectSizeBytes, String sha256, Long clientDurationMs,
+                    String mediaType, long objectSizeBytes, String sha256, String decodedContentHash,
+                    Long clientDurationMs,
                     Long verifiedDurationMs, String verifyStatus,
                     Instant recordedFrom, Instant recordedTo, Instant now);
 
     int incrementSessionClipCount(UUID tenantId, UUID sessionId);
 
-    /** 按已核验片段重算会话可信时长和证据状态。 */
-    int refreshSessionVerification(UUID tenantId, UUID sessionId, Instant verifiedAt);
+    /** 按已核验片段的录制区间并集重算可信时长，并识别重复、重叠和超间隙风险。 */
+    int refreshSessionVerification(UUID tenantId, UUID sessionId,
+                                   int maximumClipGapSeconds, Instant verifiedAt);
+
+    void flagSessionForReview(UUID tenantId, UUID sessionId, Instant detectedAt);
 
     long uploadedTotalDurationMs(UUID tenantId, UUID sessionId);
 
@@ -47,8 +59,9 @@ public interface SalesWorkRecordingRepository {
 
     record RecordingClipRow(
             UUID id, UUID sessionId, String clientClipId, int clipIndex, String objectKey, String mediaType,
-            long objectSizeBytes, String sha256, Long clientDurationMs,
-            Long verifiedDurationMs, String uploadStatus, String verifyStatus, Instant createdAt) {
+            long objectSizeBytes, String sha256, String decodedContentHash, Long clientDurationMs,
+            Long verifiedDurationMs, String uploadStatus, String verifyStatus,
+            Instant recordedFrom, Instant recordedTo, Instant createdAt) {
     }
 
     record RecordingDiscardRow(

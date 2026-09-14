@@ -30,7 +30,7 @@ class TemporaryCheckinWorkbookTest {
         when(row.visitResult()).thenReturn("已向店长介绍新品，约定下周回访。\n需补充两箱纸巾。");
         when(row.status()).thenReturn("SUBMITTED");when(row.visitOrdinal()).thenReturn(2L);when(row.riskLevel()).thenReturn("LOW");
         when(row.locationAddress()).thenReturn("北京市朝阳区嘉多丽园南区");when(row.audioFilename()).thenReturn("现场录音.m4a");
-        var daily=new TemporaryCheckinStatisticsRepository.DailyAttendance(LocalDate.of(2026,9,8),"北京",sales,"张销售",3,2,at,at.plusSeconds(1800),1);
+        var daily=new TemporaryCheckinStatisticsRepository.DailyAttendance(LocalDate.of(2026,9,8),"北京",sales,"张销售",3,2,2,at,at.plusSeconds(1800),1);
         var e=new TemporaryCheckinEvidenceRepository.EvidenceView("GOOD",null,null,null,null,null,new java.math.BigDecimal("36.8"),"APPROVED","管理员",at.plusSeconds(120),null);
         byte[] bytes=new TemporaryCheckinWorkbookWriter().write(List.of(row,row),List.of(daily),Map.of(id,e),Map.of(id,2L),"日期：2026-09-08 至 2026-09-08  ｜  城市：北京  ｜  状态：已提交");
         assertThat(bytes[0]).isEqualTo((byte)'P');assertThat(bytes[1]).isEqualTo((byte)'K');
@@ -46,6 +46,12 @@ class TemporaryCheckinWorkbookTest {
             }
             assertThat(format.formatCellValue(summary.getRow(5).getCell(0))).isEqualTo("2026-09-08");
             assertThat(summary.getRow(5).getCell(3).getNumericCellValue()).isEqualTo(3);
+            assertThat(summary.getRow(4).getCell(4).getStringCellValue()).isEqualTo("拜访门店数");
+            assertThat(summary.getRow(4).getCell(5).getStringCellValue()).isEqualTo("录音数量");
+            assertThat(summary.getRow(5).getCell(5).getCellType()).isEqualTo(CellType.NUMERIC);
+            assertThat(summary.getRow(5).getCell(5).getNumericCellValue()).isEqualTo(2);
+            assertThat(summary.getRow(2).getCell(0).getStringCellValue()).contains("拜访次数","多段计一次");
+            assertThat(format.formatCellValue(summary.getRow(5).getCell(6))).isEqualTo("2026-09-08 00:33:33");
             assertThat(detail.getRow(5).getCell(0).getCellType()).isEqualTo(CellType.NUMERIC);
             assertThat(format.formatCellValue(detail.getRow(5).getCell(0))).isEqualTo("2026-09-08 00:33:33");
             assertThat(format.formatCellValue(detail.getRow(5).getCell(15))).isEqualTo("2026-09-08 00:35:33");

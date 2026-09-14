@@ -46,6 +46,7 @@ function harness() {
         btoa: (value) => Buffer.from(value, "binary").toString("base64")};
     const injected = original.replace(/\n\}\)\(\);\s*$/, `
         // Tests replace transport and visual rendering boundaries; state/validation/recovery remain production code.
+        const actualRenderAudioSegments = renderAudioSegments;
         syncStateFromForm = () => {};
         renderPhotos = renderRestoredValues = renderSelectedStore = renderLocation = renderAudioSegments = renderUploadedBadges
             = renderBusinessLock = renderTab = renderFlowActions = setFormsDisabled = prepareProgress
@@ -58,6 +59,7 @@ function harness() {
             renderStoreResults, handleStoreSearchKeydown, handleStoreResultKeydown, handleCityChange,
             renderRecordingDisclosure, recoverInterruptedSubmission, restoreOwnedDraft, imageHeaderDimensions, readAudioDurationMs, readPcmWaveDurationMs, formatDateTime,
             handleAudioFileSelection, audioFileSizeAllowed, retryAudioSegment, optionalUploadOutcome,
+            attachAudioFile, renderAudioSegmentsActual: actualRenderAudioSegments,
             optionalUploadFailureMessage, uploadWithXHR: actualUploadMedia,
             setRequest(fn) { requestJson = fn; }, setUpload(fn) {uploadMedia = fn;} };
     })();`);
@@ -531,6 +533,70 @@ async function check(name, run) {await run(); checks++; console.log(`ok - ${name
         const restore=h.api.openSavedDraft({owner:"t1:sales1",snapshot:old},false);
         await Promise.resolve();h.api.state.visit.customerName="刚输入的新客户";release([]);
         assert.equal(await restore,false);assert.equal(h.api.state.visit.customerName,"刚输入的新客户");
+    });
+    await check("reopening the current visit retains newer in-memory audio and photos after Blob persistence fails", async () => {
+        const h=harness(), segmentId=webcrypto.randomUUID();
+        const audio=Object.assign(new Blob(["new-recording"]), {name:"new.wav"});
+        h.api.state.submission.audioSegments=[{segmentId,originalFilename:"new.wav",uploadState:"LOCAL"}];
+        h.api.state.files.audio=[{segmentId,file:audio}];
+        const stale=h.api.snapshotDraft();
+        stale.submission.audioSegments[0].originalFilename="old.wav";
+        h.api.state.visit.customerName="当前新填写客户";
+        const photo=h.api.state.files.photos[0].file;
+        h.window.SalesCheckinDraftStore.saveMedia=async()=>{throw Object.assign(new Error("quota"),{name:"QuotaExceededError"});};
+        assert.equal(await h.api.saveLocalMedia(`audio:${segmentId}`,audio),false);
+        h.window.SalesCheckinDraftStore.mediaFor=async()=>[
+            {mediaId:`audio:${segmentId}`,file:new Blob(["old-recording"]),filename:"old.wav"},
+            {mediaId:`photo:${h.photoId}`,file:new Blob(["old-photo"]),filename:"old.jpg"}];
+        assert.equal(await h.api.openSavedDraft({owner:"t1:sales1",snapshot:stale},false),true);
+        assert.equal(h.api.state.files.audio[0].file,audio);
+        assert.equal(h.api.state.files.photos[0].file,photo);
+        assert.equal(h.api.state.submission.audioSegments[0].originalFilename,"new.wav");
+        assert.equal(h.api.state.submission.audioSegments[0].uploadState,"LOCAL");
+        assert.equal(h.api.state.visit.customerName,"当前新填写客户");
+    });
+    await check("current in-memory attachments survive a failed IndexedDB read without inventing missing files", async () => {
+        const h=harness(), present=webcrypto.randomUUID(),missing=webcrypto.randomUUID();
+        const audio=new Blob(["still-in-memory"]);
+        h.api.state.submission.audioSegments=[{segmentId:present,uploadState:"LOCAL"},{segmentId:missing,uploadState:"LOCAL"}];
+        h.api.state.files.audio=[{segmentId:present,file:audio}];
+        h.window.SalesCheckinDraftStore.mediaFor=async()=>{throw Object.assign(new Error("timeout"),{code:"LOCAL_STORAGE_TIMEOUT"});};
+        assert.equal(await h.api.openSavedDraft({owner:"t1:sales1",snapshot:h.api.snapshotDraft()},false),true);
+        assert.equal(h.api.state.files.audio.length,1);assert.equal(h.api.state.files.audio[0].file,audio);
+        assert.equal(h.api.state.submission.audioSegments.find(item=>item.segmentId===missing).uploadState,"NEEDS_FILE");
+        assert.match(h.element("#draft-save-status").textContent,/超时.*当前页面附件已保留/);
+    });
+    await check("switching drafts never transfers the previous visit's in-memory files", async () => {
+        const h=harness(),segmentId=webcrypto.randomUUID();
+        h.api.state.submission.audioSegments=[{segmentId,uploadState:"LOCAL"}];
+        h.api.state.files.audio=[{segmentId,file:new Blob(["previous-visit"])}];
+        const other=h.api.snapshotDraft();other.submission.clientSubmissionId=webcrypto.randomUUID();
+        assert.equal(await h.api.openSavedDraft({owner:"t1:sales1",snapshot:other},false),true);
+        assert.equal(h.api.state.files.audio.length,0);assert.equal(h.api.state.files.photos.length,0);
+        assert.equal(h.api.state.submission.audioSegments[0].uploadState,"NEEDS_FILE");
+    });
+    await check("a failed read of a different draft does not clear the current visit's files", async () => {
+        const h=harness(),photo=h.api.state.files.photos[0].file,id=h.api.state.submission.clientSubmissionId;
+        const other=h.api.snapshotDraft();other.submission.clientSubmissionId=webcrypto.randomUUID();
+        h.window.SalesCheckinDraftStore.mediaFor=async()=>{throw new Error("read unavailable");};
+        await assert.rejects(h.api.openSavedDraft({owner:"t1:sales1",snapshot:other},false),/read unavailable/);
+        assert.equal(h.api.state.submission.clientSubmissionId,id);assert.equal(h.api.state.files.photos[0].file,photo);
+    });
+    await check("local save failures distinguish browser quota, app limits, timeout, and unknown causes", async () => {
+        for (const [error,pattern] of [
+            [Object.assign(new Error("quota"),{name:"QuotaExceededError"}),/浏览器可用存储额度不足/],
+            [Object.assign(new Error("limit"),{code:"LOCAL_DRAFT_LIMIT"}),/待处理记录已达 20 条/],
+            [Object.assign(new Error("limit"),{code:"LOCAL_MEDIA_LIMIT"}),/附件缓存已达上限/],
+            [Object.assign(new Error("timeout"),{code:"LOCAL_STORAGE_TIMEOUT"}),/超时.*结果尚未确认/],
+            [Object.assign(new Error("denied"),{name:"SecurityError"}),/本机保存不可用/],
+            [new Error("unexpected"),/原因暂未确定/]
+        ]) {
+            const h=harness();h.window.SalesCheckinDraftStore.saveMedia=async()=>{throw error;};
+            assert.equal(await h.api.saveLocalMedia("audio:local",new Blob(["audio"])),false);
+            const message=h.element("#audio-selection-note").textContent;
+            assert.match(message,pattern);assert.match(message,/附件仍可直接上传/);
+            assert.doesNotMatch(message,/空间不足或浏览器禁止/);
+        }
     });
     console.log(`${checks} recovery behavior checks passed`);
     completed=true;

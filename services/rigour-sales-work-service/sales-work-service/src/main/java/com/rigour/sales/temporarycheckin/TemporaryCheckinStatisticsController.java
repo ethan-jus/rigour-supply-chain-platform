@@ -3,6 +3,7 @@ package com.rigour.sales.temporarycheckin;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.LocalDate;
 import java.util.UUID;
+import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -32,6 +33,12 @@ class TemporaryCheckinStatisticsController {
             @RequestParam(name = "status", required = false) String status,
             @RequestParam(name = "visitType", required = false) String visitType,
             @RequestParam(name = "q", required = false) String query,
+            @RequestParam(name="riskLevel",required=false) String riskLevel,
+            @RequestParam(name="riskFlags",required=false) List<String> riskFlags,
+            @RequestParam(name="deviceRisk",required=false) String deviceRisk,
+            @RequestParam(name="audioRisk",required=false) String audioRisk,
+            @RequestParam(name="riskQuery",required=false) String riskQuery,
+            @RequestParam(name="riskReviewStatus",required=false) String riskReviewStatus,
             @RequestParam(name = "locationStatus", required = false) String locationStatus,
             @RequestParam(name = "reviewStatus", required = false) String reviewStatus,
             @RequestParam(name = "mediaStatus", required = false) String mediaStatus,
@@ -40,7 +47,8 @@ class TemporaryCheckinStatisticsController {
             @RequestParam(name = "summarySortBy", required = false) String summarySortBy,
             @RequestParam(name = "summarySortDirection", required = false) String summarySortDirection) {
         var scope = access.requireScope(request);
-        var options = new TemporaryCheckinRepository.AdminReadOptions(locationStatus, reviewStatus, mediaStatus, null, null);
+        var options = new TemporaryCheckinRepository.AdminReadOptions(locationStatus,reviewStatus,mediaStatus,null,null,
+                riskLevel,riskFlags,deviceRisk,audioRisk,riskQuery,riskReviewStatus,scope.city());
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(service.summary(scope, from, to,
                 city, salespersonId, status, visitType, query, options, page, size, summarySortBy, summarySortDirection));
     }

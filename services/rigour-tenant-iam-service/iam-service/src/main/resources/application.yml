@@ -2,6 +2,8 @@ server:
   port: 26881
   servlet:
     session:
+      # 浏览器SSO会话与iam_auth_session保持同一有效期，避免Access Token续签时提前丢失登录态。
+      timeout: 8h
       cookie:
         name: RIGOUR_IAM_SESSION
         http-only: true

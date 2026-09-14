@@ -74,6 +74,34 @@ class TemporaryCheckinLocationVerificationTokenServiceTest {
                 ACCURACY_METERS, CAPTURED_AT));
     }
 
+    @Test
+    void signsOldOrUnknownSamplesForAddressOnlyWithoutPromotingThemToLocationProof() {
+        var issuer=serviceAt(TENANT_ID,NOW);
+        for (Instant captured:new Instant[]{NOW.minusSeconds(86400),null}) {
+            String token=issuer.issueAddress(SALESPERSON_ID,"北京",LONGITUDE,LATITUDE,null,captured,resolvedGeocode());
+            assertThat(issuer.verifyAddress(token,SALESPERSON_ID,"深圳",LONGITUDE,LATITUDE,null,captured)).isEqualTo(resolvedGeocode());
+            assertInvalid(() -> issuer.verify(token,SALESPERSON_ID,"北京",LONGITUDE,LATITUDE,null,captured));
+            assertInvalid(() -> issuer.verifyAddress(token,SALESPERSON_ID,"北京",LONGITUDE,LATITUDE,BigDecimal.ONE,captured));
+            assertInvalid(() -> issuer.verifyAddress(token,SALESPERSON_ID,"北京",LONGITUDE,LATITUDE,null,NOW));
+            assertInvalid(() -> issuer.verifyAddress(token,SALESPERSON_ID,"北京",LONGITUDE.add(BigDecimal.ONE),LATITUDE,null,captured));
+            assertInvalid(() -> issuer.verifyAddress(token,UUID.randomUUID(),"北京",LONGITUDE,LATITUDE,null,captured));
+            assertInvalid(() -> serviceAt(OTHER_TENANT_ID,NOW).verifyAddress(token,SALESPERSON_ID,"北京",LONGITUDE,LATITUDE,null,captured));
+        }
+    }
+
+    @Test
+    void addressOnlyProofExpiresFromServerIssueTimeAndRejectsSignatureTampering() {
+        var issuer=serviceAt(TENANT_ID,NOW);
+        Instant old=NOW.minusSeconds(86400);
+        String token=issuer.issueAddress(SALESPERSON_ID,"北京",LONGITUDE,LATITUDE,new BigDecimal("900"),old,resolvedGeocode());
+        assertThat(serviceAt(TENANT_ID,NOW.plusSeconds(3599)).verifyAddress(token,SALESPERSON_ID,"北京",
+                LONGITUDE,LATITUDE,new BigDecimal("900.00"),old)).isEqualTo(resolvedGeocode());
+        assertInvalid(() -> serviceAt(TENANT_ID,NOW.plusSeconds(3600)).verifyAddress(token,SALESPERSON_ID,"北京",
+                LONGITUDE,LATITUDE,new BigDecimal("900"),old));
+        assertInvalid(() -> issuer.verifyAddress(tamperSignature(token),SALESPERSON_ID,"北京",LONGITUDE,LATITUDE,new BigDecimal("900"),old));
+        assertThat(issuer.issueAddress(SALESPERSON_ID,"北京",LONGITUDE,LATITUDE,null,null,GeocodeResult.failed("TEST"))).isNull();
+    }
+
     private static TemporaryCheckinLocationVerificationTokenService serviceAt(
             UUID tenantId, Instant instant) {
         TemporaryCheckinProperties properties = new TemporaryCheckinProperties();

@@ -651,7 +651,7 @@ public class TemporaryCheckinRepository {
                        customer_name, customer_phone, visit_result,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
                        location_verification_status, location_failure_reason, location_attempt_id,
-                       location_address, location_adcode,
+                       COALESCE(NULLIF(TRIM(location_formatted_address),''),location_address) AS location_address, location_adcode,
                        identity_method, submitted_ip_masked, user_agent_summary,
                        risk_level, risk_flags_json,
                        storefront_photo_original_filename, storefront_photo_deleted_at,
@@ -670,6 +670,7 @@ public class TemporaryCheckinRepository {
             sql=new StringBuilder(projection);
         }
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
+        sql=TemporaryCheckinRiskSql.prepare(sql,arguments,tenantId,options);
         appendAdminFilters(
                 sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, options);
         sql.append(options.orderBy()).append(" LIMIT ?");
@@ -722,6 +723,7 @@ public class TemporaryCheckinRepository {
                  WHERE s.tenant_id=?
                 """);
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
+        sql=TemporaryCheckinRiskSql.prepare(sql,arguments,tenantId,options);
         appendAdminFilters(
                 sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, options);
         return jdbc.queryForObject(sql.toString(), (rs, row) -> new AdminSubmissionStats(
@@ -739,6 +741,18 @@ public class TemporaryCheckinRepository {
     public List<AdminSubmissionRow> findAdminSubmissions(
             UUID tenantId, Instant from, Instant toExclusive, String city, UUID salespersonId,
             String status, String visitType, String escapedQuery, int offset, int limit, AdminReadOptions options) {
+        return adminSubmissions(tenantId,from,toExclusive,city,salespersonId,status,visitType,escapedQuery,
+                offset,limit,options,null);
+    }
+
+    Optional<AdminSubmissionRow> findAdminSubmission(UUID tenantId,UUID id,String scopeCity) {
+        return adminSubmissions(tenantId,null,null,scopeCity,null,null,null,null,0,1,
+                AdminReadOptions.defaults(),id).stream().findFirst();
+    }
+
+    private List<AdminSubmissionRow> adminSubmissions(
+            UUID tenantId, Instant from, Instant toExclusive, String city, UUID salespersonId,
+            String status, String visitType, String escapedQuery, int offset, int limit, AdminReadOptions options,UUID exactId) {
         StringBuilder sql = new StringBuilder("""
                 WITH visit_ranks AS (
                     SELECT id,
@@ -754,7 +768,7 @@ public class TemporaryCheckinRepository {
                        customer_name, customer_phone, visit_result,
                        longitude, latitude, accuracy_meters, location_captured_at, location_note,
                        location_verification_status, location_failure_reason, location_attempt_id,
-                       location_address, location_adcode,
+                       COALESCE(NULLIF(TRIM(location_formatted_address),''),location_address) AS location_address, location_adcode,
                        identity_method, submitted_ip_masked, user_agent_summary,
                        risk_level, risk_flags_json,
                        storefront_photo_object_key, storefront_photo_deleted_at,
@@ -770,8 +784,10 @@ public class TemporaryCheckinRepository {
                  WHERE s.tenant_id=?
                 """);
         List<Object> arguments = new ArrayList<>(List.of(bin(tenantId), bin(tenantId)));
+        sql=TemporaryCheckinRiskSql.prepare(sql,arguments,tenantId,options);
         appendAdminFilters(
                 sql, arguments, from, toExclusive, city, salespersonId, status, visitType, escapedQuery, options);
+        if(exactId!=null) {sql.append(" AND s.id=? AND s.deletion_state='NONE'");arguments.add(bin(exactId));}
         sql.append(options.orderBy()).append(" LIMIT ? OFFSET ?");
         arguments.add(limit);
         arguments.add(offset);
@@ -1044,6 +1060,7 @@ public class TemporaryCheckinRepository {
     static void appendAdminFilters(
             StringBuilder sql, List<Object> arguments, Instant from, Instant toExclusive, String city,
             UUID salespersonId, String status, String visitType, String escapedQuery, AdminReadOptions options) {
+        TemporaryCheckinRiskSql.appendFilters(sql,arguments,options);
         if (options.locationStatus() != null) {
             sql.append(" AND s.location_quality=?"); arguments.add(options.locationStatus());
         }
@@ -1475,16 +1492,74 @@ public class TemporaryCheckinRepository {
 
     /** 固定列映射杜绝客户端排序字符串进入 SQL，列表、统计、CSV 使用同一过滤模型。 */
     public record AdminReadOptions(String locationStatus, String reviewStatus, String mediaStatus,
-            String sortBy, String sortDirection) {
+            String sortBy, String sortDirection, String riskLevel, List<String> riskFlags,
+            String deviceRisk, String audioRisk, String riskQuery, String riskReviewStatus, String scopeCity,
+            List<AdminSort> sorts) {
+        private static final java.util.Set<String> SORT_FIELDS=java.util.Set.of("completedAt","cityName","salespersonName","storeName",
+                "deviceId","deviceVisitCount","deviceSalespersonCount","audioDuplicateCount");
+        public AdminReadOptions(String locationStatus,String reviewStatus,String mediaStatus,String sortBy,String sortDirection) {
+            this(locationStatus,reviewStatus,mediaStatus,sortBy,sortDirection,null,List.of(),null,null,null,null,null);
+        }
+        public AdminReadOptions(String locationStatus,String reviewStatus,String mediaStatus,String sortBy,String sortDirection,
+                String riskLevel,List<String> riskFlags,String deviceRisk,String audioRisk,String riskQuery,String riskReviewStatus,String scopeCity) {
+            this(locationStatus,reviewStatus,mediaStatus,sortBy,sortDirection,riskLevel,riskFlags,deviceRisk,audioRisk,riskQuery,riskReviewStatus,scopeCity,null);
+        }
         public AdminReadOptions {
             locationStatus = choice(locationStatus, java.util.Set.of("GOOD","LOW_ACCURACY","STALE",
                     "TIME_UNKNOWN","MISSING","USER_REPORTED","OUT_OF_RANGE","STORE_UNLOCATED","LEGACY"), "locationStatus");
             reviewStatus = choice(reviewStatus,java.util.Set.of("PENDING","APPROVED","FOLLOW_UP","FLAGGED"),"reviewStatus");
             mediaStatus = choice(mediaStatus,java.util.Set.of("MISSING_AUDIO","HAS_AUDIO","MISSING_PHOTO"),"mediaStatus");
-            sortBy = sortBy == null || sortBy.isBlank() ? "completedAt" : sortBy;
-            sortDirection = sortDirection == null || sortDirection.isBlank() ? "desc" : sortDirection;
-            choice(sortBy,java.util.Set.of("completedAt","cityName","salespersonName","storeName"),"sortBy");
-            choice(sortDirection,java.util.Set.of("asc","desc"),"sortDirection");
+            if(sorts==null||sorts.isEmpty()) {
+                sortBy = sortBy == null || sortBy.isBlank() ? "completedAt" : sortBy;
+                sortDirection = sortDirection == null || sortDirection.isBlank() ? "desc" : sortDirection;
+                sorts=List.of(new AdminSort(sortBy,sortDirection));
+            } else {
+                if(sorts.size()>8)throw TemporaryCheckinException.badRequest("组合排序最多8个字段");
+                var used=new java.util.HashSet<String>();
+                for(AdminSort sort:sorts) {
+                    if(sort==null||!used.add(sort.field()))throw TemporaryCheckinException.badRequest("组合排序字段不能为空或重复");
+                }
+                sorts=List.copyOf(sorts);
+                sortBy=sorts.getFirst().field();sortDirection=sorts.getFirst().direction();
+            }
+            riskLevel=choice(riskLevel,java.util.Set.of("NONE","LOW","MEDIUM","HIGH"),"riskLevel");
+            deviceRisk=choice(deviceRisk,java.util.Set.of("SHARED"),"deviceRisk");
+            audioRisk=choice(audioRisk,java.util.Set.of("DUPLICATE","CROSS_SALES"),"audioRisk");
+            riskReviewStatus=choice(riskReviewStatus,java.util.Set.of("PENDING","EXPLAINED","FLAGGED","INCONCLUSIVE"),"riskReviewStatus");
+            riskFlags=riskFlags==null?List.of():riskFlags.stream().filter(v->v!=null&&!v.isBlank()).distinct().toList();
+            if(riskFlags.size()>12) throw TemporaryCheckinException.badRequest("异常类型过多");
+            for(String flag:riskFlags) choice(flag,java.util.Set.of("SHARED_DEVICE","AUDIO_DUPLICATE",
+                    "AUDIO_CROSS_SALES","AUDIO_CROSS_DATE","DEVICE_MULTIPLE_SALES","SALESPERSON_MULTIPLE_DEVICES",
+                    "IP_CHURN","SHARED_IP_MULTIPLE_SALES","LOCATION_UNVERIFIED","LOCATION_LOW_ACCURACY",
+                    "LOCATION_STALE","LOCATION_TIME_UNKNOWN","LOCATION_MISSING","LOCATION_OUT_OF_RANGE",
+                    "LOCATION_USER_REPORTED","STORE_UNLOCATED"),"riskFlags");
+            riskQuery=riskQuery==null||riskQuery.isBlank()?null:riskQuery.trim().toUpperCase(java.util.Locale.ROOT);
+            if(riskQuery!=null&&!riskQuery.matches("[A-Z0-9-]{1,40}"))
+                throw TemporaryCheckinException.badRequest("请输入设备或录音编号，最多40个字母、数字或连字符");
+        }
+        AdminReadOptions withScope(String city) {
+            return new AdminReadOptions(locationStatus,reviewStatus,mediaStatus,sortBy,sortDirection,
+                    riskLevel,riskFlags,deviceRisk,audioRisk,riskQuery,riskReviewStatus,city,sorts);
+        }
+        /** 重复 query 参数保留用户给定优先级；只接受有限字段，不允许客户端提供 SQL 表达式。 */
+        public AdminReadOptions withSorts(List<String> requested) {
+            if(requested==null||requested.isEmpty())return this;
+            if(requested.size()>8)throw TemporaryCheckinException.badRequest("组合排序最多8个字段");
+            List<AdminSort> values=new ArrayList<>();
+            for(String value:requested) {
+                if(value==null||value.length()>64)throw TemporaryCheckinException.badRequest("sort格式无效，应为字段:asc或字段:desc");
+                String[] pair=value.split(":",-1);
+                if(pair.length!=2)throw TemporaryCheckinException.badRequest("sort格式无效，应为字段:asc或字段:desc");
+                values.add(new AdminSort(pair[0],pair[1]));
+            }
+            return new AdminReadOptions(locationStatus,reviewStatus,mediaStatus,null,null,
+                    riskLevel,riskFlags,deviceRisk,audioRisk,riskQuery,riskReviewStatus,scopeCity,values);
+        }
+        boolean hasRiskFilters() {
+            return riskLevel!=null||!riskFlags.isEmpty()||deviceRisk!=null||audioRisk!=null||riskQuery!=null||riskReviewStatus!=null;
+        }
+        boolean needsRisk() {
+            return hasRiskFilters()||sorts.stream().anyMatch(sort->java.util.Set.of("deviceId","deviceVisitCount","deviceSalespersonCount","audioDuplicateCount").contains(sort.field()));
         }
         static AdminReadOptions defaults() { return new AdminReadOptions(null,null,null,null,null); }
         private static String choice(String value,java.util.Set<String> choices,String name) {
@@ -1493,14 +1568,49 @@ public class TemporaryCheckinRepository {
             return value;
         }
         String orderBy() {
-            String column = switch(sortBy) {
+            List<String> clauses=new ArrayList<>();
+            for(AdminSort sort:sorts) {
+                String column=column(sort.field()),direction="asc".equals(sort.direction())?" ASC":" DESC";
+                clauses.add(column+" IS NULL ASC");clauses.add(column+direction);
+                // 同名销售各自成组后再应用时间等后续排序，不能把不同账号的拜访交织在一起。
+                if("salespersonName".equals(sort.field()))clauses.add("s.salesperson_id"+direction);
+            }
+            boolean explicitTime=sorts.stream().anyMatch(sort->"completedAt".equals(sort.field()));
+            if(!explicitTime) {
+                clauses.add("s.submitted_at IS NULL ASC");clauses.add("s.submitted_at DESC");
+            }
+            clauses.add("s.id"+(explicitTime&&"asc".equals(sorts.getLast().direction())?" ASC":" DESC"));
+            return " ORDER BY "+String.join(", ",clauses);
+        }
+        public String sortDescription() {
+            String description=sorts.stream().map(sort->switch(sort.field()) {
+                case "completedAt"->"打卡时间";case "cityName"->"城市";case "salespersonName"->"销售";
+                case "storeName"->"门店";case "deviceId"->"设备编号";case "deviceVisitCount"->"设备关联拜访数";
+                case "deviceSalespersonCount"->"设备关联销售数";case "audioDuplicateCount"->"同录音关联拜访数";
+                default->throw new IllegalStateException("未映射的排序字段");
+            }+("asc".equals(sort.direction())?"升序":"降序")).collect(java.util.stream.Collectors.joining(" → "));
+            return sorts.stream().anyMatch(sort->"completedAt".equals(sort.field()))?description:description+" → 默认打卡时间降序";
+        }
+        private static String column(String field) {
+            return switch(field) {
                 case "cityName" -> "s.city";
                 case "salespersonName" -> "s.salesperson_name_snapshot";
                 case "storeName" -> "s.store_name_snapshot";
-                default -> "s.submitted_at";
+                case "deviceId" -> "rf.device_id";
+                case "deviceVisitCount" -> "rf.device_visit_count";
+                case "deviceSalespersonCount" -> "rf.device_salesperson_count";
+                case "audioDuplicateCount" -> "rf.audio_duplicate_count";
+                case "completedAt" -> "s.submitted_at";
+                default -> throw new IllegalStateException("未映射的排序字段");
             };
-            String direction = "asc".equals(sortDirection) ? " ASC" : " DESC";
-            return " ORDER BY " + column + " IS NULL ASC, " + column + direction + ", s.id" + direction;
+        }
+    }
+
+    /** 拜访明细的单项排序，字段和方向在构造时验证，不能保存任意 SQL。 */
+    public record AdminSort(String field,String direction) {
+        public AdminSort {
+            if(!AdminReadOptions.SORT_FIELDS.contains(field==null?"":field))throw TemporaryCheckinException.badRequest("sortBy无效");
+            if(!"asc".equals(direction)&&!"desc".equals(direction))throw TemporaryCheckinException.badRequest("sortDirection无效");
         }
     }
 

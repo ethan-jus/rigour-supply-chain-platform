@@ -26,6 +26,8 @@ class TemporaryCheckinLocationVerificationTokenService {
 
     private static final String VERSION = "v1";
     private static final String SIGNING_DOMAIN = "temporary-checkin-location-verification-v1\0";
+    private static final String ADDRESS_VERSION = "a1";
+    private static final String ADDRESS_DOMAIN = "temporary-checkin-address-evidence-v1\0";
     private static final int MAX_TOKEN_LENGTH = 8_192;
 
     private final ObjectMapper objectMapper;
@@ -103,14 +105,54 @@ class TemporaryCheckinLocationVerificationTokenService {
         return payload.geocode();
     }
 
+    /** 地址凭据只证明服务器曾解析这些坐标，不证明样本新鲜、精度合格或已经到店。 */
+    String issueAddress(UUID salespersonId, String city, BigDecimal longitude, BigDecimal latitude,
+            BigDecimal accuracyMeters, Instant capturedAt, GeocodeResult geocode) {
+        requireSigningKey();
+        if (geocode == null || !"RESOLVED".equals(geocode.status())) return null;
+        Instant now = clock.instant();
+        LocationPayload payload = new LocationPayload(tenantId, salespersonId, city, longitude, latitude,
+                accuracyMeters, capturedAt, geocode, now, now.plus(tokenTtl));
+        String encoded = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(objectMapper.writeValueAsBytes(payload));
+        String unsigned = ADDRESS_VERSION + "." + encoded;
+        return unsigned + "." + sign(unsigned, ADDRESS_DOMAIN);
+    }
+
+    /** 兼容已签发的 v1；a1 的有效期从服务器解析时开始，仍逐项绑定原始采样事实。 */
+    GeocodeResult verifyAddress(String token, UUID salespersonId, String city, BigDecimal longitude,
+            BigDecimal latitude, BigDecimal accuracyMeters, Instant capturedAt) {
+        if (token == null || !token.startsWith(ADDRESS_VERSION + ".")) {
+            return verify(token, salespersonId, city, longitude, latitude, accuracyMeters, capturedAt);
+        }
+        requireSigningKey();
+        LocationPayload payload = parse(token, ADDRESS_VERSION, ADDRESS_DOMAIN);
+        Instant now = clock.instant();
+        boolean matches = tenantId.equals(payload.tenantId()) && salespersonId.equals(payload.salespersonId())
+                && sameNumber(longitude, payload.longitude()) && sameNumber(latitude, payload.latitude())
+                && sameNullableNumber(accuracyMeters, payload.accuracyMeters())
+                && java.util.Objects.equals(capturedAt, payload.capturedAt())
+                && payload.issuedAt() != null && payload.expiresAt() != null
+                && !payload.issuedAt().isAfter(now.plusSeconds(30))
+                && payload.expiresAt().isAfter(payload.issuedAt()) && now.isBefore(payload.expiresAt())
+                && !payload.expiresAt().isAfter(payload.issuedAt().plus(tokenTtl))
+                && payload.geocode() != null && "RESOLVED".equals(payload.geocode().status());
+        if (!matches) throw invalidProof();
+        return payload.geocode();
+    }
+
     private LocationPayload parse(String token) {
+        return parse(token, VERSION, SIGNING_DOMAIN);
+    }
+
+    private LocationPayload parse(String token, String version, String domain) {
         if (token == null || token.isBlank() || token.length() > MAX_TOKEN_LENGTH) {
             throw invalidProof();
         }
         String[] parts = token.split("\\.", -1);
-        if (parts.length != 3 || !VERSION.equals(parts[0])) throw invalidProof();
+        if (parts.length != 3 || !version.equals(parts[0])) throw invalidProof();
         String unsigned = parts[0] + "." + parts[1];
-        if (!constantEquals(sign(unsigned), parts[2])) throw invalidProof();
+        if (!constantEquals(sign(unsigned, domain), parts[2])) throw invalidProof();
         try {
             byte[] json = Base64.getUrlDecoder().decode(parts[1]);
             return objectMapper.readValue(json, LocationPayload.class);
@@ -120,7 +162,11 @@ class TemporaryCheckinLocationVerificationTokenService {
     }
 
     private String sign(String unsigned) {
-        byte[] domain = SIGNING_DOMAIN.getBytes(StandardCharsets.UTF_8);
+        return sign(unsigned, SIGNING_DOMAIN);
+    }
+
+    private String sign(String unsigned, String signingDomain) {
+        byte[] domain = signingDomain.getBytes(StandardCharsets.UTF_8);
         byte[] value = unsigned.getBytes(StandardCharsets.UTF_8);
         byte[] input = new byte[domain.length + value.length];
         System.arraycopy(domain, 0, input, 0, domain.length);
@@ -161,6 +207,10 @@ class TemporaryCheckinLocationVerificationTokenService {
 
     private static boolean sameNumber(BigDecimal first, BigDecimal second) {
         return first != null && second != null && first.compareTo(second) == 0;
+    }
+
+    private static boolean sameNullableNumber(BigDecimal first, BigDecimal second) {
+        return first == null ? second == null : sameNumber(first, second);
     }
 
     private static boolean constantEquals(String first, String second) {
