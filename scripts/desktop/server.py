@@ -79,6 +79,10 @@ with (ROOT / 'deploy.lock').open('w') as lock:
         switch_current(release)
         print('应用已回退到：' + release.name)
     else:
+        # 首次迁移是单独的人工确认流程；日常发布绝不重灌数据库。
+        migration = Path('/mnt/d/RigourDev/backups/cloud-import/迁移验收.json')
+        if not migration.is_file() or json.loads(migration.read_text()).get('完整导入已验收') is not True:
+            raise SystemExit('尚未完成旧服务器数据库完整迁移验收，停止应用发布；可先运行 build 验证构建。')
         if not args.value:
             raise SystemExit('需要指定 D 盘 downloads 内的发布包。')
         archive = Path(args.value).resolve()
