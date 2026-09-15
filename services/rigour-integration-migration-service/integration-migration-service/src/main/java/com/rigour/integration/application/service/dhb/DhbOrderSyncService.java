@@ -197,6 +197,8 @@ public final class DhbOrderSyncService {
     private final ErpStockOutProjectionClient erpStockOutProjectionClient;
     private final HrDhbStaffSyncClient hrEmployeeClient;
     private final BusinessDictionaryBatchClient dictionaryClient;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.rigour.integration.application.service.DictionarySourceMappingService dictionaryMappings;
     private final int detailConcurrency;
     private final ProductMediaStorage fundAttachmentStorage;
     private final DhbAttachmentObjectKeyFactory fundAttachmentKeyFactory;
@@ -366,7 +368,7 @@ public final class DhbOrderSyncService {
     private void ensureProductUnitDictionary(UUID tenantId, UUID taskId, UUID runId) {
         if (dictionaryClient == null) return;
         try {
-            Audit audit = dictionaryClient.sync(BusinessDictionaryBatchClient.serviceCaller(
+            Audit audit = syncDictionaryValues(BusinessDictionaryBatchClient.serviceCaller(
                     "rigour-integration-migration-service", "DHB_ORDER_DICTIONARY_SYNC", tenantId),
                     "ORDER", UNIT_DICTIONARY_ITEMS);
             if (audit.unmapped() > 0) {
@@ -397,7 +399,7 @@ public final class DhbOrderSyncService {
             if (observations.isEmpty()) return;
         }
         try {
-            Audit audit = dictionaryClient.sync(BusinessDictionaryBatchClient.serviceCaller(
+            Audit audit = syncDictionaryValues(BusinessDictionaryBatchClient.serviceCaller(
                     "rigour-integration-migration-service", "DHB_ORDER_DICTIONARY_SYNC", tenantId),
                     "ORDER", observations);
             if (audit.unmapped() > 0) {
@@ -4248,4 +4250,9 @@ public final class DhbOrderSyncService {
         Map<String, Object> expected() { return expected; }
         Map<String, Object> actual() { return actual; }
     }
+    private Audit syncDictionaryValues(CallerIdentity caller, String sourceType, java.util.Collection<BusinessDictionaryBatchClient.Observation> observations) {
+        return dictionaryMappings == null ? dictionaryClient.sync(caller,sourceType,observations)
+                : dictionaryMappings.sync(caller,sourceType,observations);
+    }
+
 }

@@ -6,8 +6,6 @@ import com.rigour.settings.api.v1.model.DictItemCommand;
 import com.rigour.settings.api.v1.model.DictItemView;
 import com.rigour.settings.api.v1.model.DictView;
 import com.rigour.settings.application.port.out.BusinessDictionaryStore;
-import com.rigour.settings.application.port.out.BusinessDictionaryStore.SyncItem;
-import com.rigour.settings.application.port.out.BusinessDictionaryStore.SyncStats;
 import com.rigour.settings.infrastructure.persistence.entity.DictEntity;
 import com.rigour.settings.infrastructure.persistence.entity.DictItemEntity;
 import com.rigour.settings.infrastructure.persistence.mapper.DictItemMapper;
@@ -17,9 +15,7 @@ import com.rigour.shared.core.exception.BusinessException;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
@@ -31,6 +27,8 @@ public class MybatisPlusBusinessDictionaryRepository implements BusinessDictiona
     private final DictMapper dictMapper;
     private final DictItemMapper itemMapper;
     private final Clock clock;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.rigour.settings.infrastructure.persistence.mapper.DictMergeLogMapper mergeLogMapper;
 
     public MybatisPlusBusinessDictionaryRepository(DictMapper dictMapper, DictItemMapper itemMapper, Clock clock) {
         this.dictMapper = dictMapper;
@@ -125,6 +123,7 @@ public class MybatisPlusBusinessDictionaryRepository implements BusinessDictiona
     @Transactional
     public DictItemView createItem(Long dictionaryId, DictItemCommand command, String actorId) {
         DictEntity dictionary = requireDictionaryEntity(dictionaryId);
+        lockDictionary(dictionary.dictionaryCode);
         if (!dictionary.dictionaryCode.equals(command.dictionaryCode())) {
             throw conflict("字典项必须属于请求路径中的字典");
         }
@@ -148,7 +147,7 @@ public class MybatisPlusBusinessDictionaryRepository implements BusinessDictiona
             itemMapper.insert(entity);
             touchDictionary(entity.dictionaryCode, actorId, now);
         } catch (DataIntegrityViolationException exception) {
-            throw conflict("当前字典中已存在相同编码的字典项");
+            throw conflict("当前字典中已存在相同编码或同父级同名的标准项");
         }
         return view(entity);
     }
@@ -157,12 +156,15 @@ public class MybatisPlusBusinessDictionaryRepository implements BusinessDictiona
     @Transactional
     public DictItemView updateItem(Long itemId, DictItemCommand command, String actorId) {
         DictItemEntity existing = requireItemEntity(itemId);
+        lockDictionary(existing.dictionaryCode);
+        existing = requireItemEntity(itemId);
         if (!existing.dictionaryCode.equals(command.dictionaryCode())) {
             throw conflict("字典项不能移动到其他字典");
         }
         if (!existing.dictionaryItemCode.equals(command.dictionaryItemCode())) {
             throw conflict("字典项编码创建后不可修改");
         }
+        if (existing.canonicalItemCode != null) throw conflict("历史兼容项不能直接编辑，请维护对应标准项");
         DictItemEntity parent = parent(command.dictionaryCode(), command.parentDictionaryItemCode());
         ensureNoCycle(existing, parent);
         int newLevel = parent == null ? 1 : parent.dictionaryItemLevel + 1;
@@ -187,7 +189,7 @@ public class MybatisPlusBusinessDictionaryRepository implements BusinessDictiona
             }
             touchDictionary(existing.dictionaryCode, actorId, changes.updatedTime);
         } catch (DataIntegrityViolationException exception) {
-            throw conflict("当前字典中已存在相同编码的字典项");
+            throw conflict("当前字典中已存在相同编码或同父级同名的标准项");
         }
         DictItemEntity saved = itemMapper.selectById(itemId);
         if (saved == null || deleted(saved.deleted)) throw notFound("字典项不存在");
@@ -195,77 +197,52 @@ public class MybatisPlusBusinessDictionaryRepository implements BusinessDictiona
     }
 
     @Override
+    public com.rigour.settings.api.v1.model.DictMergePreview previewMerge(Long itemId, Long targetItemId) {
+        DictItemEntity source = requireItemEntity(itemId);
+        DictItemEntity target = requireItemEntity(targetItemId);
+        var blockers = new java.util.ArrayList<String>();
+        if (source.id.equals(target.id)) blockers.add("不能合并到自身");
+        if (!source.dictionaryCode.equals(target.dictionaryCode)) blockers.add("跨字典调整需按维度迁移处理");
+        if (!java.util.Objects.equals(source.parentDictionaryItemCode, target.parentDictionaryItemCode)) blockers.add("仅允许合并同父级条目");
+        if (source.canonicalItemCode != null || target.canonicalItemCode != null) blockers.add("合并双方必须是标准项");
+        long children = itemMapper.selectCount(Wrappers.<DictItemEntity>query().eq("dictionary_code", source.dictionaryCode)
+                .eq("parent_dictionary_item_code", source.dictionaryItemCode).eq("deleted", 0));
+        long aliases = itemMapper.selectCount(Wrappers.<DictItemEntity>query().eq("canonical_dictionary_code", source.dictionaryCode)
+                .eq("canonical_item_code", source.dictionaryItemCode).eq("deleted", 0));
+        if (children > 0) blockers.add("存在下级条目，需要先迁移下级关系");
+        return new com.rigour.settings.api.v1.model.DictMergePreview(view(source), view(target), children, aliases, List.copyOf(blockers));
+    }
+
+    @Override
     @Transactional
-    public SyncStats syncMissingItems(String dictionaryCode, List<SyncItem> items, String actorId) {
-        if (items == null || items.isEmpty()) return new SyncStats(0, 0, 0, 0);
-        requireDictionaryCode(dictionaryCode);
-        List<DictItemEntity> stored = itemMapper.selectList(Wrappers.<DictItemEntity>query()
-                .eq("dictionary_code", dictionaryCode));
-        Map<String, DictItemEntity> byCode = new LinkedHashMap<>();
-        int nextOrdinal = 0;
-        for (DictItemEntity item : stored) {
-            nextOrdinal = Math.max(nextOrdinal, item.ordinal == null ? 0 : item.ordinal + 1);
-            byCode.putIfAbsent(item.dictionaryItemCode, item);
-        }
+    public com.rigour.settings.api.v1.model.DictMergePreview merge(Long itemId,
+            com.rigour.settings.api.v1.model.DictMergeCommand command, String actorId, String tenantId) {
+        DictItemEntity initial = requireItemEntity(itemId);
+        lockDictionary(initial.dictionaryCode);
+        var preview = previewMerge(itemId, command.targetItemId());
+        if (!preview.blockers().isEmpty()) throw conflict(String.join("；", preview.blockers()));
+        if (preview.source().revision() != command.sourceRevision() || preview.target().revision() != command.targetRevision())
+            throw conflict("字典项已变化，请重新预览");
         LocalDateTime now = now();
-        int created = 0;
-        int existing = 0;
-        int blocked = 0;
-        int enriched = 0;
-        List<DictItemEntity> missingItems = new java.util.ArrayList<>();
-        for (SyncItem item : items) {
-            DictItemEntity present = byCode.get(item.dictionaryItemCode());
-            if (present != null) {
-                if (!deleted(present.deleted)) {
-                    existing++;
-                    if (present.dictionaryItemName != null
-                            && present.dictionaryItemName.equals(present.dictionaryItemCode)
-                            && !item.dictionaryItemName().equals(item.dictionaryItemCode())) {
-                        DictItemEntity changes = new DictItemEntity();
-                        changes.dictionaryItemName = item.dictionaryItemName();
-                        changes.revision = present.revision + 1;
-                        changes.updatedBy = actorId;
-                        changes.updatedTime = now;
-                        int updated = itemMapper.update(changes, Wrappers.<DictItemEntity>update()
-                                .eq("id", present.id)
-                                .eq("revision", present.revision));
-                        if (updated != 1) throw conflict("字典项显示名称已被其他任务修改，请重试");
-                        present.dictionaryItemName = item.dictionaryItemName();
-                        present.revision = changes.revision;
-                        enriched++;
-                    }
-                } else {
-                    blocked++;
-                }
-                continue;
-            }
-            DictItemEntity entity = new DictItemEntity();
-            entity.dictionaryCode = dictionaryCode;
-            entity.parentDictionaryItemCode = null;
-            entity.dictionaryItemLevel = 1;
-            entity.dictionaryItemCode = item.dictionaryItemCode();
-            entity.dictionaryItemName = item.dictionaryItemName();
-            entity.remark = item.remark();
-            entity.ordinal = nextOrdinal++;
-            entity.revision = 1;
-            entity.createdBy = actorId;
-            entity.updatedBy = actorId;
-            entity.createdTime = now;
-            entity.updatedTime = now;
-            entity.deleted = 0;
-            byCode.put(entity.dictionaryItemCode, entity);
-            missingItems.add(entity);
-            created++;
-        }
-        if (!missingItems.isEmpty()) {
-            try {
-                itemMapper.insertBatch(missingItems);
-            } catch (DataIntegrityViolationException exception) {
-                throw conflict("自动生成的字典项编码发生冲突");
-            }
-        }
-        if (created > 0 || enriched > 0) touchDictionary(dictionaryCode, actorId, now);
-        return new SyncStats(created, existing, blocked, enriched);
+        int changed = itemMapper.update(null, Wrappers.<DictItemEntity>update()
+                .eq("id", itemId).eq("revision", command.sourceRevision()).isNull("canonical_item_code")
+                .set("canonical_dictionary_code", preview.target().dictionaryCode())
+                .set("canonical_item_code", preview.target().dictionaryItemCode())
+                .set("revision", command.sourceRevision()+1).set("updated_by", actorId).set("updated_time", now));
+        if (changed != 1) throw conflict("字典项已变化，请重新预览");
+        itemMapper.update(null, Wrappers.<DictItemEntity>update()
+                .eq("canonical_dictionary_code", preview.source().dictionaryCode())
+                .eq("canonical_item_code", preview.source().dictionaryItemCode())
+                .set("canonical_item_code", preview.target().dictionaryItemCode()).setSql("revision=revision+1")
+                .set("updated_by", actorId).set("updated_time", now));
+        mergeLogMapper.insert(tenantId, initial.dictionaryCode, preview.source().dictionaryItemCode(),
+                preview.target().dictionaryItemCode(), command.sourceRevision(), command.targetRevision(), command.reason(), actorId);
+        touchDictionary(initial.dictionaryCode, actorId, now);
+        return preview;
+    }
+
+    private void lockDictionary(String dictionaryCode) {
+        dictMapper.selectOne(Wrappers.<DictEntity>query().eq("dictionary_code", dictionaryCode).last("FOR UPDATE"));
     }
 
     private DictEntity requireDictionaryEntity(Long dictionaryId) {
@@ -291,7 +268,7 @@ public class MybatisPlusBusinessDictionaryRepository implements BusinessDictiona
                 .eq("dictionary_item_code", parentDictionaryItemCode)
                 .eq("deleted", 0)
                 .last("LIMIT 1"));
-        if (parent == null) throw conflict("父级字典项必须属于同一本字典");
+        if (parent == null || parent.canonicalItemCode != null) throw conflict("父级字典项必须是同一本字典的有效标准项");
         return parent;
     }
 
@@ -355,7 +332,7 @@ public class MybatisPlusBusinessDictionaryRepository implements BusinessDictiona
     private static DictItemView view(DictItemEntity entity) {
         return new DictItemView(entity.id, entity.dictionaryCode, entity.dictionaryItemLevel,
                 entity.parentDictionaryItemCode, entity.dictionaryItemCode, entity.dictionaryItemName,
-                entity.remark, entity.ordinal, entity.revision);
+                entity.remark, entity.ordinal, entity.revision, entity.canonicalDictionaryCode, entity.canonicalItemCode);
     }
 
     private static boolean deleted(Integer deleted) {

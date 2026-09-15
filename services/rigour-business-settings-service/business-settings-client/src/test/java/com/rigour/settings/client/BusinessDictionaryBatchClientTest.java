@@ -27,6 +27,23 @@ class BusinessDictionaryBatchClientTest {
     private static final String BASE_URL = "https://settings.test";
 
     @Test
+    void usesServerCanonicalResolutionInsteadOfRegeneratingAutoCode() {
+        RestClient.Builder builder=RestClient.builder();
+        MockRestServiceServer server=MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo(BASE_URL+BusinessDictionaryInternalApi.BASE_PATH+"/items/sync"))
+                .andRespond(withSuccess("""
+                    {"code":"OK","data":{"effective":{"dictionary":{"id":1,"dictionaryCode":"STORE_STATUS","dictionaryName":"状态","dictionaryType":"CRM","revision":2},"items":[]},
+                    "observed":1,"created":0,"existing":1,"blocked":0,"resolutions":{"营业":{"dictionaryCode":"STORE_STATUS","itemCode":"ACTIVE"}}}}
+                    """,MediaType.APPLICATION_JSON));
+        var client=new BusinessDictionaryBatchClient(builder,signer(),BASE_URL);
+        var audit=client.sync(BusinessDictionaryBatchClient.serviceCaller("test","SYNC",TENANT_ID),"FEISHU_IMPORT",
+                List.of(new BusinessDictionaryBatchClient.Observation("STORE_STATUS","状态","营业","营业")));
+        assertThat(audit.unmapped()).isZero();
+        assertThat(audit.resolved()).singleElement().satisfies(value->assertThat(value.targetItemCode()).isEqualTo("ACTIVE"));
+        server.verify();
+    }
+
+    @Test
     void deduplicatesExactValuesAndKeepsExplicitSourceName() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

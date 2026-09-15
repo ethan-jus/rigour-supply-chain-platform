@@ -5,6 +5,7 @@ import com.rigour.settings.api.v1.model.DictItemView;
 import com.rigour.settings.api.v1.model.DictSourceValue;
 import com.rigour.settings.api.v1.model.DictSyncCommand;
 import com.rigour.settings.api.v1.model.DictSyncResult;
+import com.rigour.settings.api.v1.model.DictValueResolution;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.context.RequestContext;
 import com.rigour.shared.context.RequestHeaders;
@@ -43,7 +44,7 @@ import tools.jackson.databind.ObjectMapper;
 /**
  * 各领域服务复用的业务字典批处理客户端。
  *
- * <p>调用方只声明明确字段观察值；本类负责按 dictionaryCode 去重并批量补齐、按来源值精确解析、
+ * <p>调用方只声明明确字段观察值；本类负责按 dictionaryCode 去重并批量解析、按来源值精确解析、
  * 在 Settings 不可用时返回审计告警而不抛出异常中断主数据落库。它不会扫描任意来源字段，
  * 也不会把第三方字段定义成业务字典结构。</p>
  */
@@ -69,7 +70,7 @@ public final class BusinessDictionaryBatchClient {
     }
 
     /**
-     * 批量补齐并校验当前同步批次的所有明确观察值。
+     * 批量解析并校验当前同步批次的所有明确观察值。
      *
      * @param caller 携带租户和 business-settings:dict:sync 权限的服务身份
      * @param sourceType 调用方用于日志审计的同步对象类型
@@ -84,6 +85,7 @@ public final class BusinessDictionaryBatchClient {
         Map<DictionaryKey, Map<SourceKey, Long>> grouped = group(source);
         Map<String, Long> revisions = new LinkedHashMap<>();
         List<MappingIssue> issues = new ArrayList<>();
+        List<ResolvedValue> resolved = new ArrayList<>();
         for (Map.Entry<DictionaryKey, Map<SourceKey, Long>> entry : grouped.entrySet()) {
             DictionaryKey key = entry.getKey();
             try {
@@ -91,16 +93,19 @@ public final class BusinessDictionaryBatchClient {
                 revisions.put(key.auditCode(), (long) result.effective().dictionary().revision());
                 Map<String, String> active = activeMappings(result);
                 entry.getValue().forEach((value, count) -> {
-                    if (!active.containsKey(sourceItemCode(key.dictionaryCode(), value.value()))) {
-                        issues.add(new MappingIssue(key.dictionaryCode(), value.fieldCode(),
-                                value.value(), count));
+                    DictValueResolution target = result.resolutions() == null ? null : result.resolutions().get(value.value());
+                    // 兼容尚未升级的 Settings；升级后以服务端解析结果为准，不在客户端复制业务映射。
+                    if (result.resolutions() == null && active.containsKey(sourceItemCode(key.dictionaryCode(), value.value()))) {
+                        target = new DictValueResolution(key.dictionaryCode(), sourceItemCode(key.dictionaryCode(), value.value()));
                     }
+                    if (target == null) issues.add(new MappingIssue(key.dictionaryCode(), value.fieldCode(), value.value(), count));
+                    else resolved.add(new ResolvedValue(key.dictionaryCode(), value.value(), target.dictionaryCode(), target.itemCode()));
                 });
             } catch (RuntimeException error) {
                 revisions.put(key.auditCode(), -1L);
                 entry.getValue().forEach((value, count) -> issues.add(new MappingIssue(
                         key.dictionaryCode(), value.fieldCode(), value.value(), count)));
-                log.warn("业务字典批量补齐不可用 tenantId={} sourceType={} dictionaryCode={} errorType={} reason={}",
+                log.warn("业务字典批量解析不可用 tenantId={} sourceType={} dictionaryCode={} errorType={} reason={}",
                         caller.tenantId(), text(sourceType), key.dictionaryCode(),
                         error.getClass().getSimpleName(), oneLine(error.getMessage()));
             }
@@ -110,7 +115,7 @@ public final class BusinessDictionaryBatchClient {
         long unmapped = issues.stream().mapToLong(MappingIssue::count).sum();
         log.info("业务字典批处理完成 tenantId={} sourceType={} dictionaryCount={} observedCount={} unmappedCount={}",
                 caller.tenantId(), text(sourceType), grouped.size(), source.size(), unmapped);
-        return new Audit(unmapped, revisions, issues);
+        return new Audit(unmapped, revisions, issues, resolved);
     }
 
     /** 为领域服务构造稳定、最小权限的租户服务身份。 */
@@ -288,22 +293,32 @@ public final class BusinessDictionaryBatchClient {
     }
 
     /** 领域服务显式声明的单个白名单字段观察值。 */
-    public record Observation(String dictionaryCode, String fieldCode, String sourceValue, String sourceName) {
+    public record Observation(String dictionaryCode, String fieldCode, String sourceValue, String sourceName, String sourceScope) {
+        public Observation(String dictionaryCode, String fieldCode, String sourceValue, String sourceName) {
+            this(dictionaryCode, fieldCode, sourceValue, sourceName, null);
+        }
         boolean hasValue() { return sourceValue != null && !sourceValue.isBlank(); }
     }
 
-    /** 未能从补齐后的有效字典中精确解析的来源值。 */
+    /** 未能从当前字典中精确解析的来源值。 */
     public record MappingIssue(String dictionaryCode, String fieldCode, String sourceValue, long count) { }
 
     /** 单个同步批次的字典快照审计。 */
-    public record Audit(long unmapped, Map<String, Long> revisions, List<MappingIssue> issues) {
+    public record Audit(long unmapped, Map<String, Long> revisions, List<MappingIssue> issues, List<ResolvedValue> resolved) {
+        public Audit(long unmapped, Map<String, Long> revisions, List<MappingIssue> issues) {
+            this(unmapped, revisions, issues, List.of());
+        }
         public Audit {
             if (unmapped < 0) throw new IllegalArgumentException("unmapped不能小于0");
             revisions = revisions == null ? Map.of() : Map.copyOf(revisions);
             issues = issues == null ? List.of() : List.copyOf(issues);
+            resolved = resolved == null ? List.of() : List.copyOf(resolved);
         }
         public static Audit empty() { return new Audit(0, Map.of(), List.of()); }
     }
+
+    /** 服务端确认的原值到标准字典编码关系，供 Integration 持久化来源映射。 */
+    public record ResolvedValue(String dictionaryCode, String sourceValue, String targetDictionaryCode, String targetItemCode) { }
 
     private record DictionaryKey(String dictionaryCode) {
         String auditCode() { return dictionaryCode; }

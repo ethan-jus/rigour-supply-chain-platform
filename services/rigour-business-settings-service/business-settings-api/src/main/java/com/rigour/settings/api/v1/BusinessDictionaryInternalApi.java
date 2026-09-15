@@ -15,11 +15,11 @@ public interface BusinessDictionaryInternalApi {
     String BASE_PATH = "/internal/v1/business-settings/dictionaries";
 
     /**
-     * 将明确白名单字段中首次出现的来源值批量补入当前租户生效字典。
-     * 已有条目不会被修改或重新启用，字典定义也不会由同步任务自动创建。
+     * 将白名单字段的来源值批量解析为标准字典编码。
+     * 仅查询现有标准项及历史别名；未知值交由 Integration 记录为待映射，不新增字典项。
      *
      * @param command 模块、字典和本批次观察到的来源值
-     * @return 补齐统计及补齐后的有效字典快照
+     * @return 解析统计、当前字典快照及来源值对应的标准编码
      */
     @PostMapping("/items/sync")
     ApiResponse<DictSyncResult> syncItems(@RequestBody DictSyncCommand command);

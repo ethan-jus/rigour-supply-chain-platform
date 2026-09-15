@@ -9,7 +9,6 @@ import static org.mockito.Mockito.when;
 
 import com.rigour.settings.api.v1.model.DictItemCommand;
 import com.rigour.settings.api.v1.model.DictItemView;
-import com.rigour.settings.application.port.out.BusinessDictionaryStore.SyncItem;
 import com.rigour.settings.infrastructure.persistence.entity.DictEntity;
 import com.rigour.settings.infrastructure.persistence.entity.DictItemEntity;
 import com.rigour.settings.infrastructure.persistence.mapper.DictItemMapper;
@@ -67,61 +66,32 @@ class MybatisPlusBusinessDictionaryRepositoryTest {
                 new DictItemCommand("PRODUCT_UNIT", "UNKNOWN", "BOX", "箱", null, 10, 0),
                 "actor-id"))
                 .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("父级字典项必须属于同一本字典");
+                .hasMessageContaining("父级字典项必须是同一本字典的有效标准项");
     }
 
     @Test
-    void syncAddsOnlyMissingCodesAndTouchesDictionaryOnce() {
-        DictItemEntity active = item(10L, "PRODUCT_UNIT", null, 1);
-        active.dictionaryItemCode = "BOX";
-        active.dictionaryItemName = "箱";
-        active.deleted = 0;
-        active.ordinal = 2;
-        DictItemEntity deleted = item(11L, "PRODUCT_UNIT", null, 1);
-        deleted.dictionaryItemCode = "OLD";
-        deleted.deleted = 1;
-        deleted.ordinal = 3;
-        when(dictMapper.selectOne(any())).thenReturn(dictionary());
-        when(itemMapper.selectList(any())).thenReturn(List.of(active, deleted));
-        when(itemMapper.insert(any(DictItemEntity.class))).thenReturn(1);
-
-        var result = repository.syncMissingItems("PRODUCT_UNIT", List.of(
-                new SyncItem("BOX", "箱", null),
-                new SyncItem("OLD", "旧单位", null),
-                new SyncItem("PAIL", "桶", null)), "service-id");
-
-        assertThat(result.created()).isEqualTo(1);
-        assertThat(result.existing()).isEqualTo(1);
-        assertThat(result.blocked()).isEqualTo(1);
-        ArgumentCaptor<List<DictItemEntity>> inserted = ArgumentCaptor.forClass(List.class);
-        verify(itemMapper).insertBatch(inserted.capture());
-        assertThat(inserted.getValue()).hasSize(1);
-        assertThat(inserted.getValue().getFirst().dictionaryItemCode).isEqualTo("PAIL");
-        assertThat(inserted.getValue().getFirst().dictionaryItemName).isEqualTo("桶");
-        verify(dictMapper).update(any(DictEntity.class), any());
+    void mergePreviewRejectsDifferentParentsAndChildReferences() {
+        DictItemEntity source=item(1L,"PRODUCT_UNIT",null,1), target=item(2L,"PRODUCT_UNIT","OTHER",2);
+        source.dictionaryItemCode="SOURCE"; target.dictionaryItemCode="TARGET";
+        when(itemMapper.selectById(1L)).thenReturn(source);
+        when(itemMapper.selectById(2L)).thenReturn(target);
+        when(itemMapper.selectCount(any())).thenReturn(2L,3L);
+        var preview=repository.previewMerge(1L,2L);
+        assertThat(preview.childReferences()).isEqualTo(2);
+        assertThat(preview.aliasReferences()).isEqualTo(3);
+        assertThat(preview.blockers()).contains("仅允许合并同父级条目","存在下级条目，需要先迁移下级关系");
     }
 
     @Test
-    void syncEnrichesOnlyPlaceholderDisplayName() {
-        DictItemEntity placeholder = item(10L, "PRODUCT_UNIT", null, 1);
-        placeholder.dictionaryItemCode = "BOX";
-        placeholder.dictionaryItemName = "BOX";
-        placeholder.ordinal = 1;
-        placeholder.revision = 2;
-        when(dictMapper.selectOne(any())).thenReturn(dictionary());
-        when(itemMapper.selectList(any())).thenReturn(List.of(placeholder));
-        when(itemMapper.update(any(DictItemEntity.class), any())).thenReturn(1);
-
-        var result = repository.syncMissingItems("PRODUCT_UNIT",
-                List.of(new SyncItem("BOX", "箱", null)), "service-id");
-
-        assertThat(result.existing()).isEqualTo(1);
-        assertThat(result.enriched()).isEqualTo(1);
-        ArgumentCaptor<DictItemEntity> updated = ArgumentCaptor.forClass(DictItemEntity.class);
-        verify(itemMapper).update(updated.capture(), any());
-        assertThat(updated.getValue().dictionaryItemName).isEqualTo("箱");
-        assertThat(updated.getValue().revision).isEqualTo(3);
-        verify(dictMapper).update(any(DictEntity.class), any());
+    void mergeRejectsStalePreviewBeforeChangingRows() {
+        DictItemEntity source=item(1L,"PRODUCT_UNIT",null,1), target=item(2L,"PRODUCT_UNIT",null,1);
+        source.dictionaryItemCode="SOURCE"; target.dictionaryItemCode="TARGET";
+        when(itemMapper.selectById(1L)).thenReturn(source);
+        when(itemMapper.selectById(2L)).thenReturn(target);
+        when(itemMapper.selectCount(any())).thenReturn(0L);
+        assertThatThrownBy(()->repository.merge(1L,new com.rigour.settings.api.v1.model.DictMergeCommand(2L,9,1,"重复"),"actor","tenant"))
+            .isInstanceOf(BusinessException.class).hasMessageContaining("重新预览");
+        org.mockito.Mockito.verify(itemMapper,org.mockito.Mockito.never()).update(any(),any());
     }
 
     private static DictEntity dictionary() {

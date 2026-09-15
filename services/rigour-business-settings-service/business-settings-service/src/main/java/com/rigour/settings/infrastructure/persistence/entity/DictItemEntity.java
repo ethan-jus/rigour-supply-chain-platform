@@ -20,6 +20,10 @@ public class DictItemEntity {
     public String dictionaryItemCode;
     /** 字典条目名称。 */
     public String dictionaryItemName;
+    /** 历史兼容项指向的标准字典；与标准项编码同时为空或同时存在。 */
+    public String canonicalDictionaryCode;
+    /** 直接指向有效标准项，不允许形成别名链。 */
+    public String canonicalItemCode;
     /** 备注。 */
     public String remark;
     /** 序号。 */

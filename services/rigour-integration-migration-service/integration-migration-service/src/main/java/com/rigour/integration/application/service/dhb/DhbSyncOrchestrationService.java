@@ -134,6 +134,8 @@ public final class DhbSyncOrchestrationService {
     private final DhbClient dhbClient;
     private final DhbOrderSyncService orderSyncService;
     private final BusinessDictionaryBatchClient dictionaryClient;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.rigour.integration.application.service.DictionarySourceMappingService dictionaryMappings;
     private final DhbOrchestrationLease orchestrationLease;
     private final DhbSyncOrchestrationProperties properties;
     private final Clock clock;
@@ -279,7 +281,7 @@ public final class DhbSyncOrchestrationService {
             steps.add(skipped("DICTIONARY", "BUSINESS_DICTIONARY", "未配置启用的业务字典同步任务"));
             return false;
         }
-        Audit audit = dictionaryClient.sync(BusinessDictionaryBatchClient.serviceCaller(
+        Audit audit = syncDictionaryValues(BusinessDictionaryBatchClient.serviceCaller(
                         "rigour-integration-migration-service", "DHB_DICTIONARY_BOOTSTRAP",
                         bucket.key.tenantId()),
                 "DHB_ORCHESTRATION_BASELINE", BASELINE_DICTIONARY_OBSERVATIONS);
@@ -713,4 +715,9 @@ public final class DhbSyncOrchestrationService {
     private interface TargetSetter {
         void set(TargetBucket bucket, SyncTargetView target);
     }
+    private Audit syncDictionaryValues(CallerIdentity caller, String sourceType, java.util.Collection<BusinessDictionaryBatchClient.Observation> observations) {
+        return dictionaryMappings == null ? dictionaryClient.sync(caller,sourceType,observations)
+                : dictionaryMappings.sync(caller,sourceType,observations);
+    }
+
 }

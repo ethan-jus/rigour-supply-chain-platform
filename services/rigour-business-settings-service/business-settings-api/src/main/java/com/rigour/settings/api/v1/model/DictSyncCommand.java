@@ -3,7 +3,7 @@ package com.rigour.settings.api.v1.model;
 import java.util.List;
 
 /**
- * 批量补齐字典项命令。
+ * 批量解析来源字典值的内部命令。
  *
  * @param dictionaryCode 字典编码
  * @param values 本批次白名单字段观察到的来源值

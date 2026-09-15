@@ -2,6 +2,8 @@ package com.rigour.settings.api;
 
 import com.rigour.settings.api.v1.BusinessDictionaryApi;
 import com.rigour.settings.api.v1.model.DictCommand;
+import com.rigour.settings.api.v1.model.DictMergeCommand;
+import com.rigour.settings.api.v1.model.DictMergePreview;
 import com.rigour.settings.api.v1.model.DictItemCommand;
 import com.rigour.settings.api.v1.model.DictItemView;
 import com.rigour.settings.api.v1.model.DictView;
@@ -82,5 +84,17 @@ public class BusinessDictionaryController implements BusinessDictionaryApi {
             @PathVariable("itemId") Long itemId,
             @RequestBody DictItemCommand command) {
         return ApiResponse.success(service.updateItem(itemId, command));
+    }
+
+    @Override
+    @GetMapping("/items/{itemId}/merge-preview")
+    public ApiResponse<DictMergePreview> previewMerge(@PathVariable Long itemId, @RequestParam Long targetItemId) {
+        return ApiResponse.success(service.previewMerge(itemId, targetItemId));
+    }
+
+    @Override
+    @PostMapping("/items/{itemId}/merge")
+    public ApiResponse<DictMergePreview> merge(@PathVariable Long itemId, @RequestBody DictMergeCommand command) {
+        return ApiResponse.success(service.merge(itemId, command));
     }
 }

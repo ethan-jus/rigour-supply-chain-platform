@@ -150,6 +150,8 @@ public final class FeishuImportBundleService {
     private final CrmCustomerProjectionClient crmCustomerProjectionClient;
     private final ErpProductProjectionClient erpProductProjectionClient;
     private final BusinessDictionaryBatchClient businessDictionaryBatchClient;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.rigour.integration.application.service.DictionarySourceMappingService dictionaryMappings;
     private final FeishuSalesOrderImportMapper salesOrderImportMapper;
     private final FeishuStaffImportMapper staffImportMapper;
     private final FeishuCrmAreaImportMapper crmAreaImportMapper;
@@ -2364,7 +2366,7 @@ public final class FeishuImportBundleService {
 
     private void syncDictionaries(CallerIdentity caller, List<StoredRawRow> rows) {
         if (businessDictionaryBatchClient == null || rows == null || rows.isEmpty()) return;
-        Audit audit = businessDictionaryBatchClient.sync(
+        Audit audit = syncDictionaryValues(
                 BusinessDictionaryBatchClient.serviceCaller(
                         "rigour-integration-feishu-import-service", "FEISHU_IMPORT_SERVICE", caller.tenantId()),
                 "FEISHU_IMPORT", dictionaryObservationMapper.observations(rows));
@@ -3457,4 +3459,9 @@ public final class FeishuImportBundleService {
                     rowResult == null ? null : rowResult.unitCode());
         }
     }
+    private Audit syncDictionaryValues(CallerIdentity caller, String sourceType, java.util.Collection<BusinessDictionaryBatchClient.Observation> observations) {
+        return dictionaryMappings == null ? businessDictionaryBatchClient.sync(caller,sourceType,observations)
+                : dictionaryMappings.sync(caller,sourceType,observations);
+    }
+
 }

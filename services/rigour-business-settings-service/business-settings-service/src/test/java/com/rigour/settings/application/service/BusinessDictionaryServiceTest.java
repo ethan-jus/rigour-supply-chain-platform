@@ -15,8 +15,6 @@ import com.rigour.settings.api.v1.model.DictSourceValue;
 import com.rigour.settings.api.v1.model.DictSyncCommand;
 import com.rigour.settings.api.v1.model.DictView;
 import com.rigour.settings.application.port.out.BusinessDictionaryStore;
-import com.rigour.settings.application.port.out.BusinessDictionaryStore.SyncItem;
-import com.rigour.settings.application.port.out.BusinessDictionaryStore.SyncStats;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.context.TestAuthorizationContext;
 import com.rigour.shared.core.exception.BusinessException;
@@ -82,46 +80,47 @@ class BusinessDictionaryServiceTest {
     }
 
     @Test
-    void serviceBatchSyncUsesDictionaryCodeOnlyAndDoesNotCreateDictionary() {
-        UUID serviceId = UUID.randomUUID();
-        TestAuthorizationContext.set(new CallerIdentity("SERVICE", serviceId, UUID.randomUUID(), null, null,
-                UUID.randomUUID(), 0, 0, 0, Set.of("ERP_DICTIONARY_SYNC"),
-                Set.of("business-settings:dict:sync")));
-        DictView dictionary = new DictView(1L, "PRODUCT_UNIT", "商品单位", "COMMON", null, 3);
-        DictView refreshed = new DictView(1L, "PRODUCT_UNIT", "商品单位", "COMMON", null, 4);
-        when(store.findByCode("PRODUCT_UNIT")).thenReturn(Optional.of(dictionary), Optional.of(refreshed));
-        when(store.syncMissingItems(eq("PRODUCT_UNIT"), any(), eq(serviceId.toString())))
-                .thenReturn(new SyncStats(1, 0, 0, 0));
-        when(store.items("PRODUCT_UNIT")).thenReturn(List.of());
-
-        var result = service.syncItems(new DictSyncCommand("product_unit", List.of(
-                new DictSourceValue("BOX", null), new DictSourceValue("BOX", "箱"))));
-
-        ArgumentCaptor<List<SyncItem>> items = ArgumentCaptor.forClass(List.class);
-        verify(store).syncMissingItems(eq("PRODUCT_UNIT"), items.capture(), eq(serviceId.toString()));
-        assertThat(items.getValue()).singleElement().satisfies(item -> {
-            assertThat(item.dictionaryItemCode()).isEqualTo("BOX");
-            assertThat(item.dictionaryItemName()).isEqualTo("箱");
-        });
-        assertThat(result.created()).isEqualTo(1);
-        assertThat(result.effective().dictionary().revision()).isEqualTo(4);
+    void sourceSyncResolvesCanonicalNamesAndLeavesUnknownValuesUnchanged() {
+        setService();
+        when(store.findByCode("PRODUCT_UNIT")).thenReturn(Optional.of(new DictView(1L,"PRODUCT_UNIT","单位","COMMON",null,3)));
+        when(store.items("PRODUCT_UNIT")).thenReturn(List.of(new DictItemView(11L,"PRODUCT_UNIT",1,null,"BOX","箱",null,10,1)));
+        var command=new DictSyncCommand("PRODUCT_UNIT",List.of(new DictSourceValue("箱",null),new DictSourceValue("箱",null),new DictSourceValue("新单位",null)));
+        var first=service.syncItems(command);
+        var second=service.syncItems(command);
+        assertThat(first.created()).isZero();
+        assertThat(first.blocked()).isEqualTo(1);
+        assertThat(first.resolutions().get("箱").itemCode()).isEqualTo("BOX");
+        assertThat(first.resolutions()).doesNotContainKey("新单位");
+        assertThat(second).isEqualTo(first);
+        assertThat(first.effective().dictionary().revision()).isEqualTo(3);
     }
 
     @Test
-    void hrSourceSynonymsReuseCanonicalStatusCodes() {
-        UUID serviceId = UUID.randomUUID();
-        TestAuthorizationContext.set(new CallerIdentity("SERVICE", serviceId, UUID.randomUUID(), null, null,
-                UUID.randomUUID(), 0, 0, 0, Set.of("HR_DICTIONARY_SYNC"), Set.of("business-settings:dict:sync")));
-        when(store.findByCode("EMPLOYEE_STATUS")).thenReturn(Optional.of(
-                new DictView(1L, "EMPLOYEE_STATUS", "员工状态", "HR", null, 1)));
-        when(store.syncMissingItems(eq("EMPLOYEE_STATUS"), any(), any())).thenReturn(new SyncStats(0, 4, 0, 0));
-        when(store.items("EMPLOYEE_STATUS")).thenReturn(List.of());
-        service.syncItems(new DictSyncCommand("EMPLOYEE_STATUS", List.of(
-                new DictSourceValue("在职", null), new DictSourceValue("离职", null),
-                new DictSourceValue("停用", null), new DictSourceValue("待入职", null))));
-        ArgumentCaptor<List<SyncItem>> items = ArgumentCaptor.forClass(List.class);
-        verify(store).syncMissingItems(eq("EMPLOYEE_STATUS"), items.capture(), eq(serviceId.toString()));
-        assertThat(items.getValue()).extracting(SyncItem::dictionaryItemCode).containsExactly("ACTIVE", "LEFT", "INACTIVE", "PENDING");
+    void historyKeepsAliasesWhileEffectiveOptionsOnlyContainStandards() {
+        setTenant(UUID.randomUUID());
+        when(store.findByCode("STORE_STATUS")).thenReturn(Optional.of(new DictView(1L,"STORE_STATUS","门店状态","CRM",null,1)));
+        when(store.items("STORE_STATUS")).thenReturn(List.of(
+            new DictItemView(11L,"STORE_STATUS",1,null,"ACTIVE","营业中",null,10,1),
+            new DictItemView(12L,"STORE_STATUS",1,null,"LEGACY","营业中",null,20,1,"STORE_STATUS","ACTIVE")));
+        assertThat(service.resolve("STORE_STATUS").items()).hasSize(2);
+        assertThat(service.effective("STORE_STATUS").items()).extracting(DictItemView::dictionaryItemCode).containsExactly("ACTIVE");
+        setService();
+        var result=service.syncItems(new DictSyncCommand("STORE_STATUS",List.of(new DictSourceValue("LEGACY",null))));
+        assertThat(result.resolutions().get("LEGACY").itemCode()).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void hrSynonymsContinueToResolveStandardCodes() {
+        setService();
+        when(store.findByCode("EMPLOYEE_STATUS")).thenReturn(Optional.of(new DictView(1L,"EMPLOYEE_STATUS","员工状态","HR",null,1)));
+        when(store.items("EMPLOYEE_STATUS")).thenReturn(List.of(new DictItemView(1L,"EMPLOYEE_STATUS",1,null,"INACTIVE","停用",null,1,1)));
+        var result=service.syncItems(new DictSyncCommand("EMPLOYEE_STATUS",List.of(new DictSourceValue("禁用",null))));
+        assertThat(result.resolutions().get("禁用").itemCode()).isEqualTo("INACTIVE");
+    }
+
+    private static void setService() {
+        TestAuthorizationContext.set(new CallerIdentity("SERVICE",UUID.randomUUID(),UUID.randomUUID(),null,null,
+            UUID.randomUUID(),0,0,0,Set.of("DICT_SYNC"),Set.of("business-settings:dict:sync")));
     }
 
     private static void setTenant(UUID actorId) {

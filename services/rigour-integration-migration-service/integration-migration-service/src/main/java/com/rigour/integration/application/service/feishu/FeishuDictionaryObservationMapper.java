@@ -6,18 +6,23 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/** 从飞书导出行提取明确业务枚举字段，用于补齐 Settings 字典项。 */
+/** 从飞书导出行提取明确业务枚举字段，用于解析 Settings 标准项并记录未知来源值。 */
 final class FeishuDictionaryObservationMapper {
 
     List<Observation> observations(List<StoredRawRow> rows) {
         List<Observation> result = new ArrayList<>();
         for (StoredRawRow row : rows == null ? List.<StoredRawRow>of() : rows) {
+            int from = result.size();
             Map<String, String> values = row.values();
             addCommon(result, values);
             addHr(result, row, values);
             addCrm(result, row, values);
             addErp(result, row, values);
             addOrder(result, row, values);
+            for (int i=from;i<result.size();i++) {
+                Observation o=result.get(i);
+                result.set(i,new Observation(o.dictionaryCode(),o.fieldCode(),o.sourceValue(),o.sourceName(),row.tableCode()));
+            }
         }
         return List.copyOf(result);
     }

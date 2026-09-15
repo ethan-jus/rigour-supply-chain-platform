@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/** 仅供领域服务批量补齐已定义字典项的内部 HTTP 入口。 */
+/** 仅供领域服务批量解析来源字典值的内部 HTTP 入口。 */
 @RestController
 @RequestMapping(BusinessDictionaryInternalApi.BASE_PATH)
 public final class BusinessDictionaryInternalController implements BusinessDictionaryInternalApi {

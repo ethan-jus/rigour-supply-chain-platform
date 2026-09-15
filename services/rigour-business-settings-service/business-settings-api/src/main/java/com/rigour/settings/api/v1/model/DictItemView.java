@@ -10,5 +10,16 @@ public record DictItemView(
         String dictionaryItemName,
         String remark,
         int ordinal,
-        int revision) {
+        int revision,
+        String canonicalDictionaryCode,
+        String canonicalItemCode) {
+    /** 保持既有调用方的标准项构造方式。 */
+    public DictItemView(Long id, String dictionaryCode, int dictionaryItemLevel,
+                        String parentDictionaryItemCode, String dictionaryItemCode, String dictionaryItemName,
+                        String remark, int ordinal, int revision) {
+        this(id, dictionaryCode, dictionaryItemLevel, parentDictionaryItemCode, dictionaryItemCode,
+                dictionaryItemName, remark, ordinal, revision, null, null);
+    }
+    /** 兼容项只解析历史值，不再作为新业务选项。 */
+    public boolean alias() { return canonicalItemCode != null; }
 }

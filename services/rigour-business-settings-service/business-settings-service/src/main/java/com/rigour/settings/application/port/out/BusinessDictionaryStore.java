@@ -33,15 +33,10 @@ public interface BusinessDictionaryStore {
     /** 使用乐观锁修改条目，并在父节点变化时更新后代层级。 */
     DictItemView updateItem(Long itemId, DictItemCommand command, String actorId);
 
-    /**
-     * 批量新增当前字典中尚不存在的精确来源值；已有停用项保持不变，只允许把“名称=原值”的
-     * 历史占位名称补充为已确认名称。整个批次只递增一次字典修订号。
-     */
-    SyncStats syncMissingItems(String dictionaryCode, List<SyncItem> items, String actorId);
+    /** 查询字典内引用与合并阻点。 */
+    com.rigour.settings.api.v1.model.DictMergePreview previewMerge(Long itemId, Long targetItemId);
 
-    /** 内部同步准备写入的根级启用项。 */
-    record SyncItem(String dictionaryItemCode, String dictionaryItemName, String remark) { }
-
-    /** 内部同步持久化统计。 */
-    record SyncStats(int created, int existing, int blocked, int enriched) { }
+    /** 锁定字典后合并并保留操作审计。 */
+    com.rigour.settings.api.v1.model.DictMergePreview merge(Long itemId,
+            com.rigour.settings.api.v1.model.DictMergeCommand command, String actorId, String tenantId);
 }

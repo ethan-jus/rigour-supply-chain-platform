@@ -1,6 +1,8 @@
 package com.rigour.settings.api.v1;
 
 import com.rigour.settings.api.v1.model.DictCommand;
+import com.rigour.settings.api.v1.model.DictMergeCommand;
+import com.rigour.settings.api.v1.model.DictMergePreview;
 import com.rigour.settings.api.v1.model.DictItemCommand;
 import com.rigour.settings.api.v1.model.DictItemView;
 import com.rigour.settings.api.v1.model.DictView;
@@ -99,4 +101,12 @@ public interface BusinessDictionaryApi {
     ApiResponse<DictItemView> updateItem(
             @PathVariable Long itemId,
             @RequestBody DictItemCommand command);
+
+    /** 查询字典内引用与合并条件，不删除历史编码。 */
+    @GetMapping("/items/{itemId}/merge-preview")
+    ApiResponse<DictMergePreview> previewMerge(@PathVariable Long itemId, @RequestParam Long targetItemId);
+
+    /** 将旧编码保留为标准项的直接兼容入口。 */
+    @PostMapping("/items/{itemId}/merge")
+    ApiResponse<DictMergePreview> merge(@PathVariable Long itemId, @RequestBody DictMergeCommand command);
 }
