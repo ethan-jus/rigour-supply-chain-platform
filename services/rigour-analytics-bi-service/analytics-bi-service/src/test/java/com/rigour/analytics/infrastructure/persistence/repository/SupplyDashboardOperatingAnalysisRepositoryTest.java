@@ -38,6 +38,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
@@ -223,12 +224,14 @@ class SupplyDashboardOperatingAnalysisRepositoryTest {
         assertThat(whereClause("collectionSummary", params)).isEqualTo(whereClause("collectionTrend", params));
     }
 
-    @Test
-    void allQueriesApplyEachFilterTenantAndPeriodBoundariesIndependently() {
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(longs = {10, 0, -1})
+    void allQueriesApplyEachFilterTenantAndPeriodBoundariesIndependently(Long category) {
         for (int id = 1; id <= 9; id++) {
             Instant date = id == 8 ? FROM.minusNanos(1000) : id == 9 ? TO.plusNanos(1000) : FROM;
             order(id, (long) id, "BJ", "S1", date, "10");
-            line(id, id, (long) id, "BJ", 10L, "S1", date, "10", "BOX");
+            line(id, id, (long) id, "BJ", category, "S1", date, "10", "BOX");
             payment(id, (long) id, "S1", "S1", date, "10");
             order(100 + id, (long) id, "BJ", "S1",
                     id == 8 ? PREVIOUS_FROM.minusNanos(1000) : id == 9 ? FROM : PREVIOUS_FROM, "10");
@@ -276,16 +279,44 @@ class SupplyDashboardOperatingAnalysisRepositoryTest {
     }
 
     @Test
-    void missingAndInvalidCategoriesAreNotReturnedAndMatrixIsNotTopTwenty() {
+    void missingAndInvalidCategoriesShareOneUnknownGroupAndMatrixIsNotTopTwenty() {
         line(1, 1, 10L, "BJ", null, "S1", FROM, "10", "BOX");
         line(2, 1, 10L, "BJ", 0L, "S1", FROM, "10", "BOX");
         line(3, 1, 10L, "BJ", -1L, "S1", FROM, "10", "BOX");
         for (int id = 4; id <= 28; id++) line(id, id, 10L, "BJ", (long) id, "S1", FROM, "10", "BOX");
         jdbc.update("UPDATE bi_sales_order_line_fact SET product_category_name = ' ', region_name = ''");
         var result = query(null, null, null, null);
-        assertThat(result.cityProducts()).hasSize(25).allSatisfy(row -> {
+        assertThat(result.cityProducts()).hasSize(26).allSatisfy(row -> {
             assertThat(row.regionName()).isEqualTo("BJ");
-            assertThat(row.categoryName()).isEqualTo(row.categoryCode());
+            assertThat(row.categoryName()).isEqualTo(row.categoryCode().equals("UNKNOWN")
+                    ? "分类关联待核对" : row.categoryCode());
+        });
+        assertThat(result.cityProducts()).filteredOn(row -> row.categoryCode().equals("UNKNOWN"))
+                .singleElement().satisfies(row -> {
+                    assertThat(row.salesAmount()).isEqualByComparingTo("30");
+                    assertThat(row.orderCount()).isEqualTo(1L);
+                    assertThat(row.customerCount()).isEqualTo(1L);
+                });
+        assertThat(result.cityProducts().stream().map(row -> row.salesAmount())
+                .reduce(BigDecimal.ZERO, BigDecimal::add)).isEqualByComparingTo("280");
+    }
+
+    @Test
+    void unknownCategoriesStaySeparatePerCityWithoutChangingSignedLineAmounts() {
+        line(1, 1, 10L, "BJ", null, "S1", FROM, "100.123456", "BOX");
+        line(2, 1, 10L, "BJ", 0L, "S1", TO, "-0.123456", "METER");
+        line(3, 2, 20L, "SH", -1L, "S2", FROM, "25", "EACH");
+        line(4, 3, 30L, "BJ", null, "S1", FROM, "999", "BOX");
+        line(5, 4, 40L, "BJ", null, "S1", FROM, "999", "BOX");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET order_status_code='CANCELLED' WHERE order_line_id=4");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET deleted=1 WHERE order_line_id=5");
+
+        assertThat(query(null, null, null, null).cityProducts()).hasSize(2).allSatisfy(row -> {
+            assertThat(row.categoryCode()).isEqualTo("UNKNOWN");
+            assertThat(row.categoryName()).isEqualTo("分类关联待核对");
+            assertThat(row.salesAmount()).isEqualByComparingTo(row.regionCode().equals("BJ") ? "100" : "25");
+            assertThat(row.orderCount()).isEqualTo(1L);
+            assertThat(row.customerCount()).isEqualTo(1L);
         });
     }
 

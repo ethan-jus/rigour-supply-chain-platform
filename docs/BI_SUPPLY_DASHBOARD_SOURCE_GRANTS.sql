@@ -21,3 +21,13 @@ GRANT SELECT ON rigour_erp.erp_product TO 'rigour_bi_app'@'%';
 GRANT SELECT ON rigour_erp.erp_product_variant TO 'rigour_bi_app'@'%';
 GRANT SELECT ON rigour_erp.erp_product_category TO 'rigour_bi_app'@'%';
 GRANT SELECT ON rigour_erp.erp_product_brand TO 'rigour_bi_app'@'%';
+
+-- HR员工和岗位只读权限，仅供定时/手动刷新本地员工投影。
+GRANT SELECT (tenant_id, employee_code, employee_name, employment_status, city_name, primary_position_code, primary_position_name_snapshot, job_category, department_name_snapshot, entry_date, leave_date, deleted) ON rigour_hr.hr_employee TO 'rigour_bi_app'@'%';
+GRANT SELECT (tenant_id, position_code, position_name, deleted) ON rigour_hr.hr_position TO 'rigour_bi_app'@'%';
+
+-- Sales拜访与门店只读权限，仅供刷新建联本地投影。
+GRANT SELECT (tenant_id, id, store_id, salesperson_id, status, deletion_state, submitted_at, review_status) ON rigour_sales_work.temp_sales_checkin_submission TO 'rigour_bi_app'@'%';
+GRANT SELECT (tenant_id, id, city) ON rigour_sales_work.temp_sales_checkin_store TO 'rigour_bi_app'@'%';
+GRANT SELECT (tenant_id, salesperson_id, employee_code) ON rigour_sales_work.temp_sales_checkin_employee_link TO 'rigour_bi_app'@'%';
+GRANT SELECT (tenant_id, store_id, customer_id, customer_code) ON rigour_sales_work.temp_sales_checkin_customer_link TO 'rigour_bi_app'@'%';

@@ -80,6 +80,16 @@ public interface BiDataScopeMapper {
                  WHERE tenant_id = #{tenantId} AND deleted = 0 AND status_code = 'ACTIVE'
                    AND region_code IN <foreach collection="regions" item="region" open="(" close=")" separator=",">#{region}</foreach>
                 <if test="ownerStaffCode != null">AND owner_staff_code = #{ownerStaffCode}</if>
+                UNION ALL
+                SELECT region_code, city_name, employee_code, employee_name, NULL, NULL, NULL
+                  FROM bi_employee_dim WHERE tenant_id = #{tenantId}
+                   AND region_code IN <foreach collection="regions" item="region" open="(" close=")" separator=",">#{region}</foreach>
+                <if test="ownerStaffCode != null">AND employee_code = #{ownerStaffCode}</if>
+                UNION ALL
+                SELECT region_code, city_name, owner_staff_code, NULL, NULL, NULL, NULL
+                  FROM bi_sales_contact_fact WHERE tenant_id = #{tenantId}
+                   AND region_code IN <foreach collection="regions" item="region" open="(" close=")" separator=",">#{region}</foreach>
+                <if test="ownerStaffCode != null">AND owner_staff_code = #{ownerStaffCode}</if>
             )
             SELECT 'REGION' AS optionType, region_code AS optionValue, COALESCE(MAX(region_name), region_code) AS optionLabel
               FROM visible WHERE region_code IS NOT NULL GROUP BY region_code

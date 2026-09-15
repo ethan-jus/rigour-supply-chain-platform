@@ -2950,11 +2950,12 @@ public final class FeishuImportBundleService {
         return oneLine.length() > 2000 ? oneLine.substring(0, 2000) : oneLine;
     }
 
-    private static final class SalesOrderMappingContext implements FeishuSalesOrderImportMapper.MappingContext {
+    static final class SalesOrderMappingContext implements FeishuSalesOrderImportMapper.MappingContext {
         private static final Pattern CODE_PREFIX =
                 Pattern.compile("^([A-Za-z]{1,12}\\d{2,})\\s*[-_：: ]+.*$");
         private final Map<String, FeishuSalesOrderImportMapper.CustomerMapping> customers = new HashMap<>();
         private final Map<String, FeishuSalesOrderImportMapper.ProductMapping> products = new HashMap<>();
+        private final Set<String> ambiguousProductReferences = new HashSet<>();
         private final Map<String, FeishuSalesOrderImportMapper.EmployeeMapping> employees = new HashMap<>();
         private final Map<String, String> areaCodes = new HashMap<>();
 
@@ -2971,7 +2972,15 @@ public final class FeishuImportBundleService {
 
         @Override
         public Optional<FeishuSalesOrderImportMapper.ProductMapping> product(String... references) {
-            return lookup(products, references);
+            if (references == null) return Optional.empty();
+            for (String reference : references) {
+                String key = normalizeReference(reference);
+                if (key == null) continue;
+                if (ambiguousProductReferences.contains(key)) return Optional.empty();
+                FeishuSalesOrderImportMapper.ProductMapping product = products.get(key);
+                if (product != null) return Optional.of(product);
+            }
+            return Optional.empty();
         }
 
         @Override
@@ -3036,7 +3045,7 @@ public final class FeishuImportBundleService {
             FeishuSalesOrderImportMapper.ProductMapping mapping =
                     new FeishuSalesOrderImportMapper.ProductMapping(productId, decision.productVariantId(),
                             productCode, decision.variantCode(), productName, specification, decision.unitCode());
-            add(products, mapping, row.sourceDocumentNo(), productCode, productName, specification,
+            addProductReferences(mapping, row.sourceDocumentNo(), productCode, productName,
                     value(values, "产品编码", "商品编码", "SKU编码", "产品编码名称", "产品名称",
                             "商品名称", "产品编号", "订单产品"));
         }
@@ -3058,11 +3067,23 @@ public final class FeishuImportBundleService {
                     new FeishuSalesOrderImportMapper.ProductMapping(
                             resolved.productId(), resolved.productVariantId(), productCode,
                             resolved.variantCode(), productName, specification, resolved.unitCode());
-            add(products, mapping, row.sourceDocumentNo(), productCode, resolved.variantCode(),
-                    productName, specification,
+            addProductReferences(mapping, productCode, resolved.variantCode(), productName,
                     value(values, "产品编号", "商品编码", "产品编码", "SKU编码", "商品编号",
-                            "产品编码名称", "产品编号名称", "订单产品", "产品名称", "商品名称", "产品", "商品",
-                            "规格", "规格名称", "规格描述", "产品规格"));
+                            "产品编码名称", "产品编号名称", "订单产品", "产品名称", "商品名称", "产品", "商品"));
+        }
+
+        private void addProductReferences(FeishuSalesOrderImportMapper.ProductMapping mapping, String... references) {
+            // Brand and specification fragments are not product identities; shared aliases must not pick the first SKU.
+            for (String reference : references) {
+                String key = normalizeReference(reference);
+                if (key == null || ambiguousProductReferences.contains(key)) continue;
+                FeishuSalesOrderImportMapper.ProductMapping existing = products.putIfAbsent(key, mapping);
+                if (existing != null && (!java.util.Objects.equals(existing.productId(), mapping.productId())
+                        || !java.util.Objects.equals(existing.productVariantId(), mapping.productVariantId()))) {
+                    products.remove(key);
+                    ambiguousProductReferences.add(key);
+                }
+            }
         }
 
         void addResolvedEmployee(ExternalEmployeeResolvedView resolved) {

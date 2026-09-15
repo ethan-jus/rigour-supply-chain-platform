@@ -508,17 +508,7 @@ public class MybatisPlusHrEmployeeRepository
     }
 
     private static String employmentStatus(String value) {
-        String text = clean(value, 32);
-        if (text == null) return "ACTIVE";
-        if (text.contains("离职") || text.contains("停") || text.contains("禁") || text.contains("冻结")) {
-            return "INACTIVE";
-        }
-        if (text.contains("待")) return "PENDING";
-        String upper = text.toUpperCase(java.util.Locale.ROOT);
-        return switch (upper) {
-            case "ACTIVE", "INACTIVE", "PENDING" -> upper;
-            default -> "ACTIVE";
-        };
+        return com.rigour.hr.domain.model.EmploymentStatus.fromSource(clean(value, 32));
     }
 
     private static String remark(ExternalEmployeeRowCommand row) {

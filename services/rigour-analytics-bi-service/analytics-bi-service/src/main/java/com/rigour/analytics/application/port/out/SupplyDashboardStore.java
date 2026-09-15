@@ -248,7 +248,20 @@ public interface SupplyDashboardStore {
             BigDecimal unpaidAmount,
             Long orderCount,
             Long customerCount,
-            BigDecimal rate) {
+            BigDecimal rate,
+            String currentRegionName,
+            List<String> orderRegionNames) {
+        public RankingItem {
+            orderRegionNames = orderRegionNames == null ? List.of() : List.copyOf(orderRegionNames);
+        }
+
+        public RankingItem(
+                String rankType, String dimensionCode, String dimensionName, String regionCode, String regionName,
+                BigDecimal salesAmount, BigDecimal paidAmount, BigDecimal unpaidAmount,
+                Long orderCount, Long customerCount, BigDecimal rate) {
+            this(rankType, dimensionCode, dimensionName, regionCode, regionName, salesAmount, paidAmount,
+                    unpaidAmount, orderCount, customerCount, rate, null, List.of());
+        }
     }
 
     record SalesMonthlyPerformanceItem(

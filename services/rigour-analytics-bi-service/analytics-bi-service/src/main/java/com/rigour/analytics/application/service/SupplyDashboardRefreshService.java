@@ -3,6 +3,8 @@ package com.rigour.analytics.application.service;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshRunView;
 import com.rigour.analytics.application.port.out.SupplyDashboardStore;
+import com.rigour.analytics.application.port.out.EmployeeAnalyticsStore;
+import com.rigour.analytics.application.port.out.CityContactAnalyticsStore;
 import com.rigour.analytics.application.port.out.SupplyDashboardStore.RefreshRun;
 import com.rigour.analytics.application.port.out.SupplyDashboardStore.SourceRefreshResult;
 import com.rigour.shared.context.AuthorizationContext;
@@ -33,6 +35,8 @@ public final class SupplyDashboardRefreshService {
     private static final String LOCK_CODE = "SUPPLY_DASHBOARD_REFRESH_LOCK";
     private static final String JOB_MANUAL = "SUPPLY_DASHBOARD_MANUAL";
     private static final String JOB_HOURLY = "SUPPLY_DASHBOARD_HOURLY";
+    private static final SourceMeta CONTACT = new SourceMeta("SALES_SUBMITTED_VISIT", "Sales已提交拜访");
+    private static final SourceMeta EMPLOYEE = new SourceMeta("HR_EMPLOYEE", "HR员工与岗位");
     private static final SourceMeta CUSTOMER = new SourceMeta("CRM_CUSTOMER", "客户/门店");
     private static final SourceMeta ORDER = new SourceMeta("ORDER_SALES_ORDER", "销售订单");
     private static final SourceMeta ORDER_LINE = new SourceMeta("ORDER_SALES_ORDER_LINE", "销售订单行");
@@ -42,21 +46,27 @@ public final class SupplyDashboardRefreshService {
     private static final SourceMeta INVENTORY_OPERATION = new SourceMeta("ERP_INVENTORY_OPERATION", "采购/发货流转");
     private static final SourceMeta RECONCILIATION = new SourceMeta("BI_RECONCILIATION_CURRENT", "对账快照");
     private static final List<SourceMeta> SOURCE_METAS = List.of(
-            CUSTOMER, ORDER, ORDER_LINE, PRODUCT, PAYMENT, INVENTORY, INVENTORY_OPERATION, RECONCILIATION);
+            CUSTOMER, ORDER, ORDER_LINE, PRODUCT, PAYMENT, INVENTORY, INVENTORY_OPERATION, RECONCILIATION, EMPLOYEE, CONTACT);
 
     private final SupplyDashboardStore store;
     private final Clock clock;
+    private final EmployeeAnalyticsStore employees;
+    private final CityContactAnalyticsStore contacts;
     private final boolean scheduledEnabled;
     private final Duration lookback;
     private final Duration lockTtl;
 
     public SupplyDashboardRefreshService(
             SupplyDashboardStore store,
+            EmployeeAnalyticsStore employees,
+            CityContactAnalyticsStore contacts,
             Clock analyticsClock,
             @Value("${rigour.analytics.supply-dashboard.refresh.enabled:true}") boolean scheduledEnabled,
             @Value("${rigour.analytics.supply-dashboard.refresh.lookback:PT2H}") Duration lookback,
             @Value("${rigour.analytics.supply-dashboard.refresh.lock-ttl:PT55M}") Duration lockTtl) {
         this.store = Objects.requireNonNull(store, "store");
+        this.employees = Objects.requireNonNull(employees, "employees");
+        this.contacts = Objects.requireNonNull(contacts, "contacts");
         this.clock = Objects.requireNonNull(analyticsClock, "analyticsClock");
         this.scheduledEnabled = scheduledEnabled;
         this.lookback = positive(lookback, Duration.ofHours(2), "lookback");
@@ -86,7 +96,18 @@ public final class SupplyDashboardRefreshService {
             log.warn("供应链 BI 定时刷新读取租户失败: {}", exception.getMessage(), exception);
             return;
         }
-        for (String tenantId : tenantIds) {
+        var allTenants = new LinkedHashSet<>(tenantIds);
+        try {
+            allTenants.addAll(employees.tenantIds());
+        } catch (RuntimeException exception) {
+            log.warn("HR来源租户读取失败，继续刷新其他来源已知租户", exception);
+        }
+        try {
+            allTenants.addAll(contacts.tenantIds());
+        } catch (RuntimeException exception) {
+            log.warn("Sales来源租户读取失败，继续刷新其他来源已知租户", exception);
+        }
+        for (String tenantId : allTenants) {
             try {
                 refreshTenant(tenantId, JOB_HOURLY);
             } catch (RuntimeException exception) {
@@ -165,6 +186,16 @@ public final class SupplyDashboardRefreshService {
                         refreshSnapshot(run.id(), tenantId, RECONCILIATION,
                                 syncedAt -> store.refreshReconciliationCurrent(
                                         tenantId, monthStart(upperBound), upperBound, syncedAt)));
+            }
+            if (selection.includes(EMPLOYEE)) {
+                collectRefreshResult(results, failures, tenantId, EMPLOYEE, () ->
+                        refreshSnapshot(run.id(), tenantId, EMPLOYEE,
+                                syncedAt -> employees.refresh(tenantId, syncedAt)));
+            }
+            if (selection.includes(CONTACT)) {
+                collectRefreshResult(results, failures, tenantId, CONTACT, () ->
+                        refreshSnapshot(run.id(), tenantId, CONTACT,
+                                syncedAt -> contacts.refresh(tenantId, syncedAt)));
             }
             for (SourceRefreshResult item : results) {
                 pulled += item.pulledCount();

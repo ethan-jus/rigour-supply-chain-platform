@@ -107,6 +107,23 @@ class BusinessDictionaryServiceTest {
         assertThat(result.effective().dictionary().revision()).isEqualTo(4);
     }
 
+    @Test
+    void hrSourceSynonymsReuseCanonicalStatusCodes() {
+        UUID serviceId = UUID.randomUUID();
+        TestAuthorizationContext.set(new CallerIdentity("SERVICE", serviceId, UUID.randomUUID(), null, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of("HR_DICTIONARY_SYNC"), Set.of("business-settings:dict:sync")));
+        when(store.findByCode("EMPLOYEE_STATUS")).thenReturn(Optional.of(
+                new DictView(1L, "EMPLOYEE_STATUS", "员工状态", "HR", null, 1)));
+        when(store.syncMissingItems(eq("EMPLOYEE_STATUS"), any(), any())).thenReturn(new SyncStats(0, 4, 0, 0));
+        when(store.items("EMPLOYEE_STATUS")).thenReturn(List.of());
+        service.syncItems(new DictSyncCommand("EMPLOYEE_STATUS", List.of(
+                new DictSourceValue("在职", null), new DictSourceValue("离职", null),
+                new DictSourceValue("停用", null), new DictSourceValue("待入职", null))));
+        ArgumentCaptor<List<SyncItem>> items = ArgumentCaptor.forClass(List.class);
+        verify(store).syncMissingItems(eq("EMPLOYEE_STATUS"), items.capture(), eq(serviceId.toString()));
+        assertThat(items.getValue()).extracting(SyncItem::dictionaryItemCode).containsExactly("ACTIVE", "LEFT", "INACTIVE", "PENDING");
+    }
+
     private static void setTenant(UUID actorId) {
         TestAuthorizationContext.set(new CallerIdentity("TENANT", actorId, UUID.randomUUID(), actorId, null,
                 UUID.randomUUID(), 0, 0, 0, Set.of("TENANT_SUPER_ADMIN"),

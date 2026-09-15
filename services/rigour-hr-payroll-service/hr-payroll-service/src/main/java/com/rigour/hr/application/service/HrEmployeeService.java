@@ -182,7 +182,7 @@ public final class HrEmployeeService {
         if (text == null) return null;
         String upper = text.toUpperCase(Locale.ROOT);
         return switch (upper) {
-            case "ACTIVE", "INACTIVE", "PENDING" -> upper;
+            case "ACTIVE", "LEFT", "INACTIVE", "PENDING" -> upper;
             default -> throw badRequest("employmentStatus格式无效");
         };
     }

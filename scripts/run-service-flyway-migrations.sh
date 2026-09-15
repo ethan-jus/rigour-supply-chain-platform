@@ -100,6 +100,7 @@ module_pom() {
     order) printf '%s\n' "$ROOT_DIR/services/rigour-order-center-service/order-center-service/pom.xml" ;;
     hr) printf '%s\n' "$ROOT_DIR/services/rigour-hr-payroll-service/hr-payroll-service/pom.xml" ;;
     bi) printf '%s\n' "$ROOT_DIR/services/rigour-analytics-bi-service/analytics-bi-service/pom.xml" ;;
+    sales) printf '%s\n' "$ROOT_DIR/services/rigour-sales-work-service/sales-work-service/pom.xml" ;;
     *) printf 'Unknown service: %s\n' "$1" >&2; return 1 ;;
   esac
 }
@@ -114,6 +115,7 @@ schema_name() {
     order) printf '%s\n' "rigour_order" ;;
     hr) printf '%s\n' "rigour_hr" ;;
     bi) printf '%s\n' "rigour_bi" ;;
+    sales) printf '%s\n' "rigour_sales_work" ;;
     *) printf 'Unknown service: %s\n' "$1" >&2; return 1 ;;
   esac
 }
@@ -128,6 +130,7 @@ migration_dir() {
     order) printf '%s\n' "$ROOT_DIR/services/rigour-order-center-service/order-center-service/src/main/resources/db/migration" ;;
     hr) printf '%s\n' "$ROOT_DIR/services/rigour-hr-payroll-service/hr-payroll-service/src/main/resources/db/migration" ;;
     bi) printf '%s\n' "$ROOT_DIR/services/rigour-analytics-bi-service/analytics-bi-service/src/main/resources/db/migration" ;;
+    sales) printf '%s\n' "$ROOT_DIR/services/rigour-sales-work-service/sales-work-service/src/main/resources/db/migration" ;;
     *) printf 'Unknown service: %s\n' "$1" >&2; return 1 ;;
   esac
 }

@@ -6,6 +6,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -205,6 +206,92 @@ class ProductCategoryProjectionTest {
         assertThat(rows).hasSize(503);
         assertThat(amount(rows)).isEqualByComparingTo("601.01");
         assertThat(decimal(row(rows, "UNKNOWN"), "salesAmount")).isEqualByComparingTo("0.01");
+    }
+
+    @Test void skuRankingReturnsMoreThanEightyGroupsWithoutChangingAmountsOrScope() {
+        refresh();
+        prepareSkuFacts();
+        for (int id = 1; id <= 92; id++) {
+            fact(id, 100L, 10L, "1.25");
+            jdbc.update("UPDATE bi_sales_order_line_fact SET product_variant_id=?,product_name=? WHERE order_id=?", id, "Product " + id, id);
+        }
+        jdbc.update("UPDATE bi_sales_order_line_fact SET region_code='SH' WHERE order_id=83");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET owner_staff_code='S2' WHERE order_id=84");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET customer_type_code='T2' WHERE order_id=85");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET source_system_code='MANUAL' WHERE order_id=86");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET order_status_code='CANCELLED' WHERE order_id=87");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET deleted=1 WHERE order_id=88");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET order_date=? WHERE order_id=89", local(NOW.plusNanos(1000)));
+        jdbc.update("UPDATE bi_sales_order_line_fact SET order_date=? WHERE order_id=90", local(NOW.minusSeconds(3600).minusNanos(1000)));
+        jdbc.update("UPDATE bi_sales_order_line_fact SET tenant_id='other-tenant' WHERE order_id=91");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET product_category_id=999 WHERE order_id=92");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET order_date=? WHERE order_id=1", local(NOW.minusSeconds(3600)));
+        jdbc.update("UPDATE bi_sales_order_line_fact SET order_date=? WHERE order_id=82", local(NOW));
+
+        var rows = skus(1L);
+
+        assertThat(rows).hasSize(82);
+        assertThat(rows).extracting(row -> value(row, "dimensionCode").toString()).doesNotHaveDuplicates();
+        for (int id = 1; id <= 82; id++) {
+            assertThat(decimal(row(rows, String.valueOf(id)), "salesAmount")).isEqualByComparingTo("1.25");
+        }
+        assertThat(amount(rows)).isEqualByComparingTo("102.50");
+    }
+
+    @Test void unknownSkuGroupNeverCombinesNamesAndSpecificationsFromUnrelatedProducts() {
+        prepareSkuFacts();
+        fact(1, null, null, "10.123456");
+        fact(2, null, null, "20");
+        fact(3, null, null, "-0.123456");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET product_name='Noodles',specification_snapshot='Box' WHERE order_id=1");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET product_name='Cloth',specification_snapshot='Z-type' WHERE order_id=2");
+
+        var rows = skus(null);
+
+        assertThat(rows).hasSize(1);
+        var unknown = row(rows, "UNKNOWN");
+        assertThat(value(unknown, "dimensionName")).isEqualTo("商品/SKU关联待核对");
+        assertThat(decimal(unknown, "salesAmount")).isEqualByComparingTo("30");
+        assertThat(((Number) value(unknown, "orderCount")).longValue()).isEqualTo(3);
+    }
+
+    @Test void conflictingSkuSnapshotsAreExplicitAndConsistentHMIsNotSplitOrReplaced() {
+        prepareSkuFacts();
+        for (int id = 1; id <= 6; id++) fact(id, 100L, 10L, "10");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET product_variant_id=39,product_name='Tip',specification_snapshot='H/M' WHERE order_id IN (1,2)");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET specification_snapshot='Competitive' WHERE order_id=2");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET product_variant_id=40,product_name='Tip',specification_snapshot='H/M' WHERE order_id IN (3,4)");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET product_variant_id=41,product_name='Tip',specification_snapshot='H' WHERE order_id IN (5,6)");
+        jdbc.update("UPDATE bi_sales_order_line_fact SET product_name='Chalk' WHERE order_id=6");
+
+        var rows = skus(null);
+
+        assertThat(rows).hasSize(3);
+        assertThat(value(row(rows, "39"), "dimensionName")).isEqualTo("Tip / 规格快照不一致（待核对）");
+        assertThat(value(row(rows, "40"), "dimensionName")).isEqualTo("Tip / H/M");
+        assertThat(value(row(rows, "41"), "dimensionName")).isEqualTo("商品名称快照不一致（待核对）");
+        assertThat(rows).allSatisfy(row -> {
+            assertThat(decimal(row, "salesAmount")).isEqualByComparingTo("20");
+            assertThat(((Number) value(row, "orderCount")).longValue()).isEqualTo(2);
+        });
+    }
+
+    private void prepareSkuFacts() {
+        jdbc.execute("ALTER TABLE bi_sales_order_line_fact ADD (product_variant_id BIGINT, sku_code VARCHAR(64), product_code VARCHAR(64), product_name VARCHAR(160), specification_snapshot VARCHAR(160))");
+        jdbc.update("DELETE FROM bi_sales_order_line_fact");
+    }
+
+    private List<Map<String, Object>> skus(Long category) {
+        var parameters = new HashMap<String, Object>(Map.of("tenantId", TENANT, "from", local(NOW.minusSeconds(3600)),
+                "to", local(NOW), "regionCode", "BJ", "ownerStaffCode", "S1", "customerTypeCode", "T1",
+                "sourceSystemCode", "FEISHU"));
+        parameters.put("productCategoryId", category);
+        var bound = session.getConfiguration().getMappedStatement(SupplyDashboardQueryMapper.class.getName()
+                + ".skuSalesRanking").getBoundSql(parameters);
+        // H2 treats an unsized CHAR cast as CHAR(1); MySQL preserves the complete identifier.
+        String sql = bound.getSql().replace(" AS CHAR)", " AS VARCHAR)");
+        Object[] args = bound.getParameterMappings().stream().map(mapping -> parameters.get(mapping.getProperty())).toArray();
+        return jdbc.queryForList(sql, args);
     }
 
     private void refresh() { repository.refreshProductDim(TENANT, NOW.minusSeconds(3600), NOW, NOW); }

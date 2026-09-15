@@ -348,7 +348,7 @@ class SupplyDashboardQueryServiceTest {
         FakeStore store = new FakeStore();
         store.watermarks.put("CRM_CUSTOMER", Instant.parse("2026-08-25T07:00:00Z"));
         SupplyDashboardRefreshService service = new SupplyDashboardRefreshService(
-                store, Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
+                store, employeeStore(), contactStore(), Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
         TestAuthorizationContext.set(caller("analytics:refresh:write"));
 
         SupplyDashboardRefreshRunView result = service.refreshCurrentTenant();
@@ -364,7 +364,7 @@ class SupplyDashboardQueryServiceTest {
     void manualRefreshCanLimitSourceScope() {
         FakeStore store = new FakeStore();
         SupplyDashboardRefreshService service = new SupplyDashboardRefreshService(
-                store, Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
+                store, employeeStore(), contactStore(), Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
         TestAuthorizationContext.set(caller("analytics:refresh:write"));
 
         SupplyDashboardRefreshRunView result = service.refreshCurrentTenant(
@@ -385,7 +385,7 @@ class SupplyDashboardQueryServiceTest {
         FakeStore store = new FakeStore();
         store.watermarks.put("ORDER_SALES_ORDER", Instant.parse("2026-08-25T07:00:00Z"));
         SupplyDashboardRefreshService service = new SupplyDashboardRefreshService(
-                store, Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
+                store, employeeStore(), contactStore(), Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
         TestAuthorizationContext.set(caller("analytics:refresh:write"));
 
         SupplyDashboardRefreshRunView result = service.refreshCurrentTenant(
@@ -403,7 +403,7 @@ class SupplyDashboardQueryServiceTest {
         store.watermarks.put("ORDER_SALES_ORDER", Instant.parse("2026-08-25T07:00:00Z"));
         store.backfillSources.add("ORDER_SALES_ORDER");
         SupplyDashboardRefreshService service = new SupplyDashboardRefreshService(
-                store, Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
+                store, employeeStore(), contactStore(), Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
 
         RefreshRun result = service.refreshTenant(TENANT_ID.toString(), "SUPPLY_DASHBOARD_HOURLY");
 
@@ -418,7 +418,7 @@ class SupplyDashboardQueryServiceTest {
         FakeStore store = new FakeStore();
         store.failingSources.add("CRM_CUSTOMER");
         SupplyDashboardRefreshService service = new SupplyDashboardRefreshService(
-                store, Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
+                store, employeeStore(), contactStore(), Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
         TestAuthorizationContext.set(caller("analytics:refresh:write"));
 
         SupplyDashboardRefreshRunView result = service.refreshCurrentTenant();
@@ -441,7 +441,7 @@ class SupplyDashboardQueryServiceTest {
     @Test
     void manualRefreshRejectsUnknownSourceScope() {
         SupplyDashboardRefreshService service = new SupplyDashboardRefreshService(
-                new FakeStore(), Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
+                new FakeStore(), employeeStore(), contactStore(), Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofHours(2), Duration.ofMinutes(55));
         TestAuthorizationContext.set(caller("analytics:refresh:write"));
 
         assertThatThrownBy(() -> service.refreshCurrentTenant(
@@ -564,6 +564,30 @@ class SupplyDashboardQueryServiceTest {
             return String.join("\n", select.value());
         }
         throw new IllegalStateException("未找到 Mapper SQL 注解: " + methodName);
+    }
+
+    private static com.rigour.analytics.application.port.out.EmployeeAnalyticsStore employeeStore() {
+        return new com.rigour.analytics.application.port.out.EmployeeAnalyticsStore() {
+            public List<String> tenantIds() { return List.of(); }
+            public SourceRefreshResult refresh(String tenantId, Instant syncedAt) {
+                return new SourceRefreshResult("HR_EMPLOYEE", "HR员工与岗位", 0L, 0L, 0L, syncedAt);
+            }
+            public Snapshot read(String tenantId, Instant from, Instant to, String regionCode, String employeeCode) {
+                return new Snapshot(null, List.of());
+            }
+        };
+    }
+
+    private static com.rigour.analytics.application.port.out.CityContactAnalyticsStore contactStore() {
+        return new com.rigour.analytics.application.port.out.CityContactAnalyticsStore() {
+            public List<String> tenantIds() { return List.of(); }
+            public SourceRefreshResult refresh(String tenantId, Instant syncedAt) {
+                return new SourceRefreshResult("SALES_SUBMITTED_VISIT", "Sales已提交拜访", 0L, 0L, 0L, syncedAt);
+            }
+            public Snapshot read(String tenantId, Instant from, Instant to, String regionCode, String ownerStaffCode) {
+                return new Snapshot(null, false, List.of());
+            }
+        };
     }
 
     private static final class FakeStore implements SupplyDashboardStore {

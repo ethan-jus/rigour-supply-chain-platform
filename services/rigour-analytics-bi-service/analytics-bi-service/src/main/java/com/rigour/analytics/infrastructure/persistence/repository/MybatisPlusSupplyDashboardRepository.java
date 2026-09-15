@@ -13,6 +13,8 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,6 +30,7 @@ public class MybatisPlusSupplyDashboardRepository
     }
 
     @Override
+    @Transactional(readOnly = true)
     public SupplyDashboardData overview(String tenantId, SupplyDashboardFilter filter) {
         LocalDateTime from = local(filter.from());
         LocalDateTime to = local(filter.to());
@@ -65,9 +68,7 @@ public class MybatisPlusSupplyDashboardRepository
                 mapper.cityCostTrend(tenantId, from, to, filter.regionCode())
                         .stream().map(MybatisPlusSupplyDashboardRepository::trend).toList(),
                 citySalesRanking,
-                mapper.salesRanking(tenantId, from, to,
-                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
-                        .stream().map(MybatisPlusSupplyDashboardRepository::ranking).toList(),
+                salesRankingWithCities(tenantId, from, to, filter),
                 mapper.salesMonthlyPerformance(tenantId, from, to,
                         filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
                         .stream().map(MybatisPlusSupplyDashboardRepository::salesMonthlyPerformance).toList(),
@@ -319,6 +320,10 @@ public class MybatisPlusSupplyDashboardRepository
         Map<String, Object> summary = mapper.customerSourceSummary(tenantId, localFrom, localTo);
         int affected = mapper.upsertCustomerDimFromSource(tenantId, localFrom, localTo, localSyncedAt);
         affected += mapper.backfillCustomerContactSnapshots(tenantId, localSyncedAt);
+        // 当前属性全量替换，包含历史补录/清空；与客户主投影共用事务，失败不会留下半份快照。
+        mapper.clearCustomerAttributes(tenantId);
+        affected += mapper.refreshCustomerAttributes(tenantId, localSyncedAt);
+        mapper.completeCustomerAttributes(tenantId, localSyncedAt);
         return sourceResult("CRM_CUSTOMER", "客户/门店", summary, affected);
     }
 
@@ -595,6 +600,29 @@ public class MybatisPlusSupplyDashboardRepository
                 number(row, "orderCount"),
                 number(row, "customerCount"),
                 decimal(row, "rate"));
+    }
+
+    /** 人员当前归属只作展示；历史城市和业绩仍按订单事实的相同筛选范围读取。 */
+    private List<RankingItem> salesRankingWithCities(
+            String tenantId, LocalDateTime from, LocalDateTime to, SupplyDashboardFilter filter) {
+        var mapper = getBaseMapper();
+        var ranks = mapper.salesRanking(tenantId, from, to, filter.regionCode(), filter.ownerStaffCode(),
+                filter.customerTypeCode(), filter.sourceSystemCode()).stream()
+                .map(MybatisPlusSupplyDashboardRepository::ranking).toList();
+        if (ranks.isEmpty()) return ranks;
+        var cities = mapper.salesRankingCityAttributions(tenantId, from, to,
+                        filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())
+                .stream().collect(Collectors.groupingBy(row -> text(row, "dimensionCode")));
+        return ranks.stream().map(rank -> {
+            var attribution = cities.getOrDefault(rank.dimensionCode(), List.of());
+            var currentCity = attribution.stream().map(row -> text(row, "currentRegionName"))
+                    .filter(Objects::nonNull).findFirst().orElse(null);
+            var orderCities = attribution.stream().map(row -> text(row, "orderRegionName"))
+                    .filter(Objects::nonNull).distinct().sorted().toList();
+            return new RankingItem(rank.rankType(), rank.dimensionCode(), rank.dimensionName(),
+                    rank.regionCode(), rank.regionName(), rank.salesAmount(), rank.paidAmount(), rank.unpaidAmount(),
+                    rank.orderCount(), rank.customerCount(), rank.rate(), currentCity, orderCities);
+        }).toList();
     }
 
     private static SalesMonthlyPerformanceItem salesMonthlyPerformance(Map<String, Object> row) {

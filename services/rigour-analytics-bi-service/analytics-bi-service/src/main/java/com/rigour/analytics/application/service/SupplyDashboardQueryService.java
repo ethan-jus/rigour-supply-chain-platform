@@ -329,7 +329,9 @@ public final class SupplyDashboardQueryService {
                 money(item.unpaidAmount()),
                 number(item.orderCount()),
                 number(item.customerCount()),
-                ratioValue(item.rate()));
+                ratioValue(item.rate()),
+                item.currentRegionName(),
+                item.orderRegionNames());
     }
 
     private static SupplyDashboardSalesMonthlyPerformanceView salesMonthlyPerformance(

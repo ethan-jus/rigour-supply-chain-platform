@@ -230,6 +230,17 @@ public class BusinessDictionaryService {
     }
 
     private static String sourceItemCode(String dictionaryCode, String sourceValue) {
+        // HR 固定状态使用标准编码，防止每次来源导入再生成同义 AUTO 字典项。
+        if ("EMPLOYEE_STATUS".equals(dictionaryCode)) {
+            String canonical = switch (sourceValue.strip()) {
+                case "在职" -> "ACTIVE";
+                case "离职" -> "LEFT";
+                case "停用", "冻结", "禁用" -> "INACTIVE";
+                case "待入职", "待确认" -> "PENDING";
+                default -> null;
+            };
+            if (canonical != null) return canonical;
+        }
         String normalized = upper(sourceValue);
         if (normalized != null && CODE.matcher(normalized).matches()) return normalized;
         return autoCode(dictionaryCode, sourceValue);
