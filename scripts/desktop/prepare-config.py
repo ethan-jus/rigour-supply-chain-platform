@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 import subprocess
+import shutil
+from datetime import datetime
 
 root = Path('/srv/rigour-dev')
 if not (root / '.env').exists():
@@ -41,8 +43,7 @@ rigour.iam.oidc.signing.enabled=true
 rigour.iam.oidc.authorization-attributes.enabled=true
 rigour.iam.oidc.authorization-attributes.active-key-version=v1
 rigour.iam.oidc.authorization-attributes.keys-base64.v1=${IAM_OIDC_AUTH_ATTRIBUTES_KEY_V1}
-rigour.iam.bootstrap.local-signing-key.enabled=true
-rigour.iam.bootstrap.local-signing-key.path=/keys/iam-signing.pem
+rigour.iam.bootstrap.local-signing-key.enabled=false
 rigour.iam.bootstrap.portal-client.enabled=true
 rigour.iam.bootstrap.portal-client.client-id=rigour-portal-desktop
 rigour.iam.bootstrap.portal-client.redirect-uri=http://192.168.12.7:5100/oidc/callback
@@ -74,6 +75,23 @@ for name, content in values.items():
         print('已生成应用配置：' + name)
     else:
         print('保留已有应用配置：' + name)
+# 将第一次空库尝试生成的两项配置升级为完整迁移模式，先保留原文件。
+iam_path = config / 'iam.properties'
+original = iam_path.read_text()
+updated = original.replace('rigour.iam.bootstrap.local-signing-key.enabled=true',
+                           'rigour.iam.bootstrap.local-signing-key.enabled=false')
+updated = updated.replace('rigour.iam.bootstrap.local-signing-key.path=/keys/iam-signing.pem\n','')
+updated = updated.replace('rigour.iam.bootstrap.portal-client.client-id=rigour-portal-browser\n',
+                          'rigour.iam.bootstrap.portal-client.client-id=rigour-portal-desktop\n')
+key = root / 'apps/keys/.config/rigour/secrets/iam-dev-signing-v1.pem'
+if not key.is_file() or key.stat().st_mode & 0o077:
+    raise SystemExit('未找到已核对公钥且权限受限的迁移签名私钥，停止发布。')
+if original != updated:
+    backup = root / 'apps/backups' / ('配置升级前-'+datetime.now().strftime('%Y%m%d%H%M%S'))
+    backup.mkdir(parents=True,exist_ok=False)
+    shutil.copy2(iam_path,backup / 'iam.properties')
+    iam_path.write_text(updated)
+    print('已备份并更新首次空库尝试配置，复用原签名密钥和独立桌面客户端。')
 # IAM 历史迁移会删除自身临时清理表，迁移账号需要本库 DROP 权限，运行账号不增加权限。
 subprocess.run(['docker','exec','-i','rigour-dev-desktop-mysql-1','sh','-c',
     'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot'],

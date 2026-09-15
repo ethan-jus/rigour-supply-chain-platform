@@ -3300,9 +3300,10 @@ public class TemporaryCheckinService {
     }
 
     private static boolean sameInstant(Instant left, Instant right) {
+        // MySQL DATETIME(6)/Connector-J 会四舍五入纳秒，直接截断会把同一请求误判成冲突。
         return left != null && right != null
-                && left.truncatedTo(java.time.temporal.ChronoUnit.MICROS)
-                .equals(right.truncatedTo(java.time.temporal.ChronoUnit.MICROS));
+                && left.plusNanos(500).truncatedTo(java.time.temporal.ChronoUnit.MICROS)
+                .equals(right.plusNanos(500).truncatedTo(java.time.temporal.ChronoUnit.MICROS));
     }
 
     private static boolean sameNullableInstant(Instant left, Instant right) {

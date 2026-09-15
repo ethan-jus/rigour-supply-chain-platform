@@ -60,6 +60,7 @@ import java.util.Set;
 import java.util.UUID;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -73,6 +74,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
 @SpringBootTest
@@ -138,12 +140,28 @@ class IntegrationMigrationServiceApplicationTests {
     @MockitoBean
     private ProductMediaSyncWorker productMediaSyncWorker;
 
+    @BeforeEach
+    void resetOnlyDisposableTestDatabase() throws java.sql.SQLException {
+        // 工作线程独立提交，不能依赖测试线程事务回滚；逐用例恢复完整迁移夹具。
+        // 明确校验一次性容器 URL，绝不清理共享 DEV 或外部数据库。
+        try (var connection = flyway.getConfiguration().getDataSource().getConnection()) {
+            assertThat(connection.getMetaData().getURL()).isEqualTo(MYSQL.getJdbcUrl());
+        }
+        Flyway disposable = Flyway.configure().configuration(flyway.getConfiguration())
+                .cleanDisabled(false).load();
+        disposable.clean();
+        disposable.migrate();
+    }
+
     @Test
     void contextLoadsAndMigratesIntegrationSchema() {
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
                 .contains("1", "2", "3", "4", "11", "12", "13");
-        assertThat(syncRunMapper.selectCount(Wrappers.<IntegrationSyncRunEntity>query())).isZero();
+        // db/testdata 的 V10.5 固定提供一条历史批次，用于验证 V11 来源追溯，不能当成空库。
+        assertThat(syncRunMapper.selectCount(Wrappers.<IntegrationSyncRunEntity>query())).isEqualTo(1L);
+        assertThat(syncRunMapper.selectById(IntegrationUuidCodec.encode(
+                UUID.fromString("40000000-0000-0000-0000-000000000001"))).status).isEqualTo("SUCCEEDED");
         assertThat(rawLandingMapper.selectCount(Wrappers.<IntegrationRawLandingEntity>query()))
                 .isGreaterThanOrEqualTo(0L);
         assertThat(orderMirrorMapper.selectCount(Wrappers.<IntegrationOrderMirrorEntity>query()))
@@ -335,24 +353,26 @@ class IntegrationMigrationServiceApplicationTests {
         });
         when(client.getOrderContent(any(), any()))
                 .thenAnswer(invocation -> orderDetail(invocation.getArgument(1)));
-        when(client.getShipments(any(), any())).thenAnswer(invocation -> {
+        stubEmptyDependentOrderFeeds(client);
+        doAnswer(invocation -> {
             DhbClient.ShipmentQuery query = invocation.getArgument(1);
             assertThat(query.createdWindow()).isNotNull();
             assertThat(query.updatedWindow()).isNull();
             assertThat(query.isApi()).isNull();
             return new DhbClient.Page<>(query.page(), 0, List.of());
-        });
-        when(client.getReceipts(any(), any())).thenAnswer(invocation -> {
+        }).when(client).getShipments(any(), any());
+        doAnswer(invocation -> {
             DhbClient.ReceiptQuery query = invocation.getArgument(1);
-            assertThat(query.createdWindow()).isNull();
+            assertThat(query.createdWindow()).isNotNull();
             assertThat(query.updatedFrom()).isNotNull();
+            assertThat(query.createdWindow().from()).isEqualTo(query.updatedFrom());
             return new DhbClient.Page<>(query.page(), 0, List.of());
-        });
-        when(client.getPayments(any(), any())).thenAnswer(invocation -> {
+        }).when(client).getReceipts(any(), any());
+        doAnswer(invocation -> {
             DhbClient.PaymentQuery query = invocation.getArgument(1);
             assertThat(query.createdWindow()).isNotNull();
             return new DhbClient.Page<>(query.page(), 0, List.of());
-        });
+        }).when(client).getPayments(any(), any());
         seedOrderProjectionMappings(tenant, connector.id());
         CallerIdentity caller = new CallerIdentity("TENANT", actor, tenant, actor, null,
                 UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("integration:dhb:write"));
@@ -413,8 +433,9 @@ class IntegrationMigrationServiceApplicationTests {
         assertThat(outboxEventCount(tenant, "DHB_ORDER_MIRROR_UPSERTED")).isEqualTo(2L);
     }
 
-    @Test
-    void projectsOrderWhenDhbRepeatsTheSameSkuLine() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void projectsRepeatedSkuAccordingToSourceLineIdentity(boolean sameSourceLine) {
         UUID tenant = UUID.randomUUID();
         UUID actor = UUID.randomUUID();
         ConnectorView connector = store.createConnector(tenant, actor,
@@ -430,10 +451,16 @@ class IntegrationMigrationServiceApplicationTests {
             return new DhbClient.Page<>(query.page(), 1,
                     query.page().begin() == 0 ? List.of(source) : List.of());
         });
+        Map<String,Object> firstLine = new java.util.LinkedHashMap<>(
+                orderProductRow("PROD-1", "SKU-1", "2", "10.00", "箱"));
+        Map<String,Object> secondLine = new java.util.LinkedHashMap<>(
+                orderProductRow("PROD-1", "SKU-1", "3", "12.00", "箱"));
+        if (sameSourceLine) {
+            firstLine.put("orders_list_id", "SOURCE-LINE-1");
+            secondLine.put("orders_list_id", "SOURCE-LINE-1");
+        }
         when(client.getOrderContent(any(), any()))
-                .thenReturn(orderDetail("DHB-DUP-LINE", List.of(
-                        orderProductRow("PROD-1", "SKU-1", "2", "10.00", "箱"),
-                        orderProductRow("PROD-1", "SKU-1", "3", "12.00", "箱"))));
+                .thenReturn(orderDetail("DHB-DUP-LINE", List.of(firstLine, secondLine)));
         stubEmptyDependentOrderFeeds(client);
         seedOrderProjectionMappings(tenant, connector.id());
         CallerIdentity caller = new CallerIdentity("TENANT", actor, tenant, actor, null,
@@ -447,9 +474,18 @@ class IntegrationMigrationServiceApplicationTests {
         assertThat(result.status()).isEqualTo("SUCCEEDED");
         assertThat(result.acceptedCount()).isEqualTo(1);
         SalesOrderDetailView projected = orderProjection.rows.values().iterator().next();
-        assertThat(projected.lines()).hasSize(1);
-        assertThat(projected.lines().getFirst().quantity()).isEqualByComparingTo("5");
-        assertThat(projected.lines().getFirst().unitPrice()).isEqualByComparingTo("11.200000");
+        if (sameSourceLine) {
+            assertThat(projected.lines()).hasSize(1);
+            assertThat(projected.lines().getFirst().quantity()).isEqualByComparingTo("5");
+            assertThat(projected.lines().getFirst().unitPrice()).isEqualByComparingTo("11.200000");
+        } else {
+            // 没有来源行 ID 时，相同 SKU 可以是两条不同价格的真实明细，不能擅自合并。
+            assertThat(projected.lines()).hasSize(2);
+            assertThat(projected.lines().get(0).quantity()).isEqualByComparingTo("2");
+            assertThat(projected.lines().get(0).unitPrice()).isEqualByComparingTo("10.000000");
+            assertThat(projected.lines().get(1).quantity()).isEqualByComparingTo("3");
+            assertThat(projected.lines().get(1).unitPrice()).isEqualByComparingTo("12.000000");
+        }
     }
 
     @Test
@@ -509,6 +545,10 @@ class IntegrationMigrationServiceApplicationTests {
     }
 
     private static void stubEmptyDependentOrderFeeds(DhbClient client) {
+        when(client.getTransferOrders(any(), any())).thenAnswer(invocation -> {
+            DhbClient.TransferOrderQuery query = invocation.getArgument(1);
+            return new DhbClient.Page<>(query.page(), 0, List.of());
+        });
         when(client.getShipments(any(), any())).thenAnswer(invocation -> {
             DhbClient.ShipmentQuery query = invocation.getArgument(1);
             return new DhbClient.Page<>(query.page(), 0, List.of());

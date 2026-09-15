@@ -294,7 +294,8 @@ public class SalesWorkRecordingService {
         if (!"TOO_SHORT".equals(command.reason())) {
             throw invalid("短录音丢弃原因仅支持TOO_SHORT");
         }
-        Instant recordedAt = clock.instant();
+        // 首次响应与 MySQL DATETIME(6) 读取后的幂等响应使用相同精度。
+        Instant recordedAt = clock.instant().plusNanos(500).truncatedTo(ChronoUnit.MICROS);
         SalesWorkContextService.SalesIdentity identity = contextService.resolveIdentity(caller, recordedAt);
         VisitSnapshot visit = visitRepository
                 .findVisit(caller.tenantId(), identity.profile().id(), visitId)
@@ -316,8 +317,8 @@ public class SalesWorkRecordingService {
         if (existing.isPresent()) {
             RecordingDiscardRow row = existing.get();
             if (row.clientDurationMs() != command.durationMs()
-                    || !row.recordedFrom().equals(command.recordedFrom())
-                    || !row.recordedTo().equals(command.recordedTo())
+                    || !samePersistedInstant(row.recordedFrom(), command.recordedFrom())
+                    || !samePersistedInstant(row.recordedTo(), command.recordedTo())
                     || !row.reason().equals(command.reason())) {
                 throw invalid("clientClipId已被不同短录音登记使用");
             }
@@ -387,9 +388,10 @@ public class SalesWorkRecordingService {
     }
 
     private static boolean samePersistedInstant(Instant persisted, Instant requested) {
+        // 与 MySQL DATETIME(6) 的微秒四舍五入口径一致，不比较数据库无法保留的纳秒尾数。
         return persisted != null && requested != null
-                && persisted.truncatedTo(ChronoUnit.MICROS)
-                .equals(requested.truncatedTo(ChronoUnit.MICROS));
+                && persisted.plusNanos(500).truncatedTo(ChronoUnit.MICROS)
+                .equals(requested.plusNanos(500).truncatedTo(ChronoUnit.MICROS));
     }
 
     private byte[] readBytes(MultipartFile file) {

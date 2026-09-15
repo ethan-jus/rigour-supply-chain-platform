@@ -4634,8 +4634,10 @@ class TemporaryCheckinApiIntegrationTests {
     }
 
     private static LocationCommand location() {
+        // 固定为需要微秒进位的纳秒尾数，在 macOS/Linux 都覆盖数据库精度导致的幂等回归。
         return new LocationCommand(new BigDecimal("116.3971280"), new BigDecimal("39.9165270"),
-                new BigDecimal("8.50"), Instant.now().minusSeconds(30), "门店内");
+                new BigDecimal("8.50"), Instant.now().minusSeconds(30)
+                        .truncatedTo(java.time.temporal.ChronoUnit.SECONDS).plusNanos(123456789), "门店内");
     }
 
     private void insertSalesperson(UUID tenantId, UUID id, String name, String city) {

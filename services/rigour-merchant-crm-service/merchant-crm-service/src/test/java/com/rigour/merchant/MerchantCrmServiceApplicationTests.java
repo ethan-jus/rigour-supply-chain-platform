@@ -66,7 +66,7 @@ class MerchantCrmServiceApplicationTests {
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.tables
                  WHERE table_schema = DATABASE() AND table_name LIKE 'crm\\_%'
-                """, Integer.class)).isEqualTo(16);
+                """, Integer.class)).isEqualTo(18);
         assertThat(jdbcTemplate.queryForList("""
                 SELECT table_name FROM information_schema.tables
                  WHERE table_schema = DATABASE() AND table_name LIKE 'crm\\_%'
@@ -74,9 +74,15 @@ class MerchantCrmServiceApplicationTests {
                 "crm_party", "crm_customer_profile", "crm_contact", "crm_address",
                 "crm_source_binding", "crm_source_identity_alias",
                 "crm_sync_run", "crm_sync_checkpoint", "crm_sync_lock");
+        // V9 仅解除旧员工表关联；物理清理属于备份切流后的 DBA 流程，不在 Flyway 测试中执行。
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.tables
                  WHERE table_schema = DATABASE() AND table_name = 'crm_external_staff'
+                """, Integer.class)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema=DATABASE() AND table_name='crm_sales_assignment'
+                   AND column_name='external_staff_id'
                 """, Integer.class)).isZero();
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.columns
@@ -115,17 +121,18 @@ class MerchantCrmServiceApplicationTests {
                     id,tenant_id,connector_id,source_system,object_type,trigger_type,
                     sync_mode,status,page_size,max_pages,fetched_count,created_count,
                     changed_count,repaired_count,duplicate_count,absent_count,rejected_count,
-                    started_at,created_at,updated_at)
+                    started_at,created_time,updated_time)
                 VALUES (?,?,?,'DINGHUOBAO','CUSTOMER','SCHEDULED','FULL','SKIPPED',
                         500,100,0,0,0,0,0,0,0,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))
                 """, CrmUuidCodec.encode(UUID.randomUUID()), CrmUuidCodec.encode(tenantId),
                 CrmUuidCodec.encode(connectorId)))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                .isInstanceOf(org.springframework.dao.DataAccessException.class)
+                .hasMessageContaining("chk_crm_sync_run_skipped_terminal");
 
         UUID staleRun = store.startRun(tenantId, connectorId, null, sourceTaskId,
                 CrmMasterDataObjectType.ADDRESS, 100, "SCHEDULED");
         jdbcTemplate.update("""
-                UPDATE crm_sync_run SET updated_at=UTC_TIMESTAMP(6)-INTERVAL 3 HOUR
+                UPDATE crm_sync_run SET updated_time=UTC_TIMESTAMP(6)-INTERVAL 3 HOUR
                  WHERE tenant_id=? AND id=?
                 """, CrmUuidCodec.encode(tenantId), CrmUuidCodec.encode(staleRun));
         jdbcTemplate.update("""
@@ -150,7 +157,7 @@ class MerchantCrmServiceApplicationTests {
         UUID ownedRun = store.startRun(tenantId, connectorId, null, sourceTaskId,
                 CrmMasterDataObjectType.ADDRESS, 100, "SCHEDULED");
         jdbcTemplate.update("""
-                UPDATE crm_sync_run SET updated_at=UTC_TIMESTAMP(6)-INTERVAL 3 HOUR
+                UPDATE crm_sync_run SET updated_time=UTC_TIMESTAMP(6)-INTERVAL 3 HOUR
                  WHERE tenant_id=? AND id=?
                 """, CrmUuidCodec.encode(tenantId), CrmUuidCodec.encode(ownedRun));
 
@@ -442,7 +449,7 @@ class MerchantCrmServiceApplicationTests {
         assertThat(created.created()).isEqualTo(1);
         assertThat(duplicate.duplicates()).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("""
-                SELECT version FROM crm_address WHERE tenant_id=? AND id=?
+                SELECT revision FROM crm_address WHERE tenant_id=? AND id=?
                 """, Long.class, CrmUuidCodec.encode(tenantId), addressId)).isZero();
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM crm_contact c
@@ -475,7 +482,7 @@ class MerchantCrmServiceApplicationTests {
 
     private long partyVersion(UUID tenantId, byte[] partyId) {
         return jdbcTemplate.queryForObject("""
-                SELECT version FROM crm_party WHERE tenant_id=? AND id=?
+                SELECT revision FROM crm_party WHERE tenant_id=? AND id=?
                 """, Long.class, CrmUuidCodec.encode(tenantId), partyId);
     }
 
