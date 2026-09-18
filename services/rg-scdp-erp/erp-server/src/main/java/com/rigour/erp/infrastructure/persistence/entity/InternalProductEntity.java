@@ -44,6 +44,8 @@ public class InternalProductEntity {
     private String saleTypeCode;
     /** 上架状态，关联 PRODUCT_SHELF_STATUS 字典项。 */
     private String shelfStatusCode;
+    /** 排序值，数值越小越靠前。 */
+    private Integer ordinal;
     /** 来源商品状态名称。 */
     private String sourceStatusName;
     /** 商品标签编码数组 JSON。 */
@@ -123,6 +125,8 @@ public class InternalProductEntity {
     public void setSaleTypeCode(String saleTypeCode) { this.saleTypeCode = saleTypeCode; }
     public String getShelfStatusCode() { return shelfStatusCode; }
     public void setShelfStatusCode(String shelfStatusCode) { this.shelfStatusCode = shelfStatusCode; }
+    public Integer getOrdinal() { return ordinal; }
+    public void setOrdinal(Integer ordinal) { this.ordinal = ordinal; }
     public String getSourceStatusName() { return sourceStatusName; }
     public void setSourceStatusName(String sourceStatusName) { this.sourceStatusName = sourceStatusName; }
     public String getTagCodesJson() { return tagCodesJson; }

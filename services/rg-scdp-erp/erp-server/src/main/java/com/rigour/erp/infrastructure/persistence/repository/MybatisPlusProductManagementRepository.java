@@ -2,6 +2,7 @@ package com.rigour.erp.infrastructure.persistence.repository;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.rigour.erp.api.v1.model.ExternalProductResolveRowCommand;
 import com.rigour.erp.api.v1.model.ExternalProductResolvedView;
@@ -120,10 +121,11 @@ public class MybatisPlusProductManagementRepository
 
     @Override
     public MasterDataPageView<ProductManagementSummaryView> products(
-            String tenantId, int begin, int step, ProductSearchCriteria criteria) {
+            String tenantId, int begin, int step, ProductSearchCriteria criteria, boolean withVariants) {
         InternalProductMapper mapper = getBaseMapper();
         long total = mapper.selectCount(query(tenantId, criteria));
         List<InternalProductEntity> page = mapper.selectList(query(tenantId, criteria)
+                .orderByAsc(InternalProductEntity::getOrdinal)
                 .orderByDesc(InternalProductEntity::getUpdatedTime)
                 .orderByDesc(InternalProductEntity::getId)
                 .last("LIMIT " + step + " OFFSET " + begin));
@@ -136,7 +138,7 @@ public class MybatisPlusProductManagementRepository
                 page.stream().map(InternalProductEntity::getDefaultWarehouseId).collect(Collectors.toSet()));
         List<ProductManagementSummaryView> items = page.stream()
                 .map(product -> summary(product, variants.getOrDefault(product.getId(), List.of()),
-                        categories, brands, warehouses, tenantId))
+                        categories, brands, warehouses, tenantId, withVariants))
                 .toList();
         return new MasterDataPageView<>(total, begin, step, items);
     }
@@ -242,6 +244,7 @@ public class MybatisPlusProductManagementRepository
                 .set(InternalProductEntity::getOrderMultipleQuantity, command.orderMultipleQuantity())
                 .set(InternalProductEntity::getSaleTypeCode, command.saleTypeCode())
                 .set(InternalProductEntity::getShelfStatusCode, command.shelfStatusCode())
+                .set(InternalProductEntity::getOrdinal, command.ordinal())
                 .set(InternalProductEntity::getTagCodesJson, json(command.tagCodes()))
                 .set(InternalProductEntity::getLimitQuantity, command.limitQuantity())
                 .set(InternalProductEntity::getDefaultWarehouseId, command.defaultWarehouseId())
@@ -259,6 +262,41 @@ public class MybatisPlusProductManagementRepository
         if (updated != 1) throw conflict("商品已被其他人修改，请刷新后重试");
         syncVariants(tenantId, id, command.variants(), actorId, now);
         return product(tenantId, id).orElseThrow(() -> notFound("商品不存在"));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ProductManagementDetailView updateShelfStatus(
+            String tenantId, Long id, String shelfStatusCode, int revision, String actorId) {
+        applyProductField(
+                tenantId, id, InternalProductEntity::getShelfStatusCode, shelfStatusCode, revision, actorId);
+        return product(tenantId, id).orElseThrow(() -> notFound("商品不存在"));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ProductManagementDetailView updateOrdinal(
+            String tenantId, Long id, int ordinal, int revision, String actorId) {
+        applyProductField(tenantId, id, InternalProductEntity::getOrdinal, ordinal, revision, actorId);
+        return product(tenantId, id).orElseThrow(() -> notFound("商品不存在"));
+    }
+
+    /** 列表就地修改单个商品列；只更新目标列，商品其他业务字段保持原值。 */
+    private void applyProductField(String tenantId, Long id,
+                                   SFunction<InternalProductEntity, ?> column, Object value,
+                                   int revision, String actorId) {
+        requireActive(tenantId, id);
+        LocalDateTime now = now();
+        int updated = getBaseMapper().update(null, Wrappers.<InternalProductEntity>lambdaUpdate()
+                .set(column, value)
+                .set(InternalProductEntity::getRevision, revision + 1)
+                .set(InternalProductEntity::getUpdatedBy, actorId)
+                .set(InternalProductEntity::getUpdatedTime, now)
+                .eq(InternalProductEntity::getTenantId, tenantId)
+                .eq(InternalProductEntity::getId, id)
+                .eq(InternalProductEntity::getRevision, revision)
+                .eq(InternalProductEntity::getDeleted, 0));
+        if (updated != 1) throw conflict("商品已被其他人修改，请刷新后重试");
     }
 
     @Override
@@ -1074,6 +1112,7 @@ public class MybatisPlusProductManagementRepository
         entity.setOrderMultipleQuantity(command.orderMultipleQuantity());
         entity.setSaleTypeCode(command.saleTypeCode());
         entity.setShelfStatusCode(command.shelfStatusCode());
+        entity.setOrdinal(command.ordinal());
         entity.setTagCodesJson(json(command.tagCodes()));
         entity.setLimitQuantity(command.limitQuantity());
         entity.setDefaultWarehouseId(command.defaultWarehouseId());
@@ -1120,7 +1159,8 @@ public class MybatisPlusProductManagementRepository
                                                  Map<Long, String> categories,
                                                  Map<Long, String> brands,
                                                  Map<Long, String> warehouses,
-                                                 String tenantId) {
+                                                 String tenantId,
+                                                 boolean withVariants) {
         InternalProductVariantEntity defaultVariant = defaultVariant(variants);
         ProductImageJson mainImage = mainImage(parseImages(entity.getImageKeysJson()));
         String mainImageKey = mainImage == null ? null : mainImage.imageKey();
@@ -1130,15 +1170,22 @@ public class MybatisPlusProductManagementRepository
                 entity.getCategoryNameSnapshot(), entity.getBrandId(),
                 first(value(brands, entity.getBrandId()), entity.getBrandNameSnapshot()),
                 entity.getBrandNameSnapshot(), entity.getIndustryName(),
-                entity.getUnitCode(), entity.getSaleTypeCode(),
-                entity.getShelfStatusCode(), entity.getSubmitStatusCode(),
+                entity.getProductSpecification(), entity.getUnitCode(), entity.getSaleTypeCode(),
+                entity.getShelfStatusCode(), entity.getOrdinal(), entity.getSubmitStatusCode(),
                 entity.getSourceSystemCode(), entity.getSourceDocumentNo(),
                 instant(entity.getSourceCreatedAt()), instant(entity.getSourceUpdatedAt()),
                 entity.getDefaultWarehouseId(),
                 value(warehouses, entity.getDefaultWarehouseId()),
                 defaultVariant == null ? null : defaultVariant.getSalePrice(),
-                mainImageKey, temporaryUrl(tenantId, mainImageKey), variants.size(), entity.getRevision(),
-                instant(entity.getUpdatedTime()));
+                mainImageKey, temporaryUrl(tenantId, mainImageKey), variants.size(),
+                withVariants
+                        ? variants.stream()
+                                .map(MybatisPlusProductManagementRepository::variantView)
+                                .toList()
+                        : List.of(),
+                entity.getRevision(),
+                entity.getCreatedBy(), instant(entity.getCreatedTime()),
+                entity.getUpdatedBy(), instant(entity.getUpdatedTime()));
     }
 
     private ProductManagementDetailView detail(String tenantId, InternalProductEntity entity,
@@ -1151,7 +1198,7 @@ public class MybatisPlusProductManagementRepository
                 entity.getBrandNameSnapshot(), entity.getIndustryName(), entity.getProductSpecification(),
                 entity.getUnitCode(), entity.getMinOrderQuantity(), entity.getOrderMultipleFlag(),
                 entity.getOrderMultipleQuantity(), entity.getSaleTypeCode(), entity.getShelfStatusCode(),
-                entity.getSourceStatusName(), parseStrings(entity.getTagCodesJson()),
+                entity.getOrdinal(), entity.getSourceStatusName(), parseStrings(entity.getTagCodesJson()),
                 entity.getLimitQuantity(), entity.getDefaultWarehouseId(),
                 warehouseName(tenantId, entity.getDefaultWarehouseId()), imageViews(tenantId, entity.getImageKeysJson()),
                 variants.stream().map(MybatisPlusProductManagementRepository::variantView).toList(),
