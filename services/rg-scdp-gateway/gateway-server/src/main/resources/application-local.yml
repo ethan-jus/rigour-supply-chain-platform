@@ -7,3 +7,11 @@ spring:
 ---
 server:
   port: 26880
+# 本机开发：服务间调用全部指向本机，起哪个用哪个，没起的报错是预期行为。
+# Nacos 仍继承 dev 的台式机地址，不需要本机安装中间件；网关自身不连数据库和 Redis。
+# IAM/HR/CRM/ORDER/INTEGRATION 在 dev 里已是 localhost，这里不重复声明。
+BUSINESS_SETTINGS_SERVICE_URL: "http://localhost:26892"
+ERP_SERVICE_URL: "http://localhost:26884"
+SALES_SERVICE_URL: "http://localhost:26886"
+AI_SERVICE_URL: "http://localhost:26887"
+BI_SERVICE_URL: "http://localhost:26888"
