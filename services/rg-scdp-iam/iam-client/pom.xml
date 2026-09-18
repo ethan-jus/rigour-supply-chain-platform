@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+ <modelVersion>4.0.0</modelVersion><parent><groupId>com.rigour</groupId><artifactId>rg-scdp-iam</artifactId><version>1.0.0-SNAPSHOT</version><relativePath>../pom.xml</relativePath></parent>
+ <artifactId>iam-client</artifactId><name>iam-client</name><description>供应链当前授权 HTTP 客户端和请求上下文，不包含 IAM 持久化或业务 SQL</description>
+ <dependencies>
+  <dependency><groupId>tools.jackson.core</groupId><artifactId>jackson-databind</artifactId></dependency>
+  <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId></dependency>
+  <dependency><groupId>com.rigour</groupId><artifactId>iam-api</artifactId></dependency>
+  <dependency><groupId>com.rigour</groupId><artifactId>shared-context</artifactId></dependency>
+  <dependency><groupId>org.springframework</groupId><artifactId>spring-web</artifactId></dependency>
+  <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-autoconfigure</artifactId></dependency>
+  <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot</artifactId></dependency>
+  <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+ </dependencies>
+</project>

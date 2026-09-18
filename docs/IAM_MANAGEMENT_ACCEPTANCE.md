@@ -24,14 +24,14 @@
 
 ```bash
 SPRING_PROFILES_ACTIVE=dev,local \
-./mvnw -pl services/rigour-tenant-iam-service/iam-service -am spring-boot:run
+./mvnw -pl services/rg-scdp-iam/iam-server -am spring-boot:run
 ```
 
 OIDC开关、issuer和Gateway安全开关已写入DEV Nacos/local YAML；启动命令只选择Profile和读取Secret。
 
 ```bash
 SPRING_PROFILES_ACTIVE=dev,local \
-./mvnw -pl services/rigour-api-gateway -am spring-boot:run
+./mvnw -pl services/rg-scdp-gateway/gateway-server -am spring-boot:run
 ```
 
 ```bash

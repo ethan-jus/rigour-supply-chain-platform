@@ -128,8 +128,8 @@ Secret 来源：
 
 当前已补齐：
 
-- [`Integration README`](../services/rigour-integration-migration-service/README.md)
-- [`Order Center README`](../services/rigour-order-center-service/README.md)
+- [`Integration README`](../services/rg-scdp-integration/README.md)
+- [`Order Center README`](../services/rg-scdp-order/README.md)
 
 ## 7. Git 与评审门禁
 

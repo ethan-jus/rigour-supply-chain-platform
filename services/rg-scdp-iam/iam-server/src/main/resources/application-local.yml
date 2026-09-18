@@ -1,0 +1,9 @@
+# 个人配置：选择 local 时自动复用 DEV；在 --- 之后覆盖自己需要的配置即可。
+# 例如在下面添加 spring.datasource.url/username/password，改用自己的数据库。
+# 不需要个人覆盖时直接选择 dev；个人修改不要提交到团队分支。
+spring:
+  config:
+    import: "application-dev.yml"
+---
+server:
+  port: 26881

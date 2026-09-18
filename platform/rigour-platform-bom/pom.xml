@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>com.rigour</groupId>
-        <artifactId>rigour-supply-chain-platform</artifactId>
+        <artifactId>rigour-supply-chain-digital-platform</artifactId>
         <version>1.0.0-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
@@ -15,6 +15,7 @@
     <description>Rigour 平台内部库版本清单，不携带运行时依赖</description>
     <dependencyManagement>
         <dependencies>
+            <dependency><groupId>com.rigour</groupId><artifactId>iam-client</artifactId><version>${project.version}</version></dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
                 <artifactId>rigour-platform-starter</artifactId>
@@ -22,42 +23,42 @@
             </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
-                <artifactId>rigour-shared-context</artifactId>
+                <artifactId>shared-context</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
-                <artifactId>rigour-shared-core</artifactId>
+                <artifactId>shared-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
-                <artifactId>rigour-shared-logging</artifactId>
+                <artifactId>shared-logging</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
-                <artifactId>rigour-shared-audit</artifactId>
+                <artifactId>shared-audit</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
-                <artifactId>rigour-shared-idempotency</artifactId>
+                <artifactId>shared-idempotency</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
-                <artifactId>rigour-shared-outbox</artifactId>
+                <artifactId>shared-outbox</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
-                <artifactId>rigour-shared-cache</artifactId>
+                <artifactId>shared-cache</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
-                <artifactId>rigour-shared-file</artifactId>
+                <artifactId>shared-file</artifactId>
                 <version>${project.version}</version>
             </dependency>
         </dependencies>

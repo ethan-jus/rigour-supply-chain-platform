@@ -86,7 +86,7 @@ CRM、ERP、Order 业务新增、编辑、作废和审核继续走本平台领�
 - provider message 截断和敏感字段脱敏，绝不输出请求体、`Password`、`sKey`、token 或 API Key。
 
 Integration 的版本化跨服务契约位于
-`services/rigour-integration-migration-service/integration-migration-api` 的
+`services/rg-scdp-integration/integration-api` 的
 `DhbIntegrationApi`、`DhbProductApi`、`DhbOrderApi` 和 `DhbApiModels`；Integration
 Controller 分别实现这些契约。
 其他微服务依赖 API 模块，不依赖 `DhbClient` 或订货宝原始 `f/v` 报文。

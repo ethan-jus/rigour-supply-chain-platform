@@ -66,23 +66,23 @@
 ## 已验证
 
 - 后端编译/安装通过：
-  - `./mvnw -pl services/rigour-integration-migration-service/integration-migration-client,services/rigour-integration-migration-service/integration-migration-service,services/rigour-merchant-crm-service/merchant-crm-service -am -DskipTests compile`
-  - `./mvnw -pl services/rigour-integration-migration-service/integration-migration-client,services/rigour-integration-migration-service/integration-migration-service,services/rigour-merchant-crm-service/merchant-crm-service -am -DskipTests install`
-  - `./mvnw -pl services/rigour-integration-migration-service/integration-migration-service,services/rigour-order-center-service/order-center-service -am -DskipTests compile`
-  - `./mvnw -pl services/rigour-integration-migration-service/integration-migration-service,services/rigour-order-center-service/order-center-service -am -DskipTests install`
+  - `./mvnw -pl services/rg-scdp-integration/integration-client,services/rg-scdp-integration/integration-server,services/rg-scdp-crm/crm-server -am -DskipTests compile`
+  - `./mvnw -pl services/rg-scdp-integration/integration-client,services/rg-scdp-integration/integration-server,services/rg-scdp-crm/crm-server -am -DskipTests install`
+  - `./mvnw -pl services/rg-scdp-integration/integration-server,services/rg-scdp-order/order-server -am -DskipTests compile`
+  - `./mvnw -pl services/rg-scdp-integration/integration-server,services/rg-scdp-order/order-server -am -DskipTests install`
 - Portal `pnpm build` 通过。
 - 注意：`-DskipTests` 未执行完整单测，只验证编译/testCompile/install 链路。
 
 ## 关键文件
 
-- `services/rigour-order-center-service/order-center-api/src/main/java/com/rigour/order/api/v1/model/SalesOrderSourceProjectionCommand.java`
-- `services/rigour-order-center-service/order-center-service/src/main/java/com/rigour/order/application/service/sales/OrderAuditActors.java`
-- `services/rigour-order-center-service/order-center-service/src/main/resources/db/migration/V28__sales_order_source_creator_and_sync_audit.sql`
-- `services/rigour-integration-migration-service/integration-migration-service/src/main/java/com/rigour/integration/application/service/dhb/DhbOrderSyncService.java`
-- `services/rigour-integration-migration-service/integration-migration-service/src/main/java/com/rigour/integration/infrastructure/persistence/repository/MybatisPlusDhbSyncStore.java`
-- `services/rigour-integration-migration-service/integration-migration-client/src/main/java/com/rigour/integration/client/ExternalObjectMappingClient.java`
-- `services/rigour-merchant-crm-service/merchant-crm-service/src/main/java/com/rigour/merchant/api/InternalCrmDhbSyncController.java`
-- `services/rigour-erp-core-service/erp-core-service/src/main/resources/db/migration/V29__erp_procurement_and_stock_in_source_identity.sql`
+- `services/rg-scdp-order/order-api/src/main/java/com/rigour/order/api/v1/model/SalesOrderSourceProjectionCommand.java`
+- `services/rg-scdp-order/order-server/src/main/java/com/rigour/order/application/service/sales/OrderAuditActors.java`
+- `services/rg-scdp-order/order-server/src/main/resources/db/migration/V28__sales_order_source_creator_and_sync_audit.sql`
+- `services/rg-scdp-integration/integration-server/src/main/java/com/rigour/integration/application/service/dhb/DhbOrderSyncService.java`
+- `services/rg-scdp-integration/integration-server/src/main/java/com/rigour/integration/infrastructure/persistence/repository/MybatisPlusDhbSyncStore.java`
+- `services/rg-scdp-integration/integration-client/src/main/java/com/rigour/integration/client/ExternalObjectMappingClient.java`
+- `services/rg-scdp-crm/crm-server/src/main/java/com/rigour/merchant/api/InternalCrmDhbSyncController.java`
+- `services/rg-scdp-erp/erp-server/src/main/resources/db/migration/V29__erp_procurement_and_stock_in_source_identity.sql`
 - Portal：`src/views/supply-chain/order/SalesOrderView.vue`、`src/views/supply-chain/order/FundDocumentView.vue`、`src/utils/audit-actor.ts`
 
 ## 注意事项

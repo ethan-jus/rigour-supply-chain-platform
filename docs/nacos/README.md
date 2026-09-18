@@ -21,8 +21,6 @@ Group：DEFAULT_GROUP
 | `rigour-ai-agent-service.example.yml` | `rigour-ai-agent-service.yaml` | `AI_DB_APP_PASSWORD` / `AI_DB_MIGRATOR_PASSWORD` |
 | `rigour-analytics-bi-service.example.yml` | `rigour-analytics-bi-service.yaml` | `BI_DB_APP_PASSWORD` / `BI_DB_MIGRATOR_PASSWORD` |
 | `rigour-hr-payroll-service.example.yml` | `rigour-hr-payroll-service.yaml` | `HR_DB_APP_PASSWORD` / `HR_DB_MIGRATOR_PASSWORD` |
-| `rigour-city-operations-service.example.yml` | `rigour-city-operations-service.yaml` | `CITY_DB_APP_PASSWORD` / `CITY_DB_MIGRATOR_PASSWORD` |
-| `rigour-channel-agent-service.example.yml` | `rigour-channel-agent-service.yaml` | `CHANNEL_DB_APP_PASSWORD` / `CHANNEL_DB_MIGRATOR_PASSWORD` |
 | `rigour-business-settings-service.example.yml` | `rigour-business-settings-service.yaml` | `BUSINESS_SETTINGS_DB_APP_PASSWORD` / `BUSINESS_SETTINGS_DB_MIGRATOR_PASSWORD` |
 
 ERP、Order Center、Sales Work 和 Business Settings 已包含正式业务迁移，其模板将 `spring.flyway.enabled` 设为 `true`。其他仍为空 Schema 的领域服务保持 `false`；完成首个迁移并接入 JDBC/Flyway 后再切换。模板变更不等于共享 DEV Nacos 已发布。

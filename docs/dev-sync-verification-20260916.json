@@ -1,0 +1,1843 @@
+{
+  "verifiedAt": "2026-09-16T01:29:25.015785+08:00",
+  "repositories": [
+    {
+      "repository": "rigour-supply-chain-platform",
+      "branch": "dev",
+      "before": "8268fc87982aa24e49e7805d22f2c6529035e6c4",
+      "after": "5c5e628c92c360aa727e14799d95a4df4322f108",
+      "remoteDev": "5c5e628c92c360aa727e14799d95a4df4322f108",
+      "unmerged": 0,
+      "staged": false,
+      "preservation": {
+        "originalEntries": 384,
+        "byteIdenticalOrDeletionPreserved": 354,
+        "integrated": [
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/application/port/out/SupplyDashboardStore.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/application/service/SupplyDashboardQueryService.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/application/service/SupplyDashboardRefreshService.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/infrastructure/config/AnalyticsBiInfrastructureConfiguration.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/infrastructure/integration/HttpBiSourceSnapshotClient.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/infrastructure/persistence/mapper/BiDataScopeMapper.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/infrastructure/persistence/mapper/SupplyDashboardQueryMapper.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/infrastructure/persistence/repository/MybatisPlusSupplyDashboardRepository.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/infrastructure/persistence/scope/BiAuthorityFilter.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/infrastructure/persistence/scope/BiScopePredicates.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/infrastructure/persistence/scope/BiScopedLanguageDriver.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/infrastructure/persistence/scope/BiSourceDatasets.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/main/java/com/rigour/analytics/infrastructure/persistence/scope/BiSourceSnapshotProjector.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/test/java/com/rigour/analytics/BiSupplyScopeIntegrationTest.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/test/java/com/rigour/analytics/application/service/SupplyDashboardQueryServiceTest.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/test/java/com/rigour/analytics/infrastructure/integration/HttpBiSourceSnapshotClientTest.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/test/java/com/rigour/analytics/infrastructure/persistence/repository/ProductCategoryProjectionTest.java",
+          "services/rigour-analytics-bi-service/analytics-bi-service/src/test/java/com/rigour/analytics/infrastructure/persistence/repository/SupplyDashboardOperatingAnalysisRepositoryTest.java",
+          "services/rigour-business-settings-service/business-settings-api/src/main/java/com/rigour/settings/api/v1/model/DictItemView.java",
+          "services/rigour-business-settings-service/business-settings-client/src/main/java/com/rigour/settings/client/BusinessDictionaryBatchClient.java",
+          "services/rigour-business-settings-service/business-settings-client/src/main/java/com/rigour/settings/client/DictionaryItems.java",
+          "services/rigour-business-settings-service/business-settings-service/src/main/java/com/rigour/settings/application/service/BusinessDictionaryService.java",
+          "services/rigour-business-settings-service/business-settings-service/src/main/java/com/rigour/settings/infrastructure/persistence/repository/JdbcTenantDictionaryRepository.java",
+          "services/rigour-business-settings-service/business-settings-service/src/main/resources/db/migration/V29__tenant_dictionary_overrides.sql",
+          "services/rigour-business-settings-service/business-settings-service/src/test/java/com/rigour/settings/TenantDictionaryIntegrationTest.java",
+          "services/rigour-hr-payroll-service/hr-payroll-service/src/main/java/com/rigour/hr/application/service/HrOrganizationService.java",
+          "services/rigour-hr-payroll-service/hr-payroll-service/src/main/java/com/rigour/hr/infrastructure/persistence/repository/MybatisPlusHrEmployeeRepository.java",
+          "services/rigour-integration-migration-service/integration-migration-service/docs/feishu-reconciliation-capture-contract.md",
+          "services/rigour-merchant-crm-service/merchant-crm-service/src/main/java/com/rigour/merchant/infrastructure/persistence/repository/JdbcAnalyticsSourceSnapshotStore.java",
+          "services/rigour-tenant-iam-service/iam-service/src/test/java/com/rigour/tenant/iam/TenantIamServiceApplicationTests.java"
+        ],
+        "unexpectedMissing": []
+      }
+    },
+    {
+      "repository": "rigour-supply-chain-portal",
+      "branch": "dev",
+      "before": "bd74ef97ba7895b95b41f1a87c6d1f78282aa1fd",
+      "after": "0636d224f86a08b6326ab9b1543b2b65c14dbf10",
+      "remoteDev": "0636d224f86a08b6326ab9b1543b2b65c14dbf10",
+      "unmerged": 0,
+      "staged": false,
+      "preservation": {
+        "originalEntries": 59,
+        "byteIdenticalOrDeletionPreserved": 49,
+        "integrated": [
+          "src/api/core/business-settings.ts",
+          "src/router/routes.ts",
+          "src/utils/business-dictionary.ts",
+          "src/utils/route-registry.ts",
+          "src/views/supply-chain/bi/IndexView.vue",
+          "src/views/supply-chain/hr/HrEmployeeEditor.vue",
+          "src/views/supply-chain/hr/HrEmployeeManagementView.vue",
+          "src/views/supply-chain/settings/BusinessDictionaryView.vue",
+          "tests/contract-backed-supply-surfaces.test.ts",
+          "tests/route-registry.test.ts"
+        ],
+        "unexpectedMissing": []
+      }
+    }
+  ],
+  "protectedRules": [
+    "Tenant-configurable menu labels, hierarchy, icons and action permissions",
+    "Business users require an active unique HR employee binding",
+    "Complete role clauses are combined before member caps",
+    "Current customer responsibility assigns new orders; historical attribution remains frozen",
+    "Warehouse selection, inventory read and outbound execution are authorized separately",
+    "Tenant dictionary overrides, historical aliases and audit are preserved"
+  ],
+  "backend": {
+    "command": "./mvnw verify -fae",
+    "status": "BUILD SUCCESS",
+    "testCounts": {
+      "tests": 1372,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 3
+    },
+    "suites": [
+      {
+        "name": "com.rigour.gateway.security.TrustedContextFilterTest",
+        "module": "services/rigour-api-gateway",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.gateway.security.CurrentTokenValidationFilterTest",
+        "module": "services/rigour-api-gateway",
+        "tests": 6,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.gateway.security.AccessTokenClaimsValidatorTest",
+        "module": "services/rigour-api-gateway",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.gateway.GatewayApplicationTests",
+        "module": "services/rigour-api-gateway",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.gateway.security.GatewaySecurityFailureWriterTest",
+        "module": "services/rigour-api-gateway",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.gateway.GatewayRouteConfigurationTest",
+        "module": "services/rigour-api-gateway",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.gateway.security.GatewayJwtVerificationTest",
+        "module": "services/rigour-api-gateway",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.gateway.security.GatewaySecurityPropertiesTest",
+        "module": "services/rigour-api-gateway",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.ai.AiAgentServiceApplicationTests",
+        "module": "services/rigour-ai-agent-service/ai-agent-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.channel.ChannelAgentServiceApplicationTests",
+        "module": "services/rigour-channel-agent-service/channel-agent-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.city.CityOperationsServiceApplicationTests",
+        "module": "services/rigour-city-operations-service/city-operations-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.infrastructure.persistence.repository.MybatisPlusProductMasterDataRepositoryTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.product.ProductMasterDataSyncServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 14,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.infrastructure.persistence.repository.MybatisPlusSupplyDataRepositoryTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 14,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.supply.SupplyDataSyncServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 7,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.infrastructure.integration.StablePayloadHasherTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.ErpOrderExecutionIntegrationTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 7,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.sync.ErpDataSyncServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.infrastructure.media.CosProductMediaUrlResolverTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.inventory.ErpTransferOrderServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 14,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.product.ErpProductManagementServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 9,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.infrastructure.persistence.repository.ProductNameFuzzyMatchTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.infrastructure.persistence.repository.MybatisPlusErpSyncRunAuditStoreTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.infrastructure.persistence.repository.MybatisPlusStockInOrderRepositoryTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.infrastructure.persistence.repository.ProductImageJsonCompatibilityTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.infrastructure.integration.HttpDhbProductMasterDataClientTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.infrastructure.integration.HttpDhbProductSyncTargetDiscoveryClientTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.inventory.ErpStockOutOrderServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.inventory.ErpStockInOrderServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.supply.ErpSupplierProfileServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.sync.BusinessDictionaryCoverageServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.ErpCoreServiceApplicationTests",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.supply.ErpProcurementOrderServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.inventory.ErpInventoryWarehouseServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.erp.application.service.product.ErpProductBasicDataServiceTest",
+        "module": "services/rigour-erp-core-service/erp-core-service",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.client.HttpSupplyAuthorizationClientTest",
+        "module": "services/rigour-tenant-iam-service/iam-client",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.client.SupplyAuthorizationContextTest",
+        "module": "services/rigour-tenant-iam-service/iam-client",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.api.IamAccessDeniedExceptionHandlerTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.domain.model.navigation.MenuHierarchyTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.infrastructure.persistence.settings.HttpAppReadinessClientTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.OidcLoginAuthenticationSuccessHandlerTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.infrastructure.persistence.repository.MybatisPlusIamStaffManagementStoreTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.infrastructure.feishu.FeishuIdentityProviderClientTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.infrastructure.persistence.repository.JdbcIamBiIdentityStoreContextTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.application.service.auth.FeishuAuthenticationServiceTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.IamSessionConfigurationTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.infrastructure.persistence.auth.DhbSyncPermissionMigrationTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.domain.settings.AppMenuTreeTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 6,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.infrastructure.persistence.auth.TenantAdministratorEffectivePermissionsTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 23,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.IamAuthorizationServerSecurityTests",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.TenantIamServiceApplicationTests",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 23,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.application.service.portal.IamBiIdentityServiceTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.infrastructure.security.oidc.PrivateKeyReferenceResolverTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.infrastructure.persistence.repository.MybatisPlusIamRolePermissionStoreTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.IamPackageArchitectureTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.tenant.iam.infrastructure.bootstrap.PortalClientBootstrapPropertiesTest",
+        "module": "services/rigour-tenant-iam-service/iam-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.merchant.application.service.CrmDictionaryCoverageServiceTest",
+        "module": "services/rigour-merchant-crm-service/merchant-crm-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.merchant.infrastructure.integration.HttpDhbCrmMasterDataClientTest",
+        "module": "services/rigour-merchant-crm-service/merchant-crm-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.merchant.infrastructure.persistence.repository.MybatisPlusCrmRepositoryProxyTest",
+        "module": "services/rigour-merchant-crm-service/merchant-crm-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.merchant.MerchantCrmServiceApplicationTests",
+        "module": "services/rigour-merchant-crm-service/merchant-crm-service",
+        "tests": 13,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.merchant.infrastructure.persistence.FeishuSystemCreatorMigrationTest",
+        "module": "services/rigour-merchant-crm-service/merchant-crm-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.merchant.infrastructure.persistence.FeishuSystemUpdaterMigrationTest",
+        "module": "services/rigour-merchant-crm-service/merchant-crm-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.merchant.application.service.CrmInternalCustomerServiceTest",
+        "module": "services/rigour-merchant-crm-service/merchant-crm-service",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.merchant.application.service.CrmMasterDataSyncServiceTest",
+        "module": "services/rigour-merchant-crm-service/merchant-crm-service",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinAdminThumbnailerTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinAudioDetectionTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 7,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinStatisticsTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 20,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinV19MigrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.SalesWorkMigrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinAnalysisWorkerTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinLocationVerificationTokenServiceTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinAudioRejectionHandlerTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 7,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinWorkbookTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.SalesWorkAdminIntegrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.AnalyticsSourceSnapshotContractTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinAdminPasswordHasherTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.application.service.SalesWorkAttendanceServiceStatusTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.Wgs84Gcj02ConverterTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinCombinedSortIntegrationTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.SalesWorkVisitIntegrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 6,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.infrastructure.amap.RestAmapPoiClientTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 6,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinAdminAuthIntegrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinRiskIntegrationTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinDeletionServiceTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinV23MigrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinStoreSelectionTokenServiceTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinIdentityEventRecorderTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinSalesIdentityServiceTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinAddressTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 13,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.infrastructure.media.AacAdtsRecordingMediaVerifierTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 16,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinPersistenceIntegrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.SalesWorkServiceApplicationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinAdminAccessPolicyTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinV15MigrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinWorkbookWriterTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.application.service.SalesWorkRecordingServiceTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 13,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinAdminAudioEvidenceContractTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinApiIntegrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 89,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.SalesWorkReopenAndTrackIntegrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinV20MigrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.SalesWorkAttendanceIntegrationTests",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.infrastructure.persistence.JdbcSalesWorkRecordingRepositoryTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinPublicPageContractTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TencentCloudTc3SignerTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.AmapTemporaryCheckinReverseGeocoderTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.sales.temporarycheckin.TemporaryCheckinCombinedSortOptionsTest",
+        "module": "services/rigour-sales-work-service/sales-work-service",
+        "tests": 18,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.order.infrastructure.persistence.repository.OrderProductRepairWorkflowTest",
+        "module": "services/rigour-order-center-service/order-center-service",
+        "tests": 18,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.order.application.service.sales.OrderBusinessTimeCodeGenerationTest",
+        "module": "services/rigour-order-center-service/order-center-service",
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.order.infrastructure.media.CosFundAttachmentUrlResolverTest",
+        "module": "services/rigour-order-center-service/order-center-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.order.OrderAttributionAndScopeIntegrationTest",
+        "module": "services/rigour-order-center-service/order-center-service",
+        "tests": 15,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.order.infrastructure.integration.HttpOrderRepairReferencesTest",
+        "module": "services/rigour-order-center-service/order-center-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.order.application.service.sales.OrderSalesOrderServiceTest",
+        "module": "services/rigour-order-center-service/order-center-service",
+        "tests": 23,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.order.OrderCenterServiceApplicationTests",
+        "module": "services/rigour-order-center-service/order-center-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.order.infrastructure.config.OrderLocalServiceUrlTest",
+        "module": "services/rigour-order-center-service/order-center-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.settings.client.BusinessDictionaryBatchClientTest",
+        "module": "services/rigour-business-settings-service/business-settings-client",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.settings.client.DictionaryItemsTest",
+        "module": "services/rigour-business-settings-service/business-settings-client",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.settings.TenantDictionaryIntegrationTest",
+        "module": "services/rigour-business-settings-service/business-settings-service",
+        "tests": 7,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.settings.application.service.BusinessDictionaryServiceTest",
+        "module": "services/rigour-business-settings-service/business-settings-service",
+        "tests": 6,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.settings.BusinessSettingsServiceApplicationTests",
+        "module": "services/rigour-business-settings-service/business-settings-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.client.ConnectorSyncLeaseClientTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-client",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.client.ExternalObjectMappingClientTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-client",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.dhb.DhbIntegrationServiceTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.feishu.FeishuImportBundleServiceTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 60,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.dhb.DhbClientAdapterCrmTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.media.ProductMediaSyncWorkerTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.feishu.FeishuReconciliationServiceTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 15,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.dhb.DhbSupplyChainServiceTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.dhb.DhbIntegrationWaitShipsRawLandingTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.DictionarySourceMappingServiceTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.feishu.FeishuProductReferenceMappingTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.config.FeishuReconciliationPropertiesTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 25,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.feishu.FeishuBitableClientAdapterTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.feishu.FeishuAttachmentObjectKeyFactoryTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.dhb.DhbOrderSyncServiceLineMappingTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 28,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.lease.DhbConnectorLeaseManagerTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.feishu.FeishuBitableCaptureTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 21,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.config.IntegrationInfrastructureConfigurationTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.dhb.DhbAttachmentObjectKeyFactoryTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.dhb.DhbSyncOrchestrationServiceTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.feishu.FeishuDictionaryGovernanceServiceTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.dhb.DhbClientAdapterTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 27,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.lease.DhbOrchestrationLeaseManagerTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.persistence.repository.JdbcFeishuOnlineCaptureStoreTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.feishu.FeishuJsapiSignServiceTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.media.CosProductMediaStorageTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 6,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.config.FeishuLocalYamlConfigurationTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.infrastructure.feishu.FeishuJsapiClientAdapterTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.dhb.ProductImageObjectKeyFactoryTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.IntegrationMigrationServiceApplicationTests",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.integration.application.service.dhb.DhbSyncOrchestrationPropertiesTest",
+        "module": "services/rigour-integration-migration-service/integration-migration-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.BiReconciliationSourceNormalizerTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 15,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.EmployeeAnalyticsServiceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.SupplyDashboardRestrictedOverviewTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.BiReconciliationRepairCaptureTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.BiComparisonRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.SupplyDashboardOperatingAnalysisRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 20,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.BiReconciliationRepairEvidenceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.PeopleFilterOptionsRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.SupplyDashboardTargetSemanticsRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 19,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.ProductCategoryProjectionTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 13,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.BiReconciliationOnlineReviewServiceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.BiComparisonServiceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.BiReconciliationOnlineCaptureRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 15,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.integration.HttpBiOrderRepairEvidenceSourceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.integration.HttpBiScopeIdentitySourceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.VisitAnalyticsRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.SkuSalesRankingMySqlTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 3
+      },
+      {
+        "name": "com.rigour.analytics.api.controller.OperatingWorkspaceApiTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.SupplyDashboardTargetContractTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.integration.HttpBiReconciliationUnitDictionaryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.OperatingWorkspaceRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 7,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.BiReconciliationEvidenceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.CustomerAttributeAnalyticsRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.CityProductSupplyRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.BiDataScopeServiceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 12,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.CustomerAttributeAnalyticsServiceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.OperatingWorkspaceServiceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 15,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.api.controller.BiScopedEndpointsTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 7,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.BiReconciliationUnitMappingTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.VisitAnalyticsServiceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.SupplyDashboardPaymentBackfillRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 6,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.BiBusinessDayRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 22,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.BiReconciliationReviewServiceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 17,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.CityProductReportRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 20,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.BiSupplyScopeIntegrationTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 13,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.BiBusinessTimeTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.SupplyDashboardOperatingAnalysisTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 20,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.integration.HttpBiSourceSnapshotClientTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.SupplyDashboardQueryServiceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 22,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.SalesRankingCityAttributionTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.CityContactRefreshTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.AnalyticsBiServiceApplicationTests",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.EmployeeAnalyticsRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.CityContactAnalyticsRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.BiCustomerTargetScopeRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.CityContactAnalyticsServiceTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.application.service.BiDataScopeRenewerTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.api.controller.CityProductReportSerializationTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.analytics.infrastructure.persistence.repository.BiReconciliationReviewRepositoryTest",
+        "module": "services/rigour-analytics-bi-service/analytics-bi-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.collaboration.CollaborationServiceApplicationTests",
+        "module": "services/rigour-collaboration-service/collaboration-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.collaboration.application.service.CollaborationServiceTest",
+        "module": "services/rigour-collaboration-service/collaboration-service",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.hr.HrPayrollServiceApplicationTests",
+        "module": "services/rigour-hr-payroll-service/hr-payroll-service",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.hr.domain.model.EmploymentStatusTest",
+        "module": "services/rigour-hr-payroll-service/hr-payroll-service",
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.hr.application.service.HrEmployeeServiceTest",
+        "module": "services/rigour-hr-payroll-service/hr-payroll-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.hr.AnalyticsSourceSnapshotContractTest",
+        "module": "services/rigour-hr-payroll-service/hr-payroll-service",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.shared.context.RequestContextFilterTest",
+        "module": "shared/rigour-shared-context",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.shared.context.ApplicationPermissionScopeTest",
+        "module": "shared/rigour-shared-context",
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.shared.core.web.GlobalExceptionHandlerTest",
+        "module": "shared/rigour-shared-core",
+        "tests": 6,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.shared.core.code.BusinessCodeGeneratorTest",
+        "module": "shared/rigour-shared-core",
+        "tests": 6,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.shared.core.api.ApiResponseTest",
+        "module": "shared/rigour-shared-core",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.shared.core.sync.SyncConflictClassifierTest",
+        "module": "shared/rigour-shared-core",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.architecture.EnvironmentConfigurationTest",
+        "module": "platform/rigour-architecture-tests",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "com.rigour.architecture.ReactorArchitectureTest",
+        "module": "platform/rigour-architecture-tests",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    ],
+    "log": "/Users/ethan/myspance/rigour/B2B供应链/自动化系统构建/outputs/dev-sync-review/20260916-002743/verification/rigour-dev-sync-platform-verify5.log",
+    "rootRunSkippedReason": "3 SkuSalesRankingMySqlTest cases require BI_TEST_MYSQL_URL; all 3 passed in the isolated follow-up run.",
+    "mysqlDialectFollowup": {
+      "command": "./mvnw -pl :analytics-bi-service -am -Dtest=SkuSalesRankingMySqlTest -Dsurefire.failIfNoSpecifiedTests=false test",
+      "environment": "Temporary mysql:8.4 container bound to 127.0.0.1; removed after testing",
+      "testCounts": {
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "log": "/Users/ethan/myspance/rigour/B2B供应链/自动化系统构建/outputs/dev-sync-review/20260916-002743/verification/rigour-dev-sync-mysql-dialect-test.log",
+      "status": "BUILD SUCCESS"
+    },
+    "uniqueTestsPassedIncludingFollowup": 1372
+  },
+  "frontend": {
+    "commands": [
+      "pnpm lint",
+      "pnpm build (includes pnpm typecheck)",
+      "pnpm test:run"
+    ],
+    "status": "PASS",
+    "testFiles": 74,
+    "tests": 511,
+    "warning": "Existing BI/ExcelJS bundle exceeds 800 kB; build succeeds."
+  },
+  "salesBusinessLinks": {
+    "command": "python3 -m unittest discover -s services/rigour-sales-work-service/tools -p test_business_links.py",
+    "status": "PASS",
+    "tests": 11
+  },
+  "migrationChecks": {
+    "duplicateVersions": 0,
+    "remoteMigrationFilesUnchanged": 276,
+    "localMigrationsRenamed": 21
+  },
+  "backup": "/Users/ethan/myspance/rigour/B2B供应链/自动化系统构建/outputs/dev-sync-review/20260916-002743",
+  "noCommit": true,
+  "noPush": true,
+  "noDeployment": true,
+  "sharedDevDatabaseModified": false,
+  "liveTenantActivationOrBrowserAcceptance": "NOT_RUN"
+}

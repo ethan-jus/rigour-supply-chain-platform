@@ -15,7 +15,7 @@ import fcntl
 from service_catalog import DOMAINS, business_compose, select_services
 
 PLATFORM = Path(__file__).resolve().parents[2]
-PORTAL = PLATFORM.parent / 'rigour-supply-chain-portal'
+WEB = PLATFORM.parent / 'rigour-supply-chain-digital-web'
 SOURCE = Path(__file__).resolve().parent
 ROOT = Path('/srv/rigour-dev')
 
@@ -32,10 +32,10 @@ def run(args, **kwargs):
 def git(repo, *args):
     return subprocess.check_output(['git','-C',str(repo),*args],text=True).strip()
 
-parser = argparse.ArgumentParser(description='中文一键部署全部微服务与门户到 D 盘开发环境')
+parser = argparse.ArgumentParser(description='中文一键部署全部微服务与SCDP 前端到 D 盘开发环境')
 parser.add_argument('action', nargs='?',default='deploy',choices=['deploy','build','status','logs','rollback'])
 parser.add_argument('--version',help='回退版本号，见发布记录')
-parser.add_argument('--services',help='本次部署的业务服务简称，逗号分隔；默认全部，始终包含IAM、Gateway和门户')
+parser.add_argument('--services',help='本次部署的业务服务简称，逗号分隔；默认全部，始终包含IAM、Gateway和SCDP 前端')
 args = parser.parse_args()
 selected = select_services(args.services)
 if sys.platform != 'linux' or not PLATFORM.is_relative_to(ROOT / 'src') or not Path('/mnt/d/RigourDev').is_dir():
@@ -50,10 +50,14 @@ if args.action not in ('deploy','build'):
 # 构建互斥锁覆盖 Git 更新、测试和发布，避免两个窗口同时修改工作区。
 lock = (ROOT / 'build.lock').open('w')
 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-if not PORTAL.exists():
-    run(['git','clone','--branch','dev','--single-branch','https://github.com/ethan-jus/rigour-supply-chain-portal.git',str(PORTAL)])
+legacy_web = PLATFORM.parent / 'rigour-supply-chain-portal'
+if not WEB.exists() and legacy_web.exists():
+    legacy_web.rename(WEB)
+    run(['git', '-C', str(WEB), 'worktree', 'repair'])
+if not WEB.exists():
+    run(['git','clone','--branch','dev','--single-branch','https://github.com/ethan-jus/rigour-supply-chain-portal.git',str(WEB)])
 commits = {}
-for repo in [PLATFORM,PORTAL]:
+for repo in [PLATFORM,WEB]:
     if git(repo,'branch','--show-current') != 'dev' or git(repo,'status','--porcelain'):
         raise SystemExit(repo.name + ' 必须位于干净的 dev 分支；请先提交自己的修改。')
     run(['git','-C',str(repo),'fetch','origin','dev'])
@@ -72,24 +76,24 @@ with log_path.open('w') as log:
     settings = Path('/mnt/d/RigourDev/config/maven-settings.xml')
     run(['./mvnw','verify',*(['-s',str(settings)] if settings.exists() else []),'-B','-T','2'],cwd=PLATFORM,stdout=log,stderr=subprocess.STDOUT)
     for command in [['pnpm','install','--frozen-lockfile'],['pnpm','lint'],['pnpm','typecheck'],['pnpm','test:run']]:
-        run(command,cwd=PORTAL,stdout=log,stderr=subprocess.STDOUT)
+        run(command,cwd=WEB,stdout=log,stderr=subprocess.STDOUT)
     env = dict(os.environ,VITE_OIDC_ISSUER='http://192.168.12.7:26881',
-        VITE_OIDC_CLIENT_ID='rigour-portal-desktop',VITE_OIDC_REDIRECT_URI='http://192.168.12.7:5100/oidc/callback',
-        VITE_OIDC_POST_LOGOUT_REDIRECT_URI='http://192.168.12.7:5100/',VITE_API_BASE_URL='/api/v1',VITE_APP_ENV='development')
-    run(['pnpm','exec','vite','build','--mode','desktop'],cwd=PORTAL,env=env,stdout=log,stderr=subprocess.STDOUT)
+        VITE_OIDC_CLIENT_ID='rigour-scdp-desktop',VITE_OIDC_REDIRECT_URI='http://192.168.12.7:5100/oidc/callback',
+        VITE_API_BASE_URL='/api/v1',VITE_APP_ENV='development')
+    run(['pnpm','exec','vite','build','--mode','desktop'],cwd=WEB,env=env,stdout=log,stderr=subprocess.STDOUT)
 
 (ROOT / 'cache').mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='rigour-release-',dir=ROOT / 'cache') as staging:
     folder = Path(staging)
-    for name in ['compose.yaml','Dockerfile.iam','Dockerfile.gateway','Dockerfile.portal','Dockerfile.service','nginx.conf','prepare-config.py','business_config.py','service_catalog.py','server.py','portal_health.py','migrate-iam-compat.py','IamCompatibilityMigration.java']:
+    for name in ['compose.yaml','Dockerfile.iam','Dockerfile.gateway','Dockerfile.web','Dockerfile.service','nginx.conf','prepare-config.py','business_config.py','service_catalog.py','server.py','web_health.py','migrate-iam-compat.py','IamCompatibilityMigration.java']:
         shutil.copy2(SOURCE / name,folder / name)
-    shutil.copy2(PLATFORM / 'services/rigour-tenant-iam-service/iam-service/target/iam-service-1.0.0-SNAPSHOT.jar',folder / 'iam.jar')
-    shutil.copy2(PLATFORM / 'services/rigour-api-gateway/target/rigour-api-gateway-1.0.0-SNAPSHOT.jar',folder / 'gateway.jar')
+    shutil.copy2(PLATFORM / 'services/rg-scdp-iam/iam-server/target/iam-server.jar',folder / 'iam-server.jar')
+    shutil.copy2(PLATFORM / 'services/rg-scdp-gateway/gateway-server/target/gateway-server.jar',folder / 'gateway-server.jar')
     for name, title, module, port, suffix, prefix in DOMAINS:
         artifact = module.split('/')[-1]
-        shutil.copy2(PLATFORM / 'services' / module / 'target' / (artifact + '-1.0.0-SNAPSHOT.jar'),folder / (name + '.jar'))
+        shutil.copy2(PLATFORM / 'services' / module / 'target' / (artifact + '.jar'),folder / (artifact + '.jar'))
     (folder / 'compose.business.json').write_text(json.dumps({'services': {k: v for k, v in business_compose().items() if k in selected}},ensure_ascii=False,indent=2))
-    shutil.copytree(PORTAL / 'dist',folder / 'portal')
+    shutil.copytree(WEB / 'dist',folder / 'web')
     (folder / '发布记录.json').write_text(json.dumps({'版本':release_id,'Git提交':commits,'部署服务':selected,'开发入口':'http://192.168.12.7:5100'},ensure_ascii=False,indent=2))
     hashes = {str(path.relative_to(folder)):hashlib.sha256(path.read_bytes()).hexdigest() for path in folder.rglob('*') if path.is_file()}
     (folder / 'sha256.json').write_text(json.dumps(hashes,ensure_ascii=False,indent=2))
@@ -101,4 +105,4 @@ if args.action == 'build':
     print('构建与校验完成，未修改运行中的应用。发布包：' + str(archive))
     raise SystemExit(0)
 run(['python3',str(SOURCE / 'server.py'),'deploy',str(archive)])
-print('发布完成。门户：http://192.168.12.7:5100；代码版本与验收信息在发布包内。')
+print('发布完成。SCDP 前端：http://192.168.12.7:5100；代码版本与验收信息在发布包内。')

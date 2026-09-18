@@ -18,7 +18,7 @@
 从仓库根目录执行，需 Docker、可用的 Playwright 包和 Chromium/Chrome：
 
 ```sh
-node services/rigour-sales-work-service/sales-work-service/scripts/admin-refresh-proxy-check.mjs
+node services/rg-scdp-sales/sales-server/scripts/admin-refresh-proxy-check.mjs
 ```
 
 Playwright 不在普通 Node 模块搜索路径时设置 `PW_MODULE_PATH`；使用现有 Chrome 时设置 `CHROME_BIN`。脚本没有个人绝对路径依赖。

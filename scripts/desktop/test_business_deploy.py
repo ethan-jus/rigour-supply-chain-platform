@@ -19,18 +19,25 @@ class BusinessDeployTest(unittest.TestCase):
             self.assertTrue(kwargs['check'])
 
     def test_all_modules_and_ports_are_unique(self):
-        self.assertEqual(12, len(DOMAINS))
-        self.assertEqual(14, len(set(PORTS.values())))
+        self.assertEqual(9, len(DOMAINS))
+        self.assertEqual(11, len(set(PORTS.values())))
         repo = Path(__file__).resolve().parents[2]
         for row in DOMAINS:
             self.assertTrue((repo / 'services' / row[2] / 'pom.xml').is_file())
 
     def test_selection_is_explicit_and_dependency_ordered(self):
         self.assertEqual(CORE + ['settings','crm'], select_services('crm,settings'))
-        self.assertEqual(15, len(select_services()))
+        self.assertEqual(12, len(select_services()))
         with self.assertRaises(ValueError):
             select_services('unknown')
         self.assertEqual(['rigour_iam','rigour_settings'], schemas_for(select_services('settings')))
+
+    def test_retired_services_cannot_be_selected_or_deployed(self):
+        for name in ('collaboration', 'city', 'channel'):
+            with self.subTest(service=name):
+                with self.assertRaises(ValueError):
+                    select_services(name)
+                self.assertNotIn(name, business_compose())
 
     def test_each_container_has_own_env_and_persistent_data(self):
         for name, config in business_compose().items():

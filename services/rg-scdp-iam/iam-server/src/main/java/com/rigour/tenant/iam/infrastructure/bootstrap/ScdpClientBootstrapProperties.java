@@ -1,0 +1,59 @@
+package com.rigour.tenant.iam.infrastructure.bootstrap;
+
+import java.net.URI;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+/** 公开SCDP PKCE客户端的一次性初始化参数；默认关闭且不包含客户端Secret。 */
+@ConfigurationProperties(prefix = "rigour.iam.bootstrap.scdp-client")
+public final class ScdpClientBootstrapProperties {
+    private boolean enabled;
+    private String clientId = "rigour-scdp-browser";
+    private String clientName = "瑞盖供应链数字化平台";
+    private String redirectUri;
+    private String postLogoutRedirectUri;
+    private boolean allowInsecureLoopback;
+    /** 台式机 DEV 显式允许精确的 HTTP 回调，仍不允许通配符和任意回调。 */
+    private boolean allowInsecureHttp;
+
+    public boolean isEnabled() { return enabled; }
+    public void setEnabled(boolean enabled) { this.enabled = enabled; }
+    public String getClientId() { return clientId; }
+    public void setClientId(String clientId) { this.clientId = clientId; }
+    public String getClientName() { return clientName; }
+    public void setClientName(String clientName) { this.clientName = clientName; }
+    public String getRedirectUri() { return redirectUri; }
+    public void setRedirectUri(String redirectUri) { this.redirectUri = redirectUri; }
+    public String getPostLogoutRedirectUri() { return postLogoutRedirectUri; }
+    public void setPostLogoutRedirectUri(String value) { this.postLogoutRedirectUri = value; }
+    public boolean isAllowInsecureLoopback() { return allowInsecureLoopback; }
+    public void setAllowInsecureLoopback(boolean value) { this.allowInsecureLoopback = value; }
+    public boolean isAllowInsecureHttp() { return allowInsecureHttp; }
+    public void setAllowInsecureHttp(boolean value) { this.allowInsecureHttp = value; }
+
+    public void validate() {
+        if (clientId == null || clientId.isBlank() || clientName == null || clientName.isBlank()) {
+            throw new IllegalStateException("SCDP OAuth client id and name cannot be empty");
+        }
+        requireUri(redirectUri, "redirect-uri", false);
+        requireUri(postLogoutRedirectUri, "post-logout-redirect-uri", true);
+    }
+
+    private void requireUri(String value, String field, boolean allowRoot) {
+        URI uri;
+        try {
+            uri = URI.create(value == null ? "" : value.strip());
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalStateException("SCDP " + field + " is invalid", exception);
+        }
+        boolean secure = "https".equalsIgnoreCase(uri.getScheme());
+        boolean loopback = allowInsecureLoopback && "http".equalsIgnoreCase(uri.getScheme())
+                && ("localhost".equalsIgnoreCase(uri.getHost()) || "127.0.0.1".equals(uri.getHost())
+                || "::1".equals(uri.getHost()));
+        boolean developmentHttp = allowInsecureHttp && "http".equalsIgnoreCase(uri.getScheme());
+        if (!(secure || loopback || developmentHttp) || uri.getHost() == null
+                || uri.getFragment() != null || uri.getUserInfo() != null
+                || !allowRoot && (uri.getPath() == null || uri.getPath().equals("/"))) {
+            throw new IllegalStateException("SCDP " + field + " must be exact HTTPS or approved loopback HTTP URI");
+        }
+    }
+}

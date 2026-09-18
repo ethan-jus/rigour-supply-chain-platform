@@ -2,13 +2,13 @@
 
 ## 定位
 
-本工程是 13 个粗粒度领域服务（含 Collaboration 协作服务）和一个 API Gateway 的可编译骨架。当前目标是建立稳定的代码所有权、依赖方向和跨仓库 HTTP 契约，不以空实现冒充生产基础设施。
+本工程是 10 个领域服务和一个 API Gateway 的可编译骨架。当前目标是建立稳定的代码所有权、依赖方向和跨仓库 HTTP 契约，不以空实现冒充生产基础设施。
 
 多人协同开发入口是 [`TEAM_DEVELOPMENT_GUIDE.md`](TEAM_DEVELOPMENT_GUIDE.md)。它规定了服务唯一所有者、第三方集成归属、跨服务契约、README、评审和断舍离门禁；本文件负责解释架构结构，不替代协同规则。
 
 ## Reactor
 
-根reactor共54个项目：根聚合项目1个、platform 3个、shared 8个、Gateway 1个、领域聚合父模块13个、领域API模块13个、领域启动应用13个，以及2个明确复用跨服务调用策略的client模块。
+根 reactor 包含根聚合、platform、shared、网关聚合及启动模块、10 个领域聚合/API/启动模块，以及实际被依赖的 IAM、Integration、公共基础客户端。所有目录与 artifactId 保持一致，准确清单由架构测试校验。
 
 ```text
 root
@@ -23,14 +23,14 @@ root
 ├── shared-file        # 可选纯契约
 ├── platform-starter   -> context + core + logging + web + validation + actuator
 ├── api-gateway        -> platform-starter + Spring Cloud Gateway WebMVC
-├── 13 domain service parents
+├── 10 domain service parents
 │   ├── <domain>-api     # 版本化接口和DTO，不包含实现
 │   ├── <domain>-client  # 可选；只封装已确认的跨服务调用策略
-│   └── <domain>-service # 启动应用、业务、领域和持久化
+│   └── <domain>-server  # 启动应用、业务、领域和持久化
 └── architecture-tests
 ```
 
-领域服务之间禁止 Maven 依赖。跨服务协作只能通过版本化 API、领域事件或本地投影完成；禁止跨库 SQL、跨服务写表和共享业务表。当前 `business-settings-client` 只封装字典批量补齐与降级审计，`integration-migration-client` 只封装连接器同步任务租约、心跳和精确释放；二者不包含所属服务的领域实现或数据访问。
+领域服务之间禁止 Maven 实现依赖。跨服务协作只能通过版本化 API、领域事件或本地投影完成；禁止跨库 SQL、跨服务写表和共享业务表。当前 `foundation-client` 只封装字典批量补齐与降级审计，`integration-client` 只封装连接器同步任务租约、心跳和精确释放；二者不包含所属服务的领域实现或数据访问。`iam-client` 仅封装供应链当前授权的签名 HTTP 读取和请求生命周期，业务过滤仍由各数据所属服务实现。
 
 ## Shared 边界
 
@@ -47,7 +47,7 @@ root
 
 ### 幂等落地要求
 
-`IdempotencyStore.reserve` 必须在具体基础设施中实现原子占位。跨实例并发、TTL、失败释放、结果重放和敏感响应保留策略必须由使用它的领域服务决定并做集成测试。仅引入 `rigour-shared-idempotency` 不会自动获得幂等能力。
+`IdempotencyStore.reserve` 必须在具体基础设施中实现原子占位。跨实例并发、TTL、失败释放、结果重放和敏感响应保留策略必须由使用它的领域服务决定并做集成测试。仅引入 `shared-idempotency` 不会自动获得幂等能力。
 
 ### Outbox 落地要求
 
@@ -55,7 +55,7 @@ root
 
 ## 服务内部依赖
 
-所有领域服务都采用业务聚合目录，让接口契约和实现相邻，避免按技术类型集中到顶层`contracts`目录。API模型不再拆出独立DTO模块：请求、响应和错误语义都是接口契约的一部分。Gateway只承担入口能力，不发布领域调用契约，因此保持单模块。
+所有领域服务都采用业务聚合目录，让接口契约和实现相邻，避免按技术类型集中到顶层`contracts`目录。API模型不再拆出独立DTO模块：请求、响应和错误语义都是接口契约的一部分。Gateway采用 `rg-scdp-gateway` 聚合工程，下设 `gateway-server`；没有独立领域调用契约，因此不创建空的 `gateway-api`。
 
 领域实现模块统一采用四层package边界：
 
@@ -80,7 +80,7 @@ domain          -> 不依赖 Spring、数据库或其他服务实现
 
 1. 所有POM都由根reactor直接或递归聚合；
 2. artifactId 不重复；
-3. 只有 `rigour-api-gateway` 和 13 个领域服务（含 `rigour-collaboration-service`）；
+3. 只有 `gateway-server` 和 10 个领域服务启动模块；
 4. 服务 POM 不直接依赖其他服务 artifact。
 
 这些静态门禁不能证明数据库账号隔离、运行时调用方向或事件兼容性，后续仍需部署和集成测试。
@@ -97,4 +97,4 @@ RocketMQ Proxy 映射为宿主机 `18081` 到容器 `8081`，与微服务使用�
 
 ## 尚未生产就绪
 
-IAM OIDC、平台/租户管理、数据库导航、Portal卡片与权限导航、Gateway资源服务器和签名上下文已完成代码。Gateway对每个受保护请求调用IAM内部`/token/current`，会话撤销和安全/租户策略版本变化可立即生效；代价是当前请求链路与IAM延迟和可用性耦合，后续需以安全版本事件投影扩展。V1～V6已应用共享DEV，V7/V8、共享密钥、客户端和跨进程浏览器链路尚未发布验收。构建和Testcontainers通过不代表共享DEV或生产验收完成。
+IAM OIDC、SCDP 租户内用户与角色管理、数据库导航、Gateway 资源服务器和签名上下文已实现。入口已收敛为登录后直接进入 SCDP；平台管理与应用目录代码移除。Gateway对每个受保护请求调用IAM内部`/token/current`，会话撤销和安全/租户策略版本变化可立即生效；代价是当前请求链路与IAM延迟和可用性耦合，后续需以安全版本事件投影扩展。V1～V6已应用共享DEV，V7/V8、共享密钥、客户端和跨进程浏览器链路尚未发布验收。构建和Testcontainers通过不代表共享DEV或生产验收完成。

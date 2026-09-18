@@ -15,7 +15,7 @@ services:
     volumes:
       - /srv/rigour-dev/apps/config/iam.properties:/config/iam.properties:ro
       - /srv/rigour-dev/apps/keys:/keys
-    command: ['java', '-jar', '/app/service.jar', '--spring.profiles.active=desktop', '--spring.config.additional-location=file:/config/iam.properties']
+    command: ['java', '-jar', '/app/iam-server.jar', '--spring.profiles.active=desktop', '--spring.config.additional-location=file:/config/iam.properties']
   gateway:
     image: rigour-desktop-gateway:${RELEASE_ID:?未设置发布版本}
     build:
@@ -29,12 +29,12 @@ services:
       JAVA_TOOL_OPTIONS: '-Xms64m -Xmx384m -Dfile.encoding=UTF-8'
     volumes:
       - /srv/rigour-dev/apps/config/gateway.properties:/config/gateway.properties:ro
-    command: ['java', '-jar', '/app/service.jar', '--spring.profiles.active=desktop', '--spring.config.additional-location=file:/config/gateway.properties']
-  portal:
-    image: rigour-desktop-portal:${RELEASE_ID:?未设置发布版本}
+    command: ['java', '-jar', '/app/gateway-server.jar', '--spring.profiles.active=desktop', '--spring.config.additional-location=file:/config/gateway.properties']
+  web:
+    image: rigour-desktop-web:${RELEASE_ID:?未设置发布版本}
     build:
       context: .
-      dockerfile: Dockerfile.portal
+      dockerfile: Dockerfile.web
     network_mode: host
     restart: unless-stopped
     mem_limit: 128m

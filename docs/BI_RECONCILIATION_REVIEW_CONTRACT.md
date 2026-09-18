@@ -44,7 +44,7 @@ No migration, shared-DEV capture, historical business write, actual import or on
 ## Test Entry Points
 
 - Backend: `BiReconciliationReviewServiceTest`, `BiReconciliationSourceNormalizerTest`, `BiReconciliationReviewRepositoryTest`, `BiReconciliationOnlineReviewServiceTest`, `BiReconciliationOnlineCaptureRepositoryTest`.
-- Backend targeted command: `./mvnw -pl services/rigour-analytics-bi-service/analytics-bi-service -am test -Dtest=BiReconciliationReviewServiceTest,BiReconciliationSourceNormalizerTest,BiReconciliationReviewRepositoryTest -Dsurefire.failIfNoSpecifiedTests=false`.
+- Backend targeted command: `./mvnw -pl services/rg-scdp-bi/bi-server -am test -Dtest=BiReconciliationReviewServiceTest,BiReconciliationSourceNormalizerTest,BiReconciliationReviewRepositoryTest -Dsurefire.failIfNoSpecifiedTests=false`.
 - Portal: `pnpm exec vitest run tests/bi-reconciliation-center.test.ts tests/bi-reconciliation-review-api.test.ts`.
 - Main coordinates all Maven invocations serially because other agents share `target` directories.
 

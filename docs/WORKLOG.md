@@ -83,7 +83,7 @@
 
 ### 已知边界
 
-- 集成测试需在有 Docker 的环境执行 `./mvnw -pl services/rigour-sales-work-service/sales-work-service -am test` 后方可视为数据库闭环验收。
+- 集成测试需在有 Docker 的环境执行 `./mvnw -pl services/rg-scdp-sales/sales-server -am test` 后方可视为数据库闭环验收。
 - 地图坐标按服务端保存值原样渲染；飞书定位坐标系与高德底图（GCJ-02）若不一致，需服务端统一转换（当前阶段未做）。
 - 门店/归属投影维护 API 是临时前置；CRM 服务与事件消费者投产后应下线并删除对应权限资源。
 - Portal 销售管理页面仍是骨架，本阶段只交付 API 层；页面接入另行排期。
@@ -429,7 +429,7 @@
 
 ### 完成结果
 
-- Gateway 只保留 `services/rigour-api-gateway`。
+- Gateway 只保留 `services/rg-scdp-gateway/gateway-server`。
 - shared 只保留并聚合 `core/context/logging/audit/idempotency/outbox/cache/file` 八个模块。
 - `rigour-platform-starter` 只传递 context、core、logging、Web、Validation 和 Actuator。
 - audit/idempotency/outbox/cache/file 均为按需契约；无共享 JPA 实体、默认空实现或自动启用的无效切面。

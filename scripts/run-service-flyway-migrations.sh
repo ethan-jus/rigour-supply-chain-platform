@@ -92,15 +92,15 @@ JAVA
 
 module_pom() {
   case "$1" in
-    settings) printf '%s\n' "$ROOT_DIR/services/rigour-business-settings-service/business-settings-service/pom.xml" ;;
-    iam) printf '%s\n' "$ROOT_DIR/services/rigour-tenant-iam-service/iam-service/pom.xml" ;;
-    integration) printf '%s\n' "$ROOT_DIR/services/rigour-integration-migration-service/integration-migration-service/pom.xml" ;;
-    erp) printf '%s\n' "$ROOT_DIR/services/rigour-erp-core-service/erp-core-service/pom.xml" ;;
-    crm) printf '%s\n' "$ROOT_DIR/services/rigour-merchant-crm-service/merchant-crm-service/pom.xml" ;;
-    order) printf '%s\n' "$ROOT_DIR/services/rigour-order-center-service/order-center-service/pom.xml" ;;
-    hr) printf '%s\n' "$ROOT_DIR/services/rigour-hr-payroll-service/hr-payroll-service/pom.xml" ;;
-    bi) printf '%s\n' "$ROOT_DIR/services/rigour-analytics-bi-service/analytics-bi-service/pom.xml" ;;
-    sales) printf '%s\n' "$ROOT_DIR/services/rigour-sales-work-service/sales-work-service/pom.xml" ;;
+    settings) printf '%s\n' "$ROOT_DIR/services/rg-scdp-foundation/foundation-server/pom.xml" ;;
+    iam) printf '%s\n' "$ROOT_DIR/services/rg-scdp-iam/iam-server/pom.xml" ;;
+    integration) printf '%s\n' "$ROOT_DIR/services/rg-scdp-integration/integration-server/pom.xml" ;;
+    erp) printf '%s\n' "$ROOT_DIR/services/rg-scdp-erp/erp-server/pom.xml" ;;
+    crm) printf '%s\n' "$ROOT_DIR/services/rg-scdp-crm/crm-server/pom.xml" ;;
+    order) printf '%s\n' "$ROOT_DIR/services/rg-scdp-order/order-server/pom.xml" ;;
+    hr) printf '%s\n' "$ROOT_DIR/services/rg-scdp-hr/hr-server/pom.xml" ;;
+    bi) printf '%s\n' "$ROOT_DIR/services/rg-scdp-bi/bi-server/pom.xml" ;;
+    sales) printf '%s\n' "$ROOT_DIR/services/rg-scdp-sales/sales-server/pom.xml" ;;
     *) printf 'Unknown service: %s\n' "$1" >&2; return 1 ;;
   esac
 }
@@ -122,15 +122,15 @@ schema_name() {
 
 migration_dir() {
   case "$1" in
-    settings) printf '%s\n' "$ROOT_DIR/services/rigour-business-settings-service/business-settings-service/src/main/resources/db/migration" ;;
-    iam) printf '%s\n' "$ROOT_DIR/services/rigour-tenant-iam-service/iam-service/src/main/resources/db/migration" ;;
-    integration) printf '%s\n' "$ROOT_DIR/services/rigour-integration-migration-service/integration-migration-service/src/main/resources/db/migration" ;;
-    erp) printf '%s\n' "$ROOT_DIR/services/rigour-erp-core-service/erp-core-service/src/main/resources/db/migration" ;;
-    crm) printf '%s\n' "$ROOT_DIR/services/rigour-merchant-crm-service/merchant-crm-service/src/main/resources/db/migration" ;;
-    order) printf '%s\n' "$ROOT_DIR/services/rigour-order-center-service/order-center-service/src/main/resources/db/migration" ;;
-    hr) printf '%s\n' "$ROOT_DIR/services/rigour-hr-payroll-service/hr-payroll-service/src/main/resources/db/migration" ;;
-    bi) printf '%s\n' "$ROOT_DIR/services/rigour-analytics-bi-service/analytics-bi-service/src/main/resources/db/migration" ;;
-    sales) printf '%s\n' "$ROOT_DIR/services/rigour-sales-work-service/sales-work-service/src/main/resources/db/migration" ;;
+    settings) printf '%s\n' "$ROOT_DIR/services/rg-scdp-foundation/foundation-server/src/main/resources/db/migration" ;;
+    iam) printf '%s\n' "$ROOT_DIR/services/rg-scdp-iam/iam-server/src/main/resources/db/migration" ;;
+    integration) printf '%s\n' "$ROOT_DIR/services/rg-scdp-integration/integration-server/src/main/resources/db/migration" ;;
+    erp) printf '%s\n' "$ROOT_DIR/services/rg-scdp-erp/erp-server/src/main/resources/db/migration" ;;
+    crm) printf '%s\n' "$ROOT_DIR/services/rg-scdp-crm/crm-server/src/main/resources/db/migration" ;;
+    order) printf '%s\n' "$ROOT_DIR/services/rg-scdp-order/order-server/src/main/resources/db/migration" ;;
+    hr) printf '%s\n' "$ROOT_DIR/services/rg-scdp-hr/hr-server/src/main/resources/db/migration" ;;
+    bi) printf '%s\n' "$ROOT_DIR/services/rg-scdp-bi/bi-server/src/main/resources/db/migration" ;;
+    sales) printf '%s\n' "$ROOT_DIR/services/rg-scdp-sales/sales-server/src/main/resources/db/migration" ;;
     *) printf 'Unknown service: %s\n' "$1" >&2; return 1 ;;
   esac
 }

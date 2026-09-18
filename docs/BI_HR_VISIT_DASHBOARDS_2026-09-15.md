@@ -1,5 +1,7 @@
 # HR 与销售拜访独立看板交付（2026-09-15）
 
+> 本文保留当时验收记录。2026-09-16 本地 dev 合并后的租户字典、数据权限、迁移编号和 BI 来源接口以[兼容检查记录](DEV_SYNC_SUPPLY_SETTINGS_2026-09-16.md)为准；历史直接读库配置已被领域 API 替代。
+
 ## 已完成
 
 - 数据看板菜单新增 **HR 人事看板** `/supply-chain/bi/hr`、**销售拜访看板** `/supply-chain/bi/sales-visits`；对应 IAM V88 已在 DEV 成功执行。

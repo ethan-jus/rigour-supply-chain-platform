@@ -1,4 +1,4 @@
 FROM eclipse-temurin:21-jre
 ARG SERVICE_JAR
 WORKDIR /app
-COPY ${SERVICE_JAR} service.jar
+COPY ${SERVICE_JAR} ./

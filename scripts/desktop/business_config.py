@@ -1,8 +1,6 @@
 """业务服务桌面配置生成；外部凭据只读取本机文件，不使用假密钥或访问云端。"""
 import os
 from pathlib import Path
-import re
-import secrets
 import subprocess
 from service_catalog import DOMAINS
 
@@ -87,30 +85,6 @@ def prepare(selected):
     missing = [key for name in selected for key in external_keys(name) if not external.get(key)]
     if missing:
         raise RuntimeError('缺少真实外部配置，请补齐 apps/config/external.env：' + ','.join(missing))
-    if 'collaboration' in selected:
-        additions = {}
-        for role in ['APP', 'MIGRATOR']:
-            key = 'COLLABORATION_DB_' + role + '_PASSWORD'
-            if key not in env:
-                user = 'rigour_collaboration_' + role.lower()
-                if mysql(f"SELECT user FROM mysql.user WHERE user='{user}';").strip():
-                    raise RuntimeError('协作账号已存在但配置缺失，停止自动生成密码。')
-                additions[key] = secrets.token_hex(20)
-        if additions:
-            env_path.write_text(env_path.read_text().rstrip() + '\n# 内部协作独立数据库凭据\n'
-                                + ''.join(k + '=' + v + '\n' for k, v in additions.items()))
-            env_path.chmod(0o600)
-            env.update(additions)
-        sql = 'CREATE DATABASE IF NOT EXISTS rigour_collaboration CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;\n'
-        for role in ['APP', 'MIGRATOR']:
-            password = env['COLLABORATION_DB_' + role + '_PASSWORD']
-            # 此处仅接受本生成器产生的口令，避免 SQL 拼接解释外部输入。
-            if not re.fullmatch('[0-9a-f]{40}', password):
-                raise RuntimeError('协作数据库凭据格式不符合初始化约定。')
-            privileges = 'SELECT,INSERT,UPDATE,DELETE' if role == 'APP' else 'SELECT,INSERT,UPDATE,DELETE,CREATE,ALTER,INDEX,REFERENCES'
-            sql += f"CREATE USER IF NOT EXISTS 'rigour_collaboration_{role.lower()}'@'%' IDENTIFIED BY '{password}';\n"
-            sql += f"GRANT {privileges} ON rigour_collaboration.* TO 'rigour_collaboration_{role.lower()}'@'%';\n"
-        mysql(sql)
     for row in DOMAINS:
         name, title, module, port, suffix, prefix = row
         if name not in selected:
@@ -124,8 +98,6 @@ def prepare(selected):
         allowed = external_keys(name)
         if name in ('erp', 'integration'):
             allowed += [f'RIGOUR_{name.upper()}_PRODUCT_MEDIA_COS_SESSION_TOKEN']
-        if name == 'collaboration':
-            allowed += ['RIGOUR_LIVEKIT_URL', 'RIGOUR_LIVEKIT_API_KEY', 'RIGOUR_LIVEKIT_API_SECRET']
         values.update({key: external[key] for key in allowed if external.get(key)})
         path = ROOT / f'apps/config/{name}.env'
         path.write_text('# 本服务所需凭据；不包含其他领域密码和数据库 root。\n' + ''.join(k + '=' + v + '\n' for k, v in values.items()))

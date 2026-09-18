@@ -1,5 +1,7 @@
 # 服务边界
 
+下表应用列为保持兼容的运行注册名。工程目录与 Maven 坐标使用新命名，映射见 [工程命名约定](PROJECT_NAMING.md)。
+
 | 应用 | 端口 | Schema | 数据主权与职责 |
 |---|---:|---|---|
 | rigour-api-gateway | 26880 | — | 路由、JWT资源服务器、IAM当前Token在线确认和HMAC签名的身份/角色/权限上下文入口；限流及事件投影待实现 |
@@ -12,10 +14,8 @@
 | rigour-ai-agent-service | 26887 | `rigour_ai` | ASR、业务初审、查重、知识问答、战报 Agent 和模型治理 |
 | rigour-analytics-bi-service | 26888 | `rigour_bi` | 指标、分析分层、驾驶舱、排名、战报和锁定快照 |
 | rigour-hr-payroll-service | 26889 | `rigour_hr` | 任职、工资、绩效、提成、月结和冲回 |
-| rigour-city-operations-service | 26890 | `rigour_city` | 城市成本、预算、活动、合作方、营销、复盘和培训 |
-| rigour-channel-agent-service | 26891 | `rigour_channel` | 代理等级、关系树、额度、审批、占用和释放流水 |
 | rigour-business-settings-service | 26892 | `rigour_settings` | 系统级、模块级和租户级业务字典及层级条目；不持有ERP、CRM、订单业务事实 |
 
-每个领域服务独占自己的Schema、数据库账号和写权限。2026-08-06 18:52只读核验的共享DEV运行时为：`rigour_iam`的Flyway V1～V21、34张业务表，`rigour_integration`最近已确认的基线为V1～V2、13张业务表。Sales Work V1尚未发布共享DEV；运行账号和迁移账号必须分离，密码通过环境Secret注入而不是写入Nacos。
+每个领域服务是自身 Schema 的唯一业务写入方。DEV 按 2026-09-16 的开发约定使用配置文件中的 root，并在启动时运行 Flyway；生产仍须按独立配置控制账号和写权限。数据库实际迁移版本以目标环境核验为准。
 
-服务之间无Maven实现依赖，通过API、事件或本地投影协作。每个领域服务的Java调用契约位于同一聚合工程的`<domain>-api`，调用方只允许依赖API模块。所有外部业务请求必须经过Gateway；服务只信任签名且未过期的调用人上下文，不能信任浏览器或普通内部调用方自填的`X-Rigour-*`。BI聚合由analytics-bi-service提供，不在页面或Gateway中实时拼装多个业务库。
+服务之间无Maven实现依赖，通过API、事件或本地投影协作。每个领域服务的Java调用契约位于同一聚合工程的`<domain>-api`，调用方只允许依赖 API 或不含业务实现的客户端模块。所有外部业务请求必须经过Gateway；服务只信任签名且未过期的调用人上下文，不能信任浏览器或普通内部调用方自填的`X-Rigour-*`。BI聚合由 `bi-server` 提供，不在页面或Gateway中实时拼装多个业务库。

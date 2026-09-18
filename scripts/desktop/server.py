@@ -13,7 +13,7 @@ import subprocess
 import tarfile
 import time
 from urllib.request import urlopen
-from portal_health import check_portal
+from web_health import check_web
 from service_catalog import CORE, DOMAINS, PORTS, schemas_for, select_services
 from business_config import prepare as prepare_business, mysql
 
@@ -35,7 +35,7 @@ def query(sql):
     return mysql(sql)
 
 def release_services(release):
-    return json.loads((release / '发布记录.json').read_text()).get('部署服务', CORE)
+    return ['web' if name == 'portal' else name for name in json.loads((release / '发布记录.json').read_text()).get('部署服务', CORE)]
 
 def schema_state(selected):
     state = {}
@@ -82,7 +82,7 @@ def check_release(release):
         if service in PORTS:
             wait_health(f'http://127.0.0.1:{PORTS[service]}/actuator/health',240)
     wait_health('http://127.0.0.1:5100/')
-    check_portal()
+    check_web()
 
 def wait_health(url, seconds=150):
     deadline = time.monotonic() + seconds
@@ -175,7 +175,11 @@ with (ROOT / 'deploy.lock').open('w') as lock:
                     print('启动并检查：' + title,flush=True)
                     compose(release,'up','-d','--no-build','--pull','never',name)
                     wait_health(f'http://127.0.0.1:{port}/actuator/health',240)
-            compose(release,'up','-d','--no-build','--pull','never','gateway','portal')
+            if current.exists() and 'portal' in json.loads((current.resolve() / '发布记录.json').read_text()).get('部署服务', []):
+                # 旧无状态前端容器占用 5100；在新镜像和服务就绪后移除。
+                compose(current.resolve(), 'stop', 'portal')
+                compose(current.resolve(), 'rm', '-f', 'portal')
+            compose(release,'up','-d','--no-build','--pull','never','gateway','web')
             check_release(release)
         except Exception:
             print('部署未通过验收，保留旧版本记录和备份；未自动修改或回退数据库。', flush=True)

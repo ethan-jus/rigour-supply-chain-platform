@@ -1,0 +1,11 @@
+CREATE TABLE order_business_parameter(
+ tenant_id VARCHAR(36) NOT NULL,parameter_code VARCHAR(80) NOT NULL,parameter_value VARCHAR(100) NOT NULL,
+ revision BIGINT NOT NULL DEFAULT 1,updated_by VARCHAR(50) NOT NULL,updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+ PRIMARY KEY(tenant_id,parameter_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE order_parameter_audit(
+ id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,tenant_id VARCHAR(36) NOT NULL,actor_id VARCHAR(50) NOT NULL,
+ parameter_code VARCHAR(80) NOT NULL,old_value VARCHAR(100) NOT NULL,new_value VARCHAR(100) NOT NULL,
+ reason VARCHAR(500) NOT NULL,revision BIGINT NOT NULL,created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+ KEY ix_order_parameter_audit(tenant_id,created_at,id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

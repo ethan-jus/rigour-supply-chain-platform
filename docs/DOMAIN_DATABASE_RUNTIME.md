@@ -1,5 +1,7 @@
 # 领域数据库运行时初始化
 
+> 历史运行手册：本文包含旧的服务清单、服务器地址与账号初始化流程。当前日常共享 DEV 的数据源、账号及 Flyway 运行规则以 [`SHARED_DEV_LOCAL_RUNTIME.md`](./SHARED_DEV_LOCAL_RUNTIME.md) 为准；操作前须核对当前检出代码和目标环境。
+
 更新时间：2026-08-10
 
 本文只负责共享 DEV 的数据库边界、账号和初始化方式，不代替各领域的字段级设计、Flyway 迁移和持久层实现。
@@ -20,8 +22,6 @@
 | `rigour-ai-agent-service` | `rigour_ai` | `rigour_ai_app` | `rigour_ai_migrator` | `AI_DB_APP_PASSWORD` / `AI_DB_MIGRATOR_PASSWORD` |
 | `rigour-analytics-bi-service` | `rigour_bi` | `rigour_bi_app` | `rigour_bi_migrator` | `BI_DB_APP_PASSWORD` / `BI_DB_MIGRATOR_PASSWORD` |
 | `rigour-hr-payroll-service` | `rigour_hr` | `rigour_hr_app` | `rigour_hr_migrator` | `HR_DB_APP_PASSWORD` / `HR_DB_MIGRATOR_PASSWORD` |
-| `rigour-city-operations-service` | `rigour_city` | `rigour_city_app` | `rigour_city_migrator` | `CITY_DB_APP_PASSWORD` / `CITY_DB_MIGRATOR_PASSWORD` |
-| `rigour-channel-agent-service` | `rigour_channel` | `rigour_channel_app` | `rigour_channel_migrator` | `CHANNEL_DB_APP_PASSWORD` / `CHANNEL_DB_MIGRATOR_PASSWORD` |
 
 已有库不在本次重建范围：
 

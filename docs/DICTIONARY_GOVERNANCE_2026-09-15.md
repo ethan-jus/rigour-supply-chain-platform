@@ -1,5 +1,7 @@
 # 字典治理实施记录（2026-09-15）
 
+> 本文保留当时验收记录。2026-09-16 本地 dev 合并后的租户字典、数据权限、迁移编号和 BI 来源接口以[兼容检查记录](DEV_SYNC_SUPPLY_SETTINGS_2026-09-16.md)为准；历史直接读库配置已被领域 API 替代。
+
 ## 结果与范围
 
 - 在 `feature/system-optimization` 完成 Platform / Portal 的字典治理；未提交、未推送。

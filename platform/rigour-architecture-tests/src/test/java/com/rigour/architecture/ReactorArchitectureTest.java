@@ -61,10 +61,24 @@ class ReactorArchitectureTest {
                 .filter(module -> module.startsWith("services/"))
                 .forEach(serviceModules::add);
 
-        assertEquals(14, serviceModules.size(), "必须保持 Gateway + 13 个领域服务（含协作服务）");
-        assertTrue(serviceModules.contains("services/rigour-api-gateway"));
+        assertEquals(11, serviceModules.size(), "必须保持 Gateway + 10 个领域服务");
+        assertTrue(serviceModules.contains("services/rg-scdp-gateway"));
         assertTrue(serviceModules.stream().noneMatch(module -> module.equals("services/rigour-gateway")));
-        assertEquals(14, applicationModules().size(), "聚合父模块和API模块不得被误计为启动应用");
+        assertEquals(11, applicationModules().size(), "聚合父模块和API模块不得被误计为启动应用");
+    }
+
+    @Test
+    void projectDirectoriesMatchTheirMavenArtifactIds() throws Exception {
+        assertEquals("rigour-supply-chain-digital-platform",
+                directChildText(readPom(ROOT.resolve("pom.xml")), "artifactId"));
+        for (String module : allModules()) {
+            Document pom = readPom(ROOT.resolve(module).resolve("pom.xml"));
+            assertEquals(Path.of(module).getFileName().toString(), directChildText(pom, "artifactId"), module);
+            if (module.startsWith("services/") && Path.of(module).getNameCount() == 2) {
+                assertTrue(Path.of(module).getFileName().toString().startsWith("rg-scdp-"), module);
+                assertEquals("pom", directChildText(pom, "packaging"), module);
+            }
+        }
     }
 
     @Test
@@ -101,9 +115,9 @@ class ReactorArchitectureTest {
         }
 
         assertEquals(Set.of(
-                "rigour-shared-context",
-                "rigour-shared-core",
-                "rigour-shared-logging"
+                "shared-context",
+                "shared-core",
+                "shared-logging"
         ), internalDependencies, "可选 shared 库不得由 platform-starter 强制传递");
     }
 
@@ -154,7 +168,7 @@ class ReactorArchitectureTest {
             String packaging = directChildText(pom, "packaging");
             String artifactId = directChildText(pom, "artifactId");
             if (!"pom".equals(packaging)
-                    && ("rigour-api-gateway".equals(artifactId) || artifactId.endsWith("-service"))) {
+                    && artifactId.endsWith("-server")) {
                 result.add(module);
             }
         }

@@ -21,7 +21,7 @@ All upload layers now agree: business audio 256 MiB; Spring multipart file 256 M
 
 The client checks size before metadata/preview work. Definite 413 is persisted as non-retryable for that file; users can replace it. HTML proxy errors are not rendered. Optional uploads allow 20 minutes total and stop after 90 seconds without upload progress; they do not hold the main visit or next visit open. No full-file browser transcoding was introduced.
 
-See [upload deployment guide](../services/rigour-sales-work-service/sales-work-service/deploy/UPLOAD_LIMITS.md).
+See [upload deployment guide](../services/rg-scdp-sales/sales-server/deploy/UPLOAD_LIMITS.md).
 
 ## Schema and runtime
 
@@ -38,11 +38,11 @@ Run from repository root:
 
 ```sh
 ./mvnw verify
-./mvnw -pl services/rigour-sales-work-service/sales-work-service -am verify
-node services/rigour-sales-work-service/sales-work-service/src/test/js/sales-checkin-geolocation.test.cjs
-node services/rigour-sales-work-service/sales-work-service/src/test/js/sales-checkin-recovery.test.cjs
-node services/rigour-sales-work-service/sales-work-service/scripts/admin-browser-check.mjs
-node services/rigour-sales-work-service/sales-work-service/scripts/nginx-upload-check.mjs
+./mvnw -pl services/rg-scdp-sales/sales-server -am verify
+node services/rg-scdp-sales/sales-server/src/test/js/sales-checkin-geolocation.test.cjs
+node services/rg-scdp-sales/sales-server/src/test/js/sales-checkin-recovery.test.cjs
+node services/rg-scdp-sales/sales-server/scripts/admin-browser-check.mjs
+node services/rg-scdp-sales/sales-server/scripts/nginx-upload-check.mjs
 git diff --check
 ```
 

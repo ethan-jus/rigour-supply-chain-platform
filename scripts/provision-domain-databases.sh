@@ -20,8 +20,6 @@ services=(
   "ai|rigour_ai|rigour_ai_app|rigour_ai_migrator|AI_DB_APP_PASSWORD|AI_DB_MIGRATOR_PASSWORD"
   "bi|rigour_bi|rigour_bi_app|rigour_bi_migrator|BI_DB_APP_PASSWORD|BI_DB_MIGRATOR_PASSWORD"
   "hr|rigour_hr|rigour_hr_app|rigour_hr_migrator|HR_DB_APP_PASSWORD|HR_DB_MIGRATOR_PASSWORD"
-  "city|rigour_city|rigour_city_app|rigour_city_migrator|CITY_DB_APP_PASSWORD|CITY_DB_MIGRATOR_PASSWORD"
-  "channel|rigour_channel|rigour_channel_app|rigour_channel_migrator|CHANNEL_DB_APP_PASSWORD|CHANNEL_DB_MIGRATOR_PASSWORD"
 )
 
 umask 077

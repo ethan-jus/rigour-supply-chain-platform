@@ -1,8 +1,0 @@
-# local不是一套独立环境；它必须与dev一起启用，只保留开发者电脑的运行差异。
-spring:
-  cloud:
-    nacos:
-      discovery:
-        # local只是本机运行覆盖层：读取共享DEV配置，但不把开发者电脑注册到共享服务发现。
-        # 如果后续需要调试服务发现，只能在当次启动临时覆盖为true，不要提交为默认值。
-        register-enabled: ${NACOS_DISCOVERY_REGISTER_ENABLED:false}

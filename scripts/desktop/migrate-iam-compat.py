@@ -14,10 +14,10 @@ release = Path(__file__).resolve().parent
 root = Path('/srv/rigour-dev')
 env = dict(line.split('=',1) for line in (root/'.env').read_text().splitlines()
            if line and not line.startswith('#'))
-assert (release/'iam.jar').is_file(), '只从已经校验的发布包执行迁移'
+assert (release/'iam-server.jar').is_file(), '只从已经校验的发布包执行迁移'
 with tempfile.TemporaryDirectory(dir=root/'cache',prefix='iam-compat-') as temporary:
     folder = Path(temporary)
-    with zipfile.ZipFile(release/'iam.jar') as jar:
+    with zipfile.ZipFile(release/'iam-server.jar') as jar:
         for info in jar.infolist():
             name = info.filename
             if (name.startswith('BOOT-INF/lib/') and name.endswith('.jar')) or (

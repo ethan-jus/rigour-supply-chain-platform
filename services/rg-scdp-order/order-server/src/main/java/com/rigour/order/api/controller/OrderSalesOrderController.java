@@ -1,0 +1,193 @@
+package com.rigour.order.api.controller;
+
+import com.rigour.order.api.v1.OrderSalesOrderApi;
+import com.rigour.order.api.v1.model.OrderPageView;
+import com.rigour.order.api.v1.model.SalesOrderCommand;
+import com.rigour.order.api.v1.model.SalesOrderDetailView;
+import com.rigour.order.api.v1.model.SalesOrderSourceProjectionCommand;
+import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
+import com.rigour.order.api.v1.model.SalesOrderStockOutCommand;
+import com.rigour.order.api.v1.model.SalesOrderStockOutResult;
+import com.rigour.order.api.v1.model.SalesOrderSummaryView;
+import com.rigour.order.api.v1.model.SalesOrderTotalsView;
+import com.rigour.order.application.service.sales.OrderSalesOrderService;
+import com.rigour.shared.core.api.ApiResponse;
+
+import org.springframework.web.bind.annotation.RestController;
+
+import java.time.Instant;
+
+/** Order 自研销售订单 HTTP 边界；订货宝同步查询不从这里进入。 */
+@RestController
+public final class OrderSalesOrderController implements OrderSalesOrderApi {
+    private final OrderSalesOrderService service;
+    private final com.rigour.order.application.service.sales.OrderFulfillmentService fulfillment;
+
+    public OrderSalesOrderController(
+            OrderSalesOrderService service,
+            com.rigour.order.application.service.sales.OrderFulfillmentService fulfillment) {
+        this.service = service;
+        this.fulfillment = fulfillment;
+    }
+
+    @Override
+    public ApiResponse<OrderPageView<SalesOrderSummaryView>> salesOrders(
+            int begin,
+            int step,
+            String orderNo,
+            String sourceOrderNo,
+            String sourceStatusCode,
+            String dataQualityStatusCode,
+            String customerName,
+            String contactPhone,
+            String regionCode,
+            String ownerSalesUserId,
+            String ownerEmployeeCode,
+            String orderStatusCode,
+            String paymentStatusCode,
+            String outboundStatusCode,
+            Instant orderDateFrom,
+            Instant orderDateTo,
+            Long productId,
+            Long productVariantId,
+            String productCodeSnapshot,
+            String skuCodeSnapshot,
+            String productNameSnapshot,
+            String specificationSnapshot) {
+        return ApiResponse.success(
+                service.salesOrders(
+                        begin,
+                        step,
+                        orderNo,
+                        sourceOrderNo,
+                        sourceStatusCode,
+                        dataQualityStatusCode,
+                        customerName,
+                        contactPhone,
+                        regionCode,
+                        ownerSalesUserId,
+                        ownerEmployeeCode,
+                        orderStatusCode,
+                        paymentStatusCode,
+                        outboundStatusCode,
+                        orderDateFrom,
+                        orderDateTo,
+                        productId,
+                        productVariantId,
+                        productCodeSnapshot,
+                        skuCodeSnapshot,
+                        productNameSnapshot,
+                        specificationSnapshot));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderTotalsView> salesOrderTotals(
+            String orderNo,
+            String sourceOrderNo,
+            String sourceStatusCode,
+            String dataQualityStatusCode,
+            String customerName,
+            String contactPhone,
+            String regionCode,
+            String ownerSalesUserId,
+            String ownerEmployeeCode,
+            String orderStatusCode,
+            String paymentStatusCode,
+            String outboundStatusCode,
+            Instant orderDateFrom,
+            Instant orderDateTo,
+            Long productId,
+            Long productVariantId,
+            String productCodeSnapshot,
+            String skuCodeSnapshot,
+            String productNameSnapshot,
+            String specificationSnapshot) {
+        return ApiResponse.success(
+                service.salesOrderTotals(
+                        orderNo,
+                        sourceOrderNo,
+                        sourceStatusCode,
+                        dataQualityStatusCode,
+                        customerName,
+                        contactPhone,
+                        regionCode,
+                        ownerSalesUserId,
+                        ownerEmployeeCode,
+                        orderStatusCode,
+                        paymentStatusCode,
+                        outboundStatusCode,
+                        orderDateFrom,
+                        orderDateTo,
+                        productId,
+                        productVariantId,
+                        productCodeSnapshot,
+                        skuCodeSnapshot,
+                        productNameSnapshot,
+                        specificationSnapshot));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderDetailView> salesOrder(Long id) {
+        return ApiResponse.success(service.salesOrder(id));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderDetailView> createSalesOrder(SalesOrderCommand command) {
+        return ApiResponse.success(service.create(command));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderDetailView> updateSalesOrder(Long id, SalesOrderCommand command) {
+        return ApiResponse.success(service.update(id, command));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderDetailView> updateSalesOrderSourceStatus(
+            Long id, SalesOrderSourceStatusCommand command) {
+        return ApiResponse.success(service.updateSourceStatus(id, command));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderDetailView> updateSalesOrderSourceProjection(
+            Long id, SalesOrderSourceProjectionCommand command) {
+        return ApiResponse.success(service.updateSourceProjection(id, command));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderDetailView> submitSalesOrder(Long id, int revision) {
+        return ApiResponse.success(service.submit(id, revision));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderDetailView> cancelSalesOrder(Long id, int revision) {
+        return ApiResponse.success(service.cancel(id, revision));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderDetailView> cancelSalesOrderBySource(Long id, int revision) {
+        return ApiResponse.success(service.cancelBySource(id, revision));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderDetailView> confirmSalesOrderOutbound(Long id, int revision) {
+        return ApiResponse.success(service.confirmOutbound(id, revision));
+    }
+
+    @Override
+    public ApiResponse<SalesOrderStockOutResult> confirmSalesOrderStockOut(
+            Long id, SalesOrderStockOutCommand command) {
+        var result = fulfillment.execute(id, command);
+        return ApiResponse.success(
+                new SalesOrderStockOutResult(
+                        result.stockOutId(),
+                        result.stockOutNo(),
+                        result.stockOutTime(),
+                        service.salesOrder(id)));
+    }
+
+    @Override
+    public ApiResponse<Void> deleteSalesOrder(Long id, int revision) {
+        service.delete(id, revision);
+        return ApiResponse.success(null);
+    }
+}

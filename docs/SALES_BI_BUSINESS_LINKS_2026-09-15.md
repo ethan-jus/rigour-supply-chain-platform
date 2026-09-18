@@ -1,5 +1,7 @@
 # Sales 人员、门店固定编码关联
 
+> 本文保留当时验收记录。2026-09-16 本地 dev 合并后的租户字典、数据权限、迁移编号和 BI 来源接口以[兼容检查记录](DEV_SYNC_SUPPLY_SETTINGS_2026-09-16.md)为准；历史直接读库配置已被领域 API 替代。
+
 范围：共享 DEV；2026-09-15。用户已确认采用名称匹配建立初始业务关联，并授权门店参照处理。没有提交、推送或生产发布。
 
 ## 已落库
@@ -23,22 +25,22 @@
 - 个人筛选按**拜访提交人**的固定员工编码统计，不按 CRM 当前客户负责人替代；沿用现有可信租户/城市/员工范围。未关联人员的拜访只进入其可见城市总体，不计入任何个人业绩。
 - 城市总数仍按 Sales 门店去重，不因缺 CRM 对应而排除；表格增加“已关联 CRM 门店”“未关联 CRM 门店”。旧快照未带关联时显示待同步，个人查询不退回城市总数。
 - 12:11 左右源库核对：9,911 次有效拜访、5,511 家去重门店；8,924 次拜访已关联员工，涉及 84 名有拜访记录的员工；252 家被拜访门店已关联 CRM。与此前 9,910 次相比增加一次真实提交，门店去重数未变。
-- **已生效（13:35）**：用户已执行[三条最小授权 SQL](BI_SALES_BUSINESS_LINK_GRANTS.sql)，BI 应用账号三项读取均实测通过。本地 BI 26888 已按原 `dev,local` 配置重启并健康检查 UP；没有变更认证规则或其他领域服务。
+- **已生效（13:35）**：用户已执行当时的三项最小数据库读权限，BI 应用账号三项读取均实测通过。本地 BI 26888 已按原 `dev,local` 配置重启并健康检查 UP；没有变更认证规则或其他领域服务。
 - 已登录 Portal 触发全链路刷新，运行 218 于 13:35:26 完成 SUCCESS；随后运行 219 于 13:35:51 完成 SUCCESS。关联快照时间为 13:35:50，`business_links_ready=1`。
 - 13:38 只读一致性事务核对：源库与 BI 均为 **9,921 次有效拜访、5,516 家去重门店、8,934 次已关联员工拜访、84 名有已关联拜访的员工、252 家已关联 CRM 的被拜访门店**。源端单独记录、BI 单独记录、逐记录编码/城市/审核状态/时间差异均为 0；17 个城市、109 个员工编码与城市分组（含未关联人员分组）的汇总差异均为 0。
 - 拜访数和去重门店数较上一轮增加来自真实新提交。568 家已关联门店中仅 252 家在当前拜访事实中出现，其余不凭空计入建联；城市总体仍保留 5,264 家尚未关联 CRM 的被拜访门店。
 
 ## 可复跑维护程序
 
-程序：`services/rigour-sales-work-service/tools/business_links.py`，依赖 PyMySQL。它是按需运行的 Sales 数据维护工具，不是在线请求或自动调度任务；HR/CRM 各用独立只读事务，Sales 只写自己的两张关联表。
+程序：`services/rg-scdp-sales/tools/business_links.py`，依赖 PyMySQL。它是按需运行的 Sales 数据维护工具，不是在线请求或自动调度任务；HR/CRM 各用独立只读事务，Sales 只写自己的两张关联表。
 
 通过环境注入 `SALES_DB_HOST/PORT/NAME/USER/PASSWORD`、`HR_DB_*`、`CRM_DB_*`。账号分别使用对应领域账号，不使用 root 或跨域通用写账号。密钥和审核文件不得进入 Git。
 
 ```bash
-python3 services/rigour-sales-work-service/tools/business_links.py \
+python3 services/rg-scdp-sales/tools/business_links.py \
   --tenant-id "$LINK_TENANT_ID" --report /tmp/sales-link-preview.json
 
-python3 services/rigour-sales-work-service/tools/business_links.py \
+python3 services/rg-scdp-sales/tools/business_links.py \
   --tenant-id "$LINK_TENANT_ID" --report /tmp/sales-link-applied.json \
   --apply --expected-digest "$LINK_PREVIEW_DIGEST" --actor "$LINK_OPERATOR"
 ```

@@ -1,0 +1,43 @@
+# 日常开发选择 dev：基础设施统一使用台式机 192.168.12.7，不需要本机安装中间件。
+# DEV账号仅用于开发；COS/签名密钥沿用IDEA环境变量，不在Git保存云密钥。
+# 本机不注册到共享服务池、不自动迁移数据库；台式机部署仍由部署脚本管理。
+server:
+  port: 26887
+spring:
+  datasource:
+    url: "jdbc:mysql://192.168.12.7:13306/rigour_ai?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&sslMode=DISABLED&allowPublicKeyRetrieval=true"
+    username: "root"
+    password: "281f54b19ac9a71025fca65e0654b23c504d3f98"
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+  cloud:
+    nacos:
+      server-addr: "192.168.12.7:18848"
+      config:
+        enabled: false
+        import-check:
+          enabled: false
+        namespace: "3aa03547-8948-4254-bd94-47c630db128b"
+      username: "nacos"
+      password: "430baa72cea83cdd77b1627990f7fb2d6bfe0622"
+      discovery:
+        namespace: "3aa03547-8948-4254-bd94-47c630db128b"
+        register-enabled: false
+  data:
+    redis:
+      host: "192.168.12.7"
+      port: 16379
+      password: "bf34d06b828c6a2045152916d7a151efff33bf7f"
+  flyway:
+    enabled: false
+  application:
+    name: "rigour-ai-agent-service"
+rocketmq:
+  name-server: "192.168.12.7:19876"
+rigour:
+  context:
+    trust:
+      active-key-id: "v1"
+      keys-base64:
+        v1: "${RIGOUR_CONTEXT_TRUST_KEY_V1}"

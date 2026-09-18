@@ -1,10 +1,12 @@
 # IAM数据库运行时接入
 
+> 历史运行手册：本文中的旧服务器地址、账号权限和运行版本来自早期环境快照。当前日常共享 DEV 的数据源、账号与启动迁移规则以 [`SHARED_DEV_LOCAL_RUNTIME.md`](./SHARED_DEV_LOCAL_RUNTIME.md) 为准；操作前须重新核对目标环境，不能直接照搬本文历史值。
+
 ## 1. 当前边界
 
 - 逻辑Schema：`rigour_iam`。
 - 开发MySQL：`82.157.4.176:13306`。
-- 当前检出的V1～V21迁移由`services/rigour-tenant-iam-service/iam-service`的Flyway执行；2026-08-06 共享DEV已校验并执行至V21，后续状态仍必须以启动日志和`flyway_schema_history`查询为准。
+- 当前检出的V1～V21迁移由`services/rg-scdp-iam/iam-server`的Flyway执行；2026-08-06 共享DEV已校验并执行至V21，后续状态仍必须以启动日志和`flyway_schema_history`查询为准。
 - 数据源地址和非敏感参数放在Nacos；数据库密码只通过环境变量或部署平台Secret注入。
 - 真实密码不进入Git，也不能使用MySQL root账号启动服务。
 

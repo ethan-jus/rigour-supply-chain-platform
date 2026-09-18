@@ -1,5 +1,0 @@
-spring:
-  cloud:
-    nacos:
-      discovery:
-        register-enabled: ${NACOS_DISCOVERY_REGISTER_ENABLED:false}

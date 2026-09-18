@@ -1,221 +1,92 @@
-# 共享DEV配置与数据库、本机服务开发指南
+# 本地开发环境配置
 
-## 开发模式
+更新日期：2026-09-16。日常开发统一使用台式机 **192.168.12.7** 的基础设施，本机只启动需要调试的服务。
 
-当前统一采用以下模式：
+## 三种配置，直接选择
+
+每个启动模块的 `src/main/resources` 保留公共 `application.yml`，按用途选择一个环境：
+
+| Profile | 配置文件 | 用途 |
+|---|---|---|
+| `dev` | `application-dev.yml` | 日常开发；已填写台式机的数据库、Redis、Nacos等DEV连接信息 |
+| `local` | `application-local.yml` | 个人覆盖；自动读取同目录DEV配置，在 `---` 后覆盖自己的端口、数据库或服务地址 |
+| `prod` | `application-prod.yml` | 独立生产配置；生产地址、账号由部署环境提供，不回退到DEV |
+
+**不再需要同步脚本、外部properties文件，也不需要同时选择 `dev,local`。**
+公共 `application.yml` 不强制默认环境，避免自动化测试误连共享数据库。
+生产环境尚未提供实际参数；`prod` 是配置入口，不表示生产已部署。
+
+## IDEA怎么启动
+
+1. Reload Maven项目。
+2. 选择对应服务的运行配置，Active profiles填 `dev`；普通Application启动项使用参数 `--spring.profiles.active=dev`。
+3. 点击运行。当前这台Mac的19个已有运行项已调整；IDEA若仍显示旧参数，请重新打开项目。
+4. 个人要改地址或端口时，编辑该服务 `application-local.yml` 的第二段，并改选 `local`。不要把个人覆盖提交到团队分支。
+
+DEV数据库、Redis、Nacos的地址与开发账号直接在DEV YAML，不用每次填写。
+COS云密钥、IAM加密密钥和服务间签名密钥仍使用已有IDEA环境变量，已与台式机对齐，不另建配置文件。
+新同事只需由负责人一次性提供相应密钥：所有服务使用同一 `RIGOUR_CONTEXT_TRUST_KEY_V1`；IAM另需 `IAM_OIDC_AUTH_ATTRIBUTES_KEY_V1`；ERP/Integration各需所属领域的COS SecretId/SecretKey。
+IAM沿用既有 `~/.config/rigour/secrets/iam-dev-signing-v1.pem`（权限600）；它是签名私钥，不是新增环境配置，不要自行重新生成。
+原有飞书、订货宝的IDEA凭据仍保留。DEV的飞书登录开关与台式机一致默认关闭，需要调试时使用 `RIGOUR_FEISHU_ENABLED=true`。
+
+### 启动时执行数据库迁移
+
+按 2026-09-16 最新确认的简化方式，各服务 DEV 数据源统一使用台式机 MySQL `root`，真实 DEV 专用密码直接写在 `application-dev.yml`。Flyway 复用同一数据源，不需要单独迁移账号、密码环境变量或额外配置文件。
+
+已有 Flyway 迁移的 10 个服务在 `dev` 启动时自动执行本服务尚未应用的 SQL，`local` 继承同一行为。网关及暂无数据库迁移的服务不启用 Flyway；生产配置不随本次调整。
+
+迁移失败或历史校验失败时停止启动，不自动 repair。已执行 SQL 不改写；保留 `validate-on-migrate=true`、`baseline-on-migrate=false`、`clean-disabled=true` 和 `out-of-order=false`。
+
+个人 `local` 覆盖数据源时，迁移自动使用覆盖后的数据库。仅迁移到新版本不代表已初始化供应链租户或切换授权模式。修改配置后需要重新启动对应 IDEA 服务，已运行进程不会自动迁移。
+
+## DEV基础设施
+
+| 组件 | 地址 |
+|---|---|
+| MySQL | `192.168.12.7:13306`，各服务使用自己的 `rigour_*` 库，DEV 统一使用 `root` |
+| Redis | `192.168.12.7:16379` |
+| Nacos API | `192.168.12.7:18848`；gRPC端口 `19848` |
+| Nacos控制台 | [打开控制台](http://192.168.12.7:18080) |
+| RocketMQ NameServer | `192.168.12.7:19876` |
+| 已部署门户 | [打开DEV门户](http://192.168.12.7:5100) |
+
+Nacos Namespace名称是 `dev`，实际ID为 `3aa03547-8948-4254-bd94-47c630db128b`。
+**目前应用配置以项目YAML为准，Nacos配置读取关闭，不需要再往Nacos复制一套配置。**
+台式机服务使用Nacos注册发现；本机进程默认不注册，避免把个人调试实例混入同事的共享服务池。
+本次未改变台式机部署脚本及其运行配置，台式机现有服务不用重启。
+
+## 门户和业务断点调试
+
+本机门户仍访问本机Gateway和IAM，这与“使用DEV数据库”不冲突：
+
+1. 启动IAM（26881）、Gateway（26880）和Order（26885），都选择 `dev`。
+2. 门户项目运行 `pnpm dev`，浏览器访问 [本机门户](http://localhost:5100)。
+3. Gateway的订单地址指向本机Order，订单服务的供应链授权查询指向本机IAM；订单业务参数使用本机新版接口。其他业务服务地址默认指向台式机，不必在本机启动全部微服务。修改这些地址后需重启对应服务。
+
+例如要调试ERP，在IDEA启动本机ERP，再在Gateway运行项设置：
 
 ```text
-开发者A电脑                         开发者B电脑
-Portal :5100                       Portal :5100
-Gateway:26880                      Gateway:26880
-IAM    :26881                      IAM    :26881
-按需业务服务:26882-26891             按需业务服务:26882-26891
-       \                              /
-        +---- 共享DEV Nacos配置中心 ----+
-        +---- 共享DEV业务数据库 --------+
+ERP_SERVICE_URL=http://localhost:26884
 ```
 
-`Portal`指`rigour-supply-chain-portal` Vue前端项目，不是Spring微服务。它由`pnpm dev`在每位开发者电脑的5100端口启动。
-
-## Profile规则
-
-所有本机Spring服务使用：
-
-```text
-dev,local
-```
-
-- `dev`加载远端DEV Nacos Namespace和其中的数据源配置。
-- `local`覆盖IAM、Gateway、Portal回调为本机localhost，并默认禁止把开发者电脑注册到共享Nacos服务发现。
-- `local`同时为IAM和Integration提供局域网开发开关：只动态匹配RFC1918私网HTTP来源，不保存任何开发者电脑IP；生产配置必须关闭。
-- 两者同时生效，不是二选一；`local`在这里是“本机运行覆盖层”，不是本地数据库环境。
-- 只使用`dev`会读取Nacos，但不会启用本机loopback HTTP边界；只使用`local`则没有DEV Nacos数据源。
-
-不要在提交到Git的基础`application.yml`中固定`spring.profiles.active=dev,local`。基础配置同时用于单元测试、CI、迁移检查和未来部署；固定后这些场景会意外连接共享DEV。每位开发者在IDEA Spring Boot Run Configuration的`Active profiles`字段保存一次`dev,local`即可，不需要每次输入Program arguments。
-
-`application-local.yml`默认配置：
+或者把该项写在Gateway的 `application-local.yml` 第二段，Gateway选择 `local`。
+ERP需要调用本机Integration时，ERP的 `local` 第二段添加：
 
 ```yaml
-spring:
-  cloud:
-    nacos:
-      discovery:
-        register-enabled: false
+rigour:
+  integration:
+    base-url: http://localhost:26882
 ```
 
-因此本机服务读取共享Nacos配置，但不会把开发者A/B的局域网地址混入共享注册中心。当前Gateway使用固定localhost端口路由本机服务。如果以后确实需要本地实例参加服务发现，必须先设计按开发者隔离的group/cluster，再显式设置`NACOS_DISCOVERY_REGISTER_ENABLED=true`。
+其余未覆盖的服务仍使用台式机。门户/工作台已有Vite配置无需修改，本机5200的工作台按需启动。
 
-## 本机与局域网访问地址
+## 仅保留必要的共享环境边界
 
-```text
-Portal:  http://localhost:5100
-Gateway: http://localhost:26880
-IAM:     http://localhost:26881
-```
+- 本机 DEV/local 启动会使用 root 数据源更新所属共享数据库。启动前检查新增 SQL 与目标数据库。多人共用库时，不能通过修改已执行 SQL 或跳过校验消除版本冲突。
+- Integration图片后台任务、订货宝定时同步和BI定时刷新默认关闭，避免个人启动后重复处理共享数据；手动业务调试仍会真实写入DEV数据库/COS。
+- 自动化测试继续用测试夹具/Testcontainers，不使用共享DEV数据。
+- DEV YAML中的开发账号不得转用生产；COS、签名私钥和生产凭据不提交Git。
 
-`localhost`由每位开发者自己的浏览器解析，所以数据库中的Portal回调地址可以统一登记为：
+## 本次验证范围
 
-```text
-http://localhost:5100/oidc/callback
-http://localhost:5100/
-```
-
-开发者A登录时访问A电脑的localhost，开发者B登录时访问B电脑的localhost，二者不会互相跳转。
-
-Portal和Sales Workbench的Vite开发服务器都绑定`0.0.0.0`，这表示监听所有网卡，不是固定服务器IP。启动Sales Workbench后，`[ViteTrace] server-listening`日志会动态列出：
-
-```text
-localUrl: http://localhost:5200
-lanUrls:  [http://<当前网卡地址>:5200, ...]
-```
-
-同一局域网设备使用日志中的`lanUrls`访问，不要把当前`192.168.x.x`复制进配置文件。Portal打开Sales Workbench时，本地开发的`localhost:5200`会自动替换为当前Portal页面主机名，因此从局域网地址进入门户时不会把手机带到手机自己的localhost。
-
-注意：当前本地OIDC客户端仍按安全边界精确注册`http://localhost:5100/oidc/callback`和`http://localhost:5100/`，适合本机浏览器登录。要让外部手机完成Portal的OIDC登录，必须给IAM和Portal提供稳定的HTTPS域名并在IAM客户端中注册对应回调，不能把任意局域网IP作为生产OIDC回调。
-
-## 共享Secret
-
-所有连接同一DEV IAM数据库的本机IAM必须使用相同Secret；普通DEV开关、地址和超时已统一放在Nacos YAML：
-
-| 环境变量 | 用途 | 要求 |
-|---|---|---|
-| `IAM_OIDC_AUTH_ATTRIBUTES_KEY_V1` | AES-256-GCM加密OAuth授权上下文 | 32随机字节的Base64，所有IAM相同且重启不变 |
-| `~/.config/rigour/secrets/iam-dev-signing-v1.pem` | RS256签发Access/ID Token | PKCS#8 RSA-3072 PEM，权限600；所有开发者保存同一私钥 |
-| `RIGOUR_CONTEXT_TRUST_KEY_V1` | Gateway到IAM/领域服务的HMAC上下文签名 | 至少32随机字节的Base64，Gateway和所有下游服务相同 |
-
-这些值只通过各开发者IDEA Secret、受限本地Secret文件或公司Secret工具分发；Nacos只保存非敏感配置，禁止保存这些密钥明文。AES密钥可由负责人在安全终端生成一次：
-
-```bash
-openssl rand -base64 32
-```
-
-不得为每位开发者分别生成AES/RSA/HMAC密钥，否则同一共享数据库中的授权密文、JWT和下游上下文无法互认。
-
-## IDEA运行配置
-
-先Reload All Maven Projects。下面是共享DEV一次性初始化全部完成后的最终配置；模板中的普通开关已统一写入Nacos。新环境在密钥、V7-V11、签名公钥和Portal客户端尚未准备好时，三个OIDC开关必须保持`false`。
-
-IDEA Community以普通`Application`配置启动时，Spring Boot可能把输出控制台判定为非终端而不输出ANSI级别颜色。这不是业务日志配置缺失。可仅在IDEA运行配置的VM options加入`-Dspring.output.ansi.enabled=ALWAYS`；不要把该选项写进项目YAML，以免生产日志采集收到ANSI转义码。
-
-为IAM设置：
-
-```text
-Active profiles:
-dev,local
-
-Secret values only:
-IAM_OIDC_AUTH_ATTRIBUTES_KEY_V1=<负责人分发的共享AES密钥>
-RIGOUR_CONTEXT_TRUST_KEY_V1=<负责人分发的共享HMAC密钥>
-```
-
-Gateway使用相同Profile，并至少配置：
-
-```text
-Active profiles:
-dev,local
-
-Secret values only:
-RIGOUR_CONTEXT_TRUST_KEY_V1=<同一共享HMAC密钥>
-```
-
-ERP Core 使用相同Profile。本机 IDEA Run Configuration 的环境变量配置为：
-
-```text
-Active profiles:
-dev,local
-
-Non-secret values:
-NACOS_SERVER_ADDR=82.157.4.176:18848
-NACOS_USERNAME=nacos
-NACOS_NAMESPACE=3aa03547-8948-4254-bd94-47c630db128b
-NACOS_CONFIG_GROUP=DEFAULT_GROUP
-NACOS_DISCOVERY_GROUP=DEFAULT_GROUP
-NACOS_DISCOVERY_REGISTER_ENABLED=false
-RIGOUR_INTEGRATION_BASE_URL=http://localhost:26882
-RIGOUR_INTEGRATION_DHB_IMAGE_BASE_URL=https://img.dhb168.com/
-RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_OBJECT_PREFIX=product-images
-RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_REGION=ap-beijing
-RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_BUCKET=rigour-sales-recordings-1361731487
-RIGOUR_ERP_PRODUCT_MEDIA_COS_OBJECT_PREFIX=product-images
-RIGOUR_ERP_PRODUCT_MEDIA_COS_REGION=ap-beijing
-RIGOUR_ERP_PRODUCT_MEDIA_COS_BUCKET=rigour-sales-recordings-1361731487
-
-Secret values only:
-NACOS_PASSWORD=<负责人分发的Nacos密码>
-ERP_DB_APP_PASSWORD=<rigour_erp_app密码>
-ERP_DB_MIGRATOR_PASSWORD=<rigour_erp_migrator密码>
-RIGOUR_CONTEXT_TRUST_KEY_V1=<同一共享HMAC密钥>
-RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_ID=<商品图片私桶只读密钥ID>
-RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_KEY=<商品图片私桶只读密钥>
-```
-
-ERP 的 Nacos Data ID 是 `rigour-erp-core-service.yaml`，Namespace 必须使用上面的实际 ID，
-不能填写控制台显示名称 `dev`。本机默认不注册到共享服务发现；ERP 调用本机 Integration 的地址
-由 `RIGOUR_INTEGRATION_BASE_URL` 指定。密码变量必须由进程环境解析，不能把明文发布到 Nacos。
-
-商品图片不提供本地文件降级。Integration 下载订货宝返回的全部有效图片并写入 COS 私桶，ERP
-只从数据库读取对象 Key，并在每次商品查询时签发新的短时 URL。Sales Work、Integration 和 ERP
-必须指向同一个地域和私桶，并保持 `object-prefix` 一致：
-
-| 服务 | 必填非敏感变量 | 必填 Secret |
-|---|---|---|
-| Integration | `ap-beijing`、`rigour-sales-recordings-1361731487`、`product-images` | `RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_ID`、`RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_KEY` |
-| ERP Core | `ap-beijing`、`rigour-sales-recordings-1361731487`、`product-images` | `RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_ID`、`RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_KEY` |
-
-临时凭据还需分别注入对应的 `*_COS_SESSION_TOKEN`。Integration 凭据需要对象写权限，ERP
-只需要对象读/签名所需权限；禁止把 Secret 写入 Git、Nacos 或日志。任一必填 COS 参数缺失时，
-服务应启动失败，防止订货宝图片误落本机或返回第三方永久地址。
-
-Portal使用仓库已有`.env.development`：
-
-```text
-VITE_API_TARGET=http://localhost:26880
-VITE_OIDC_ISSUER=http://localhost:26881
-VITE_OIDC_CLIENT_ID=rigour-portal-browser
-VITE_OIDC_REDIRECT_URI=http://localhost:5100/oidc/callback
-VITE_OIDC_POST_LOGOUT_REDIRECT_URI=http://localhost:5100/
-```
-
-`VITE_API_TARGET`只由本机Vite开发服务器读取，用于把浏览器的相对路径`/api`转发给Gateway；换服务器时在`.env.local`覆盖它，不修改Vite源码，也不让手机直接访问该地址。
-
-## 共享DEV一次性初始化
-
-以下操作只由负责人执行一次，不由每位开发者重复执行：
-
-1. 备份`rigour_iam`并确认Flyway历史正常。
-2. 应用V7-V11。
-3. 在`iam_signing_key`登记唯一有效RSA-3072公钥，`private_key_ref`统一使用`home-file:.config/rigour/secrets/iam-dev-signing-v1.pem`。代码会在每位开发者自己的`user.home`下解析，并拒绝越界路径、符号链接和组/其他用户可读文件。
-4. 临时把Nacos或本机local YAML的`rigour.iam.bootstrap.portal-client.enabled`设为`true`，启动一次IAM，创建`rigour-portal-browser`。
-5. 成功后立即把该开关恢复为`false`。
-6. 初始化平台管理员、租户、套餐订阅和租户管理员；租户管理员密码只通过前台终端输入。
-
-`rigour.iam.bootstrap.local-signing-key.enabled`不能用于此模式。它把某位开发者本机绝对文件路径写入共享数据库，其他开发者无法读取。
-
-## 启动顺序与验收
-
-1. 启动本机IAM。
-2. 确认`http://localhost:26881/.well-known/openid-configuration`和`/oauth2/jwks`返回200。
-3. 启动本机Gateway。
-4. 启动Portal：`pnpm dev`。
-5. 访问`http://localhost:5100`完成登录。
-6. 按需启动本机业务服务。
-
-每位开发者都使用相同端口，不会冲突，因为端口只在各自电脑上占用。共享的是配置和数据，不是本机进程。
-
-## 登录跳转与下游故障排查
-
-代码已在关键边界输出中文诊断日志，并遵守“不记录密码、Bearer Token、Cookie、请求体和密钥”的约束：
-
-- Gateway：`HTTP请求完成`记录请求 ID、路径、HTTP状态和耗时；`IAM拒绝当前会话`表示明确的401/403；`IAM会话校验服务不可用`表示Gateway无法访问IAM；`下游服务暂不可用`表示业务服务连接失败。
-- IAM：`IAM密码登录成功/失败`记录登录范围、租户编码、用户名和失败原因，不记录密码。
-- Portal（仅Vite开发模式）：浏览器Console按`[门户]`前缀记录OIDC回调、请求ID、应用卡片、菜单加载和路由守卫决策，不记录Token。
-
-排查时把同一个`requestId`从Portal Console对应到Gateway/IAM日志。只有明确的401才应该清理会话并回到登录页；500、超时或连接拒绝应显示服务不可用，不应伪装成重新登录。若要临时查看Gateway成功的在线会话校验，可在本机运行配置追加日志级别`com.rigour.gateway.security=DEBUG`，复现后恢复为`INFO`。
-
-订货宝商城卡片现在是外部直达入口，指向`https://pc.dhb168.com`；浏览器会离开Portal进入第三方管理端，当前仍可能需要在第三方登录。真正免密必须由订货宝提供OIDC/SAML/一次性登录票据等协议，不能把第三方账号密码放进Portal。
-
-订货宝数据同步页面依赖本机`26882`的Integration服务；该服务未启动时，`/api/v1/integration/**`连接拒绝只影响同步数据，不应影响系统管理和供应链的门户授权链路。Integration使用服务账号/API密钥同步数据，不能复用员工浏览器登录密码。
-
-Integration 的共享DEV数据库、`rigour_integration_app`运行时账号、`rigour_integration_migrator`迁移账号、Flyway V1～V3和启动验收步骤见 [`docs/INTEGRATION_DATABASE_RUNTIME.md`](./INTEGRATION_DATABASE_RUNTIME.md)。数据库密码只通过本机Secret/IDEA环境变量注入，不能写入Nacos或提交到Git。
-
-其余 9 个领域服务的共享DEV空Schema、运行账号、迁移账号和一次性初始化脚本见 [`docs/DOMAIN_DATABASE_RUNTIME.md`](./DOMAIN_DATABASE_RUNTIME.md)。这些库当前没有业务表，服务也尚未因此自动获得JDBC/Flyway能力；不能把账号登录成功当成领域服务已接入或业务接口已验收。
+2026-09-15：14个服务的dev/local/prod配置加载与个人覆盖测试通过；`./mvnw verify`构建成功（1220项测试中195项跳过，本机Docker不可用，数据库容器测试未完整执行）。本机IAM、Gateway、ERP、Integration以dev启动，健康检查均返回UP；IAM Discovery/JWKS返回200。验证进程随后关闭，端口留给IDEA。未执行共享数据库迁移、未部署台式机、未做完整浏览器业务验收。

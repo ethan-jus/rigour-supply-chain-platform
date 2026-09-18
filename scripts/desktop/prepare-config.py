@@ -44,11 +44,11 @@ rigour.iam.oidc.authorization-attributes.enabled=true
 rigour.iam.oidc.authorization-attributes.active-key-version=v1
 rigour.iam.oidc.authorization-attributes.keys-base64.v1=${IAM_OIDC_AUTH_ATTRIBUTES_KEY_V1}
 rigour.iam.bootstrap.local-signing-key.enabled=false
-rigour.iam.bootstrap.portal-client.enabled=true
-rigour.iam.bootstrap.portal-client.client-id=rigour-portal-desktop
-rigour.iam.bootstrap.portal-client.redirect-uri=http://192.168.12.7:5100/oidc/callback
-rigour.iam.bootstrap.portal-client.post-logout-redirect-uri=http://192.168.12.7:5100/
-rigour.iam.bootstrap.portal-client.allow-insecure-http=true
+rigour.iam.bootstrap.scdp-client.enabled=true
+rigour.iam.bootstrap.scdp-client.client-id=rigour-scdp-desktop
+rigour.iam.bootstrap.scdp-client.redirect-uri=http://192.168.12.7:5100/oidc/callback
+rigour.iam.bootstrap.scdp-client.post-logout-redirect-uri=http://192.168.12.7:5100/
+rigour.iam.bootstrap.scdp-client.allow-insecure-http=true
 ''',
     'gateway.properties': '''# 台式机网关仍执行真实 Token、会话和权限校验，仅允许开发 HTTP 地址。
 server.port=26880
@@ -80,9 +80,11 @@ iam_path = config / 'iam.properties'
 original = iam_path.read_text()
 updated = original.replace('rigour.iam.bootstrap.local-signing-key.enabled=true',
                            'rigour.iam.bootstrap.local-signing-key.enabled=false')
+updated = updated.replace('rigour.iam.bootstrap.portal-client.', 'rigour.iam.bootstrap.scdp-client.')
+updated = updated.replace('client-id=rigour-portal-', 'client-id=rigour-scdp-')
 updated = updated.replace('rigour.iam.bootstrap.local-signing-key.path=/keys/iam-signing.pem\n','')
-updated = updated.replace('rigour.iam.bootstrap.portal-client.client-id=rigour-portal-browser\n',
-                          'rigour.iam.bootstrap.portal-client.client-id=rigour-portal-desktop\n')
+updated = updated.replace('rigour.iam.bootstrap.scdp-client.client-id=rigour-scdp-browser\n',
+                          'rigour.iam.bootstrap.scdp-client.client-id=rigour-scdp-desktop\n')
 key = root / 'apps/keys/.config/rigour/secrets/iam-dev-signing-v1.pem'
 if not key.is_file() or key.stat().st_mode & 0o077:
     raise SystemExit('未找到已核对公钥且权限受限的迁移签名私钥，停止发布。')

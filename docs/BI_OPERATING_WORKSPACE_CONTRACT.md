@@ -34,7 +34,7 @@ On target `changed`, refresh completion/current dashboard; on action `changed`, 
 
 ## Owned Files
 
-Platform prefix: `services/rigour-analytics-bi-service/`.
+Platform prefix: `services/rg-scdp-bi/`.
 
 - `analytics-bi-api/src/main/java/com/rigour/analytics/api/v1/AnalyticsOperatingWorkspaceApi.java`
 - `analytics-bi-api/src/main/java/com/rigour/analytics/api/v1/model/OperatingWorkspaceModels.java`
@@ -62,5 +62,5 @@ All owned files are new and staged. Existing dirty files and other agents' files
 
 - Backend owned suites: OperatingWorkspaceServiceTest (15), OperatingWorkspaceRepositoryTest (7), OperatingWorkspaceApiTest (2): 24 passed, no skips. Repository tests execute real MyBatis SQL against the V9 target and V10 action/event schemas on isolated H2, including audit transaction rollback. H2 engine/collation clauses differ from MySQL; shared DEV migration is not claimed.
 - Portal: `pnpm exec vitest run tests/bi-operations-api.test.ts tests/bi-operations-workbench.test.ts`: 9 passed. Scoped ESLint, `pnpm typecheck`, `pnpm build` passed; build retains existing large-chunk/dependency-comment warnings.
-- Broader `./mvnw -pl services/rigour-analytics-bi-service/analytics-bi-service -am verify` was attempted but other concurrently edited comparison/scope/existing-analysis tests failed. Parent is coordinating final serial Maven validation; this document does not claim whole-module or whole-repository acceptance.
+- Broader `./mvnw -pl services/rg-scdp-bi/bi-server -am verify` was attempted but other concurrently edited comparison/scope/existing-analysis tests failed. Parent is coordinating final serial Maven validation; this document does not claim whole-module or whole-repository acceptance.
 - Required runtime checks: apply V10 after V9, include shared scope migration/configuration, restart BI, explicitly grant read/write permissions, verify authorized month target editing and 409 conflict handling, register a real non-financial followup and verify its persisted history and scoped visibility in the authenticated drawer. No shared DEV business records were created for this subtask.

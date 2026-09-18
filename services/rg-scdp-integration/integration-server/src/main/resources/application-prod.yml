@@ -1,0 +1,55 @@
+# 生产独立配置：部署时提供生产参数，缺失则启动失败；绝不回退到DEV数据库。
+# 生产地址和账号尚未指定，此文件是生产配置入口，不代表生产环境已部署。
+spring:
+  application:
+    name: "rigour-integration-migration-service"
+  cloud:
+    nacos:
+      server-addr: "${NACOS_SERVER_ADDR}"
+      username: "${NACOS_USERNAME}"
+      password: "${NACOS_PASSWORD}"
+      discovery:
+        namespace: "${NACOS_NAMESPACE}"
+        register-enabled: true
+      config:
+        enabled: false
+        import-check:
+          enabled: false
+  flyway:
+    enabled: false
+  datasource:
+    url: "${DB_URL}"
+    username: "${DB_USERNAME}"
+    password: "${DB_PASSWORD}"
+  data:
+    redis:
+      host: "${REDIS_HOST}"
+      port: "${REDIS_PORT:6379}"
+      password: "${REDIS_PASSWORD}"
+rigour:
+  context:
+    trust:
+      active-key-id: "v1"
+      keys-base64:
+        v1: "${RIGOUR_CONTEXT_TRUST_KEY_V1}"
+  integration:
+    product-media:
+      cos:
+        region: "${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_REGION}"
+        bucket: "${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_BUCKET}"
+        secret-id: "${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_ID}"
+        secret-key: "${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_KEY}"
+    feishu:
+      allow-insecure-lan: false
+  business-settings:
+    base-url: "${RIGOUR_BUSINESS_SETTINGS_BASE_URL}"
+  hr:
+    base-url: "${RIGOUR_HR_BASE_URL}"
+  crm:
+    base-url: "${RIGOUR_CRM_BASE_URL}"
+  erp:
+    base-url: "${RIGOUR_ERP_BASE_URL}"
+  order:
+    base-url: "${RIGOUR_ORDER_BASE_URL}"
+rocketmq:
+  name-server: "${ROCKETMQ_NAME_SERVER}"

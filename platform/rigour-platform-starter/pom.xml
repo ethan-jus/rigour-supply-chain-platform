@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>com.rigour</groupId>
-        <artifactId>rigour-supply-chain-platform</artifactId>
+        <artifactId>rigour-supply-chain-digital-platform</artifactId>
         <version>1.0.0-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
@@ -15,15 +15,15 @@
     <dependencies>
         <dependency>
             <groupId>com.rigour</groupId>
-            <artifactId>rigour-shared-context</artifactId>
+            <artifactId>shared-context</artifactId>
         </dependency>
         <dependency>
             <groupId>com.rigour</groupId>
-            <artifactId>rigour-shared-core</artifactId>
+            <artifactId>shared-core</artifactId>
         </dependency>
         <dependency>
             <groupId>com.rigour</groupId>
-            <artifactId>rigour-shared-logging</artifactId>
+            <artifactId>shared-logging</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

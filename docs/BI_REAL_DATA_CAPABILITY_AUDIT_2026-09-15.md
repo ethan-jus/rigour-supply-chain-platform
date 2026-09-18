@@ -1,5 +1,7 @@
 # BI 真实数据支撑能力核查
 
+> 本文保留当时验收记录。2026-09-16 本地 dev 合并后的租户字典、数据权限、迁移编号和 BI 来源接口以[兼容检查记录](DEV_SYNC_SUPPLY_SETTINGS_2026-09-16.md)为准；历史直接读库配置已被领域 API 替代。
+
 ## 结论与范围
 
 用户要求：除活动、成本暂缺真实业务事实外，其他 BI 指标全部使用可追溯的真实业务数据。真实业务库数据、规则计算值、未接入和待核对必须区分；没有记录不能直接解释为业务数量为零。
@@ -104,7 +106,7 @@ BI快照本次最近更新时间约为2026-09-15 09:58；快照更新到今天�
 
 ## 6. 可复查实现入口
 
-- 字典：`services/rigour-business-settings-service/README.md`、`BusinessDictionaryApi.java`、`V27__seed_feishu_import_business_dictionaries.sql`。
+- 字典：`services/rg-scdp-foundation/README.md`、`BusinessDictionaryApi.java`、`V27__seed_feishu_import_business_dictionaries.sql`。
 - Order：`OrderSalesOrderApi.java`、`OrderSalesShipmentApi.java`、`OrderSalesPaymentRecordApi.java`、`OrderSalesRefundRecordApi.java`、`OrderFundDocumentApi.java`、`OrderSalesOrderProductRepairApi.java`。
 - ERP：`ErpProductManagementApi.java`、`ErpProductSpecificationApi.java`、`ErpStockBalanceApi.java`、`ErpProcurementOrderApi.java`、`ErpStockInOrderApi.java`、`ErpStockOutOrderApi.java`、`ErpTransferOrderApi.java`。
 - CRM：`CrmCustomerApi.java`、`CrmInternalCustomerApi.java`、`HttpHrEmployeeDirectoryClient.java`。
@@ -150,7 +152,7 @@ BI快照本次最近更新时间约为2026-09-15 09:58；快照更新到今天�
 - HR：新增 `V2__hr_employee_separation_status.sql`。
 - Settings：新增 `V29__align_hr_status_and_restore_grain_unit.sql`。
 - BI：新增 `V14__bi_employee_dimension.sql`、`V15__bi_sales_city_contacts.sql`。
-- `BI_SUPPLY_DASHBOARD_SOURCE_GRANTS.sql` 增补 HR 两张表、Sales 两张表的列级只读权限；不包含联系方式、密码哈希、截图内容或定位字段。
+- 当时的直接读库授权脚本增补 HR 两张表、Sales 两张表的列级只读权限；不包含联系方式、密码哈希、截图内容或定位字段。
 - 共享 DEV 的 BI 应用账号读取 HR 员工和 Sales 提交表，实测均返回数据库权限错误 1142。因此新来源尚未能在运行中 BI 刷新；需要先配置这些最小权限，按 HR/Settings/BI 顺序执行相应迁移并更新服务，再执行“员工与建联”刷新。
 - 新浏览器验证页停在 IAM 登录页。本轮组件/隔离库验证不等同于已登录新接口验收，也未宣称生产已生效。
 - 已完成隔离库刷新与查询测试：员工零订单、联接守恒、来源失败回滚、来源未同步为空；Sales 草稿/删除排除、无截图可计数、重复门店去重、异常分类、城市/租户/日期范围。

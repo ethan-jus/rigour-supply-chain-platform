@@ -86,4 +86,4 @@ Integration 独占订货宝协议、Token、Secret、重试、限流、Raw Landi
 | `field_1` 至 `field_6` | `erp_product_custom_field` |
 | `goods_picture` / `goods_imgs` | Integration 下载后写入 `erp_product_image.object_key` |
 
-正式执行脚本为 `services/rigour-erp-core-service/erp-core-service/src/main/resources/db/migration/V2__erp_product_master_data_media_and_attributes.sql`；历史品牌图片列由 `V6__erp_private_media_object_keys.sql` 收口为 `logo_object_key`。
+正式执行脚本为 `services/rg-scdp-erp/erp-server/src/main/resources/db/migration/V2__erp_product_master_data_media_and_attributes.sql`；历史品牌图片列由 `V6__erp_private_media_object_keys.sql` 收口为 `logo_object_key`。

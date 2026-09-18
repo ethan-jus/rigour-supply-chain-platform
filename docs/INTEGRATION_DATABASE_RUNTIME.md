@@ -136,7 +136,7 @@ if [[ -z "$INTEGRATION_DB_MIGRATOR_PASSWORD" ]]; then
   echo "未输入数据库密码，已停止；没有执行 Docker Repair。"
 else
   export FLYWAY_PASSWORD="$INTEGRATION_DB_MIGRATOR_PASSWORD"
-  export DHB_MIGRATION_DIR="$PWD/services/rigour-integration-migration-service/integration-migration-service/src/main/resources/db/migration"
+  export DHB_MIGRATION_DIR="$PWD/services/rg-scdp-integration/integration-server/src/main/resources/db/migration"
 
   docker run --rm \
     -v "$DHB_MIGRATION_DIR:/flyway/sql:ro" \
@@ -203,11 +203,11 @@ RIGOUR_DHB_DEV_PASSWORD=<订货宝接口密码>
 ```bash
 cd "/Users/ethan/myspance/rigour/B2B供应链/自动化系统构建/06_代码工程/rigour-supply-chain-platform"
 
-./mvnw -B -pl services/rigour-integration-migration-service/integration-migration-service \
+./mvnw -B -pl services/rg-scdp-integration/integration-server \
   -am -DskipTests install
 
 SPRING_PROFILES_ACTIVE=dev,local \
-./mvnw -f services/rigour-integration-migration-service/integration-migration-service/pom.xml \
+./mvnw -f services/rg-scdp-integration/integration-server/pom.xml \
   spring-boot:run
 ```
 
@@ -216,7 +216,7 @@ SPRING_PROFILES_ACTIVE=dev,local \
 也可以在 IDEA 直接运行主类：
 
 ```text
-com.rigour.integration.IntegrationMigrationServiceApplication
+com.rigour.integration.IntegrationApplication
 Active profiles: dev,local
 VM options: -Dspring.output.ansi.enabled=ALWAYS
 ```
