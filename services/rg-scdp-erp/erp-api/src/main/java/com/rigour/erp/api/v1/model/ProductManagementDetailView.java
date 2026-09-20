@@ -22,6 +22,10 @@ public record ProductManagementDetailView(
         String industryName,
         String productSpecification,
         String unitCode,
+        String middleUnitCode,
+        BigDecimal baseToMiddleRate,
+        String bigUnitCode,
+        BigDecimal baseToBigRate,
         BigDecimal minOrderQuantity,
         Boolean orderMultipleFlag,
         BigDecimal orderMultipleQuantity,
@@ -72,6 +76,7 @@ public record ProductManagementDetailView(
                                        Instant createdTime, String updatedBy, Instant updatedTime) {
         this(id, productCode, productName, null, categoryId, categoryName, null,
                 brandId, brandName, null, null, productSpecification, unitCode,
+                null, null, null, null,
                 minOrderQuantity, orderMultipleFlag, orderMultipleQuantity, saleTypeCode,
                 shelfStatusCode, ordinal, null, tagCodes, limitQuantity, defaultWarehouseId,
                 defaultWarehouseName, images, variants, recommendProductIds, submitStatusCode,
