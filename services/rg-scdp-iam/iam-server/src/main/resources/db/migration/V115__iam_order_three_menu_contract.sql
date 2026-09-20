@@ -80,7 +80,7 @@ UPDATE iam_role_resource role_grant
    AND role_grant.status <> 'ACTIVE';
 
 UPDATE iam_role_resource role_grant
-   SET role_grant.status='DISABLED',
+   SET role_grant.status='INACTIVE',
        role_grant.updated_at=UTC_TIMESTAMP(6)
  WHERE @order_statistics IS NOT NULL
    AND role_grant.resource_id=@order_statistics;
