@@ -468,11 +468,7 @@ public final class OrderSalesOrderService {
         SalesOrderWrite normalized = normalize(command, false, isFeishuSource(sourceSystemCode));
         requireExternalProjectionAllowed(actor, normalized.sourceSystemCode());
         requireUnits(actor, normalized, null, Boolean.TRUE.equals(command.submit()));
-        String orderNo =
-                codeGenerator.generateUnique(
-                        OrderBusinessCodeRules.SALES_ORDER,
-                        orderCodeBusinessTime(normalized),
-                        candidate -> !store.existsByNo(tenantId, candidate));
+        String orderNo = sourceOrderNoOrGenerated(tenantId, command, normalized);
         SalesOrderDetailView created =
                 store.create(tenantId, orderNo, normalized, OrderAuditActors.writeActor(actor));
         created = withDetailEnrichment(actor, created);
@@ -486,6 +482,32 @@ public final class OrderSalesOrderService {
                 created.payableAmount(),
                 actor.principalId());
         return created;
+    }
+
+    /**
+     * 订货宝订单号是外部业务身份，必须保留来源值（包括前导零），不能在第一次投影时换成内部编码。
+     * 其他订单仍使用既有内部编码规则；历史订单不会通过这里批量改号。
+     */
+    private String sourceOrderNoOrGenerated(
+            String tenantId, SalesOrderCommand command, SalesOrderWrite normalized) {
+        if (SOURCE_SYSTEM_DINGHUOBAO.equalsIgnoreCase(normalized.sourceSystemCode())) {
+            String sourceOrderNo =
+                    text(
+                            first(command.businessOrderNoOverride(), command.sourceOrderNo()),
+                            50,
+                            "订货宝订单号");
+            if (sourceOrderNo == null) {
+                throw badRequest("订货宝订单号不能为空");
+            }
+            if (store.existsByNo(tenantId, sourceOrderNo)) {
+                throw conflict("订货宝订单号已存在，请按来源订单执行幂等更新");
+            }
+            return sourceOrderNo;
+        }
+        return codeGenerator.generateUnique(
+                OrderBusinessCodeRules.SALES_ORDER,
+                orderCodeBusinessTime(normalized),
+                candidate -> !store.existsByNo(tenantId, candidate));
     }
 
     private static Instant orderCodeBusinessTime(SalesOrderWrite command) {

@@ -91,16 +91,28 @@ class OrderSalesOrderServiceTest {
     }
 
     @Test
-    void createDinghuobaoOrderUsesSourceOrderDateForOrderNo() {
+    void createDinghuobaoOrderUsesSourceBusinessOrderNoAndPreservesLeadingZeros() {
         FakeStore store = new FakeStore();
         OrderSalesOrderService service = service(store);
         TestAuthorizationContext.set(serviceCaller("order:write"));
 
-        SalesOrderDetailView created = service.create(dinghuobaoCommand());
+        SalesOrderDetailView created = service.create(dinghuobaoCommandWithBusinessOrderNo());
 
-        assertThat(created.orderNo()).isEqualTo("DD202608191234");
+        assertThat(created.orderNo()).isEqualTo("00001234");
         assertThat(created.sourceSystemCode()).isEqualTo("DINGHUOBAO");
         assertThat(created.sourceOrderNo()).isEqualTo("DH.20260819.0001");
+    }
+
+    @Test
+    void createDinghuobaoOrderRejectsDuplicateSourceBusinessOrderNo() {
+        FakeStore store = new FakeStore();
+        OrderSalesOrderService service = service(store);
+        TestAuthorizationContext.set(serviceCaller("order:write"));
+        service.create(dinghuobaoCommandWithBusinessOrderNo());
+
+        assertThatThrownBy(() -> service.create(dinghuobaoCommandWithBusinessOrderNo()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("订货宝订单号已存在");
     }
 
     @Test
@@ -641,6 +653,44 @@ class OrderSalesOrderServiceTest {
                 List.of(line()),
                 false,
                 0);
+    }
+
+    private static SalesOrderCommand dinghuobaoCommandWithBusinessOrderNo() {
+        return new SalesOrderCommand(
+                1L,
+                "DINGHUOBAO",
+                "DH.20260819.0001",
+                null,
+                null,
+                null,
+                null,
+                "CUS-1",
+                "上海静安店",
+                "张三",
+                "13800000000",
+                "east",
+                "sales-1",
+                "李四",
+                null,
+                null,
+                Instant.parse("2026-08-18T16:30:00Z"),
+                "normal",
+                "cash",
+                List.<String>of(),
+                null,
+                null,
+                new BigDecimal("1.00"),
+                "订货宝导入",
+                List.of(line()),
+                false,
+                0,
+                "00001234",
+                Instant.parse("2026-08-18T16:30:00Z"),
+                Instant.parse("2026-08-18T16:30:00Z"),
+                null,
+                null,
+                "service",
+                Instant.parse("2026-08-20T03:00:00Z"));
     }
 
     private static SalesOrderCommand dinghuobaoCommandWithoutOrderDate() {
