@@ -34,6 +34,14 @@ public class InternalProductEntity {
     private String productSpecification;
     /** 商品单位，关联 PRODUCT_UNIT 字典项。 */
     private String unitCode;
+    /** 中包装单位编码，关联 PRODUCT_UNIT 字典项。 */
+    private String middleUnitCode;
+    /** 基础单位到中包装单位换算率，如1打=6桶时为6。 */
+    private BigDecimal baseToMiddleRate;
+    /** 大包装单位编码，关联 PRODUCT_UNIT 字典项。 */
+    private String bigUnitCode;
+    /** 基础单位到大包装单位换算率，如1箱=12桶时为12。 */
+    private BigDecimal baseToBigRate;
     /** 起订量。 */
     private BigDecimal minOrderQuantity;
     /** 是否整倍订货。 */
@@ -44,6 +52,8 @@ public class InternalProductEntity {
     private String saleTypeCode;
     /** 上架状态，关联 PRODUCT_SHELF_STATUS 字典项。 */
     private String shelfStatusCode;
+    /** 排序值，数值越小越靠前。 */
+    private Integer ordinal;
     /** 来源商品状态名称。 */
     private String sourceStatusName;
     /** 商品标签编码数组 JSON。 */
@@ -113,6 +123,14 @@ public class InternalProductEntity {
     public void setProductSpecification(String productSpecification) { this.productSpecification = productSpecification; }
     public String getUnitCode() { return unitCode; }
     public void setUnitCode(String unitCode) { this.unitCode = unitCode; }
+    public String getMiddleUnitCode() { return middleUnitCode; }
+    public void setMiddleUnitCode(String middleUnitCode) { this.middleUnitCode = middleUnitCode; }
+    public BigDecimal getBaseToMiddleRate() { return baseToMiddleRate; }
+    public void setBaseToMiddleRate(BigDecimal baseToMiddleRate) { this.baseToMiddleRate = baseToMiddleRate; }
+    public String getBigUnitCode() { return bigUnitCode; }
+    public void setBigUnitCode(String bigUnitCode) { this.bigUnitCode = bigUnitCode; }
+    public BigDecimal getBaseToBigRate() { return baseToBigRate; }
+    public void setBaseToBigRate(BigDecimal baseToBigRate) { this.baseToBigRate = baseToBigRate; }
     public BigDecimal getMinOrderQuantity() { return minOrderQuantity; }
     public void setMinOrderQuantity(BigDecimal minOrderQuantity) { this.minOrderQuantity = minOrderQuantity; }
     public Boolean getOrderMultipleFlag() { return orderMultipleFlag; }
@@ -123,6 +141,8 @@ public class InternalProductEntity {
     public void setSaleTypeCode(String saleTypeCode) { this.saleTypeCode = saleTypeCode; }
     public String getShelfStatusCode() { return shelfStatusCode; }
     public void setShelfStatusCode(String shelfStatusCode) { this.shelfStatusCode = shelfStatusCode; }
+    public Integer getOrdinal() { return ordinal; }
+    public void setOrdinal(Integer ordinal) { this.ordinal = ordinal; }
     public String getSourceStatusName() { return sourceStatusName; }
     public void setSourceStatusName(String sourceStatusName) { this.sourceStatusName = sourceStatusName; }
     public String getTagCodesJson() { return tagCodesJson; }

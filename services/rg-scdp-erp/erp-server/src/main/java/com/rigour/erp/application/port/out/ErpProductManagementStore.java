@@ -16,7 +16,7 @@ import java.util.Set;
 /** ERP 自研商品管理持久化端口；只操作我方商品、规格和引用资料。 */
 public interface ErpProductManagementStore {
     MasterDataPageView<ProductManagementSummaryView> products(
-            String tenantId, int begin, int step, ProductSearchCriteria criteria);
+            String tenantId, int begin, int step, ProductSearchCriteria criteria, boolean withVariants);
 
     Optional<ProductManagementDetailView> product(String tenantId, Long id);
 
@@ -37,6 +37,12 @@ public interface ErpProductManagementStore {
     ProductManagementDetailView create(String tenantId, String productCode, ProductWrite command, String actorId);
 
     ProductManagementDetailView update(String tenantId, Long id, ProductWrite command, String actorId);
+
+    ProductManagementDetailView updateShelfStatus(
+            String tenantId, Long id, String shelfStatusCode, int revision, String actorId);
+
+    ProductManagementDetailView updateOrdinal(
+            String tenantId, Long id, int ordinal, int revision, String actorId);
 
     void delete(String tenantId, Long id, int revision, String actorId);
 
@@ -73,6 +79,7 @@ public interface ErpProductManagementStore {
             BigDecimal orderMultipleQuantity,
             String saleTypeCode,
             String shelfStatusCode,
+            Integer ordinal,
             List<String> tagCodes,
             BigDecimal limitQuantity,
             Long defaultWarehouseId,

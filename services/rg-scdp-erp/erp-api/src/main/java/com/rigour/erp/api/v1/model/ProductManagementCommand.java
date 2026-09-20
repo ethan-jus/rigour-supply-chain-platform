@@ -21,6 +21,7 @@ public record ProductManagementCommand(
         BigDecimal orderMultipleQuantity,
         String saleTypeCode,
         String shelfStatusCode,
+        Integer ordinal,
         List<String> tagCodes,
         BigDecimal limitQuantity,
         Long defaultWarehouseId,

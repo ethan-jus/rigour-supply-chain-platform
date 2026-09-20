@@ -11,7 +11,10 @@ import com.rigour.erp.api.v1.model.ProductImageCommand;
 import com.rigour.erp.api.v1.model.ProductManagementCommand;
 import com.rigour.erp.api.v1.model.ProductManagementDetailView;
 import com.rigour.erp.api.v1.model.ProductManagementSummaryView;
+import com.rigour.erp.api.v1.model.ProductOrdinalCommand;
+import com.rigour.erp.api.v1.model.ProductShelfStatusCommand;
 import com.rigour.erp.api.v1.model.ProductVariantCommand;
+import com.rigour.erp.application.port.out.ErpProductDictionary;
 import com.rigour.erp.application.port.out.ErpProductManagementStore;
 import com.rigour.erp.application.port.out.ErpProductManagementStore.ProductImageWrite;
 import com.rigour.erp.application.port.out.ErpProductManagementStore.ProductSearchCriteria;
@@ -53,6 +56,9 @@ public final class ErpProductManagementService {
     private static final String SUBMITTED = "SUBMITTED";
     private static final String SPOT = "SPOT";
     private static final String OFF_SHELF = "OFF_SHELF";
+    private static final String UNIT_DICTIONARY = "PRODUCT_UNIT";
+    private static final String SALE_TYPE_DICTIONARY = "PRODUCT_SALE_TYPE";
+    private static final String SHELF_STATUS_DICTIONARY = "PRODUCT_SHELF_STATUS";
     private static final String MAIN_IMAGE = "MAIN";
     private static final String DETAIL_IMAGE = "DETAIL";
     private static final String SYSTEM_ACTOR = "SYSTEM";
@@ -60,22 +66,21 @@ public final class ErpProductManagementService {
     private static final Pattern SOURCE_SYSTEM = Pattern.compile("[A-Z0-9_]{2,32}");
 
     private final ErpProductManagementStore store;
-    private final com.rigour.erp.application.port.out.ErpUnitDictionary units;
+    private final ErpProductDictionary dictionaries;
     private final BusinessCodeGenerator codeGenerator;
 
     @Autowired
     public ErpProductManagementService(
-            ErpProductManagementStore store,
-            com.rigour.erp.application.port.out.ErpUnitDictionary units) {
-        this(store, new BusinessCodeGenerator(), units);
+            ErpProductManagementStore store, ErpProductDictionary dictionaries) {
+        this(store, new BusinessCodeGenerator(), dictionaries);
     }
 
     ErpProductManagementService(
             ErpProductManagementStore store,
             BusinessCodeGenerator codeGenerator,
-            com.rigour.erp.application.port.out.ErpUnitDictionary units) {
+            ErpProductDictionary dictionaries) {
         this.store = Objects.requireNonNull(store, "store");
-        this.units = Objects.requireNonNull(units, "units");
+        this.dictionaries = Objects.requireNonNull(dictionaries, "dictionaries");
         this.codeGenerator = Objects.requireNonNull(codeGenerator, "codeGenerator");
     }
 
@@ -90,7 +95,8 @@ public final class ErpProductManagementService {
             String saleTypeCode,
             String shelfStatusCode,
             String submitStatusCode,
-            Long defaultWarehouseId) {
+            Long defaultWarehouseId,
+            boolean withVariants) {
         String tenantId = tenant(READ_PERMISSION);
         ProductSearchCriteria criteria =
                 new ProductSearchCriteria(
@@ -108,7 +114,8 @@ public final class ErpProductManagementService {
                         tenantId,
                         ErpServiceValidation.pageBegin(begin),
                         ErpServiceValidation.pageStep(step),
-                        criteria);
+                        criteria,
+                        withVariants);
         log.debug(
                 "ERP商品列表查询完成 tenantId={} productCode={} productName={} categoryId={} brandId={}"
                     + " submitStatusCode={} count={} total={}",
@@ -170,6 +177,55 @@ public final class ErpProductManagementService {
                 updated.id(),
                 updated.productCode(),
                 updated.submitStatusCode(),
+                updated.revision(),
+                actor.principalId());
+        return updated;
+    }
+
+    /** 列表就地切换上架状态；不读取也不覆盖商品其他字段。 */
+    public ProductManagementDetailView updateShelfStatus(Long id, ProductShelfStatusCommand command) {
+        CallerIdentity actor = actor(WRITE_PERMISSION);
+        if (command == null) throw badRequest("商品参数不能为空");
+        Long productId = ErpServiceValidation.requireId(id, "商品ID无效");
+        ErpServiceValidation.checkRevision(command.revision(), true);
+        String shelfStatusCode =
+                ErpServiceValidation.code(command.shelfStatusCode(), "shelfStatusCode", true);
+        String tenantId = actor.tenantId().toString();
+        if (!dictionaries
+                .validCodes(tenantId, SHELF_STATUS_DICTIONARY)
+                .contains(shelfStatusCode)) {
+            throw badRequest("上架状态不存在或已停用，请重新选择上架状态");
+        }
+        ProductManagementDetailView updated =
+                store.updateShelfStatus(
+                        tenantId, productId, shelfStatusCode, command.revision(), actor.principalId().toString());
+        log.info(
+                "ERP商品上架状态变更完成 tenantId={} productId={} shelfStatusCode={} revision={} actorId={}",
+                tenantId,
+                productId,
+                shelfStatusCode,
+                updated.revision(),
+                actor.principalId());
+        return updated;
+    }
+
+    /** 列表就地修改排序值；不读取也不覆盖商品其他字段。 */
+    public ProductManagementDetailView updateOrdinal(Long id, ProductOrdinalCommand command) {
+        CallerIdentity actor = actor(WRITE_PERMISSION);
+        if (command == null) throw badRequest("商品参数不能为空");
+        Long productId = ErpServiceValidation.requireId(id, "商品ID无效");
+        ErpServiceValidation.checkRevision(command.revision(), true);
+        if (command.ordinal() == null) throw badRequest("ordinal不能为空");
+        int ordinal = ErpServiceValidation.ordinal(command.ordinal());
+        String tenantId = actor.tenantId().toString();
+        ProductManagementDetailView updated =
+                store.updateOrdinal(
+                        tenantId, productId, ordinal, command.revision(), actor.principalId().toString());
+        log.info(
+                "ERP商品排序变更完成 tenantId={} productId={} ordinal={} revision={} actorId={}",
+                tenantId,
+                productId,
+                ordinal,
                 updated.revision(),
                 actor.principalId());
         return updated;
@@ -272,6 +328,7 @@ public final class ErpProductManagementService {
                                 command.saleTypeCode(), "saleTypeCode", SPOT),
                         ErpServiceValidation.defaultCode(
                                 command.shelfStatusCode(), "shelfStatusCode", OFF_SHELF),
+                        ErpServiceValidation.ordinal(command.ordinal()),
                         tagCodes(command.tagCodes()),
                         quantity(command.limitQuantity(), "limitQuantity", false),
                         warehouseId,
@@ -281,16 +338,38 @@ public final class ErpProductManagementService {
                         submit ? SUBMITTED : DRAFT,
                         ErpServiceValidation.text(command.remark(), 1000, "remark"),
                         update ? command.revision() : 0);
+        validateDictionaries(tenantId, write);
+        validateReferences(tenantId, productId, write, submit);
+        return write;
+    }
+
+    /**
+     * 商品单位、售卖类型和上架状态只接受租户当前启用的字典项。
+     *
+     * <p>字典是这些字段的唯一事实来源：停用项和未知编码都拒绝写入，
+     * 避免商品表出现字典里查不到、前端只能原样回显的孤儿状态值。</p>
+     */
+    private void validateDictionaries(String tenantId, ProductWrite write) {
         var selectedUnits = new LinkedHashSet<String>();
         if (write.unitCode() != null) selectedUnits.add(write.unitCode());
         write.variants().stream()
                 .map(ProductVariantWrite::unitCode)
                 .filter(Objects::nonNull)
                 .forEach(selectedUnits::add);
-        if (!selectedUnits.isEmpty() && !units.validUnits(tenantId).containsAll(selectedUnits))
+        if (!selectedUnits.isEmpty()
+                && !dictionaries.validCodes(tenantId, UNIT_DICTIONARY).containsAll(selectedUnits)) {
             throw badRequest("商品单位不存在或已停用，请重新选择单位");
-        validateReferences(tenantId, productId, write, submit);
-        return write;
+        }
+        if (!dictionaries
+                .validCodes(tenantId, SALE_TYPE_DICTIONARY)
+                .contains(write.saleTypeCode())) {
+            throw badRequest("售卖类型不存在或已停用，请重新选择售卖类型");
+        }
+        if (!dictionaries
+                .validCodes(tenantId, SHELF_STATUS_DICTIONARY)
+                .contains(write.shelfStatusCode())) {
+            throw badRequest("上架状态不存在或已停用，请重新选择上架状态");
+        }
     }
 
     private void validateReferences(

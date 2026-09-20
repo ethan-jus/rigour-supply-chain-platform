@@ -2,8 +2,14 @@ package com.rigour.erp.api.v1.model;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 
-/** ERP 商品列表视图；列表只保留识别、分类、价格和状态等核心字段。 */
+/**
+ * ERP 商品列表视图；列表只保留识别、分类、价格、状态和审计字段。
+ *
+ * <p>{@code variants} 只在列表查询显式要求携带规格明细时下发，用于列表就地展开规格；
+ * 未要求时为空列表，调用方以 {@code variantCount} 判断规格数量。</p>
+ */
 public record ProductManagementSummaryView(
         Long id,
         String productCode,
@@ -16,9 +22,15 @@ public record ProductManagementSummaryView(
         String brandName,
         String brandNameSnapshot,
         String industryName,
+        String productSpecification,
         String unitCode,
+        String middleUnitCode,
+        BigDecimal baseToMiddleRate,
+        String bigUnitCode,
+        BigDecimal baseToBigRate,
         String saleTypeCode,
         String shelfStatusCode,
+        Integer ordinal,
         String submitStatusCode,
         String sourceSystemCode,
         String sourceDocumentNo,
@@ -30,20 +42,13 @@ public record ProductManagementSummaryView(
         String mainImageKey,
         String mainImageUrl,
         Integer variantCount,
+        List<ProductVariantManagementView> variants,
         Integer revision,
+        String createdBy,
+        Instant createdTime,
+        String updatedBy,
         Instant updatedTime) {
-    public ProductManagementSummaryView(Long id, String productCode, String productName,
-                                        Long categoryId, String categoryName, Long brandId,
-                                        String brandName, String unitCode, String saleTypeCode,
-                                        String shelfStatusCode, String submitStatusCode,
-                                        Long defaultWarehouseId, String defaultWarehouseName,
-                                        BigDecimal defaultSalePrice, String mainImageKey,
-                                        String mainImageUrl, Integer variantCount,
-                                        Integer revision, Instant updatedTime) {
-        this(id, productCode, productName, null, categoryId, categoryName, null,
-                brandId, brandName, null, null, unitCode, saleTypeCode, shelfStatusCode,
-                submitStatusCode, null, null, null, null, defaultWarehouseId,
-                defaultWarehouseName, defaultSalePrice, mainImageKey, mainImageUrl,
-                variantCount, revision, updatedTime);
+    public ProductManagementSummaryView {
+        variants = variants == null ? List.of() : List.copyOf(variants);
     }
 }

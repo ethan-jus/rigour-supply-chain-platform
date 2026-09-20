@@ -5,11 +5,13 @@ import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.api.v1.model.ProductManagementCommand;
 import com.rigour.erp.api.v1.model.ProductManagementDetailView;
 import com.rigour.erp.api.v1.model.ProductManagementSummaryView;
+import com.rigour.erp.api.v1.model.ProductOrdinalCommand;
+import com.rigour.erp.api.v1.model.ProductShelfStatusCommand;
 import com.rigour.erp.application.service.product.ErpProductManagementService;
 import com.rigour.shared.core.api.ApiResponse;
 import org.springframework.web.bind.annotation.RestController;
 
-/** ERP 商品管理 HTTP 边界；只承载自研商品新增、编辑、删除、列表和详情。 */
+/** ERP 商品管理 HTTP 边界；只承载自研商品新增、编辑、删除、列表、详情和列表就地改状态。 */
 @RestController
 public final class ErpProductManagementController implements ErpProductManagementApi {
     private final ErpProductManagementService productService;
@@ -22,10 +24,10 @@ public final class ErpProductManagementController implements ErpProductManagemen
     public ApiResponse<MasterDataPageView<ProductManagementSummaryView>> products(
             int begin, int step, String productCode, String productName, Long categoryId, Long brandId,
             String unitCode, String saleTypeCode, String shelfStatusCode, String submitStatusCode,
-            Long defaultWarehouseId) {
+            Long defaultWarehouseId, boolean withVariants) {
         return ApiResponse.success(productService.products(begin, step, productCode, productName,
                 categoryId, brandId, unitCode, saleTypeCode, shelfStatusCode, submitStatusCode,
-                defaultWarehouseId));
+                defaultWarehouseId, withVariants));
     }
 
     @Override
@@ -41,6 +43,18 @@ public final class ErpProductManagementController implements ErpProductManagemen
     @Override
     public ApiResponse<ProductManagementDetailView> updateProduct(Long id, ProductManagementCommand command) {
         return ApiResponse.success(productService.update(id, command));
+    }
+
+    @Override
+    public ApiResponse<ProductManagementDetailView> updateProductShelfStatus(
+            Long id, ProductShelfStatusCommand command) {
+        return ApiResponse.success(productService.updateShelfStatus(id, command));
+    }
+
+    @Override
+    public ApiResponse<ProductManagementDetailView> updateProductOrdinal(
+            Long id, ProductOrdinalCommand command) {
+        return ApiResponse.success(productService.updateOrdinal(id, command));
     }
 
     @Override

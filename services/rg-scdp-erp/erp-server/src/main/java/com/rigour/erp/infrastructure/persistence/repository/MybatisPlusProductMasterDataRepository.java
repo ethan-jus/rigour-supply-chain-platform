@@ -36,6 +36,7 @@ import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCom
 import com.rigour.shared.core.code.BusinessCodeGenerator;
 import com.rigour.shared.core.code.BusinessCodeRule;
 import com.rigour.shared.core.sync.ExternalSourceCodes;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -628,6 +629,10 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
             entity.setBrandId(brandId);
             entity.setProductSpecification(value.model());
             entity.setUnitCode(internalUnitCode(value.unit()));
+            entity.setMiddleUnitCode(optionalInternalUnitCode(value.middleUnit()));
+            entity.setBaseToMiddleRate(positiveRate(value.baseToMiddleRate()));
+            entity.setBigUnitCode(optionalInternalUnitCode(value.bigUnit()));
+            entity.setBaseToBigRate(positiveRate(value.baseToBigRate()));
             entity.setMinOrderQuantity(value.minimumOrder());
             entity.setOrderMultipleFlag(false);
             entity.setOrderMultipleQuantity(null);
@@ -1177,6 +1182,10 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
                 || !Objects.equals(entity.getCategoryId(), categoryId)
                 || !Objects.equals(entity.getBrandId(), brandId)
                 || !Objects.equals(entity.getShelfStatusCode(), internalShelfStatus(value.putaway()))
+                || !Objects.equals(entity.getMiddleUnitCode(), optionalInternalUnitCode(value.middleUnit()))
+                || !Objects.equals(entity.getBaseToMiddleRate(), positiveRate(value.baseToMiddleRate()))
+                || !Objects.equals(entity.getBigUnitCode(), optionalInternalUnitCode(value.bigUnit()))
+                || !Objects.equals(entity.getBaseToBigRate(), positiveRate(value.baseToBigRate()))
                 || !Objects.equals(entity.getImageKeysJson(), imagesJson)
                 || !Objects.equals(entity.getRecommendProductIdsJson(), recommendProductIdsJson)
                 || !Objects.equals(entity.getSourceSystemCode(), SOURCE_SYSTEM)
@@ -1459,6 +1468,15 @@ public class MybatisPlusProductMasterDataRepository implements ProductMasterData
 
     private static String internalShelfStatus(String value) {
         return "T".equalsIgnoreCase(blank(value)) ? "ON_SHELF" : "OFF_SHELF";
+    }
+
+    private static String optionalInternalUnitCode(String value) {
+        String normalized = blank(value);
+        return normalized == null ? null : internalUnitCode(normalized);
+    }
+
+    private static BigDecimal positiveRate(BigDecimal value) {
+        return value == null || value.signum() <= 0 ? null : value;
     }
 
     private static String internalUnitCode(String value) {

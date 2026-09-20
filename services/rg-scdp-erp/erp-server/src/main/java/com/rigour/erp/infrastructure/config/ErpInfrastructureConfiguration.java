@@ -33,11 +33,11 @@ import java.time.Duration;
 public class ErpInfrastructureConfiguration {
 
     @Bean
-    com.rigour.erp.application.port.out.ErpUnitDictionary erpUnitDictionary(
+    com.rigour.erp.application.port.out.ErpProductDictionary erpProductDictionary(
             TrustedContextSigner signer,
             @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl,
             SimpleClientHttpRequestFactory requestFactory) {
-        return new com.rigour.erp.infrastructure.integration.HttpErpUnitDictionary(
+        return new com.rigour.erp.infrastructure.integration.HttpErpProductDictionary(
                 RestClient.builder().requestFactory(requestFactory), signer, baseUrl);
     }
 

@@ -3,6 +3,7 @@ package com.rigour.erp.application.service.product;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -20,7 +21,10 @@ import com.rigour.erp.api.v1.model.ProductImageCommand;
 import com.rigour.erp.api.v1.model.ProductManagementCommand;
 import com.rigour.erp.api.v1.model.ProductManagementDetailView;
 import com.rigour.erp.api.v1.model.ProductManagementSummaryView;
+import com.rigour.erp.api.v1.model.ProductOrdinalCommand;
+import com.rigour.erp.api.v1.model.ProductShelfStatusCommand;
 import com.rigour.erp.api.v1.model.ProductVariantCommand;
+import com.rigour.erp.application.port.out.ErpProductDictionary;
 import com.rigour.erp.application.port.out.ErpProductManagementStore;
 import com.rigour.erp.application.port.out.ErpProductManagementStore.ProductSearchCriteria;
 import com.rigour.erp.application.port.out.ErpProductManagementStore.ProductWrite;
@@ -58,7 +62,7 @@ class ErpProductManagementServiceTest {
         ErpProductManagementStore store = mock(ErpProductManagementStore.class);
         ErpProductManagementService service =
                 new ErpProductManagementService(
-                        store, fixedGenerator(), tenant -> Set.of("BOX", "PIECE"));
+                        store, fixedGenerator(), dictionary());
         TestAuthorizationContext.set(caller("erp:product:write"));
         when(store.existsByCode(TENANT, "PRD202608201234")).thenReturn(false);
         when(store.create(eq(TENANT), eq("PRD202608201234"), any(), eq(ACTOR)))
@@ -68,7 +72,7 @@ class ErpProductManagementServiceTest {
                 service.create(
                         new ProductManagementCommand(
                                 false, null, null, null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null));
+                                null, null, null, null, null, null, null, null, null));
 
         ArgumentCaptor<ProductWrite> command = ArgumentCaptor.forClass(ProductWrite.class);
         verify(store).create(eq(TENANT), eq("PRD202608201234"), command.capture(), eq(ACTOR));
@@ -77,6 +81,7 @@ class ErpProductManagementServiceTest {
         assertThat(command.getValue().submitStatusCode()).isEqualTo("DRAFT");
         assertThat(command.getValue().saleTypeCode()).isEqualTo("SPOT");
         assertThat(command.getValue().shelfStatusCode()).isEqualTo("OFF_SHELF");
+        assertThat(command.getValue().ordinal()).isZero();
         assertThat(command.getValue().variants()).isEmpty();
         assertThat(command.getValue().revision()).isZero();
         verify(store, never()).categoryActive(eq(TENANT), any());
@@ -85,12 +90,12 @@ class ErpProductManagementServiceTest {
     @Test
     void disabledUnitCannotBeUsedForNewProductDraft() {
         var store = mock(ErpProductManagementStore.class);
-        var service = new ErpProductManagementService(store, fixedGenerator(), tenant -> Set.of());
+        var service = new ErpProductManagementService(store, fixedGenerator(), dictionaryWithoutUnits());
         TestAuthorizationContext.set(caller("erp:product:write"));
         var command =
                 new ProductManagementCommand(
                         false, "测试商品", null, null, null, "BOX", null, null, null, null, null, null,
-                        null, null, null, null, null, null, null);
+                        null, null, null, null, null, null, null, null);
         assertThatThrownBy(() -> service.create(command))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("已停用");
@@ -102,7 +107,7 @@ class ErpProductManagementServiceTest {
         ErpProductManagementStore store = mock(ErpProductManagementStore.class);
         ErpProductManagementService service =
                 new ErpProductManagementService(
-                        store, fixedGenerator(), tenant -> Set.of("BOX", "PIECE"));
+                        store, fixedGenerator(), dictionary());
         TestAuthorizationContext.set(caller("erp:product:write"));
 
         ProductManagementCommand command =
@@ -118,6 +123,7 @@ class ErpProductManagementServiceTest {
                         null,
                         "spot",
                         "on_shelf",
+                        null,
                         null,
                         null,
                         3L,
@@ -139,7 +145,7 @@ class ErpProductManagementServiceTest {
         ErpProductManagementStore store = mock(ErpProductManagementStore.class);
         ErpProductManagementService service =
                 new ErpProductManagementService(
-                        store, fixedGenerator(), tenant -> Set.of("BOX", "PIECE"));
+                        store, fixedGenerator(), dictionary());
         TestAuthorizationContext.set(caller("erp:product:write"));
         when(store.existsByCode(TENANT, "PRD202608201234")).thenReturn(false);
         when(store.existsVariantByCode(TENANT, "SKU202608201234")).thenReturn(false);
@@ -164,6 +170,7 @@ class ErpProductManagementServiceTest {
                         new BigDecimal("2"),
                         " spot ",
                         " on_shelf ",
+                        30,
                         List.of(" new ", "hot", "NEW"),
                         null,
                         3L,
@@ -195,6 +202,7 @@ class ErpProductManagementServiceTest {
         assertThat(write.unitCode()).isEqualTo("BOX");
         assertThat(write.saleTypeCode()).isEqualTo("SPOT");
         assertThat(write.shelfStatusCode()).isEqualTo("ON_SHELF");
+        assertThat(write.ordinal()).isEqualTo(30);
         assertThat(write.tagCodes()).containsExactly("NEW", "HOT");
         assertThat(write.images()).hasSize(2);
         assertThat(write.images().get(0).imageTypeCode()).isEqualTo("MAIN");
@@ -213,18 +221,18 @@ class ErpProductManagementServiceTest {
         ErpProductManagementStore store = mock(ErpProductManagementStore.class);
         ErpProductManagementService service =
                 new ErpProductManagementService(
-                        store, fixedGenerator(), tenant -> Set.of("BOX", "PIECE"));
+                        store, fixedGenerator(), dictionary());
         TestAuthorizationContext.set(caller("erp:product:read"));
-        when(store.products(eq(TENANT), eq(0), eq(20), any()))
+        when(store.products(eq(TENANT), eq(0), eq(20), any(), eq(true)))
                 .thenReturn(
                         new MasterDataPageView<ProductManagementSummaryView>(0, 0, 20, List.of()));
 
         service.products(
-                0, 20, " prd ", " 酸奶 ", 1L, 2L, " box ", " spot ", " on_shelf ", " submitted ", 3L);
+                0, 20, " prd ", " 酸奶 ", 1L, 2L, " box ", " spot ", " on_shelf ", " submitted ", 3L, true);
 
         ArgumentCaptor<ProductSearchCriteria> criteria =
                 ArgumentCaptor.forClass(ProductSearchCriteria.class);
-        verify(store).products(eq(TENANT), eq(0), eq(20), criteria.capture());
+        verify(store).products(eq(TENANT), eq(0), eq(20), criteria.capture(), eq(true));
         assertThat(criteria.getValue().productCode()).isEqualTo("prd");
         assertThat(criteria.getValue().productName()).isEqualTo("酸奶");
         assertThat(criteria.getValue().categoryId()).isEqualTo(1L);
@@ -241,7 +249,7 @@ class ErpProductManagementServiceTest {
         ErpProductManagementStore store = mock(ErpProductManagementStore.class);
         ErpProductManagementService service =
                 new ErpProductManagementService(
-                        store, fixedGenerator(), tenant -> Set.of("BOX", "PIECE"));
+                        store, fixedGenerator(), dictionary());
         TestAuthorizationContext.set(caller("erp:product:write"));
 
         service.delete(7L, 2);
@@ -254,7 +262,7 @@ class ErpProductManagementServiceTest {
         ErpProductManagementStore store = mock(ErpProductManagementStore.class);
         ErpProductManagementService service =
                 new ErpProductManagementService(
-                        store, fixedGenerator(), tenant -> Set.of("BOX", "PIECE"));
+                        store, fixedGenerator(), dictionary());
         TestAuthorizationContext.set(serviceCaller("erp:product:sync"));
         ExternalProductResolvedView resolved =
                 new ExternalProductResolvedView(
@@ -302,7 +310,7 @@ class ErpProductManagementServiceTest {
         ErpProductManagementStore store = mock(ErpProductManagementStore.class);
         ErpProductManagementService service =
                 new ErpProductManagementService(
-                        store, fixedGenerator(), tenant -> Set.of("BOX", "PIECE"));
+                        store, fixedGenerator(), dictionary());
         TestAuthorizationContext.set(serviceCaller("erp:product:sync"));
         when(store.syncExternalProducts(eq(TENANT), eq("FEISHU"), any(), eq("SYSTEM"), any()))
                 .thenReturn(new ExternalProductSyncResult(1, 0, 0, 1, 0, List.of(), List.of()));
@@ -351,7 +359,7 @@ class ErpProductManagementServiceTest {
         ErpProductManagementStore store = mock(ErpProductManagementStore.class);
         ErpProductManagementService service =
                 new ErpProductManagementService(
-                        store, fixedGenerator(), tenant -> Set.of("BOX", "PIECE"));
+                        store, fixedGenerator(), dictionary());
         TestAuthorizationContext.set(caller("erp:product:write"));
 
         assertThatThrownBy(
@@ -361,11 +369,128 @@ class ErpProductManagementServiceTest {
                                         new ProductManagementCommand(
                                                 false, "酸奶", null, null, null, null, null, null,
                                                 null, null, null, null, null, null, null, null,
-                                                null, null, null)))
+                                                null, null, null, null)))
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode")
                 .isEqualTo(ErrorCode.BAD_REQUEST);
         verify(store, never()).update(eq(TENANT), eq(1L), any(), eq(ACTOR));
+    }
+
+    @Test
+    void shelfStatusToggleRequiresRevisionAndNormalizesCode() {
+        ErpProductManagementStore store = mock(ErpProductManagementStore.class);
+        ErpProductManagementService service =
+                new ErpProductManagementService(
+                        store, fixedGenerator(), dictionary());
+        TestAuthorizationContext.set(caller("erp:product:write"));
+        when(store.updateShelfStatus(TENANT, 1L, "ON_SHELF", 4, ACTOR))
+                .thenReturn(detail(1L, "PRD202608201234", "SUBMITTED", 5));
+
+        ProductManagementDetailView updated =
+                service.updateShelfStatus(1L, new ProductShelfStatusCommand(" on_shelf ", 4));
+
+        assertThat(updated.revision()).isEqualTo(5);
+        verify(store).updateShelfStatus(TENANT, 1L, "ON_SHELF", 4, ACTOR);
+
+        assertThatThrownBy(() -> service.updateShelfStatus(1L, new ProductShelfStatusCommand("ON_SHELF", null)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        assertThatThrownBy(() -> service.updateShelfStatus(1L, new ProductShelfStatusCommand(null, 4)))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        verify(store, never()).updateShelfStatus(eq(TENANT), eq(1L), eq(null), anyInt(), eq(ACTOR));
+    }
+
+    @Test
+    void ordinalUpdateRejectsMissingValueAndKeepsOptimisticLock() {
+        ErpProductManagementStore store = mock(ErpProductManagementStore.class);
+        ErpProductManagementService service =
+                new ErpProductManagementService(
+                        store, fixedGenerator(), dictionary());
+        TestAuthorizationContext.set(caller("erp:product:write"));
+        when(store.updateOrdinal(TENANT, 1L, 20, 3, ACTOR))
+                .thenReturn(detail(1L, "PRD202608201234", "SUBMITTED", 4));
+
+        ProductManagementDetailView updated =
+                service.updateOrdinal(1L, new ProductOrdinalCommand(20, 3));
+
+        assertThat(updated.revision()).isEqualTo(4);
+        verify(store).updateOrdinal(TENANT, 1L, 20, 3, ACTOR);
+
+        assertThatThrownBy(() -> service.updateOrdinal(1L, new ProductOrdinalCommand(null, 3)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("ordinal不能为空");
+        assertThatThrownBy(() -> service.updateOrdinal(1L, new ProductOrdinalCommand(-1, 3)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("ordinal必须大于等于0");
+        assertThatThrownBy(() -> service.updateOrdinal(1L, new ProductOrdinalCommand(20, 0)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("revision必须大于0");
+    }
+
+    @Test
+    void saleTypeAndShelfStatusOutsideDictionaryAreRejected() {
+        ErpProductManagementStore store = mock(ErpProductManagementStore.class);
+        ErpProductManagementService service =
+                new ErpProductManagementService(store, fixedGenerator(), dictionary());
+        TestAuthorizationContext.set(caller("erp:product:write"));
+
+        assertThatThrownBy(
+                        () ->
+                                service.create(
+                                        new ProductManagementCommand(
+                                                false, "酸奶", null, null, null, null, null, null,
+                                                null, "GROUP_BUY", null, null, null, null, null,
+                                                null, null, null, null, null)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("售卖类型不存在或已停用");
+
+        assertThatThrownBy(
+                        () ->
+                                service.create(
+                                        new ProductManagementCommand(
+                                                false, "酸奶", null, null, null, null, null, null,
+                                                null, null, "PRE_ORDER", null, null, null, null,
+                                                null, null, null, null, null)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("上架状态不存在或已停用");
+
+        verify(store, never()).create(any(), any(), any(), any());
+    }
+
+    @Test
+    void shelfStatusToggleRejectsCodeOutsideDictionary() {
+        ErpProductManagementStore store = mock(ErpProductManagementStore.class);
+        ErpProductManagementService service =
+                new ErpProductManagementService(store, fixedGenerator(), dictionary());
+        TestAuthorizationContext.set(caller("erp:product:write"));
+
+        assertThatThrownBy(
+                        () ->
+                                service.updateShelfStatus(
+                                        1L, new ProductShelfStatusCommand("PRE_ORDER", 4)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("上架状态不存在或已停用");
+        verify(store, never()).updateShelfStatus(any(), any(), any(), anyInt(), any());
+    }
+
+    /** 商品单位、售卖类型、上架状态三类字典都齐全的租户。 */
+    private static ErpProductDictionary dictionary() {
+        return (tenant, dictionaryCode) ->
+                switch (dictionaryCode) {
+                    case "PRODUCT_UNIT" -> Set.of("BOX", "PIECE");
+                    case "PRODUCT_SALE_TYPE" -> Set.of("SPOT", "PRE_SALE", "STOP_SALE");
+                    case "PRODUCT_SHELF_STATUS" -> Set.of("ON_SHELF", "OFF_SHELF");
+                    default -> Set.of();
+                };
+    }
+
+    /** 只缺商品单位字典项的租户，用于验证停用单位被拒绝。 */
+    private static ErpProductDictionary dictionaryWithoutUnits() {
+        return (tenant, dictionaryCode) ->
+                dictionaryCode.equals("PRODUCT_UNIT") ? Set.of() : dictionary().validCodes(tenant, dictionaryCode);
     }
 
     private static BusinessCodeGenerator fixedGenerator() {
@@ -388,6 +513,7 @@ class ErpProductManagementServiceTest {
                 null,
                 null,
                 false,
+                null,
                 null,
                 null,
                 null,
