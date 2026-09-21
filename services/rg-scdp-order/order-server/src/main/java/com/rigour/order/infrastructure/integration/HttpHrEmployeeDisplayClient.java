@@ -55,35 +55,66 @@ public final class HttpHrEmployeeDisplayClient implements HrEmployeeDisplayClien
     }
 
     @Override
-    public Set<String> employeeCodesInDepartment(
+    public Set<Long> departmentIdsInScope(
             CallerIdentity caller, Long departmentId, Boolean includeSubDepartments) {
         if (caller == null || caller.tenantId() == null) {
-            throw new IllegalArgumentException("HR员工部门查询必须携带租户上下文");
+            throw new IllegalArgumentException("HR部门范围查询必须携带租户上下文");
         }
         if (departmentId == null) return Set.of();
-        Set<String> result = new LinkedHashSet<>();
-        int begin = 0;
-        int step = 200;
-        for (int page = 0; page < 10; page += 1) {
-            UriComponentsBuilder builder = UriComponentsBuilder.fromUri(baseUri)
-                    .path("/api/v1/hr/employees")
-                    .queryParam("begin", begin)
-                    .queryParam("step", step)
-                    .queryParam("departmentId", departmentId);
-            if (includeSubDepartments != null) {
-                builder.queryParam("includeSubDepartments", includeSubDepartments);
-            }
-            URI uri = builder.build().encode().toUri();
-            EmployeePage response = fetchEmployees(caller, uri);
-            if (response.items() == null || response.items().isEmpty()) break;
-            for (Map<String, Object> row : response.items()) {
-                String code = text(row.get("employeeCode"));
-                if (code != null) result.add(code);
-            }
-            begin += step;
-            if (begin >= response.total()) break;
+        if (!Boolean.TRUE.equals(includeSubDepartments)) return Set.of(departmentId);
+        URI uri = UriComponentsBuilder.fromUri(baseUri)
+                .path("/api/v1/hr/departments")
+                .build()
+                .encode()
+                .toUri();
+        List<Map<String, Object>> rows = fetchDepartments(caller, uri);
+        Map<Long, Long> parents = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            Long id = longValue(row.get("id"));
+            if (id == null) continue;
+            parents.put(id, longValue(row.get("parentId")));
         }
-        return result;
+        Set<Long> scope = new LinkedHashSet<>();
+        scope.add(departmentId);
+        boolean grew = true;
+        while (grew) {
+            grew = false;
+            for (Map.Entry<Long, Long> entry : parents.entrySet()) {
+                if (scope.contains(entry.getKey())) continue;
+                if (entry.getValue() != null && scope.contains(entry.getValue())) {
+                    scope.add(entry.getKey());
+                    grew = true;
+                }
+            }
+        }
+        return Set.copyOf(scope);
+    }
+
+    private List<Map<String, Object>> fetchDepartments(CallerIdentity caller, URI uri) {
+        ApiResponse<List<Map<String, Object>>> response =
+                restClient
+                        .get()
+                        .uri(uri)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .retrieve()
+                        .body(new ParameterizedTypeReference<>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null) {
+            throw new IllegalStateException("HR部门范围查询返回空响应");
+        }
+        return response.data();
+    }
+
+    private static Long longValue(Object value) {
+        if (value instanceof Number number) return number.longValue();
+        String text = text(value);
+        if (text == null) return null;
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException exception) {
+            return null;
+        }
     }
 
     private EmployeeDisplay resolveOne(CallerIdentity caller, String employeeCode) {

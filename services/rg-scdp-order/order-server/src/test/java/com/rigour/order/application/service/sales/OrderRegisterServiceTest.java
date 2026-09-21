@@ -1,7 +1,11 @@
 package com.rigour.order.application.service.sales;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -73,24 +77,44 @@ class OrderRegisterServiceTest {
     }
 
     @Test
-    void ordersResolveDepartmentFilterToEmployeeCodes() {
+    void ordersResolveDepartmentFilterToSnapshotDepartmentScope() {
         OrderRegisterStore store = mock(OrderRegisterStore.class);
         CrmCustomerAreaDisplayClient crm = mock(CrmCustomerAreaDisplayClient.class);
         HrEmployeeDisplayClient hr = mock(HrEmployeeDisplayClient.class);
         TestAuthorizationContext.set(caller("order:read"));
-        when(hr.employeeCodesInDepartment(any(), eq(7L), eq(false)))
-                .thenReturn(Set.of("EMP001", "EMP002"));
+        when(hr.departmentIdsInScope(any(), eq(7L), eq(true))).thenReturn(Set.of(7L, 8L, 9L));
         when(store.orders(eq(TENANT), eq(0), eq(20), any()))
                 .thenReturn(new OrderRegisterPage<>(0L, 0, 20, List.of(), Map.of(), null));
 
         OrderRegisterService service = new OrderRegisterService(store, crm, hr, invoiceStore(), resolverProvider());
-        service.orders(0, 20, null, null, null, null, null, null, 7L, false, null, null, null, null, null, null);
+        service.orders(0, 20, null, null, null, null, null, null, 7L, true, null, null, null, null, null, null);
 
         ArgumentCaptor<OrderCriteria> captor = ArgumentCaptor.forClass(OrderCriteria.class);
         verify(store).orders(eq(TENANT), eq(0), eq(20), captor.capture());
-        verify(hr).employeeCodesInDepartment(any(), eq(7L), eq(false));
-        assertThat(captor.getValue().ownerEmployeeCodes())
-                .containsExactlyInAnyOrder("EMP001", "EMP002");
+        verify(hr).departmentIdsInScope(any(), eq(7L), eq(true));
+        assertThat(captor.getValue().departmentIds()).containsExactlyInAnyOrder(7L, 8L, 9L);
+    }
+
+    @Test
+    void ordersFailLoudlyWhenDepartmentScopeCannotBeResolved() {
+        OrderRegisterStore store = mock(OrderRegisterStore.class);
+        CrmCustomerAreaDisplayClient crm = mock(CrmCustomerAreaDisplayClient.class);
+        HrEmployeeDisplayClient hr = mock(HrEmployeeDisplayClient.class);
+        TestAuthorizationContext.set(caller("order:read"));
+        when(hr.departmentIdsInScope(any(), eq(7L), eq(false)))
+                .thenThrow(new IllegalStateException("HR unavailable"));
+
+        OrderRegisterService service = new OrderRegisterService(store, crm, hr, invoiceStore(), resolverProvider());
+
+        assertThatThrownBy(
+                        () ->
+                                service.orders(
+                                        0, 20, null, null, null, null, null, null, 7L, false,
+                                        null, null, null, null, null, null))
+                .isInstanceOf(BusinessException.class)
+                .extracting(exception -> ((BusinessException) exception).getErrorCode())
+                .isEqualTo(ErrorCode.SERVICE_UNAVAILABLE);
+        verify(store, never()).orders(any(), anyInt(), anyInt(), any());
     }
 
     @Test
@@ -104,12 +128,23 @@ class OrderRegisterServiceTest {
 
         OrderRegisterService service = new OrderRegisterService(store, crm, hr, invoiceStore(), resolverProvider());
         service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, "PENDING");
-        service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, "BOGUS");
+        service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         ArgumentCaptor<OrderCriteria> captor = ArgumentCaptor.forClass(OrderCriteria.class);
         verify(store, org.mockito.Mockito.times(2)).orders(eq(TENANT), eq(0), eq(20), captor.capture());
         assertThat(captor.getAllValues().get(0).invoiceStatusCode()).isEqualTo("PENDING");
         assertThat(captor.getAllValues().get(1).invoiceStatusCode()).isNull();
+
+        // 非法发票状态必须报 400，不能退化成“不筛选”
+        assertThatThrownBy(
+                        () ->
+                                service.orders(
+                                        0, 20, null, null, null, null, null, null, null, null,
+                                        null, null, null, null, null, "BOGUS"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(exception -> ((BusinessException) exception).getErrorCode())
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        verify(store, org.mockito.Mockito.times(2)).orders(eq(TENANT), eq(0), eq(20), any());
     }
 
     private static OrderRegisterOrderView order(String departmentName) {

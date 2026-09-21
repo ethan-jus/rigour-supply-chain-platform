@@ -736,6 +736,55 @@ class OrderAttributionAndScopeIntegrationTest {
     }
 
     @Test
+    void departmentFilterKeepsFrozenSnapshotDepartmentAfterTransfer() {
+        long id = order("dept-snapshot", 1L);
+        when(customer.resolve(any(), eq(1L)))
+                .thenReturn(attribution("v1", "EMP-A", 10, List.of(10L), "HZ", List.of("HZ"), true));
+        tx.executeWithoutResult(s -> writer.prepare(tenant, id, true, false));
+
+        // 业务员调岗：当前归属字段改到新部门/新业务员，历史快照仍冻结在部门 10
+        jdbc.update("UPDATE order_sales_order SET owner_employee_code='EMP-B' WHERE id=?", id);
+
+        // 数据范围授权：本用例独立声明 order:read 全量可见
+        when(iam.authorization(any(), eq("order:read")))
+                .thenReturn(
+                        policy(
+                                "order:read",
+                                List.of(
+                                        new Clause(
+                                                UUID.randomUUID(),
+                                                "ORDER",
+                                                "ALL",
+                                                none(),
+                                                all(),
+                                                none(),
+                                                false)),
+                                all(),
+                                all()));
+        try (var ctx =
+                com.rigour.tenant.iam.client.SupplyAuthorizationContext.open(
+                        iam, actor, policy("order:read", List.of(), all(), all()))) {
+            assertThat(ordersInDepartments(Set.of(10L))).contains("dept-snapshot");
+            assertThat(ordersInDepartments(Set.of(20L))).doesNotContain("dept-snapshot");
+        }
+    }
+
+    private List<String> ordersInDepartments(Set<Long> departmentIds) {
+        return register
+                .orders(
+                        tenant,
+                        0,
+                        50,
+                        new com.rigour.order.application.port.out.OrderRegisterStore.OrderCriteria(
+                                null, null, null, null, null, null, departmentIds, null, null,
+                                null, null, null, null))
+                .items()
+                .stream()
+                .map(item -> item.orderNo())
+                .toList();
+    }
+
+    @Test
     void warehouseQueueFiltersBeforeCountAndDoesNotExposeOutOfScopeDetails() {
         long mine = order("queue-mine", 1L), other = order("queue-other", 2L);
         jdbc.update(

@@ -1104,9 +1104,9 @@ class OrderSalesOrderServiceTest {
         }
 
         @Override
-        public Set<String> employeeCodesInDepartment(
+        public Set<Long> departmentIdsInScope(
                 CallerIdentity caller, Long departmentId, Boolean includeSubDepartments) {
-            return Set.of();
+            return departmentId == null ? Set.of() : Set.of(departmentId);
         }
     }
 
