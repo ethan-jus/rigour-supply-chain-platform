@@ -56,7 +56,14 @@ public interface OrderSalesPaymentRecordStore {
             BigDecimal paidAmount,
             List<String> voucherKeys,
             String remark,
-            Integer revision) {
+            Integer revision,
+            // 来源审计与同步审计：只由来源同步写入，人工编辑保持原值。
+            Instant sourceCreatedAt,
+            Instant sourceUpdatedAt,
+            String sourceModifierId,
+            String sourceModifierName,
+            String syncedBy,
+            Instant syncedAt) {
         public SalesPaymentWrite {
             voucherKeys = voucherKeys == null ? List.of() : List.copyOf(voucherKeys);
         }
@@ -78,7 +85,7 @@ public interface OrderSalesPaymentRecordStore {
             this(null, null, null, orderId, salesOrderNoSnapshot, customerId,
                     customerCodeSnapshot, customerNameSnapshot, collectorStaffCode,
                     collectorNameSnapshot, paymentTime, paymentMethodCode, paidAmount,
-                    voucherKeys, remark, revision);
+                    voucherKeys, remark, revision, null, null, null, null, null, null);
         }
     }
 }

@@ -54,8 +54,8 @@ sales:
     cos:
       region: ap-beijing
       bucket: rigour-sales-recordings-1361731487
-      secret-id: ${RIGOUR_SALES_RECORDING_COS_SECRET_ID:}
-      secret-key: ${RIGOUR_SALES_RECORDING_COS_SECRET_KEY:}
+      secret-id: ${RIGOUR_COS_SECRET_ID:}
+      secret-key: ${RIGOUR_COS_SECRET_KEY:}
       # 当前使用长期 CAM 密钥，不配置 session-token。
       connection-timeout-ms: 5000
       socket-timeout-ms: 30000
@@ -70,12 +70,14 @@ sales:
 
 ## 四、注入部署 Secret
 
-`rigour-sales-work-service` 进程只需获得以下凭据变量：
+所有供应链服务共用同一套 COS 凭据变量（在 IDEA/部署环境全局配置一次即可）：
 
 ```text
-RIGOUR_SALES_RECORDING_COS_SECRET_ID
-RIGOUR_SALES_RECORDING_COS_SECRET_KEY
+RIGOUR_COS_SECRET_ID
+RIGOUR_COS_SECRET_KEY
 ```
+
+服务专用旧变量名（如 `RIGOUR_SALES_RECORDING_COS_SECRET_ID`、`RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_ID`）仍作为兼容回退生效，不再新增使用。
 
 `RIGOUR_SALES_RECORDING_COS_SESSION_TOKEN` 不是创建 Bucket 时生成的字段。只有服务通过腾讯云 STS 获取临时凭据时，STS 响应才会同时返回 `SecretId`、`SecretKey` 和 `Token`。长期 CAM API 密钥模式不配置它。当前客户端不会自动续期临时 Token，因此不要在生产启用该模式。
 

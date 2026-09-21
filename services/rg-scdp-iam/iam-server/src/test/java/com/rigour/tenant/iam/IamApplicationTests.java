@@ -311,12 +311,20 @@ class IamApplicationTests {
                         + "AND route_path='/supply-chain/order/sales-orders' AND visible=1",
                 1);
         assertCount(
+                "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.order.statistics' "
+                        + "AND route_path='/supply-chain/order/statistics' AND visible=0",
+                1);
+        assertCount(
+                "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.order.invoices' "
+                        + "AND route_path='/supply-chain/order/invoices' AND visible=1",
+                1);
+        assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.order.%' AND"
                     + " route_key NOT IN"
                     + " ('supply.order.menu','supply.order.fulfillments','supply.order.sales-orders',"
                     + "'supply.order.lines',"
                     + "'supply.order.shipments','supply.order.sales-payments','supply.order.sales-refunds',"
-                    + "'supply.order.fund-documents')",
+                    + "'supply.order.fund-documents','supply.order.statistics','supply.order.invoices')",
                 0);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.order.lines' "

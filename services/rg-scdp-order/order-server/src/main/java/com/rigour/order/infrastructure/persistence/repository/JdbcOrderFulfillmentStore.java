@@ -55,6 +55,14 @@ public class JdbcOrderFulfillmentStore implements OrderFulfillmentStore {
     }
 
     @Override
+    @Transactional(readOnly=true)
+    public String regionCode(String tenant,long id) {
+        var rows=jdbc.query("SELECT region_code FROM order_sales_order WHERE tenant_id=? AND id=? AND deleted=0",
+                (rs,n)->rs.getString(1),tenant,id);
+        return rows.isEmpty()?null:rows.getFirst();
+    }
+
+    @Override
     public Set<Long> permittedWarehouseIds(
             CallerIdentity actor, long orderId, List<Long> candidates) {
         return scopes.permittedWarehouses(actor.tenantId().toString(), orderId, candidates);

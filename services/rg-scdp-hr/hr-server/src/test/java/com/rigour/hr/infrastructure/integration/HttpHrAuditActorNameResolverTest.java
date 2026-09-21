@@ -26,7 +26,10 @@ class HttpHrAuditActorNameResolverTest {
         });
         server.start();
         try {
-            var resolver = new HttpHrAuditActorNameResolver("http://127.0.0.1:"+server.getAddress().getPort());
+            var resolver =
+                    new HttpHrAuditActorNameResolver(
+                            "http://127.0.0.1:"+server.getAddress().getPort(),
+                            org.springframework.web.client.RestClient.builder());
             assertThat(resolver.resolve(tenant.toString(),user.toString())).isNull();
             var request = new MockHttpServletRequest(); request.addHeader("Authorization","Bearer test-only-token");
             RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));

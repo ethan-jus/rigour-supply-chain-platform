@@ -15,13 +15,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.Environment;
-import org.springframework.core.env.Profiles;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.time.Clock;
 import java.time.Duration;
 
@@ -50,73 +46,42 @@ public class OrderInfrastructureConfiguration {
     @Bean
     OrderRepairUnitDictionary orderRepairUnitDictionary(
             TrustedContextSigner signer,
-            @Value("${rigour.business-settings.base-url:http://localhost:26892}")
+            @Value("${rigour.business-settings.base-url:http://rigour-business-settings-service}")
                     String settingsBaseUrl,
             SimpleClientHttpRequestFactory requestFactory,
-            Environment environment) {
+            RestClient.Builder restClientBuilder) {
         return new HttpOrderRepairUnitDictionary(
-                RestClient.builder().requestFactory(requestFactory),
-                signer,
-                localServiceUrl(
-                        environment, settingsBaseUrl, "rigour-business-settings-service", 26892));
+                restClientBuilder.requestFactory(requestFactory), signer, settingsBaseUrl);
     }
 
     @Bean
     ErpOrderRepairCatalog erpOrderRepairCatalog(
             TrustedContextSigner signer,
-            @Value("${rigour.erp.base-url:http://localhost:26884}") String erpBaseUrl,
+            @Value("${rigour.erp.base-url:http://rigour-erp-core-service}") String erpBaseUrl,
             SimpleClientHttpRequestFactory requestFactory,
-            Environment environment) {
+            RestClient.Builder restClientBuilder) {
         return new HttpErpOrderRepairCatalog(
-                RestClient.builder().requestFactory(requestFactory),
-                signer,
-                localServiceUrl(environment, erpBaseUrl, "rigour-erp-core-service", 26884));
+                restClientBuilder.requestFactory(requestFactory), signer, erpBaseUrl);
     }
 
     @Bean
     HrEmployeeDisplayClient hrEmployeeDisplayClient(
             TrustedContextSigner signer,
-            @Value("${rigour.hr.base-url:http://localhost:26889}") String hrBaseUrl,
+            @Value("${rigour.hr.base-url:http://rigour-hr-payroll-service}") String hrBaseUrl,
             SimpleClientHttpRequestFactory requestFactory,
-            Environment environment) {
+            RestClient.Builder restClientBuilder) {
         return new HttpHrEmployeeDisplayClient(
-                RestClient.builder().requestFactory(requestFactory),
-                signer,
-                localServiceUrl(environment, hrBaseUrl, "rigour-hr-payroll-service", 26889));
+                restClientBuilder.requestFactory(requestFactory), signer, hrBaseUrl);
     }
 
     @Bean
     CrmCustomerAreaDisplayClient crmCustomerAreaDisplayClient(
             TrustedContextSigner signer,
-            @Value("${rigour.crm.base-url:http://localhost:26883}") String crmBaseUrl,
+            @Value("${rigour.crm.base-url:http://rigour-merchant-crm-service}") String crmBaseUrl,
             SimpleClientHttpRequestFactory requestFactory,
-            Environment environment) {
+            RestClient.Builder restClientBuilder) {
         return new HttpCrmCustomerAreaDisplayClient(
-                RestClient.builder().requestFactory(requestFactory),
-                signer,
-                localServiceUrl(environment, crmBaseUrl, "rigour-merchant-crm-service", 26883));
-    }
-
-    // Match Integration's local-only routing without overriding an explicit developer endpoint.
-    static String localServiceUrl(
-            Environment environment, String configured, String serviceHost, int port) {
-        if (!environment.acceptsProfiles(Profiles.of("local")) || configured == null)
-            return configured;
-        try {
-            URI uri = new URI(configured);
-            if (!serviceHost.equalsIgnoreCase(uri.getHost())) return configured;
-            return new URI(
-                            uri.getScheme(),
-                            uri.getUserInfo(),
-                            "127.0.0.1",
-                            port,
-                            uri.getPath(),
-                            uri.getQuery(),
-                            uri.getFragment())
-                    .toString();
-        } catch (URISyntaxException ignored) {
-            return configured;
-        }
+                restClientBuilder.requestFactory(requestFactory), signer, crmBaseUrl);
     }
 
     private static void positive(Duration value, String name) {

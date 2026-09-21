@@ -25,7 +25,7 @@
 
 DEV数据库、Redis、Nacos的地址与开发账号直接在DEV YAML，不用每次填写。
 COS云密钥、IAM加密密钥和服务间签名密钥仍使用已有IDEA环境变量，已与台式机对齐，不另建配置文件。
-新同事只需由负责人一次性提供相应密钥：所有服务使用同一 `RIGOUR_CONTEXT_TRUST_KEY_V1`；IAM另需 `IAM_OIDC_AUTH_ATTRIBUTES_KEY_V1`；ERP/Integration各需所属领域的COS SecretId/SecretKey。
+新同事只需由负责人一次性提供相应密钥：所有服务使用同一 `RIGOUR_CONTEXT_TRUST_KEY_V1`；IAM另需 `IAM_OIDC_AUTH_ATTRIBUTES_KEY_V1`；所有业务服务共用同一套COS凭据（`RIGOUR_COS_SECRET_ID/KEY`，见 `docs/COS_RECORDING_SETUP.md`）。
 IAM沿用既有 `~/.config/rigour/secrets/iam-dev-signing-v1.pem`（权限600）；它是签名私钥，不是新增环境配置，不要自行重新生成。
 原有飞书、订货宝的IDEA凭据仍保留。DEV的飞书登录开关与台式机一致默认关闭，需要调试时使用 `RIGOUR_FEISHU_ENABLED=true`。
 

@@ -4,13 +4,16 @@ import com.rigour.gateway.security.AccessTokenClaimsValidator;
 import com.rigour.gateway.security.TrustedContextFilter;
 import com.rigour.gateway.security.CurrentTokenValidationFilter;
 import com.rigour.gateway.security.GatewaySecurityFailureWriter;
+import com.rigour.platform.http.ServiceAddressResolver;
 import com.rigour.shared.context.TrustedContextSigner;
+import java.time.Duration;
 import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
@@ -21,7 +24,8 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.client.RestClient;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.web.client.RestOperations;
+import org.springframework.web.client.RestTemplate;
 import org.springframework.http.HttpMethod;
 
 /** Gateway资源服务器安全链；只有显式配置IAM信任锚后才接受业务请求。 */
@@ -31,16 +35,28 @@ public class GatewaySecurityConfiguration {
 
     @Bean
     @ConditionalOnProperty(prefix = "rigour.gateway.security", name = "enabled", havingValue = "true")
-    JwtDecoder gatewayJwtDecoder(GatewaySecurityProperties properties) {
+    JwtDecoder gatewayJwtDecoder(GatewaySecurityProperties properties, ServiceAddressResolver serviceAddressResolver) {
         properties.requireCurrentTokenValidation();
         String issuer = properties.requireIssuer();
         List<String> audience = properties.requireAudience();
-        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(properties.requireJwkSetUri()).build();
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(properties.requireJwkSetUri())
+                .restOperations(jwkSetRestOperations(serviceAddressResolver))
+                .build();
         OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefaultWithIssuer(issuer),
                 new AccessTokenClaimsValidator(audience));
         decoder.setJwtValidator(validator);
         return decoder;
+    }
+
+    /** JWKS 拉取走注册中心服务名寻址；issuer 是令牌身份标识，必须保持与 IAM 签发值一致。 */
+    private static RestOperations jwkSetRestOperations(ServiceAddressResolver serviceAddressResolver) {
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(Duration.ofSeconds(3));
+        requestFactory.setReadTimeout(Duration.ofSeconds(10));
+        RestTemplate restTemplate = new RestTemplate(requestFactory);
+        restTemplate.getInterceptors().add(serviceAddressResolver);
+        return restTemplate;
     }
 
     @Bean

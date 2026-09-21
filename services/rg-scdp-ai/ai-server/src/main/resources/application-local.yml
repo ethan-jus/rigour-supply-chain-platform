@@ -4,6 +4,9 @@
 spring:
   config:
     import: "application-dev.yml"
+# 个人命名空间：本机服务只注册到/发现该命名空间，与共享 DEV 及同实例隔离；修改只动这一处。
+# 必须写在 --- 之前的文档里：Nacos 配置的导入在 dev 文档处理时提前解析，写后面会不一致。
+NACOS_NAMESPACE: "ethan-local"
 ---
 server:
   port: 26887

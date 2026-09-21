@@ -366,15 +366,15 @@ class HrApplicationTests {
         assertThat(detail.profile()).isEqualTo(profile);
         assertThat(detail.jobGrade()).isEqualTo("S1");
         var gradeFilter = new com.rigour.hr.application.port.out.HrEmployeeStore.EmployeeSearchCriteria(
-                null,null,null,null,null,null,null,null,null,null,root.id(),"SALES","S1");
+                null,null,null,null,null,null,null,null,null,null,root.id(),"SALES","S1",null);
         assertThat(employeeStore.employees(tenant,0,1,gradeFilter).total()).isEqualTo(1);
         assertThat(employeeStore.employees(tenant,0,1,gradeFilter).items()).extracting(e -> e.employeeName()).containsExactly("测试甲");
         var otherPosition = new com.rigour.hr.application.port.out.HrEmployeeStore.EmployeeSearchCriteria(
-                null,null,null,null,null,null,null,null,null,null,root.id(),"OTHER","S1");
+                null,null,null,null,null,null,null,null,null,null,root.id(),"OTHER","S1",null);
         assertThat(employeeStore.employees(tenant,0,20,otherPosition).total()).isZero();
         assertThat(employeeStore.employees("other-tenant",0,20,gradeFilter).total()).isZero();
         assertThat(detail.departmentId()).isEqualTo(child.id());
-        var filter=new com.rigour.hr.application.port.out.HrEmployeeStore.EmployeeSearchCriteria(null,null,null,null,null,null,null,null,null,null,root.id(),null,null);
+        var filter=new com.rigour.hr.application.port.out.HrEmployeeStore.EmployeeSearchCriteria(null,null,null,null,null,null,null,null,null,null,root.id(),null,null,null);
         var page=employeeStore.employees(tenant,0,1,filter);
         assertThat(page.total()).isEqualTo(2);
         assertThat(page.items()).hasSize(1).allMatch(e->e.profile()==null);
@@ -490,7 +490,7 @@ class HrApplicationTests {
         try {
             var criteria =
                     new com.rigour.hr.application.port.out.HrEmployeeStore.EmployeeSearchCriteria(
-                            null, null, null, null, null, null, null, null, null, null, null, null, null);
+                            null, null, null, null, null, null, null, null, null, null, null, null, null, null);
             var page = employeeStore.employees(tenant, 0, 1, criteria);
             assertThat(page.total()).isEqualTo(2);
             assertThat(page.items()).hasSize(1);

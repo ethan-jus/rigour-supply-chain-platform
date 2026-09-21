@@ -56,7 +56,10 @@ class HttpBiSourceSnapshotClientTest {
         server.start();
         try {
             String base = "http://127.0.0.1:" + server.getAddress().getPort();
-            var client = new HttpBiSourceSnapshotClient(signer, base, base, base, base, base, base);
+            var client =
+                    new HttpBiSourceSnapshotClient(
+                            signer, base, base, base, base, base, base,
+                            org.springframework.web.client.RestClient.builder());
             assertThat(client.version(tenant, "ORDER", "ORDER_PAYMENT_RECORD")).isEqualTo("v1");
             var page = client.page(tenant, "ORDER", "ORDER_PAYMENT_RECORD", "");
             assertThat(page.items().getFirst())

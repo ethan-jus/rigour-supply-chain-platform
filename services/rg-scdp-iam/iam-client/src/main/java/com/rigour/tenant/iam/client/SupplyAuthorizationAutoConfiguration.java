@@ -9,6 +9,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.Ordered;
+import org.springframework.web.client.RestClient;
 
 /** 只由供应链业务服务显式依赖启用，不进入平台 starter，也不接管SCDP认证。 */
 @AutoConfiguration
@@ -19,9 +20,10 @@ public class SupplyAuthorizationAutoConfiguration {
     SupplyAuthorizationClient supplyAuthorizationClient(
             TrustedContextSigner signer,
             @Value(
-                            "${rigour.supply-authorization.iam-base-url:${IAM_BASE_URL:http://rigour-tenant-iam-service:26881}}")
-                    String base) {
-        return new HttpSupplyAuthorizationClient(signer, base);
+                            "${rigour.supply-authorization.iam-base-url:${IAM_BASE_URL:http://rigour-tenant-iam-service}}")
+                    String base,
+            RestClient.Builder restClientBuilder) {
+        return new HttpSupplyAuthorizationClient(signer, base, restClientBuilder);
     }
 
     @Bean

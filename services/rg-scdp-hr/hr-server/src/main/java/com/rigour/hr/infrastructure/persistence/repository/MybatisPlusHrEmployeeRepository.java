@@ -574,13 +574,17 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
         EmployeeSearchCriteria c =
                 criteria == null
                         ? new EmployeeSearchCriteria(
-                                null, null, null, null, null, null, null, null, null, null, null, null, null)
+                                null, null, null, null, null, null, null, null, null, null, null, null, null, null)
                         : criteria;
         QueryWrapper<HrEmployeeEntity> query =
                 new QueryWrapper<HrEmployeeEntity>().eq("tenant_id", tenantId).eq("deleted", 0);
         if (c.departmentId() != null) {
             if (c.departmentId() <= 0) throw new IllegalArgumentException("部门 ID 无效");
-            query.apply("department_id IN (SELECT descendant_id FROM hr_department_closure WHERE tenant_id={0} AND ancestor_id={1})", tenantId, c.departmentId());
+            if (Boolean.FALSE.equals(c.includeSubDepartments())) {
+                query.eq("department_id", c.departmentId());
+            } else {
+                query.apply("department_id IN (SELECT descendant_id FROM hr_department_closure WHERE tenant_id={0} AND ancestor_id={1})", tenantId, c.departmentId());
+            }
         }
         if (c.keyword() != null) {
             query.and(

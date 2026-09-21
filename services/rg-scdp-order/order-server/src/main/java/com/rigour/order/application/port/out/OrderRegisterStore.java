@@ -14,17 +14,26 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
 /** 订单登记读取与订单号映射仓储端口；读取复用既有业务表，不得新建平行业务表。 */
 public interface OrderRegisterStore {
     OrderRegisterPage<OrderRegisterOrderView> orders(
             String tenantId, int begin, int step, OrderCriteria criteria);
 
+    /** 按订单号精确定位订单；开票登记用它确认订单存在并取金额快照。 */
+    Optional<OrderRegisterOrderView> findOrder(String tenantId, String orderNo);
+
     OrderRegisterPage<OrderRegisterLineView> lines(
             String tenantId, int begin, int step, LineCriteria criteria);
 
     OrderRegisterPage<OrderRegisterPaymentView> payments(
             String tenantId, int begin, int step, PaymentCriteria criteria);
+
+    /** 财务核对回款：写入交易单号（用于凭证验重与对账）并标记已核对。 */
+    OrderRegisterPaymentView checkPayment(
+            String tenantId, long id, String transactionNo, String actorId, Instant checkedAt);
 
     PeriodStatisticsView periodStatistics(String tenantId, PeriodCriteria criteria);
 
@@ -47,12 +56,13 @@ public interface OrderRegisterStore {
             String customerCode,
             String regionCode,
             String ownerEmployeeCode,
-            Long departmentId,
+            Set<String> ownerEmployeeCodes,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
             String paymentStatusCode,
-            Boolean hasUnpaid) {
+            Boolean hasUnpaid,
+            String invoiceStatusCode) {
     }
 
     record LineCriteria(
@@ -62,12 +72,14 @@ public interface OrderRegisterStore {
             String customerCode,
             String regionCode,
             String ownerEmployeeCode,
-            Long departmentId,
+            Set<String> ownerEmployeeCodes,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
             String productKeyword,
-            String productCode) {
+            String productCode,
+            /** 按商品ID集合过滤；商品分类筛选先在前端解析成商品集合。 */
+            List<Long> productIds) {
     }
 
     record PaymentCriteria(
@@ -77,7 +89,7 @@ public interface OrderRegisterStore {
             String customerCode,
             String regionCode,
             String ownerEmployeeCode,
-            Long departmentId,
+            Set<String> ownerEmployeeCodes,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
@@ -85,7 +97,10 @@ public interface OrderRegisterStore {
             String transactionNo,
             String paymentStatusCode,
             Instant paymentTimeFrom,
-            Instant paymentTimeTo) {
+            Instant paymentTimeTo,
+            /** 排序字段：paymentTime / createdTime / syncedAt；空按收款时间倒序。 */
+            String sortBy,
+            String sortDirection) {
     }
 
     record PeriodCriteria(
@@ -94,7 +109,7 @@ public interface OrderRegisterStore {
             String groupBy,
             String regionCode,
             String ownerEmployeeCode,
-            Long departmentId,
+            Set<String> ownerEmployeeCodes,
             Long customerId,
             String customerName,
             String customerCode) {
@@ -105,7 +120,7 @@ public interface OrderRegisterStore {
             boolean hasUnpaid,
             String regionCode,
             String ownerEmployeeCode,
-            Long departmentId,
+            Set<String> ownerEmployeeCodes,
             Long customerId,
             String orderNo) {
     }

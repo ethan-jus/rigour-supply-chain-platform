@@ -42,7 +42,21 @@ public final class OrderFulfillmentService {
                                         com.rigour.order.api.v1.OrderFulfillmentApi.WarehouseOption
                                                 ::id)
                                 .toList());
-        return candidates.stream().filter(w -> ids.contains(w.id())).toList();
+        // 客户归属地区对应的仓库排前面，前端据此默认选中；没有地区或没有匹配仓时保持原顺序。
+        String region = store.regionCode(a.tenantId().toString(), id);
+        return candidates.stream()
+                .filter(w -> ids.contains(w.id()))
+                .sorted(
+                        java.util.Comparator.comparingInt(
+                                        (com.rigour.order.api.v1.OrderFulfillmentApi.WarehouseOption w) ->
+                                                        region != null
+                                                                        && region.equals(w.regionCode())
+                                                                ? 0
+                                                                : 1)
+                                .thenComparing(
+                                        com.rigour.order.api.v1.OrderFulfillmentApi.WarehouseOption
+                                                ::warehouseName))
+                .toList();
     }
 
     public OrderFulfillmentStatusView status(long id) {

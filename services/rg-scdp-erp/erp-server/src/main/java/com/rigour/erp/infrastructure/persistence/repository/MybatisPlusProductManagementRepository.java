@@ -239,6 +239,11 @@ public class MybatisPlusProductManagementRepository
                 .set(InternalProductEntity::getBrandId, command.brandId())
                 .set(InternalProductEntity::getProductSpecification, command.productSpecification())
                 .set(InternalProductEntity::getUnitCode, command.unitCode())
+                .set(InternalProductEntity::getMiddleUnitCode, command.middleUnitCode())
+                .set(InternalProductEntity::getBaseToMiddleRate, command.baseToMiddleRate())
+                .set(InternalProductEntity::getBigUnitCode, command.bigUnitCode())
+                .set(InternalProductEntity::getBaseToBigRate, command.baseToBigRate())
+                .set(InternalProductEntity::getStatisticsUnitLevel, command.statisticsUnitLevel())
                 .set(InternalProductEntity::getMinOrderQuantity, command.minOrderQuantity())
                 .set(InternalProductEntity::getOrderMultipleFlag, command.orderMultipleFlag())
                 .set(InternalProductEntity::getOrderMultipleQuantity, command.orderMultipleQuantity())
@@ -428,6 +433,7 @@ public class MybatisPlusProductManagementRepository
                 matched.product().getProductCode(), matched.variant().getVariantCode(),
                 matched.product().getProductName(), matched.variant().getSpecificationSnapshot(),
                 first(matched.variant().getUnitCode(), matched.product().getUnitCode()),
+                matched.product().getMiddleUnitCode(),
                 matched.matchedSourceSystem(), matched.strategy(), matched.score(),
                 "MATCHED", "已自动匹配ERP商品规格");
     }
@@ -697,7 +703,7 @@ public class MybatisPlusProductManagementRepository
     private static ExternalProductResolvedView unresolved(
             ExternalProductResolveRowCommand row, String status, String message) {
         return new ExternalProductResolvedView(row == null ? null : row.referenceId(),
-                null, null, null, null, null, null, null, null, null, 0, status, message);
+                null, null, null, null, null, null, null, null, null, null, 0, status, message);
     }
 
     private static int sourceScore(String preferredSourceSystem, String matchedSourceSystem, int baseScore) {
@@ -817,8 +823,8 @@ public class MybatisPlusProductManagementRepository
         if (view == null) return null;
         return new ExternalProductResolvedView(referenceId, view.productId(), view.productVariantId(),
                 view.productCode(), view.variantCode(), view.productName(), view.specification(),
-                view.unitCode(), view.matchedSourceSystem(), view.matchStrategy(), view.matchScore(),
-                view.status(), view.message());
+                view.unitCode(), view.middleUnitCode(), view.matchedSourceSystem(), view.matchStrategy(),
+                view.matchScore(), view.status(), view.message());
     }
 
     private ProductSyncOutcome syncExternalProductRow(String tenantId, String sourceSystem,
@@ -989,6 +995,9 @@ public class MybatisPlusProductManagementRepository
         if (criteria.defaultWarehouseId() != null) {
             query.eq(InternalProductEntity::getDefaultWarehouseId, criteria.defaultWarehouseId());
         }
+        if (criteria.productIds() != null && !criteria.productIds().isEmpty()) {
+            query.in(InternalProductEntity::getId, criteria.productIds());
+        }
         return query;
     }
 
@@ -1107,6 +1116,11 @@ public class MybatisPlusProductManagementRepository
         entity.setBrandId(command.brandId());
         entity.setProductSpecification(command.productSpecification());
         entity.setUnitCode(command.unitCode());
+        entity.setMiddleUnitCode(command.middleUnitCode());
+        entity.setBaseToMiddleRate(command.baseToMiddleRate());
+        entity.setBigUnitCode(command.bigUnitCode());
+        entity.setBaseToBigRate(command.baseToBigRate());
+        entity.setStatisticsUnitLevel(command.statisticsUnitLevel());
         entity.setMinOrderQuantity(command.minOrderQuantity());
         entity.setOrderMultipleFlag(command.orderMultipleFlag());
         entity.setOrderMultipleQuantity(command.orderMultipleQuantity());
@@ -1172,7 +1186,8 @@ public class MybatisPlusProductManagementRepository
                 entity.getBrandNameSnapshot(), entity.getIndustryName(),
                 entity.getProductSpecification(), entity.getUnitCode(), entity.getMiddleUnitCode(),
                 entity.getBaseToMiddleRate(), entity.getBigUnitCode(),
-                entity.getBaseToBigRate(), entity.getSaleTypeCode(),
+                entity.getBaseToBigRate(), entity.getStatisticsUnitLevel(),
+                entity.getSaleTypeCode(),
                 entity.getShelfStatusCode(), entity.getOrdinal(), entity.getSubmitStatusCode(),
                 entity.getSourceSystemCode(), entity.getSourceDocumentNo(),
                 instant(entity.getSourceCreatedAt()), instant(entity.getSourceUpdatedAt()),
@@ -1200,6 +1215,7 @@ public class MybatisPlusProductManagementRepository
                 entity.getBrandNameSnapshot(), entity.getIndustryName(), entity.getProductSpecification(),
                 entity.getUnitCode(), entity.getMiddleUnitCode(), entity.getBaseToMiddleRate(),
                 entity.getBigUnitCode(), entity.getBaseToBigRate(),
+                entity.getStatisticsUnitLevel(),
                 entity.getMinOrderQuantity(), entity.getOrderMultipleFlag(),
                 entity.getOrderMultipleQuantity(), entity.getSaleTypeCode(), entity.getShelfStatusCode(),
                 entity.getOrdinal(), entity.getSourceStatusName(), parseStrings(entity.getTagCodesJson()),

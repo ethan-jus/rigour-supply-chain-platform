@@ -64,7 +64,9 @@ public interface ErpProductManagementStore {
             String saleTypeCode,
             String shelfStatusCode,
             String submitStatusCode,
-            Long defaultWarehouseId) {
+            Long defaultWarehouseId,
+            /** 按商品ID批量核对（详情页批量取主图与单位配置）；为空表示不限制。 */
+            List<Long> productIds) {
     }
 
     /** 商品聚合写入模型；Service 已完成入参清洗、默认值和提交校验。 */
@@ -74,6 +76,12 @@ public interface ErpProductManagementStore {
             Long brandId,
             String productSpecification,
             String unitCode,
+            String middleUnitCode,
+            BigDecimal baseToMiddleRate,
+            String bigUnitCode,
+            BigDecimal baseToBigRate,
+            /** 默认统计单位层级：BASE/MIDDLE/BIG，空按基础单位。 */
+            String statisticsUnitLevel,
             BigDecimal minOrderQuantity,
             Boolean orderMultipleFlag,
             BigDecimal orderMultipleQuantity,

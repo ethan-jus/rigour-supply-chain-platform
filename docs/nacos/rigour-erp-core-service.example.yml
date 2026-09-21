@@ -41,11 +41,11 @@ rigour:
         object-prefix: product-images
         region: ap-beijing
         bucket: rigour-sales-recordings-1361731487
-        # SecretId/SecretKey 只从部署 Secret 注入；缺失时 ERP 启动失败，不降级本地文件。
-        secret-id: ${RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_ID:}
-        secret-key: ${RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_KEY:}
+        # 全供应链共用一套 COS 凭据（RIGOUR_COS_*）；服务专用旧变量名兼容回退。
+        secret-id: ${RIGOUR_COS_SECRET_ID:${RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_ID:}}
+        secret-key: ${RIGOUR_COS_SECRET_KEY:${RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_KEY:}}
         # 仅 STS 临时凭据模式需要；长期 CAM 密钥模式保持为空。
-#        session-token: ${RIGOUR_ERP_PRODUCT_MEDIA_COS_SESSION_TOKEN:}
+#        session-token: ${RIGOUR_COS_SESSION_TOKEN:${RIGOUR_ERP_PRODUCT_MEDIA_COS_SESSION_TOKEN:}}
         connection-timeout-ms: 5000
         socket-timeout-ms: 30000
     context:

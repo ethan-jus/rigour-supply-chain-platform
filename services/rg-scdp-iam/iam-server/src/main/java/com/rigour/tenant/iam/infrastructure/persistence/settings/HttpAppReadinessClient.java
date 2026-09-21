@@ -12,9 +12,9 @@ import java.net.*;import java.net.http.HttpClient;import java.time.Duration;impo
 @Component
 public final class HttpAppReadinessClient implements AppReadinessClient {
  private final RestClient client;private final TrustedContextSigner signer;private final Map<String,URI> endpoints=new TreeMap<>();
- public HttpAppReadinessClient(TrustedContextSigner signer,Environment environment){
- this.signer=signer;var factory=new JdkClientHttpRequestFactory(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build());factory.setReadTimeout(Duration.ofSeconds(5));client=RestClient.builder().requestFactory(factory).build();
- String[][] sources={{"hr","HR_PAYROLL_BASE_URL","rigour-hr-payroll-service:26889"},{"crm","MERCHANT_CRM_BASE_URL","rigour-merchant-crm-service:26883"},{"erp","ERP_CORE_BASE_URL","rigour-erp-core-service:26884"},{"order","ORDER_CENTER_BASE_URL","rigour-order-center-service:26885"},{"bi","ANALYTICS_BI_BASE_URL","rigour-analytics-bi-service:26888"},{"settings","BUSINESS_SETTINGS_BASE_URL","rigour-business-settings-service:26892"}};
+ public HttpAppReadinessClient(TrustedContextSigner signer,Environment environment,RestClient.Builder restClientBuilder){
+ this.signer=signer;var factory=new JdkClientHttpRequestFactory(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build());factory.setReadTimeout(Duration.ofSeconds(5));client=restClientBuilder.requestFactory(factory).build();
+ String[][] sources={{"hr","HR_PAYROLL_BASE_URL","rigour-hr-payroll-service"},{"crm","MERCHANT_CRM_BASE_URL","rigour-merchant-crm-service"},{"erp","ERP_CORE_BASE_URL","rigour-erp-core-service"},{"order","ORDER_CENTER_BASE_URL","rigour-order-center-service"},{"bi","ANALYTICS_BI_BASE_URL","rigour-analytics-bi-service"},{"settings","BUSINESS_SETTINGS_BASE_URL","rigour-business-settings-service"}};
  for(var s:sources){String base=environment.getProperty("rigour.iam."+s[0]+"-base-url",environment.getProperty(s[1],"http://"+s[2]));URI uri=URI.create(base.replaceAll("/+$","")+"/internal/v1/supply/readiness");if(!Set.of("http","https").contains(uri.getScheme())||uri.getUserInfo()!=null)throw new IllegalArgumentException("准备检查服务地址无效");endpoints.put(s[0],uri);}
  }
  public List<Domain> inspect(UUID tenant){var result=new ArrayList<Domain>();for(var entry:endpoints.entrySet()){try{result.add(read(tenant,entry.getKey(),entry.getValue()));}catch(RuntimeException ex){result.add(new Domain(entry.getKey(),"UNAVAILABLE",List.of(new Issue("SERVICE_"+entry.getKey(),"BLOCKING",1,"无法核验 "+entry.getKey()+" 服务，请检查部署版本和服务连接"))));}}return result;}

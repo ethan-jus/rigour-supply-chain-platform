@@ -30,15 +30,16 @@ public final class HttpCrmEmployeeClient implements CrmEmployeeClient {
     public HttpCrmEmployeeClient(
             TrustedContextSigner signer,
             @Value(
-                            "${rigour.hr.base-url:${rigour.crm.hr-base-url:${HR_PAYROLL_BASE_URL:http://rigour-hr-payroll-service:26889}}}")
-                    String base) {
+                            "${rigour.hr.base-url:${rigour.crm.hr-base-url:${HR_PAYROLL_BASE_URL:http://rigour-hr-payroll-service}}}")
+                    String base,
+            RestClient.Builder restClientBuilder) {
         this.signer = signer;
         this.base = URI.create(base.replaceAll("/+$", ""));
         var factory =
                 new JdkClientHttpRequestFactory(
                         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build());
         factory.setReadTimeout(Duration.ofSeconds(5));
-        client = RestClient.builder().requestFactory(factory).build();
+        client = restClientBuilder.requestFactory(factory).build();
     }
 
     @Override

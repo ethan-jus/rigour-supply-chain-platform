@@ -7,6 +7,7 @@ import com.rigour.order.api.v1.model.OrderRegisterModels.HistoryCoverage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodRow;
 import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodStatisticsView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.ReceivablesView;
+import com.rigour.order.application.port.out.OrderRegisterStore.OrderCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.PeriodCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.ReceivablesCriteria;
 import com.rigour.shared.context.TestAuthorizationContext;
@@ -47,9 +48,12 @@ class JdbcOrderRegisterStoreMySqlTest {
 
     @BeforeAll
     static void migrate() {
-        var ds =
-                new DriverManagerDataSource(
-                        MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
+        // 与运行时一致：DATETIME 按 UTC 会话读写，否则测试写库与读库的时区约定会互相偏移。
+        String url =
+                MYSQL.getJdbcUrl()
+                        + (MYSQL.getJdbcUrl().contains("?") ? "&" : "?")
+                        + "connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true";
+        var ds = new DriverManagerDataSource(url, MYSQL.getUsername(), MYSQL.getPassword());
         Flyway.configure()
                 .dataSource(ds)
                 .locations("classpath:db/migration")
@@ -221,6 +225,70 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(store.creators(UUID.randomUUID().toString())).isEmpty();
     }
 
+    @Test
+    void invoiceStatusFilterSplitsNotAppliedPendingAndInvoiced() {
+        String tenant = UUID.randomUUID().toString();
+        long pending = order(tenant, "SO-INV-1", 1L, "C-1", "发票客户甲", "HZ", "EMP-1", "张三", "2026-09-11T05:00:00Z", 10, 0);
+        long invoiced = order(tenant, "SO-INV-2", 1L, "C-1", "发票客户乙", "HZ", "EMP-1", "张三", "2026-09-11T06:00:00Z", 20, 0);
+        long revoked = order(tenant, "SO-INV-3", 1L, "C-1", "发票客户丙", "HZ", "EMP-1", "张三", "2026-09-11T07:00:00Z", 30, 0);
+        long untouched = order(tenant, "SO-INV-4", 1L, "C-1", "发票客户丁", "HZ", "EMP-1", "张三", "2026-09-11T08:00:00Z", 40, 0);
+        invoice(tenant, pending, "SO-INV-1", "PENDING");
+        invoice(tenant, invoiced, "SO-INV-2", "INVOICED");
+        invoice(tenant, revoked, "SO-INV-3", "REVOKED");
+
+        assertThat(orderNumbersWithInvoice(tenant, "PENDING")).containsExactly("SO-INV-1");
+        assertThat(orderNumbersWithInvoice(tenant, "INVOICED")).containsExactly("SO-INV-2");
+        // 已撤回与无发票行都按“未申请”口径展示。
+        assertThat(orderNumbersWithInvoice(tenant, "NOT_APPLIED"))
+                .containsExactlyInAnyOrder("SO-INV-3", "SO-INV-4");
+        assertThat(untouched).isPositive();
+    }
+
+    @Test
+    void orderDatesRoundTripStoredUtcInstants() {
+        String tenant = UUID.randomUUID().toString();
+        order(tenant, "SO-UTC-1", 1L, "C-1", "时间客户", "HZ", "EMP-1", "张三", "2026-08-31T16:00:00Z", 10, 0);
+
+        var page =
+                store.orders(
+                        tenant,
+                        0,
+                        10,
+                        new OrderCriteria(
+                                null, null, null, null, null, null, null,
+                                Instant.parse("2026-08-31T16:00:00Z"),
+                                Instant.parse("2026-09-01T16:00:00Z"),
+                                null, null, null, null));
+
+        assertThat(page.items()).singleElement()
+                .satisfies(view -> assertThat(view.orderDate()).isEqualTo(Instant.parse("2026-08-31T16:00:00Z")));
+    }
+
+    private static List<String> orderNumbersWithInvoice(String tenant, String invoiceStatusCode) {
+        return store.orders(
+                        tenant,
+                        0,
+                        50,
+                        new OrderCriteria(
+                                null, null, null, null, null, null, null, null, null, null, null, null,
+                                invoiceStatusCode))
+                .items()
+                .stream()
+                .map(view -> view.orderNo())
+                .toList();
+    }
+
+    private static void invoice(String tenant, long orderId, String orderNo, String status) {
+        jdbc.update(
+                "INSERT INTO order_invoice(tenant_id,sales_order_id,order_no,status,title_type,title,"
+                        + " invoice_type,amount,deleted,created_at,updated_at)"
+                        + " VALUES(?,?,?,?,'COMPANY','测试抬头','NORMAL',10,0,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+                tenant,
+                orderId,
+                orderNo,
+                status);
+    }
+
     private static PeriodCriteria period(
             String groupBy, String region, String employee, String customerName, String customerCode) {
         return new PeriodCriteria(
@@ -324,6 +392,181 @@ class JdbcOrderRegisterStoreMySqlTest {
                 Long.class,
                 tenant,
                 no);
+    }
+
+    @Test
+    void checkPaymentWritesTransactionNoAndRejectsDuplicateOrCancelled() {
+        // 独立租户：核对用例自带数据，避免影响其它断言共享租户的合计口径。
+        String tenant = UUID.randomUUID().toString();
+        long orderId =
+                order(tenant, "SO-PAY-CHK-1", 1L, "C-1", "核对客户", "HZ", "EMP-1", "张三",
+                        "2026-09-11T05:00:00Z", 100, 0);
+        insertPayment(tenant, "PAY-CHK-1", orderId, "2026-09-12T05:00:00Z", 60, "RECEIVED", null);
+        insertPayment(tenant, "PAY-CHK-2", orderId, "2026-09-12T06:00:00Z", 40, "RECEIVED", "TXN-USED");
+        insertPayment(tenant, "PAY-CHK-3", orderId, "2026-09-12T07:00:00Z", 10, "CANCELLED", null);
+        long checkedPayment = paymentId(tenant, "PAY-CHK-1");
+        long pendingPayment = paymentId(tenant, "PAY-CHK-2");
+        long cancelledPayment = paymentId(tenant, "PAY-CHK-3");
+
+        var checked =
+                store.checkPayment(
+                        tenant, checkedPayment, "TXN-NEW-001", "finance-1",
+                        Instant.parse("2026-09-21T03:00:00Z"));
+        assertThat(checked.paymentStatusCode()).isEqualTo("CHECKED");
+        assertThat(checked.transactionNo()).isEqualTo("TXN-NEW-001");
+        assertThat(checked.checkedBy()).isEqualTo("finance-1");
+        assertThat(checked.checkedAt()).isEqualTo(Instant.parse("2026-09-21T03:00:00Z"));
+
+        // 已核对：不可重复核对
+        assertThatThrownBy(
+                        () ->
+                                store.checkPayment(
+                                        tenant, checkedPayment, "TXN-NEW-002", "finance-1",
+                                        Instant.parse("2026-09-21T04:00:00Z")))
+                .hasMessageContaining("已核对");
+        // 付款凭证验重：流水号已被其他回款单占用
+        assertThatThrownBy(
+                        () ->
+                                store.checkPayment(
+                                        tenant, pendingPayment, "TXN-NEW-001", "finance-1",
+                                        Instant.parse("2026-09-21T04:00:00Z")))
+                .hasMessageContaining("交易单号已被其他回款单使用");
+        // 已取消：不可核对
+        assertThatThrownBy(
+                        () ->
+                                store.checkPayment(
+                                        tenant, cancelledPayment, "TXN-NEW-003", "finance-1",
+                                        Instant.parse("2026-09-21T04:00:00Z")))
+                .hasMessageContaining("已取消");
+    }
+
+    @Test
+    void orderAuditFieldsPreferSourceCreatorAndFallbackToSystem() {
+        String tenant = UUID.randomUUID().toString();
+        order(tenant, "SO-AUDIT-1", 1L, "C-1", "审计客户", "HZ", "EMP-1", "张三",
+                "2026-09-11T05:00:00Z", 50, 0);
+        jdbc.update(
+                "UPDATE order_sales_order SET source_creator_name='刘鹏昆',"
+                        + " source_created_at=?, source_modifier_name='张艺瀚', source_updated_at=?"
+                        + " WHERE tenant_id=? AND order_no='SO-AUDIT-1'",
+                Timestamp.from(Instant.parse("2026-09-10T02:00:00Z")),
+                Timestamp.from(Instant.parse("2026-09-11T02:00:00Z")),
+                tenant);
+        order(tenant, "SO-AUDIT-2", 1L, "C-1", "审计客户", "HZ", "EMP-1", "张三",
+                "2026-09-11T06:00:00Z", 60, 0);
+        // 显式清空来源字段：验证无来源时回退本系统记录人（created_by）。
+        jdbc.update(
+                "UPDATE order_sales_order SET source_creator_name=NULL, source_created_at=NULL"
+                        + " WHERE tenant_id=? AND order_no='SO-AUDIT-2'",
+                tenant);
+
+        var page =
+                store.orders(
+                        tenant, 0, 10,
+                        new OrderCriteria(null, null, "审计客户", null, null, null, null,
+                                null, null, null, null, null, null));
+
+        assertThat(page.items()).hasSize(2);
+        var withSource =
+                page.items().stream()
+                        .filter(view -> "SO-AUDIT-1".equals(view.orderNo()))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(withSource.createdBy()).isEqualTo("刘鹏昆");
+        assertThat(withSource.createdTime()).isEqualTo(Instant.parse("2026-09-10T02:00:00Z"));
+        assertThat(withSource.updatedBy()).isEqualTo("张艺瀚");
+        assertThat(withSource.updatedTime()).isEqualTo(Instant.parse("2026-09-11T02:00:00Z"));
+        // 无来源的订单回退为本系统记录人（同步落库账号），不显示为空。
+        var withoutSource =
+                page.items().stream()
+                        .filter(view -> "SO-AUDIT-2".equals(view.orderNo()))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(withoutSource.createdBy()).isEqualTo("双人核对");
+    }
+
+    @Test
+    void lineRowsExposeSourceAuditAndFallbackToSystemRecorder() {
+        // 明细 SQL 必须同时取来源审计与系统记录列，否则行映射会因缺列直接失败。
+        String tenant = UUID.randomUUID().toString();
+        long withSource =
+                order(tenant, "SO-LINE-1", 1L, "C-1", "明细客户", "HZ", "EMP-1", "张三",
+                        "2026-09-11T05:00:00Z", 100, 0);
+        long withoutSource =
+                order(tenant, "SO-LINE-2", 1L, "C-1", "明细客户", "HZ", "EMP-1", "张三",
+                        "2026-09-12T05:00:00Z", 50, 0);
+        jdbc.update(
+                "UPDATE order_sales_order SET source_creator_name=NULL,source_created_at=NULL,"
+                        + "updated_by='李四' WHERE tenant_id=? AND order_no='SO-LINE-2'",
+                tenant);
+        insertLine(tenant, withSource, "P-LINE-1");
+        insertLine(tenant, withoutSource, "P-LINE-2");
+
+        var page =
+                store.lines(
+                        tenant, 0, 10,
+                        new com.rigour.order.application.port.out.OrderRegisterStore.LineCriteria(
+                                null, null, null, null, null, null, null, null, null, null, null,
+                                null, null));
+
+        assertThat(page.items()).hasSize(2);
+        var source =
+                page.items().stream()
+                        .filter(view -> "SO-LINE-1".equals(view.orderNo()))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(source.createdBy()).isEqualTo("张三");
+        var fallback =
+                page.items().stream()
+                        .filter(view -> "SO-LINE-2".equals(view.orderNo()))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(fallback.createdBy()).isEqualTo("双人核对");
+        assertThat(fallback.updatedBy()).isEqualTo("李四");
+        assertThat(page.totals()).containsEntry("lineAmount", new BigDecimal("40.000000"));
+    }
+
+    private static void insertLine(String tenant, long orderId, String productCode) {
+        jdbc.update(
+                "INSERT INTO order_sales_order_line(tenant_id,order_id,line_no,product_id,"
+                        + " product_code_snapshot,product_name_snapshot,unit_code,quantity,unit_price,"
+                        + " line_amount,revision,created_by,created_time,updated_by,updated_time,deleted)"
+                        + " VALUES(?,?,1,1,?,?,'BOX',2,10,20,1,'双人核对',UTC_TIMESTAMP(6),"
+                        + " '双人核对',UTC_TIMESTAMP(6),0)",
+                tenant,
+                orderId,
+                productCode,
+                "明细商品");
+    }
+
+    private static long paymentId(String tenant, String paymentNo) {
+        Long id =
+                jdbc.queryForObject(
+                        "SELECT id FROM order_payment_record WHERE tenant_id=? AND payment_no=?",
+                        Long.class,
+                        tenant,
+                        paymentNo);
+        return id == null ? 0L : id;
+    }
+
+    private static void insertPayment(
+            String tenant,
+            String paymentNo,
+            long orderId,
+            String time,
+            int amount,
+            String status,
+            String transactionNo) {
+        jdbc.update(
+                "INSERT INTO order_payment_record(tenant_id,payment_no,order_id,payment_time,paid_amount,"
+                        + " payment_status_code,transaction_no) VALUES(?,?,?,?,?,?,?)",
+                tenant,
+                paymentNo,
+                orderId,
+                Timestamp.from(Instant.parse(time)),
+                new BigDecimal(amount),
+                status,
+                transactionNo);
     }
 
     private static void payment(

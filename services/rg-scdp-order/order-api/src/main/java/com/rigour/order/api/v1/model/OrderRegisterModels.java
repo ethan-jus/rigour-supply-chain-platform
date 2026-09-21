@@ -50,6 +50,8 @@ public final class OrderRegisterModels {
             String legacyOrderNo,
             String sourceSystemCode,
             String sourceOrderNo,
+            /** 订货宝关联单号：来源为订货宝时取来源单号，其余来源按订单号映射解析。 */
+            String dhbOrderNo,
             String orderNumberState,
             Long customerId,
             String customerCode,
@@ -62,6 +64,10 @@ public final class OrderRegisterModels {
             String departmentName,
             String orderStatusCode,
             String paymentStatusCode,
+            /** 数据完善状态；草稿且 NEEDS_REVIEW 的历史来源单在列表展示为“待完善”。 */
+            String dataQualityStatusCode,
+            String invoiceStatusCode,
+            String invoiceStatusName,
             BigDecimal originalAmount,
             BigDecimal payableAmount,
             BigDecimal paidAmount,
@@ -95,6 +101,10 @@ public final class OrderRegisterModels {
             BigDecimal unitPrice,
             BigDecimal lineAmount,
             String orderNo,
+            /** 来源系统单号；页面与订单列表口径一致，便于按来源核对。 */
+            String sourceOrderNo,
+            /** 订货宝关联单号（订单级）。 */
+            String dhbOrderNo,
             Long customerId,
             String customerCode,
             String customerName,
@@ -106,7 +116,13 @@ public final class OrderRegisterModels {
             String departmentName,
             String orderStatusCode,
             Instant orderDate,
-            Integer revision) {
+            Integer revision,
+            String createdBy,
+            Instant createdTime,
+            String updatedBy,
+            Instant updatedTime,
+            String syncedBy,
+            Instant syncedAt) {
     }
 
     /** 收款列表行；一行是一笔关联订单的收款记录，订单金额只做关联参考。 */
@@ -116,6 +132,8 @@ public final class OrderRegisterModels {
             String sourceRecordId,
             Long orderId,
             String orderNo,
+            /** 订货宝关联单号（订单级）。 */
+            String dhbOrderNo,
             Long customerId,
             String customerCode,
             String customerName,
@@ -132,6 +150,7 @@ public final class OrderRegisterModels {
             Instant paymentTime,
             String transactionNo,
             List<String> attachments,
+            List<FundDocumentAttachmentView> attachmentViews,
             String createdBy,
             Instant createdTime,
             String updatedBy,
@@ -143,6 +162,7 @@ public final class OrderRegisterModels {
             Integer revision) {
         public OrderRegisterPaymentView {
             attachments = attachments == null ? List.of() : List.copyOf(attachments);
+            attachmentViews = attachmentViews == null ? List.of() : List.copyOf(attachmentViews);
         }
     }
 
@@ -259,5 +279,9 @@ public final class OrderRegisterModels {
             Instant createdTime,
             String updatedBy,
             Instant updatedTime) {
+    }
+
+    /** 财务核对命令；交易单号用于凭证验重与对账。 */
+    public record PaymentCheckCommand(String transactionNo) {
     }
 }

@@ -59,7 +59,11 @@ class HttpCustomerAssignmentTargetClientTest {
             exchange.close();
         });
         server.start();
-        client = new HttpCustomerAssignmentTargetClient(signer, "http://127.0.0.1:" + server.getAddress().getPort());
+        client =
+                new HttpCustomerAssignmentTargetClient(
+                        signer,
+                        "http://127.0.0.1:" + server.getAddress().getPort(),
+                        org.springframework.web.client.RestClient.builder());
         body.set(response(tenant, target, "EMP-A"));
         TestAuthorizationContext.set(caller);
     }

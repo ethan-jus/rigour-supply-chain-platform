@@ -71,7 +71,9 @@ class HttpAppReadinessClientTest {
                         "rigour.iam." + domain + "-base-url",
                         "http://127.0.0.1:" + server.getAddress().getPort());
             }
-            var client = new HttpAppReadinessClient(signer, env);
+            var client =
+                    new HttpAppReadinessClient(
+                            signer, env, org.springframework.web.client.RestClient.builder());
             assertThat(client.inspect(tenant)).hasSize(6).allMatch(d -> d.issues().isEmpty());
             assertThat(invalid.get()).isZero();
             oldHr.set(true);

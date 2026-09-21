@@ -9,6 +9,7 @@ import com.rigour.shared.core.api.ApiResponse;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -53,6 +54,38 @@ public final class HttpHrEmployeeDisplayClient implements HrEmployeeDisplayClien
         return List.copyOf(result);
     }
 
+    @Override
+    public Set<String> employeeCodesInDepartment(
+            CallerIdentity caller, Long departmentId, Boolean includeSubDepartments) {
+        if (caller == null || caller.tenantId() == null) {
+            throw new IllegalArgumentException("HR员工部门查询必须携带租户上下文");
+        }
+        if (departmentId == null) return Set.of();
+        Set<String> result = new LinkedHashSet<>();
+        int begin = 0;
+        int step = 200;
+        for (int page = 0; page < 10; page += 1) {
+            UriComponentsBuilder builder = UriComponentsBuilder.fromUri(baseUri)
+                    .path("/api/v1/hr/employees")
+                    .queryParam("begin", begin)
+                    .queryParam("step", step)
+                    .queryParam("departmentId", departmentId);
+            if (includeSubDepartments != null) {
+                builder.queryParam("includeSubDepartments", includeSubDepartments);
+            }
+            URI uri = builder.build().encode().toUri();
+            EmployeePage response = fetchEmployees(caller, uri);
+            if (response.items() == null || response.items().isEmpty()) break;
+            for (Map<String, Object> row : response.items()) {
+                String code = text(row.get("employeeCode"));
+                if (code != null) result.add(code);
+            }
+            begin += step;
+            if (begin >= response.total()) break;
+        }
+        return result;
+    }
+
     private EmployeeDisplay resolveOne(CallerIdentity caller, String employeeCode) {
         URI uri = UriComponentsBuilder.fromUri(baseUri)
                 .path("/api/v1/hr/employees")
@@ -62,6 +95,18 @@ public final class HttpHrEmployeeDisplayClient implements HrEmployeeDisplayClien
                 .build()
                 .encode()
                 .toUri();
+        EmployeePage page = fetchEmployees(caller, uri);
+        List<Map<String, Object>> rows = page.items();
+        if (rows == null || rows.isEmpty()) return null;
+        Map<String, Object> row = rows.getFirst();
+        String code = text(row.get("employeeCode"));
+        String name = text(row.get("employeeName"));
+        if (code == null || name == null) return null;
+        return new EmployeeDisplay(
+                code, name, text(row.get("employmentStatus")), text(row.get("departmentName")));
+    }
+
+    private EmployeePage fetchEmployees(CallerIdentity caller, URI uri) {
         ApiResponse<EmployeePage> response = restClient.get().uri(uri)
                 .accept(MediaType.APPLICATION_JSON)
                 .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
@@ -71,13 +116,7 @@ public final class HttpHrEmployeeDisplayClient implements HrEmployeeDisplayClien
         if (response == null || !"OK".equals(response.code()) || response.data() == null) {
             throw new IllegalStateException("HR员工展示查询返回空响应");
         }
-        List<Map<String, Object>> rows = response.data().items();
-        if (rows == null || rows.isEmpty()) return null;
-        Map<String, Object> row = rows.getFirst();
-        String code = text(row.get("employeeCode"));
-        String name = text(row.get("employeeName"));
-        if (code == null || name == null) return null;
-        return new EmployeeDisplay(code, name, text(row.get("employmentStatus")));
+        return response.data();
     }
 
     private Map<String, String> signedHeaders(String method, URI uri, CallerIdentity caller) {

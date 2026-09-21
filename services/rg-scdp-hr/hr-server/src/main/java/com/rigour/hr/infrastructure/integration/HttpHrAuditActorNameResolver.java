@@ -20,13 +20,14 @@ public final class HttpHrAuditActorNameResolver implements HrAuditActorNameResol
     private final RestClient client;
 
     public HttpHrAuditActorNameResolver(
-            @Value("${rigour.supply-authorization.iam-base-url:${IAM_BASE_URL:http://rigour-tenant-iam-service:26881}}") String base) {
+            @Value("${rigour.supply-authorization.iam-base-url:${IAM_BASE_URL:http://rigour-tenant-iam-service}}") String base,
+            RestClient.Builder restClientBuilder) {
         URI uri = URI.create(base);
         if (!java.util.Set.of("http", "https").contains(uri.getScheme()) || uri.getUserInfo() != null)
             throw new IllegalArgumentException("IAM 地址无效");
         var factory = new JdkClientHttpRequestFactory(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build());
         factory.setReadTimeout(Duration.ofSeconds(3));
-        client = RestClient.builder().baseUrl(base).requestFactory(factory).build();
+        client = restClientBuilder.baseUrl(base).requestFactory(factory).build();
     }
 
     @Override

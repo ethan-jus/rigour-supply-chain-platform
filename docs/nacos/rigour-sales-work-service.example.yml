@@ -52,9 +52,9 @@ sales:
     cos:
       region: ap-beijing
       bucket: rigour-sales-recordings-1361731487
-      # 当前使用长期 CAM 密钥：SecretId/SecretKey 由部署 Secret 注入，不写入 Nacos。
-      secret-id: ${RIGOUR_SALES_RECORDING_COS_SECRET_ID:}
-      secret-key: ${RIGOUR_SALES_RECORDING_COS_SECRET_KEY:}
+      # 当前使用长期 CAM 密钥：全供应链共用一套 COS 凭据（RIGOUR_COS_*）；服务专用旧变量名兼容回退。
+      secret-id: ${RIGOUR_COS_SECRET_ID:${RIGOUR_SALES_RECORDING_COS_SECRET_ID:}}
+      secret-key: ${RIGOUR_COS_SECRET_KEY:${RIGOUR_SALES_RECORDING_COS_SECRET_KEY:}}
       # 只有切换到 STS 临时凭据时才增加 session-token；长期密钥模式不要配置。
       connection-timeout-ms: 5000
       socket-timeout-ms: 30000

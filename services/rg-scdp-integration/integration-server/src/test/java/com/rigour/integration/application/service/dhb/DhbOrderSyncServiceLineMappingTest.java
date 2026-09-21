@@ -12,6 +12,7 @@ import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.api.v1.model.SalesOrderDetailView;
 import com.rigour.order.api.v1.model.SalesOrderLineCommand;
 import com.rigour.order.api.v1.model.SalesOrderLineView;
+import com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand;
 import com.rigour.order.api.v1.model.SalesShipmentLineCommand;
 import com.rigour.settings.client.BusinessDictionaryBatchClient.Observation;
 import java.math.BigDecimal;
@@ -25,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -280,6 +282,68 @@ class DhbOrderSyncServiceLineMappingTest {
 
         assertThat(lines).hasSize(1);
         assertThat(lines.getFirst().unitCode()).isEqualTo("PAIR");
+    }
+
+    @Test
+    void usesOrderUnitQuantityAndPriceWhenDhbLineIsOrderedByContainerUnit() {
+        UUID tenantId = UUID.randomUUID();
+        UUID connectorId = UUID.randomUUID();
+        Map<MappingKey, ExternalObjectMapping> mappings = new HashMap<>();
+        mappings.put(key(tenantId, connectorId, "PRODUCT_SPU", "PROD-1"),
+                mapping("PRODUCT_SPU", "PROD-1", "P-1", "ERP", "PRODUCT", 14L, "PRD202609085929"));
+        mappings.put(key(tenantId, connectorId, "PRODUCT_SKU", "PROD-1::SKU-1"),
+                mapping("PRODUCT_SKU", "PROD-1::SKU-1", "SKU-1",
+                        "ERP", "PRODUCT_VARIANT", 28L, "SKU202609088166"));
+        DhbSyncStore store = storeWithMappings(mappings);
+        DhbOrderSyncService service = service(store);
+
+        Map<String, Object> row = new HashMap<>(orderProductRow(
+                "LINE-1", "PROD-1", "SKU-1", "12.0000", "6.5000", "桶"));
+        row.put("orders_units", "container_units");
+        row.put("order_units_name", "箱");
+        row.put("orders_units_number", "1.0000");
+        row.put("order_units_price", "78.0000");
+        row.put("base_units_name", "桶");
+        row.put("ConversionNumber", "12.0000");
+
+        List<SalesOrderLineCommand> lines = salesOrderLines(service, tenantId, connectorId,
+                Map.of("OrderProduct", List.of(row)));
+
+        assertThat(lines).hasSize(1);
+        assertThat(lines.getFirst().unitCode()).isEqualTo("BOX");
+        assertThat(lines.getFirst().quantity()).isEqualByComparingTo("1");
+        assertThat(lines.getFirst().unitPrice()).isEqualByComparingTo("78.00");
+    }
+
+    @Test
+    void keepsBaseUnitQuantityWhenDhbLineIsOrderedByBaseUnit() {
+        UUID tenantId = UUID.randomUUID();
+        UUID connectorId = UUID.randomUUID();
+        Map<MappingKey, ExternalObjectMapping> mappings = new HashMap<>();
+        mappings.put(key(tenantId, connectorId, "PRODUCT_SPU", "PROD-1"),
+                mapping("PRODUCT_SPU", "PROD-1", "P-1", "ERP", "PRODUCT", 14L, "PRD202609085929"));
+        mappings.put(key(tenantId, connectorId, "PRODUCT_SKU", "PROD-1::SKU-1"),
+                mapping("PRODUCT_SKU", "PROD-1::SKU-1", "SKU-1",
+                        "ERP", "PRODUCT_VARIANT", 28L, "SKU202609088166"));
+        DhbSyncStore store = storeWithMappings(mappings);
+        DhbOrderSyncService service = service(store);
+
+        Map<String, Object> row = new HashMap<>(orderProductRow(
+                "LINE-1", "PROD-1", "SKU-1", "12.0000", "6.5000", "桶"));
+        row.put("orders_units", "base_units");
+        row.put("order_units_name", "桶");
+        row.put("orders_units_number", "12.0000");
+        row.put("order_units_price", "6.5000");
+        row.put("base_units_name", "桶");
+        row.put("ConversionNumber", "12.0000");
+
+        List<SalesOrderLineCommand> lines = salesOrderLines(service, tenantId, connectorId,
+                Map.of("OrderProduct", List.of(row)));
+
+        assertThat(lines).hasSize(1);
+        assertThat(lines.getFirst().unitCode()).isEqualTo("BUCKET");
+        assertThat(lines.getFirst().quantity()).isEqualByComparingTo("12");
+        assertThat(lines.getFirst().unitPrice()).isEqualByComparingTo("6.50");
     }
 
     @Test
@@ -702,6 +766,53 @@ class DhbOrderSyncServiceLineMappingTest {
     }
 
     @Test
+    void advancesSubmittedBusinessStatusWhenSourceIsAlreadyCompleted() {
+        AtomicReference<String> advancedSourceStatus = new AtomicReference<>();
+        OrderSalesOrderProjectionClient projection = proxy(OrderSalesOrderProjectionClient.class,
+                (ignoredProxy, method, args) -> {
+                    if ("updateSalesOrderSourceStatus".equals(method.getName())) {
+                        advancedSourceStatus.set(
+                                ((SalesOrderSourceStatusCommand) args[2]).sourceStatusCode());
+                        return completedSourceDetail("COMPLETED");
+                    }
+                    throw new UnsupportedOperationException(
+                            "Unexpected projection call: " + method.getName());
+                });
+        DhbOrderSyncService service = new DhbOrderSyncService(proxy(DhbSyncStore.class),
+                proxy(DhbClient.class), projection, proxy(HrDhbStaffSyncClient.class));
+        SalesOrderDetailView current = completedSourceDetail("SUBMITTED");
+
+        SalesOrderDetailView result = upsertSalesOrder(service, UUID.randomUUID(), current,
+                completedSourceCommand(), false);
+
+        assertThat(advancedSourceStatus.get()).isEqualTo("COMPLETED");
+        assertThat(result.orderStatusCode()).isEqualTo("COMPLETED");
+    }
+
+    @Test
+    void keepsDraftSalesOrderWhenSourceIsAlreadyCompleted() {
+        AtomicBoolean businessStatusTouched = new AtomicBoolean(false);
+        OrderSalesOrderProjectionClient projection = proxy(OrderSalesOrderProjectionClient.class,
+                (ignoredProxy, method, ignoredArgs) -> {
+                    if ("updateSalesOrder".equals(method.getName())) {
+                        return completedSourceDetail("DRAFT");
+                    }
+                    businessStatusTouched.set(true);
+                    throw new UnsupportedOperationException(
+                            "Unexpected projection call: " + method.getName());
+                });
+        DhbOrderSyncService service = new DhbOrderSyncService(proxy(DhbSyncStore.class),
+                proxy(DhbClient.class), projection, proxy(HrDhbStaffSyncClient.class));
+        SalesOrderDetailView current = completedSourceDetail("DRAFT");
+
+        SalesOrderDetailView result = upsertSalesOrder(service, UUID.randomUUID(), current,
+                completedSourceCommand(), false);
+
+        assertThat(result.orderStatusCode()).isEqualTo("DRAFT");
+        assertThat(businessStatusTouched).isFalse();
+    }
+
+    @Test
     void cancelsSubmittedSalesOrderThroughSourceCancellationWhenSourceIsCancelled() {
         AtomicBoolean sourceCancelCalled = new AtomicBoolean(false);
         SalesOrderDetailView current = salesOrderDetail("SUBMITTED");
@@ -916,9 +1027,11 @@ class DhbOrderSyncServiceLineMappingTest {
         try {
             Class<?> preparedType = preparedSalesOrderType();
             var constructor = preparedType
-                    .getDeclaredConstructor(String.class, String.class, SalesOrderCommand.class, boolean.class);
+                    .getDeclaredConstructor(String.class, String.class, SalesOrderCommand.class,
+                            boolean.class, boolean.class);
             constructor.setAccessible(true);
-            Object prepared = constructor.newInstance("DHB-ORDER-1", "stockup", command, cancelled);
+            Object prepared = constructor.newInstance("DHB-ORDER-1", "stockup", command, cancelled,
+                    false);
             Method method = DhbOrderSyncService.class.getDeclaredMethod("upsertSalesOrder",
                     UUID.class, ExternalObjectMapping.class, SalesOrderDetailView.class, preparedType);
             method.setAccessible(true);
@@ -941,12 +1054,12 @@ class DhbOrderSyncServiceLineMappingTest {
         try {
             Method method = DhbOrderSyncService.class.getDeclaredMethod("prepareSalesOrder",
                     UUID.class, UUID.class, String.class, DhbClient.OrderSummary.class,
-                    DhbClient.OrderDetail.class, Map.class);
+                    DhbClient.OrderDetail.class, Map.class, boolean.class, Map.class);
             method.setAccessible(true);
             Object prepared = method.invoke(service, tenantId, connectorId, "DHB-ORDER-TEST",
                     null, new DhbClient.OrderDetail("DHB-ORDER-TEST", "stockup",
                             new BigDecimal("20.00"), content),
-                    Map.of());
+                    Map.of(), true, new java.util.concurrent.ConcurrentHashMap<>());
             Method command = prepared.getClass().getDeclaredMethod("command");
             command.setAccessible(true);
             return (SalesOrderCommand) command.invoke(prepared);
@@ -1023,6 +1136,25 @@ class DhbOrderSyncServiceLineMappingTest {
             }
         }
         throw new AssertionError("PreparedSalesOrder type not found");
+    }
+
+    private static SalesOrderDetailView completedSourceDetail(String orderStatus) {
+        return new SalesOrderDetailView(100L, "SO202608220001", "DINGHUOBAO", "DH.20260904.0136",
+                "COMPLETED", 1L, "C001", "客户", null, null, null, null, null, null, null,
+                Instant.parse("2026-08-22T00:00:00Z"), null, null, orderStatus, null,
+                null, "UNPAID", "PENDING", new BigDecimal("2"), new BigDecimal("20.00"),
+                BigDecimal.ZERO, BigDecimal.ZERO, new BigDecimal("20.00"), BigDecimal.ZERO,
+                new BigDecimal("20.00"), null, 3, "DHB_SYNC",
+                Instant.parse("2026-08-22T00:00:00Z"), "DHB_SYNC",
+                Instant.parse("2026-08-22T00:00:00Z"), List.of(salesOrderLineView()));
+    }
+
+    private static SalesOrderCommand completedSourceCommand() {
+        return new SalesOrderCommand(1L, "DINGHUOBAO", "DH.20260904.0136", "COMPLETED", null, null,
+                null, "C001", "客户", null, null, null, null, null, null, null,
+                Instant.parse("2026-08-22T00:00:00Z"), null, null, List.of(), null, null, null,
+                "remark", List.of(salesOrderLineCommand()), false, null, null, null, null, null,
+                null, null, null);
     }
 
     private static SalesOrderCommand salesOrderCommand(boolean submit) {

@@ -96,6 +96,7 @@ public final class ErpProductManagementService {
             String shelfStatusCode,
             String submitStatusCode,
             Long defaultWarehouseId,
+            List<Long> productIds,
             boolean withVariants) {
         String tenantId = tenant(READ_PERMISSION);
         ProductSearchCriteria criteria =
@@ -108,7 +109,8 @@ public final class ErpProductManagementService {
                         ErpServiceValidation.code(saleTypeCode, "saleTypeCode", false),
                         ErpServiceValidation.code(shelfStatusCode, "shelfStatusCode", false),
                         ErpServiceValidation.code(submitStatusCode, "submitStatusCode", false),
-                        ErpServiceValidation.optionalId(defaultWarehouseId, "defaultWarehouseId"));
+                        ErpServiceValidation.optionalId(defaultWarehouseId, "defaultWarehouseId"),
+                        batchProductIds(productIds));
         MasterDataPageView<ProductManagementSummaryView> result =
                 store.products(
                         tenantId,
@@ -308,6 +310,15 @@ public final class ErpProductManagementService {
         Long warehouseId =
                 ErpServiceValidation.optionalId(command.defaultWarehouseId(), "defaultWarehouseId");
         String unitCode = ErpServiceValidation.code(command.unitCode(), "unitCode", submit);
+        String middleUnitCode =
+                ErpServiceValidation.code(command.middleUnitCode(), "middleUnitCode", false);
+        BigDecimal baseToMiddleRate =
+                unitRate(middleUnitCode, command.baseToMiddleRate(), "baseToMiddleRate");
+        String bigUnitCode = ErpServiceValidation.code(command.bigUnitCode(), "bigUnitCode", false);
+        BigDecimal baseToBigRate = unitRate(bigUnitCode, command.baseToBigRate(), "baseToBigRate");
+        String statisticsUnitLevel =
+                statisticsUnitLevel(
+                        command.statisticsUnitLevel(), middleUnitCode, bigUnitCode);
         boolean orderMultipleFlag = Boolean.TRUE.equals(command.orderMultipleFlag());
         BigDecimal orderMultipleQuantity =
                 orderMultipleFlag
@@ -321,6 +332,11 @@ public final class ErpProductManagementService {
                         ErpServiceValidation.text(
                                 command.productSpecification(), 500, "productSpecification"),
                         unitCode,
+                        middleUnitCode,
+                        baseToMiddleRate,
+                        bigUnitCode,
+                        baseToBigRate,
+                        statisticsUnitLevel,
                         quantity(command.minOrderQuantity(), "minOrderQuantity", false),
                         orderMultipleFlag,
                         orderMultipleQuantity,
@@ -352,6 +368,8 @@ public final class ErpProductManagementService {
     private void validateDictionaries(String tenantId, ProductWrite write) {
         var selectedUnits = new LinkedHashSet<String>();
         if (write.unitCode() != null) selectedUnits.add(write.unitCode());
+        if (write.middleUnitCode() != null) selectedUnits.add(write.middleUnitCode());
+        if (write.bigUnitCode() != null) selectedUnits.add(write.bigUnitCode());
         write.variants().stream()
                 .map(ProductVariantWrite::unitCode)
                 .filter(Objects::nonNull)
@@ -605,6 +623,51 @@ public final class ErpProductManagementService {
 
     private static BusinessException badRequest(String message) {
         return new BusinessException(ErrorCode.BAD_REQUEST, message, List.of());
+    }
+
+    /** 默认统计单位只接受三级单位层级；空值按基础单位处理，未知层级拒绝写入。 */
+    private static String statisticsUnitLevel(String value, String middleUnitCode, String bigUnitCode) {
+        String level = ErpServiceValidation.text(value, 16, "statisticsUnitLevel");
+        if (level == null) return null;
+        String normalized = level.toUpperCase(Locale.ROOT);
+        if (!Set.of("BASE", "MIDDLE", "BIG").contains(normalized)) {
+            throw badRequest("statisticsUnitLevel仅支持BASE、MIDDLE、BIG");
+        }
+        if ("MIDDLE".equals(normalized) && middleUnitCode == null) {
+            throw badRequest("默认统计单位选择中包装时必须先维护中包装单位与换算率");
+        }
+        if ("BIG".equals(normalized) && bigUnitCode == null) {
+            throw badRequest("默认统计单位选择大包装时必须先维护大包装单位与换算率");
+        }
+        return normalized;
+    }
+
+    /** 单位编码与换算率必须成对出现：有单位无换算率（或反之）都会让页面换算口径失真。 */
+    private static BigDecimal unitRate(String unitCode, BigDecimal rate, String field) {
+        BigDecimal value = quantity(rate, field, false);
+        if (unitCode == null) {
+            if (value != null) throw badRequest(field + "需要同时维护对应的包装单位编码");
+            return null;
+        }
+        if (value == null) throw badRequest("维护了包装单位就必须维护" + field);
+        if (value.compareTo(BigDecimal.ONE) <= 0) {
+            throw badRequest(field + "必须大于1（1包装等于N个基础单位）");
+        }
+        return value;
+    }
+
+    /** 批量核对商品只接受有限数量的ID，避免把列表查询变成全表扫描。 */
+    private static List<Long> batchProductIds(List<Long> values) {
+        if (values == null || values.isEmpty()) return null;
+        LinkedHashSet<Long> ids = new LinkedHashSet<>();
+        for (Long value : values) {
+            if (value == null) continue;
+            if (value < 1) throw badRequest("productIds包含无效商品ID");
+            ids.add(value);
+        }
+        if (ids.isEmpty()) return null;
+        if (ids.size() > 200) throw badRequest("productIds单次最多核对200个商品");
+        return List.copyOf(ids);
     }
 
     private static BusinessException notFound(String message) {

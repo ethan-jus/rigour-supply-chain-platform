@@ -299,7 +299,13 @@ public final class OrderSalesPaymentRecordService {
                 paidAmount,
                 voucherKeys(command.voucherKeys()),
                 text(command.remark(), 1000, "remark"),
-                update ? command.revision() : 0);
+                update ? command.revision() : 0,
+                command.sourceCreatedAt(),
+                command.sourceUpdatedAt(),
+                text(command.sourceModifierId(), 80, "sourceModifierId"),
+                text(command.sourceModifierName(), 100, "sourceModifierName"),
+                text(command.syncedBy(), 50, "syncedBy"),
+                command.syncedAt());
     }
 
     private List<String> voucherKeys(List<String> values) {

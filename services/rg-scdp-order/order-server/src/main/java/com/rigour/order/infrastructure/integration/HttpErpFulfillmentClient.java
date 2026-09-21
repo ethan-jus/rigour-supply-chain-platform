@@ -28,8 +28,9 @@ public final class HttpErpFulfillmentClient implements ErpFulfillmentClient {
     public HttpErpFulfillmentClient(
             TrustedContextSigner signer,
             @Value(
-                            "${rigour.order.erp-execution-base-url:${ERP_BASE_URL:http://rigour-erp-core-service:26884}}")
-                    String base) {
+                            "${rigour.order.erp-execution-base-url:${ERP_BASE_URL:http://rigour-erp-core-service}}")
+                    String base,
+            RestClient.Builder restClientBuilder) {
         this.signer = signer;
         this.base = URI.create(base.replaceAll("/+$", ""));
         if (!Set.of("http", "https").contains(this.base.getScheme()))
@@ -38,7 +39,7 @@ public final class HttpErpFulfillmentClient implements ErpFulfillmentClient {
                 new JdkClientHttpRequestFactory(
                         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build());
         f.setReadTimeout(Duration.ofSeconds(15));
-        client = RestClient.builder().requestFactory(f).build();
+        client = restClientBuilder.requestFactory(f).build();
     }
 
     public Receipt execute(CallerIdentity actor, String id) {
@@ -136,7 +137,7 @@ public final class HttpErpFulfillmentClient implements ErpFulfillmentClient {
                     .map(
                             w ->
                                     new com.rigour.order.api.v1.OrderFulfillmentApi.WarehouseOption(
-                                            Long.parseLong(w.key()), w.name()))
+                                            Long.parseLong(w.key()), w.name(), w.regionCode()))
                     .toList();
         } catch (RestClientException e) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "可选仓库暂不可查询", e);

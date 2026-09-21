@@ -52,7 +52,8 @@ public final class HrEmployeeService {
                                                 String mobile, String employmentStatus,
                                                 String jobCategory, String positionName,
                                                 String regionName, String cityName,
-                                                String sourceSystem, Long departmentId, String positionCode, String jobGrade) {
+                                                String sourceSystem, Long departmentId, Boolean includeSubDepartments,
+                                                String positionCode, String jobGrade) {
         String tenantId = tenant(READ_PERMISSION);
         EmployeeSearchCriteria criteria = new EmployeeSearchCriteria(
                 HrServiceValidation.text(keyword, 128, "keyword"),
@@ -66,7 +67,8 @@ public final class HrEmployeeService {
                 HrServiceValidation.text(cityName, 80, "cityName"),
                 sourceSystem(sourceSystem, false), departmentId,
                 HrServiceValidation.text(positionCode, 50, "positionCode"),
-                HrServiceValidation.text(jobGrade, 32, "jobGrade"));
+                HrServiceValidation.text(jobGrade, 32, "jobGrade"),
+                includeSubDepartments);
         HrPageView<HrEmployeeView> result = store.employees(tenantId, HrServiceValidation.pageBegin(begin),
                 HrServiceValidation.pageStep(step), criteria);
         log.debug("HR员工列表查询完成 tenantId={} keyword={} count={} total={}",

@@ -2454,6 +2454,9 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
     @Override
     public List<ExternalObjectMappingCommand> externalObjectMappings(
             UUID tenantId, UUID connectorId, UUID runId, CrmMasterDataObjectType objectType) {
+        if (objectType == CrmMasterDataObjectType.CUSTOMER_AREA) {
+            return customerAreaMappings(tenantId, connectorId, runId);
+        }
         if (objectType != CrmMasterDataObjectType.CUSTOMER) return List.of();
         List<ExternalObjectMappingCommand> result = new ArrayList<>();
         List<SourceBindingEntity> bindings =
@@ -2510,6 +2513,72 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                             null,
                             "CRM订货宝客户同步映射"));
         }
+        return result;
+    }
+
+    /**
+     * 归属地区以内部编码对外，没有数字主键：映射只登记内部编码，供订单同步按来源地区 ID 或名称解析。
+     */
+    private List<ExternalObjectMappingCommand> customerAreaMappings(
+            UUID tenantId, UUID connectorId, UUID runId) {
+        List<SourceBindingEntity> bindings =
+                bindingMapper.selectList(
+                        Wrappers.<SourceBindingEntity>query()
+                                .eq("tenant_id", bytes(tenantId))
+                                .eq("connector_id", bytes(connectorId))
+                                .eq("source_system", SOURCE_SYSTEM)
+                                .eq(
+                                        "source_object_type",
+                                        CrmMasterDataObjectType.CUSTOMER_AREA.name())
+                                .eq("binding_status", "RESOLVED")
+                                .eq("source_presence", "PRESENT"));
+        if (bindings.isEmpty()) return List.of();
+        Map<UUID, CustomerAreaEntity> areasById =
+                customerAreasById(
+                        tenantId,
+                        bindings.stream()
+                                .map(binding -> binding.targetId == null ? null : uuid(binding.targetId))
+                                .toList());
+        List<ExternalObjectMappingCommand> result = new ArrayList<>();
+        for (SourceBindingEntity binding : bindings) {
+            CustomerAreaEntity area =
+                    binding.targetId == null ? null : areasById.get(uuid(binding.targetId));
+            if (area == null || area.areaCode == null || area.areaCode.isBlank()) continue;
+            result.add(
+                    new ExternalObjectMappingCommand(
+                            connectorId,
+                            INTEGRATION_SOURCE_SYSTEM,
+                            CrmMasterDataObjectType.CUSTOMER_AREA.name(),
+                            binding.sourceObjectId,
+                            first(binding.sourceName, area.areaName, binding.sourceObjectId),
+                            "CRM",
+                            CrmMasterDataObjectType.CUSTOMER_AREA.name(),
+                            null,
+                            area.areaCode,
+                            "ACTIVE",
+                            runId,
+                            instant(binding.syncedAt),
+                            null,
+                            binding.sourcePayloadHash,
+                            null,
+                            "CRM订货宝归属地区同步映射"));
+        }
+        return result;
+    }
+
+    private Map<UUID, CustomerAreaEntity> customerAreasById(
+            UUID tenantId, Collection<UUID> areaIds) {
+        if (areaIds == null || areaIds.isEmpty()) return Map.of();
+        List<UUID> ids = areaIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) return Map.of();
+        Map<UUID, CustomerAreaEntity> result = new LinkedHashMap<>();
+        customerAreaMapper
+                .selectList(
+                        Wrappers.<CustomerAreaEntity>query()
+                                .eq("tenant_id", bytes(tenantId))
+                                .in("id", ids.stream().map(MybatisPlusCrmRepository::bytes).toList())
+                                .eq("deleted", 0))
+                .forEach(entity -> result.put(uuid(entity.id), entity));
         return result;
     }
 

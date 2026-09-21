@@ -1,22 +1,22 @@
 # 日常开发选择 dev：基础设施统一使用台式机 192.168.12.7，不需要本机安装中间件。
 # DEV账号仅用于开发；COS/签名密钥沿用IDEA环境变量，不在Git保存云密钥。
-# 本机不注册到共享服务池、不自动迁移数据库；台式机部署仍由部署脚本管理。
+# 服务注册到 DEV 命名空间，网关与各服务间按服务名解析实例，不再维护静态地址表。
 server:
   port: 26880
 spring:
+  config:
+    import: "optional:nacos:rigour-common.yml,optional:nacos:${spring.application.name}.yml"
   cloud:
     nacos:
       server-addr: "192.168.12.7:18848"
       config:
-        enabled: false
-        import-check:
-          enabled: false
-        namespace: "3aa03547-8948-4254-bd94-47c630db128b"
+        enabled: true
+        namespace: "${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}"
       username: "nacos"
       password: "430baa72cea83cdd77b1627990f7fb2d6bfe0622"
       discovery:
-        namespace: "3aa03547-8948-4254-bd94-47c630db128b"
-        register-enabled: false
+        namespace: "${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}"
+        register-enabled: true
   flyway:
     enabled: false
   application:
@@ -26,9 +26,11 @@ rigour:
     security:
       enabled: true
       allow-insecure-http: true
+      # issuer 是令牌身份标识，必须与 IAM 的 rigour.iam.oidc.server.issuer 完全一致，不参与服务寻址。
       issuer: "http://localhost:26881"
-      jwk-set-uri: "http://localhost:26881/oauth2/jwks"
-      iam-current-token-uri: "http://localhost:26881/api/v1/token/current"
+      # JWKS 与会话核验按服务名解析 IAM 实例（注册中心寻址）。
+      jwk-set-uri: "http://rigour-tenant-iam-service/oauth2/jwks"
+      iam-current-token-uri: "http://rigour-tenant-iam-service/api/v1/token/current"
       current-token-validation-enabled: true
       allow-insecure-loopback: true
   context:
@@ -36,15 +38,3 @@ rigour:
       active-key-id: "v1"
       keys-base64:
         v1: "${RIGOUR_CONTEXT_TRUST_KEY_V1}"
-IAM_SERVICE_URL: "http://localhost:26881"
-BUSINESS_SETTINGS_SERVICE_URL: "http://192.168.12.7:26892"
-# 部门、员工及任职维护使用 IDEA 本机新版 HR，数据库仍使用共享 DEV。
-HR_SERVICE_URL: "http://localhost:26889"
-CRM_SERVICE_URL: "http://localhost:26883"
-ERP_SERVICE_URL: "http://192.168.12.7:26884"
-# 订单及业务参数由 IDEA 本机新版服务处理，避免转入台式机旧接口。
-ORDER_SERVICE_URL: "http://localhost:26885"
-SALES_SERVICE_URL: "http://192.168.12.7:26886"
-AI_SERVICE_URL: "http://192.168.12.7:26887"
-BI_SERVICE_URL: "http://192.168.12.7:26888"
-INTEGRATION_SERVICE_URL: "http://localhost:26882"

@@ -536,7 +536,7 @@ class OrderBusinessTimeCodeGenerationTest {
     }
 
     private static HrEmployeeDisplayClient emptyEmployeeClient() {
-        return (caller, employeeCodes) -> List.of();
+        return HrEmployeeDisplayClient.NONE;
     }
 
     private static OrderSalesOrderStore orderStore() {

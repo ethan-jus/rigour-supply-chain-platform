@@ -38,6 +38,7 @@ public interface HrEmployeeStore {
                                   String positionName,
                                   String regionName,
                                   String cityName,
-                                  String sourceSystem, Long departmentId, String positionCode, String jobGrade) {
+                                  String sourceSystem, Long departmentId, String positionCode, String jobGrade,
+                                  Boolean includeSubDepartments) {
     }
 }

@@ -341,107 +341,129 @@ public class MybatisPlusSalesOrderRepository
                 cancelled
                         ? SalesOrderPaymentStatus.CANCELLED.code()
                         : paymentStatus(payableAmount, paidAmount);
+        var update =
+                Wrappers.<InternalSalesOrderEntity>lambdaUpdate()
+                        .set(
+                                InternalSalesOrderEntity::getSourceStatusCode,
+                                command.sourceStatusCode())
+                        .set(
+                                InternalSalesOrderEntity::getSourceCreatorId,
+                                command.sourceCreatorId())
+                        .set(
+                                InternalSalesOrderEntity::getSourceCreatorStaffCode,
+                                command.sourceCreatorStaffCode())
+                        .set(
+                                InternalSalesOrderEntity::getSourceCreatorName,
+                                command.sourceCreatorName())
+                        .set(
+                                InternalSalesOrderEntity::getDataQualityStatusCode,
+                                command.dataQualityStatusCode())
+                        .set(
+                                InternalSalesOrderEntity::getDataQualityMessage,
+                                command.dataQualityMessage())
+                        .set(
+                                InternalSalesOrderEntity::getCustomerId,
+                                command.customerId())
+                        .set(
+                                InternalSalesOrderEntity::getCustomerCodeSnapshot,
+                                command.customerCodeSnapshot())
+                        .set(
+                                InternalSalesOrderEntity::getCustomerNameSnapshot,
+                                command.customerNameSnapshot())
+                        .set(
+                                InternalSalesOrderEntity::getContactNameSnapshot,
+                                command.contactNameSnapshot())
+                        .set(
+                                InternalSalesOrderEntity::getContactPhoneSnapshot,
+                                command.contactPhoneSnapshot())
+                        .set(
+                                InternalSalesOrderEntity::getRegionCode,
+                                command.regionCode())
+                        .set(
+                                InternalSalesOrderEntity::getOwnerSalesUserId,
+                                command.ownerSalesUserId())
+                        .set(
+                                InternalSalesOrderEntity::getOwnerSalesName,
+                                command.ownerSalesName())
+                        .set(
+                                InternalSalesOrderEntity::getOwnerEmployeeCode,
+                                command.ownerEmployeeCode())
+                        .set(
+                                InternalSalesOrderEntity
+                                        ::getOwnerEmployeeNameSnapshot,
+                                command.ownerEmployeeNameSnapshot())
+                        .set(
+                                InternalSalesOrderEntity::getOrderDate,
+                                local(command.orderDate()))
+                        .set(
+                                InternalSalesOrderEntity::getOrderStatusCode,
+                                orderStatusCode)
+                        .set(
+                                InternalSalesOrderEntity::getOrderTypeCode,
+                                command.orderTypeCode())
+                        .set(
+                                InternalSalesOrderEntity::getPaymentMethodCode,
+                                command.paymentMethodCode())
+                        .set(
+                                InternalSalesOrderEntity::getPaymentVoucherKeysJson,
+                                json(command.paymentVoucherKeys()))
+                        .set(
+                                InternalSalesOrderEntity::getPaymentStatusCode,
+                                paymentStatusCode)
+                        .set(
+                                InternalSalesOrderEntity::getTotalQuantity,
+                                command.totalQuantity())
+                        .set(
+                                InternalSalesOrderEntity::getOriginalAmount,
+                                command.originalAmount())
+                        .set(
+                                InternalSalesOrderEntity::getDiscountRate,
+                                command.discountRate())
+                        .set(
+                                InternalSalesOrderEntity::getDiscountAmount,
+                                command.discountAmount())
+                        .set(
+                                InternalSalesOrderEntity::getPayableAmount,
+                                payableAmount)
+                        .set(
+                                InternalSalesOrderEntity::getUnpaidAmount,
+                                unpaidAmount)
+                        .set(
+                                InternalSalesOrderEntity::getSourceUnpaidAmount,
+                                sourceUnpaidAmount)
+                        .set(InternalSalesOrderEntity::getRemark, command.remark())
+                        .set(
+                                InternalSalesOrderEntity::getRevision,
+                                command.revision() + 1)
+                        .set(
+                                InternalSalesOrderEntity::getUpdatedBy,
+                                auditActor(actorId))
+                        .set(InternalSalesOrderEntity::getUpdatedTime, now);
+        if (command.sourceCreatedAt() != null)
+            update.set(
+                    InternalSalesOrderEntity::getSourceCreatedAt,
+                    local(command.sourceCreatedAt()));
+        if (command.sourceUpdatedAt() != null)
+            update.set(
+                    InternalSalesOrderEntity::getSourceUpdatedAt,
+                    local(command.sourceUpdatedAt()));
+        if (command.sourceModifierId() != null)
+            update.set(
+                    InternalSalesOrderEntity::getSourceModifierId,
+                    command.sourceModifierId());
+        if (command.sourceModifierName() != null)
+            update.set(
+                    InternalSalesOrderEntity::getSourceModifierName,
+                    command.sourceModifierName());
+        if (command.syncedBy() != null)
+            update.set(InternalSalesOrderEntity::getSyncedBy, command.syncedBy());
+        if (command.syncedAt() != null)
+            update.set(InternalSalesOrderEntity::getSyncedAt, local(command.syncedAt()));
         int updated =
                 getBaseMapper()
                         .update(
                                 null,
-                                Wrappers.<InternalSalesOrderEntity>lambdaUpdate()
-                                        .set(
-                                                InternalSalesOrderEntity::getSourceStatusCode,
-                                                command.sourceStatusCode())
-                                        .set(
-                                                InternalSalesOrderEntity::getSourceCreatorId,
-                                                command.sourceCreatorId())
-                                        .set(
-                                                InternalSalesOrderEntity::getSourceCreatorStaffCode,
-                                                command.sourceCreatorStaffCode())
-                                        .set(
-                                                InternalSalesOrderEntity::getSourceCreatorName,
-                                                command.sourceCreatorName())
-                                        .set(
-                                                InternalSalesOrderEntity::getDataQualityStatusCode,
-                                                command.dataQualityStatusCode())
-                                        .set(
-                                                InternalSalesOrderEntity::getDataQualityMessage,
-                                                command.dataQualityMessage())
-                                        .set(
-                                                InternalSalesOrderEntity::getCustomerId,
-                                                command.customerId())
-                                        .set(
-                                                InternalSalesOrderEntity::getCustomerCodeSnapshot,
-                                                command.customerCodeSnapshot())
-                                        .set(
-                                                InternalSalesOrderEntity::getCustomerNameSnapshot,
-                                                command.customerNameSnapshot())
-                                        .set(
-                                                InternalSalesOrderEntity::getContactNameSnapshot,
-                                                command.contactNameSnapshot())
-                                        .set(
-                                                InternalSalesOrderEntity::getContactPhoneSnapshot,
-                                                command.contactPhoneSnapshot())
-                                        .set(
-                                                InternalSalesOrderEntity::getRegionCode,
-                                                command.regionCode())
-                                        .set(
-                                                InternalSalesOrderEntity::getOwnerSalesUserId,
-                                                command.ownerSalesUserId())
-                                        .set(
-                                                InternalSalesOrderEntity::getOwnerSalesName,
-                                                command.ownerSalesName())
-                                        .set(
-                                                InternalSalesOrderEntity::getOwnerEmployeeCode,
-                                                command.ownerEmployeeCode())
-                                        .set(
-                                                InternalSalesOrderEntity
-                                                        ::getOwnerEmployeeNameSnapshot,
-                                                command.ownerEmployeeNameSnapshot())
-                                        .set(
-                                                InternalSalesOrderEntity::getOrderDate,
-                                                local(command.orderDate()))
-                                        .set(
-                                                InternalSalesOrderEntity::getOrderStatusCode,
-                                                orderStatusCode)
-                                        .set(
-                                                InternalSalesOrderEntity::getOrderTypeCode,
-                                                command.orderTypeCode())
-                                        .set(
-                                                InternalSalesOrderEntity::getPaymentMethodCode,
-                                                command.paymentMethodCode())
-                                        .set(
-                                                InternalSalesOrderEntity::getPaymentVoucherKeysJson,
-                                                json(command.paymentVoucherKeys()))
-                                        .set(
-                                                InternalSalesOrderEntity::getPaymentStatusCode,
-                                                paymentStatusCode)
-                                        .set(
-                                                InternalSalesOrderEntity::getTotalQuantity,
-                                                command.totalQuantity())
-                                        .set(
-                                                InternalSalesOrderEntity::getOriginalAmount,
-                                                command.originalAmount())
-                                        .set(
-                                                InternalSalesOrderEntity::getDiscountRate,
-                                                command.discountRate())
-                                        .set(
-                                                InternalSalesOrderEntity::getDiscountAmount,
-                                                command.discountAmount())
-                                        .set(
-                                                InternalSalesOrderEntity::getPayableAmount,
-                                                payableAmount)
-                                        .set(
-                                                InternalSalesOrderEntity::getUnpaidAmount,
-                                                unpaidAmount)
-                                        .set(
-                                                InternalSalesOrderEntity::getSourceUnpaidAmount,
-                                                sourceUnpaidAmount)
-                                        .set(InternalSalesOrderEntity::getRemark, command.remark())
-                                        .set(
-                                                InternalSalesOrderEntity::getRevision,
-                                                command.revision() + 1)
-                                        .set(
-                                                InternalSalesOrderEntity::getUpdatedBy,
-                                                auditActor(actorId))
-                                        .set(InternalSalesOrderEntity::getUpdatedTime, now)
+                                update
                                         .eq(InternalSalesOrderEntity::getTenantId, tenantId)
                                         .eq(InternalSalesOrderEntity::getId, id)
                                         .eq(
@@ -465,10 +487,18 @@ public class MybatisPlusSalesOrderRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public SalesOrderDetailView updateSourceStatus(
-            String tenantId, Long id, String sourceStatusCode, int revision, String actorId) {
+            String tenantId,
+            Long id,
+            String sourceStatusCode,
+            String orderStatusCode,
+            int revision,
+            String actorId) {
         InternalSalesOrderEntity existing =
                 selectActive(tenantId, id).orElseThrow(() -> notFound("销售订单不存在"));
-        if (Objects.equals(existing.getSourceStatusCode(), sourceStatusCode)) {
+        String businessStatusCode =
+                orderStatusCode == null ? existing.getOrderStatusCode() : orderStatusCode;
+        if (Objects.equals(existing.getSourceStatusCode(), sourceStatusCode)
+                && Objects.equals(existing.getOrderStatusCode(), businessStatusCode)) {
             return rawDetail(tenantId, id);
         }
         LocalDateTime now = now();
@@ -480,6 +510,9 @@ public class MybatisPlusSalesOrderRepository
                                         .set(
                                                 InternalSalesOrderEntity::getSourceStatusCode,
                                                 sourceStatusCode)
+                                        .set(
+                                                InternalSalesOrderEntity::getOrderStatusCode,
+                                                businessStatusCode)
                                         .set(InternalSalesOrderEntity::getRevision, revision + 1)
                                         .set(
                                                 InternalSalesOrderEntity::getUpdatedBy,
@@ -499,55 +532,78 @@ public class MybatisPlusSalesOrderRepository
             String tenantId, Long id, SalesOrderSourceProjectionWrite command, String actorId) {
         attribution.requireNoExecution(tenantId, id);
         attribution.rejectFrozenSourceRewrite(
-                tenantId,
-                id,
-                command.ownerEmployeeCode(),
-                selectActive(tenantId, id)
-                        .map(InternalSalesOrderEntity::getRegionCode)
-                        .orElse(null));
+                tenantId, id, command.ownerEmployeeCode(), command.regionCode());
         InternalSalesOrderEntity existing =
                 selectActive(tenantId, id).orElseThrow(() -> notFound("销售订单不存在"));
         if (sourceProjectionSame(existing, command)) {
             return rawDetail(tenantId, id);
         }
         LocalDateTime now = now();
+        var update =
+                Wrappers.<InternalSalesOrderEntity>lambdaUpdate()
+                        .set(
+                                InternalSalesOrderEntity::getSourceStatusCode,
+                                command.sourceStatusCode())
+                        .set(
+                                InternalSalesOrderEntity::getSourceCreatorId,
+                                command.sourceCreatorId())
+                        .set(
+                                InternalSalesOrderEntity::getSourceCreatorStaffCode,
+                                command.sourceCreatorStaffCode())
+                        .set(
+                                InternalSalesOrderEntity::getSourceCreatorName,
+                                command.sourceCreatorName())
+                        .set(
+                                InternalSalesOrderEntity::getOwnerSalesUserId,
+                                command.ownerSalesUserId())
+                        .set(
+                                InternalSalesOrderEntity::getOwnerSalesName,
+                                command.ownerSalesName())
+                        .set(
+                                InternalSalesOrderEntity::getOwnerEmployeeCode,
+                                command.ownerEmployeeCode())
+                        .set(
+                                InternalSalesOrderEntity
+                                        ::getOwnerEmployeeNameSnapshot,
+                                command.ownerEmployeeNameSnapshot())
+                        .set(InternalSalesOrderEntity::getRegionCode, command.regionCode())
+                        .set(
+                                InternalSalesOrderEntity::getOrderStatusCode,
+                                command.orderStatusCode() == null
+                                        ? existing.getOrderStatusCode()
+                                        : command.orderStatusCode())
+                        .set(
+                                InternalSalesOrderEntity::getRevision,
+                                command.revision() + 1)
+                        .set(
+                                InternalSalesOrderEntity::getUpdatedBy,
+                                auditActor(actorId))
+                        .set(InternalSalesOrderEntity::getUpdatedTime, now);
+        if (command.sourceCreatedAt() != null)
+            update.set(
+                    InternalSalesOrderEntity::getSourceCreatedAt,
+                    local(command.sourceCreatedAt()));
+        if (command.sourceUpdatedAt() != null)
+            update.set(
+                    InternalSalesOrderEntity::getSourceUpdatedAt,
+                    local(command.sourceUpdatedAt()));
+        if (command.sourceModifierId() != null)
+            update.set(
+                    InternalSalesOrderEntity::getSourceModifierId,
+                    command.sourceModifierId());
+        if (command.sourceModifierName() != null)
+            update.set(
+                    InternalSalesOrderEntity::getSourceModifierName,
+                    command.sourceModifierName());
+        if (command.syncedBy() != null)
+            update.set(InternalSalesOrderEntity::getSyncedBy, command.syncedBy());
+        if (command.syncedAt() != null)
+            update.set(InternalSalesOrderEntity::getSyncedAt, local(command.syncedAt()));
         int updated =
                 getBaseMapper()
                         .update(
                                 null,
-                                Wrappers.<InternalSalesOrderEntity>lambdaUpdate()
-                                        .set(
-                                                InternalSalesOrderEntity::getSourceStatusCode,
-                                                command.sourceStatusCode())
-                                        .set(
-                                                InternalSalesOrderEntity::getSourceCreatorId,
-                                                command.sourceCreatorId())
-                                        .set(
-                                                InternalSalesOrderEntity::getSourceCreatorStaffCode,
-                                                command.sourceCreatorStaffCode())
-                                        .set(
-                                                InternalSalesOrderEntity::getSourceCreatorName,
-                                                command.sourceCreatorName())
-                                        .set(
-                                                InternalSalesOrderEntity::getOwnerSalesUserId,
-                                                command.ownerSalesUserId())
-                                        .set(
-                                                InternalSalesOrderEntity::getOwnerSalesName,
-                                                command.ownerSalesName())
-                                        .set(
-                                                InternalSalesOrderEntity::getOwnerEmployeeCode,
-                                                command.ownerEmployeeCode())
-                                        .set(
-                                                InternalSalesOrderEntity
-                                                        ::getOwnerEmployeeNameSnapshot,
-                                                command.ownerEmployeeNameSnapshot())
-                                        .set(
-                                                InternalSalesOrderEntity::getRevision,
-                                                command.revision() + 1)
-                                        .set(
-                                                InternalSalesOrderEntity::getUpdatedBy,
-                                                auditActor(actorId))
-                                        .set(InternalSalesOrderEntity::getUpdatedTime, now)
+                                update
                                         .eq(InternalSalesOrderEntity::getTenantId, tenantId)
                                         .eq(InternalSalesOrderEntity::getId, id)
                                         .eq(
@@ -899,6 +955,10 @@ public class MybatisPlusSalesOrderRepository
         entity.setSourceCreatorId(command.sourceCreatorId());
         entity.setSourceCreatorStaffCode(command.sourceCreatorStaffCode());
         entity.setSourceCreatorName(command.sourceCreatorName());
+        entity.setSourceCreatedAt(local(command.sourceCreatedAt()));
+        entity.setSourceUpdatedAt(local(command.sourceUpdatedAt()));
+        entity.setSourceModifierId(command.sourceModifierId());
+        entity.setSourceModifierName(command.sourceModifierName());
         entity.setDataQualityStatusCode(command.dataQualityStatusCode());
         entity.setDataQualityMessage(command.dataQualityMessage());
         entity.setCustomerId(command.customerId());
@@ -932,6 +992,8 @@ public class MybatisPlusSalesOrderRepository
         entity.setCreatedTime(now);
         entity.setUpdatedBy(auditActor(actorId));
         entity.setUpdatedTime(now);
+        entity.setSyncedBy(command.syncedBy());
+        entity.setSyncedAt(local(command.syncedAt()));
         entity.setDeleted(0);
         return entity;
     }
@@ -1274,6 +1336,10 @@ public class MybatisPlusSalesOrderRepository
                 && Objects.equals(existing.getOwnerEmployeeCode(), command.ownerEmployeeCode())
                 && Objects.equals(
                         existing.getOwnerEmployeeNameSnapshot(),
-                        command.ownerEmployeeNameSnapshot());
+                        command.ownerEmployeeNameSnapshot())
+                && Objects.equals(existing.getRegionCode(), command.regionCode())
+                && (command.orderStatusCode() == null
+                        || Objects.equals(
+                                existing.getOrderStatusCode(), command.orderStatusCode()));
     }
 }

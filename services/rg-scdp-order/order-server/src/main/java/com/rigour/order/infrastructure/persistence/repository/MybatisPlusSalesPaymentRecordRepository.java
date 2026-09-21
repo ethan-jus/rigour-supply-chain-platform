@@ -163,11 +163,8 @@ public class MybatisPlusSalesPaymentRecordRepository
         requireOrder(tenantId, command.orderId());
         scopes.requireStableAssociation(existing.getOrderId(), command.orderId());
         LocalDateTime now = now();
-        int updated =
-                getBaseMapper()
-                        .update(
-                                null,
-                                Wrappers.<InternalSalesPaymentRecordEntity>lambdaUpdate()
+        var update =
+                Wrappers.<InternalSalesPaymentRecordEntity>lambdaUpdate()
                                         .set(
                                                 InternalSalesPaymentRecordEntity::getConnectorId,
                                                 uuidText(command.connectorId()))
@@ -228,7 +225,33 @@ public class MybatisPlusSalesPaymentRecordRepository
                                         .set(
                                                 InternalSalesPaymentRecordEntity::getUpdatedBy,
                                                 actorId)
-                                        .set(InternalSalesPaymentRecordEntity::getUpdatedTime, now)
+                                        .set(InternalSalesPaymentRecordEntity::getUpdatedTime, now);
+        if (command.sourceCreatedAt() != null)
+            update.set(
+                    InternalSalesPaymentRecordEntity::getSourceCreatedAt,
+                    local(command.sourceCreatedAt()));
+        if (command.sourceUpdatedAt() != null)
+            update.set(
+                    InternalSalesPaymentRecordEntity::getSourceUpdatedAt,
+                    local(command.sourceUpdatedAt()));
+        if (command.sourceModifierId() != null)
+            update.set(
+                    InternalSalesPaymentRecordEntity::getSourceModifierId,
+                    command.sourceModifierId());
+        if (command.sourceModifierName() != null)
+            update.set(
+                    InternalSalesPaymentRecordEntity::getSourceModifierName,
+                    command.sourceModifierName());
+        if (command.syncedBy() != null)
+            update.set(InternalSalesPaymentRecordEntity::getSyncedBy, command.syncedBy());
+        if (command.syncedAt() != null)
+            update.set(
+                    InternalSalesPaymentRecordEntity::getSyncedAt, local(command.syncedAt()));
+        int updated =
+                getBaseMapper()
+                        .update(
+                                null,
+                                update
                                         .eq(InternalSalesPaymentRecordEntity::getTenantId, tenantId)
                                         .eq(InternalSalesPaymentRecordEntity::getId, id)
                                         .eq(
@@ -344,6 +367,10 @@ public class MybatisPlusSalesPaymentRecordRepository
         entity.setConnectorId(uuidText(command.connectorId()));
         entity.setSourceSystemCode(command.sourceSystemCode());
         entity.setSourceDocumentNo(command.sourceDocumentNo());
+        entity.setSourceCreatedAt(local(command.sourceCreatedAt()));
+        entity.setSourceUpdatedAt(local(command.sourceUpdatedAt()));
+        entity.setSourceModifierId(command.sourceModifierId());
+        entity.setSourceModifierName(command.sourceModifierName());
         entity.setOrderId(command.orderId());
         entity.setSalesOrderNoSnapshot(command.salesOrderNoSnapshot());
         entity.setCustomerId(command.customerId());
@@ -361,6 +388,8 @@ public class MybatisPlusSalesPaymentRecordRepository
         entity.setCreatedTime(now);
         entity.setUpdatedBy(actorId);
         entity.setUpdatedTime(now);
+        entity.setSyncedBy(command.syncedBy());
+        entity.setSyncedAt(local(command.syncedAt()));
         entity.setDeleted(0);
         return entity;
     }

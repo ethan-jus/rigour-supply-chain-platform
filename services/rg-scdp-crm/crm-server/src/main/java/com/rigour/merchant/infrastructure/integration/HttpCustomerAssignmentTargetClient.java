@@ -29,8 +29,9 @@ public final class HttpCustomerAssignmentTargetClient implements CustomerAssignm
     public HttpCustomerAssignmentTargetClient(
             TrustedContextSigner signer,
             @Value(
-                            "${rigour.supply-authorization.iam-base-url:${IAM_BASE_URL:http://rigour-tenant-iam-service:26881}}")
-                    String base) {
+                            "${rigour.supply-authorization.iam-base-url:${IAM_BASE_URL:http://rigour-tenant-iam-service}}")
+                    String base,
+            RestClient.Builder restClientBuilder) {
         this.signer = signer;
         this.base = URI.create(base.replaceAll("/+$", ""));
         if (!Set.of("http", "https").contains(this.base.getScheme())
@@ -39,7 +40,7 @@ public final class HttpCustomerAssignmentTargetClient implements CustomerAssignm
                 new JdkClientHttpRequestFactory(
                         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build());
         factory.setReadTimeout(Duration.ofSeconds(5));
-        this.client = RestClient.builder().requestFactory(factory).build();
+        this.client = restClientBuilder.requestFactory(factory).build();
     }
 
     public CustomerAssignmentTargetView byUser(String tenant, UUID userId) {

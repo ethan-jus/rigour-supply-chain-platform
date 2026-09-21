@@ -10,6 +10,8 @@ public record ExternalProductResolvedView(
         String productName,
         String specification,
         String unitCode,
+        /** 商品中包装单位；明细表按「数量(箱)」下单时用它决定内部单位。 */
+        String middleUnitCode,
         String matchedSourceSystem,
         String matchStrategy,
         Integer matchScore,

@@ -1,5 +1,6 @@
 package com.rigour.integration.application.service.dhb;
 
+import com.rigour.integration.application.port.out.CrmCustomerAttributionClient;
 import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbClient.Connector;
 import com.rigour.integration.application.port.out.DhbClient.DownloadedFile;
@@ -119,6 +120,8 @@ public final class DhbOrderSyncService {
     private static final AtomicInteger DETAIL_EXECUTOR_SEQUENCE = new AtomicInteger();
     private static final UUID SERVICE_PRINCIPAL_ID =
             UUID.fromString("019fb700-0000-7000-8000-00000000d0b0");
+    /** 同步落库时写入订单/回款「同步人」列的可读文案；定时与人工触发都由同步服务执行。 */
+    private static final String SYNC_ACTOR = "系统自动同步";
     private static final Set<String> DOMAIN_PERMISSIONS = Set.of(
             "order:read", "order:write", "hr:employee:read", "erp:supply:read", "erp:supply:write");
     private static final int DEFAULT_PAGE_SIZE = 100;
@@ -149,6 +152,42 @@ public final class DhbOrderSyncService {
             "order_units_name", "base_units_name", "Units", "UnitsName", "Unit",
             "unit_name", "UnitName", "unitName"
     };
+    /**
+     * 订货宝明细可能按订单单位（箱）下单、也可能按基础单位（桶）下单；单位的展示口径由 order_units_name 决定，
+     * 数量和单价必须取同一口径，否则会出现「12 桶的数字配 箱 的单位」这类错账。
+     */
+    private static boolean orderUnitIsContainer(Map<String, Object> row) {
+        String orderUnit = text(first(row, "order_units_name"));
+        String baseUnit = text(first(row, "base_units_name", "Units", "UnitsName", "Unit"));
+        if (orderUnit != null && baseUnit != null) return !orderUnit.equalsIgnoreCase(baseUnit);
+        return "container_units".equalsIgnoreCase(text(first(row, "orders_units")));
+    }
+
+    private static BigDecimal orderUnitQuantity(Map<String, Object> row, BigDecimal baseQuantity) {
+        if (!orderUnitIsContainer(row)) return baseQuantity;
+        BigDecimal unitQuantity = decimal(firstObject(row, "orders_units_number"));
+        if (unitQuantity != null && unitQuantity.compareTo(BigDecimal.ZERO) > 0) return unitQuantity;
+        BigDecimal rate = conversionRate(row);
+        if (rate != null && baseQuantity != null) {
+            return baseQuantity.divide(rate, 6, RoundingMode.HALF_UP);
+        }
+        return baseQuantity;
+    }
+
+    private static BigDecimal orderUnitPrice(Map<String, Object> row, BigDecimal basePrice) {
+        if (!orderUnitIsContainer(row)) return basePrice;
+        BigDecimal unitPrice = decimal(firstObject(row, "order_units_price"));
+        if (unitPrice != null) return unitPrice;
+        BigDecimal rate = conversionRate(row);
+        if (rate != null && basePrice != null) return basePrice.multiply(rate);
+        return basePrice;
+    }
+
+    private static BigDecimal conversionRate(Map<String, Object> row) {
+        BigDecimal rate = decimal(firstObject(row, "ConversionNumber", "conversion_number"));
+        return rate != null && rate.compareTo(BigDecimal.ZERO) > 0 ? rate : null;
+    }
+
     private static final Pattern INTERNAL_CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
     private static final DateTimeFormatter D_HMS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final ZoneId SOURCE_ZONE = ZoneId.of("Asia/Shanghai");
@@ -210,6 +249,7 @@ public final class DhbOrderSyncService {
     private final int detailConcurrency;
     private final ProductMediaStorage fundAttachmentStorage;
     private final DhbAttachmentObjectKeyFactory fundAttachmentKeyFactory;
+    private final CrmCustomerAttributionClient crmCustomerAttributionClient;
 
     public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
                                OrderSalesOrderProjectionClient orderProjectionClient,
@@ -251,6 +291,20 @@ public final class DhbOrderSyncService {
                                int detailConcurrency,
                                ProductMediaStorage fundAttachmentStorage,
                                DhbAttachmentObjectKeyFactory fundAttachmentKeyFactory) {
+        this(store, client, orderProjectionClient, erpStockOutProjectionClient, hrEmployeeClient,
+                dictionaryClient, detailConcurrency, fundAttachmentStorage, fundAttachmentKeyFactory,
+                null);
+    }
+
+    public DhbOrderSyncService(DhbSyncStore store, DhbClient client,
+                               OrderSalesOrderProjectionClient orderProjectionClient,
+                               ErpStockOutProjectionClient erpStockOutProjectionClient,
+                               HrDhbStaffSyncClient hrEmployeeClient,
+                               BusinessDictionaryBatchClient dictionaryClient,
+                               int detailConcurrency,
+                               ProductMediaStorage fundAttachmentStorage,
+                               DhbAttachmentObjectKeyFactory fundAttachmentKeyFactory,
+                               CrmCustomerAttributionClient crmCustomerAttributionClient) {
         this.store = Objects.requireNonNull(store, "store cannot be null");
         this.client = Objects.requireNonNull(client, "client cannot be null");
         this.orderProjectionClient = Objects.requireNonNull(orderProjectionClient,
@@ -261,6 +315,7 @@ public final class DhbOrderSyncService {
         this.detailConcurrency = normalizeDetailConcurrency(detailConcurrency);
         this.fundAttachmentStorage = fundAttachmentStorage;
         this.fundAttachmentKeyFactory = fundAttachmentKeyFactory;
+        this.crmCustomerAttributionClient = crmCustomerAttributionClient;
     }
 
     public SyncRunView runOrderPull(CallerIdentity caller, UUID taskId, SyncRunCommand command) {
@@ -304,6 +359,7 @@ public final class DhbOrderSyncService {
 
         Counts counts = new Counts();
         Map<String, EmployeeProjection> employeeCache = new ConcurrentHashMap<>();
+        Map<Long, Optional<String>> customerRegionCache = new ConcurrentHashMap<>();
         Map<String, Object> sourceOrderLocks = new ConcurrentHashMap<>();
         MAPPING_LOOKUP_CACHE.set(new ConcurrentHashMap<>());
         UNIT_DICTIONARY_SYNC_CACHE.set(ConcurrentHashMap.newKeySet());
@@ -322,7 +378,8 @@ public final class DhbOrderSyncService {
                     store.persistOrderPage(caller.tenantId(), taskId, started.runId(),
                             page.items(), Instant.now());
                     counts.addAll(projectDetails(detailExecutor, "order-detail", page.items(),
-                            order -> projectOrder(caller, task, started.runId(), order, employeeCache)));
+                            order -> projectOrder(caller, task, started.runId(), order, employeeCache,
+                                    customerRegionCache)));
                     if (page.hasNext() && pages >= pageLimit) throw new IllegalStateException("DHB_PAGE_LIMIT_REACHED: 分页未读取完毕，未推进游标，请缩小时间范围");
                     if (!page.hasNext()) {
                         break;
@@ -486,7 +543,8 @@ public final class DhbOrderSyncService {
 
     private ProjectionOutcome projectOrder(CallerIdentity caller, SyncTaskContext task,
                                            UUID runId, OrderSummary summary,
-                                           Map<String, EmployeeProjection> employeeCache) {
+                                           Map<String, EmployeeProjection> employeeCache,
+                                           Map<Long, Optional<String>> customerRegionCache) {
         String sourceOrderNo = firstNonBlank(summary == null ? null : summary.orderNumber(),
                 summary == null ? null : summary.sourceId(),
                 first(map(summary == null ? null : summary.attributes()), "OrderSN", "orders_num"));
@@ -514,7 +572,9 @@ public final class DhbOrderSyncService {
                     existing.internalObjectId());
             PreparedSalesOrder prepared = prepareSalesOrder(
                     caller.tenantId(), task.connectorId(), sourceOrderNo, summary, detail,
-                    employeeCache);
+                    employeeCache,
+                    current == null || current.regionCode() == null || current.regionCode().isBlank(),
+                    customerRegionCache);
             var intake=orderProjectionClient.registerSourceOrder(orderServiceCaller(caller.tenantId()),
                     new com.rigour.order.api.v1.model.HistorySyncModels.SourceOrder(task.connectorId(),sourceOrderNo,
                         prepared.command(),detail.amount()==null?summary.amount():detail.amount(),raw.payloadChecksum()));
@@ -545,6 +605,12 @@ public final class DhbOrderSyncService {
             }
 
             SalesOrderDetailView projected = upsertSalesOrder(caller.tenantId(), existing, current, prepared);
+            if (prepared.regionFromCustomer()) {
+                store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "WARN",
+                        "订货宝订单缺少来源地区，已按客户当前归属回填 orderNo=" + sourceOrderNo
+                                + " regionCode=" + prepared.command().regionCode(),
+                        "DHB_ORDER_REGION_FROM_CUSTOMER");
+            }
             store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
                     new ExternalObjectMappingWrite(task.connectorId(), SOURCE_OBJECT_SALES_ORDER,
                             sourceOrderNo, sourceOrderNo, "ORDER", "SALES_ORDER", projected.id(),
@@ -1139,20 +1205,58 @@ public final class DhbOrderSyncService {
     private SalesOrderDetailView ensureSalesOrderSourceProjection(
             CallerIdentity serviceCaller, SalesOrderDetailView current, PreparedSalesOrder prepared) {
         SalesOrderCommand expected = prepared.command();
-        if (current == null || salesOrderSourceProjectionComplete(current, expected)) {
+        boolean regionFill =
+                current != null
+                        && (current.regionCode() == null || current.regionCode().isBlank())
+                        && expected.regionCode() != null
+                        && !expected.regionCode().isBlank();
+        if (current == null) {
+            return null;
+        }
+        SalesOrderDetailView projected = current;
+        if (!(salesOrderSourceProjectionComplete(current, expected) && !regionFill)) {
+            projected = orderProjectionClient.updateSalesOrderSourceProjection(serviceCaller, current.id(),
+                    new SalesOrderSourceProjectionCommand(
+                            expected.sourceStatusCode(),
+                            expected.sourceCreatorId(),
+                            expected.sourceCreatorStaffCode(),
+                            expected.sourceCreatorName(),
+                            current.ownerSalesUserId(),
+                            current.ownerSalesName(),
+                            current.ownerEmployeeCode(),
+                            current.ownerEmployeeNameSnapshot(),
+                            expected.regionCode(),
+                            current.revision(),
+                            expected.sourceCreatedAt(),
+                            expected.sourceUpdatedAt(),
+                            expected.sourceModifierId(),
+                            expected.sourceModifierName(),
+                            expected.syncedBy(),
+                            expected.syncedAt()));
+        }
+        return ensureSalesOrderBusinessStatus(serviceCaller, projected, expected);
+    }
+
+    /**
+     * 来源已完成但业务状态仍停在「已提交」的单据（例如历史同步创建时就已完成）在这里补推进；
+     * 来源状态到业务状态的映射只维护在订单服务，这里只触发幂等补写。
+     */
+    private SalesOrderDetailView ensureSalesOrderBusinessStatus(
+            CallerIdentity serviceCaller, SalesOrderDetailView current, SalesOrderCommand expected) {
+        String expectedSourceStatus = expected.sourceStatusCode();
+        if (current == null
+                || expectedSourceStatus == null
+                || !"COMPLETED".equalsIgnoreCase(expectedSourceStatus.trim())
+                || "COMPLETED".equalsIgnoreCase(current.orderStatusCode())
+                || "CANCELLED".equalsIgnoreCase(current.orderStatusCode())
+                || salesOrderDraft(current)) {
             return current;
         }
-        return orderProjectionClient.updateSalesOrderSourceProjection(serviceCaller, current.id(),
-                new SalesOrderSourceProjectionCommand(
-                        expected.sourceStatusCode(),
-                        expected.sourceCreatorId(),
-                        expected.sourceCreatorStaffCode(),
-                        expected.sourceCreatorName(),
-                        current.ownerSalesUserId(),
-                        current.ownerSalesName(),
-                        current.ownerEmployeeCode(),
-                        current.ownerEmployeeNameSnapshot(),
-                        current.revision()));
+        return orderProjectionClient.updateSalesOrderSourceStatus(
+                serviceCaller,
+                current.id(),
+                new SalesOrderSourceStatusCommand(
+                        current.sourceStatusCode(), current.revision()));
     }
 
     private void ensureSalesOrderMapping(CallerIdentity caller, SyncTaskContext task, UUID runId,
@@ -1344,7 +1448,9 @@ public final class DhbOrderSyncService {
     private PreparedSalesOrder prepareSalesOrder(UUID tenantId, UUID connectorId,
                                                  String sourceOrderNo, OrderSummary summary,
                                                  OrderDetail detail,
-                                                 Map<String, EmployeeProjection> employeeCache) {
+                                                 Map<String, EmployeeProjection> employeeCache,
+                                                 boolean allowRegionFallback,
+                                                 Map<Long, Optional<String>> customerRegionCache) {
         Map<String, Object> list = map(summary == null ? null : summary.attributes());
         Map<String, Object> content = map(detail == null ? null : detail.attributes());
         String sourceStatus = firstNonBlank(
@@ -1420,6 +1526,14 @@ public final class DhbOrderSyncService {
         EmployeeProjection sourceModifier = resolveEmployee(tenantId, connectorId, sourceModifierIds,
                 sourceModifierNames, employeeCache);
         String regionCode = customerAreaCode(tenantId, connectorId, content, list);
+        boolean regionFromCustomer = false;
+        if (regionCode == null && allowRegionFallback) {
+            String fallback = customerRegionCode(tenantId, customer, customerRegionCache);
+            if (fallback != null) {
+                regionCode = fallback;
+                regionFromCustomer = true;
+            }
+        }
         Instant orderDate = sourceBusinessTime(
                 "DHB_ORDER_BUSINESS_TIME_MISSING",
                 "订货宝订单缺少下单/创建时间，不能生成销售订单",
@@ -1465,9 +1579,37 @@ public final class DhbOrderSyncService {
                 sourceUpdatedAt,
                 firstClean(sourceModifierIds),
                 firstNonBlank(sourceModifier.employeeName(), firstClean(sourceModifierNames)),
-                SERVICE_PRINCIPAL_ID.toString(),
+                SYNC_ACTOR,
                 Instant.now());
-        return new PreparedSalesOrder(sourceOrderNo, sourceStatus, command, cancelled);
+        return new PreparedSalesOrder(sourceOrderNo, sourceStatus, command, cancelled,
+                regionFromCustomer);
+    }
+
+    /**
+     * 来源订单没有地区时的兜底：读取订单客户在我们系统的当前归属地区编码。
+     *
+     * <p>只补空、不覆盖已有归属；CRM 不可用时保持为空并让订单进入待核对，不猜测。</p>
+     */
+    private String customerRegionCode(UUID tenantId, ExternalObjectMapping customer,
+                                      Map<Long, Optional<String>> customerRegionCache) {
+        if (crmCustomerAttributionClient == null
+                || customer == null
+                || customer.internalObjectId() == null
+                || customer.internalObjectId() < 1) {
+            return null;
+        }
+        long customerId = customer.internalObjectId();
+        Optional<String> cached = customerRegionCache.computeIfAbsent(customerId, id -> {
+            try {
+                return Optional.ofNullable(crmCustomerAttributionClient.regionCode(
+                        orderServiceCaller(tenantId), id));
+            } catch (RuntimeException error) {
+                log.warn("CRM客户归属兜底查询失败，订单地区保持为空 tenantId={} customerId={} reason={}",
+                        tenantId, id, safeMessage(error));
+                return Optional.empty();
+            }
+        });
+        return cached.orElse(null);
     }
 
     private String customerAreaCode(UUID tenantId, UUID connectorId,
@@ -1539,7 +1681,7 @@ public final class DhbOrderSyncService {
                 receipt == null ? null : receipt.updatedAt(),
                 null,
                 null,
-                SERVICE_PRINCIPAL_ID.toString(),
+                SYNC_ACTOR,
                 Instant.now());
         return new PreparedSalesPayment(sourceReceiptNo, sourceOrderNo, command);
     }
@@ -2560,10 +2702,10 @@ public final class DhbOrderSyncService {
             ExternalObjectMapping sku = mappingAny(tenantId, connectorId,
                     List.of("PRODUCT_SKU", "PRODUCT_VARIANT", "SKU"), skuCandidates,
                     sourceShipmentNo, "商品规格");
-            BigDecimal quantity = decimal(firstObject(row, "ShipsNumber", "ships_number",
+            BigDecimal quantity = orderUnitQuantity(row, decimal(firstObject(row, "ShipsNumber", "ships_number",
                     "OutNumber", "outNumber", "transfer_number", "TransferNumber",
                     "warehousing_number", "WarehousingNumber", "ContentNumber", "Number",
-                    "Quantity", "quantity", "GoodsNumber"));
+                    "Quantity", "quantity", "GoodsNumber")));
             if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
                 throw new ProjectionRejected("DHB_STOCK_OUT_LINE_QUANTITY_INVALID",
                         "订货宝出库单明细数量为空或小于等于0",
@@ -2646,9 +2788,9 @@ public final class DhbOrderSyncService {
             ExternalObjectMapping sku = mappingAny(tenantId, connectorId,
                     List.of("PRODUCT_SKU", "PRODUCT_VARIANT", "SKU"), skuCandidates,
                     sourceShipmentNo, "商品规格");
-            BigDecimal quantity = decimal(firstObject(row, "ShipsNumber", "ships_number",
+            BigDecimal quantity = orderUnitQuantity(row, decimal(firstObject(row, "ShipsNumber", "ships_number",
                     "OutNumber", "outNumber", "ContentNumber", "Number", "Quantity",
-                    "quantity", "GoodsNumber"));
+                    "quantity", "GoodsNumber")));
             if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
                 throw new ProjectionRejected("DHB_SHIPMENT_LINE_QUANTITY_INVALID",
                         "订货宝发货单明细数量为空或小于等于0",
@@ -2884,8 +3026,8 @@ public final class DhbOrderSyncService {
             Long productId = requiredInternalId(product, sourceOrderNo, "商品");
             Long variantId = requiredInternalId(sku, sourceOrderNo, "商品规格");
             String duplicateKey = salesOrderLineKey(row, productId, variantId, rowIndex);
-            BigDecimal quantity = decimal(firstObject(row, "ContentNumber", "order_units_number",
-                    "Number", "OrderNumber", "Quantity", "quantity", "orders_number", "GoodsNumber"));
+            BigDecimal quantity = orderUnitQuantity(row, decimal(firstObject(row, "ContentNumber",
+                    "Number", "OrderNumber", "Quantity", "quantity", "orders_number", "GoodsNumber")));
             if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
                 throw new ProjectionRejected("DHB_ORDER_LINE_QUANTITY_INVALID",
                         "订货宝订单明细数量为空或小于等于0",
@@ -2896,9 +3038,9 @@ public final class DhbOrderSyncService {
                     "ContentMoney", "content_money", "LineAmount", "lineAmount", "line_amount",
                     "OrderAmount", "order_amount", "Amount", "amount", "TotalPrice", "totalPrice",
                     "TotalAmount", "totalAmount", "GoodsAmount", "goodsAmount"));
-            BigDecimal unitPrice = decimal(firstObject(row, "ContentPrice", "order_units_price",
+            BigDecimal unitPrice = orderUnitPrice(row, decimal(firstObject(row, "ContentPrice",
                     "Price", "OrderPrice", "UnitPrice", "unitPrice", "unit_price",
-                    "SalePrice", "salePrice"));
+                    "SalePrice", "salePrice")));
             if (unitPrice == null && lineAmount != null) {
                 unitPrice = lineAmount.divide(quantity, 6, RoundingMode.HALF_UP);
             }
@@ -4087,7 +4229,8 @@ public final class DhbOrderSyncService {
     }
 
     private record PreparedSalesOrder(String sourceOrderNo, String sourceStatus,
-                                      SalesOrderCommand command, boolean cancelled) {
+                                      SalesOrderCommand command, boolean cancelled,
+                                      boolean regionFromCustomer) {
     }
 
     private record PreparedSalesPayment(String sourceReceiptNo, String sourceOrderNo,

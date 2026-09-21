@@ -9,6 +9,7 @@ import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterLineView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterOrderView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPaymentView;
+import com.rigour.order.api.v1.model.OrderRegisterModels.PaymentCheckCommand;
 import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodStatisticsView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.ReceivablesView;
 import com.rigour.order.application.service.sales.OrderRegisterService;
@@ -48,11 +49,13 @@ public class OrderRegisterController implements OrderRegisterApi {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
             String paymentStatusCode,
-            Boolean hasUnpaid) {
+            Boolean hasUnpaid,
+            String invoiceStatusCode) {
         return ApiResponse.success(
                 service.orders(
                         begin,
@@ -64,11 +67,13 @@ public class OrderRegisterController implements OrderRegisterApi {
                         regionCode,
                         ownerEmployeeCode,
                         departmentId,
+                        includeSubDepartments,
                         orderDateFrom,
                         orderDateTo,
                         orderStatusCode,
                         paymentStatusCode,
-                        hasUnpaid));
+                        hasUnpaid,
+                        invoiceStatusCode));
     }
 
     @Override
@@ -82,11 +87,13 @@ public class OrderRegisterController implements OrderRegisterApi {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
             String productKeyword,
-            String productCode) {
+            String productCode,
+            List<Long> productIds) {
         return ApiResponse.success(
                 service.lines(
                         begin,
@@ -98,11 +105,13 @@ public class OrderRegisterController implements OrderRegisterApi {
                         regionCode,
                         ownerEmployeeCode,
                         departmentId,
+                        includeSubDepartments,
                         orderDateFrom,
                         orderDateTo,
                         orderStatusCode,
                         productKeyword,
-                        productCode));
+                        productCode,
+                        productIds));
     }
 
     @Override
@@ -116,6 +125,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
@@ -123,7 +133,9 @@ public class OrderRegisterController implements OrderRegisterApi {
             String transactionNo,
             String paymentStatusCode,
             Instant paymentTimeFrom,
-            Instant paymentTimeTo) {
+            Instant paymentTimeTo,
+            String sortBy,
+            String sortDirection) {
         return ApiResponse.success(
                 service.payments(
                         begin,
@@ -135,6 +147,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         regionCode,
                         ownerEmployeeCode,
                         departmentId,
+                        includeSubDepartments,
                         orderDateFrom,
                         orderDateTo,
                         orderStatusCode,
@@ -142,7 +155,14 @@ public class OrderRegisterController implements OrderRegisterApi {
                         transactionNo,
                         paymentStatusCode,
                         paymentTimeFrom,
-                        paymentTimeTo));
+                        paymentTimeTo,
+                        sortBy,
+                        sortDirection));
+    }
+
+    @Override
+    public ApiResponse<OrderRegisterPaymentView> checkPayment(Long id, PaymentCheckCommand command) {
+        return ApiResponse.success(service.checkPayment(id, command));
     }
 
     @Override
@@ -153,6 +173,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Long customerId,
             String customerName,
             String customerCode) {
@@ -164,6 +185,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         regionCode,
                         ownerEmployeeCode,
                         departmentId,
+                        includeSubDepartments,
                         customerId,
                         customerName,
                         customerCode));
@@ -183,6 +205,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Long customerId,
             String orderNo) {
         return ApiResponse.success(
@@ -194,6 +217,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         regionCode,
                         ownerEmployeeCode,
                         departmentId,
+                        includeSubDepartments,
                         customerId,
                         orderNo));
     }
@@ -232,11 +256,13 @@ public class OrderRegisterController implements OrderRegisterApi {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
             String paymentStatusCode,
-            Boolean hasUnpaid) {
+            Boolean hasUnpaid,
+            String invoiceStatusCode) {
         List<OrderRegisterOrderView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -250,11 +276,13 @@ public class OrderRegisterController implements OrderRegisterApi {
                             regionCode,
                             ownerEmployeeCode,
                             departmentId,
+                            includeSubDepartments,
                             orderDateFrom,
                             orderDateTo,
                             orderStatusCode,
                             paymentStatusCode,
-                            hasUnpaid);
+                            hasUnpaid,
+                            invoiceStatusCode);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
@@ -307,11 +335,13 @@ public class OrderRegisterController implements OrderRegisterApi {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
             String productKeyword,
-            String productCode) {
+            String productCode,
+            List<Long> productIds) {
         List<OrderRegisterLineView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -325,11 +355,13 @@ public class OrderRegisterController implements OrderRegisterApi {
                             regionCode,
                             ownerEmployeeCode,
                             departmentId,
+                            includeSubDepartments,
                             orderDateFrom,
                             orderDateTo,
                             orderStatusCode,
                             productKeyword,
-                            productCode);
+                            productCode,
+                            productIds);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
@@ -369,6 +401,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
@@ -390,6 +423,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                             regionCode,
                             ownerEmployeeCode,
                             departmentId,
+                            includeSubDepartments,
                             orderDateFrom,
                             orderDateTo,
                             orderStatusCode,
@@ -397,7 +431,9 @@ public class OrderRegisterController implements OrderRegisterApi {
                             transactionNo,
                             paymentStatusCode,
                             paymentTimeFrom,
-                            paymentTimeTo);
+                            paymentTimeTo,
+                            null,
+                            null);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
@@ -405,7 +441,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                 "payments.csv",
                 new String[] {
                     "收款编码", "订单号", "客户名称", "归属地区", "业务员", "订单金额",
-                    "收款金额", "收款状态", "收款时间", "交易流水号", "核对人", "核对时间"
+                    "收款金额", "收款状态", "收款时间", "交易单号", "核对人", "核对时间"
                 },
                 rows.stream()
                         .map(
@@ -435,6 +471,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Long customerId,
             String orderNo) {
         List<ReceivablesView> rows = new ArrayList<>();
@@ -448,6 +485,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                             regionCode,
                             ownerEmployeeCode,
                             departmentId,
+                            includeSubDepartments,
                             customerId,
                             orderNo);
             rows.addAll(page.items());
@@ -485,6 +523,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Long customerId,
             String customerName,
             String customerCode) {
@@ -496,6 +535,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         regionCode,
                         ownerEmployeeCode,
                         departmentId,
+                        includeSubDepartments,
                         customerId,
                         customerName,
                         customerCode);

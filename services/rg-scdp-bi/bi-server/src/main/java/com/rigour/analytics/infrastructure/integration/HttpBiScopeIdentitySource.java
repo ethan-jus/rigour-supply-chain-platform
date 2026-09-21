@@ -35,10 +35,11 @@ public final class HttpBiScopeIdentitySource implements BiScopeIdentitySource {
 
     @Autowired
     public HttpBiScopeIdentitySource(TrustedContextSigner signer,
-            @Value("${rigour.analytics.scope.iam-base-url:http://localhost:26881}") String iam,
-            @Value("${rigour.analytics.scope.hr-base-url:http://localhost:26889}") String hr,
-            @Value("${rigour.analytics.scope.crm-base-url:http://localhost:26883}") String crm) {
-        this(defaultBuilder(), signer, iam, hr, crm);
+            @Value("${rigour.analytics.scope.iam-base-url:http://rigour-tenant-iam-service}") String iam,
+            @Value("${rigour.analytics.scope.hr-base-url:http://rigour-hr-payroll-service}") String hr,
+            @Value("${rigour.analytics.scope.crm-base-url:http://rigour-merchant-crm-service}") String crm,
+            RestClient.Builder restClientBuilder) {
+        this(timed(restClientBuilder), signer, iam, hr, crm);
     }
 
     HttpBiScopeIdentitySource(RestClient.Builder builder, TrustedContextSigner signer, String iam, String hr, String crm) {
@@ -47,11 +48,11 @@ public final class HttpBiScopeIdentitySource implements BiScopeIdentitySource {
         this.iam = base(iam); this.hr = base(hr); this.crm = base(crm);
     }
 
-    private static RestClient.Builder defaultBuilder() {
+    private static RestClient.Builder timed(RestClient.Builder builder) {
         var factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(3));
         factory.setReadTimeout(Duration.ofSeconds(10));
-        return RestClient.builder().requestFactory(factory);
+        return builder.requestFactory(factory);
     }
 
     @Override public VerifiedIdentity verify(CallerIdentity actor, BiScopeSyncCommand command) {

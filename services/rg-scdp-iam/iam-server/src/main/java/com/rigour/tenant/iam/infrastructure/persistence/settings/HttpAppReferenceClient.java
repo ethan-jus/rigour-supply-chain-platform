@@ -28,14 +28,15 @@ public final class HttpAppReferenceClient implements AppReferenceClient {
     public HttpAppReferenceClient(
             TrustedContextSigner signer,
             @Value(
-                            "${rigour.iam.hr-base-url:${HR_PAYROLL_BASE_URL:http://rigour-hr-payroll-service:26889}}")
+                            "${rigour.iam.hr-base-url:${HR_PAYROLL_BASE_URL:http://rigour-hr-payroll-service}}")
                     String hr,
             @Value(
-                            "${rigour.iam.crm-base-url:${MERCHANT_CRM_BASE_URL:http://rigour-merchant-crm-service:26883}}")
+                            "${rigour.iam.crm-base-url:${MERCHANT_CRM_BASE_URL:http://rigour-merchant-crm-service}}")
                     String crm,
             @Value(
-                            "${rigour.iam.erp-base-url:${ERP_CORE_BASE_URL:http://rigour-erp-core-service:26884}}")
-                    String erp) {
+                            "${rigour.iam.erp-base-url:${ERP_CORE_BASE_URL:http://rigour-erp-core-service}}")
+                    String erp,
+            RestClient.Builder restClientBuilder) {
         this.signer = signer;
         endpoints =
                 Map.of(
@@ -49,7 +50,7 @@ public final class HttpAppReferenceClient implements AppReferenceClient {
                 new JdkClientHttpRequestFactory(
                         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build());
         factory.setReadTimeout(Duration.ofSeconds(5));
-        client = RestClient.builder().requestFactory(factory).build();
+        client = restClientBuilder.requestFactory(factory).build();
     }
 
     private static URI endpoint(String base, String path) {

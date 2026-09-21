@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: rigour-business-settings-service
+  profiles:
+    active: local
 
 management:
   endpoints:

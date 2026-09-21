@@ -28,6 +28,14 @@ public class InternalSalesOrderEntity {
     private String sourceCreatorStaffCode;
     /** 来源平台制单人名称。 */
     private String sourceCreatorName;
+    /** 来源真实创建时间。 */
+    private LocalDateTime sourceCreatedAt;
+    /** 来源真实修改时间。 */
+    private LocalDateTime sourceUpdatedAt;
+    /** 来源真实修改人ID。 */
+    private String sourceModifierId;
+    /** 来源真实修改人名称。 */
+    private String sourceModifierName;
     /** 导入数据质量状态：COMPLETE、NEEDS_REVIEW。 */
     private String dataQualityStatusCode;
     /** 导入数据质量说明，提示业务人员补齐缺失映射。 */
@@ -98,6 +106,10 @@ public class InternalSalesOrderEntity {
     private String updatedBy;
     /** 更新时间。 */
     private LocalDateTime updatedTime;
+    /** 最近成功同步人。 */
+    private String syncedBy;
+    /** 最近成功同步时间。 */
+    private LocalDateTime syncedAt;
     /** 删除标识：0未删除，1已删除。 */
     private Integer deleted;
 
@@ -119,6 +131,14 @@ public class InternalSalesOrderEntity {
     public void setSourceCreatorStaffCode(String sourceCreatorStaffCode) { this.sourceCreatorStaffCode = sourceCreatorStaffCode; }
     public String getSourceCreatorName() { return sourceCreatorName; }
     public void setSourceCreatorName(String sourceCreatorName) { this.sourceCreatorName = sourceCreatorName; }
+    public LocalDateTime getSourceCreatedAt() { return sourceCreatedAt; }
+    public void setSourceCreatedAt(LocalDateTime sourceCreatedAt) { this.sourceCreatedAt = sourceCreatedAt; }
+    public LocalDateTime getSourceUpdatedAt() { return sourceUpdatedAt; }
+    public void setSourceUpdatedAt(LocalDateTime sourceUpdatedAt) { this.sourceUpdatedAt = sourceUpdatedAt; }
+    public String getSourceModifierId() { return sourceModifierId; }
+    public void setSourceModifierId(String sourceModifierId) { this.sourceModifierId = sourceModifierId; }
+    public String getSourceModifierName() { return sourceModifierName; }
+    public void setSourceModifierName(String sourceModifierName) { this.sourceModifierName = sourceModifierName; }
     public String getDataQualityStatusCode() { return dataQualityStatusCode; }
     public void setDataQualityStatusCode(String dataQualityStatusCode) { this.dataQualityStatusCode = dataQualityStatusCode; }
     public String getDataQualityMessage() { return dataQualityMessage; }
@@ -189,6 +209,10 @@ public class InternalSalesOrderEntity {
     public void setUpdatedBy(String updatedBy) { this.updatedBy = updatedBy; }
     public LocalDateTime getUpdatedTime() { return updatedTime; }
     public void setUpdatedTime(LocalDateTime updatedTime) { this.updatedTime = updatedTime; }
+    public String getSyncedBy() { return syncedBy; }
+    public void setSyncedBy(String syncedBy) { this.syncedBy = syncedBy; }
+    public LocalDateTime getSyncedAt() { return syncedAt; }
+    public void setSyncedAt(LocalDateTime syncedAt) { this.syncedAt = syncedAt; }
     public Integer getDeleted() { return deleted; }
     public void setDeleted(Integer deleted) { this.deleted = deleted; }
 }

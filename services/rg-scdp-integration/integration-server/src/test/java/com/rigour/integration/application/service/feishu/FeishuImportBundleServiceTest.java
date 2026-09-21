@@ -1210,7 +1210,7 @@ class FeishuImportBundleServiceTest {
                 return rows.stream()
                         .map(row -> new ExternalProductResolvedView(row.referenceId(),
                                 2001L, 3001L, "PRD202609010001", "SKU202609010001",
-                                "金汤肥牛", "默认规格", "BOX", "DINGHUOBAO",
+                                "金汤肥牛", "默认规格", "BOX", "BOX", "DINGHUOBAO",
                                 "PRODUCT_NAME_FUZZY_UNIQUE", 70, "MATCHED", "已匹配"))
                         .toList();
             }
@@ -1264,7 +1264,7 @@ class FeishuImportBundleServiceTest {
                 return rows.stream()
                         .map(row -> new ExternalProductResolvedView(row.referenceId(),
                                 2001L, 3001L, "PRD202609010001", "SKU202609010001",
-                                "金汤肥牛", "默认规格", "BOX", "DINGHUOBAO",
+                                "金汤肥牛", "默认规格", "BOX", "BOX", "DINGHUOBAO",
                                 "PRODUCT_NAME_FUZZY_UNIQUE", 70, "MATCHED", "已匹配"))
                         .toList();
             }
@@ -1421,7 +1421,7 @@ class FeishuImportBundleServiceTest {
                             spicyNoodle ? "PRD202608060001" : "PRD202608060002",
                             spicyNoodle ? "SKU202608060001" : "SKU202608060002",
                             spicyNoodle ? "油泼辣子拌面" : "金汤肥牛",
-                            "默认规格", "BOX", "DINGHUOBAO",
+                            "默认规格", "BOX", "BOX", "DINGHUOBAO",
                             "PRODUCT_NAME_FUZZY_UNIQUE", 70, "MATCHED", "已匹配");
                 }).toList();
             }
@@ -1482,7 +1482,7 @@ class FeishuImportBundleServiceTest {
                 return rows.stream()
                         .map(row -> new ExternalProductResolvedView(row.referenceId(),
                                 2001L, 3001L, "PRD202608250001", "SKU202608250001",
-                                "油泼辣子拌面", "默认规格", "BOX", "DINGHUOBAO",
+                                "油泼辣子拌面", "默认规格", "BOX", "BOX", "DINGHUOBAO",
                                 "PRODUCT_NAME_FUZZY_UNIQUE", 70, "MATCHED", "已匹配"))
                         .toList();
             }
@@ -1963,7 +1963,7 @@ class FeishuImportBundleServiceTest {
                 return rows.stream()
                         .map(row -> new ExternalProductResolvedView(row.referenceId(),
                                 2001L, 3001L, "PRD202609010001", "SKU202609010001",
-                                "油泼辣子拌面", "默认规格", "BOX", "DINGHUOBAO",
+                                "油泼辣子拌面", "默认规格", "BOX", "BOX", "DINGHUOBAO",
                                 "PRODUCT_NAME_EXACT", 95, "MATCHED", "已匹配"))
                         .toList();
             }
@@ -2002,7 +2002,8 @@ class FeishuImportBundleServiceTest {
         assertThat(capturedResolveRows.get()).singleElement().satisfies(row -> {
             assertThat(row.productCode()).isNull();
             assertThat(row.productName()).isEqualTo("油泼辣子拌面");
-            assertThat(row.specification()).isNull();
+            // 规格取自「产品编号」末段，多规格商品据此挑规格，单规格商品忽略。
+            assertThat(row.specification()).isEqualTo("12桶/箱");
         });
         assertThat(capturedOrder.get()).satisfies(command -> {
             assertThat(command.customerId()).isEqualTo(1001L);
@@ -2207,7 +2208,7 @@ class FeishuImportBundleServiceTest {
                 return rows.stream()
                         .map(row -> new ExternalProductResolvedView(row.referenceId(),
                                 2001L, 3001L, "PRD202609010001", "SKU202609010001",
-                                "油泼辣子拌面", "默认规格", "BOX", "DINGHUOBAO",
+                                "油泼辣子拌面", "默认规格", "BOX", "BOX", "DINGHUOBAO",
                                 "PRODUCT_NAME_EXACT", 95, "MATCHED", "已匹配"))
                         .toList();
             }

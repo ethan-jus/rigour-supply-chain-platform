@@ -26,11 +26,12 @@ public final class HttpBiAuthoritySource implements BiAuthoritySource {
     public HttpBiAuthoritySource(
             TrustedContextSigner signer,
             @Value(
-                            "${rigour.analytics.scope.order-base-url:http://rigour-order-center-service:26885}")
+                            "${rigour.analytics.scope.order-base-url:http://rigour-order-center-service}")
                     String order,
             @Value(
-                            "${rigour.analytics.scope.crm-base-url:http://rigour-merchant-crm-service:26883}")
-                    String crm) {
+                            "${rigour.analytics.scope.crm-base-url:http://rigour-merchant-crm-service}")
+                    String crm,
+            RestClient.Builder restClientBuilder) {
         this.signer = signer;
         this.bases =
                 Map.of(
@@ -41,7 +42,7 @@ public final class HttpBiAuthoritySource implements BiAuthoritySource {
         var factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(3));
         factory.setReadTimeout(Duration.ofSeconds(15));
-        client = RestClient.builder().requestFactory(factory).build();
+        client = restClientBuilder.requestFactory(factory).build();
     }
 
     @Override

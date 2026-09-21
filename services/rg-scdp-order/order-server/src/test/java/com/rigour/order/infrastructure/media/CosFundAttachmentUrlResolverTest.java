@@ -20,6 +20,18 @@ class CosFundAttachmentUrlResolverTest {
     }
 
     @Test
+    void missingCredentialsDegradeToNoPreviewWithoutBlockingStartup() {
+        FundAttachmentAccessProperties properties = validProperties();
+        properties.getCos().setSecretId("");
+        properties.getCos().setSecretKey("");
+
+        CosFundAttachmentUrlResolver resolver = new CosFundAttachmentUrlResolver(properties);
+
+        assertEquals(null, resolver.temporaryUrl("tenant-id",
+                "tenant-id/fund-attachments/order/proof.png"));
+    }
+
+    @Test
     void rejectsObjectKeyOutsideFundAttachmentDirectory() {
         assertThrows(IllegalArgumentException.class,
                 () -> CosFundAttachmentUrlResolver.validateKey("tenant-id",

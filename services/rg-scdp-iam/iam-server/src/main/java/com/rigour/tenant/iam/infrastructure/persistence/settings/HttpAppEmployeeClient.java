@@ -35,8 +35,9 @@ public final class HttpAppEmployeeClient implements AppEmployeeClient {
     public HttpAppEmployeeClient(
             TrustedContextSigner signer,
             @Value(
-                            "${rigour.iam.hr-base-url:${HR_PAYROLL_BASE_URL:http://rigour-hr-payroll-service:26889}}")
-                    String baseUrl) {
+                            "${rigour.iam.hr-base-url:${HR_PAYROLL_BASE_URL:http://rigour-hr-payroll-service}}")
+                    String baseUrl,
+            RestClient.Builder restClientBuilder) {
         this.signer = signer;
         this.base = URI.create(baseUrl.replaceAll("/+$", ""));
         if (!Set.of("http", "https").contains(base.getScheme()) || base.getUserInfo() != null)
@@ -45,7 +46,7 @@ public final class HttpAppEmployeeClient implements AppEmployeeClient {
                 new JdkClientHttpRequestFactory(
                         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build());
         factory.setReadTimeout(Duration.ofSeconds(5));
-        this.client = RestClient.builder().requestFactory(factory).build();
+        this.client = restClientBuilder.requestFactory(factory).build();
     }
 
     @Override

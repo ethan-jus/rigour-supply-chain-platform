@@ -71,8 +71,32 @@ class ErpProductManagementServiceTest {
         ProductManagementDetailView created =
                 service.create(
                         new ProductManagementCommand(
-                                false, null, null, null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null));
+                                false,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null
+                        ));
 
         ArgumentCaptor<ProductWrite> command = ArgumentCaptor.forClass(ProductWrite.class);
         verify(store).create(eq(TENANT), eq("PRD202608201234"), command.capture(), eq(ACTOR));
@@ -88,14 +112,84 @@ class ErpProductManagementServiceTest {
     }
 
     @Test
+    void statisticsUnitLevelOnlyAcceptsThreeLevelsAndBatchIdsAreCapped() {
+        var store = mock(ErpProductManagementStore.class);
+        var service = new ErpProductManagementService(store, fixedGenerator(), dictionary());
+        TestAuthorizationContext.set(caller("erp:product:write"));
+
+        var invalidLevel =
+                new ProductManagementCommand(
+                                false,
+                                "测试商品",
+                                null,
+                                null,
+                                null,
+                                "BOX",
+                                null,
+                                null,
+                                null,
+                                null,
+                                "CASE",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null
+                        );
+        assertThatThrownBy(() -> service.create(invalidLevel))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("statisticsUnitLevel仅支持BASE、MIDDLE、BIG");
+
+        TestAuthorizationContext.set(caller("erp:product:read"));
+        assertThatThrownBy(() -> service.products(
+                        0, 20, null, null, null, null, null, null, null, null, null,
+                        java.util.stream.LongStream.rangeClosed(1, 201).boxed().toList(), false))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("productIds单次最多核对200个商品");
+    }
+
+    @Test
     void disabledUnitCannotBeUsedForNewProductDraft() {
         var store = mock(ErpProductManagementStore.class);
         var service = new ErpProductManagementService(store, fixedGenerator(), dictionaryWithoutUnits());
         TestAuthorizationContext.set(caller("erp:product:write"));
         var command =
                 new ProductManagementCommand(
-                        false, "测试商品", null, null, null, "BOX", null, null, null, null, null, null,
-                        null, null, null, null, null, null, null, null);
+                                false,
+                                "测试商品",
+                                null,
+                                null,
+                                null,
+                                "BOX",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null
+                        );
         assertThatThrownBy(() -> service.create(command))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("已停用");
@@ -112,26 +206,32 @@ class ErpProductManagementServiceTest {
 
         ProductManagementCommand command =
                 new ProductManagementCommand(
-                        true,
-                        "酸奶",
-                        1L,
-                        2L,
-                        "一箱",
-                        "box",
-                        null,
-                        null,
-                        null,
-                        "spot",
-                        "on_shelf",
-                        null,
-                        null,
-                        null,
-                        3L,
-                        null,
-                        List.of(),
-                        null,
-                        null,
-                        null);
+                                true,
+                                "酸奶",
+                                1L,
+                                2L,
+                                "一箱",
+                                "box",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                "spot",
+                                "on_shelf",
+                                null,
+                                null,
+                                null,
+                                3L,
+                                null,
+                                List.of(),
+                                null,
+                                null,
+                                null
+                        );
 
         assertThatThrownBy(() -> service.create(command))
                 .isInstanceOf(BusinessException.class)
@@ -159,26 +259,31 @@ class ErpProductManagementServiceTest {
 
         service.create(
                 new ProductManagementCommand(
-                        true,
-                        " 酸奶 ",
-                        1L,
-                        2L,
-                        " 一箱 ",
-                        " box ",
-                        new BigDecimal("1"),
-                        true,
-                        new BigDecimal("2"),
-                        " spot ",
-                        " on_shelf ",
-                        30,
-                        List.of(" new ", "hot", "NEW"),
-                        null,
-                        3L,
-                        List.of(
+                                true,
+                                " 酸奶 ",
+                                1L,
+                                2L,
+                                " 一箱 ",
+                                " box ",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                new BigDecimal("1"),
+                                true,
+                                new BigDecimal("2"),
+                                " spot ",
+                                " on_shelf ",
+                                30,
+                                List.of(" new ", "hot", "NEW"),
+                                null,
+                                3L,
+                                List.of(
                                 new ProductImageCommand(TENANT + "/products/main.png", null, null),
                                 new ProductImageCommand(
                                         TENANT + "/products/detail.png", "detail", 5)),
-                        List.of(
+                                List.of(
                                 new ProductVariantCommand(
                                         null,
                                         " 原味/箱 ",
@@ -191,9 +296,10 @@ class ErpProductManagementServiceTest {
                                         null,
                                         true,
                                         " 默认 ")),
-                        List.of(9L),
-                        " 商品备注 ",
-                        null));
+                                List.of(9L),
+                                " 商品备注 ",
+                                null
+                        ));
 
         ArgumentCaptor<ProductWrite> command = ArgumentCaptor.forClass(ProductWrite.class);
         verify(store).create(eq(TENANT), eq("PRD202608201234"), command.capture(), eq(ACTOR));
@@ -228,7 +334,8 @@ class ErpProductManagementServiceTest {
                         new MasterDataPageView<ProductManagementSummaryView>(0, 0, 20, List.of()));
 
         service.products(
-                0, 20, " prd ", " 酸奶 ", 1L, 2L, " box ", " spot ", " on_shelf ", " submitted ", 3L, true);
+                0, 20, " prd ", " 酸奶 ", 1L, 2L, " box ", " spot ", " on_shelf ", " submitted ", 3L, null,
+                true);
 
         ArgumentCaptor<ProductSearchCriteria> criteria =
                 ArgumentCaptor.forClass(ProductSearchCriteria.class);
@@ -273,6 +380,7 @@ class ErpProductManagementServiceTest {
                         "SKU202609010001",
                         "酸辣粉",
                         "箱",
+                        "BOX",
                         "BOX",
                         "DINGHUOBAO",
                         "PRODUCT_NAME_EXACT",
@@ -367,9 +475,32 @@ class ErpProductManagementServiceTest {
                                 service.update(
                                         1L,
                                         new ProductManagementCommand(
-                                                false, "酸奶", null, null, null, null, null, null,
-                                                null, null, null, null, null, null, null, null,
-                                                null, null, null, null)))
+                                false,
+                                "酸奶",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null
+                        )))
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode")
                 .isEqualTo(ErrorCode.BAD_REQUEST);
@@ -441,9 +572,32 @@ class ErpProductManagementServiceTest {
                         () ->
                                 service.create(
                                         new ProductManagementCommand(
-                                                false, "酸奶", null, null, null, null, null, null,
-                                                null, "GROUP_BUY", null, null, null, null, null,
-                                                null, null, null, null, null)))
+                                false,
+                                "酸奶",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                "GROUP_BUY",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null
+                        )))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("售卖类型不存在或已停用");
 
@@ -451,9 +605,32 @@ class ErpProductManagementServiceTest {
                         () ->
                                 service.create(
                                         new ProductManagementCommand(
-                                                false, "酸奶", null, null, null, null, null, null,
-                                                null, null, "PRE_ORDER", null, null, null, null,
-                                                null, null, null, null, null)))
+                                false,
+                                "酸奶",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                "PRE_ORDER",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null
+                        )))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("上架状态不存在或已停用");
 

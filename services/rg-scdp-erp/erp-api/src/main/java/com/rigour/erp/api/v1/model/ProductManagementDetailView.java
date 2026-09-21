@@ -26,6 +26,8 @@ public record ProductManagementDetailView(
         BigDecimal baseToMiddleRate,
         String bigUnitCode,
         BigDecimal baseToBigRate,
+        /** 默认统计单位层级：BASE/MIDDLE/BIG，空按基础单位。 */
+        String statisticsUnitLevel,
         BigDecimal minOrderQuantity,
         Boolean orderMultipleFlag,
         BigDecimal orderMultipleQuantity,
@@ -76,7 +78,7 @@ public record ProductManagementDetailView(
                                        Instant createdTime, String updatedBy, Instant updatedTime) {
         this(id, productCode, productName, null, categoryId, categoryName, null,
                 brandId, brandName, null, null, productSpecification, unitCode,
-                null, null, null, null,
+                null, null, null, null, null,
                 minOrderQuantity, orderMultipleFlag, orderMultipleQuantity, saleTypeCode,
                 shelfStatusCode, ordinal, null, tagCodes, limitQuantity, defaultWarehouseId,
                 defaultWarehouseName, images, variants, recommendProductIds, submitStatusCode,

@@ -9,7 +9,7 @@
 ## 现有架构
 
 - `platform/rigour-platform-bom`：内部库版本清单，不携带运行时依赖。
-- `platform/rigour-platform-starter`：HTTP 服务最小基线，只聚合 core/context/logging/Web/Validation/Actuator。
+- `platform/rigour-platform-starter`：HTTP 服务最小基线，聚合 core/context/logging/Web/Validation/Actuator/restclient/loadbalancer，并提供出站服务名寻址（Nacos 注册中心解析实例）。
 - `platform/rigour-architecture-tests`：reactor 和服务依赖边界门禁。
 - `shared/`：横切契约或最小自动配置；领域逻辑与业务数据放在对应服务。
 - `services/`：`rg-scdp-gateway/gateway-server` 加 10 个领域服务；每个领域服务是其 Schema 的单一写者。
@@ -30,6 +30,8 @@
 ## 实现约定
 
 - 跨服务协作优先使用版本化 API、领域事件或本地投影，保持实现模块独立。
+- 跨服务调用只使用 Nacos 注册中心的服务名寻址（base-url 默认值形如 `http://rigour-hr-payroll-service`），禁止写死对端 IP/端口；临时直连只能通过环境变量覆盖。出站 RestClient 必须由注入的 `RestClient.Builder` 构建，才能获得服务名解析拦截器；网关路由使用 `lb://<服务名>`。
+- 团队动态参数走 Nacos 配置中心：共享 `rigour-common.yml` + 每服务可选 `<spring.application.name>.yml`，DEV 以 `optional:nacos:` 导入，dataId 缺失不得阻断启动；敏感凭据只走环境变量，禁止进 Nacos。本机与共享环境隔离用 `NACOS_NAMESPACE` 切换命名空间（默认共享 DEV 命名空间，个人命名空间如 `ethan-local`）。
 - 所有领域数据、事件、缓存键和对象路径从第一天携带 tenantId。
 - 幂等、审计和事务按实际行为验证，不能仅凭注解或空切面声明已实现。
 - TODO 说明未完成原因和完成条件；注释用于解释必要的职责、边界和设计原因，不要求固定格式或每个 package 都补文档。

@@ -28,6 +28,8 @@ public record ProductManagementSummaryView(
         BigDecimal baseToMiddleRate,
         String bigUnitCode,
         BigDecimal baseToBigRate,
+        /** 默认统计单位层级：BASE/MIDDLE/BIG，空按基础单位。 */
+        String statisticsUnitLevel,
         String saleTypeCode,
         String shelfStatusCode,
         Integer ordinal,

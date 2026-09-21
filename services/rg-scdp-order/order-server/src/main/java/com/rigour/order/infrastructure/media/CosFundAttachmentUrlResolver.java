@@ -19,6 +19,8 @@ import java.util.Date;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -27,6 +29,7 @@ import org.springframework.util.StringUtils;
 @Component
 @ConditionalOnProperty(prefix = "rigour.order.fund-attachment.cos", name = "enabled", havingValue = "true")
 public final class CosFundAttachmentUrlResolver implements FundAttachmentUrlResolver {
+    private static final Logger log = LoggerFactory.getLogger(CosFundAttachmentUrlResolver.class);
     private final COSClient client;
     private final String bucket;
     private final List<String> allowedObjectPrefixes;
@@ -36,8 +39,6 @@ public final class CosFundAttachmentUrlResolver implements FundAttachmentUrlReso
         FundAttachmentAccessProperties.Cos cos = properties.getCos();
         requireText(cos.getRegion(), "rigour.order.fund-attachment.cos.region");
         requireText(cos.getBucket(), "rigour.order.fund-attachment.cos.bucket");
-        requireText(cos.getSecretId(), "rigour.order.fund-attachment.cos.secret-id");
-        requireText(cos.getSecretKey(), "rigour.order.fund-attachment.cos.secret-key");
         LinkedHashSet<String> prefixes = new LinkedHashSet<>();
         prefixes.add(normalizePrefix(cos.getObjectPrefix()));
         for (String prefix : properties.getAdditionalObjectPrefixes()) {
@@ -51,6 +52,14 @@ public final class CosFundAttachmentUrlResolver implements FundAttachmentUrlReso
         if (cos.getConnectionTimeoutMs() <= 0 || cos.getSocketTimeoutMs() <= 0) {
             throw new IllegalStateException("资金附件 COS 连接和读取超时必须大于0");
         }
+        this.bucket = cos.getBucket();
+        this.ttl = properties.getUrlTtl();
+        // 密钥由环境变量/部署 Secret 注入；缺失时降级为不签发预览地址，不阻断服务启动。
+        if (!StringUtils.hasText(cos.getSecretId()) || !StringUtils.hasText(cos.getSecretKey())) {
+            log.warn("资金附件 COS 已启用但未提供 secret-id/secret-key，回款凭证预览将不可用；配置密钥后重启即可生效。");
+            this.client = null;
+            return;
+        }
         COSCredentials credentials = StringUtils.hasText(cos.getSessionToken())
                 ? new BasicSessionCredentials(cos.getSecretId(), cos.getSecretKey(), cos.getSessionToken())
                 : new BasicCOSCredentials(cos.getSecretId(), cos.getSecretKey());
@@ -59,12 +68,11 @@ public final class CosFundAttachmentUrlResolver implements FundAttachmentUrlReso
         config.setSocketTimeout(cos.getSocketTimeoutMs());
         config.setMaxErrorRetry(2);
         this.client = new COSClient(credentials, config);
-        this.bucket = cos.getBucket();
-        this.ttl = properties.getUrlTtl();
     }
 
     @Override
     public String temporaryUrl(String tenantId, String objectKey) {
+        if (client == null) return null;
         validateKey(tenantId, objectKey, allowedObjectPrefixes);
         Date expiration = Date.from(Instant.now().plus(ttl));
         GeneratePresignedUrlRequest request =
@@ -76,7 +84,9 @@ public final class CosFundAttachmentUrlResolver implements FundAttachmentUrlReso
     }
 
     @PreDestroy
-    void shutdown() { client.shutdown(); }
+    void shutdown() {
+        if (client != null) client.shutdown();
+    }
 
     static void validateKey(String tenantId, String objectKey, String objectPrefix) {
         validateKey(tenantId, objectKey, List.of(normalizePrefix(objectPrefix)));

@@ -1,15 +1,20 @@
 package com.rigour.order.application.service.sales;
 
+import com.rigour.order.api.v1.model.FundDocumentAttachmentView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.NumberMappingView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderNumberMappingResult;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterLineView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterOrderView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPaymentView;
+import com.rigour.order.api.v1.model.OrderRegisterModels.PaymentCheckCommand;
 import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodStatisticsView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodRow;
 import com.rigour.order.api.v1.model.OrderRegisterModels.ReceivablesView;
 import com.rigour.order.application.port.out.CrmCustomerAreaDisplayClient;
+import com.rigour.order.application.port.out.FundAttachmentUrlResolver;
+import com.rigour.order.application.port.out.HrEmployeeDisplayClient;
+import com.rigour.order.application.port.out.OrderInvoiceStore;
 import com.rigour.order.application.port.out.OrderRegisterStore;
 import com.rigour.order.application.port.out.OrderRegisterStore.ApplyNumberMapping;
 import com.rigour.order.application.port.out.OrderRegisterStore.LineCriteria;
@@ -18,17 +23,22 @@ import com.rigour.order.application.port.out.OrderRegisterStore.OrderCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.PaymentCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.PeriodCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.ReceivablesCriteria;
+import com.rigour.order.domain.invoice.OrderInvoiceStatus;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -39,20 +49,34 @@ import java.util.UUID;
 /** 订单登记读取用例；归属和金额口径由仓储统一实现，服务层只做权限、校验和展示名补齐。 */
 @Service
 public class OrderRegisterService {
+    private static final Logger log = LoggerFactory.getLogger(OrderRegisterService.class);
     private static final String READ_PERMISSION = "order:read";
     private static final String WRITE_PERMISSION = "order:write";
+    private static final String CHECK_PERMISSION = "order:payment:check";
     private static final UUID SERVICE_PRINCIPAL_ID =
             UUID.nameUUIDFromBytes(
                     "service:rigour-order-center-service".getBytes(StandardCharsets.UTF_8));
     private static final Set<String> CRM_CUSTOMER_READ_PERMISSIONS = Set.of("crm:customer:read");
+    private static final Set<String> HR_EMPLOYEE_READ_PERMISSIONS = Set.of("hr:employee:read");
 
     private final OrderRegisterStore store;
     private final CrmCustomerAreaDisplayClient crmAreaDisplayClient;
+    private final HrEmployeeDisplayClient hrEmployeeDisplayClient;
+    private final OrderInvoiceStore invoiceStore;
+    private final FundAttachmentUrlResolver fundAttachmentUrlResolver;
 
     public OrderRegisterService(
-            OrderRegisterStore store, CrmCustomerAreaDisplayClient crmAreaDisplayClient) {
+            OrderRegisterStore store,
+            CrmCustomerAreaDisplayClient crmAreaDisplayClient,
+            HrEmployeeDisplayClient hrEmployeeDisplayClient,
+            OrderInvoiceStore invoiceStore,
+            ObjectProvider<FundAttachmentUrlResolver> fundAttachmentUrlResolverProvider) {
         this.store = store;
         this.crmAreaDisplayClient = crmAreaDisplayClient;
+        this.hrEmployeeDisplayClient = hrEmployeeDisplayClient;
+        this.invoiceStore = invoiceStore;
+        this.fundAttachmentUrlResolver =
+                fundAttachmentUrlResolverProvider.getIfAvailable(() -> FundAttachmentUrlResolver.NONE);
     }
 
     public OrderRegisterPage<OrderRegisterOrderView> orders(
@@ -65,11 +89,13 @@ public class OrderRegisterService {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
             String paymentStatusCode,
-            Boolean hasUnpaid) {
+            Boolean hasUnpaid,
+            String invoiceStatusCode) {
         CallerIdentity actor = actor(READ_PERMISSION);
         var criteria =
                 new OrderCriteria(
@@ -79,15 +105,55 @@ public class OrderRegisterService {
                         text(customerCode, 64, "customerCode"),
                         text(regionCode, 128, "regionCode"),
                         text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        optionalId(departmentId, "departmentId无效"),
+                        ownerEmployeeCodes(actor, departmentId, includeSubDepartments),
                         orderDateFrom,
                         orderDateTo,
                         text(orderStatusCode, 64, "orderStatusCode"),
                         text(paymentStatusCode, 64, "paymentStatusCode"),
-                        hasUnpaid);
+                        hasUnpaid,
+                        invoiceStatusCode(invoiceStatusCode));
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         var result = store.orders(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
-        return withRegionNames(actor, result);
+        return withInvoiceStatuses(
+                actor, withDepartmentNames(actor, withRegionNames(actor, result)));
+    }
+
+    /** 商品筛选集合由前端分类解析或商品下拉给出，限制上限避免超长 SQL。 */
+    private static List<Long> filterProductIds(List<Long> values) {
+        if (values == null || values.isEmpty()) return null;
+        LinkedHashSet<Long> ids = new LinkedHashSet<>();
+        for (Long value : values) {
+            if (value == null) continue;
+            if (value < 1) throw badRequest("productIds包含无效商品ID");
+            ids.add(value);
+        }
+        if (ids.isEmpty()) return null;
+        if (ids.size() > 500) throw badRequest("productIds单次最多筛选500个商品");
+        return List.copyOf(ids);
+    }
+
+    /** 发票状态筛选只接受列表展示口径：未申请、待开票、已开票。 */
+    private static String invoiceStatusCode(String value) {
+        String code = text(value, 32, "invoiceStatusCode");
+        if (code == null) return null;
+        return Set.of("NOT_APPLIED", "PENDING", "INVOICED").contains(code)
+                ? code
+                : null;
+    }
+
+    /** 财务核对回款：与银行流水核对后写入交易单号（凭证验重 + 方便对账）并标记已核对。 */
+    public OrderRegisterPaymentView checkPayment(Long id, PaymentCheckCommand command) {
+        CallerIdentity actor = actor(CHECK_PERMISSION);
+        if (id == null || id < 1) throw badRequest("回款ID无效");
+        if (command == null) throw badRequest("核对参数不能为空");
+        String transactionNo = text(command.transactionNo(), 128, "transactionNo");
+        if (transactionNo == null) throw badRequest("交易单号不能为空");
+        return store.checkPayment(
+                actor.tenantId().toString(),
+                id,
+                transactionNo,
+                actor.principalId() == null ? null : actor.principalId().toString(),
+                Instant.now());
     }
 
     public OrderRegisterPage<OrderRegisterLineView> lines(
@@ -100,11 +166,13 @@ public class OrderRegisterService {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
             String productKeyword,
-            String productCode) {
+            String productCode,
+            List<Long> productIds) {
         CallerIdentity actor = actor(READ_PERMISSION);
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         var criteria =
@@ -115,14 +183,15 @@ public class OrderRegisterService {
                         text(customerCode, 64, "customerCode"),
                         text(regionCode, 128, "regionCode"),
                         text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        optionalId(departmentId, "departmentId无效"),
+                        ownerEmployeeCodes(actor, departmentId, includeSubDepartments),
                         orderDateFrom,
                         orderDateTo,
                         text(orderStatusCode, 64, "orderStatusCode"),
                         text(productKeyword, 200, "productKeyword"),
-                        text(productCode, 128, "productCode"));
+                        text(productCode, 128, "productCode"),
+                        filterProductIds(productIds));
         var result = store.lines(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
-        return withRegionNames(actor, result);
+        return withDepartmentNames(actor, withRegionNames(actor, result));
     }
 
     public OrderRegisterPage<OrderRegisterPaymentView> payments(
@@ -135,6 +204,7 @@ public class OrderRegisterService {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
@@ -142,7 +212,9 @@ public class OrderRegisterService {
             String transactionNo,
             String paymentStatusCode,
             Instant paymentTimeFrom,
-            Instant paymentTimeTo) {
+            Instant paymentTimeTo,
+            String sortBy,
+            String sortDirection) {
         CallerIdentity actor = actor(READ_PERMISSION);
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         requireRange(paymentTimeFrom, paymentTimeTo, "paymentTimeFrom不能晚于paymentTimeTo");
@@ -154,7 +226,7 @@ public class OrderRegisterService {
                         text(customerCode, 64, "customerCode"),
                         text(regionCode, 128, "regionCode"),
                         text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        optionalId(departmentId, "departmentId无效"),
+                        ownerEmployeeCodes(actor, departmentId, includeSubDepartments),
                         orderDateFrom,
                         orderDateTo,
                         text(orderStatusCode, 64, "orderStatusCode"),
@@ -162,9 +234,11 @@ public class OrderRegisterService {
                         text(transactionNo, 128, "transactionNo"),
                         text(paymentStatusCode, 32, "paymentStatusCode"),
                         paymentTimeFrom,
-                        paymentTimeTo);
+                        paymentTimeTo,
+                        text(sortBy, 32, "sortBy"),
+                        text(sortDirection, 8, "sortDirection"));
         var result = store.payments(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
-        return withRegionNames(actor, result);
+        return withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
     }
 
     public PeriodStatisticsView periodStatistics(
@@ -174,6 +248,7 @@ public class OrderRegisterService {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Long customerId,
             String customerName,
             String customerCode) {
@@ -191,7 +266,7 @@ public class OrderRegisterService {
                         normalizedGroup,
                         text(regionCode, 128, "regionCode"),
                         text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        optionalId(departmentId, "departmentId无效"),
+                        ownerEmployeeCodes(actor, departmentId, includeSubDepartments),
                         optionalId(customerId, "customerId无效"),
                         text(customerName, 200, "customerName"),
                         text(customerCode, 64, "customerCode"));
@@ -212,6 +287,7 @@ public class OrderRegisterService {
             String regionCode,
             String ownerEmployeeCode,
             Long departmentId,
+            Boolean includeSubDepartments,
             Long customerId,
             String orderNo) {
         CallerIdentity actor = actor(READ_PERMISSION);
@@ -222,7 +298,7 @@ public class OrderRegisterService {
                         hasUnpaid,
                         text(regionCode, 128, "regionCode"),
                         text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        optionalId(departmentId, "departmentId无效"),
+                        ownerEmployeeCodes(actor, departmentId, includeSubDepartments),
                         optionalId(customerId, "customerId无效"),
                         text(orderNo, 80, "orderNo"));
         var result =
@@ -367,10 +443,11 @@ public class OrderRegisterService {
             return (T)
                     new OrderRegisterOrderView(
                             v.id(), v.orderNo(), v.legacyOrderNo(), v.sourceSystemCode(),
-                            v.sourceOrderNo(), v.orderNumberState(), v.customerId(), v.customerCode(),
+                            v.sourceOrderNo(), v.dhbOrderNo(), v.orderNumberState(), v.customerId(), v.customerCode(),
                             v.customerName(), v.regionCode(), name, v.ownerEmployeeCode(),
                             v.ownerEmployeeName(), v.departmentId(), v.departmentName(),
-                            v.orderStatusCode(), v.paymentStatusCode(), v.originalAmount(),
+                            v.orderStatusCode(), v.paymentStatusCode(), v.dataQualityStatusCode(),
+                            v.invoiceStatusCode(), v.invoiceStatusName(), v.originalAmount(),
                             v.payableAmount(), v.paidAmount(), v.unpaidAmount(), v.checkedAmount(),
                             v.orderDate(), v.shipmentTime(), v.createdBy(), v.createdTime(),
                             v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.revision());
@@ -381,20 +458,24 @@ public class OrderRegisterService {
                             v.id(), v.orderId(), v.lineNo(), v.sourceLineId(), v.productId(),
                             v.productVariantId(), v.productCode(), v.skuCode(), v.productName(),
                             v.specification(), v.unitCode(), v.quantity(), v.unitPrice(),
-                            v.lineAmount(), v.orderNo(), v.customerId(), v.customerCode(),
-                            v.customerName(), v.regionCode(), name, v.ownerEmployeeCode(),
+                            v.lineAmount(), v.orderNo(), v.sourceOrderNo(), v.dhbOrderNo(), v.customerId(),
+                            v.customerCode(), v.customerName(), v.regionCode(), name,
+                            v.ownerEmployeeCode(),
                             v.ownerEmployeeName(), v.departmentId(), v.departmentName(),
-                            v.orderStatusCode(), v.orderDate(), v.revision());
+                            v.orderStatusCode(), v.orderDate(), v.revision(),
+                            v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
+                            v.syncedBy(), v.syncedAt());
         }
         if (item instanceof OrderRegisterPaymentView v) {
             return (T)
                     new OrderRegisterPaymentView(
-                            v.id(), v.paymentNo(), v.sourceRecordId(), v.orderId(), v.orderNo(),
+                            v.id(), v.paymentNo(), v.sourceRecordId(), v.orderId(), v.orderNo(), v.dhbOrderNo(),
                             v.customerId(), v.customerCode(), v.customerName(), v.regionCode(), name,
                             v.ownerEmployeeCode(), v.ownerEmployeeName(), v.departmentId(),
                             v.departmentName(), v.orderDate(), v.orderAmount(), v.paidAmount(),
                             v.paymentStatusCode(), v.paymentTime(), v.transactionNo(),
-                            v.attachments(), v.createdBy(), v.createdTime(), v.updatedBy(),
+                            v.attachments(), v.attachmentViews(), v.createdBy(), v.createdTime(),
+                            v.updatedBy(),
                             v.updatedTime(), v.syncedBy(), v.syncedAt(), v.checkedBy(),
                             v.checkedAt(), v.revision());
         }
@@ -411,12 +492,255 @@ public class OrderRegisterService {
         return item;
     }
 
+    /** 用业务员当前 HR 员工档案补齐部门名；归属快照缺失时列表仍可展示部门。 */
+    private <T> OrderRegisterPage<T> withDepartmentNames(
+            CallerIdentity actor, OrderRegisterPage<T> page) {
+        if (page == null || page.items().isEmpty()) return page;
+        Set<String> employeeCodes = new LinkedHashSet<>();
+        for (T item : page.items()) {
+            String code = employeeCodeOf(item);
+            if (code != null && !code.isBlank() && departmentNameOf(item) == null) {
+                employeeCodes.add(code.strip());
+            }
+        }
+        if (employeeCodes.isEmpty()) return page;
+        Map<String, String> departments = new LinkedHashMap<>();
+        try {
+            for (HrEmployeeDisplayClient.EmployeeDisplay display :
+                    hrEmployeeDisplayClient.resolve(hrServiceCaller(actor.tenantId()), employeeCodes)) {
+                if (display == null || display.employeeCode() == null) continue;
+                if (display.departmentName() == null || display.departmentName().isBlank()) continue;
+                departments.put(display.employeeCode().strip(), display.departmentName().strip());
+            }
+        } catch (RuntimeException ignored) {
+            // 部门展示名补齐失败不阻断登记列表；业务员和地区仍可正常展示。
+        }
+        if (departments.isEmpty()) return page;
+        List<T> items = page.items().stream().map(item -> withDepartmentName(item, departments)).toList();
+        return new OrderRegisterPage<>(
+                page.total(), page.begin(), page.step(), items, page.totals(), page.coverage());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> T withDepartmentName(T item, Map<String, String> departments) {
+        String code = employeeCodeOf(item);
+        String department = code == null ? null : departments.get(code.strip());
+        if (department == null || department.isBlank()) return item;
+        if (item instanceof OrderRegisterOrderView v) {
+            return (T)
+                    new OrderRegisterOrderView(
+                            v.id(), v.orderNo(), v.legacyOrderNo(), v.sourceSystemCode(),
+                            v.sourceOrderNo(), v.dhbOrderNo(), v.orderNumberState(), v.customerId(), v.customerCode(),
+                            v.customerName(), v.regionCode(), v.regionName(), v.ownerEmployeeCode(),
+                            v.ownerEmployeeName(), v.departmentId(), department, v.orderStatusCode(),
+                            v.paymentStatusCode(), v.dataQualityStatusCode(), v.invoiceStatusCode(),
+                            v.invoiceStatusName(),
+                            v.originalAmount(), v.payableAmount(), v.paidAmount(),
+                            v.unpaidAmount(), v.checkedAmount(), v.orderDate(), v.shipmentTime(),
+                            v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
+                            v.syncedBy(), v.syncedAt(), v.revision());
+        }
+        if (item instanceof OrderRegisterLineView v) {
+            return (T)
+                    new OrderRegisterLineView(
+                            v.id(), v.orderId(), v.lineNo(), v.sourceLineId(), v.productId(),
+                            v.productVariantId(), v.productCode(), v.skuCode(), v.productName(),
+                            v.specification(), v.unitCode(), v.quantity(), v.unitPrice(),
+                            v.lineAmount(), v.orderNo(), v.sourceOrderNo(), v.dhbOrderNo(), v.customerId(),
+                            v.customerCode(), v.customerName(), v.regionCode(), v.regionName(),
+                            v.ownerEmployeeCode(),
+                            v.ownerEmployeeName(), v.departmentId(), department, v.orderStatusCode(),
+                            v.orderDate(), v.revision(),
+                            v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
+                            v.syncedBy(), v.syncedAt());
+        }
+        if (item instanceof OrderRegisterPaymentView v) {
+            return (T)
+                    new OrderRegisterPaymentView(
+                            v.id(), v.paymentNo(), v.sourceRecordId(), v.orderId(), v.orderNo(), v.dhbOrderNo(),
+                            v.customerId(), v.customerCode(), v.customerName(), v.regionCode(),
+                            v.regionName(), v.ownerEmployeeCode(), v.ownerEmployeeName(),
+                            v.departmentId(), department, v.orderDate(), v.orderAmount(),
+                            v.paidAmount(), v.paymentStatusCode(), v.paymentTime(), v.transactionNo(),
+                            v.attachments(), v.attachmentViews(), v.createdBy(), v.createdTime(),
+                            v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.checkedBy(),
+                            v.checkedAt(), v.revision());
+        }
+        return item;
+    }
+
+    /** 批量回填开票状态；未申请/已撤回没有发票行，列表按未申请展示。 */
+    private <T> OrderRegisterPage<T> withInvoiceStatuses(CallerIdentity actor, OrderRegisterPage<T> page) {
+        if (page == null || page.items().isEmpty()) return page;
+        Set<Long> orderIds = new LinkedHashSet<>();
+        for (T item : page.items()) {
+            if (item instanceof OrderRegisterOrderView view && view.id() != null) orderIds.add(view.id());
+        }
+        if (orderIds.isEmpty()) return page;
+        Map<Long, String> statuses;
+        try {
+            statuses = invoiceStore.statusesByOrderIds(actor.tenantId().toString(), orderIds);
+        } catch (RuntimeException exception) {
+            log.warn(
+                    "开票状态批量回填失败，列表仍可展示其他字段 tenantId={} errorType={}",
+                    actor.tenantId(),
+                    exception.getClass().getSimpleName());
+            return page;
+        }
+        if (statuses.isEmpty()) return page;
+        List<T> items = page.items().stream().map(item -> withInvoiceStatus(item, statuses)).toList();
+        return new OrderRegisterPage<>(
+                page.total(), page.begin(), page.step(), items, page.totals(), page.coverage());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> T withInvoiceStatus(T item, Map<Long, String> statuses) {
+        if (!(item instanceof OrderRegisterOrderView v) || v.id() == null) return item;
+        String status = statuses.get(v.id());
+        if (status == null) return item;
+        return (T)
+                new OrderRegisterOrderView(
+                        v.id(), v.orderNo(), v.legacyOrderNo(), v.sourceSystemCode(),
+                        v.sourceOrderNo(), v.dhbOrderNo(), v.orderNumberState(), v.customerId(), v.customerCode(),
+                        v.customerName(), v.regionCode(), v.regionName(), v.ownerEmployeeCode(),
+                        v.ownerEmployeeName(), v.departmentId(), v.departmentName(),
+                        v.orderStatusCode(), v.paymentStatusCode(), v.dataQualityStatusCode(), status,
+                        OrderInvoiceStatus.displayNameOf(status), v.originalAmount(),
+                        v.payableAmount(), v.paidAmount(), v.unpaidAmount(), v.checkedAmount(),
+                        v.orderDate(), v.shipmentTime(), v.createdBy(), v.createdTime(),
+                        v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.revision());
+    }
+
+    private static String employeeCodeOf(Object item) {
+        if (item instanceof OrderRegisterOrderView v) return v.ownerEmployeeCode();
+        if (item instanceof OrderRegisterLineView v) return v.ownerEmployeeCode();
+        if (item instanceof OrderRegisterPaymentView v) return v.ownerEmployeeCode();
+        return null;
+    }
+
+    private static String departmentNameOf(Object item) {
+        if (item instanceof OrderRegisterOrderView v) return v.departmentName();
+        if (item instanceof OrderRegisterLineView v) return v.departmentName();
+        if (item instanceof OrderRegisterPaymentView v) return v.departmentName();
+        return null;
+    }
+
+    /** 以服务身份读取 HR 员工档案，避免依赖当前用户的 HR 权限。 */
+    private static CallerIdentity hrServiceCaller(UUID tenantId) {
+        return new CallerIdentity(
+                "SERVICE",
+                SERVICE_PRINCIPAL_ID,
+                tenantId,
+                null,
+                null,
+                UUID.randomUUID(),
+                0,
+                0,
+                0,
+                Set.of(),
+                HR_EMPLOYEE_READ_PERMISSIONS);
+    }
+
+    /** 部门筛选先按 HR 员工档案解析业务员编码，再用业务员匹配订单/明细/回款。 */
+    private Set<String> ownerEmployeeCodes(
+            CallerIdentity actor, Long departmentId, Boolean includeSubDepartments) {
+        Long departmentKey = optionalId(departmentId, "departmentId无效");
+        if (departmentKey == null) return null;
+        try {
+            Set<String> codes = hrEmployeeDisplayClient.employeeCodesInDepartment(
+                    hrServiceCaller(actor.tenantId()), departmentKey, includeSubDepartments);
+            log.info(
+                    "部门筛选解析完成 tenantId={} departmentId={} includeSubDepartments={} employeeCount={}",
+                    actor.tenantId(),
+                    departmentKey,
+                    includeSubDepartments,
+                    codes.size());
+            return codes;
+        } catch (RuntimeException exception) {
+            log.warn(
+                    "部门筛选解析员工失败 tenantId={} departmentId={} errorType={}",
+                    actor.tenantId(),
+                    departmentKey,
+                    exception.getClass().getSimpleName());
+            return Set.of();
+        }
+    }
+
     private static String regionCodeOf(Object item) {
         if (item instanceof OrderRegisterOrderView v) return v.regionCode();
         if (item instanceof OrderRegisterLineView v) return v.regionCode();
         if (item instanceof OrderRegisterPaymentView v) return v.regionCode();
         if (item instanceof ReceivablesView v) return v.regionCode();
         return null;
+    }
+
+    /** 给回款列表行签发凭证短时预览地址；签名不可用或失败时保持原始对象键。 */
+    private OrderRegisterPage<OrderRegisterPaymentView> withAttachmentViews(
+            CallerIdentity actor, OrderRegisterPage<OrderRegisterPaymentView> page) {
+        if (page == null || page.items().isEmpty()) return page;
+        String tenantId = actor.tenantId().toString();
+        List<OrderRegisterPaymentView> items =
+                page.items().stream()
+                        .map(item -> item.attachments().isEmpty() ? item : withAttachmentViews(tenantId, item))
+                        .toList();
+        return new OrderRegisterPage<>(
+                page.total(), page.begin(), page.step(), items, page.totals(), page.coverage());
+    }
+
+    private OrderRegisterPaymentView withAttachmentViews(String tenantId, OrderRegisterPaymentView item) {
+        List<FundDocumentAttachmentView> views = new ArrayList<>();
+        for (String key : new LinkedHashSet<>(item.attachments())) {
+            String objectKey = plainAttachmentKey(key);
+            if (objectKey == null) continue;
+            views.add(
+                    new FundDocumentAttachmentView(
+                            objectKey,
+                            attachmentFileName(objectKey),
+                            temporaryFundAttachmentUrl(tenantId, objectKey)));
+        }
+        if (views.isEmpty()) return item;
+        return new OrderRegisterPaymentView(
+                item.id(), item.paymentNo(), item.sourceRecordId(), item.orderId(), item.orderNo(),
+                item.dhbOrderNo(), item.customerId(), item.customerCode(), item.customerName(), item.regionCode(),
+                item.regionName(), item.ownerEmployeeCode(), item.ownerEmployeeName(),
+                item.departmentId(), item.departmentName(), item.orderDate(), item.orderAmount(),
+                item.paidAmount(), item.paymentStatusCode(), item.paymentTime(), item.transactionNo(),
+                item.attachments(), views, item.createdBy(), item.createdTime(), item.updatedBy(),
+                item.updatedTime(), item.syncedBy(), item.syncedAt(), item.checkedBy(),
+                item.checkedAt(), item.revision());
+    }
+
+    private String temporaryFundAttachmentUrl(String tenantId, String objectKey) {
+        if (!objectKey.startsWith(tenantId + "/")) return null;
+        try {
+            return fundAttachmentUrlResolver.temporaryUrl(tenantId, objectKey);
+        } catch (RuntimeException exception) {
+            log.debug(
+                    "回款凭证临时URL生成失败 tenantId={} objectKey={} errorType={}",
+                    tenantId,
+                    objectKey.length() <= 96 ? objectKey : objectKey.substring(0, 96) + "...",
+                    exception.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    private static String plainAttachmentKey(String value) {
+        if (value == null || value.isBlank()) return null;
+        String normalized = value.strip();
+        if (normalized.startsWith("http://")
+                || normalized.startsWith("https://")
+                || normalized.startsWith("file:")) {
+            return null;
+        }
+        return normalized;
+    }
+
+    private static String attachmentFileName(String objectKey) {
+        String value = objectKey == null ? "" : objectKey.strip();
+        int query = value.indexOf('?');
+        if (query >= 0) value = value.substring(0, query);
+        int slash = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+        return slash >= 0 && slash < value.length() - 1 ? value.substring(slash + 1) : value;
     }
 
     private static CallerIdentity actor(String permission) {

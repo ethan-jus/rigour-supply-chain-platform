@@ -1151,7 +1151,9 @@ public final class FeishuImportBundleService {
                 descriptorProductName(explicitProductRef),
                 linkedDisplayName(explicitProductRef),
                 nonCodeDescriptor(explicitProductRef));
-        String specification = value(values, "规格", "规格名称", "规格描述", "产品规格");
+        // 规格在「产品编号」末段（如 A500B、H/M、竞技型），不带规格会挑错多规格商品的规格。
+        String specification = firstNonBlank(value(values, "规格", "规格名称", "规格描述", "产品规格"),
+                descriptorSpecification(explicitProductRef), descriptorSpecification(orderProductRef));
         if (firstNonBlank(productCode, variantCode, productName) == null) return null;
         return new ExternalProductResolveRowCommand(row.id().toString(), productCode, variantCode,
                 productName, specification);
@@ -3046,7 +3048,8 @@ public final class FeishuImportBundleService {
             String specification = firstNonBlank(value(values, "规格", "产品规格"), productName);
             FeishuSalesOrderImportMapper.ProductMapping mapping =
                     new FeishuSalesOrderImportMapper.ProductMapping(productId, decision.productVariantId(),
-                            productCode, decision.variantCode(), productName, specification, decision.unitCode());
+                            productCode, decision.variantCode(), productName, specification, decision.unitCode(),
+                            null);
             addProductReferences(mapping, row.sourceDocumentNo(), productCode, productName,
                     value(values, "产品编码", "商品编码", "SKU编码", "产品编码名称", "产品名称",
                             "商品名称", "产品编号", "订单产品"));
@@ -3065,13 +3068,58 @@ public final class FeishuImportBundleService {
                     value(values, "订单产品", "产品名称", "商品名称", "产品", "商品"));
             String specification = firstNonBlank(resolved.specification(),
                     value(values, "规格", "规格名称", "规格描述", "产品规格"));
+            if (!plausibleProductResolution(row, resolved)) {
+                log.warn("飞书商品解析结果与明细商品描述对不上，转到待映射 tenantId={} sourceDocumentNo={} "
+                                + "reference={} resolvedProduct={} resolvedVariant={} strategy={}",
+                        row.tenantId(), row.sourceDocumentNo(), productCode, resolved.productCode(),
+                        resolved.variantCode(), resolved.matchStrategy());
+                return;
+            }
             FeishuSalesOrderImportMapper.ProductMapping mapping =
                     new FeishuSalesOrderImportMapper.ProductMapping(
                             resolved.productId(), resolved.productVariantId(), productCode,
-                            resolved.variantCode(), productName, specification, resolved.unitCode());
+                            resolved.variantCode(), productName, specification, resolved.unitCode(),
+                            resolved.middleUnitCode());
             addProductReferences(mapping, productCode, resolved.variantCode(), productName,
                     value(values, "产品编号", "商品编码", "产品编码", "SKU编码", "商品编号",
                             "产品编码名称", "产品编号名称", "订单产品", "产品名称", "商品名称", "产品", "商品"));
+        }
+
+        /** 编码或我方既定映射命中即可信；名称匹配的结果必须能和明细里的商品描述对上。 */
+        private static boolean plausibleProductResolution(
+                StoredRawRow row, ExternalProductResolvedView resolved) {
+            String strategy = resolved.matchStrategy() == null ? "" : resolved.matchStrategy().trim();
+            if (Set.of("SOURCE_SKU_CODE_EXACT", "SOURCE_SKU_OR_PRODUCT_CODE_EXACT",
+                            "VARIANT_CODE_EXACT", "PRODUCT_CODE_EXACT", "SOURCE_PRODUCT_CODE_EXACT",
+                            // 名称别名是我们自己维护的映射（主数据来源绑定），按来源名称精确命中即可信。
+                            "SOURCE_PRODUCT_NAME_EXACT")
+                    .contains(strategy)) {
+                return true;
+            }
+            if (row == null) return true;
+            Map<String, String> values = row.values();
+            List<String> references = new ArrayList<>();
+            references.add(descriptorProductName(value(values, "产品编号", "商品编码", "产品编码", "SKU编码",
+                    "商品编号", "产品编码名称", "产品编号名称")));
+            references.add(descriptorProductName(value(values, "订单产品", "产品名称", "商品名称", "产品", "商品")));
+            references.add(value(values, "产品编号", "商品编码", "产品编码", "SKU编码", "商品编号"));
+            references.add(value(values, "订单产品", "产品名称", "商品名称"));
+            return references.stream()
+                    .filter(reference -> reference != null && !reference.isBlank())
+                    .anyMatch(reference -> productNameLooksLike(reference, resolved.productName()));
+        }
+
+        /** 名称匹配只认同源：包含关系，或至少 5 个连续字相同。 */
+        private static boolean productNameLooksLike(String reference, String productName) {
+            String left = SalesOrderMappingContext.normalizeReference(reference);
+            String right = SalesOrderMappingContext.normalizeReference(productName);
+            if (left == null || right == null) return true;
+            if (left.equals(right) || left.contains(right) || right.contains(left)) return true;
+            int window = 5;
+            for (int index = 0; index + window <= left.length(); index++) {
+                if (right.contains(left.substring(index, index + window))) return true;
+            }
+            return false;
         }
 
         private void addProductReferences(FeishuSalesOrderImportMapper.ProductMapping mapping, String... references) {

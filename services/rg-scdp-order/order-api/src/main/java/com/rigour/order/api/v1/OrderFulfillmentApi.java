@@ -12,7 +12,8 @@ public interface OrderFulfillmentApi {
     @GetMapping("/api/v1/orders/fulfillments/{id}")
     ApiResponse<OrderFulfillmentQueueView.Detail> detail(@PathVariable long id);
 
-    record WarehouseOption(long id, String warehouseName) {}
+    /** 可选仓库；regionCode 用于和订单客户的归属地区匹配，匹配仓排前面。 */
+    record WarehouseOption(long id, String warehouseName, String regionCode) {}
 
     @GetMapping(OrderSalesOrderApi.BASE_PATH + "/{id}/warehouse-options")
     ApiResponse<java.util.List<WarehouseOption>> warehouses(@PathVariable long id);

@@ -24,21 +24,22 @@ public final class HttpBiSourceSnapshotClient implements BiSourceSnapshotClient 
     public HttpBiSourceSnapshotClient(
             TrustedContextSigner signer,
             @Value(
-                            "${rigour.analytics.scope.order-base-url:http://rigour-order-center-service:26885}")
+                            "${rigour.analytics.scope.order-base-url:http://rigour-order-center-service}")
                     String order,
             @Value(
-                            "${rigour.analytics.scope.crm-base-url:http://rigour-merchant-crm-service:26883}")
+                            "${rigour.analytics.scope.crm-base-url:http://rigour-merchant-crm-service}")
                     String crm,
-            @Value("${rigour.analytics.scope.erp-base-url:http://rigour-erp-core-service:26884}")
+            @Value("${rigour.analytics.scope.erp-base-url:http://rigour-erp-core-service}")
                     String erp,
             @Value(
-                            "${rigour.analytics.scope.integration-base-url:http://rigour-integration-migration-service:26882}")
+                            "${rigour.analytics.scope.integration-base-url:http://rigour-integration-migration-service}")
                     String integration,
-            @Value("${rigour.analytics.scope.hr-base-url:http://rigour-hr-payroll-service:26889}")
+            @Value("${rigour.analytics.scope.hr-base-url:http://rigour-hr-payroll-service}")
                     String hr,
             @Value(
-                            "${rigour.analytics.scope.sales-base-url:http://rigour-sales-work-service:26886}")
-                    String sales) {
+                            "${rigour.analytics.scope.sales-base-url:http://rigour-sales-work-service}")
+                    String sales,
+            RestClient.Builder restClientBuilder) {
         this.signer = signer;
         bases =
                 Map.of(
@@ -57,7 +58,7 @@ public final class HttpBiSourceSnapshotClient implements BiSourceSnapshotClient 
         var factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(3));
         factory.setReadTimeout(Duration.ofSeconds(30));
-        client = RestClient.builder().requestFactory(factory).build();
+        client = restClientBuilder.requestFactory(factory).build();
     }
 
     public String version(UUID tenant, String source, String dataset) {

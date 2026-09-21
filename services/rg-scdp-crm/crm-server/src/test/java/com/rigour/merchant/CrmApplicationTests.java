@@ -103,6 +103,17 @@ class CrmApplicationTests {
         assertThat(cityAfter.parentCode()).isEqualTo("ROOT");
         assertThat(cityAfter.sortOrder()).isEqualTo(2);
         assertThat(jdbcTemplate.queryForObject("SELECT region_code FROM crm_customer WHERE tenant_id=? AND customer_code='KEEP'", String.class, tenant.toString())).isEqualTo("CITY");
+        // 地区映射以内部编码发布给Integration：没有数字内部ID，订单同步按来源ID或名称解析。
+        var areaMappings =
+                store.externalObjectMappings(
+                        tenant, connector, run, CrmMasterDataObjectType.CUSTOMER_AREA);
+        assertThat(areaMappings).hasSize(1);
+        assertThat(areaMappings.getFirst().sourceObjectId()).isEqualTo("44077");
+        assertThat(areaMappings.getFirst().sourceObjectNo()).isEqualTo("杭州市");
+        assertThat(areaMappings.getFirst().internalDomain()).isEqualTo("CRM");
+        assertThat(areaMappings.getFirst().internalObjectType()).isEqualTo("CUSTOMER_AREA");
+        assertThat(areaMappings.getFirst().internalObjectId()).isNull();
+        assertThat(areaMappings.getFirst().internalObjectNo()).isEqualTo("CITY");
     }
 
     @Test

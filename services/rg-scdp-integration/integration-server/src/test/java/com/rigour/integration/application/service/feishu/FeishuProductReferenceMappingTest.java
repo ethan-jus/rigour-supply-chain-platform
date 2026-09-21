@@ -62,6 +62,62 @@ class FeishuProductReferenceMappingTest {
         assertThat(context.product("专业款皮头H")).isPresent();
     }
 
+    @Test
+    void unrelatedResolvedProductIsNotMappedToTheLine() {
+        var context = new FeishuImportBundleService.SalesOrderMappingContext(Map.of());
+        context.addResolvedProduct(row("杨掌柜-葱油鸡肉菌菇拌面-12桶/箱"),
+                resolvedByName(15, 29, "粉面菜蛋金汤肥牛味", null, "BUCKET", "BOX"));
+        context.addResolvedProduct(row("杨掌柜-酸麻叉烧味粉面菜蛋-12桶/箱"),
+                resolvedByName(15, 29, "粉面菜蛋金汤肥牛味", null, "BUCKET", "BOX"));
+
+        assertThat(context.product("杨掌柜-葱油鸡肉菌菇拌面-12桶/箱", "葱油鸡肉菌菇拌面")).isEmpty();
+        assertThat(context.product("杨掌柜-酸麻叉烧味粉面菜蛋-12桶/箱")).isEmpty();
+    }
+
+    @Test
+    void sameNameFamilyResolutionIsStillMapped() {
+        var context = new FeishuImportBundleService.SalesOrderMappingContext(Map.of());
+        context.addResolvedProduct(row("杨掌柜-金汤肥牛-12桶/箱"),
+                resolvedByName(15, 29, "粉面菜蛋金汤肥牛味", null, "BUCKET", "BOX"));
+
+        assertThat(context.product("杨掌柜-金汤肥牛-12桶/箱", "金汤肥牛")).get()
+                .extracting(FeishuSalesOrderImportMapper.ProductMapping::productVariantId).isEqualTo(29L);
+    }
+
+    @Test
+    void orderUnitColumnOnlyBecomesBoxForProductsPackedByBox() {
+        var context = new FeishuImportBundleService.SalesOrderMappingContext(Map.of());
+        context.addResolvedProduct(rowWithQty("杨掌柜-油泼辣子拌面-12桶/箱", "2"),
+                resolvedByName(14, 28, "油泼辣子拌面", null, "BUCKET", "BOX"));
+        context.addResolvedProduct(rowWithQty("瑞盖-学院专业款皮头-H/M", "2"),
+                resolvedByName(20, 39, "专业款皮头", null, "PIECE", null));
+        var mapper = new FeishuSalesOrderImportMapper();
+
+        var noodleLine = mapper.linePlan(rowWithQty("杨掌柜-油泼辣子拌面-12桶/箱", "2"), context);
+        var tipLine = mapper.linePlan(rowWithQty("瑞盖-学院专业款皮头-H/M", "2"), context);
+
+        assertThat(noodleLine.command()).isNotNull();
+        assertThat(noodleLine.command().unitCode()).isEqualTo("BOX");
+        assertThat(tipLine.command()).isNotNull();
+        assertThat(tipLine.command().unitCode()).isEqualTo("PIECE");
+    }
+
+    private static ExternalProductResolvedView resolvedByName(
+            long productId, long variantId, String name, String specification,
+            String unitCode, String middleUnitCode) {
+        return new ExternalProductResolvedView("reference", productId, variantId, "P" + productId,
+                "S" + variantId, name, specification, unitCode, middleUnitCode,
+                "DINGHUOBAO", "PRODUCT_NAME_FUZZY_UNIQUE", 70, "MATCHED", "matched");
+    }
+
+    private static StoredRawRow rowWithQty(String productReference, String quantity) {
+        return new StoredRawRow(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                "订单明细", "FEISHU_SALES_ORDER_LINE", "ORDER", "SALES_ORDER_LINE", 1, "LINE-001",
+                Instant.parse("2026-09-01T00:00:00Z"), "PENDING",
+                Map.of("关联订单", "SO-001", "产品编号", productReference, "数量(箱)", quantity,
+                        "实际单价", "78", "实际小计", "156"), Map.of());
+    }
+
     private static StoredRawRow row(String productReference) {
         return new StoredRawRow(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
                 "订单明细", "FEISHU_SALES_ORDER_LINE", "ORDER", "SALES_ORDER_LINE", 1, "LINE-001",
@@ -71,6 +127,6 @@ class FeishuProductReferenceMappingTest {
 
     private static ExternalProductResolvedView resolved(long productId, long variantId, String name, String specification) {
         return new ExternalProductResolvedView("reference", productId, variantId, "P" + productId, "S" + variantId,
-                name, specification, "PIECE", "DINGHUOBAO", "PRODUCT_CODE_EXACT", 100, "MATCHED", "matched");
+                name, specification, "PIECE", null, "DINGHUOBAO", "PRODUCT_CODE_EXACT", 100, "MATCHED", "matched");
     }
 }

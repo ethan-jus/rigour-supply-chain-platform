@@ -7,6 +7,7 @@ import com.rigour.erp.api.v1.model.ProductManagementSummaryView;
 import com.rigour.erp.api.v1.model.ProductOrdinalCommand;
 import com.rigour.erp.api.v1.model.ProductShelfStatusCommand;
 import com.rigour.shared.core.api.ApiResponse;
+import java.util.List;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -43,6 +44,7 @@ public interface ErpProductManagementApi {
             @RequestParam(required = false) String shelfStatusCode,
             @RequestParam(required = false) String submitStatusCode,
             @RequestParam(required = false) Long defaultWarehouseId,
+            @RequestParam(required = false) List<Long> productIds,
             @RequestParam(defaultValue = "false") boolean withVariants);
 
     @GetMapping(BASE_PATH + "/{id}")

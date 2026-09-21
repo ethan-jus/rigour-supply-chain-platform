@@ -9,8 +9,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "rigour.order.fund-attachment")
 public class FundAttachmentAccessProperties {
     private Duration urlTtl = Duration.ofMinutes(10);
-    /** 额外允许签名的附件目录；飞书导入附件与订货宝资金附件分目录隔离。 */
-    private List<String> additionalObjectPrefixes = new ArrayList<>(List.of("feishu-attachments"));
+    /** 额外允许签名的附件目录；飞书导入附件、发票附件与订货宝资金附件分目录隔离。 */
+    private List<String> additionalObjectPrefixes =
+            new ArrayList<>(List.of("feishu-attachments", "order-invoices"));
     private final Cos cos = new Cos();
 
     public Duration getUrlTtl() { return urlTtl; }

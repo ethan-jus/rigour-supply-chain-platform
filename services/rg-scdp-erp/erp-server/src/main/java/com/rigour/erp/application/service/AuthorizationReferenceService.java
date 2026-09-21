@@ -39,7 +39,8 @@ public final class AuthorizationReferenceService {
                                 d.warehouseName(),
                                 null,
                                 d.statusCode(),
-                                d.revision() == null ? 0 : d.revision()));
+                                d.revision() == null ? 0 : d.revision(),
+                                d.regionCode()));
             begin += page.items().size();
             if (begin >= page.total() || page.items().isEmpty()) break;
             if (begin >= 20000) throw new IllegalStateException("仓库数量超过单次授权目录上限");

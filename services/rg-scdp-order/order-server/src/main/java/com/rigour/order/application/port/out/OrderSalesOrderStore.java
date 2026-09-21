@@ -27,7 +27,8 @@ public interface OrderSalesOrderStore {
     SalesOrderDetailView updateExternalProjection(String tenantId, Long id, SalesOrderWrite command, String actorId);
 
     SalesOrderDetailView updateSourceStatus(
-            String tenantId, Long id, String sourceStatusCode, int revision, String actorId);
+            String tenantId, Long id, String sourceStatusCode, String orderStatusCode,
+            int revision, String actorId);
 
     SalesOrderDetailView updateSourceProjection(
             String tenantId, Long id, SalesOrderSourceProjectionWrite command, String actorId);
@@ -117,7 +118,14 @@ public interface OrderSalesOrderStore {
             BigDecimal payableAmount,
             List<SalesOrderLineWrite> lines,
             String remark,
-            Integer revision) {
+            Integer revision,
+            // 来源审计与同步审计：只由来源同步写入，人工编辑保持原值。
+            Instant sourceCreatedAt,
+            Instant sourceUpdatedAt,
+            String sourceModifierId,
+            String sourceModifierName,
+            String syncedBy,
+            Instant syncedAt) {
         public SalesOrderWrite {
             paymentVoucherKeys = paymentVoucherKeys == null ? List.of() : List.copyOf(paymentVoucherKeys);
             lines = lines == null ? List.of() : List.copyOf(lines);
@@ -162,7 +170,7 @@ public interface OrderSalesOrderStore {
                     ownerEmployeeNameSnapshot, orderDate, orderStatusCode,
                     orderTypeCode, paymentMethodCode, List.of(), null, totalQuantity,
                     originalAmount, discountRate, discountAmount, payableAmount,
-                    lines, remark, revision);
+                    lines, remark, revision, null, null, null, null, null, null);
         }
 
         public SalesOrderWrite(Long customerId, String customerCodeSnapshot,
@@ -181,7 +189,7 @@ public interface OrderSalesOrderStore {
                     ownerSalesUserId, ownerSalesName, ownerEmployeeCode, ownerEmployeeNameSnapshot,
                     orderDate, orderStatusCode, orderTypeCode, paymentMethodCode, List.of(),
                     null, totalQuantity, originalAmount, discountRate, discountAmount,
-                    payableAmount, lines, remark, revision);
+                    payableAmount, lines, remark, revision, null, null, null, null, null, null);
         }
 
         public SalesOrderWrite(Long customerId, String customerCodeSnapshot,
@@ -199,7 +207,7 @@ public interface OrderSalesOrderStore {
                     ownerSalesUserId, ownerSalesName, null, null, orderDate,
                     orderStatusCode, orderTypeCode, paymentMethodCode, List.of(), null, totalQuantity,
                     originalAmount, discountRate, discountAmount, payableAmount,
-                    lines, remark, revision);
+                    lines, remark, revision, null, null, null, null, null, null);
         }
     }
 
@@ -212,7 +220,16 @@ public interface OrderSalesOrderStore {
             String ownerSalesName,
             String ownerEmployeeCode,
             String ownerEmployeeNameSnapshot,
-            Integer revision) {
+            String regionCode,
+            // 来源状态推进后应落到的业务状态；为 null 时沿用当前值。
+            String orderStatusCode,
+            Integer revision,
+            Instant sourceCreatedAt,
+            Instant sourceUpdatedAt,
+            String sourceModifierId,
+            String sourceModifierName,
+            String syncedBy,
+            Instant syncedAt) {
     }
 
     record SalesOrderLineWrite(

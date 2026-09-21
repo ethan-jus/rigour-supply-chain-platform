@@ -28,8 +28,9 @@ public final class HttpOrderExecutionClient implements OrderExecutionClient {
     public HttpOrderExecutionClient(
             TrustedContextSigner signer,
             @Value(
-                            "${rigour.erp.order-execution-base-url:${ORDER_BASE_URL:http://rigour-order-center-service:26885}}")
-                    String base) {
+                            "${rigour.erp.order-execution-base-url:${ORDER_BASE_URL:http://rigour-order-center-service}}")
+                    String base,
+            RestClient.Builder restClientBuilder) {
         this.signer = signer;
         this.base = URI.create(base.replaceAll("/+$", ""));
         if (!Set.of("http", "https").contains(this.base.getScheme()))
@@ -38,7 +39,7 @@ public final class HttpOrderExecutionClient implements OrderExecutionClient {
                 new JdkClientHttpRequestFactory(
                         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build());
         f.setReadTimeout(Duration.ofSeconds(10));
-        client = RestClient.builder().requestFactory(f).build();
+        client = restClientBuilder.requestFactory(f).build();
     }
 
     public FulfillmentExecutionView claim(CallerIdentity actor, String id) {

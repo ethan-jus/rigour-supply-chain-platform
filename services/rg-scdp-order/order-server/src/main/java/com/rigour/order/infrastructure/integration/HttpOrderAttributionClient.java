@@ -28,8 +28,9 @@ public final class HttpOrderAttributionClient implements OrderAttributionClient 
     public HttpOrderAttributionClient(
             TrustedContextSigner signer,
             @Value(
-                            "${rigour.order.crm-attribution-base-url:${CRM_BASE_URL:http://rigour-merchant-crm-service:26883}}")
-                    String base) {
+                            "${rigour.order.crm-attribution-base-url:${CRM_BASE_URL:http://rigour-merchant-crm-service}}")
+                    String base,
+            RestClient.Builder restClientBuilder) {
         this.signer = signer;
         this.base = URI.create(base.replaceAll("/+$", ""));
         if (!Set.of("http", "https").contains(this.base.getScheme()))
@@ -38,7 +39,7 @@ public final class HttpOrderAttributionClient implements OrderAttributionClient 
                 new JdkClientHttpRequestFactory(
                         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build());
         factory.setReadTimeout(Duration.ofSeconds(5));
-        client = RestClient.builder().requestFactory(factory).build();
+        client = restClientBuilder.requestFactory(factory).build();
     }
 
     @Override

@@ -98,12 +98,6 @@ import java.time.Clock;
 public final class IamInfrastructureConfiguration {
 
     @Bean
-    @ConditionalOnMissingBean(RestClient.Builder.class)
-    RestClient.Builder feishuRestClientBuilder() {
-        return RestClient.builder();
-    }
-
-    @Bean
     @ConditionalOnProperty(prefix = "rigour.iam.feishu", name = "enabled", havingValue = "true")
     FeishuIdentityProvider feishuIdentityProvider(
             RestClient.Builder builder, FeishuAuthenticationProperties properties) {

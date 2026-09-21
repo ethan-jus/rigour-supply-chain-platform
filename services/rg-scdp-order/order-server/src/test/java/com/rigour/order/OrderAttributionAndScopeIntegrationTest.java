@@ -56,6 +56,7 @@ class OrderAttributionAndScopeIntegrationTest {
     @Autowired JdbcOrderFulfillmentStore fulfillment;
     @Autowired OrderDataScope scopes;
     @Autowired com.rigour.order.application.port.out.OrderSalesPaymentRecordStore payments;
+    @Autowired com.rigour.order.application.port.out.OrderRegisterStore register;
     @Autowired com.rigour.order.application.port.out.OrderParameterStore parameterStore;
     @Autowired com.rigour.order.application.service.sales.OrderSalesOrderService sales;
     @MockitoBean OrderAttributionClient customer;
@@ -81,7 +82,7 @@ class OrderAttributionAndScopeIntegrationTest {
                                                                         .port.out
                                                                         .HrEmployeeDisplayClient
                                                                         .EmployeeDisplay(
-                                                                        code, "当前姓名", "INACTIVE"))
+                                                                        code, "当前姓名", "INACTIVE", "销售部"))
                                                 .toList());
         tenant = UUID.randomUUID().toString();
         UUID user = UUID.randomUUID();
@@ -361,6 +362,227 @@ class OrderAttributionAndScopeIntegrationTest {
                                 Integer.class,
                                 args.toArray()))
                 .isEqualTo(3);
+    }
+
+    @Test
+    void syncedOrderAndPaymentPersistSourceAuditAndSyncActor() {
+        TestAuthorizationContext.set(serviceCallerIdentity());
+        Instant sourceCreatedAt = Instant.parse("2026-09-18T02:00:00Z");
+        Instant sourceUpdatedAt = Instant.parse("2026-09-19T05:00:00Z");
+        Instant syncedAt = Instant.parse("2026-09-21T03:30:00Z");
+        var line =
+                new com.rigour.order.api.v1.model.SalesOrderLineCommand(
+                        10L,
+                        11L,
+                        "P-SYNC-1",
+                        "SKU-SYNC-1",
+                        "同步商品",
+                        "箱",
+                        "BOX",
+                        java.math.BigDecimal.ONE,
+                        java.math.BigDecimal.TEN,
+                        null,
+                        java.math.BigDecimal.ZERO,
+                        null);
+        var command =
+                new com.rigour.order.api.v1.model.SalesOrderCommand(
+                        1L,
+                        "DINGHUOBAO",
+                        "DH.SYNC.0001",
+                        "PENDING_OUTBOUND",
+                        "U-9",
+                        "RY0009",
+                        "刘鹏昆",
+                        "CUS-1",
+                        "杭州客户",
+                        "张三",
+                        "13800000000",
+                        "HZ",
+                        null,
+                        null,
+                        null,
+                        null,
+                        sourceCreatedAt,
+                        "NORMAL",
+                        "CASH",
+                        List.of(),
+                        null,
+                        null,
+                        null,
+                        "同步订单",
+                        List.of(line),
+                        false,
+                        0,
+                        "DH.SYNC.0001",
+                        sourceCreatedAt,
+                        sourceUpdatedAt,
+                        "U-10",
+                        "张艺瀚",
+                        "系统自动同步",
+                        syncedAt);
+        var created = sales.create(command);
+
+        var orderRow =
+                jdbc.queryForMap(
+                        "SELECT synced_by,synced_at,source_created_at,source_updated_at,"
+                                + "source_modifier_id,source_modifier_name FROM order_sales_order"
+                                + " WHERE tenant_id=? AND order_no=?",
+                        tenant,
+                        created.orderNo());
+        assertThat(orderRow)
+                .containsEntry("synced_by", "系统自动同步")
+                .containsEntry("source_modifier_id", "U-10")
+                .containsEntry("source_modifier_name", "张艺瀚");
+        assertThat(((java.time.LocalDateTime) orderRow.get("synced_at")).toInstant(java.time.ZoneOffset.UTC))
+                .isEqualTo(syncedAt);
+        assertThat(
+                        ((java.time.LocalDateTime) orderRow.get("source_created_at"))
+                                .toInstant(java.time.ZoneOffset.UTC))
+                .isEqualTo(sourceCreatedAt);
+
+        var orderPage =
+                register.orders(
+                        tenant,
+                        0,
+                        10,
+                        new com.rigour.order.application.port.out.OrderRegisterStore.OrderCriteria(
+                                created.orderNo(), null, null, null, null, null, null, null, null,
+                                null, null, null, null));
+        var orderView = orderPage.items().getFirst();
+        assertThat(orderView.createdBy()).isEqualTo("刘鹏昆");
+        assertThat(orderView.updatedBy()).isEqualTo("张艺瀚");
+        assertThat(orderView.syncedBy()).isEqualTo("系统自动同步");
+        assertThat(orderView.syncedAt()).isEqualTo(syncedAt);
+
+        // 已有订单走来源投影路径时也要刷新来源审计与同步审计。
+        Instant projectedAt = syncedAt.plusSeconds(600);
+        sales.updateSourceProjection(
+                created.id(),
+                new com.rigour.order.api.v1.model.SalesOrderSourceProjectionCommand(
+                        "COMPLETED",
+                        "U-9",
+                        "RY0009",
+                        "刘鹏昆",
+                        null,
+                        null,
+                        null,
+                        null,
+                        "HZ",
+                        created.revision(),
+                        sourceCreatedAt,
+                        projectedAt,
+                        "U-11",
+                        "王五",
+                        "系统自动同步",
+                        projectedAt));
+        var projectedRow =
+                jdbc.queryForMap(
+                        "SELECT synced_at,source_updated_at,source_modifier_name"
+                                + " FROM order_sales_order WHERE tenant_id=? AND id=?",
+                        tenant,
+                        created.id());
+        assertThat(projectedRow).containsEntry("source_modifier_name", "王五");
+        assertThat(
+                        ((java.time.LocalDateTime) projectedRow.get("synced_at"))
+                                .toInstant(java.time.ZoneOffset.UTC))
+                .isEqualTo(projectedAt);
+        assertThat(
+                        ((java.time.LocalDateTime) projectedRow.get("source_updated_at"))
+                                .toInstant(java.time.ZoneOffset.UTC))
+                .isEqualTo(projectedAt);
+
+        var payment =
+                payments.create(
+                        tenant,
+                        "PAY-SYNC-0001",
+                        new com.rigour.order.application.port.out.OrderSalesPaymentRecordStore
+                                .SalesPaymentWrite(
+                                UUID.randomUUID(),
+                                "DINGHUOBAO",
+                                "SKU-SYNC-R1",
+                                created.id(),
+                                created.orderNo(),
+                                1L,
+                                "CUS-1",
+                                "杭州客户",
+                                "RY0009",
+                                "刘鹏昆",
+                                sourceUpdatedAt,
+                                "CASH",
+                                java.math.BigDecimal.TEN,
+                                List.of(),
+                                "同步回款",
+                                0,
+                                sourceCreatedAt,
+                                sourceUpdatedAt,
+                                "U-10",
+                                "张艺瀚",
+                                "系统自动同步",
+                                syncedAt),
+                        "SYSTEM");
+        var paymentRow =
+                jdbc.queryForMap(
+                        "SELECT synced_by,synced_at FROM order_payment_record"
+                                + " WHERE tenant_id=? AND id=?",
+                        tenant,
+                        payment.id());
+        assertThat(paymentRow).containsEntry("synced_by", "系统自动同步");
+        assertThat(
+                        ((java.time.LocalDateTime) paymentRow.get("synced_at"))
+                                .toInstant(java.time.ZoneOffset.UTC))
+                .isEqualTo(syncedAt);
+        var paymentPage =
+                register.payments(
+                        tenant,
+                        0,
+                        10,
+                        new com.rigour.order.application.port.out.OrderRegisterStore.PaymentCriteria(
+                                null, null, null, null, null, null, null, null, null, null,
+                                "PAY-SYNC-0001", null, null, null, null, null, null));
+        var paymentView = paymentPage.items().getFirst();
+        assertThat(paymentView.syncedBy()).isEqualTo("系统自动同步");
+        assertThat(paymentView.syncedAt()).isEqualTo(syncedAt);
+
+        // 回款更新同样刷新同步审计。
+        Instant paymentSyncedAt = syncedAt.plusSeconds(900);
+        payments.update(
+                tenant,
+                payment.id(),
+                new com.rigour.order.application.port.out.OrderSalesPaymentRecordStore
+                        .SalesPaymentWrite(
+                        UUID.randomUUID(),
+                        "DINGHUOBAO",
+                        "SKU-SYNC-R1",
+                        created.id(),
+                        created.orderNo(),
+                        1L,
+                        "CUS-1",
+                        "杭州客户",
+                        "RY0009",
+                        "刘鹏昆",
+                        sourceUpdatedAt,
+                        "CASH",
+                        java.math.BigDecimal.TEN,
+                        List.of(),
+                        "同步回款更新",
+                        payment.revision(),
+                        sourceCreatedAt,
+                        sourceUpdatedAt,
+                        "U-10",
+                        "张艺瀚",
+                        "系统自动同步",
+                        paymentSyncedAt),
+                "SYSTEM");
+        assertThat(
+                        ((java.time.LocalDateTime)
+                                        jdbc.queryForMap(
+                                                        "SELECT synced_at FROM order_payment_record"
+                                                                + " WHERE tenant_id=? AND id=?",
+                                                        tenant,
+                                                        payment.id())
+                                                .get("synced_at"))
+                                .toInstant(java.time.ZoneOffset.UTC))
+                .isEqualTo(paymentSyncedAt);
     }
 
     @Test
@@ -1135,6 +1357,21 @@ class OrderAttributionAndScopeIntegrationTest {
                                         new com.rigour.order.api.v1.model.OrderAttributionReview
                                                 .Review(false, "错误订单")))
                 .isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+    }
+
+    private CallerIdentity serviceCallerIdentity() {
+        return new CallerIdentity(
+                "SERVICE",
+                UUID.randomUUID(),
+                actor.tenantId(),
+                null,
+                null,
+                UUID.randomUUID(),
+                0,
+                0,
+                0,
+                Set.of("DHB_ORDER_SYNC_SERVICE"),
+                Set.of("order:read", "order:write"));
     }
 
     private long order(String no, Long customerId) {

@@ -1,6 +1,6 @@
 # 日常开发选择 dev：基础设施统一使用台式机 192.168.12.7，不需要本机安装中间件。
 # DEV账号仅用于开发；COS/签名密钥沿用IDEA环境变量，不在Git保存云密钥。
-# 本机不注册到共享服务池、不自动迁移数据库；台式机部署仍由部署脚本管理。
+# 本机注册到 DEV 命名空间，服务间按服务名解析实例；台式机部署仍由部署脚本管理。
 server:
   port: 26884
 spring:
@@ -11,19 +11,19 @@ spring:
     hikari:
       maximum-pool-size: 5
       minimum-idle: 1
+  config:
+    import: "optional:nacos:rigour-common.yml,optional:nacos:${spring.application.name}.yml"
   cloud:
     nacos:
       server-addr: "192.168.12.7:18848"
       config:
-        enabled: false
-        import-check:
-          enabled: false
-        namespace: "3aa03547-8948-4254-bd94-47c630db128b"
+        enabled: true
+        namespace: "${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}"
       username: "nacos"
       password: "430baa72cea83cdd77b1627990f7fb2d6bfe0622"
       discovery:
-        namespace: "3aa03547-8948-4254-bd94-47c630db128b"
-        register-enabled: false
+        namespace: "${NACOS_NAMESPACE:3aa03547-8948-4254-bd94-47c630db128b}"
+        register-enabled: true
   data:
     redis:
       host: "192.168.12.7"
@@ -42,7 +42,7 @@ rocketmq:
   name-server: "192.168.12.7:19876"
 rigour:
   supply-authorization:
-    iam-base-url: "http://localhost:26881"
+    iam-base-url: "http://rigour-tenant-iam-service"
   context:
     trust:
       active-key-id: "v1"
@@ -51,11 +51,12 @@ rigour:
   erp:
     product-media:
       cos:
-        region: "ap-beijing"
-        bucket: "rigour-sales-recordings-1361731487"
-        secret-id: "${RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_ID}"
-        secret-key: "${RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_KEY}"
+        region: "${RIGOUR_COS_REGION:ap-beijing}"
+        bucket: "${RIGOUR_COS_BUCKET:rigour-sales-recordings-1361731487}"
+        # 全供应链共用一套 COS 凭据（RIGOUR_COS_*）；旧的 ERP 专用变量名兼容回退。
+        secret-id: "${RIGOUR_COS_SECRET_ID:${RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_ID:}}"
+        secret-key: "${RIGOUR_COS_SECRET_KEY:${RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_KEY:}}"
   business-settings:
-    base-url: "${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://192.168.12.7:26892}"
+    base-url: "${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://rigour-business-settings-service}"
   integration:
-    base-url: "${RIGOUR_INTEGRATION_BASE_URL:http://192.168.12.7:26882}"
+    base-url: "${RIGOUR_INTEGRATION_BASE_URL:http://rigour-integration-migration-service}"

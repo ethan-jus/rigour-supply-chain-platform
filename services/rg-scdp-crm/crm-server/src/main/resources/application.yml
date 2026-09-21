@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: rigour-merchant-crm-service
+  profiles:
+    active: local
 
 management:
   endpoints:
@@ -21,12 +23,12 @@ logging:
 rigour:
   hr:
     # CRM 只读取 HR 员工主档做人员归属解析，IAM 不再承载人员主数据。
-    base-url: ${RIGOUR_HR_BASE_URL:http://localhost:26889}
+    base-url: ${RIGOUR_HR_BASE_URL:http://rigour-hr-payroll-service}
   business-settings:
     # CRM 通过公共客户端批量补齐明确白名单字典；服务不可用不阻断主数据落库。
-    base-url: ${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://localhost:26892}
+    base-url: ${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://rigour-business-settings-service}
   integration:
-    base-url: ${RIGOUR_INTEGRATION_BASE_URL:http://localhost:26882}
+    base-url: ${RIGOUR_INTEGRATION_BASE_URL:http://rigour-integration-migration-service}
     http:
       connect-timeout: ${RIGOUR_INTEGRATION_CONNECT_TIMEOUT:3s}
       read-timeout: ${RIGOUR_INTEGRATION_READ_TIMEOUT:120s}

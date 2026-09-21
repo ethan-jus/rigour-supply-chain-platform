@@ -676,9 +676,11 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
                 MAPPING_STATUSES, "mappingStatus");
         String internalDomain = optionalCode(command.internalDomain());
         String internalObjectType = optionalCode(command.internalObjectType());
+        // 地区等编码键主数据没有数字主键，ACTIVE 映射允许只带内部编码。
+        boolean hasInternalObject = command.internalObjectId() != null
+                || (command.internalObjectNo() != null && !command.internalObjectNo().isBlank());
         if ("ACTIVE".equals(mappingStatus)
-                && (internalDomain == null || internalObjectType == null
-                || command.internalObjectId() == null)) {
+                && (internalDomain == null || internalObjectType == null || !hasInternalObject)) {
             throw new IllegalArgumentException("ACTIVE mapping requires internal object fields");
         }
 

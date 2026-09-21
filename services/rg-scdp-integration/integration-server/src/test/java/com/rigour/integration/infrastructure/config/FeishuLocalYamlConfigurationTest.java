@@ -39,9 +39,15 @@ class FeishuLocalYamlConfigurationTest {
         }
         try (var stream = getClass().getResourceAsStream("/application-dev.yml")) {
             assertThat(stream).isNotNull();
-            assertThat(new String(stream.readAllBytes(), StandardCharsets.UTF_8))
-                    .contains("192.168.12.7:18848")
-                    .doesNotContain("import:", "feishu-reconciliation.properties");
+            String devYaml = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            assertThat(devYaml).contains("192.168.12.7:18848");
+            assertThat(devYaml).doesNotContain("feishu-reconciliation.properties");
+            // DEV 只允许从 Nacos 配置中心做 optional 导入，个人外部文件导入仍然禁止。
+            java.util.List<String> importLines = java.util.Arrays.stream(devYaml.split("\n"))
+                    .filter(line -> line.contains("import:"))
+                    .toList();
+            assertThat(importLines).isNotEmpty();
+            assertThat(importLines).allSatisfy(line -> assertThat(line).contains("optional:nacos:"));
         }
     }
 

@@ -15,6 +15,7 @@ import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
+import com.rigour.integration.application.port.out.CrmCustomerAttributionClient;
 import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
@@ -30,6 +31,7 @@ import com.rigour.integration.infrastructure.persistence.entity.IntegrationOrder
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationOutboxEventEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationRawLandingEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationSyncCheckpointEntity;
+import com.rigour.integration.infrastructure.persistence.entity.IntegrationSyncLogEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationSyncRunEntity;
 import com.rigour.integration.infrastructure.persistence.entity.IntegrationSyncTaskEntity;
 import com.rigour.integration.infrastructure.persistence.mapper.DhbConnectorMapper;
@@ -38,6 +40,7 @@ import com.rigour.integration.infrastructure.persistence.mapper.IntegrationOrder
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationOutboxEventMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationRawLandingMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncCheckpointMapper;
+import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncLogMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncRunMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncTaskMapper;
 import com.rigour.order.api.v1.model.FundDocumentCommand;
@@ -73,6 +76,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -128,6 +132,8 @@ class IntegrationApplicationTests {
     @Autowired private ExternalObjectMappingMapper externalObjectMappingMapper;
 
     @Autowired private IntegrationSyncCheckpointMapper checkpointMapper;
+
+    @Autowired private IntegrationSyncLogMapper syncLogMapper;
 
     @MockitoBean private ProductMediaSyncWorker productMediaSyncWorker;
 
@@ -468,6 +474,130 @@ class IntegrationApplicationTests {
         assertThat(orderProjection.created).isEqualTo(2);
         assertThat(rawLandingCount(tenant)).isEqualTo(4L);
         assertThat(outboxEventCount(tenant)).isEqualTo(2L);
+    }
+
+    @Test
+    void orderSyncResolvesCustomerAreaMappingFallsBackToCustomerRegionAndRepairsBlankRegion() {
+        UUID tenant = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        ConnectorView connector =
+                store.createConnector(
+                        tenant,
+                        actor,
+                        new ConnectorCommand(
+                                "DHB_AREA_SYNC",
+                                "订货宝地区同步",
+                                "https://area-sync.dhb.example",
+                                "env://DHB_AREA_SYNC",
+                                "ACTIVE",
+                                0));
+        var task = orderTaskFor(tenant, connector.id());
+
+        // CRM 地区的内部对象是编码而非数字ID：ACTIVE 映射允许只登记 internalObjectNo。
+        int accepted =
+                store.saveExternalObjectMappings(
+                        tenant,
+                        actor,
+                        List.of(
+                                new com.rigour.integration.api.v1.model.DhbApiModels
+                                        .ExternalObjectMappingCommand(
+                                        connector.id(),
+                                        "DHB",
+                                        "CUSTOMER_AREA",
+                                        "AREA-1",
+                                        "武汉",
+                                        "CRM",
+                                        "CUSTOMER_AREA",
+                                        null,
+                                        "CUSAREA-WH",
+                                        "ACTIVE",
+                                        null,
+                                        null,
+                                        null,
+                                        null,
+                                        null,
+                                        "CRM订货宝归属地区同步映射")));
+        assertThat(accepted).isEqualTo(1);
+        seedOrderProjectionMappings(tenant, connector.id());
+
+        Instant from = Instant.parse("2026-08-04T00:00:00Z");
+        Instant to = Instant.parse("2026-08-04T01:00:00Z");
+        DhbClient.OrderSummary areaOrder = order("DHB-AREA-1", "12.50");
+        DhbClient.OrderSummary fallbackOrder = order("DHB-AREA-2", "12.50");
+        DhbClient client = mock(DhbClient.class);
+        when(client.getOrders(any(), any()))
+                .thenAnswer(
+                        invocation -> {
+                            DhbClient.OrderQuery query = invocation.getArgument(1);
+                            return query.page().begin() == 0
+                                    ? new DhbClient.Page<>(query.page(), 2, List.of(areaOrder))
+                                    : new DhbClient.Page<>(query.page(), 2, List.of(fallbackOrder));
+                        });
+        when(client.getOrderContent(any(), any()))
+                .thenAnswer(
+                        invocation -> {
+                            String orderNo = invocation.getArgument(1);
+                            return "DHB-AREA-1".equals(orderNo)
+                                    ? orderDetailWithArea(orderNo, "AREA-1")
+                                    : orderDetail(orderNo);
+                        });
+        stubEmptyDependentOrderFeeds(client);
+
+        CallerIdentity caller =
+                new CallerIdentity(
+                        "TENANT",
+                        actor,
+                        tenant,
+                        actor,
+                        null,
+                        UUID.randomUUID(),
+                        0,
+                        0,
+                        0,
+                        Set.of(),
+                        Set.of("integration:dhb:write"));
+        FakeOrderProjectionClient orderProjection = new FakeOrderProjectionClient();
+        CrmCustomerAttributionClient attribution = (serviceCaller, customerId) -> "CUSAREA-FALLBACK";
+        DhbOrderSyncService worker =
+                new DhbOrderSyncService(
+                        syncStore,
+                        client,
+                        orderProjection,
+                        null,
+                        new FakeHrDhbStaffSyncClient(),
+                        null,
+                        3,
+                        null,
+                        null,
+                        attribution);
+
+        var result = worker.runOrderPull(caller, task.id(), new SyncRunCommand(from, to, 1));
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        assertThat(result.acceptedCount()).isEqualTo(2);
+        assertThat(orderProjection.rows.values())
+                .extracting(SalesOrderDetailView::regionCode)
+                .containsExactlyInAnyOrder("CUSAREA-WH", "CUSAREA-FALLBACK");
+        assertThat(
+                        syncLogMapper.selectList(
+                                Wrappers.<IntegrationSyncLogEntity>query()
+                                        .eq("tenant_id", IntegrationUuidCodec.encode(tenant))
+                                        .eq("error_code", "DHB_ORDER_REGION_FROM_CUSTOMER")))
+                .hasSize(1);
+
+        SalesOrderDetailView areaRow =
+                orderProjection.rows.values().stream()
+                        .filter(row -> "CUSAREA-WH".equals(row.regionCode()))
+                        .findFirst()
+                        .orElseThrow();
+        orderProjection.blankRegionAndSubmit(areaRow.id());
+        assertThat(orderProjection.salesOrder(caller, areaRow.id()).regionCode()).isNull();
+
+        var repaired = worker.runOrderPull(caller, task.id(), new SyncRunCommand(from, to, 1));
+
+        assertThat(repaired.status()).isEqualTo("SUCCEEDED");
+        assertThat(orderProjection.salesOrder(caller, areaRow.id()).regionCode())
+                .isEqualTo("CUSAREA-WH");
     }
 
     @Test
@@ -873,6 +1003,14 @@ class IntegrationApplicationTests {
                 orderNumber, List.of(orderProductRow("PROD-1", "SKU-1", "2", "10.00", "箱")));
     }
 
+    private static DhbClient.OrderDetail orderDetailWithArea(String orderNumber, String areaId) {
+        Map<String, Object> attributes = new LinkedHashMap<>(orderDetail(orderNumber).attributes());
+        attributes.put("ClientAreaID", areaId);
+        attributes.put("ClientAreaName", "武汉");
+        return new DhbClient.OrderDetail(
+                orderNumber, "pending", new BigDecimal("12.50"), attributes);
+    }
+
     private static DhbClient.OrderDetail orderDetail(
             String orderNumber, List<Map<String, Object>> products) {
         return new DhbClient.OrderDetail(
@@ -1119,7 +1257,7 @@ class IntegrationApplicationTests {
                             current.customerNameSnapshot(),
                             current.contactNameSnapshot(),
                             current.contactPhoneSnapshot(),
-                            current.regionCode(),
+                            first(current.regionCode(), command.regionCode()),
                             first(command.ownerSalesUserId(), current.ownerSalesUserId()),
                             first(command.ownerSalesName(), current.ownerSalesName()),
                             first(command.ownerEmployeeCode(), current.ownerEmployeeCode()),
@@ -1160,6 +1298,40 @@ class IntegrationApplicationTests {
                             command.revision() + 1);
             rows.put(id, value);
             return value;
+        }
+
+        /** 模拟历史来源单：已提交但当时没有地区归属。 */
+        void blankRegionAndSubmit(long id) {
+            SalesOrderDetailView current = rows.get(id);
+            SalesOrderCommand base = command(current);
+            SalesOrderCommand blanked =
+                    new SalesOrderCommand(
+                            base.customerId(),
+                            base.sourceSystemCode(),
+                            base.sourceOrderNo(),
+                            base.sourceStatusCode(),
+                            base.sourceCreatorId(),
+                            base.sourceCreatorStaffCode(),
+                            base.sourceCreatorName(),
+                            base.customerCodeSnapshot(),
+                            base.customerNameSnapshot(),
+                            base.contactNameSnapshot(),
+                            base.contactPhoneSnapshot(),
+                            null,
+                            base.ownerSalesUserId(),
+                            base.ownerSalesName(),
+                            base.ownerEmployeeCode(),
+                            base.ownerEmployeeNameSnapshot(),
+                            base.orderDate(),
+                            base.orderTypeCode(),
+                            base.paymentMethodCode(),
+                            base.discountRate(),
+                            base.discountAmount(),
+                            base.remark(),
+                            base.lines(),
+                            true,
+                            base.revision());
+            rows.put(id, detail(id, current.orderNo(), blanked, "SUBMITTED", current.revision() + 1));
         }
 
         private static String first(String preferred, String fallback) {

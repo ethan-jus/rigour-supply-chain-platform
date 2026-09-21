@@ -118,14 +118,14 @@ sales:
     # 30秒以下按误触/噪声处理：不保存音频，只登记审计元数据。
     minimum-clip-seconds: 30
     cos:
-      # region 和 bucket 是非敏感资源标识，由环境配置文件覆盖。
-      region:
-      bucket:
-      # 只有腾讯云访问凭据从进程 Secret/环境变量注入。
-      secret-id: ${RIGOUR_SALES_RECORDING_COS_SECRET_ID:}
-      secret-key: ${RIGOUR_SALES_RECORDING_COS_SECRET_KEY:}
+      # region 和 bucket 是非敏感资源标识，由统一环境变量或环境配置文件覆盖。
+      region: ${RIGOUR_COS_REGION:}
+      bucket: ${RIGOUR_COS_BUCKET:}
+      # 全供应链共用一套 COS 凭据（RIGOUR_COS_*）；服务专用旧变量名兼容回退。
+      secret-id: ${RIGOUR_COS_SECRET_ID:${RIGOUR_SALES_RECORDING_COS_SECRET_ID:}}
+      secret-key: ${RIGOUR_COS_SECRET_KEY:${RIGOUR_SALES_RECORDING_COS_SECRET_KEY:}}
       # 仅 STS 临时凭据模式需要；长期 CAM 密钥模式为空。
-      session-token: ${RIGOUR_SALES_RECORDING_COS_SESSION_TOKEN:}
+      session-token: ${RIGOUR_COS_SESSION_TOKEN:${RIGOUR_SALES_RECORDING_COS_SESSION_TOKEN:}}
       connection-timeout-ms: 5000
       socket-timeout-ms: 30000
       server-side-encryption: true

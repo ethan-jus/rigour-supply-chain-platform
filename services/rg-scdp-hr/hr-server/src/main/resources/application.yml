@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: rigour-hr-payroll-service
+  profiles:
+    active: local
 
 management:
   endpoints:

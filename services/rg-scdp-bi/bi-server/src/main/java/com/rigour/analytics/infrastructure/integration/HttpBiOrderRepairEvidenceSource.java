@@ -28,8 +28,9 @@ public class HttpBiOrderRepairEvidenceSource implements BiOrderRepairEvidenceSou
 
     @Autowired
     public HttpBiOrderRepairEvidenceSource(TrustedContextSigner signer,
-            @Value("${rigour.order.base-url:${RIGOUR_ORDER_BASE_URL:http://localhost:26885}}") String baseUrl) {
-        this(builder(), signer, baseUrl);
+            @Value("${rigour.order.base-url:${RIGOUR_ORDER_BASE_URL:http://rigour-order-center-service}}") String baseUrl,
+            RestClient.Builder restClientBuilder) {
+        this(timed(restClientBuilder), signer, baseUrl);
     }
 
     HttpBiOrderRepairEvidenceSource(RestClient.Builder builder, TrustedContextSigner signer, String baseUrl) {
@@ -70,9 +71,9 @@ public class HttpBiOrderRepairEvidenceSource implements BiOrderRepairEvidenceSou
         return List.copyOf(response.data().items());
     }
 
-    private static RestClient.Builder builder() {
+    private static RestClient.Builder timed(RestClient.Builder builder) {
         var factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(3)); factory.setReadTimeout(Duration.ofSeconds(10));
-        return RestClient.builder().requestFactory(factory);
+        return builder.requestFactory(factory);
     }
 }

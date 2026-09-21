@@ -35,10 +35,12 @@ public class ErpInfrastructureConfiguration {
     @Bean
     com.rigour.erp.application.port.out.ErpProductDictionary erpProductDictionary(
             TrustedContextSigner signer,
-            @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            @Value("${rigour.business-settings.base-url:http://rigour-business-settings-service}")
+                    String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new com.rigour.erp.infrastructure.integration.HttpErpProductDictionary(
-                RestClient.builder().requestFactory(requestFactory), signer, baseUrl);
+                restClientBuilder.requestFactory(requestFactory), signer, baseUrl);
     }
 
     @Bean
@@ -62,11 +64,12 @@ public class ErpInfrastructureConfiguration {
     DhbProductMasterDataClient dhbProductMasterDataClient(
             TrustedContextSigner signer,
             ObjectMapper objectMapper,
-            @Value("${rigour.integration.base-url:http://localhost:26882}")
+            @Value("${rigour.integration.base-url:http://rigour-integration-migration-service}")
                     String integrationBaseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new HttpDhbProductMasterDataClient(
-                RestClient.builder().requestFactory(requestFactory),
+                restClientBuilder.requestFactory(requestFactory),
                 signer,
                 objectMapper,
                 integrationBaseUrl);
@@ -75,19 +78,23 @@ public class ErpInfrastructureConfiguration {
     @Bean
     BusinessDictionaryBatchClient businessDictionaryBatchClient(
             TrustedContextSigner signer,
-            @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            @Value("${rigour.business-settings.base-url:http://rigour-business-settings-service}")
+                    String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new BusinessDictionaryBatchClient(
-                RestClient.builder().requestFactory(requestFactory), signer, baseUrl);
+                restClientBuilder.requestFactory(requestFactory), signer, baseUrl);
     }
 
     @Bean(destroyMethod = "close")
     ConnectorSyncLeaseClient connectorSyncLeaseClient(
             TrustedContextSigner signer,
-            @Value("${rigour.integration.base-url:http://localhost:26882}") String baseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            @Value("${rigour.integration.base-url:http://rigour-integration-migration-service}")
+                    String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new ConnectorSyncLeaseClient(
-                RestClient.builder().requestFactory(requestFactory),
+                restClientBuilder.requestFactory(requestFactory),
                 signer,
                 baseUrl,
                 "rigour-erp-core-service");
@@ -96,10 +103,12 @@ public class ErpInfrastructureConfiguration {
     @Bean
     ExternalObjectMappingClient externalObjectMappingClient(
             TrustedContextSigner signer,
-            @Value("${rigour.integration.base-url:http://localhost:26882}") String baseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            @Value("${rigour.integration.base-url:http://rigour-integration-migration-service}")
+                    String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new ExternalObjectMappingClient(
-                RestClient.builder().requestFactory(requestFactory),
+                restClientBuilder.requestFactory(requestFactory),
                 signer,
                 baseUrl,
                 "rigour-erp-core-service");
@@ -109,11 +118,12 @@ public class ErpInfrastructureConfiguration {
     DhbSupplyDataClient dhbSupplyDataClient(
             TrustedContextSigner signer,
             ObjectMapper objectMapper,
-            @Value("${rigour.integration.base-url:http://localhost:26882}")
+            @Value("${rigour.integration.base-url:http://rigour-integration-migration-service}")
                     String integrationBaseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new HttpDhbSupplyDataClient(
-                RestClient.builder().requestFactory(requestFactory),
+                restClientBuilder.requestFactory(requestFactory),
                 signer,
                 objectMapper,
                 integrationBaseUrl);
@@ -122,21 +132,23 @@ public class ErpInfrastructureConfiguration {
     @Bean
     DhbProductSyncTargetDiscoveryClient dhbProductSyncTargetDiscoveryClient(
             TrustedContextSigner signer,
-            @Value("${rigour.integration.base-url:http://localhost:26882}")
+            @Value("${rigour.integration.base-url:http://rigour-integration-migration-service}")
                     String integrationBaseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new HttpDhbProductSyncTargetDiscoveryClient(
-                RestClient.builder().requestFactory(requestFactory), signer, integrationBaseUrl);
+                restClientBuilder.requestFactory(requestFactory), signer, integrationBaseUrl);
     }
 
     @Bean
     DhbSupplySyncTargetDiscoveryClient dhbSupplySyncTargetDiscoveryClient(
             TrustedContextSigner signer,
-            @Value("${rigour.integration.base-url:http://localhost:26882}")
+            @Value("${rigour.integration.base-url:http://rigour-integration-migration-service}")
                     String integrationBaseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new HttpDhbSupplySyncTargetDiscoveryClient(
-                RestClient.builder().requestFactory(requestFactory), signer, integrationBaseUrl);
+                restClientBuilder.requestFactory(requestFactory), signer, integrationBaseUrl);
     }
 
     private static void positive(Duration value, String name) {
@@ -144,7 +156,7 @@ public class ErpInfrastructureConfiguration {
                 || value.isZero()
                 || value.isNegative()
                 || value.compareTo(Duration.ofMinutes(2)) > 0) {
-            throw new IllegalStateException("ERP Integration " + name + " 必须在1ms到120s之间");
+            throw new IllegalStateException("ERP Integration " + name + "必须在1ms到120s之间");
         }
     }
 }

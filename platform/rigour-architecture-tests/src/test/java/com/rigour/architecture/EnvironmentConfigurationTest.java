@@ -21,14 +21,16 @@ class EnvironmentConfigurationTest {
     Path temporary;
 
     @Test
-    void everyApplicationUsesDesktopDevWithoutExternalFilesOrRegistration() throws Exception {
+    void everyApplicationRegistersToSharedDevWithoutExternalFiles() throws Exception {
         List<Path> resources = applicationResources();
         assertEquals(11, resources.size());
         for (Path resource : resources) {
             var env = load(resource, "dev");
             assertEquals("192.168.12.7:18848", env.getProperty("spring.cloud.nacos.server-addr"));
-            assertEquals("false", env.getProperty("spring.cloud.nacos.discovery.register-enabled"));
-            assertEquals("false", env.getProperty("spring.cloud.nacos.config.enabled"));
+            assertEquals("true", env.getProperty("spring.cloud.nacos.discovery.register-enabled"),
+                    "DEV 统一注册到共享命名空间，服务间按服务名解析实例");
+            assertEquals("true", env.getProperty("spring.cloud.nacos.config.enabled"),
+                    "DEV 通过 Nacos 配置中心加载团队动态参数");
             boolean migrations = Files.isDirectory(resource.resolve("db/migration"));
             assertEquals(migrations ? "true" : "false", env.getProperty("spring.flyway.enabled"));
             if (migrations) {
@@ -40,8 +42,13 @@ class EnvironmentConfigurationTest {
                 assertEquals("false", env.getProperty("spring.flyway.baseline-on-migrate"));
                 assertEquals("false", env.getProperty("spring.flyway.out-of-order"));
             }
-            assertFalse(Files.readString(resource.resolve("application-dev.yml")).contains("spring.config.import"));
-            assertNull(env.getProperty("spring.config.import"), "DEV不依赖额外配置文件");
+            String configImport = env.getProperty("spring.config.import");
+            assertNotNull(configImport, "DEV 通过 Nacos 配置中心加载动态参数");
+            assertTrue(configImport.contains("optional:nacos:rigour-common.yml"),
+                    "团队共享配置必须是 optional 导入，缺失不得阻断启动");
+            assertTrue(configImport.contains(
+                            "optional:nacos:" + env.getProperty("spring.application.name") + ".yml"),
+                    "每服务可选 dataId 必须是 optional 导入");
             assertNotNull(env.getProperty("spring.application.name"));
             if (!resource.toString().contains("gateway-server")) {
                 assertTrue(env.getProperty("spring.datasource.url").startsWith("jdbc:mysql://192.168.12.7:13306/rigour_"));
@@ -68,7 +75,11 @@ class EnvironmentConfigurationTest {
             assertEquals("28000", env.getProperty("server.port"));
             assertEquals("jdbc:mysql://localhost:3306/personal_test", env.getProperty("spring.datasource.url"));
             assertEquals("192.168.12.7:18848", env.getProperty("spring.cloud.nacos.server-addr"));
-            assertEquals("false", env.getProperty("spring.cloud.nacos.discovery.register-enabled"));
+            assertEquals("true", env.getProperty("spring.cloud.nacos.discovery.register-enabled"),
+                    "local 继承 dev 的注册行为，本机实例进入共享命名空间");
+            assertEquals(env.getProperty("spring.cloud.nacos.config.namespace"),
+                    env.getProperty("spring.cloud.nacos.discovery.namespace"),
+                    "配置中心与注册中心必须使用同一命名空间，避免读到其他环境的动态参数");
             if (Files.isDirectory(source.resolve("db/migration"))) {
                 assertEquals("true", env.getProperty("spring.flyway.enabled"));
                 assertNull(env.getProperty("spring.flyway.url"),

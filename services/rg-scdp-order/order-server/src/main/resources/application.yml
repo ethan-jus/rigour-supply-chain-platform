@@ -7,7 +7,12 @@ spring:
     # 同时作为Nacos Data ID前缀，DEV会读取 rigour-order-center-service.yaml。
     name: rigour-order-center-service
   profiles:
-    active: dev
+    active: local
+  servlet:
+    multipart:
+      # 发票附件单文件上限略高于业务校验（10MB），让超限返回业务错误而不是框架错误。
+      max-file-size: ${RIGOUR_ORDER_INVOICE_MAX_FILE_SIZE:12MB}
+      max-request-size: ${RIGOUR_ORDER_INVOICE_MAX_REQUEST_SIZE:60MB}
 
 management:
   endpoints:
@@ -36,10 +41,10 @@ mybatis-plus:
 rigour:
   erp:
     # Order一键销售出库只调用ERP版本化HTTP契约，不访问ERP数据库。
-    base-url: ${RIGOUR_ERP_BASE_URL:http://localhost:26884}
+    base-url: ${RIGOUR_ERP_BASE_URL:http://rigour-erp-core-service}
   hr:
     # Order列表按员工编码查询HR员工主档展示名；业务表只保存employee_code。
-    base-url: ${RIGOUR_HR_BASE_URL:http://localhost:26889}
+    base-url: ${RIGOUR_HR_BASE_URL:http://rigour-hr-payroll-service}
   order:
     http:
       # Order对下游ERP的连接和读取超时；订货宝同步统一收口到Integration编排器。
@@ -50,14 +55,18 @@ rigour:
       url-ttl: ${RIGOUR_ORDER_FUND_ATTACHMENT_URL_TTL:10m}
       additional-object-prefixes:
         - ${RIGOUR_ORDER_FEISHU_ATTACHMENT_COS_OBJECT_PREFIX:feishu-attachments}
+        # 发票附件与资金附件共用同一私桶与凭据，只按目录前缀隔离。
+        - ${RIGOUR_ORDER_INVOICE_ATTACHMENT_COS_OBJECT_PREFIX:order-invoices}
       cos:
         enabled: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_ENABLED:false}
         object-prefix: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_OBJECT_PREFIX:fund-attachments}
-        region:
-        bucket:
-        secret-id: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SECRET_ID:}
-        secret-key: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SECRET_KEY:}
-        session-token: ${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SESSION_TOKEN:}
+        # region/bucket 是非敏感资源标识，全供应链共用同一 COS 桶。
+        region: ${RIGOUR_COS_REGION:ap-beijing}
+        bucket: ${RIGOUR_COS_BUCKET:rigour-sales-recordings-1361731487}
+        # 全供应链共用一套 COS 凭据（RIGOUR_COS_*）；服务专用旧变量名兼容回退。
+        secret-id: ${RIGOUR_COS_SECRET_ID:${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SECRET_ID:}}
+        secret-key: ${RIGOUR_COS_SECRET_KEY:${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SECRET_KEY:}}
+        session-token: ${RIGOUR_COS_SESSION_TOKEN:${RIGOUR_ORDER_FUND_ATTACHMENT_COS_SESSION_TOKEN:}}
         connection-timeout-ms: 5000
         socket-timeout-ms: 30000
   context:

@@ -1,6 +1,7 @@
 package com.rigour.integration.infrastructure.config;
 
 import com.rigour.integration.application.port.out.CrmDhbDomainSyncClient;
+import com.rigour.integration.application.port.out.CrmCustomerAttributionClient;
 import com.rigour.integration.application.port.out.CrmCustomerProjectionClient;
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
 import com.rigour.integration.application.port.out.DhbObjectCheckpointStore;
@@ -35,6 +36,7 @@ import com.rigour.integration.infrastructure.dhb.DhbClientAdapter;
 import com.rigour.integration.infrastructure.dhb.DhbSecretResolver;
 import com.rigour.integration.infrastructure.dhb.EnvDhbSecretResolver;
 import com.rigour.integration.infrastructure.domain.HttpCrmDhbDomainSyncClient;
+import com.rigour.integration.infrastructure.domain.HttpCrmCustomerAttributionClient;
 import com.rigour.integration.infrastructure.domain.HttpCrmCustomerProjectionClient;
 import com.rigour.integration.infrastructure.domain.HttpErpDhbDomainSyncClient;
 import com.rigour.integration.infrastructure.domain.HttpErpProductProjectionClient;
@@ -72,11 +74,8 @@ import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusF
 import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusProductMediaSyncStore;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.settings.client.BusinessDictionaryBatchClient;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.mybatis.spring.annotation.MapperScan;
@@ -86,8 +85,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.Environment;
-import org.springframework.core.env.Profiles;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -107,12 +104,6 @@ public final class IntegrationInfrastructureConfiguration {
     @ConditionalOnMissingBean(DhbSecretResolver.class)
     DhbSecretResolver dhbSecretResolver() {
         return new EnvDhbSecretResolver();
-    }
-
-    @Bean
-    @ConditionalOnMissingBean(RestClient.Builder.class)
-    RestClient.Builder dhbRestClientBuilder() {
-        return RestClient.builder();
     }
 
     @Bean
@@ -276,43 +267,44 @@ public final class IntegrationInfrastructureConfiguration {
             BusinessDictionaryBatchClient businessDictionaryBatchClient,
             ProductMediaStorage productMediaStorage,
             DhbAttachmentObjectKeyFactory dhbAttachmentObjectKeyFactory,
+            CrmCustomerAttributionClient crmCustomerAttributionClient,
             @Value("${rigour.integration.dhb.order.detail-concurrency:3}") int detailConcurrency) {
         return new DhbOrderSyncService(syncStore, client, orderSalesOrderProjectionClient,
                 erpStockOutProjectionClient, hrDhbStaffSyncClient,
                 businessDictionaryBatchClient, detailConcurrency,
-                productMediaStorage, dhbAttachmentObjectKeyFactory);
+                productMediaStorage, dhbAttachmentObjectKeyFactory, crmCustomerAttributionClient);
     }
 
     @Bean
     OrderSalesOrderProjectionClient orderSalesOrderProjectionClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.order.base-url:http://localhost:26885}") String orderBaseUrl,
-            Environment environment) {
+            @Value("${rigour.order.base-url:http://rigour-order-center-service}") String orderBaseUrl,
+            RestClient.Builder restClientBuilder) {
         return new HttpOrderSalesOrderProjectionClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
-                localLoopbackUrl(environment, orderBaseUrl, 26885));
+                restClientBuilder.requestFactory(domainSyncRequestFactory), signer,
+                orderBaseUrl);
     }
 
     @Bean
     BusinessDictionaryBatchClient businessDictionaryBatchClient(
             TrustedContextSigner signer,
-            @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl,
+            @Value("${rigour.business-settings.base-url:http://rigour-business-settings-service}")
+                    String baseUrl,
             @Value("${rigour.integration.dictionary-http.connect-timeout:3s}") Duration connectTimeout,
             @Value("${rigour.integration.dictionary-http.read-timeout:30s}") Duration readTimeout,
-            Environment environment) {
+            RestClient.Builder restClientBuilder) {
         return new BusinessDictionaryBatchClient(
-                RestClient.builder().requestFactory(requestFactory(connectTimeout, readTimeout)),
-                signer, localLoopbackUrl(environment, baseUrl, 26892));
+                restClientBuilder.requestFactory(requestFactory(connectTimeout, readTimeout)),
+                signer, baseUrl);
     }
 
     @Bean
     ErpStockOutProjectionClient erpStockOutProjectionClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.erp.base-url:http://localhost:26884}") String erpBaseUrl,
-            Environment environment) {
+            @Value("${rigour.erp.base-url:http://rigour-erp-core-service}") String erpBaseUrl,
+            RestClient.Builder restClientBuilder) {
         return new HttpErpStockOutProjectionClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
-                localLoopbackUrl(environment, erpBaseUrl, 26884));
+                restClientBuilder.requestFactory(domainSyncRequestFactory), signer, erpBaseUrl);
     }
 
     @Bean
@@ -332,85 +324,68 @@ public final class IntegrationInfrastructureConfiguration {
     @Bean
     ErpDhbDomainSyncClient erpDhbDomainSyncClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.erp.base-url:http://localhost:26884}") String erpBaseUrl,
-            Environment environment) {
+            @Value("${rigour.erp.base-url:http://rigour-erp-core-service}") String erpBaseUrl,
+            RestClient.Builder restClientBuilder) {
         return new HttpErpDhbDomainSyncClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
-                localLoopbackUrl(environment, erpBaseUrl, 26884));
+                restClientBuilder.requestFactory(domainSyncRequestFactory), signer, erpBaseUrl);
     }
 
     @Bean
     CrmDhbDomainSyncClient crmDhbDomainSyncClient(
             TrustedContextSigner signer,
-            @Value("${rigour.crm.base-url:http://localhost:26883}") String crmBaseUrl,
+            @Value("${rigour.crm.base-url:http://rigour-merchant-crm-service}") String crmBaseUrl,
             @Value("${rigour.integration.crm-sync-http.connect-timeout:5s}") Duration connectTimeout,
             @Value("${rigour.integration.crm-sync-http.read-timeout:600s}") Duration readTimeout,
-            Environment environment) {
+            RestClient.Builder restClientBuilder) {
         // Initial customer/address reconciliation can exceed the normal domain request timeout.
         return new HttpCrmDhbDomainSyncClient(
-                RestClient.builder().requestFactory(requestFactory(connectTimeout, readTimeout)), signer,
-                localLoopbackUrl(environment, crmBaseUrl, 26883));
+                restClientBuilder.requestFactory(requestFactory(connectTimeout, readTimeout)), signer,
+                crmBaseUrl);
     }
 
     @Bean
     HrDhbStaffSyncClient hrDhbStaffSyncClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.hr.base-url:http://localhost:26889}") String hrBaseUrl,
-            Environment environment) {
+            @Value("${rigour.hr.base-url:http://rigour-hr-payroll-service}") String hrBaseUrl,
+            RestClient.Builder restClientBuilder) {
         return new HttpHrDhbStaffSyncClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
-                localLoopbackUrl(environment, hrBaseUrl, 26889));
+                restClientBuilder.requestFactory(domainSyncRequestFactory), signer, hrBaseUrl);
     }
 
     @Bean
     HrEmployeeProjectionClient hrEmployeeProjectionClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.hr.base-url:http://localhost:26889}") String hrBaseUrl,
-            Environment environment) {
+            @Value("${rigour.hr.base-url:http://rigour-hr-payroll-service}") String hrBaseUrl,
+            RestClient.Builder restClientBuilder) {
         return new HttpHrEmployeeProjectionClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
-                localLoopbackUrl(environment, hrBaseUrl, 26889));
+                restClientBuilder.requestFactory(domainSyncRequestFactory), signer, hrBaseUrl);
     }
 
     @Bean
     CrmCustomerProjectionClient crmCustomerProjectionClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.crm.base-url:http://localhost:26883}") String crmBaseUrl,
-            Environment environment) {
+            @Value("${rigour.crm.base-url:http://rigour-merchant-crm-service}") String crmBaseUrl,
+            RestClient.Builder restClientBuilder) {
         return new HttpCrmCustomerProjectionClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
-                localLoopbackUrl(environment, crmBaseUrl, 26883));
+                restClientBuilder.requestFactory(domainSyncRequestFactory), signer, crmBaseUrl);
+    }
+
+    @Bean
+    CrmCustomerAttributionClient crmCustomerAttributionClient(
+            SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
+            @Value("${rigour.crm.base-url:http://rigour-merchant-crm-service}") String crmBaseUrl,
+            RestClient.Builder restClientBuilder) {
+        return new HttpCrmCustomerAttributionClient(
+                restClientBuilder.requestFactory(domainSyncRequestFactory), signer, crmBaseUrl);
     }
 
     @Bean
     ErpProductProjectionClient erpProductProjectionClient(
             SimpleClientHttpRequestFactory domainSyncRequestFactory, TrustedContextSigner signer,
-            @Value("${rigour.erp.base-url:http://localhost:26884}") String erpBaseUrl,
-            Environment environment) {
+            @Value("${rigour.erp.base-url:http://rigour-erp-core-service}") String erpBaseUrl,
+            RestClient.Builder restClientBuilder) {
         return new HttpErpProductProjectionClient(
-                RestClient.builder().requestFactory(domainSyncRequestFactory), signer,
-                localLoopbackUrl(environment, erpBaseUrl, 26884));
-    }
-
-    static String localLoopbackUrl(Environment environment, String configuredUrl, int localPort) {
-        if (!environment.acceptsProfiles(Profiles.of("local")) || configuredUrl == null || configuredUrl.isBlank()) {
-            return configuredUrl;
-        }
-        try {
-            URI uri = new URI(configuredUrl);
-            if (!isServiceDiscoveryHost(uri.getHost())) return configuredUrl;
-            String scheme = uri.getScheme() == null ? "http" : uri.getScheme();
-            return new URI(scheme, uri.getUserInfo(), "127.0.0.1",
-                    localPort, uri.getPath(), uri.getQuery(), uri.getFragment()).toString();
-        } catch (URISyntaxException ignored) {
-            return configuredUrl;
-        }
-    }
-
-    private static boolean isServiceDiscoveryHost(String host) {
-        if (host == null || host.isBlank()) return false;
-        String normalized = host.toLowerCase(Locale.ROOT);
-        return normalized.startsWith("rigour-") && normalized.endsWith("-service");
+                restClientBuilder.requestFactory(domainSyncRequestFactory), signer, erpBaseUrl);
     }
 
     @Bean

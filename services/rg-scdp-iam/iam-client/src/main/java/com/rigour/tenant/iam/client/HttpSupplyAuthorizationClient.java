@@ -18,7 +18,7 @@ public final class HttpSupplyAuthorizationClient implements SupplyAuthorizationC
     private final TrustedContextSigner signer;
     private final URI base;
 
-    public HttpSupplyAuthorizationClient(TrustedContextSigner signer, String baseUrl) {
+    public HttpSupplyAuthorizationClient(TrustedContextSigner signer, String baseUrl, RestClient.Builder restClientBuilder) {
         this.signer = signer;
         this.base = URI.create(baseUrl.replaceAll("/+$", ""));
         if (!Set.of("http", "https").contains(base.getScheme()) || base.getUserInfo() != null)
@@ -27,7 +27,7 @@ public final class HttpSupplyAuthorizationClient implements SupplyAuthorizationC
                 new JdkClientHttpRequestFactory(
                         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build());
         factory.setReadTimeout(Duration.ofSeconds(5));
-        this.client = RestClient.builder().requestFactory(factory).build();
+        this.client = restClientBuilder.requestFactory(factory).build();
     }
 
     @Override

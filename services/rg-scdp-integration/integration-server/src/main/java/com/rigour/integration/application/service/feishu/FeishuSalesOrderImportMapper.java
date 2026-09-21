@@ -27,6 +27,8 @@ final class FeishuSalesOrderImportMapper {
     static final String ORDER_TABLE_CODE = "FEISHU_SALES_ORDER";
     static final String ORDER_LINE_TABLE_CODE = "FEISHU_SALES_ORDER_LINE";
     static final String TABLE_CODE = ORDER_TABLE_CODE;
+    /** 明细表「数量(箱)」对应的内部单位编码（PRODUCT_UNIT 字典）。 */
+    private static final String BOX_UNIT_CODE = "BOX";
     private static final ZoneId DEFAULT_ZONE = ZoneId.of("Asia/Shanghai");
     private static final Pattern CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
     private static final Pattern COMPACT_SOURCE_NO = Pattern.compile("([A-Za-z]{1,12}\\d{6,})");
@@ -167,8 +169,16 @@ final class FeishuSalesOrderImportMapper {
         Long variantId = longValue(values, "规格ID", "商品规格ID", "productVariantId", "内部规格ID");
         if (variantId == null && product != null) variantId = product.productVariantId();
         String unitCode = codeValue(value(values, "单位编码", "unitCode", "内部单位编码"));
-        if (unitCode == null && product != null) unitCode = codeValue(product.unitCode());
         BigDecimal quantity = decimal(values, "数量", "购买数量", "数量(箱)", "数量（箱）", "销售数量");
+        // 明细表「数量(箱)」列按商品中包装计数：只有中包装就是箱的商品才落 BOX，
+        // 否则回到商品自身单位，避免把「个/件」的商品写成箱。
+        if (unitCode == null
+                && product != null
+                && BOX_UNIT_CODE.equalsIgnoreCase(codeValue(product.middleUnitCode()))
+                && decimal(values, "数量(箱)", "数量（箱）") != null) {
+            unitCode = BOX_UNIT_CODE;
+        }
+        if (unitCode == null && product != null) unitCode = codeValue(product.unitCode());
         if (quantity == null) blocking.add("数量");
         BigDecimal unitPrice = unitPrice(values, quantity);
         if (unitPrice == null) blocking.add("单价/小计");
@@ -703,7 +713,7 @@ final class FeishuSalesOrderImportMapper {
 
     record ProductMapping(Long productId, Long productVariantId, String productCode,
                           String variantCode, String productName, String specification,
-        String unitCode) {
+        String unitCode, String middleUnitCode) {
     }
 
     record EmployeeMapping(String employeeCode, String employeeName) {

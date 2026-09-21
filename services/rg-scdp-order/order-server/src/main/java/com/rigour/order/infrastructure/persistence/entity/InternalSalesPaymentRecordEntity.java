@@ -16,6 +16,10 @@ public class InternalSalesPaymentRecordEntity {
     private String connectorId;
     private String sourceSystemCode;
     private String sourceDocumentNo;
+    private LocalDateTime sourceCreatedAt;
+    private LocalDateTime sourceUpdatedAt;
+    private String sourceModifierId;
+    private String sourceModifierName;
     private Long orderId;
     private String salesOrderNoSnapshot;
     private Long customerId;
@@ -34,6 +38,8 @@ public class InternalSalesPaymentRecordEntity {
     private LocalDateTime createdTime;
     private String updatedBy;
     private LocalDateTime updatedTime;
+    private String syncedBy;
+    private LocalDateTime syncedAt;
     private Integer deleted;
 
     public Long getId() { return id; }
@@ -48,6 +54,14 @@ public class InternalSalesPaymentRecordEntity {
     public void setSourceSystemCode(String sourceSystemCode) { this.sourceSystemCode = sourceSystemCode; }
     public String getSourceDocumentNo() { return sourceDocumentNo; }
     public void setSourceDocumentNo(String sourceDocumentNo) { this.sourceDocumentNo = sourceDocumentNo; }
+    public LocalDateTime getSourceCreatedAt() { return sourceCreatedAt; }
+    public void setSourceCreatedAt(LocalDateTime sourceCreatedAt) { this.sourceCreatedAt = sourceCreatedAt; }
+    public LocalDateTime getSourceUpdatedAt() { return sourceUpdatedAt; }
+    public void setSourceUpdatedAt(LocalDateTime sourceUpdatedAt) { this.sourceUpdatedAt = sourceUpdatedAt; }
+    public String getSourceModifierId() { return sourceModifierId; }
+    public void setSourceModifierId(String sourceModifierId) { this.sourceModifierId = sourceModifierId; }
+    public String getSourceModifierName() { return sourceModifierName; }
+    public void setSourceModifierName(String sourceModifierName) { this.sourceModifierName = sourceModifierName; }
     public Long getOrderId() { return orderId; }
     public void setOrderId(Long orderId) { this.orderId = orderId; }
     public String getSalesOrderNoSnapshot() { return salesOrderNoSnapshot; }
@@ -84,6 +98,10 @@ public class InternalSalesPaymentRecordEntity {
     public void setUpdatedBy(String updatedBy) { this.updatedBy = updatedBy; }
     public LocalDateTime getUpdatedTime() { return updatedTime; }
     public void setUpdatedTime(LocalDateTime updatedTime) { this.updatedTime = updatedTime; }
+    public String getSyncedBy() { return syncedBy; }
+    public void setSyncedBy(String syncedBy) { this.syncedBy = syncedBy; }
+    public LocalDateTime getSyncedAt() { return syncedAt; }
+    public void setSyncedAt(LocalDateTime syncedAt) { this.syncedAt = syncedAt; }
     public Integer getDeleted() { return deleted; }
     public void setDeleted(Integer deleted) { this.deleted = deleted; }
 }

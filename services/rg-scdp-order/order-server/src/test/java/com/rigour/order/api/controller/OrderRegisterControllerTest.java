@@ -31,7 +31,7 @@ class OrderRegisterControllerTest {
     @Test
     void exportPeriodWritesBomHeaderAndEscapesLabels() {
         when(service.periodStatistics(
-                        any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                        any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(
                         new PeriodStatisticsView(
                                 LocalDate.parse("2026-09-01"),
@@ -72,6 +72,7 @@ class OrderRegisterControllerTest {
                         null,
                         null,
                         null,
+                        null,
                         null);
 
         byte[] body = response.getBody();
@@ -100,7 +101,7 @@ class OrderRegisterControllerTest {
     @Test
     void exportPeriodForwardsEveryFilterToStatistics() {
         when(service.periodStatistics(
-                        any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                        any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(
                         new PeriodStatisticsView(
                                 LocalDate.parse("2026-09-01"),
@@ -117,6 +118,7 @@ class OrderRegisterControllerTest {
                 "HZ",
                 "EMP-1",
                 7L,
+                false,
                 9L,
                 "乔氏台球",
                 "D-9");
@@ -130,6 +132,7 @@ class OrderRegisterControllerTest {
                         eq("HZ"),
                         eq("EMP-1"),
                         eq(7L),
+                        eq(false),
                         eq(9L),
                         eq("乔氏台球"),
                         eq("D-9"));

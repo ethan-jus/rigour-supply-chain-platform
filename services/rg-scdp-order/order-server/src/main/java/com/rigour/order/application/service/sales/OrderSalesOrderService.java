@@ -616,7 +616,10 @@ public final class OrderSalesOrderService {
             throw conflict("只有外部来源销售订单允许更新来源状态");
         }
         String sourceStatusCode = text(command.sourceStatusCode(), 64, "sourceStatusCode");
-        if (Objects.equals(current.sourceStatusCode(), sourceStatusCode)) {
+        String businessStatusCode =
+                businessStatusForSource(sourceStatusCode, current.orderStatusCode());
+        if (Objects.equals(current.sourceStatusCode(), sourceStatusCode)
+                && Objects.equals(current.orderStatusCode(), businessStatusCode)) {
             return withDetailEnrichment(actor, current);
         }
         SalesOrderDetailView updated =
@@ -624,6 +627,7 @@ public final class OrderSalesOrderService {
                         tenantId,
                         current.id(),
                         sourceStatusCode,
+                        businessStatusCode,
                         command.revision(),
                         OrderAuditActors.writeActor(actor));
         updated = withDetailEnrichment(actor, updated);
@@ -661,13 +665,14 @@ public final class OrderSalesOrderService {
         updated = withDetailEnrichment(actor, updated);
         log.info(
                 "Order销售订单来源投影资料更新完成 tenantId={} salesOrderId={} orderNo={} sourceStatusCode={}"
-                        + " sourceCreatorName={} ownerEmployeeCode={} revision={} actorId={}",
+                        + " sourceCreatorName={} ownerEmployeeCode={} regionCode={} revision={} actorId={}",
                 tenantId,
                 updated.id(),
                 updated.orderNo(),
                 value(updated.sourceStatusCode()),
                 value(updated.sourceCreatorName()),
                 value(updated.ownerEmployeeCode()),
+                value(updated.regionCode()),
                 updated.revision(),
                 actor.principalId());
         return updated;
@@ -1180,7 +1185,11 @@ public final class OrderSalesOrderService {
                         100,
                         "ownerEmployeeNameSnapshot"),
                 orderDate,
-                initialOrderStatus(sourceSystemCode, command.submit(), dataQuality),
+                initialOrderStatus(
+                        sourceSystemCode,
+                        text(command.sourceStatusCode(), 64, "sourceStatusCode"),
+                        command.submit(),
+                        dataQuality),
                 code(command.orderTypeCode(), "orderTypeCode", false),
                 code(command.paymentMethodCode(), "paymentMethodCode", false),
                 voucherKeys(command.paymentVoucherKeys()),
@@ -1192,7 +1201,13 @@ public final class OrderSalesOrderService {
                 payableAmount,
                 lines,
                 text(command.remark(), 1000, "remark"),
-                update ? command.revision() : 0);
+                update ? command.revision() : 0,
+                command.sourceCreatedAt(),
+                command.sourceUpdatedAt(),
+                text(command.sourceModifierId(), 80, "sourceModifierId"),
+                text(command.sourceModifierName(), 100, "sourceModifierName"),
+                text(command.syncedBy(), 50, "syncedBy"),
+                command.syncedAt());
     }
 
     private static Instant orderBusinessDate(String sourceSystemCode, Instant orderDate) {
@@ -1219,6 +1234,14 @@ public final class OrderSalesOrderService {
                         command.ownerSalesName(),
                         command.ownerEmployeeCode(),
                         command.ownerEmployeeNameSnapshot());
+        // 来源地区只补空：已有归属的订单不能被来源同步改写。
+        String orderStatusCode =
+                businessStatusForSource(sourceStatusCode, current.orderStatusCode());
+        String requestedRegion = text(command.regionCode(), 128, "regionCode");
+        String regionCode =
+                current.regionCode() == null || current.regionCode().isBlank()
+                        ? first(requestedRegion, current.regionCode())
+                        : current.regionCode();
         return new SalesOrderSourceProjectionWrite(
                 sourceStatusCode,
                 hasCreator
@@ -1247,7 +1270,15 @@ public final class OrderSalesOrderService {
                                 100,
                                 "ownerEmployeeNameSnapshot")
                         : current.ownerEmployeeNameSnapshot(),
-                command.revision());
+                regionCode,
+                orderStatusCode,
+                command.revision(),
+                command.sourceCreatedAt(),
+                command.sourceUpdatedAt(),
+                text(command.sourceModifierId(), 80, "sourceModifierId"),
+                text(command.sourceModifierName(), 100, "sourceModifierName"),
+                text(command.syncedBy(), 50, "syncedBy"),
+                command.syncedAt());
     }
 
     private static boolean sourceProjectionSame(
@@ -1261,7 +1292,22 @@ public final class OrderSalesOrderService {
                 && Objects.equals(current.ownerSalesName(), expected.ownerSalesName())
                 && Objects.equals(current.ownerEmployeeCode(), expected.ownerEmployeeCode())
                 && Objects.equals(
-                        current.ownerEmployeeNameSnapshot(), expected.ownerEmployeeNameSnapshot());
+                        current.ownerEmployeeNameSnapshot(), expected.ownerEmployeeNameSnapshot())
+                && Objects.equals(current.regionCode(), expected.regionCode())
+                && Objects.equals(current.orderStatusCode(), expected.orderStatusCode());
+    }
+
+    /**
+     * 来源状态推进到「已完成」时同步推进业务状态；其余来源状态只记录来源口径。
+     *
+     * <p>订货宝等来源单在途时业务状态是「已提交」，来源完成后页面仍应显示「已完成」；
+     * 草稿单保留草稿（资料未补齐），取消走来源取消流程，不在这里处理。</p>
+     */
+    private static String businessStatusForSource(String sourceStatusCode, String currentStatusCode) {
+        if (!sourceCompleted(sourceStatusCode)) return currentStatusCode;
+        return "SUBMITTED".equalsIgnoreCase(currentStatusCode)
+                ? SalesOrderStatus.COMPLETED.code()
+                : currentStatusCode;
     }
 
     private List<SalesOrderLineWrite> lines(
@@ -1398,7 +1444,13 @@ public final class OrderSalesOrderService {
                 command.payableAmount(),
                 command.lines(),
                 command.remark(),
-                command.revision());
+                command.revision(),
+                command.sourceCreatedAt(),
+                command.sourceUpdatedAt(),
+                command.sourceModifierId(),
+                command.sourceModifierName(),
+                command.syncedBy(),
+                command.syncedAt());
     }
 
     private static void requireSameExternalIdentity(
@@ -1496,12 +1548,23 @@ public final class OrderSalesOrderService {
     }
 
     private static String initialOrderStatus(
-            String sourceSystemCode, Boolean submit, DataQuality dataQuality) {
-        if (Boolean.TRUE.equals(submit)) return SalesOrderStatus.SUBMITTED.code();
+            String sourceSystemCode,
+            String sourceStatusCode,
+            Boolean submit,
+            DataQuality dataQuality) {
+        if (Boolean.TRUE.equals(submit)) {
+            return sourceCompleted(sourceStatusCode)
+                    ? SalesOrderStatus.COMPLETED.code()
+                    : SalesOrderStatus.SUBMITTED.code();
+        }
         if (isFeishuSource(sourceSystemCode) && dataQuality != null && dataQuality.complete()) {
             return SalesOrderStatus.COMPLETED.code();
         }
         return SalesOrderStatus.DRAFT.code();
+    }
+
+    private static boolean sourceCompleted(String sourceStatusCode) {
+        return sourceStatusCode != null && "COMPLETED".equalsIgnoreCase(sourceStatusCode.trim());
     }
 
     private static String paymentStatus(String value, boolean required) {
@@ -1648,7 +1711,7 @@ public final class OrderSalesOrderService {
     }
 
     private static HrEmployeeDisplayClient unsupportedHrEmployeeDisplayClient() {
-        return (caller, employeeCodes) -> List.of();
+        return HrEmployeeDisplayClient.NONE;
     }
 
     private static CrmCustomerAreaDisplayClient unsupportedCrmCustomerAreaDisplayClient() {

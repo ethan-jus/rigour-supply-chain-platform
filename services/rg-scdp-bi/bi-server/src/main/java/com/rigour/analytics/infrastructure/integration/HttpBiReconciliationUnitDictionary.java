@@ -32,8 +32,9 @@ public class HttpBiReconciliationUnitDictionary implements BiReconciliationUnitD
 
     @Autowired
     public HttpBiReconciliationUnitDictionary(TrustedContextSigner signer,
-            @Value("${rigour.business-settings.base-url:${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://localhost:26892}}") String baseUrl) {
-        this(defaultBuilder(), signer, baseUrl);
+            @Value("${rigour.business-settings.base-url:${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://rigour-business-settings-service}}") String baseUrl,
+            RestClient.Builder restClientBuilder) {
+        this(timed(restClientBuilder), signer, baseUrl);
     }
 
     HttpBiReconciliationUnitDictionary(RestClient.Builder builder, TrustedContextSigner signer, String baseUrl) {
@@ -46,11 +47,11 @@ public class HttpBiReconciliationUnitDictionary implements BiReconciliationUnitD
         this.signer = signer;
     }
 
-    private static RestClient.Builder defaultBuilder() {
+    private static RestClient.Builder timed(RestClient.Builder builder) {
         var factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(3));
         factory.setReadTimeout(Duration.ofSeconds(10));
-        return RestClient.builder().requestFactory(factory);
+        return builder.requestFactory(factory);
     }
 
     @Override public Map<String, String> productUnits(CallerIdentity actor) {

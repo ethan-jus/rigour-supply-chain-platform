@@ -9,6 +9,9 @@ import java.time.Instant;
 public interface OrderFulfillmentStore {
     OrderFulfillmentQueueView queue(String tenant,int begin,int step,String keyword,String outboundStatus);
     OrderFulfillmentQueueView.Detail detail(String tenant,long id);
+
+    /** 订单客户归属地区编码，用于按地区匹配出库仓库；没有归属地区返回 null。 */
+    String regionCode(String tenant,long id);
     java.util.Set<Long> permittedWarehouseIds(
             CallerIdentity actor, long orderId, java.util.List<Long> candidates);
 

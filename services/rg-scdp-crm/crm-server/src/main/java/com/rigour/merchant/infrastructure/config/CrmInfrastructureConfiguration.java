@@ -65,12 +65,13 @@ public class CrmInfrastructureConfiguration {
     @Bean
     DhbCrmMasterDataClient dhbCrmMasterDataClient(
             TrustedContextSigner signer,
-            @Value("${rigour.integration.base-url:http://localhost:26882}")
+            @Value("${rigour.integration.base-url:http://rigour-integration-migration-service}")
                     String integrationBaseUrl,
             @Value("${rigour.crm.dhb.page-size:100}") int pageSize,
-            SimpleClientHttpRequestFactory requestFactory) {
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new HttpDhbCrmMasterDataClient(
-                RestClient.builder().requestFactory(requestFactory),
+                restClientBuilder.requestFactory(requestFactory),
                 signer,
                 integrationBaseUrl,
                 pageSize);
@@ -79,19 +80,23 @@ public class CrmInfrastructureConfiguration {
     @Bean
     BusinessDictionaryBatchClient businessDictionaryBatchClient(
             TrustedContextSigner signer,
-            @Value("${rigour.business-settings.base-url:http://localhost:26892}") String baseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            @Value("${rigour.business-settings.base-url:http://rigour-business-settings-service}")
+                    String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new BusinessDictionaryBatchClient(
-                RestClient.builder().requestFactory(requestFactory), signer, baseUrl);
+                restClientBuilder.requestFactory(requestFactory), signer, baseUrl);
     }
 
     @Bean(destroyMethod = "close")
     ConnectorSyncLeaseClient connectorSyncLeaseClient(
             TrustedContextSigner signer,
-            @Value("${rigour.integration.base-url:http://localhost:26882}") String baseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            @Value("${rigour.integration.base-url:http://rigour-integration-migration-service}")
+                    String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new ConnectorSyncLeaseClient(
-                RestClient.builder().requestFactory(requestFactory),
+                restClientBuilder.requestFactory(requestFactory),
                 signer,
                 baseUrl,
                 "rigour-merchant-crm-service");
@@ -100,10 +105,12 @@ public class CrmInfrastructureConfiguration {
     @Bean
     ExternalObjectMappingClient externalObjectMappingClient(
             TrustedContextSigner signer,
-            @Value("${rigour.integration.base-url:http://localhost:26882}") String baseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            @Value("${rigour.integration.base-url:http://rigour-integration-migration-service}")
+                    String baseUrl,
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new ExternalObjectMappingClient(
-                RestClient.builder().requestFactory(requestFactory),
+                restClientBuilder.requestFactory(requestFactory),
                 signer,
                 baseUrl,
                 "rigour-merchant-crm-service");
@@ -112,20 +119,22 @@ public class CrmInfrastructureConfiguration {
     @Bean
     DhbCrmSyncTargetDiscoveryClient dhbCrmSyncTargetDiscoveryClient(
             TrustedContextSigner signer,
-            @Value("${rigour.integration.base-url:http://localhost:26882}")
+            @Value("${rigour.integration.base-url:http://rigour-integration-migration-service}")
                     String integrationBaseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new HttpDhbCrmSyncTargetDiscoveryClient(
-                RestClient.builder().requestFactory(requestFactory), signer, integrationBaseUrl);
+                restClientBuilder.requestFactory(requestFactory), signer, integrationBaseUrl);
     }
 
     @Bean
     HrEmployeeDirectoryClient hrEmployeeDirectoryClient(
             TrustedContextSigner signer,
-            @Value("${rigour.hr.base-url:http://localhost:26889}") String hrBaseUrl,
-            SimpleClientHttpRequestFactory requestFactory) {
+            @Value("${rigour.hr.base-url:http://rigour-hr-payroll-service}") String hrBaseUrl,
+            SimpleClientHttpRequestFactory requestFactory,
+            RestClient.Builder restClientBuilder) {
         return new HttpHrEmployeeDirectoryClient(
-                RestClient.builder().requestFactory(requestFactory), signer, hrBaseUrl);
+                restClientBuilder.requestFactory(requestFactory), signer, hrBaseUrl);
     }
 
     @Bean

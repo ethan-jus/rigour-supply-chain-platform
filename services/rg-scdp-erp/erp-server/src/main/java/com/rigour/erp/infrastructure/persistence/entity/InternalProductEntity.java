@@ -42,6 +42,8 @@ public class InternalProductEntity {
     private String bigUnitCode;
     /** 基础单位到大包装单位换算率，如1箱=12桶时为12。 */
     private BigDecimal baseToBigRate;
+    /** 默认统计单位层级：BASE基础/MIDDLE中包装/BIG大包装，空按基础单位。 */
+    private String statisticsUnitLevel;
     /** 起订量。 */
     private BigDecimal minOrderQuantity;
     /** 是否整倍订货。 */
@@ -131,6 +133,8 @@ public class InternalProductEntity {
     public void setBigUnitCode(String bigUnitCode) { this.bigUnitCode = bigUnitCode; }
     public BigDecimal getBaseToBigRate() { return baseToBigRate; }
     public void setBaseToBigRate(BigDecimal baseToBigRate) { this.baseToBigRate = baseToBigRate; }
+    public String getStatisticsUnitLevel() { return statisticsUnitLevel; }
+    public void setStatisticsUnitLevel(String statisticsUnitLevel) { this.statisticsUnitLevel = statisticsUnitLevel; }
     public BigDecimal getMinOrderQuantity() { return minOrderQuantity; }
     public void setMinOrderQuantity(BigDecimal minOrderQuantity) { this.minOrderQuantity = minOrderQuantity; }
     public Boolean getOrderMultipleFlag() { return orderMultipleFlag; }
