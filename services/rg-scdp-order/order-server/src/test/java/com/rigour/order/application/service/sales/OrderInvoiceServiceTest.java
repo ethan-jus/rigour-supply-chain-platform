@@ -288,7 +288,18 @@ class OrderInvoiceServiceTest {
                 null, 1L, orderNo, 200L, "C200", status, "COMPANY", "杭州测试有限公司", "91330100TEST",
                 "NORMAL",
                 null, null, null, null, null, null, new BigDecimal("1000.00"), keys, null,
-                USER_ID.toString(), Instant.parse("2026-09-20T02:00:00Z"), null, null, null, null);
+                USER_ID.toString(), Instant.parse("2026-09-20T02:00:00Z"), null, null, null, null, 1);
+    }
+
+    private static OrderInvoiceRow withRevision(OrderInvoiceRow source, int revision) {
+        return new OrderInvoiceRow(
+                source.id(), source.salesOrderId(), source.orderNo(), source.customerId(),
+                source.customerCode(), source.status(), source.titleType(), source.title(),
+                source.taxNo(), source.invoiceType(), source.bankName(), source.bankAccount(),
+                source.registerAddress(), source.registerPhone(), source.email(), source.remark(),
+                source.amount(), source.attachmentKeys(), source.invoiceNo(), source.appliedBy(),
+                source.appliedAt(), source.invoicedBy(), source.invoicedAt(), source.updatedBy(),
+                source.updatedAt(), revision);
     }
 
     private static OrderInvoiceRow rowWithStatus(OrderInvoiceRow source, String status) {
@@ -299,7 +310,63 @@ class OrderInvoiceServiceTest {
                 source.bankAccount(), source.registerAddress(), source.registerPhone(), source.email(),
                 source.remark(), source.amount(), source.attachmentKeys(), source.invoiceNo(),
                 source.appliedBy(), source.appliedAt(), source.invoicedBy(), source.invoicedAt(),
-                source.updatedBy(), source.updatedAt());
+                source.updatedBy(), source.updatedAt(), source.revision());
+    }
+
+    @Test
+    void completeRejectsWhenStatusChangedByAnotherOperator() {
+        orderExists();
+        TestAuthorizationContext.set(caller("order:invoice:write"));
+        OrderInvoiceView applied = service().apply(applyCommand("A001"));
+
+        // 另一个人先撤回（状态已变），再完成开票命中状态校验
+        service().withdraw(applied.id());
+
+        assertThatThrownBy(
+                        () ->
+                                service().complete(
+                                        applied.id(),
+                                        new OrderInvoiceCompleteCommand(
+                                                "INV-001", Instant.parse("2026-09-21T03:00:00Z"))))
+                .isInstanceOf(BusinessException.class)
+                .extracting(exception -> ((BusinessException) exception).getErrorCode())
+                .isEqualTo(ErrorCode.ORDER_INVOICE_STATE_CONFLICT);
+        assertThat(invoiceStore.rows.get(applied.id()).status()).isEqualTo("REVOKED");
+    }
+
+    @Test
+    void completeRejectsWhenAnotherWriterWinsTheRace() {
+        orderExists();
+        TestAuthorizationContext.set(caller("order:invoice:write"));
+        OrderInvoiceView applied = service().apply(applyCommand("A001"));
+        // 上传附件，满足完成开票的前置条件
+        service().uploadAttachments(
+                applied.id(),
+                List.of(new org.springframework.mock.web.MockMultipartFile(
+                        "files", "invoice.pdf", "application/pdf", new byte[] {1, 2, 3})));
+
+        // 模拟“读完之后、写入之前”另一个人先完成了状态变更（版本 +1）
+        java.util.concurrent.atomic.AtomicBoolean raced =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        invoiceStore.beforeSave =
+                () -> {
+                    OrderInvoiceRow current = invoiceStore.rows.get(applied.id());
+                    invoiceStore.rows.put(
+                            applied.id(), withRevision(current, current.revision() + 1));
+                    invoiceStore.beforeSave = null;
+                    raced.set(true);
+                };
+
+        assertThatThrownBy(
+                        () ->
+                                service().complete(
+                                        applied.id(),
+                                        new OrderInvoiceCompleteCommand(
+                                                "INV-RACE-1", Instant.parse("2026-09-21T03:00:00Z"))))
+                .isInstanceOf(BusinessException.class)
+                .extracting(exception -> ((BusinessException) exception).getErrorCode())
+                .isEqualTo(ErrorCode.CONFLICT);
+        assertThat(raced).isTrue();
     }
 
     private static final class RecordingAttachmentStorage implements InvoiceAttachmentStorage {
@@ -318,6 +385,8 @@ class OrderInvoiceServiceTest {
         private final List<OrderInvoiceProfileRow> profiles = new ArrayList<>();
         private long sequence = 0;
         private long profileSequence = 0;
+        /** 测试钩子：模拟读取之后、写入之前发生的并发写入。 */
+        private Runnable beforeSave;
 
         OrderInvoiceRow insert(OrderInvoiceRow row) {
             sequence += 1;
@@ -329,7 +398,7 @@ class OrderInvoiceServiceTest {
                             row.bankAccount(), row.registerAddress(), row.registerPhone(), row.email(),
                             row.remark(), row.amount(), row.attachmentKeys(), row.invoiceNo(),
                             row.appliedBy(), row.appliedAt(), row.invoicedBy(), row.invoicedAt(),
-                            row.updatedBy(), row.updatedAt());
+                            row.updatedBy(), row.updatedAt(), 1);
             rows.put(sequence, stored);
             return stored;
         }
@@ -451,10 +520,28 @@ class OrderInvoiceServiceTest {
         }
 
         @Override
-        public OrderInvoiceRow save(String tenantId, OrderInvoiceRow row, String actorId) {
+        public OrderInvoiceRow save(
+                String tenantId, OrderInvoiceRow row, String expectedStatus, String actorId) {
             if (row.id() == null) return insert(row);
-            rows.put(row.id(), row);
-            return row;
+            if (beforeSave != null) beforeSave.run();
+            OrderInvoiceRow current = rows.get(row.id());
+            boolean statusMatched =
+                    expectedStatus == null || expectedStatus.isBlank()
+                            || expectedStatus.equals(current == null ? null : current.status());
+            if (current == null || !statusMatched || current.revision() != row.revision()) {
+                throw new BusinessException(ErrorCode.CONFLICT, "发票状态已变化，请刷新后重试", List.of());
+            }
+            OrderInvoiceRow stored =
+                    new OrderInvoiceRow(
+                            row.id(), row.salesOrderId(), row.orderNo(), row.customerId(),
+                            row.customerCode(), row.status(), row.titleType(), row.title(),
+                            row.taxNo(), row.invoiceType(), row.bankName(), row.bankAccount(),
+                            row.registerAddress(), row.registerPhone(), row.email(), row.remark(),
+                            row.amount(), row.attachmentKeys(), row.invoiceNo(), row.appliedBy(),
+                            row.appliedAt(), row.invoicedBy(), row.invoicedAt(), row.updatedBy(),
+                            row.updatedAt(), current.revision() + 1);
+            rows.put(row.id(), stored);
+            return stored;
         }
     }
 }

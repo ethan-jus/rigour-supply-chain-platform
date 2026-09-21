@@ -4,6 +4,8 @@ import com.rigour.order.api.v1.model.OrderInvoiceModels.OrderInvoiceListItemView
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
 import com.rigour.order.application.port.out.OrderInvoiceStore;
 import com.rigour.order.domain.invoice.OrderInvoiceStatus;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -31,7 +33,7 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
                     + "invoice_type,bank_name,"
                     + "bank_account,register_address,register_phone,email,remark,amount,"
                     + "attachment_keys_json,invoice_no,applied_by,applied_at,invoiced_by,invoiced_at,"
-                    + "updated_by,updated_at";
+                    + "updated_by,updated_at,revision";
     private static final String FROM_JOIN =
             "FROM order_invoice inv LEFT JOIN order_sales_order o"
                     + " ON o.tenant_id=inv.tenant_id AND o.id=inv.sales_order_id";
@@ -100,7 +102,8 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
     }
 
     @Override
-    public OrderInvoiceRow save(String tenantId, OrderInvoiceRow row, String actorId) {
+    public OrderInvoiceRow save(
+            String tenantId, OrderInvoiceRow row, String expectedStatus, String actorId) {
         if (row.id() == null) {
             jdbc.update(
                     "INSERT INTO order_invoice (tenant_id,sales_order_id,order_no,customer_id,customer_code,"
@@ -135,35 +138,44 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
                     actorId);
             return findByOrderId(tenantId, row.salesOrderId()).orElseThrow();
         }
-        jdbc.update(
+        boolean guardStatus = expectedStatus != null && !expectedStatus.isBlank();
+        String statusGuard = guardStatus ? " AND status=?" : "";
+        List<Object> updateArgs = new ArrayList<>();
+        updateArgs.add(row.customerId());
+        updateArgs.add(row.customerCode());
+        updateArgs.add(row.status());
+        updateArgs.add(row.titleType());
+        updateArgs.add(row.title());
+        updateArgs.add(row.taxNo());
+        updateArgs.add(row.invoiceType());
+        updateArgs.add(row.bankName());
+        updateArgs.add(row.bankAccount());
+        updateArgs.add(row.registerAddress());
+        updateArgs.add(row.registerPhone());
+        updateArgs.add(row.email());
+        updateArgs.add(row.remark());
+        updateArgs.add(row.amount());
+        updateArgs.add(attachmentJson(row.attachmentKeys()));
+        updateArgs.add(row.invoiceNo());
+        updateArgs.add(row.appliedBy());
+        updateArgs.add(timestamp(row.appliedAt()));
+        updateArgs.add(row.invoicedBy());
+        updateArgs.add(timestamp(row.invoicedAt()));
+        updateArgs.add(actorId);
+        updateArgs.add(tenantId);
+        updateArgs.add(row.id());
+        if (guardStatus) updateArgs.add(expectedStatus);
+        updateArgs.add(row.revision());
+        int updated =
+                jdbc.update(
                 "UPDATE order_invoice SET customer_id=?,customer_code=?,status=?,title_type=?,title=?,tax_no=?,invoice_type=?,"
                         + "bank_name=?,bank_account=?,register_address=?,register_phone=?,email=?,remark=?,"
                         + "amount=?,attachment_keys_json=?,invoice_no=?,applied_by=?,applied_at=?,"
-                        + "invoiced_by=?,invoiced_at=?,updated_by=?,updated_at=UTC_TIMESTAMP(6)"
-                        + " WHERE tenant_id=? AND id=? AND deleted=0",
-                row.customerId(),
-                row.customerCode(),
-                row.status(),
-                row.titleType(),
-                row.title(),
-                row.taxNo(),
-                row.invoiceType(),
-                row.bankName(),
-                row.bankAccount(),
-                row.registerAddress(),
-                row.registerPhone(),
-                row.email(),
-                row.remark(),
-                row.amount(),
-                attachmentJson(row.attachmentKeys()),
-                row.invoiceNo(),
-                row.appliedBy(),
-                timestamp(row.appliedAt()),
-                row.invoicedBy(),
-                timestamp(row.invoicedAt()),
-                actorId,
-                tenantId,
-                row.id());
+                        + "invoiced_by=?,invoiced_at=?,updated_by=?,updated_at=UTC_TIMESTAMP(6),"
+                        + "revision=revision+1"
+                        + " WHERE tenant_id=? AND id=? AND deleted=0" + statusGuard + " AND revision=?",
+                updateArgs.toArray());
+        if (updated != 1) throw conflict("发票状态已变化，请刷新后重试");
         return findById(tenantId, row.id()).orElseThrow();
     }
 
@@ -262,6 +274,10 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
         return values;
     }
 
+    private static BusinessException conflict(String message) {
+        return new BusinessException(ErrorCode.CONFLICT, message, List.of());
+    }
+
     private OrderInvoiceRow mapRow(ResultSet rs, int index) throws SQLException {
         return new OrderInvoiceRow(
                 rs.getLong("id"),
@@ -288,7 +304,8 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
                 rs.getString("invoiced_by"),
                 instant(rs, "invoiced_at"),
                 rs.getString("updated_by"),
-                instant(rs, "updated_at"));
+                instant(rs, "updated_at"),
+                rs.getInt("revision"));
     }
 
     @Override

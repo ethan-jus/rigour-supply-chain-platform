@@ -175,8 +175,9 @@ public class OrderInvoiceService {
                         null,
                         null,
                         actorId,
-                        now);
-        OrderInvoiceView view = toView(tenantId, invoiceStore.save(tenantId, draft, actorId));
+                        now,
+                        existing.map(OrderInvoiceRow::revision).orElse(1));
+        OrderInvoiceView view = toView(tenantId, invoiceStore.save(tenantId, draft, null, actorId));
         rememberCustomerProfile(tenantId, order.customerId(), order.customerCode(), draft, actorId);
         return view;
     }
@@ -241,8 +242,8 @@ public class OrderInvoiceService {
                         row.invoicedBy(),
                         row.invoicedAt(),
                         actorId,
-                        Instant.now());
-        return toView(tenantId, invoiceStore.save(tenantId, updated, actorId));
+                        Instant.now(), row == null ? 1 : row.revision());
+        return toView(tenantId, invoiceStore.save(tenantId, updated, row.status(), actorId));
     }
 
     /** 完成开票：必须有附件并填写发票号码和开票日期。 */
@@ -284,8 +285,8 @@ public class OrderInvoiceService {
                         actorId,
                         invoicedAt,
                         actorId,
-                        Instant.now());
-        OrderInvoiceView view = toView(tenantId, invoiceStore.save(tenantId, updated, actorId));
+                        Instant.now(), row == null ? 1 : row.revision());
+        OrderInvoiceView view = toView(tenantId, invoiceStore.save(tenantId, updated, row.status(), actorId));
         log.info(
                 "订单开票完成 tenantId={} orderNo={} invoiceNo={}",
                 tenantId,
@@ -327,8 +328,8 @@ public class OrderInvoiceService {
                         null,
                         null,
                         actorId,
-                        Instant.now());
-        return toView(tenantId, invoiceStore.save(tenantId, updated, actorId));
+                        Instant.now(), row == null ? 1 : row.revision());
+        return toView(tenantId, invoiceStore.save(tenantId, updated, row.status(), actorId));
     }
 
     private OrderInvoiceRow requireRow(String tenantId, Long id) {

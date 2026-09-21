@@ -34,7 +34,12 @@ public interface OrderInvoiceStore {
     Map<String, Long> statusCounts(String tenantId, InvoicePageCriteria criteria);
 
     /** 新增或更新发票行；id 为空时插入，否则按 id 更新可变字段。 */
-    OrderInvoiceRow save(String tenantId, OrderInvoiceRow row, String actorId);
+    /**
+     * 保存发票行：新建（id 为空）直接插入；更新按 status + revision 原子流转，
+     * 期望状态或版本不命中时抛业务冲突，调用方不得覆盖其他并发结果。
+     */
+    OrderInvoiceRow save(
+            String tenantId, OrderInvoiceRow row, String expectedStatus, String actorId);
 
     record InvoicePageCriteria(
             String status, String orderNo, String customerName, Instant appliedFrom, Instant appliedTo) {
@@ -83,6 +88,8 @@ public interface OrderInvoiceStore {
             String invoicedBy,
             Instant invoicedAt,
             String updatedBy,
-            Instant updatedAt) {
+            Instant updatedAt,
+            /** 乐观锁版本；更新时作为期望版本参与 WHERE 条件。 */
+            int revision) {
     }
 }
