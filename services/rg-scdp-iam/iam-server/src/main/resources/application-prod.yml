@@ -1,58 +1,33 @@
-# 生产独立配置：部署时提供生产参数，缺失则启动失败；绝不回退到DEV数据库。
-# 生产地址和账号尚未指定，此文件是生产配置入口，不代表生产环境已部署。
 spring:
   application:
     name: "rigour-tenant-iam-service"
+
+  # 核心：明确指定去 Nacos 拉取哪个 Data ID 和 Group（必须和 Nacos 里完全一致）
+  config:
+    import:
+      - "nacos:rigour-iam-prod.yaml?group=DEFAULT_GROUP"
+
   cloud:
     nacos:
-      server-addr: "${NACOS_SERVER_ADDR}"
-      username: "${NACOS_USERNAME}"
-      password: "${NACOS_PASSWORD}"
+      server-addr: "127.0.0.1:8848" # 注意不要多写端口
+      username: "nacos"
+      password: "nacos123456"
       discovery:
-        namespace: "${NACOS_NAMESPACE}"
+        namespace: "516560f3-8b30-4975-84cb-c55f89b912ae" # 截图里的命名空间ID
         register-enabled: true
       config:
-        enabled: false
-        import-check:
-          enabled: false
+        enabled: true # 开启配置中心
+        namespace: "516560f3-8b30-4975-84cb-c55f89b912ae" # 截图里的命名空间ID
+        group: "DEFAULT_GROUP"
+        file-extension: "yaml"
+
+  # 系统级开关保留在本地，避免去 Nacos 拉
   flyway:
     enabled: false
-  datasource:
-    url: "${DB_URL}"
-    username: "${DB_USERNAME}"
-    password: "${DB_PASSWORD}"
-  data:
-    redis:
-      host: "${REDIS_HOST}"
-      port: "${REDIS_PORT:6379}"
-      password: "${REDIS_PASSWORD}"
-rigour:
-  context:
-    trust:
-      active-key-id: "v1"
-      keys-base64:
-        v1: "${RIGOUR_CONTEXT_TRUST_KEY_V1}"
-  iam:
-    oidc:
-      server:
-        enabled: true
-        issuer: "${IAM_ISSUER}"
-        allowed-origins:
-          - "${PORTAL_ORIGIN}"
-        allow-insecure-loopback: false
-        allow-insecure-lan: false
-      signing:
-        enabled: true
-      authorization-attributes:
-        enabled: true
-        active-key-version: "v1"
-        keys-base64:
-          v1: "${IAM_OIDC_AUTH_ATTRIBUTES_KEY_V1}"
-        allow-ephemeral-local-key: false
-rocketmq:
-  name-server: "${ROCKETMQ_NAME_SERVER}"
+
 server:
+  port: 26881
   servlet:
     session:
       cookie:
-        secure: true
+        secure: false # 前端是 http 时必须改 false

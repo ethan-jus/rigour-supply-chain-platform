@@ -3,42 +3,28 @@
 spring:
   application:
     name: "rigour-api-gateway"
+  config:
+    import:
+      - "nacos:rigour-api-gateway-prod.yaml?group=DEFAULT_GROUP"
   cloud:
     nacos:
-      server-addr: "${NACOS_SERVER_ADDR}"
-      username: "${NACOS_USERNAME}"
-      password: "${NACOS_PASSWORD}"
+      server-addr: "127.0.0.1:8848"
+      username: "nacos"
+      password: "nacos123456"
       discovery:
-        namespace: "${NACOS_NAMESPACE}"
+        namespace: "516560f3-8b30-4975-84cb-c55f89b912ae"
         register-enabled: true
       config:
-        enabled: false
-        import-check:
-          enabled: false
+        enabled: true # 开启配置中心
+        namespace: "516560f3-8b30-4975-84cb-c55f89b912ae" # 截图里的命名空间ID
+        group: "DEFAULT_GROUP"
+        file-extension: "yaml"
   flyway:
     enabled: false
-rigour:
-  context:
-    trust:
-      active-key-id: "v1"
-      keys-base64:
-        v1: "${RIGOUR_CONTEXT_TRUST_KEY_V1}"
-  gateway:
-    security:
-      enabled: true
-      allow-insecure-http: false
-      allow-insecure-loopback: false
-      issuer: "${IAM_ISSUER}"
-      jwk-set-uri: "${IAM_JWK_SET_URI}"
-      iam-current-token-uri: "${IAM_CURRENT_TOKEN_URI}"
-      current-token-validation-enabled: true
-IAM_SERVICE_URL: "${PROD_IAM_SERVICE_URL}"
-BUSINESS_SETTINGS_SERVICE_URL: "${PROD_BUSINESS_SETTINGS_SERVICE_URL}"
-HR_SERVICE_URL: "${PROD_HR_SERVICE_URL}"
-CRM_SERVICE_URL: "${PROD_CRM_SERVICE_URL}"
-ERP_SERVICE_URL: "${PROD_ERP_SERVICE_URL}"
-ORDER_SERVICE_URL: "${PROD_ORDER_SERVICE_URL}"
-SALES_SERVICE_URL: "${PROD_SALES_SERVICE_URL}"
-AI_SERVICE_URL: "${PROD_AI_SERVICE_URL}"
-BI_SERVICE_URL: "${PROD_BI_SERVICE_URL}"
-INTEGRATION_SERVICE_URL: "${PROD_INTEGRATION_SERVICE_URL}"
+
+server:
+  port: 26880
+  servlet:
+    session:
+      cookie:
+        secure: false # 前端是 http 时必须改 false

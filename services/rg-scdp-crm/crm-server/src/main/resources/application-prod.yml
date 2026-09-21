@@ -3,40 +3,28 @@
 spring:
   application:
     name: "rigour-merchant-crm-service"
+  config:
+    import:
+      - "nacos:rigour-crm-prod.yaml?group=DEFAULT_GROUP"
   cloud:
     nacos:
-      server-addr: "${NACOS_SERVER_ADDR}"
-      username: "${NACOS_USERNAME}"
-      password: "${NACOS_PASSWORD}"
+      server-addr: "127.0.0.1:8848"
+      username: "nacos"
+      password: "nacos123456"
       discovery:
-        namespace: "${NACOS_NAMESPACE}"
+        namespace: "516560f3-8b30-4975-84cb-c55f89b912ae"
         register-enabled: true
       config:
-        enabled: false
-        import-check:
-          enabled: false
+        enabled: true # 开启配置中心
+        namespace: "516560f3-8b30-4975-84cb-c55f89b912ae" # 截图里的命名空间ID
+        group: "DEFAULT_GROUP"
+        file-extension: "yaml"
   flyway:
     enabled: false
-  datasource:
-    url: "${DB_URL}"
-    username: "${DB_USERNAME}"
-    password: "${DB_PASSWORD}"
-  data:
-    redis:
-      host: "${REDIS_HOST}"
-      port: "${REDIS_PORT:6379}"
-      password: "${REDIS_PASSWORD}"
-rigour:
-  context:
-    trust:
-      active-key-id: "v1"
-      keys-base64:
-        v1: "${RIGOUR_CONTEXT_TRUST_KEY_V1}"
-  business-settings:
-    base-url: "${RIGOUR_BUSINESS_SETTINGS_BASE_URL}"
-  hr:
-    base-url: "${RIGOUR_HR_BASE_URL}"
-  integration:
-    base-url: "${RIGOUR_INTEGRATION_BASE_URL}"
-rocketmq:
-  name-server: "${ROCKETMQ_NAME_SERVER}"
+
+server:
+  port: 26883
+  servlet:
+    session:
+      cookie:
+        secure: false # 前端是 http 时必须改 false
