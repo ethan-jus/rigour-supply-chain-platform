@@ -447,7 +447,7 @@ class OrderAttributionAndScopeIntegrationTest {
                         10,
                         new com.rigour.order.application.port.out.OrderRegisterStore.OrderCriteria(
                                 created.orderNo(), null, null, null, null, null, null, null, null,
-                                null, null, null, null));
+                                null, null, null, null, null));
         var orderView = orderPage.items().getFirst();
         assertThat(orderView.createdBy()).isEqualTo("刘鹏昆");
         assertThat(orderView.updatedBy()).isEqualTo("张艺瀚");
@@ -777,7 +777,7 @@ class OrderAttributionAndScopeIntegrationTest {
                         50,
                         new com.rigour.order.application.port.out.OrderRegisterStore.OrderCriteria(
                                 null, null, null, null, null, null, departmentIds, null, null,
-                                null, null, null, null))
+                                null, null, null, null, null))
                 .items()
                 .stream()
                 .map(item -> item.orderNo())

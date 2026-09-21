@@ -72,7 +72,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                         1,
                         new OrderCriteria(
                                 orderNo, null, null, null, null, null, null, null, null, null, null, null,
-                                null))
+                                null, null))
                 .items()
                 .stream()
                 .findFirst();
@@ -766,6 +766,13 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 args.toArray());
     }
 
+    /** 与列表展示同一口径：订货宝订单号来自 order_number_mapping，或订货宝来源单号兜底。 */
+    private static final String DHB_ORDER_NO_EXPRESSION =
+            "COALESCE((SELECT MAX(dhb.dhb_order_no) FROM order_number_mapping dhb"
+                    + " WHERE dhb.tenant_id=o.tenant_id AND dhb.internal_order_no=o.order_no"
+                    + " AND dhb.state='ACTIVE' AND dhb.deleted=0),"
+                    + " CASE WHEN o.source_system_code='DINGHUOBAO' THEN o.source_order_no END)";
+
     private Sql orderWhere(String tenantId, OrderCriteria c) {
         var where = new Sql();
         where.and("o.tenant_id=?", tenantId);
@@ -783,6 +790,8 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         eq(where, "o.payment_status_code", c.paymentStatusCode());
         if (Boolean.TRUE.equals(c.hasUnpaid())) where.and("o.unpaid_amount>0");
         if (Boolean.FALSE.equals(c.hasUnpaid())) where.and("o.unpaid_amount=0");
+        if (Boolean.TRUE.equals(c.dhbLinked())) where.and(DHB_ORDER_NO_EXPRESSION + " IS NOT NULL");
+        if (Boolean.FALSE.equals(c.dhbLinked())) where.and(DHB_ORDER_NO_EXPRESSION + " IS NULL");
         // 开票状态来自 order_invoice：未申请含无发票行与已撤回，其余按当前状态精确匹配。
         if ("NOT_APPLIED".equals(c.invoiceStatusCode())) {
             where.and(

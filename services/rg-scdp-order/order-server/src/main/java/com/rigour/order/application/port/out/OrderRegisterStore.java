@@ -68,7 +68,9 @@ public interface OrderRegisterStore {
             String orderStatusCode,
             String paymentStatusCode,
             Boolean hasUnpaid,
-            String invoiceStatusCode) {
+            String invoiceStatusCode,
+            /** 订货宝关联单：true=已关联（有订货宝订单号），false=未关联，null=不过滤。 */
+            Boolean dhbLinked) {
     }
 
     record LineCriteria(

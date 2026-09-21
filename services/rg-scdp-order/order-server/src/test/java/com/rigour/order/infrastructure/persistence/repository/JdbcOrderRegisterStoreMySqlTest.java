@@ -258,10 +258,44 @@ class JdbcOrderRegisterStoreMySqlTest {
                                 null, null, null, null, null, null, null,
                                 Instant.parse("2026-08-31T16:00:00Z"),
                                 Instant.parse("2026-09-01T16:00:00Z"),
-                                null, null, null, null));
+                                null, null, null, null, null));
 
         assertThat(page.items()).singleElement()
                 .satisfies(view -> assertThat(view.orderDate()).isEqualTo(Instant.parse("2026-08-31T16:00:00Z")));
+    }
+
+    @Test
+    void dhbLinkedFilterMatchesDisplayedDhbOrderNo() {
+        String tenant = UUID.randomUUID().toString();
+        order(tenant, "SO-DHB-LINK-1", 1L, "C-1", "关联客户", "HZ", "EMP-1", "张三",
+                "2026-09-11T05:00:00Z", 10, 0);
+        order(tenant, "SO-DHB-LINK-2", 1L, "C-1", "关联客户", "HZ", "EMP-1", "张三",
+                "2026-09-11T06:00:00Z", 20, 0);
+        jdbc.update(
+                "INSERT INTO order_number_mapping(tenant_id,source_system_code,source_object_type,"
+                        + " source_object_id,dhb_order_no,internal_order_no,state,evidence,deleted)"
+                        + " VALUES(?,'DINGHUOBAO','ORDER','DH-1','DH.20260911.0001','SO-DHB-LINK-1',"
+                        + " 'ACTIVE','历史单关联核对',0)",
+                tenant);
+
+        assertThat(orderNumbers(tenant, true)).containsExactly("SO-DHB-LINK-1");
+        assertThat(orderNumbers(tenant, false)).containsExactly("SO-DHB-LINK-2");
+        assertThat(orderNumbers(tenant, null))
+                .containsExactlyInAnyOrder("SO-DHB-LINK-1", "SO-DHB-LINK-2");
+    }
+
+    private static List<String> orderNumbers(String tenant, Boolean dhbLinked) {
+        return store.orders(
+                        tenant,
+                        0,
+                        50,
+                        new OrderCriteria(
+                                null, null, null, null, null, null, null, null, null, null, null, null,
+                                null, dhbLinked))
+                .items()
+                .stream()
+                .map(view -> view.orderNo())
+                .toList();
     }
 
     private static List<String> orderNumbersWithInvoice(String tenant, String invoiceStatusCode) {
@@ -271,7 +305,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new OrderCriteria(
                                 null, null, null, null, null, null, null, null, null, null, null, null,
-                                invoiceStatusCode))
+                                invoiceStatusCode, null))
                 .items()
                 .stream()
                 .map(view -> view.orderNo())
@@ -517,7 +551,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                 store.orders(
                         tenant, 0, 10,
                         new OrderCriteria(null, null, "审计客户", null, null, null, null,
-                                null, null, null, null, null, null));
+                                null, null, null, null, null, null, null));
 
         assertThat(page.items()).hasSize(2);
         var withSource =

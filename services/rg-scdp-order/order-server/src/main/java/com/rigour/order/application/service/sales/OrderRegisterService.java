@@ -95,7 +95,8 @@ public class OrderRegisterService {
             String orderStatusCode,
             String paymentStatusCode,
             Boolean hasUnpaid,
-            String invoiceStatusCode) {
+            String invoiceStatusCode,
+            Boolean dhbLinked) {
         CallerIdentity actor = actor(READ_PERMISSION);
         var criteria =
                 new OrderCriteria(
@@ -111,7 +112,8 @@ public class OrderRegisterService {
                         text(orderStatusCode, 64, "orderStatusCode"),
                         text(paymentStatusCode, 64, "paymentStatusCode"),
                         hasUnpaid,
-                        invoiceStatusCode(invoiceStatusCode));
+                        invoiceStatusCode(invoiceStatusCode),
+                        dhbLinked);
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         var result = store.orders(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withInvoiceStatuses(

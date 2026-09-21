@@ -55,7 +55,8 @@ public class OrderRegisterController implements OrderRegisterApi {
             String orderStatusCode,
             String paymentStatusCode,
             Boolean hasUnpaid,
-            String invoiceStatusCode) {
+            String invoiceStatusCode,
+            Boolean dhbLinked) {
         return ApiResponse.success(
                 service.orders(
                         begin,
@@ -73,7 +74,8 @@ public class OrderRegisterController implements OrderRegisterApi {
                         orderStatusCode,
                         paymentStatusCode,
                         hasUnpaid,
-                        invoiceStatusCode));
+                        invoiceStatusCode,
+                        dhbLinked));
     }
 
     @Override
@@ -282,7 +284,8 @@ public class OrderRegisterController implements OrderRegisterApi {
                             orderStatusCode,
                             paymentStatusCode,
                             hasUnpaid,
-                            invoiceStatusCode);
+                            invoiceStatusCode,
+                            null);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }

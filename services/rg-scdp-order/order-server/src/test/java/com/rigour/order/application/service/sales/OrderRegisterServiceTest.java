@@ -54,7 +54,7 @@ class OrderRegisterServiceTest {
                         "EMP001", "张三", "ACTIVE", "上海市")));
 
         OrderRegisterService service = new OrderRegisterService(store, crm, hr, invoiceStore(), resolverProvider());
-        var page = service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        var page = service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         assertThat(page.items()).hasSize(1);
         assertThat(page.items().get(0).departmentName()).isEqualTo("上海市");
@@ -70,7 +70,7 @@ class OrderRegisterServiceTest {
                 .thenReturn(new OrderRegisterPage<>(1L, 0, 20, List.of(order("成都市")), Map.of(), null));
 
         OrderRegisterService service = new OrderRegisterService(store, crm, hr, invoiceStore(), resolverProvider());
-        var page = service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        var page = service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         assertThat(page.items().get(0).departmentName()).isEqualTo("成都市");
         verify(hr, never()).resolve(any(), any());
@@ -87,7 +87,7 @@ class OrderRegisterServiceTest {
                 .thenReturn(new OrderRegisterPage<>(0L, 0, 20, List.of(), Map.of(), null));
 
         OrderRegisterService service = new OrderRegisterService(store, crm, hr, invoiceStore(), resolverProvider());
-        service.orders(0, 20, null, null, null, null, null, null, 7L, true, null, null, null, null, null, null);
+        service.orders(0, 20, null, null, null, null, null, null, 7L, true, null, null, null, null, null, null, null);
 
         ArgumentCaptor<OrderCriteria> captor = ArgumentCaptor.forClass(OrderCriteria.class);
         verify(store).orders(eq(TENANT), eq(0), eq(20), captor.capture());
@@ -110,7 +110,7 @@ class OrderRegisterServiceTest {
                         () ->
                                 service.orders(
                                         0, 20, null, null, null, null, null, null, 7L, false,
-                                        null, null, null, null, null, null))
+                                        null, null, null, null, null, null, null))
                 .isInstanceOf(BusinessException.class)
                 .extracting(exception -> ((BusinessException) exception).getErrorCode())
                 .isEqualTo(ErrorCode.SERVICE_UNAVAILABLE);
@@ -127,8 +127,8 @@ class OrderRegisterServiceTest {
                 .thenReturn(new OrderRegisterPage<>(0L, 0, 20, List.of(), Map.of(), null));
 
         OrderRegisterService service = new OrderRegisterService(store, crm, hr, invoiceStore(), resolverProvider());
-        service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, "PENDING");
-        service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, "PENDING", null);
+        service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         ArgumentCaptor<OrderCriteria> captor = ArgumentCaptor.forClass(OrderCriteria.class);
         verify(store, org.mockito.Mockito.times(2)).orders(eq(TENANT), eq(0), eq(20), captor.capture());
@@ -140,7 +140,7 @@ class OrderRegisterServiceTest {
                         () ->
                                 service.orders(
                                         0, 20, null, null, null, null, null, null, null, null,
-                                        null, null, null, null, null, "BOGUS"))
+                                        null, null, null, null, null, "BOGUS", null))
                 .isInstanceOf(BusinessException.class)
                 .extracting(exception -> ((BusinessException) exception).getErrorCode())
                 .isEqualTo(ErrorCode.BAD_REQUEST);

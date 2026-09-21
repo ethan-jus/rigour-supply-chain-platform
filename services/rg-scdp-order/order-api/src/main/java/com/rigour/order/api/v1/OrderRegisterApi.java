@@ -44,7 +44,8 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) String orderStatusCode,
             @RequestParam(required = false) String paymentStatusCode,
             @RequestParam(required = false) Boolean hasUnpaid,
-            @RequestParam(required = false) String invoiceStatusCode);
+            @RequestParam(required = false) String invoiceStatusCode,
+            @RequestParam(required = false) Boolean dhbLinked);
 
     @GetMapping(BASE_PATH + "/lines")
     ApiResponse<OrderRegisterPage<OrderRegisterLineView>> lines(
