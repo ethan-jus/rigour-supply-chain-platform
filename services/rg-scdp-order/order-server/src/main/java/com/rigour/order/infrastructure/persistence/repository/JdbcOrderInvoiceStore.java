@@ -242,8 +242,9 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
             args.add(criteria.status());
         }
         if (criteria.orderNo() != null) {
-            sql.append(" AND inv.order_no=?");
-            args.add(criteria.orderNo());
+            // 与订单/明细/回款一致：订单号支持左右模糊
+            sql.append(" AND inv.order_no LIKE ?");
+            args.add("%" + criteria.orderNo() + "%");
         }
         if (criteria.customerName() != null) {
             sql.append(" AND o.customer_name_snapshot LIKE ?");

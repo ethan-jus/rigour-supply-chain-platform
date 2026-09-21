@@ -7,7 +7,9 @@ import com.rigour.order.api.v1.model.OrderRegisterModels.HistoryCoverage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodRow;
 import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodStatisticsView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.ReceivablesView;
+import com.rigour.order.application.port.out.OrderRegisterStore.LineCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.OrderCriteria;
+import com.rigour.order.application.port.out.OrderRegisterStore.PaymentCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.PeriodCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.ReceivablesCriteria;
 import com.rigour.shared.context.TestAuthorizationContext;
@@ -282,6 +284,117 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(orderNumbers(tenant, false)).containsExactly("SO-DHB-LINK-2");
         assertThat(orderNumbers(tenant, null))
                 .containsExactlyInAnyOrder("SO-DHB-LINK-1", "SO-DHB-LINK-2");
+    }
+
+    @Test
+    void dhbLinkedFilterReadsHistoryGroupSourceNumbers() {
+        String tenant = UUID.randomUUID().toString();
+        long linked =
+                order(tenant, "SO-DHB-HIST-1", 1L, "C-1", "关联客户", "HZ", "EMP-1", "张三",
+                        "2026-09-12T05:00:00Z", 10, 0);
+        order(tenant, "SO-DHB-HIST-2", 1L, "C-1", "关联客户", "HZ", "EMP-1", "张三",
+                "2026-09-12T06:00:00Z", 20, 0);
+        jdbc.update(
+                "INSERT INTO order_history_group(tenant_id,id,customer_id,evidence,actor_id,created_at)"
+                        + " VALUES(?,?,1,?,?,UTC_TIMESTAMP(6))",
+                tenant, "G-DHB-HIST-1", "批量历史关联核对", "tester");
+        jdbc.update(
+                "INSERT INTO order_history_member(tenant_id,order_id,group_id,baseline_at,opening_paid)"
+                        + " VALUES(?,?,?,?,?)",
+                tenant, linked, "G-DHB-HIST-1",
+                Timestamp.from(Instant.parse("2026-09-03T16:00:00Z")), BigDecimal.ZERO);
+        for (String no : List.of("DH.20260912.0001", "DH.20260912.0002")) {
+            jdbc.update(
+                    "INSERT INTO order_sync_source(tenant_id,connector_id,source_no,customer_id,"
+                            + " source_date,amount,payload,checksum,state,group_id,revision)"
+                            + " VALUES(?,'CONN-DHB-HIST',?,1,?,10,'{}',?,'BOUND','G-DHB-HIST-1',0)",
+                    tenant, no, Timestamp.from(Instant.parse("2026-09-12T05:00:00Z")), "hash-" + no);
+        }
+
+        assertThat(orderNumbers(tenant, true)).containsExactly("SO-DHB-HIST-1");
+        assertThat(orderNumbers(tenant, false)).containsExactly("SO-DHB-HIST-2");
+        assertThat(orderNumbersWithDhbNo(tenant))
+                .containsEntry("SO-DHB-HIST-1", "DH.20260912.0001+DH.20260912.0002");
+    }
+
+    private static java.util.Map<String, String> orderNumbersWithDhbNo(String tenant) {
+        return store.orders(
+                        tenant,
+                        0,
+                        50,
+                        new OrderCriteria(
+                                null, null, null, null, null, null, null, null, null, null, null, null,
+                                null, null))
+                .items()
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        view -> view.orderNo(),
+                        view -> view.dhbOrderNo() == null ? "" : view.dhbOrderNo()));
+    }
+
+    @Test
+    void orderNoAndCustomerNameSupportContainsMatch() {
+        String tenant = UUID.randomUUID().toString();
+        order(tenant, "SO-FUZZY-830871", 1L, "C-1", "极客台球俱乐部", "HZ", "EMP-1", "张三",
+                "2026-09-11T05:00:00Z", 10, 0);
+        order(tenant, "SO-FUZZY-830872", 1L, "C-1", "其他门店", "HZ", "EMP-1", "张三",
+                "2026-09-11T06:00:00Z", 20, 0);
+        long orderId = orderId(tenant, "SO-FUZZY-830871");
+        insertPayment(tenant, "PAY-FUZZY-1", orderId, "2026-09-12T05:00:00Z", 10, "RECEIVED", null);
+
+        // 订单列表：订单号取中段、客户名称取中段都能命中
+        var orderPage =
+                store.orders(
+                        tenant,
+                        0,
+                        50,
+                        new OrderCriteria(
+                                "83087", null, "台球", null, null, null, null, null, null, null, null,
+                                null, null, null));
+        assertThat(orderPage.items()).extracting(view -> view.orderNo())
+                .containsExactly("SO-FUZZY-830871");
+
+        // 明细列表
+        jdbc.update(
+                "INSERT INTO order_sales_order_line(tenant_id,order_id,line_no,product_id,product_variant_id,"
+                        + " product_code_snapshot,sku_code_snapshot,product_name_snapshot,unit_code,quantity,"
+                        + " unit_price,discount_amount,line_amount,revision,created_by,created_time,updated_by,"
+                        + " updated_time,deleted) VALUES(?,?,1,1,1,'P-1','SKU-1','测试商品','BOX',1,10,0,10,1,"
+                        + " 'SYSTEM',UTC_TIMESTAMP(6),'SYSTEM',UTC_TIMESTAMP(6),0)",
+                tenant,
+                orderId);
+        var linePage =
+                store.lines(
+                        tenant,
+                        0,
+                        50,
+                        new LineCriteria(
+                                "83087", null, "台球", null, null, null, null, null, null, null, null,
+                                null, null));
+        assertThat(linePage.items()).hasSize(1);
+        assertThat(linePage.items().getFirst().orderNo()).isEqualTo("SO-FUZZY-830871");
+
+        // 回款列表
+        var paymentPage =
+                store.payments(
+                        tenant,
+                        0,
+                        50,
+                        new PaymentCriteria(
+                                "83087", null, "台球", null, null, null, null, null, null, null, null,
+                                null, null, null, null, null, null));
+        assertThat(paymentPage.items()).hasSize(1);
+        assertThat(paymentPage.items().getFirst().orderNo()).isEqualTo("SO-FUZZY-830871");
+    }
+
+    private static long orderId(String tenant, String orderNo) {
+        Long id =
+                jdbc.queryForObject(
+                        "SELECT id FROM order_sales_order WHERE tenant_id=? AND order_no=?",
+                        Long.class,
+                        tenant,
+                        orderNo);
+        return id == null ? 0L : id;
     }
 
     private static List<String> orderNumbers(String tenant, Boolean dhbLinked) {
