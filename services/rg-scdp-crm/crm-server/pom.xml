@@ -11,7 +11,6 @@
         <dependency><groupId>com.rigour</groupId><artifactId>iam-client</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>hr-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>crm-api</artifactId></dependency>
-        <dependency><groupId>com.rigour</groupId><artifactId>hr-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>integration-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>integration-client</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>foundation-client</artifactId></dependency>

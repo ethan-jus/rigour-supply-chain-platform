@@ -1300,8 +1300,11 @@ public final class OrderSalesOrderService {
     /**
      * 来源状态推进到「已完成」时同步推进业务状态；其余来源状态只记录来源口径。
      *
-     * <p>订货宝等来源单在途时业务状态是「已提交」，来源完成后页面仍应显示「已完成」；
-     * 草稿单保留草稿（资料未补齐），取消走来源取消流程，不在这里处理。</p>
+     * <p>业务口径已确认：在当前阶段系统订单数据以来源（订货宝/飞书）为准，
+     * 来源完成即代表订单完成，不做“来源完成 vs 本地履约完成”的统计区分；
+     * 将来订货宝停用、订单只由本系统产生时，再按系统自身履约流程定义完成状态。</p>
+     *
+     * <p>在途时业务状态是「已提交」；草稿单保留草稿（资料未补齐），取消走来源取消流程。</p>
      */
     private static String businessStatusForSource(String sourceStatusCode, String currentStatusCode) {
         if (!sourceCompleted(sourceStatusCode)) return currentStatusCode;
