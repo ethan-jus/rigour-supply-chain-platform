@@ -282,6 +282,7 @@ public final class OrderRegisterModels {
     }
 
     /** 财务核对命令；交易单号用于凭证验重与对账。 */
-    public record PaymentCheckCommand(String transactionNo) {
+    /** 回款核对：交易单号 + 页面版本，版本用于状态流转的乐观锁。 */
+    public record PaymentCheckCommand(String transactionNo, Integer revision) {
     }
 }

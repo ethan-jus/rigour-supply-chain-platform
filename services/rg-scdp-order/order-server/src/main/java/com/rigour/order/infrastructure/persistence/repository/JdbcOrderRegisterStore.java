@@ -22,6 +22,7 @@ import com.rigour.order.domain.sync.HistorySyncRules;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -775,7 +776,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "o.region_code", c.regionCode());
         like(where, "o.owner_employee_code", c.ownerEmployeeCode());
-        in(where, "o.owner_employee_code", c.ownerEmployeeCodes());
+        inIds(where, "snap.department_id", c.departmentIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
@@ -809,7 +810,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "o.region_code", c.regionCode());
         like(where, "o.owner_employee_code", c.ownerEmployeeCode());
-        in(where, "o.owner_employee_code", c.ownerEmployeeCodes());
+        inIds(where, "snap.department_id", c.departmentIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
@@ -844,7 +845,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "o.region_code", c.regionCode());
         like(where, "o.owner_employee_code", c.ownerEmployeeCode());
-        in(where, "o.owner_employee_code", c.ownerEmployeeCodes());
+        inIds(where, "snap.department_id", c.departmentIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
@@ -875,7 +876,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "o.region_code", c.regionCode());
         like(where, "o.owner_employee_code", c.ownerEmployeeCode());
-        in(where, "o.owner_employee_code", c.ownerEmployeeCodes());
+        inIds(where, "snap.department_id", c.departmentIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
@@ -895,7 +896,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         where.and("o.deleted=0");
         like(where, "o.region_code", c.regionCode());
         like(where, "o.owner_employee_code", c.ownerEmployeeCode());
-        in(where, "o.owner_employee_code", c.ownerEmployeeCodes());
+        inIds(where, "snap.department_id", c.departmentIds());
         eq(where, "o.customer_id", c.customerId());
         like(where, "o.customer_name_snapshot", c.customerName());
         like(where, "o.customer_code_snapshot", c.customerCode());
@@ -909,7 +910,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.order_no", c.orderNo());
         like(where, "o.region_code", c.regionCode());
         like(where, "o.owner_employee_code", c.ownerEmployeeCode());
-        in(where, "o.owner_employee_code", c.ownerEmployeeCodes());
+        inIds(where, "snap.department_id", c.departmentIds());
         eq(where, "o.customer_id", c.customerId());
         if (c.hasUnpaid())
             where.and(
@@ -1013,6 +1014,19 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
     }
 
     /** 业务员编码过滤；空集合表示筛选无匹配，不能静默放大成全量。 */
+    /** 部门范围用 ID 集合；空集合表示“范围为空”，不能放大成全量。 */
+    private static void inIds(Sql where, String column, Collection<Long> values) {
+        if (values == null) return;
+        List<Long> ids = values.stream().filter(Objects::nonNull).distinct().sorted().toList();
+        if (ids.isEmpty()) {
+            where.and("1=0");
+            return;
+        }
+        where.and(
+                column + " IN (" + String.join(",", Collections.nCopies(ids.size(), "?")) + ")",
+                ids.toArray());
+    }
+
     private static void in(Sql where, String column, Collection<String> values) {
         if (values == null) return;
         List<String> codes = values.stream()
@@ -1098,7 +1112,12 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
 
     @Override
     public OrderRegisterPaymentView checkPayment(
-            String tenantId, long id, String transactionNo, String actorId, Instant checkedAt) {
+            String tenantId,
+            long id,
+            String transactionNo,
+            int revision,
+            String actorId,
+            Instant checkedAt) {
         String current =
                 jdbc.query(
                         "SELECT payment_status_code FROM order_payment_record"
@@ -1120,17 +1139,27 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         if (duplicate != null && duplicate > 0) {
             throw conflict("交易单号已被其他回款单使用，请核对后重试");
         }
-        int updated =
-                jdbc.update(
-                        "UPDATE order_payment_record SET payment_status_code='CHECKED',transaction_no=?,"
-                                + "checked_by=?,checked_at=?,updated_by=?,updated_time=UTC_TIMESTAMP(6),"
-                                + "revision=revision+1 WHERE tenant_id=? AND id=? AND deleted=0",
-                        transactionNo,
-                        actorId,
-                        Timestamp.from(checkedAt),
-                        actorId,
-                        tenantId,
-                        id);
+        // 原子流转：只允许 RECEIVED + 页面版本命中时改状态，并发核对不会互相覆盖。
+        int updated;
+        try {
+            updated =
+                    jdbc.update(
+                            "UPDATE order_payment_record SET payment_status_code='CHECKED',transaction_no=?,"
+                                    + "checked_by=?,checked_at=?,updated_by=?,updated_time=UTC_TIMESTAMP(6),"
+                                    + "revision=revision+1"
+                                    + " WHERE tenant_id=? AND id=? AND deleted=0"
+                                    + " AND payment_status_code='RECEIVED' AND revision=?",
+                            transactionNo,
+                            actorId,
+                            Timestamp.from(checkedAt),
+                            actorId,
+                            tenantId,
+                            id,
+                            revision);
+        } catch (DuplicateKeyException exception) {
+            // 并发核对不同回款时撞上交易单号唯一约束：按业务冲突返回而不是 500。
+            throw conflict("交易单号已被其他回款单使用，请核对后重试");
+        }
         if (updated == 0) throw conflict("回款状态已变化，请刷新后重试");
         return paymentById(tenantId, id).orElseThrow(() -> notFound("回款记录不存在"));
     }

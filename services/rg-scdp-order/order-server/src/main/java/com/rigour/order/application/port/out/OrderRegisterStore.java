@@ -33,7 +33,12 @@ public interface OrderRegisterStore {
 
     /** 财务核对回款：写入交易单号（用于凭证验重与对账）并标记已核对。 */
     OrderRegisterPaymentView checkPayment(
-            String tenantId, long id, String transactionNo, String actorId, Instant checkedAt);
+            String tenantId,
+            long id,
+            String transactionNo,
+            int revision,
+            String actorId,
+            Instant checkedAt);
 
     PeriodStatisticsView periodStatistics(String tenantId, PeriodCriteria criteria);
 
@@ -56,7 +61,8 @@ public interface OrderRegisterStore {
             String customerCode,
             String regionCode,
             String ownerEmployeeCode,
-            Set<String> ownerEmployeeCodes,
+            /** 部门筛选范围：命中订单归属快照 snap.department_id，含子部门时是多值。 */
+            Set<Long> departmentIds,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
@@ -72,7 +78,8 @@ public interface OrderRegisterStore {
             String customerCode,
             String regionCode,
             String ownerEmployeeCode,
-            Set<String> ownerEmployeeCodes,
+            /** 部门筛选范围：命中订单归属快照 snap.department_id，含子部门时是多值。 */
+            Set<Long> departmentIds,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
@@ -89,7 +96,8 @@ public interface OrderRegisterStore {
             String customerCode,
             String regionCode,
             String ownerEmployeeCode,
-            Set<String> ownerEmployeeCodes,
+            /** 部门筛选范围：命中订单归属快照 snap.department_id，含子部门时是多值。 */
+            Set<Long> departmentIds,
             Instant orderDateFrom,
             Instant orderDateTo,
             String orderStatusCode,
@@ -109,7 +117,8 @@ public interface OrderRegisterStore {
             String groupBy,
             String regionCode,
             String ownerEmployeeCode,
-            Set<String> ownerEmployeeCodes,
+            /** 部门筛选范围：命中订单归属快照 snap.department_id，含子部门时是多值。 */
+            Set<Long> departmentIds,
             Long customerId,
             String customerName,
             String customerCode) {
@@ -120,7 +129,8 @@ public interface OrderRegisterStore {
             boolean hasUnpaid,
             String regionCode,
             String ownerEmployeeCode,
-            Set<String> ownerEmployeeCodes,
+            /** 部门筛选范围：命中订单归属快照 snap.department_id，含子部门时是多值。 */
+            Set<Long> departmentIds,
             Long customerId,
             String orderNo) {
     }

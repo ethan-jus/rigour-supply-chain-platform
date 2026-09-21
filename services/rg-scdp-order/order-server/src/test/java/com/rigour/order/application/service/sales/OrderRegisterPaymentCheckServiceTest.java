@@ -3,6 +3,7 @@ package com.rigour.order.application.service.sales;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -54,20 +55,20 @@ class OrderRegisterPaymentCheckServiceTest {
     void checkPaymentRequiresCheckPermission() {
         TestAuthorizationContext.set(caller("order:read"));
 
-        assertThatThrownBy(() -> service().checkPayment(9L, new PaymentCheckCommand("TXN-1")))
+        assertThatThrownBy(() -> service().checkPayment(9L, new PaymentCheckCommand("TXN-1", 2)))
                 .isInstanceOf(AuthorizationDeniedException.class);
-        verify(store, never()).checkPayment(any(), anyLong(), any(), any(), any());
+        verify(store, never()).checkPayment(any(), anyLong(), any(), anyInt(), any(), any());
     }
 
     @Test
     void checkPaymentRequiresTransactionNo() {
         TestAuthorizationContext.set(caller("order:payment:check"));
 
-        assertThatThrownBy(() -> service().checkPayment(9L, new PaymentCheckCommand("  ")))
+        assertThatThrownBy(() -> service().checkPayment(9L, new PaymentCheckCommand("  ", 2)))
                 .isInstanceOf(BusinessException.class)
                 .extracting(exception -> ((BusinessException) exception).getErrorCode())
                 .isEqualTo(ErrorCode.BAD_REQUEST);
-        verify(store, never()).checkPayment(any(), anyLong(), any(), any(), any());
+        verify(store, never()).checkPayment(any(), anyLong(), any(), anyInt(), any(), any());
     }
 
     @Test
@@ -80,11 +81,11 @@ class OrderRegisterPaymentCheckServiceTest {
                         List.of(), List.of(), null, null, null, null, null, null,
                         USER_ID.toString(), Instant.parse("2026-09-21T03:00:00Z"), 2);
         when(store.checkPayment(
-                        eq(TENANT_ID.toString()), eq(9L), eq("TXN-1"), eq(USER_ID.toString()), any()))
+                        eq(TENANT_ID.toString()), eq(9L), eq("TXN-1"), eq(2), eq(USER_ID.toString()), any()))
                 .thenReturn(checked);
         TestAuthorizationContext.set(caller("order:payment:check"));
 
-        OrderRegisterPaymentView result = service().checkPayment(9L, new PaymentCheckCommand("TXN-1"));
+        OrderRegisterPaymentView result = service().checkPayment(9L, new PaymentCheckCommand("TXN-1", 2));
 
         assertThat(result).isSameAs(checked);
         verify(store)
@@ -92,8 +93,24 @@ class OrderRegisterPaymentCheckServiceTest {
                         eq(TENANT_ID.toString()),
                         eq(9L),
                         eq("TXN-1"),
+                        eq(2),
                         eq(USER_ID.toString()),
                         any());
+    }
+
+    @Test
+    void checkPaymentRequiresRevisionForOptimisticLock() {
+        TestAuthorizationContext.set(caller("order:payment:check"));
+
+        assertThatThrownBy(() -> service().checkPayment(9L, new PaymentCheckCommand("TXN-1", null)))
+                .isInstanceOf(BusinessException.class)
+                .extracting(exception -> ((BusinessException) exception).getErrorCode())
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        assertThatThrownBy(() -> service().checkPayment(9L, new PaymentCheckCommand("TXN-1", 0)))
+                .isInstanceOf(BusinessException.class)
+                .extracting(exception -> ((BusinessException) exception).getErrorCode())
+                .isEqualTo(ErrorCode.BAD_REQUEST);
+        verify(store, never()).checkPayment(any(), anyLong(), any(), anyInt(), any(), any());
     }
 
     private static CallerIdentity caller(String permission) {

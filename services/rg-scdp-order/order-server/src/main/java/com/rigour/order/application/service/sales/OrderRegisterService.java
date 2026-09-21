@@ -105,7 +105,7 @@ public class OrderRegisterService {
                         text(customerCode, 64, "customerCode"),
                         text(regionCode, 128, "regionCode"),
                         text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        ownerEmployeeCodes(actor, departmentId, includeSubDepartments),
+                        departmentScopeIds(actor, departmentId, includeSubDepartments),
                         orderDateFrom,
                         orderDateTo,
                         text(orderStatusCode, 64, "orderStatusCode"),
@@ -133,12 +133,14 @@ public class OrderRegisterService {
     }
 
     /** 发票状态筛选只接受列表展示口径：未申请、待开票、已开票。 */
+    /** 发票状态筛选只接受白名单；非法值返回 400，避免被当成“不筛选”放大成全量。 */
     private static String invoiceStatusCode(String value) {
         String code = text(value, 32, "invoiceStatusCode");
         if (code == null) return null;
-        return Set.of("NOT_APPLIED", "PENDING", "INVOICED").contains(code)
-                ? code
-                : null;
+        if (!Set.of("NOT_APPLIED", "PENDING", "INVOICED").contains(code)) {
+            throw badRequest("invoiceStatusCode无效");
+        }
+        return code;
     }
 
     /** 财务核对回款：与银行流水核对后写入交易单号（凭证验重 + 方便对账）并标记已核对。 */
@@ -148,10 +150,14 @@ public class OrderRegisterService {
         if (command == null) throw badRequest("核对参数不能为空");
         String transactionNo = text(command.transactionNo(), 128, "transactionNo");
         if (transactionNo == null) throw badRequest("交易单号不能为空");
+        if (command.revision() == null || command.revision() < 1) {
+            throw badRequest("回款版本不能为空");
+        }
         return store.checkPayment(
                 actor.tenantId().toString(),
                 id,
                 transactionNo,
+                command.revision(),
                 actor.principalId() == null ? null : actor.principalId().toString(),
                 Instant.now());
     }
@@ -183,7 +189,7 @@ public class OrderRegisterService {
                         text(customerCode, 64, "customerCode"),
                         text(regionCode, 128, "regionCode"),
                         text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        ownerEmployeeCodes(actor, departmentId, includeSubDepartments),
+                        departmentScopeIds(actor, departmentId, includeSubDepartments),
                         orderDateFrom,
                         orderDateTo,
                         text(orderStatusCode, 64, "orderStatusCode"),
@@ -226,7 +232,7 @@ public class OrderRegisterService {
                         text(customerCode, 64, "customerCode"),
                         text(regionCode, 128, "regionCode"),
                         text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        ownerEmployeeCodes(actor, departmentId, includeSubDepartments),
+                        departmentScopeIds(actor, departmentId, includeSubDepartments),
                         orderDateFrom,
                         orderDateTo,
                         text(orderStatusCode, 64, "orderStatusCode"),
@@ -266,7 +272,7 @@ public class OrderRegisterService {
                         normalizedGroup,
                         text(regionCode, 128, "regionCode"),
                         text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        ownerEmployeeCodes(actor, departmentId, includeSubDepartments),
+                        departmentScopeIds(actor, departmentId, includeSubDepartments),
                         optionalId(customerId, "customerId无效"),
                         text(customerName, 200, "customerName"),
                         text(customerCode, 64, "customerCode"));
@@ -298,7 +304,7 @@ public class OrderRegisterService {
                         hasUnpaid,
                         text(regionCode, 128, "regionCode"),
                         text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        ownerEmployeeCodes(actor, departmentId, includeSubDepartments),
+                        departmentScopeIds(actor, departmentId, includeSubDepartments),
                         optionalId(customerId, "customerId无效"),
                         text(orderNo, 80, "orderNo"));
         var result =
@@ -641,28 +647,32 @@ public class OrderRegisterService {
                 HR_EMPLOYEE_READ_PERMISSIONS);
     }
 
-    /** 部门筛选先按 HR 员工档案解析业务员编码，再用业务员匹配订单/明细/回款。 */
-    private Set<String> ownerEmployeeCodes(
+    /**
+     * 部门筛选按订单归属快照的部门口径匹配；HR 只用来展开子部门，不参与历史归属判断。
+     * HR 不可用时抛依赖错误，避免把“查不到”当成“没有数据”。
+     */
+    private Set<Long> departmentScopeIds(
             CallerIdentity actor, Long departmentId, Boolean includeSubDepartments) {
         Long departmentKey = optionalId(departmentId, "departmentId无效");
         if (departmentKey == null) return null;
         try {
-            Set<String> codes = hrEmployeeDisplayClient.employeeCodesInDepartment(
+            Set<Long> scope = hrEmployeeDisplayClient.departmentIdsInScope(
                     hrServiceCaller(actor.tenantId()), departmentKey, includeSubDepartments);
             log.info(
-                    "部门筛选解析完成 tenantId={} departmentId={} includeSubDepartments={} employeeCount={}",
+                    "部门筛选解析完成 tenantId={} departmentId={} includeSubDepartments={} departmentCount={}",
                     actor.tenantId(),
                     departmentKey,
                     includeSubDepartments,
-                    codes.size());
-            return codes;
+                    scope.size());
+            return scope;
         } catch (RuntimeException exception) {
             log.warn(
-                    "部门筛选解析员工失败 tenantId={} departmentId={} errorType={}",
+                    "部门筛选解析部门范围失败 tenantId={} departmentId={} errorType={}",
                     actor.tenantId(),
                     departmentKey,
                     exception.getClass().getSimpleName());
-            return Set.of();
+            throw new BusinessException(
+                    ErrorCode.SERVICE_UNAVAILABLE, "部门范围暂时无法解析，请稍后重试", List.of());
         }
     }
 

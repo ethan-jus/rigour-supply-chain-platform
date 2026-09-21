@@ -410,7 +410,8 @@ class JdbcOrderRegisterStoreMySqlTest {
 
         var checked =
                 store.checkPayment(
-                        tenant, checkedPayment, "TXN-NEW-001", "finance-1",
+                        tenant, checkedPayment, "TXN-NEW-001",
+                        paymentRevision(tenant, checkedPayment), "finance-1",
                         Instant.parse("2026-09-21T03:00:00Z"));
         assertThat(checked.paymentStatusCode()).isEqualTo("CHECKED");
         assertThat(checked.transactionNo()).isEqualTo("TXN-NEW-001");
@@ -421,23 +422,75 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThatThrownBy(
                         () ->
                                 store.checkPayment(
-                                        tenant, checkedPayment, "TXN-NEW-002", "finance-1",
+                                        tenant, checkedPayment, "TXN-NEW-002",
+                                        paymentRevision(tenant, checkedPayment), "finance-1",
                                         Instant.parse("2026-09-21T04:00:00Z")))
                 .hasMessageContaining("已核对");
         // 付款凭证验重：流水号已被其他回款单占用
         assertThatThrownBy(
                         () ->
                                 store.checkPayment(
-                                        tenant, pendingPayment, "TXN-NEW-001", "finance-1",
+                                        tenant, pendingPayment, "TXN-NEW-001",
+                                        paymentRevision(tenant, pendingPayment), "finance-1",
                                         Instant.parse("2026-09-21T04:00:00Z")))
                 .hasMessageContaining("交易单号已被其他回款单使用");
         // 已取消：不可核对
         assertThatThrownBy(
                         () ->
                                 store.checkPayment(
-                                        tenant, cancelledPayment, "TXN-NEW-003", "finance-1",
+                                        tenant, cancelledPayment, "TXN-NEW-003",
+                                        paymentRevision(tenant, cancelledPayment), "finance-1",
                                         Instant.parse("2026-09-21T04:00:00Z")))
                 .hasMessageContaining("已取消");
+    }
+
+    @Test
+    void checkPaymentRejectsStaleRevisionAndDuplicateTransactionConcurrently() {
+        String tenant = UUID.randomUUID().toString();
+        long orderId =
+                order(tenant, "SO-PAY-RACE-1", 1L, "C-1", "并发客户", "HZ", "EMP-1", "张三",
+                        "2026-09-11T05:00:00Z", 300, 0);
+        insertPayment(tenant, "PAY-RACE-1", orderId, "2026-09-12T05:00:00Z", 100, "RECEIVED", null);
+        insertPayment(tenant, "PAY-RACE-2", orderId, "2026-09-12T06:00:00Z", 100, "RECEIVED", null);
+        insertPayment(tenant, "PAY-RACE-3", orderId, "2026-09-12T07:00:00Z", 100, "RECEIVED", null);
+        long first = paymentId(tenant, "PAY-RACE-1");
+        long second = paymentId(tenant, "PAY-RACE-2");
+        long third = paymentId(tenant, "PAY-RACE-3");
+        int firstRevision = paymentRevision(tenant, first);
+
+        store.checkPayment(tenant, first, "TXN-RACE-001", firstRevision, "finance-1",
+                Instant.parse("2026-09-21T03:00:00Z"));
+
+        // 已核对：重复核对被前置校验拦下，不会覆盖第一次结果
+        assertThatThrownBy(
+                        () ->
+                                store.checkPayment(
+                                        tenant, first, "TXN-RACE-002", firstRevision, "finance-2",
+                                        Instant.parse("2026-09-21T03:01:00Z")))
+                .hasMessageContaining("已核对");
+        // 并发场景：两个人同时打开页面，后到的人带的是过期版本，原子更新必须失败
+        assertThatThrownBy(
+                        () ->
+                                store.checkPayment(
+                                        tenant, third, "TXN-RACE-003",
+                                        paymentRevision(tenant, third) + 5, "finance-2",
+                                        Instant.parse("2026-09-21T03:02:00Z")))
+                .hasMessageContaining("回款状态已变化");
+        // 流水号唯一约束兜底：并发写入同一交易单号时数据库直接拒绝
+        assertThatThrownBy(
+                        () ->
+                                jdbc.update(
+                                        "UPDATE order_payment_record SET transaction_no='TXN-RACE-001'"
+                                                + " WHERE tenant_id=? AND id=?",
+                                        tenant,
+                                        second))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM order_payment_record"
+                                        + " WHERE tenant_id=? AND transaction_no='TXN-RACE-001' AND deleted=0",
+                                Long.class,
+                                tenant))
+                .isEqualTo(1L);
     }
 
     @Test
@@ -537,6 +590,16 @@ class JdbcOrderRegisterStoreMySqlTest {
                 orderId,
                 productCode,
                 "明细商品");
+    }
+
+    private static int paymentRevision(String tenant, long paymentId) {
+        Integer revision =
+                jdbc.queryForObject(
+                        "SELECT revision FROM order_payment_record WHERE tenant_id=? AND id=?",
+                        Integer.class,
+                        tenant,
+                        paymentId);
+        return revision == null ? 0 : revision;
     }
 
     private static long paymentId(String tenant, String paymentNo) {
