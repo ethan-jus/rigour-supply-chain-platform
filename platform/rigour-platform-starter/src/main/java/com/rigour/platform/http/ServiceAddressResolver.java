@@ -24,15 +24,36 @@ import org.springframework.http.client.support.HttpRequestWrapper;
 public final class ServiceAddressResolver implements ClientHttpRequestInterceptor {
 
     private static final Logger log = LoggerFactory.getLogger(ServiceAddressResolver.class);
+    /** 只解析显式内部服务名；外部域名、直连 IP、localhost 一律原样放行。 */
+    private static final String DEFAULT_INTERNAL_SERVICE_PREFIX = "rigour-";
 
     private final ObjectProvider<DiscoveryClient> discoveryClient;
     private final ObjectProvider<LoadBalancerClient> loadBalancerClient;
+    private final String internalServicePrefix;
 
     public ServiceAddressResolver(
             ObjectProvider<DiscoveryClient> discoveryClient,
             ObjectProvider<LoadBalancerClient> loadBalancerClient) {
+        this(discoveryClient, loadBalancerClient, DEFAULT_INTERNAL_SERVICE_PREFIX);
+    }
+
+    public ServiceAddressResolver(
+            ObjectProvider<DiscoveryClient> discoveryClient,
+            ObjectProvider<LoadBalancerClient> loadBalancerClient,
+            String internalServicePrefix) {
         this.discoveryClient = discoveryClient;
         this.loadBalancerClient = loadBalancerClient;
+        this.internalServicePrefix =
+                internalServicePrefix == null || internalServicePrefix.isBlank()
+                        ? DEFAULT_INTERNAL_SERVICE_PREFIX
+                        : internalServicePrefix.strip();
+    }
+
+    /** 内部服务名判定：无点号的短主机名且带约定前缀，避免误拦外部域名。 */
+    static boolean isInternalServiceName(String host, String prefix) {
+        if (host == null || host.isBlank() || host.indexOf('.') >= 0) return false;
+        return host.toLowerCase(java.util.Locale.ROOT)
+                .startsWith(prefix.toLowerCase(java.util.Locale.ROOT));
     }
 
     @Override
@@ -55,8 +76,21 @@ public final class ServiceAddressResolver implements ClientHttpRequestIntercepto
             return null;
         }
         String serviceName = host.strip();
-        List<ServiceInstance> instances = discovery.getInstances(serviceName);
-        if (instances.isEmpty()) {
+        if (!isInternalServiceName(serviceName, internalServicePrefix)) {
+            return null;
+        }
+        List<ServiceInstance> instances;
+        try {
+            instances = discovery.getInstances(serviceName);
+        } catch (RuntimeException exception) {
+            // 注册中心不可用时不能让外部请求一起被阻断：按原地址继续。
+            log.warn(
+                    "注册中心查询服务实例失败，按原地址请求 service={} reason={}",
+                    serviceName,
+                    exception.toString());
+            return null;
+        }
+        if (instances == null || instances.isEmpty()) {
             return null;
         }
         ServiceInstance instance = choose(serviceName);
