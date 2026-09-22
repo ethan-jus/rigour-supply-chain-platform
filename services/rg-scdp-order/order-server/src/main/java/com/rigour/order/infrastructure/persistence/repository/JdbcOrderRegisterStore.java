@@ -95,7 +95,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 jdbc.query(
                         "SELECT o.id,o.order_no,m.internal_order_no,m.state AS mapping_state,"
                                 + " o.source_system_code,o.source_order_no,"
-                                + " COALESCE((SELECT MAX(dhb.dhb_order_no) FROM order_number_mapping dhb WHERE dhb.tenant_id=o.tenant_id AND dhb.internal_order_no=o.order_no AND dhb.state='ACTIVE' AND dhb.deleted=0), CASE WHEN o.source_system_code='DINGHUOBAO' THEN o.source_order_no END) AS dhb_order_no,"
+                                + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                                 + " o.customer_id,"
                                 + " o.customer_code_snapshot,o.customer_name_snapshot,"
                                 + " COALESCE(snap.region_code,o.region_code) AS region_code,"
@@ -183,19 +183,21 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + " l.product_code_snapshot,l.sku_code_snapshot,l.product_name_snapshot,"
                                 + " l.specification_snapshot,l.unit_code,l.quantity,l.unit_price,"
                                 + " l.line_amount,l.revision,o.order_no,o.source_order_no,"
-                                + " COALESCE((SELECT MAX(dhb.dhb_order_no) FROM order_number_mapping dhb WHERE dhb.tenant_id=o.tenant_id AND dhb.internal_order_no=o.order_no AND dhb.state='ACTIVE' AND dhb.deleted=0), CASE WHEN o.source_system_code='DINGHUOBAO' THEN o.source_order_no END) AS dhb_order_no,"
+                                + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                                 + " o.customer_id,"
                                 + " o.customer_code_snapshot,o.customer_name_snapshot,"
                                 + " COALESCE(snap.region_code,o.region_code) AS region_code,"
                                 + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                                 + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
                                 + " snap.department_id,snap.department_name,o.order_status_code,o.order_date,"
+                                + " " + LINE_RECEIVED_AMOUNT_EXPRESSION + " AS received_amount,"
                                 + " o.created_by,o.created_time,o.updated_by,o.updated_time,"
                                 + " o.source_creator_name,o.source_created_at,o.source_modifier_name,o.source_updated_at,"
                                 + " o.synced_by,o.synced_at "
                                 + " FROM order_sales_order_line l "
                                 + " JOIN order_sales_order o ON o.tenant_id=l.tenant_id AND o.id=l.order_id AND o.deleted=0 "
                                 + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
+                                + ORDER_RECEIVED_JOIN
                                 + " WHERE "
                                 + where.sql()
                                 + " ORDER BY o.order_date DESC,l.id DESC LIMIT ? OFFSET ?",
@@ -215,6 +217,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                         decimal(rs, "quantity"),
                                         decimal(rs, "unit_price"),
                                         decimal(rs, "line_amount"),
+                                        decimal(rs, "received_amount"),
                                         rs.getString("order_no"),
                                         rs.getString("source_order_no"),
                                         rs.getString("dhb_order_no"),
@@ -240,18 +243,21 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         var totals =
                 jdbc.queryForObject(
                         "SELECT COALESCE(SUM(l.line_amount),0) AS line_amount,"
+                                + " COALESCE(SUM(" + LINE_RECEIVED_AMOUNT_EXPRESSION + "),0) AS received_amount,"
                                 + " COUNT(DISTINCT COALESCE(CAST(o.customer_id AS CHAR), o.customer_name_snapshot)) AS customer_count,"
                                 + " COUNT(DISTINCT COALESCE(CAST(l.product_id AS CHAR), l.product_code_snapshot)) AS product_count,"
                                 + " COALESCE(SUM(l.quantity),0) AS quantity_sum "
                                 + " FROM order_sales_order_line l "
                                 + " JOIN order_sales_order o ON o.tenant_id=l.tenant_id AND o.id=l.order_id AND o.deleted=0 "
                                 + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
+                                + ORDER_RECEIVED_JOIN
                                 + " WHERE "
                                 + where.sql()
                                 + " LIMIT 1",
                         (rs, i) ->
                                 Map.of(
                                         "lineAmount", rs.getBigDecimal("line_amount"),
+                                        "receivedAmount", rs.getBigDecimal("received_amount"),
                                         "customerCount", BigDecimal.valueOf(rs.getLong("customer_count")),
                                         "productCount", BigDecimal.valueOf(rs.getLong("product_count")),
                                         "quantitySum", rs.getBigDecimal("quantity_sum")),
@@ -296,7 +302,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         var items =
                 jdbc.query(
                         "SELECT p.id,p.payment_no,p.source_record_id,p.order_id,o.order_no,"
-                                + " COALESCE((SELECT MAX(dhb.dhb_order_no) FROM order_number_mapping dhb WHERE dhb.tenant_id=o.tenant_id AND dhb.internal_order_no=o.order_no AND dhb.state='ACTIVE' AND dhb.deleted=0), CASE WHEN o.source_system_code='DINGHUOBAO' THEN o.source_order_no END) AS dhb_order_no,"
+                                + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                                 + " p.customer_id,p.customer_code_snapshot,p.customer_name_snapshot,"
                                 + " COALESCE(snap.region_code,o.region_code) AS region_code,"
                                 + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
@@ -766,12 +772,37 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 args.toArray());
     }
 
+    /**
+     * 明细级回款分摊：订单实收（RECEIVED/CHECKED）按「明细金额 / 订单应收」比例分摊到明细。
+     * 部分回款同样按比例，保证 Σ明细回款 = 订单实收；订单应收为 0 时不分摊。
+     */
+    private static final String LINE_RECEIVED_AMOUNT_EXPRESSION =
+            "CASE WHEN o.payable_amount > 0"
+                    + " THEN ROUND(l.line_amount * COALESCE(pr.received_amount,0) / o.payable_amount, 2)"
+                    + " ELSE 0 END";
+
+    /** 订单实收合计（与回款列表「实收金额」同口径：已收款 + 已核对）。 */
+    private static final String ORDER_RECEIVED_JOIN =
+            " LEFT JOIN (SELECT tenant_id,order_id,"
+                    + " SUM(CASE WHEN payment_status_code IN ('RECEIVED','CHECKED') THEN paid_amount ELSE 0 END)"
+                    + " AS received_amount FROM order_payment_record WHERE deleted=0"
+                    + " GROUP BY tenant_id,order_id) pr"
+                    + " ON pr.tenant_id=o.tenant_id AND pr.order_id=o.id ";
+
     /** 与列表展示同一口径：订货宝订单号来自 order_number_mapping，或订货宝来源单号兜底。 */
+    /**
+     * 订货宝订单号：优先订单号映射，其次订货宝来源单自身，最后取历史关联组内已绑定来源单号。
+     * 列表展示与「订货宝关联」筛选共用同一口径，拆合单用 + 连接多个来源单号。
+     */
     private static final String DHB_ORDER_NO_EXPRESSION =
             "COALESCE((SELECT MAX(dhb.dhb_order_no) FROM order_number_mapping dhb"
                     + " WHERE dhb.tenant_id=o.tenant_id AND dhb.internal_order_no=o.order_no"
                     + " AND dhb.state='ACTIVE' AND dhb.deleted=0),"
-                    + " CASE WHEN o.source_system_code='DINGHUOBAO' THEN o.source_order_no END)";
+                    + " CASE WHEN o.source_system_code='DINGHUOBAO' THEN o.source_order_no END,"
+                    + " (SELECT GROUP_CONCAT(s.source_no ORDER BY s.source_no SEPARATOR '+')"
+                    + " FROM order_history_member hm JOIN order_sync_source s ON"
+                    + " s.tenant_id=hm.tenant_id AND s.group_id=hm.group_id AND s.state='BOUND'"
+                    + " WHERE hm.tenant_id=o.tenant_id AND hm.order_id=o.id))";
 
     private Sql orderWhere(String tenantId, OrderCriteria c) {
         var where = new Sql();
@@ -1105,7 +1136,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
 
     private static final String PAYMENT_ROW_SELECT =
             "SELECT p.id,p.payment_no,p.source_record_id,p.order_id,o.order_no,"
-                    + " COALESCE((SELECT MAX(dhb.dhb_order_no) FROM order_number_mapping dhb WHERE dhb.tenant_id=o.tenant_id AND dhb.internal_order_no=o.order_no AND dhb.state='ACTIVE' AND dhb.deleted=0), CASE WHEN o.source_system_code='DINGHUOBAO' THEN o.source_order_no END) AS dhb_order_no,"
+                    + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                     + " p.customer_id,p.customer_code_snapshot,p.customer_name_snapshot,"
                     + " COALESCE(snap.region_code,o.region_code) AS region_code,"
                     + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"

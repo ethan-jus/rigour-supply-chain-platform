@@ -100,6 +100,8 @@ public final class OrderRegisterModels {
             BigDecimal quantity,
             BigDecimal unitPrice,
             BigDecimal lineAmount,
+            /** 分摊到本明细的回款金额：订单实收按「明细金额 / 订单应收」比例分摊，部分回款也按比例。 */
+            BigDecimal receivedAmount,
             String orderNo,
             /** 来源系统单号；页面与订单列表口径一致，便于按来源核对。 */
             String sourceOrderNo,

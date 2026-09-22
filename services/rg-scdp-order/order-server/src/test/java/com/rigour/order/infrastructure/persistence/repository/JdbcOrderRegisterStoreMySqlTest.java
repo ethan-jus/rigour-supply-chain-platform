@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.rigour.order.api.v1.model.OrderRegisterModels.HistoryCoverage;
+import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterLineView;
+import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodRow;
 import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodStatisticsView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.ReceivablesView;
@@ -28,6 +30,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -330,6 +333,72 @@ class JdbcOrderRegisterStoreMySqlTest {
                 .collect(java.util.stream.Collectors.toMap(
                         view -> view.orderNo(),
                         view -> view.dhbOrderNo() == null ? "" : view.dhbOrderNo()));
+    }
+
+    @Test
+    void lineReceivedAmountIsAllocatedByLineShareForFullAndPartialPayment() {
+        String tenant = UUID.randomUUID().toString();
+        long orderId = order(tenant, "SO-LINE-PAY-1", 1L, "C-1", "分摊客户", "HZ", "EMP-1", "张三",
+                "2026-09-11T05:00:00Z", 100, 0);
+        insertLine(tenant, orderId, 1, "台呢", "60");
+        insertLine(tenant, orderId, 2, "皮头", "40");
+        insertPayment(tenant, "PAY-LINE-1", orderId, "2026-09-12T05:00:00Z", 50, "RECEIVED", null);
+
+        // 部分回款：按明细金额占订单应收的比例分摊（60% / 40%），合计等于订单实收
+        var partial = lineStats(tenant, "台呢");
+        assertThat(partial.total()).isEqualTo(1);
+        assertThat(partial.items().getFirst().receivedAmount()).isEqualByComparingTo("30.00");
+        var partialTotals = lineTotals(tenant, null);
+        assertThat(partialTotals.get("receivedAmount")).isEqualByComparingTo("50.00");
+        assertThat(partialTotals.get("lineAmount")).isEqualByComparingTo("100.00");
+
+        // 全部回款：明细分摊回到各自明细金额
+        insertPayment(tenant, "PAY-LINE-2", orderId, "2026-09-13T05:00:00Z", 50, "CHECKED", "TXN-LINE-2");
+        var full = lineStats(tenant, null);
+        assertThat(full.items()).hasSize(2);
+        assertThat(full.items())
+                .extracting(view -> view.receivedAmount().toPlainString())
+                .containsExactlyInAnyOrder("60.00", "40.00");
+        assertThat(lineTotals(tenant, null).get("receivedAmount")).isEqualByComparingTo("100.00");
+    }
+
+    private static OrderRegisterPage<OrderRegisterLineView> lineStats(
+            String tenant, String productKeyword) {
+        return store.lines(
+                tenant,
+                0,
+                50,
+                new LineCriteria(
+                        null, null, null, null, null, null, null, null, null, null,
+                        productKeyword, null, null));
+    }
+
+    private static Map<String, BigDecimal> lineTotals(String tenant, String productKeyword) {
+        return store.lines(
+                        tenant,
+                        0,
+                        50,
+                        new LineCriteria(
+                                null, null, null, null, null, null, null, null, null, null,
+                                productKeyword, null, null))
+                .totals();
+    }
+
+    private static void insertLine(String tenant, long orderId, int lineNo, String productName, String amount) {
+        jdbc.update(
+                "INSERT INTO order_sales_order_line(tenant_id,order_id,line_no,product_id,product_variant_id,"
+                        + " product_code_snapshot,sku_code_snapshot,product_name_snapshot,unit_code,quantity,"
+                        + " unit_price,discount_amount,line_amount,revision,created_by,created_time,updated_by,"
+                        + " updated_time,deleted) VALUES(?,?,?,1,1,?,?,?,'SET',1,?,0,?,1,"
+                        + " 'SYSTEM',UTC_TIMESTAMP(6),'SYSTEM',UTC_TIMESTAMP(6),0)",
+                tenant,
+                orderId,
+                lineNo,
+                "P-" + lineNo,
+                "SKU-" + lineNo,
+                productName,
+                amount,
+                amount);
     }
 
     @Test
