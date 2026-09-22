@@ -339,7 +339,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                         where.args().toArray());
         var items =
                 jdbc.query(
-                        "SELECT p.id,p.payment_no,COALESCE(NULLIF(p.source_record_id,''),NULLIF(p.source_document_no,'')) AS source_record_id,p.order_id,o.order_no,"
+                        "SELECT " + selectedPaymentAmount("p.paid_amount", criteria) + " AS allocated_payment_amount,p.id,p.payment_no,COALESCE(NULLIF(p.source_record_id,''),NULLIF(p.source_document_no,'')) AS source_record_id,p.order_id,o.order_no,"
                                 + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                                 + " p.customer_id,p.customer_code_snapshot,p.customer_name_snapshot,"
                                 + " COALESCE(snap.region_code,o.region_code) AS region_code,"
@@ -357,8 +357,9 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + where.sql()
                                 + paymentOrderBy(criteria)
                                 + " LIMIT ? OFFSET ?",
-                        JdbcOrderRegisterStore::paymentRow,
+                        (rs, i) -> paymentRow(rs, i).withAllocation(rs.getBigDecimal("allocated_payment_amount"), List.of()),
                         append(where.args(), step, begin).toArray());
+        items = withPaymentAllocations(tenantId, items, criteria);
         var totals = paymentTotals(tenantId, criteria);
         return new OrderRegisterPage<>(total, begin, step, items, totals, historyCoverage(tenantId));
     }
@@ -721,15 +722,61 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         return totals;
     }
 
+    private static String paymentProductPredicate(PaymentCriteria criteria) {
+        if (criteria.productIds() == null) return "1=1";
+        if (criteria.productIds().isEmpty()) return "1=0";
+        return "l.product_id IN (" + criteria.productIds().stream().map(String::valueOf)
+                .collect(java.util.stream.Collectors.joining(",")) + ")";
+    }
+
+    // Cumulative rounded amounts keep every line stable across filters and absorb the final cent.
+    private static String paymentLineAmount(String amount) {
+        return "CASE WHEN la.original_amount<=0 THEN NULL ELSE "
+                + "ROUND(" + amount + "*la.cumulative_amount/la.original_amount,2)"
+                + "-ROUND(" + amount + "*la.previous_amount/la.original_amount,2) END";
+    }
+
+    private static String selectedPaymentAmount(String amount, PaymentCriteria criteria) {
+        if (criteria.productIds() == null) return amount;
+        return "(SELECT SUM(" + paymentLineAmount(amount) + ") FROM order_sales_order_line l "
+                + LINE_ALLOCATION_JOIN
+                + " WHERE l.tenant_id=o.tenant_id AND l.order_id=o.id AND l.deleted=0 AND "
+                + paymentProductPredicate(criteria) + ")";
+    }
+
+    private List<OrderRegisterPaymentView> withPaymentAllocations(String tenantId,
+            List<OrderRegisterPaymentView> items, PaymentCriteria criteria) {
+        if (items.isEmpty()) return items;
+        String ids = items.stream().map(item -> item.id().toString())
+                .collect(java.util.stream.Collectors.joining(","));
+        Map<Long, List<OrderRegisterModels.PaymentProductAllocation>> allocations = new LinkedHashMap<>();
+        jdbc.query("SELECT p.id AS payment_id,l.id,l.product_id,l.product_code_snapshot,l.product_name_snapshot,"
+                        + " l.unit_price*l.quantity AS original_amount,"
+                        + paymentLineAmount("p.paid_amount") + " AS allocated_amount,"
+                        + " (" + paymentProductPredicate(criteria) + ") AS matched"
+                        + " FROM order_payment_record p JOIN order_sales_order_line l"
+                        + " ON l.tenant_id=p.tenant_id AND l.order_id=p.order_id AND l.deleted=0"
+                        + LINE_ALLOCATION_JOIN
+                        + " WHERE p.tenant_id=? AND p.deleted=0 AND p.id IN (" + ids + ") ORDER BY p.id,l.line_no,l.id",
+                (org.springframework.jdbc.core.RowCallbackHandler) rs -> allocations.computeIfAbsent(rs.getLong("payment_id"), key -> new ArrayList<>())
+                        .add(new OrderRegisterModels.PaymentProductAllocation(rs.getLong("id"), nullableLong(rs,"product_id"),
+                                rs.getString("product_code_snapshot"), rs.getString("product_name_snapshot"),
+                                rs.getBigDecimal("original_amount"), rs.getBigDecimal("allocated_amount"), rs.getBoolean("matched"))),
+                tenantId);
+        return items.stream().map(item -> item.withAllocation(item.allocatedPaymentAmount(),
+                allocations.getOrDefault(item.id(), List.of()))).toList();
+    }
+
     private Map<String, BigDecimal> paymentTotals(String tenantId, PaymentCriteria criteria) {
         var where = paymentWhere(tenantId, criteria);
+        String amount = selectedPaymentAmount("p.paid_amount", criteria);
         var row =
                 jdbc.queryForMap(
-                        "SELECT "
-                                + " COALESCE(SUM(CASE WHEN p.payment_status_code IN ('RECEIVED','CHECKED') THEN p.paid_amount ELSE 0 END),0) received_amount,"
-                                + " COALESCE(SUM(CASE WHEN p.payment_status_code='CHECKED' THEN p.paid_amount ELSE 0 END),0) checked_amount,"
-                                + " COALESCE(SUM(CASE WHEN p.payment_status_code='PENDING' THEN p.paid_amount ELSE 0 END),0) pending_amount,"
-                                + " COALESCE(SUM(CASE WHEN p.payment_status_code='CANCELLED' THEN p.paid_amount ELSE 0 END),0) cancelled_amount "
+                        "SELECT SUM(CASE WHEN " + amount + " IS NULL THEN 1 ELSE 0 END) unallocated_count,"
+                                + " COALESCE(SUM(CASE WHEN p.payment_status_code IN ('RECEIVED','CHECKED') THEN " + amount + " ELSE 0 END),0) received_amount,"
+                                + " COALESCE(SUM(CASE WHEN p.payment_status_code='CHECKED' THEN " + amount + " ELSE 0 END),0) checked_amount,"
+                                + " COALESCE(SUM(CASE WHEN p.payment_status_code='PENDING' THEN " + amount + " ELSE 0 END),0) pending_amount,"
+                                + " COALESCE(SUM(CASE WHEN p.payment_status_code='CANCELLED' THEN " + amount + " ELSE 0 END),0) cancelled_amount "
                                 + " FROM order_payment_record p "
                                 + " JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id AND o.deleted=0 "
                                 + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
@@ -742,13 +789,15 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 "SELECT COALESCE(SUM(m.payable_amount),0) related_amount,"
                         + " COALESCE(SUM(m.unpaid_amount),0) unpaid_amount,"
                         + " COUNT(DISTINCT m.customer_id) customer_count FROM ("
-                        + " SELECT DISTINCT o.id,o.payable_amount,o.unpaid_amount,o.customer_id"
+                        + " SELECT DISTINCT o.id," + selectedPaymentAmount("o.payable_amount", criteria) + " payable_amount,"
+                        + selectedPaymentAmount("o.unpaid_amount", criteria) + " unpaid_amount,o.customer_id"
                         + " FROM order_payment_record p"
                         + " JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id AND o.deleted=0"
                         + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN'"
                         + " WHERE " + where.sql() + ") m",
                 where.args().toArray());
         Map<String, BigDecimal> totals = new LinkedHashMap<>();
+        totals.put("unallocatedCount", decimal(row, "unallocated_count"));
         totals.put("receivedAmount", decimal(row, "received_amount"));
         totals.put("checkedAmount", decimal(row, "checked_amount"));
         totals.put("pendingDocumentAmount", decimal(row, "pending_amount"));
@@ -1006,6 +1055,9 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         ge(where, "p.payment_time", c.paymentTimeFrom());
         lt(where, "p.payment_time", c.paymentTimeTo());
         eq(where, "COALESCE(NULLIF(TRIM(o.source_creator_name),''),p.created_by)", c.createdBy());
+        if (c.productIds() != null) {
+            where.and("EXISTS (SELECT 1 FROM order_sales_order_line l WHERE l.tenant_id=o.tenant_id AND l.order_id=o.id AND l.deleted=0 AND " + paymentProductPredicate(c) + ")");
+        }
         var scope = scopes.predicate("order:read", "o.", null);
         where.and("(" + scope.sql() + ")", scope.args().toArray());
         return where;

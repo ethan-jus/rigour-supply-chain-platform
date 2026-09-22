@@ -176,12 +176,67 @@ public final class OrderRegisterModels {
             Instant syncedAt,
             String checkedBy,
             Instant checkedAt,
+            Integer revision,
+            BigDecimal allocatedPaymentAmount,
+            List<PaymentProductAllocation> productAllocations) {
+        public OrderRegisterPaymentView(
+            Long id,
+            String paymentNo,
+            String sourceRecordId,
+            Long orderId,
+            String orderNo,
+            String dhbOrderNo,
+            Long customerId,
+            String customerCode,
+            String customerName,
+            String regionCode,
+            String regionName,
+            String ownerEmployeeCode,
+            String ownerEmployeeName,
+            Long departmentId,
+            String departmentName,
+            Instant orderDate,
+            BigDecimal orderAmount,
+            BigDecimal paidAmount,
+            String paymentStatusCode,
+            Instant paymentTime,
+            String transactionNo,
+            List<String> attachments,
+            List<FundDocumentAttachmentView> attachmentViews,
+            String createdBy,
+            Instant createdTime,
+            String updatedBy,
+            Instant updatedTime,
+            String syncedBy,
+            Instant syncedAt,
+            String checkedBy,
+            Instant checkedAt,
             Integer revision) {
+            this(id, paymentNo, sourceRecordId, orderId, orderNo, dhbOrderNo, customerId, customerCode,
+                    customerName, regionCode, regionName, ownerEmployeeCode, ownerEmployeeName, departmentId,
+                    departmentName, orderDate, orderAmount, paidAmount, paymentStatusCode, paymentTime,
+                    transactionNo, attachments, attachmentViews, createdBy, createdTime, updatedBy, updatedTime,
+                    syncedBy, syncedAt, checkedBy, checkedAt, revision, null, List.of());
+        }
+
+        public OrderRegisterPaymentView withAllocation(BigDecimal amount, List<PaymentProductAllocation> lines) {
+            return new OrderRegisterPaymentView(id, paymentNo, sourceRecordId, orderId, orderNo, dhbOrderNo,
+                    customerId, customerCode, customerName, regionCode, regionName, ownerEmployeeCode,
+                    ownerEmployeeName, departmentId, departmentName, orderDate, orderAmount, paidAmount,
+                    paymentStatusCode, paymentTime, transactionNo, attachments, attachmentViews, createdBy,
+                    createdTime, updatedBy, updatedTime, syncedBy, syncedAt, checkedBy, checkedAt, revision,
+                    amount, lines);
+        }
         public OrderRegisterPaymentView {
+            productAllocations = productAllocations == null ? List.of() : List.copyOf(productAllocations);
             attachments = attachments == null ? List.of() : List.copyOf(attachments);
             attachmentViews = attachmentViews == null ? List.of() : List.copyOf(attachmentViews);
         }
     }
+
+    /** 分析分摊，不代表来源付款单指定了具体商品。 */
+    public record PaymentProductAllocation(Long lineId, Long productId, String productCode,
+            String productName, BigDecimal originalAmount, BigDecimal allocatedAmount, boolean matched) {}
 
     /** 期间统计合计；五项口径与分组行一致。 */
     public record PeriodTotals(

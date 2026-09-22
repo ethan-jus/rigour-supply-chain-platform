@@ -229,8 +229,12 @@ public class OrderRegisterService {
             Instant paymentTimeFrom,
             Instant paymentTimeTo,
             String sortBy,
-            String sortDirection, String createdBy) {
+            String sortDirection, String createdBy,
+            List<Long> productIds) {
         CallerIdentity actor = actor(READ_PERMISSION);
+        if (productIds != null && (productIds.size() > 10000 || productIds.stream().anyMatch(id -> id == null || id < 0))) {
+            throw badRequest("productIds无效或超过10000个");
+        }
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         requireRange(paymentTimeFrom, paymentTimeTo, "paymentTimeFrom不能晚于paymentTimeTo");
         var criteria =
@@ -251,7 +255,7 @@ public class OrderRegisterService {
                         paymentTimeFrom,
                         paymentTimeTo,
                         text(sortBy, 32, "sortBy"),
-                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"));
+                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds);
         var result = store.payments(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
     }
@@ -493,7 +497,7 @@ public class OrderRegisterService {
                             v.attachments(), v.attachmentViews(), v.createdBy(), v.createdTime(),
                             v.updatedBy(),
                             v.updatedTime(), v.syncedBy(), v.syncedAt(), v.checkedBy(),
-                            v.checkedAt(), v.revision());
+                            v.checkedAt(), v.revision(), v.allocatedPaymentAmount(), v.productAllocations());
         }
         if (item instanceof ReceivablesView v) {
             return (T)
@@ -581,7 +585,7 @@ public class OrderRegisterService {
                             v.paidAmount(), v.paymentStatusCode(), v.paymentTime(), v.transactionNo(),
                             v.attachments(), v.attachmentViews(), v.createdBy(), v.createdTime(),
                             v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.checkedBy(),
-                            v.checkedAt(), v.revision());
+                            v.checkedAt(), v.revision(), v.allocatedPaymentAmount(), v.productAllocations());
         }
         return item;
     }
@@ -728,7 +732,7 @@ public class OrderRegisterService {
                 item.paidAmount(), item.paymentStatusCode(), item.paymentTime(), item.transactionNo(),
                 item.attachments(), views, item.createdBy(), item.createdTime(), item.updatedBy(),
                 item.updatedTime(), item.syncedBy(), item.syncedAt(), item.checkedBy(),
-                item.checkedAt(), item.revision());
+                item.checkedAt(), item.revision(), item.allocatedPaymentAmount(), item.productAllocations());
     }
 
     private String temporaryFundAttachmentUrl(String tenantId, String objectKey) {

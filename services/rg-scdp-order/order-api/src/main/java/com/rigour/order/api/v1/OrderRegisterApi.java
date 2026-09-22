@@ -97,7 +97,8 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) Instant paymentTimeTo,
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDirection,
-            @RequestParam(required = false) String createdBy);
+            @RequestParam(required = false) String createdBy,
+            @RequestParam(required = false) List<Long> productIds);
 
     /** 财务核对回款：与银行流水核对后写入交易单号，用于凭证验重与对账。 */
     @PostMapping(BASE_PATH + "/payments/{id}/check")
@@ -207,7 +208,10 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) String paymentStatusCode,
             @RequestParam(required = false) Instant paymentTimeFrom,
             @RequestParam(required = false) Instant paymentTimeTo,
-            @RequestParam(required = false) String createdBy);
+            @RequestParam(required = false) String createdBy,
+            @RequestParam(required = false) List<Long> productIds,
+            @RequestParam(required = false) String sortBy,
+            @RequestParam(required = false) String sortDirection);
 
     @GetMapping(value = BASE_PATH + "/statistics/receivables/export", produces = "text/csv;charset=UTF-8")
     ResponseEntity<byte[]> exportReceivables(

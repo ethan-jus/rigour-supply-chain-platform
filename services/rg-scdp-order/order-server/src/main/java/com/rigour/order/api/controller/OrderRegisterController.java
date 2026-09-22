@@ -144,7 +144,8 @@ public class OrderRegisterController implements OrderRegisterApi {
             Instant paymentTimeFrom,
             Instant paymentTimeTo,
             String sortBy,
-            String sortDirection, String createdBy) {
+            String sortDirection, String createdBy,
+            List<Long> productIds) {
         return ApiResponse.success(
                 service.payments(
                         begin,
@@ -166,7 +167,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         paymentTimeFrom,
                         paymentTimeTo,
                         sortBy,
-                        sortDirection, createdBy));
+                        sortDirection, createdBy, productIds));
     }
 
     @Override
@@ -432,7 +433,10 @@ public class OrderRegisterController implements OrderRegisterApi {
             String transactionNo,
             String paymentStatusCode,
             Instant paymentTimeFrom,
-            Instant paymentTimeTo, String createdBy) {
+            Instant paymentTimeTo, String createdBy,
+            List<Long> productIds,
+            String sortBy,
+            String sortDirection) {
         List<OrderRegisterPaymentView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -455,21 +459,20 @@ public class OrderRegisterController implements OrderRegisterApi {
                             paymentStatusCode,
                             paymentTimeFrom,
                             paymentTimeTo,
-                            null,
-                            null, createdBy);
+                            sortBy,
+                            sortDirection, createdBy, productIds);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
-        return csv(
-                "payments.csv",
-                new String[] {
+        var headers = new ArrayList<>(List.of(
                     "收款编码", "来源付款编码", "订单号", "客户名称", "归属地区", "业务员", "订单金额",
-                    "收款金额", "收款状态", "收款时间", "交易单号", "核对人", "核对时间"
-                },
-                rows.stream()
+                    "收款金额", "收款状态", "收款时间", "交易单号", "审核人", "审核时间"
+                ));
+        if (productIds != null) headers.add("筛选商品分摊金额");
+        return csv("payments.csv", headers.toArray(String[]::new), rows.stream()
                         .map(
-                                r ->
-                                        List.of(
+                                r -> {
+                                        List<String> values = new ArrayList<>(List.of(
                                                 str(r.paymentNo()),
                                                 str(r.sourceRecordId()),
                                                 str(r.orderNo()),
@@ -484,7 +487,10 @@ public class OrderRegisterController implements OrderRegisterApi {
                                                 time(r.paymentTime()),
                                                 str(r.transactionNo()),
                                                 str(r.checkedBy()),
-                                                time(r.checkedAt())))
+                                                time(r.checkedAt())));
+                                        if (productIds != null) values.add(r.allocatedPaymentAmount() == null ? "无法分摊" : dec(r.allocatedPaymentAmount()));
+                                        return values;
+                                })
                         .toList());
     }
 

@@ -29,6 +29,23 @@ class OrderRegisterControllerTest {
     private final OrderRegisterController controller = new OrderRegisterController(service);
 
     @Test
+    void paymentExportPreservesProductFilterAndActualPaymentAmount() {
+        var row = mock(com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPaymentView.class);
+        when(row.paymentNo()).thenReturn("PAY-1");
+        when(row.paidAmount()).thenReturn(new BigDecimal("50.00"));
+        when(row.allocatedPaymentAmount()).thenReturn(new BigDecimal("10.00"));
+        when(service.payments(eq(0), eq(200), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any(), eq("paymentTime"), eq("asc"), any(), eq(List.of(101L))))
+                .thenReturn(new com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage<>(1,0,200,List.of(row),java.util.Map.of(),null));
+        var response = controller.exportPayments(null,null,null,null,null,null,null,null,null,null,null,null,null,null,
+                null,null,null,List.of(101L),"paymentTime","asc");
+        String csv = new String(response.getBody(), StandardCharsets.UTF_8);
+        assertThat(csv).contains("审核人,审核时间,筛选商品分摊金额");
+        assertThat(csv).contains("50.00");
+        assertThat(csv).contains("10.00");
+    }
+
+    @Test
     void exportPeriodWritesBomHeaderAndEscapesLabels() {
         when(service.periodStatistics(
                         any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))

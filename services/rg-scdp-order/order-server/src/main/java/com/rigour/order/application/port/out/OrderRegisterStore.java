@@ -120,7 +120,7 @@ public interface OrderRegisterStore {
             /** 排序字段：paymentTime / createdTime / syncedAt；空按收款时间倒序。 */
             String sortBy,
             String sortDirection,
-            String createdBy) {
+            String createdBy, List<Long> productIds) {
     }
 
     record PeriodCriteria(

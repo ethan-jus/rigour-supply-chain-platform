@@ -538,7 +538,7 @@ class OrderAttributionAndScopeIntegrationTest {
                         10,
                         new com.rigour.order.application.port.out.OrderRegisterStore.PaymentCriteria(
                                 null, null, null, null, null, null, null, null, null, null,
-                                "PAY-SYNC-0001", null, null, null, null, null, null, null));
+                                "PAY-SYNC-0001", null, null, null, null, null, null, null, null));
         var paymentView = paymentPage.items().getFirst();
         assertThat(paymentView.syncedBy()).isEqualTo("系统自动同步");
         assertThat(paymentView.syncedAt()).isEqualTo(syncedAt);
