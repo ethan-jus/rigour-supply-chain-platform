@@ -307,8 +307,22 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
             var old = rows.getFirst();
             group = text(old, "group_id");
             require(num(old, "customer_id") == c.order().customerId(), "来源订单客户发生变化，必须先人工核对");
-            if (c.checksum().equals(text(old, "checksum")))
-                return new Intake(text(old, "state"), group, null);
+            if (c.checksum().equals(text(old, "checksum"))) {
+                String stored = text(old, "state");
+                // 历史关联进度会改变新旧订单判定：校验和未变也要按当前关联状态重算，只允许向上收敛。
+                if (Set.of("HISTORY_PENDING", "NEW_OR_HISTORY_REVIEW", "DATE_REVIEW").contains(stored)
+                        && !stored.equals(state)) {
+                    jdbc.update(
+                            "UPDATE order_sync_source SET state=?,revision=revision+1 WHERE tenant_id=?"
+                                + " AND connector_id=? AND source_no=?",
+                            state,
+                            t,
+                            c.connectorId().toString(),
+                            c.sourceNo());
+                    return new Intake(state, group, null);
+                }
+                return new Intake(stored, group, null);
+            }
             if (group != null) {
                 var previous = JSON.readValue(text(old, "payload"), SalesOrderCommand.class);
                 if (money(old, "amount").compareTo(amount) == 0
@@ -495,18 +509,58 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                                 + text(line, "unit_code"),
                         money(line, "quantity"));
         }
-        HistorySyncRules.equal(left, right, "关联组");
-        require(l.equals(r), "商品、规格、单位或数量结构不一致，需先核对明细");
+        String differenceReason =
+                c.differenceReason() == null ? null : c.differenceReason().strip();
+        boolean hasReason =
+                differenceReason != null
+                        && differenceReason.length() >= 5
+                        && differenceReason.length() <= 200;
+        // 单位换算/规格口径差异以订货宝为准时，明细结构可以不同，但必须留差异原因；金额口径同理。
+        if (!l.equals(r))
+            require(hasReason, "商品、规格、单位或数量结构不一致，请填写5至200字的差异原因");
+        boolean sameAmount = left.compareTo(right) == 0;
+        BigDecimal orderAmountBefore = right;
+        if (!sameAmount) {
+            require(hasReason, "关联组金额不一致，请填写5至200字的差额原因");
+            if (Boolean.TRUE.equals(c.alignOrderAmount())) {
+                // 业务确认以订货宝金额为结算口径：原子对齐历史订单金额并保留原始差额审计。
+                require(
+                        c.sources().size() == 1 && c.orders().size() == 1,
+                        "差额金额对齐仅支持一对一关联，拆合单需人工核对");
+                var baseline = c.orders().getFirst();
+                var o = order(t, baseline.orderId());
+                BigDecimal paid = money(o, "paid_amount");
+                require(
+                        paid.compareTo(HistorySyncRules.money(left)) <= 0,
+                        "订单已收超过订货宝金额，不能对齐，需人工核对");
+                BigDecimal newUnpaid = HistorySyncRules.money(left).subtract(paid);
+                jdbc.update(
+                        "UPDATE order_sales_order SET"
+                            + " payable_amount=?,unpaid_amount=?,source_unpaid_amount=?,"
+                            + "updated_time=?,revision=revision+1 WHERE tenant_id=? AND id=?",
+                        HistorySyncRules.money(left),
+                        newUnpaid,
+                        newUnpaid,
+                        ts(Instant.now()),
+                        t,
+                        baseline.orderId());
+                right = left;
+            }
+        }
         jdbc.update(
                 "INSERT INTO"
-                    + " order_history_group(tenant_id,id,customer_id,evidence,actor_id,created_at)"
-                    + " VALUES(?,?,?,?,?,?)",
+                    + " order_history_group(tenant_id,id,customer_id,evidence,actor_id,created_at,source_amount,order_amount,difference_amount,difference_reason)"
+                    + " VALUES(?,?,?,?,?,?,?,?,?,?)",
                 t,
                 group,
                 c.customerId(),
                 c.evidence(),
                 actor,
-                ts(Instant.now()));
+                ts(Instant.now()),
+                auditMoney(left),
+                auditMoney(orderAmountBefore),
+                auditMoney(left.subtract(orderAmountBefore)),
+                differenceReason);
         for (var ref : c.sources())
             jdbc.update(
                     "UPDATE order_sync_source SET group_id=?,state='BOUND',revision=revision+1"
@@ -532,6 +586,11 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     private static void merge(Map<String, BigDecimal> values, String key, BigDecimal quantity) {
         require(quantity != null && quantity.signum() >= 0 && !key.contains("null"), "商品映射或数量缺失");
         values.merge(key, quantity.stripTrailingZeros(), (x, y) -> x.add(y).stripTrailingZeros());
+    }
+
+    /** 关联组审计金额：来源快照可能带多于两位的小数，按分四舍五入后记录，原始值保留在差额原因里。 */
+    private static BigDecimal auditMoney(BigDecimal value) {
+        return value == null ? null : value.setScale(2, RoundingMode.HALF_UP);
     }
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
@@ -600,8 +659,13 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 return new Intake(text(v, "state"), text(v, "group_id"), "旧版本响应已忽略");
             if (c.checksum().equals(text(v, "pending_checksum")))
                 return new Intake("SOURCE_CHANGED_REVIEW", text(v, "group_id"), "来源变更待核实，原已入账事实保留");
+            boolean confirmedStatusCorrection =
+                    "STATUS_REVIEW".equals(text(v, "state"))
+                            && "CONFIRMED".equals(c.status())
+                            && !"CONFIRMED".equals(text(v, "source_status"));
             if (c.checksum().equals(text(v, "checksum"))
-                    && Objects.equals(group, text(v, "group_id"))) {
+                    && Objects.equals(group, text(v, "group_id"))
+                    && !confirmedStatusCorrection) {
                 resolveOwner(t, c, customer);
                 if (group == null
                         && !sources.isEmpty()

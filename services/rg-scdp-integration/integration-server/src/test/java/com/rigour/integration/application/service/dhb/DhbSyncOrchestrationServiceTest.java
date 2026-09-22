@@ -34,6 +34,7 @@ import com.rigour.settings.client.BusinessDictionaryBatchClient.MappingIssue;
 import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -775,6 +776,28 @@ class DhbSyncOrchestrationServiceTest {
         assertThat(DhbOrderSyncService.verifiedReceiptStatus(null)).isEqualTo("UNKNOWN");
         assertThat(DhbOrderSyncService.verifiedReceiptStatus("pend_receipted")).isEqualTo("PENDING");
         assertThat(DhbOrderSyncService.verifiedReceiptStatus("cancelled")).isEqualTo("CANCELLED");
+    }
+
+    @Test
+    void receiptWithoutSourceStatusIsTreatedAsConfirmed() {
+        assertThat(DhbOrderSyncService.receiptIntakeStatus(null)).isEqualTo("UNKNOWN");
+        assertThat(DhbOrderSyncService.receiptIntakeStatus(receiptWithStatus(null)))
+                .isEqualTo("CONFIRMED");
+        assertThat(DhbOrderSyncService.receiptIntakeStatus(receiptWithStatus("")))
+                .isEqualTo("CONFIRMED");
+        assertThat(DhbOrderSyncService.receiptIntakeStatus(receiptWithStatus("confirmed")))
+                .isEqualTo("CONFIRMED");
+        assertThat(DhbOrderSyncService.receiptIntakeStatus(receiptWithStatus("cancelled")))
+                .isEqualTo("CANCELLED");
+        assertThat(DhbOrderSyncService.receiptIntakeStatus(receiptWithStatus("unexpected-status")))
+                .isEqualTo("UNKNOWN");
+    }
+
+    private static DhbClient.Receipt receiptWithStatus(String status) {
+        return new DhbClient.Receipt("FR.1", "FR.1", "DH-1", "C-1", "G-1", "13", "Offline",
+                new BigDecimal("100.00"), status, Instant.parse("2026-08-25T16:00:00Z"),
+                Instant.parse("2026-08-26T06:39:00Z"), Instant.parse("2026-08-26T06:40:00Z"),
+                "S-1", null, null, null, null, Map.of());
     }
 
     private static SyncTargetView target(UUID taskId) {

@@ -29,10 +29,22 @@ public final class HistorySyncModels {
     public record Baseline(long orderId, int revision, Instant cutoff, BigDecimal openingPaid) {}
 
     public record Bind(
-            long customerId, List<SourceRef> sources, List<Baseline> orders, String evidence) {
+            long customerId, List<SourceRef> sources, List<Baseline> orders, String evidence,
+            String differenceReason, Boolean alignOrderAmount) {
         public Bind {
             sources = sources == null ? List.of() : List.copyOf(sources);
             orders = orders == null ? List.of() : List.copyOf(orders);
+        }
+
+        public Bind(
+                long customerId, List<SourceRef> sources, List<Baseline> orders, String evidence) {
+            this(customerId, sources, orders, evidence, null, null);
+        }
+
+        public Bind(
+                long customerId, List<SourceRef> sources, List<Baseline> orders, String evidence,
+                String differenceReason) {
+            this(customerId, sources, orders, evidence, differenceReason, null);
         }
     }
 

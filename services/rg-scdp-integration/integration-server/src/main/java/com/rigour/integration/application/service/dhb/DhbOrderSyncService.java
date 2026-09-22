@@ -76,6 +76,7 @@ import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -128,6 +129,11 @@ public final class DhbOrderSyncService {
     private static final int DEFAULT_MAX_PAGES = 100;
     private static final int DEFAULT_DETAIL_CONCURRENCY = 3;
     private static final int MAX_DETAIL_CONCURRENCY = 16;
+    /** 运营明确标记为 NEW 的历史来源统一使用的业务日期；订货宝录入时间仍保留在来源审计字段。 */
+    private static final Instant HISTORICAL_STAGED_BUSINESS_DATE =
+            OffsetDateTime.parse("2026-08-31T00:00:00+08:00").toInstant();
+    private static final Instant HISTORY_CUTOVER =
+            OffsetDateTime.parse("2026-09-04T00:00:00+08:00").toInstant();
     private static final long DETAIL_PROJECTION_TIMEOUT_SECONDS = 180;
     private static final int DEFAULT_INCREMENTAL_OVERLAP_SECONDS = 600;
     private static final Duration SCHEDULED_WINDOW_SAFETY_LAG = Duration.ofMinutes(2);
@@ -400,7 +406,7 @@ public final class DhbOrderSyncService {
             } else {
                 counts.fetched = 1;
                 counts.add(projectReplayTarget(caller, task, started.runId(), replayTarget,
-                        employeeCache, sourceOrderLocks));
+                        employeeCache, customerRegionCache, sourceOrderLocks));
             }
 
             String status = counts.status();
@@ -592,11 +598,14 @@ public final class DhbOrderSyncService {
                     "MAPPING",Map.of("required","历史关联或新单确认"),Map.of("sourceOrderNo",sourceOrderNo));
                 return ProjectionOutcome.REVIEW;
             }
+            // 只有运维明确把来源状态置为 NEW 的历史单才允许暂存为订货宝新单；
+            // 这一步不会删除或覆盖原飞书订单，后续仍需单独处理替换关系。
+            PreparedSalesOrder projection = stagedHistoricalDate(prepared, intake.state());
             if(current!=null && "FEISHU".equalsIgnoreCase(current.sourceSystemCode()))
                 throw new IllegalStateException("飞书历史订单不能通过订货宝整单更新");
             if (existing != null && existing.internalObjectId() != null
                     && Objects.equals(existing.payloadChecksum(), raw.payloadChecksum())
-                    && projectionComplete(current, prepared.command(), prepared.cancelled())) {
+                    && projectionComplete(current, projection.command(), projection.cancelled())) {
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
                 resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
                 store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "DEBUG",
@@ -604,11 +613,11 @@ public final class DhbOrderSyncService {
                 return ProjectionOutcome.DUPLICATE;
             }
 
-            SalesOrderDetailView projected = upsertSalesOrder(caller.tenantId(), existing, current, prepared);
-            if (prepared.regionFromCustomer()) {
+            SalesOrderDetailView projected = upsertSalesOrder(caller.tenantId(), existing, current, projection);
+            if (projection.regionFromCustomer()) {
                 store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "WARN",
                         "订货宝订单缺少来源地区，已按客户当前归属回填 orderNo=" + sourceOrderNo
-                                + " regionCode=" + prepared.command().regionCode(),
+                                + " regionCode=" + projection.command().regionCode(),
                         "DHB_ORDER_REGION_FROM_CUSTOMER");
             }
             store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
@@ -633,6 +642,24 @@ public final class DhbOrderSyncService {
                     Map.of("error", safeMessage(error)));
             return ProjectionOutcome.REJECTED;
         }
+    }
+
+    /**
+     * 仅对明确标记为 NEW 的历史来源应用 8 月 31 日兜底业务日期。
+     * HISTORY_PENDING/BOUND 仍保持历史保护流程，避免误把待核对来源投影成新单。
+     */
+    private static PreparedSalesOrder stagedHistoricalDate(PreparedSalesOrder prepared, String intakeState) {
+        if (!"NEW".equals(intakeState)
+                || prepared == null
+                || prepared.command() == null
+                || prepared.command().orderDate() == null
+                || !prepared.command().orderDate().isBefore(HISTORY_CUTOVER)) {
+            return prepared;
+        }
+        return new PreparedSalesOrder(
+                prepared.sourceOrderNo(), prepared.sourceStatus(),
+                withOrderDate(prepared.command(), HISTORICAL_STAGED_BUSINESS_DATE),
+                prepared.cancelled(), prepared.regionFromCustomer());
     }
 
     private void syncReceipts(CallerIdentity caller, SyncTaskContext task, UUID runId,
@@ -841,8 +868,12 @@ public final class DhbOrderSyncService {
     private ProjectionOutcome projectReplayTarget(CallerIdentity caller, SyncTaskContext task,
                                                   UUID runId, ReplayTarget replayTarget,
                                                   Map<String, EmployeeProjection> employeeCache,
+                                                  Map<Long, Optional<String>> customerRegionCache,
                                                   Map<String, Object> sourceOrderLocks) {
         return switch (replayTarget.sourceObjectType()) {
+            case SOURCE_OBJECT_SALES_ORDER ->
+                    projectOrder(caller, task, runId, replayOrderSummary(replayTarget.sourceId()),
+                            employeeCache, customerRegionCache);
             case SOURCE_OBJECT_ERP_STOCK_OUT, SOURCE_OBJECT_SALES_SHIPMENT ->
                     projectShipment(caller, task, runId, replayShipmentSummary(replayTarget.sourceId()),
                             employeeCache, sourceOrderLocks, replayTarget.sourceObjectType());
@@ -855,6 +886,12 @@ public final class DhbOrderSyncService {
         return new Shipment(sourceId, sourceId, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null,
                 null, null, null, Map.of("ShipsNum", sourceId));
+    }
+
+    /** 单笔历史订单重放从详情接口读取业务字段，仍复用客户/商品映射与历史日期保护。 */
+    private static OrderSummary replayOrderSummary(String sourceId) {
+        return new OrderSummary(sourceId, sourceId, null, null, null, null, null, null,
+                Map.of("OrderSN", sourceId));
     }
 
     private ProjectionOutcome projectShipment(CallerIdentity caller, SyncTaskContext task,
@@ -1006,8 +1043,7 @@ public final class DhbOrderSyncService {
                     receipt == null ? null : receipt.updatedAt(), attributes, Instant.now());
             ExternalObjectMapping receiptCustomer=optionalMappingAny(caller.tenantId(),task.connectorId(),List.of("CUSTOMER"),
                 receipt==null?List.of():java.util.stream.Stream.of(receipt.customerNumber(),receipt.customerGuid()).filter(Objects::nonNull).toList());
-            String normalizedReceiptStatus=receiptCancelled(receipt==null?null:receipt.status())?"CANCELLED":
-                receipt!=null ? verifiedReceiptStatus(receipt.status()):"UNKNOWN";
+            String normalizedReceiptStatus=receiptIntakeStatus(receipt);
             var receiptIntake=orderProjectionClient.registerReceipt(orderServiceCaller(caller.tenantId()),
                 new com.rigour.order.api.v1.model.HistorySyncModels.Receipt(task.connectorId(),sourceReceiptNo,
                     receiptSourceOrderNo(receipt,attributes),receiptCustomer==null?null:receiptCustomer.internalObjectId(),
@@ -3377,6 +3413,20 @@ public final class DhbOrderSyncService {
                 source.syncedAt());
     }
 
+    private static SalesOrderCommand withOrderDate(SalesOrderCommand source, Instant orderDate) {
+        return new SalesOrderCommand(source.customerId(), source.sourceSystemCode(), source.sourceOrderNo(),
+                source.sourceStatusCode(), source.sourceCreatorId(), source.sourceCreatorStaffCode(),
+                source.sourceCreatorName(), source.customerCodeSnapshot(), source.customerNameSnapshot(),
+                source.contactNameSnapshot(), source.contactPhoneSnapshot(), source.regionCode(),
+                source.ownerSalesUserId(), source.ownerSalesName(), source.ownerEmployeeCode(),
+                source.ownerEmployeeNameSnapshot(), orderDate, source.orderTypeCode(),
+                source.paymentMethodCode(), source.paymentVoucherKeys(), source.sourceUnpaidAmount(),
+                source.discountRate(), source.discountAmount(), source.remark(), source.lines(),
+                source.submit(), source.revision(), source.businessOrderNoOverride(),
+                source.sourceCreatedAt(), source.sourceUpdatedAt(), source.sourceModifierId(),
+                source.sourceModifierName(), source.syncedBy(), source.syncedAt());
+    }
+
     private static SalesPaymentRecordCommand withRevision(
             SalesPaymentRecordCommand source, Integer revision) {
         return new SalesPaymentRecordCommand(source.connectorId(), source.sourceSystemCode(),
@@ -3483,6 +3533,17 @@ public final class DhbOrderSyncService {
         if(Set.of("confirmed","confirm","receipted","received","completed","finished","已收款","已确认","已审核").contains(value))return "CONFIRMED";
         if(value.startsWith("pend")||Set.of("draft","new","waiting","wait","created").contains(value)||value.contains("待"))return "PENDING";
         return "UNKNOWN";
+    }
+
+    /**
+     * 收款单入账状态：订货宝收款单接口不返回状态字段，缺省按已确认入账（拉取范围只含有效收款单）；
+     * 显式出现未识别状态值时保留 UNKNOWN 交人工核对，取消状态仍按取消处理。
+     */
+    static String receiptIntakeStatus(DhbClient.Receipt receipt) {
+        if(receiptCancelled(receipt==null?null:receipt.status()))return "CANCELLED";
+        if(receipt==null)return "UNKNOWN";
+        if(receipt.status()==null||receipt.status().isBlank())return "CONFIRMED";
+        return verifiedReceiptStatus(receipt.status());
     }
 
     private static boolean receiptCancelled(String sourceStatus) {
@@ -3864,10 +3925,12 @@ public final class DhbOrderSyncService {
             throw new IllegalArgumentException("订货宝单对象重放不能同时提供同步窗口 from/to");
         }
         String normalizedObjectType = sourceObjectType.toUpperCase(Locale.ROOT);
-        if (!SOURCE_OBJECT_ERP_STOCK_OUT.equals(normalizedObjectType)
+        if (!SOURCE_OBJECT_SALES_ORDER.equals(normalizedObjectType)
+                && !SOURCE_OBJECT_ERP_STOCK_OUT.equals(normalizedObjectType)
                 && !SOURCE_OBJECT_SALES_SHIPMENT.equals(normalizedObjectType)) {
             throw new IllegalArgumentException("当前订货宝单对象重放只支持 sourceObjectType="
-                    + SOURCE_OBJECT_ERP_STOCK_OUT + " 或 " + SOURCE_OBJECT_SALES_SHIPMENT);
+                    + SOURCE_OBJECT_SALES_ORDER + "、" + SOURCE_OBJECT_ERP_STOCK_OUT + " 或 "
+                    + SOURCE_OBJECT_SALES_SHIPMENT);
         }
         return new ReplayTarget(normalizedObjectType, sourceId);
     }

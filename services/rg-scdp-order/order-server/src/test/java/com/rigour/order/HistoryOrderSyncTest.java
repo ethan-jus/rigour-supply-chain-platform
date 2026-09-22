@@ -45,9 +45,9 @@ class HistoryOrderSyncTest {
                     + " BIGINT,source_system_code VARCHAR(32),source_order_no VARCHAR(128),order_no"
                     + " VARCHAR(50),customer_name_snapshot VARCHAR(100),order_date"
                     + " TIMESTAMP,owner_employee_code VARCHAR(50),owner_employee_name_snapshot"
-                    + " VARCHAR(100),payable_amount DECIMAL(20,2),paid_amount"
-                    + " DECIMAL(20,2),unpaid_amount DECIMAL(20,2),source_unpaid_amount"
-                    + " DECIMAL(20,2),order_status_code VARCHAR(32),payment_status_code"
+                    + " VARCHAR(100),payable_amount DECIMAL(24,6),paid_amount"
+                    + " DECIMAL(24,6),unpaid_amount DECIMAL(24,6),source_unpaid_amount"
+                    + " DECIMAL(24,6),order_status_code VARCHAR(32),payment_status_code"
                     + " VARCHAR(32),revision INT,deleted INT,PRIMARY KEY(tenant_id,id))");
         db.execute(
                 "CREATE TABLE order_sales_order_line(id BIGINT AUTO_INCREMENT PRIMARY"
@@ -60,6 +60,10 @@ class HistoryOrderSyncTest {
                     c,
                     new ClassPathResource(
                             "db/migration/V40__history_order_groups_and_receipt_ledger.sql"));
+            ScriptUtils.executeSqlScript(
+                    c,
+                    new ClassPathResource(
+                            "db/migration/V46__history_group_amount_summary.sql"));
         }
         db.execute("ALTER TABLE order_sales_order ADD updated_time TIMESTAMP");
         db.execute(
@@ -189,6 +193,163 @@ class HistoryOrderSyncTest {
     }
 
     @Test
+    void explainedAmountDifferenceIsRecordedAndRequiresReason() {
+        order(1, 1, "95", "0", "10");
+        intake("D1", 1, "100", "10");
+        assertThatThrownBy(() -> bind(List.of("D1"), List.of(base(1, "0"))))
+                .hasMessageContaining("差额原因");
+        String group =
+                tx.execute(
+                        s ->
+                                store.bind(
+                                        tenant,
+                                        "tester",
+                                        new Bind(
+                                                1,
+                                                List.of(new SourceRef(connector, "D1", 0)),
+                                                List.of(base(1, "0")),
+                                                "原始商品明细和历史余额已核对",
+                                                "订货宝为结算口径，飞书侧含95折差额5元")));
+        var row =
+                db.queryForMap(
+                        "SELECT source_amount,order_amount,difference_amount,difference_reason"
+                            + " FROM order_history_group WHERE tenant_id=? AND id=?",
+                        tenant,
+                        group);
+        assertThat(new BigDecimal(String.valueOf(row.get("source_amount"))))
+                .isEqualByComparingTo("100.00");
+        assertThat(new BigDecimal(String.valueOf(row.get("order_amount"))))
+                .isEqualByComparingTo("95.00");
+        assertThat(new BigDecimal(String.valueOf(row.get("difference_amount"))))
+                .isEqualByComparingTo("5.00");
+        assertThat(String.valueOf(row.get("difference_reason"))).contains("95折");
+        assertThat(
+                        db.queryForObject(
+                                "SELECT state FROM order_sync_source WHERE tenant_id=? AND source_no=?",
+                                String.class,
+                                tenant,
+                                "D1"))
+                .isEqualTo("BOUND");
+        assertThat(
+                        db.queryForObject(
+                                "SELECT COUNT(*) FROM order_history_member WHERE tenant_id=?",
+                                Integer.class,
+                                tenant))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void alignOrderAmountUpdatesFeishuOrderToSourceAmountWithAudit() {
+        order(1, 1, "95", "0", "10");
+        intake("D1", 1, "100", "10");
+        tx.execute(
+                s ->
+                        store.bind(
+                                tenant,
+                                "tester",
+                                new Bind(
+                                        1,
+                                        List.of(new SourceRef(connector, "D1", 0)),
+                                        List.of(base(1, "0")),
+                                        "原始商品明细和历史余额已核对",
+                                        "订货宝为结算口径，飞书侧含95折差额5元",
+                                        true)));
+        var row =
+                db.queryForMap(
+                        "SELECT payable_amount,unpaid_amount,source_unpaid_amount,paid_amount"
+                            + " FROM order_sales_order WHERE tenant_id=? AND id=1",
+                        tenant);
+        assertThat(new BigDecimal(String.valueOf(row.get("payable_amount"))))
+                .isEqualByComparingTo("100.00");
+        assertThat(new BigDecimal(String.valueOf(row.get("unpaid_amount"))))
+                .isEqualByComparingTo("100.00");
+        assertThat(new BigDecimal(String.valueOf(row.get("source_unpaid_amount"))))
+                .isEqualByComparingTo("100.00");
+        assertThat(new BigDecimal(String.valueOf(row.get("paid_amount"))))
+                .isEqualByComparingTo("0.00");
+        var group =
+                db.queryForMap(
+                        "SELECT source_amount,order_amount,difference_amount"
+                            + " FROM order_history_group WHERE tenant_id=?",
+                        tenant);
+        assertThat(new BigDecimal(String.valueOf(group.get("source_amount"))))
+                .isEqualByComparingTo("100.00");
+        assertThat(new BigDecimal(String.valueOf(group.get("order_amount"))))
+                .isEqualByComparingTo("95.00");
+        assertThat(new BigDecimal(String.valueOf(group.get("difference_amount"))))
+                .isEqualByComparingTo("5.00");
+    }
+
+    @Test
+    void multiDecimalOrderAmountAlignsAndRoundsAuditDifference() {
+        order(1, 1, "225.0027", "0", "10");
+        intake("D1", 1, "234.00", "10");
+        tx.execute(
+                s ->
+                        store.bind(
+                                tenant,
+                                "tester",
+                                new Bind(
+                                        1,
+                                        List.of(new SourceRef(connector, "D1", 0)),
+                                        List.of(base(1, "0")),
+                                        "原始商品明细和历史余额已核对",
+                                        "订货宝为结算口径，飞书侧金额225.0027元按订货宝234元对齐",
+                                        true)));
+        var row =
+                db.queryForMap(
+                        "SELECT payable_amount,unpaid_amount FROM order_sales_order"
+                            + " WHERE tenant_id=? AND id=1",
+                        tenant);
+        assertThat(new BigDecimal(String.valueOf(row.get("payable_amount"))))
+                .isEqualByComparingTo("234.00");
+        assertThat(new BigDecimal(String.valueOf(row.get("unpaid_amount"))))
+                .isEqualByComparingTo("234.00");
+        var group =
+                db.queryForMap(
+                        "SELECT source_amount,order_amount,difference_amount"
+                            + " FROM order_history_group WHERE tenant_id=?",
+                        tenant);
+        assertThat(new BigDecimal(String.valueOf(group.get("source_amount"))))
+                .isEqualByComparingTo("234.00");
+        assertThat(new BigDecimal(String.valueOf(group.get("order_amount"))))
+                .isEqualByComparingTo("225.00");
+        assertThat(new BigDecimal(String.valueOf(group.get("difference_amount"))))
+                .isEqualByComparingTo("9.00");
+    }
+
+    @Test
+    void reclassificationAfterHistoryLinkedTurnsReviewIntoNew() {
+        order(1, 1, "1000", "0", "10");
+        intake("H1", 1, "1000", "10");
+        SourceOrder fresh =
+                new SourceOrder(
+                        connector,
+                        "N1",
+                        JsonMapper.builder()
+                                .build()
+                                .readValue(
+                                        "{\"customerId\":1,\"sourceSystemCode\":\"DINGHUOBAO\",\"sourceOrderNo\":\"N1\","
+                                            + "\"orderDate\":\"2026-09-10T00:00:00Z\",\"lines\":[{\"productId\":1,"
+                                            + "\"productVariantId\":11,\"unitCode\":\"BOX\",\"quantity\":10}]}",
+                                        SalesOrderCommand.class),
+                        new BigDecimal("1000"),
+                        "hash-N1");
+        // 客户仍有未关联历史单：切换后新单先进入新旧待确认
+        assertThat(store.sourceOrder(tenant, fresh).state()).isEqualTo("NEW_OR_HISTORY_REVIEW");
+        bind(List.of("H1"), List.of(base(1, "0")));
+        // 历史关联完成后重放同一来源（校验和未变）：应向上收敛为可建单的 NEW
+        assertThat(store.sourceOrder(tenant, fresh).state()).isEqualTo("NEW");
+        assertThat(
+                        db.queryForObject(
+                                "SELECT state FROM order_sync_source WHERE tenant_id=? AND source_no=?",
+                                String.class,
+                                tenant,
+                                "N1"))
+                .isEqualTo("NEW");
+    }
+
+    @Test
     void historyNeverBecomesNewOrder() {
         order(1, 1, "1000", "0", "10");
         assertThat(store.sourceOrder(tenant, source("D1", 1, "1000", "10")).state())
@@ -308,6 +469,31 @@ class HistoryOrderSyncTest {
         assertThat(pay(receipt("R1", "D1", "300", "UNKNOWN", "h1")).state())
                 .isEqualTo("STATUS_REVIEW");
         assertThat(paid(1)).isZero();
+    }
+
+    @Test
+    void correctedStatusReclassifiesSameChecksumAndAllocatesOnce() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        assertThat(pay(receipt("R1", "D1", "300", "UNKNOWN", "h1")).state())
+                .isEqualTo("STATUS_REVIEW");
+
+        assertThat(pay(receipt("R1", "D1", "300", "CONFIRMED", "h1")).state())
+                .isEqualTo("ALLOCATED");
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        assertThat(
+                        db.queryForObject(
+                                "SELECT source_status FROM order_sync_receipt WHERE tenant_id=? AND receipt_no=?",
+                                String.class,
+                                tenant,
+                                "R1"))
+                .isEqualTo("CONFIRMED");
+
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class))
+                .isEqualTo(1);
     }
 
     @Test
