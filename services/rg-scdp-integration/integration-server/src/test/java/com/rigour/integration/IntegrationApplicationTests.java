@@ -957,6 +957,80 @@ class IntegrationApplicationTests {
         assertThat(projected.lines().getFirst().skuCodeSnapshot()).isEqualTo("SK202608220001");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "2026-08-21T07:52:25Z, NEW, true, true, 1, 2026-08-30T16:00:00Z",
+        "2026-09-03T15:59:59Z, NEW, true, true, 1, 2026-08-30T16:00:00Z",
+        "2026-09-03T16:00:00Z, NEW, true, true, 1, 2026-09-03T16:00:00Z",
+        "2026-08-21T07:52:25Z, BOUND, true, true, 0,",
+        "2026-08-21T07:52:25Z, HISTORY_PENDING, true, true, 0,",
+        "2026-08-21T07:52:25Z, NEW, false, true, 0,",
+        "2026-08-21T07:52:25Z, NEW, true, false, 0,"
+    })
+    void replaysOrderWithSavedListEvidenceAndPreservesHistoryProtection(
+            Instant sourceDate, String intakeState, boolean savedList, boolean mapped,
+            int expectedCreated, Instant expectedDate) {
+        UUID tenant = UUID.randomUUID(), actor = UUID.randomUUID();
+        var connector = store.createConnector(tenant, actor,
+                new ConnectorCommand("DHB_REPLAY", "历史重放", "https://erp.dhb168.example/",
+                        "env://RIGOUR_DHB_TEST", "ACTIVE", 0));
+        var task = orderTaskFor(tenant, connector.id());
+        String sourceNo = "DH.20260821.REPLAY";
+        if (savedList) {
+            var seedRun = syncStore.beginRun(tenant, actor, task.id(), null, null);
+            syncStore.persistOrderPage(tenant, task.id(), seedRun.runId(), List.of(
+                    new DhbClient.OrderSummary(sourceNo, sourceNo, "pending", new BigDecimal("12.50"),
+                            sourceDate, sourceDate.plusSeconds(60), "CLIENT-1", "UNPAID",
+                            Map.of("OrderSN", sourceNo, "ClientNO", "CLIENT-1"))), Instant.now());
+            syncStore.finishRun(tenant, actor, task.id(), seedRun.runId(), null, null,
+                    "SUCCEEDED", 1, 1, 0, 0, null, null, null);
+            assertThat(syncStore.findOrderSummary(tenant, connector.id(), sourceNo).createdAt())
+                    .isEqualTo(sourceDate);
+            assertThat(syncStore.findOrderSummary(UUID.randomUUID(), connector.id(), sourceNo)).isNull();
+            assertThat(syncStore.findOrderSummary(tenant, UUID.randomUUID(), sourceNo)).isNull();
+        }
+        if (mapped) seedOrderProjectionMappings(tenant, connector.id());
+        var attributes = new LinkedHashMap<>(orderDetail(sourceNo).attributes());
+        attributes.remove("OrderDate");
+        DhbClient client = mock(DhbClient.class);
+        when(client.getOrderContent(any(), any())).thenReturn(
+                new DhbClient.OrderDetail(sourceNo, "pending", new BigDecimal("12.50"), attributes));
+        var projection = org.mockito.Mockito.spy(new FakeOrderProjectionClient());
+        org.mockito.Mockito.doReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake(
+                        intakeState, "BOUND".equals(intakeState) ? UUID.randomUUID().toString() : null, null))
+                .when(projection).registerSourceOrder(any(), any());
+        var caller = new CallerIdentity("TENANT", actor, tenant, actor, null, UUID.randomUUID(),
+                0, 0, 0, Set.of(), Set.of("integration:dhb:write"));
+        var replayStore = org.mockito.Mockito.spy(syncStore);
+        var worker = new DhbOrderSyncService(replayStore, client, projection, new FakeHrDhbStaffSyncClient());
+        var command = new SyncRunCommand(null, null, null, "SALES_ORDER", sourceNo);
+
+        var result = worker.runOrderPull(caller, task.id(), command);
+
+        assertThat(result.createdCount()).isEqualTo(expectedCreated);
+        assertThat(result.rejectedCount()).isEqualTo(savedList && mapped ? 0 : 1);
+        org.mockito.Mockito.verify(replayStore, org.mockito.Mockito.never()).resolveRecoveredProjectionIssues(any(), any());
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.never()).getOrders(any(), any());
+        if (expectedCreated == 1) {
+            var created = org.mockito.ArgumentCaptor.forClass(SalesOrderCommand.class);
+            org.mockito.Mockito.verify(projection).createSalesOrder(any(), created.capture());
+            assertThat(created.getValue().orderDate()).isEqualTo(expectedDate);
+            assertThat(created.getValue().sourceCreatedAt()).isEqualTo(sourceDate);
+            assertThat(created.getValue().customerId()).isEqualTo(1L);
+            assertThat(created.getValue().lines().getFirst().productId()).isEqualTo(10L);
+            assertThat(created.getValue().lines().getFirst().productVariantId()).isEqualTo(11L);
+            assertThat(worker.runOrderPull(caller, task.id(), command).createdCount()).isZero();
+            assertThat(projection.created).isEqualTo(1);
+            org.mockito.Mockito.verify(replayStore, org.mockito.Mockito.atLeastOnce())
+                    .resolveProjectionIssues(org.mockito.ArgumentMatchers.eq(tenant), any(),
+                            org.mockito.ArgumentMatchers.eq("SALES_ORDER"), org.mockito.ArgumentMatchers.eq(sourceNo));
+        } else {
+            org.mockito.Mockito.verify(projection, org.mockito.Mockito.never()).createSalesOrder(any(), any());
+            org.mockito.Mockito.verify(projection, org.mockito.Mockito.never()).updateSalesOrder(any(), any(), any());
+        }
+        assertThat(checkpoint(tenant, task.id())).isNull();
+    }
+
     private static DhbClient.OrderSummary order(String orderNumber, String amount) {
         Instant updatedAt = Instant.parse("2026-08-04T00:30:00Z");
         return new DhbClient.OrderSummary(

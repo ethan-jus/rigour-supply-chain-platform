@@ -27,6 +27,7 @@ class HistoryOrderSyncTest {
     JdbcTemplate db;
     JdbcOrderHistorySyncStore store;
     TransactionTemplate tx;
+    com.rigour.order.application.service.sales.OrderSalesOrderService salesOrders;
     String tenant = UUID.randomUUID().toString();
     UUID connector = UUID.randomUUID();
     Instant date = Instant.parse("2026-08-20T00:00:00Z"),
@@ -70,20 +71,21 @@ class HistoryOrderSyncTest {
                 "CREATE TABLE order_payment_record(id BIGINT PRIMARY KEY,tenant_id"
                     + " VARCHAR(36),payment_no VARCHAR(50),connector_id"
                     + " VARCHAR(36),source_system_code VARCHAR(64),source_document_no"
-                    + " VARCHAR(128),order_id BIGINT,sales_order_no_snapshot"
+                    + " VARCHAR(128),source_record_id VARCHAR(128),payment_status_code VARCHAR(32),order_id BIGINT,sales_order_no_snapshot"
                     + " VARCHAR(50),customer_id BIGINT,customer_code_snapshot"
                     + " VARCHAR(50),customer_name_snapshot VARCHAR(200),collector_staff_code"
                     + " VARCHAR(50),collector_name_snapshot VARCHAR(100),payment_time"
                     + " TIMESTAMP,paid_amount DECIMAL(20,2),remark VARCHAR(1000),created_by"
                     + " VARCHAR(50),updated_by VARCHAR(50),created_time TIMESTAMP,updated_time"
                     + " TIMESTAMP,revision INT,deleted INT)");
+        salesOrders = mock(com.rigour.order.application.service.sales.OrderSalesOrderService.class);
         store =
                 new JdbcOrderHistorySyncStore(
                         db,
                         mock(OrderAttributionClient.class),
                         mock(
                                 com.rigour.order.application.port.out.OrderSalesPaymentRecordStore
-                                        .class));
+                                        .class), salesOrders);
     }
 
     javax.sql.DataSource dataSource() {
@@ -154,6 +156,62 @@ class HistoryOrderSyncTest {
 
     void intake(String no, long customer, String total, String qty) {
         tx.executeWithoutResult(s -> store.sourceOrder(tenant, source(no, customer, total, qty)));
+    }
+
+    @Test
+    void explicitlyApprovesOnlyUnboundHistoricalSourcesWithoutChangingTheirSourceDate() {
+        intake("H-NEW", 1, "78", "1");
+        var command = new NewOrder(new SourceRef(connector, "H-NEW", 0), "用户确认历史缺单补新增，业务日期统一八月三十一日");
+        tx.executeWithoutResult(s -> store.confirmHistoricalNew(tenant, "tester", command));
+        var saved = db.queryForMap("SELECT * FROM order_sync_source WHERE source_no='H-NEW'");
+        assertThat(saved.get("state")).isEqualTo("NEW");
+        assertThat(saved.get("classification_actor")).isEqualTo("tester");
+        assertThat(saved.get("source_date").toString()).startsWith("2026-08-25");
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.confirmHistoricalNew(tenant, "tester", command)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.confirmHistoricalNew("another-tenant", "tester", command)))
+                .isInstanceOf(IllegalArgumentException.class);
+        order(1, 1, "78", "0", "1");
+        intake("H-BOUND", 1, "78", "1");
+        bind(List.of("H-BOUND"), List.of(base(1, "0")));
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.confirmHistoricalNew(tenant, "tester",
+                new NewOrder(new SourceRef(connector, "H-BOUND", 1), "不能重复创建已经绑定的历史来源订单"))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void deletesOnlyUnpaidUnlinkedHistoryAndKeepsRecoverableRows() {
+        order(1, 1, "78", "0", "1");
+        order(2, 1, "78", "1", "1");
+        db.execute("ALTER TABLE order_sales_order ADD updated_by VARCHAR(50)");
+        db.execute("ALTER TABLE order_sales_order ADD remark VARCHAR(1000)");
+        db.execute("ALTER TABLE order_sales_order_line ADD revision INT DEFAULT 0");
+        db.execute("ALTER TABLE order_sales_order_line ADD updated_by VARCHAR(50)");
+        db.execute("ALTER TABLE order_sales_order_line ADD updated_time TIMESTAMP");
+        for (String table : List.of("order_refund_record", "order_financial_event", "order_fulfillment_execution"))
+            db.execute("CREATE TABLE " + table + "(tenant_id VARCHAR(36),order_id BIGINT)");
+        db.execute("CREATE TABLE order_fund_document(tenant_id VARCHAR(36),related_order_id BIGINT)");
+        for (String table : List.of("order_sales_shipment", "order_invoice"))
+            db.execute("CREATE TABLE " + table + "(tenant_id VARCHAR(36),sales_order_id BIGINT)");
+        db.execute("CREATE TABLE order_number_mapping(tenant_id VARCHAR(36),internal_order_no VARCHAR(50),deleted INT)");
+        var command = new DeleteUnlinkedHistory(1, 0, "已完整核对订货宝单号和回款，无关联无回款才清理");
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.deleteUnlinkedHistory(tenant, "tester",
+                new DeleteUnlinkedHistory(2, 0, command.evidence())))).isInstanceOf(IllegalArgumentException.class);
+        db.update("INSERT INTO order_payment_record(id,tenant_id,order_id,paid_amount,deleted) VALUES(100,?,1,0,1)", tenant);
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.deleteUnlinkedHistory(tenant, "tester", command)))
+                .isInstanceOf(IllegalArgumentException.class);
+        db.update("DELETE FROM order_payment_record WHERE id=100");
+        db.update("INSERT INTO order_number_mapping VALUES(?,'O1',0)", tenant);
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.deleteUnlinkedHistory(tenant, "tester", command)))
+                .isInstanceOf(IllegalArgumentException.class);
+        db.update("DELETE FROM order_number_mapping");
+        tx.executeWithoutResult(s -> store.deleteUnlinkedHistory(tenant, "tester", command));
+        assertThat(db.queryForObject("SELECT deleted FROM order_sales_order WHERE id=1", Integer.class)).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT deleted FROM order_sales_order_line WHERE order_id=1", Integer.class)).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT remark FROM order_sales_order WHERE id=1", String.class)).contains(command.evidence());
+        assertThat(db.queryForObject("SELECT deleted FROM order_sales_order WHERE id=2", Integer.class)).isZero();
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.deleteUnlinkedHistory(tenant, "tester", command)))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     String bind(List<String> sources, List<Baseline> orders) {
@@ -316,6 +374,16 @@ class HistoryOrderSyncTest {
                 .isEqualByComparingTo("225.00");
         assertThat(new BigDecimal(String.valueOf(group.get("difference_amount"))))
                 .isEqualByComparingTo("9.00");
+    }
+
+    @Test
+    void correctedSettlementIsSavedEvenWhenRawChecksumIsUnchanged() {
+        var original = source("CORRECT-NET", 1, "234", "3");
+        store.sourceOrder(tenant, original);
+        store.sourceOrder(tenant, new SourceOrder(connector, original.sourceNo(), original.order(),
+                new BigDecimal("222.30"), original.checksum()));
+        assertThat(db.queryForObject("SELECT amount FROM order_sync_source WHERE tenant_id=? AND source_no=?",
+                BigDecimal.class, tenant, original.sourceNo())).isEqualByComparingTo("222.30");
     }
 
     @Test
@@ -612,6 +680,47 @@ class HistoryOrderSyncTest {
         assertThat(paid(1)).isEqualByComparingTo("300");
         assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class))
                 .isEqualTo(1);
+    }
+
+    @Test
+    void reconciledBaselineKeepsArchivedAllocationsInactiveAfterMetadataChange() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
+        db.update("UPDATE order_history_member SET opening_paid=300,baseline_at=?",
+                java.sql.Timestamp.from(paidAt.plusSeconds(1)));
+        db.update("UPDATE order_sync_receipt SET state='BASELINE_COVERED'");
+        assertThat(pay(receipt("R1", "D1", "300", "CONFIRMED", "metadata-new")).state())
+                .isEqualTo("BASELINE_COVERED");
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void reconciledNewSourceDoesNotReprojectCoveredReceiptWithOrWithoutMetadataChange() {
+        intake("D1", 1, "1000", "10");
+        db.update("UPDATE order_sync_source SET state='NEW'");
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
+        db.update("UPDATE order_sync_receipt SET state='BASELINE_COVERED'");
+        assertThat(pay(receipt("R1", "D1", "300", "CONFIRMED", "h1")).state()).isEqualTo("BASELINE_COVERED");
+        assertThat(pay(receipt("R1", "D1", "300", "CONFIRMED", "h2")).state()).isEqualTo("BASELINE_COVERED");
+        assertThat(pay(receipt("R1", "D1", "350", "CONFIRMED", "h3")).state()).isEqualTo("SOURCE_CHANGED_REVIEW");
+    }
+
+    @Test
+    void performanceExcludesPendingCancelledAndRetiredOrderPayments() {
+        order(1, 1, "1000", "0", "10");
+        order(2, 1, "1000", "0", "10");
+        db.update("UPDATE order_sales_order SET deleted=1 WHERE id=2");
+        int id=1;
+        for(String status:List.of("RECEIVED","CHECKED","PENDING","CANCELLED"))
+            db.update("INSERT INTO order_payment_record(id,tenant_id,order_id,collector_staff_code,paid_amount,payment_time,payment_status_code,deleted) VALUES(?,?,1,'ZHANG',100,?,?,0)",id++,tenant,java.sql.Timestamp.from(paidAt),status);
+        db.update("INSERT INTO order_payment_record(id,tenant_id,order_id,collector_staff_code,paid_amount,payment_time,payment_status_code,deleted) VALUES(5,?,2,'ZHANG',100,?,'CHECKED',0)",tenant,java.sql.Timestamp.from(paidAt));
+        var performance=store.performance(tenant,"2026-09");
+        assertThat(performance.receipts()).hasSize(1);
+        assertThat((BigDecimal)performance.receipts().getFirst().get("amount")).isEqualByComparingTo("200");
+        assertThat((BigDecimal)performance.pending().get("product_pending_amount")).isEqualByComparingTo("200");
     }
 
     @Test

@@ -70,7 +70,12 @@ public interface OrderRegisterStore {
             Boolean hasUnpaid,
             String invoiceStatusCode,
             /** 订货宝关联单：true=已关联（有订货宝订单号），false=未关联，null=不过滤。 */
-            Boolean dhbLinked) {
+            Boolean dhbLinked,
+            String dhbOrderNo,
+            Boolean hasDiscount,
+            String sortBy,
+            String sortDirection,
+            String createdBy) {
     }
 
     record LineCriteria(
@@ -88,7 +93,11 @@ public interface OrderRegisterStore {
             String productKeyword,
             String productCode,
             /** 按商品ID集合过滤；商品分类筛选先在前端解析成商品集合。 */
-            List<Long> productIds) {
+            List<Long> productIds,
+            String paymentStatusCode,
+            Boolean hasDiscount,
+            String sortBy,
+            String sortDirection) {
     }
 
     record PaymentCriteria(
@@ -110,7 +119,8 @@ public interface OrderRegisterStore {
             Instant paymentTimeTo,
             /** 排序字段：paymentTime / createdTime / syncedAt；空按收款时间倒序。 */
             String sortBy,
-            String sortDirection) {
+            String sortDirection,
+            String createdBy) {
     }
 
     record PeriodCriteria(

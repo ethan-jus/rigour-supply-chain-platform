@@ -192,6 +192,20 @@ public final class DhbSyncOrchestrationService {
     /** 单页入口不运行前置目录或其他领域，缺少依赖时保留失败供该页补齐后重试。 */
     public DhbSyncOrchestrationResult runPage(CallerIdentity actor,
             com.rigour.integration.api.v1.model.DhbPageSyncCommand command) {
+        return runPage(actor, command, stage -> {}, false);
+    }
+
+    public void validatePageTarget(CallerIdentity actor,
+            com.rigour.integration.api.v1.model.DhbPageSyncCommand command) {
+        requireManualCaller(actor);
+        if (command == null || targets(actor.tenantId(), TargetSelection.CONFIGURED).values().stream()
+                .noneMatch(b -> b.key.connectorId().equals(command.connectorId())))
+            throw new IllegalArgumentException("当前租户没有该连接器同步任务");
+    }
+
+    public DhbSyncOrchestrationResult runPage(CallerIdentity actor,
+            com.rigour.integration.api.v1.model.DhbPageSyncCommand command,
+            java.util.function.Consumer<String> progress, boolean background) {
         requireManualCaller(actor);
         if (command == null) throw new IllegalArgumentException("同步范围不能为空");
         TargetBucket bucket = targets(actor.tenantId(), TargetSelection.CONFIGURED).values().stream()
@@ -214,14 +228,17 @@ public final class DhbSyncOrchestrationService {
                         case ORDER_SALES_PACKAGE -> {
                             if (bucket.orderTarget == null) throw new IllegalArgumentException("未配置订单同步任务");
                             if (Boolean.TRUE.equals(command.incremental())) {
-                                runIncrementalOrderPackageSteps(caller, bucket, pages, steps);
+                                runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, background);
                             } else {
                                 runOrderPackageSteps(caller, bucket, command, pages, steps);
                             }
                         }
                         case CUSTOMER, ADDRESS, AREA, CLIENT_TYPE -> {
                             if (bucket.crmTarget == null) throw new IllegalArgumentException("未配置客户同步任务");
-                            var r=Boolean.TRUE.equals(command.incremental())
+                            progress.accept("正在同步客户资料及待关联记录");
+                            var r=background && Boolean.TRUE.equals(command.incremental())
+                                ? crmClient.syncLatestCustomersInBackground(caller,bucket.key.connectorId(),bucket.crmTarget.taskId(),pages,actor.principalId(),progress)
+                                : Boolean.TRUE.equals(command.incremental())
                                 ? crmClient.syncLatestCustomers(caller,bucket.key.connectorId(),bucket.crmTarget.taskId(),pages,actor.principalId())
                                 : crmClient.syncObject(caller,bucket.key.connectorId(),bucket.crmTarget.taskId(),
                                 switch(command.scope()){case AREA -> "CUSTOMER_AREA";case CLIENT_TYPE -> "CUSTOMER_TYPE";default -> type;},pages,command.from(),command.to());
@@ -671,7 +688,8 @@ public final class DhbSyncOrchestrationService {
      * 代码默认起点（9/4 00:00+08 业务分界），不再要求预先配置环境变量。
      */
     private void runIncrementalOrderPackageSteps(CallerIdentity caller, TargetBucket bucket,
-                                                 int pages, List<DhbSyncOrchestrationStepView> steps) {
+                                                 int pages, List<DhbSyncOrchestrationStepView> steps,
+                                                 java.util.function.Consumer<String> progress, boolean background) {
         Instant bootstrap = properties.incrementalWindowFromInstant();
         Instant end = clock.instant().minus(SCHEDULED_WINDOW_SAFETY_LAG);
         for (String type : List.of("SALES_ORDER", "RECEIPT", "PAYMENT")) {
@@ -683,25 +701,29 @@ public final class DhbSyncOrchestrationService {
                 steps.add(skipped("ORDER", type, "该对象游标已覆盖增量窗口，无需再次拉取"));
                 continue;
             }
-            steps.add(runIncrementalOrderScope(caller, bucket, type, from, end, pages));
+            steps.add(runIncrementalOrderScope(caller, bucket, type, from, end, pages, progress, background));
         }
     }
 
     /**
      * 单对象增量推进：把 [from, end) 切成不超过 {@code incremental-window}（默认 7 天）的窗口，
      * 每一片成功后立即推进该对象游标，因此失败、超时或本次片数用尽后再点一次都从最后成功位置继续。
-     * 一次点击最多推进 {@value #MAX_INCREMENTAL_SLICES} 片，避免把积压数据压进同一个请求；
+     * 旧同步接口最多推进 {@value #MAX_INCREMENTAL_SLICES} 片；后台任务自动接续至本次固定截止时间；
      * 每片仍受 maxPages 硬上限保护（分页未读完即失败且不推进游标）。
      */
     private DhbSyncOrchestrationStepView runIncrementalOrderScope(CallerIdentity caller, TargetBucket bucket,
                                                                  String type, Instant from, Instant end,
-                                                                 int pages) {
+                                                                 int pages, java.util.function.Consumer<String> progress,
+                                                                 boolean background) {
         ScopeTotals totals = new ScopeTotals();
         Instant windowFrom = from;
         Duration sliceWindow = properties.effectiveIncrementalWindow();
-        for (int slice = 0; slice < MAX_INCREMENTAL_SLICES && windowFrom.isBefore(end); slice++) {
+        for (int slice = 0; (background || slice < MAX_INCREMENTAL_SLICES) && windowFrom.isBefore(end); slice++) {
             Instant windowTo = windowFrom.plus(sliceWindow);
             if (windowTo.isAfter(end)) windowTo = end;
+            String label = switch (type) { case "SALES_ORDER" -> "订单及明细"; case "RECEIPT" -> "收款"; default -> "付款"; };
+            progress.accept("正在同步" + label + "：" + incrementalWindowText(windowFrom) + " 至 "
+                    + incrementalWindowText(windowTo) + "；本阶段已核对 " + totals.fetched + " 条");
             SyncRunView result;
             try {
                 result = orderSyncService.runOrderPull(caller, bucket.orderTarget.taskId(),
@@ -877,7 +899,7 @@ public final class DhbSyncOrchestrationService {
         return value == null ? fallback : value;
     }
 
-    private static void requireManualCaller(CallerIdentity caller) {
+    static void requireManualCaller(CallerIdentity caller) {
         if (caller == null || caller.tenantId() == null || caller.userId() == null) {
             throw new AuthorizationDeniedException("tenant-user-caller");
         }

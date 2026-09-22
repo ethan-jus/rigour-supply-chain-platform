@@ -524,6 +524,11 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
     }
 
     @Override
+    public com.rigour.order.api.v1.model.HistorySyncModels.Intake cancelSourceOrder(CallerIdentity caller,
+            com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder command) {
+        return historyIntake(caller, "/source-orders/cancel", command);
+    }
+
     public com.rigour.order.api.v1.model.HistorySyncModels.Intake registerSourceOrder(CallerIdentity caller,
             com.rigour.order.api.v1.model.HistorySyncModels.SourceOrder command) {
         return historyIntake(caller,"/source-orders",command);

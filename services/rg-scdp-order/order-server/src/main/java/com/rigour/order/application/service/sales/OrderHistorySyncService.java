@@ -34,9 +34,33 @@ public class OrderHistorySyncService {
         return store.sourceOrder(a.tenantId().toString(), c);
     }
 
+    public Intake cancelSourceOrder(CancelSourceOrder c) {
+        var a = actor(true, true);
+        return store.cancelSourceOrder(a.tenantId().toString(), a.principalId().toString(), c);
+    }
+
     public void confirmNew(NewOrder c) {
         var a = actor(true, false);
         store.confirmNew(a.tenantId().toString(), a.principalId().toString(), c);
+    }
+
+    /** 业务明确批准的历史补单，与切换日后的普通新单确认分开。 */
+    public void confirmHistoricalNew(NewOrder c) {
+        var a = actor(true, false);
+        store.confirmHistoricalNew(a.tenantId().toString(), a.principalId().toString(), c);
+    }
+
+    public void deleteUnlinkedHistory(DeleteUnlinkedHistory c) {
+        var a = actor(true, false);
+        AuthorizationContext.requirePermission("order:delete");
+        store.deleteUnlinkedHistory(a.tenantId().toString(), a.principalId().toString(), c);
+    }
+
+    public java.util.Map<String, Long> normalizeGroup(NormalizeGroup c) {
+        var a = actor(true, true);
+        AuthorizationContext.requirePermission("integration:dhb:write");
+        AuthorizationContext.requirePermission("order:delete");
+        return store.normalizeGroup(a.tenantId().toString(), a.principalId().toString(), c);
     }
 
     public String bind(Bind c) {

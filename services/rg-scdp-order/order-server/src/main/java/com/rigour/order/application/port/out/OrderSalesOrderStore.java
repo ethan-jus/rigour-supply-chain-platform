@@ -246,6 +246,25 @@ public interface OrderSalesOrderStore {
             BigDecimal discountRate,
             BigDecimal discountAmount,
             BigDecimal lineAmount,
+            String remark,
+        String sourceLineId) {
+        public SalesOrderLineWrite(
+            Integer lineNo,
+            Long productId,
+            Long productVariantId,
+            String productCodeSnapshot,
+            String skuCodeSnapshot,
+            String productNameSnapshot,
+            String specificationSnapshot,
+            String unitCode,
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            BigDecimal discountRate,
+            BigDecimal discountAmount,
+            BigDecimal lineAmount,
             String remark) {
+            this(lineNo, productId, productVariantId, productCodeSnapshot, skuCodeSnapshot, productNameSnapshot, specificationSnapshot, unitCode, quantity, unitPrice, discountRate, discountAmount, lineAmount, remark, null);
+        }
+
     }
 }

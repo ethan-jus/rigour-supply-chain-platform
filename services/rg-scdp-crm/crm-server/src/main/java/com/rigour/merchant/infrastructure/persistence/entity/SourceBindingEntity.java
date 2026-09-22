@@ -21,6 +21,12 @@ public class SourceBindingEntity {
     public String bindingStatus;
     /** Merged customer aliases retain their source identity; only the primary source projects master data. */
     public String primaryCustomerSourceId;
+    public Boolean independentConfirmed;
+    public Boolean unresolvedOwnerAllowed;
+    public String independenceEvidence;
+    public String independenceActor;
+    public byte[] independencePreviousTargetId;
+    public LocalDateTime independenceConfirmedAt;
     public String resolutionErrorCode;
     public String resolutionErrorMessage;
     public LocalDateTime sourceCreatedAt;

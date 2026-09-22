@@ -8,7 +8,15 @@ public interface OrderHistorySyncStore {
 
     Intake sourceOrder(String tenant, SourceOrder c);
 
+    Intake cancelSourceOrder(String tenant, String actor, CancelSourceOrder c);
+
     void confirmNew(String tenant, String actor, NewOrder c);
+
+    void confirmHistoricalNew(String tenant, String actor, NewOrder c);
+
+    void deleteUnlinkedHistory(String tenant, String actor, DeleteUnlinkedHistory c);
+
+    java.util.Map<String, Long> normalizeGroup(String tenant, String actor, NormalizeGroup c);
 
     String bind(String tenant, String actor, Bind c);
 

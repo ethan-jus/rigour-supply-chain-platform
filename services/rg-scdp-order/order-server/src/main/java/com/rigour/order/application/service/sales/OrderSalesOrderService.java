@@ -1129,7 +1129,8 @@ public final class OrderSalesOrderService {
         if (command == null) throw badRequest("销售订单参数不能为空");
         checkRevision(command.revision(), update);
         String sourceSystemCode = code(command.sourceSystemCode(), "sourceSystemCode", false);
-        List<SalesOrderLineWrite> lines = lines(command.lines(), allowIncompleteFeishuOrder);
+        List<SalesOrderLineWrite> lines = lines(command.lines(), allowIncompleteFeishuOrder,
+                serviceCaller(AuthorizationContext.requireCurrent()) && externalSource(sourceSystemCode));
         BigDecimal totalQuantity =
                 lines.stream().map(SalesOrderLineWrite::quantity).reduce(ZERO, BigDecimal::add);
         BigDecimal originalAmount =
@@ -1314,7 +1315,8 @@ public final class OrderSalesOrderService {
     }
 
     private List<SalesOrderLineWrite> lines(
-            List<SalesOrderLineCommand> source, boolean allowIncompleteFeishuOrder) {
+            List<SalesOrderLineCommand> source, boolean allowIncompleteFeishuOrder,
+            boolean preserveSourceLines) {
         if (source == null || source.isEmpty()) {
             if (allowIncompleteFeishuOrder) return List.of();
             throw badRequest("销售订单至少需要一条商品明细");
@@ -1344,7 +1346,8 @@ public final class OrderSalesOrderService {
                     productId != null && variantId != null
                             ? productId + "::" + variantId
                             : "INCOMPLETE::" + result.size();
-            if (!duplicateGuard.add(duplicateKey)) throw badRequest("销售订单明细商品规格不能重复");
+            // 来源单可按不同价格/赠品拆成同SKU多行，不能合并后改变真实数量和单价。
+            if (!duplicateGuard.add(duplicateKey) && !preserveSourceLines) throw badRequest("销售订单明细商品规格不能重复");
             BigDecimal quantity = positive(item.quantity(), "quantity");
             BigDecimal unitPrice = money(item.unitPrice(), "unitPrice");
             BigDecimal originalLineAmount = quantity.multiply(unitPrice);
@@ -1376,7 +1379,8 @@ public final class OrderSalesOrderService {
                             lineDiscountRate,
                             lineDiscountAmount,
                             originalLineAmount.subtract(lineDiscountAmount),
-                            text(item.remark(), 1000, "lineRemark")));
+                            text(item.remark(), 1000, "lineRemark"),
+                            text(item.sourceLineId(), 128, "sourceLineId")));
         }
         if (result.isEmpty()) {
             if (allowIncompleteFeishuOrder) return List.of();

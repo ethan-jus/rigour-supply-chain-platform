@@ -92,6 +92,25 @@ class OrderSalesOrderServiceTest {
     }
 
     @Test
+    void trustedSourceKeepsRepeatedSkuLinesButManualOrdersStillRejectThem() {
+        var json = new tools.jackson.databind.ObjectMapper();
+        var source = json.valueToTree(dinghuobaoCommand());
+        var repeated = source.get("lines").get(0).deepCopy();
+        ((tools.jackson.databind.node.ObjectNode) repeated).put("unitPrice", new BigDecimal("5.00"));
+        ((tools.jackson.databind.node.ArrayNode) source.get("lines")).add(repeated);
+        TestAuthorizationContext.set(serviceCaller("order:write"));
+        var created = service(new FakeStore()).create(json.treeToValue(source, SalesOrderCommand.class));
+        assertThat(created.lines()).hasSize(2);
+        assertThat(created.lines().get(1).unitPrice()).isEqualByComparingTo("5.00");
+        assertThat(created.lines().get(0).productVariantId()).isEqualTo(created.lines().get(1).productVariantId());
+        var manual = json.valueToTree(command(false, 0));
+        ((tools.jackson.databind.node.ArrayNode) manual.get("lines")).add(manual.get("lines").get(0).deepCopy());
+        TestAuthorizationContext.set(caller("order:write"));
+        assertThatThrownBy(() -> service(new FakeStore()).create(json.treeToValue(manual, SalesOrderCommand.class)))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("商品规格不能重复");
+    }
+
+    @Test
     void createDinghuobaoOrderUsesSourceBusinessOrderNoAndPreservesLeadingZeros() {
         FakeStore store = new FakeStore();
         OrderSalesOrderService service = service(store);

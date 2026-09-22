@@ -348,8 +348,9 @@ public final class DhbOrderSyncService {
         Instant windowTo = windowTo(window);
         SyncRunStarted started = store.beginRun(caller.tenantId(), caller.userId(), taskId,
                 windowFrom, windowTo);
-        store.resolveRecoveredProjectionIssues(caller.tenantId(), caller.userId());
         if (replayTarget == null) {
+            // 单对象重放成功后会精确关闭该来源问题，无需扫描整个租户的历史死信。
+            store.resolveRecoveredProjectionIssues(caller.tenantId(), caller.userId());
             store.recordSyncLog(caller.tenantId(), taskId, started.runId(), "INFO",
                     "订货宝订单同步开始：Raw落库、映射校验、投影到Order销售订单 detailConcurrency="
                             + detailConcurrency, null);
@@ -562,12 +563,29 @@ public final class DhbOrderSyncService {
 
         RawObjectPersistResult raw = null;
         try {
+            if (isCancelled(dhbOrderStatusCode(firstNonBlank(summary.status(),
+                    first(map(summary.attributes()), "OrderStatus", "orderStatus", "StatusName", "status"))))) {
+                raw = store.persistRawObject(caller.tenantId(), task.connectorId(), runId,
+                        "ORDER", sourceOrderNo, summary.updatedAt() == null ? null : summary.updatedAt().toString(),
+                        summary.updatedAt(), map(summary.attributes()), Instant.now());
+                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw);
+            }
             OrderDetail detail = client.getOrderContent(task.connector(), sourceOrderNo);
             Map<String, Object> payload = combinedPayload(summary, detail);
             raw = store.persistRawObject(caller.tenantId(), task.connectorId(), runId,
                     RAW_OBJECT_ORDER_DETAIL, sourceOrderNo,
                     summary == null || summary.updatedAt() == null ? null : summary.updatedAt().toString(),
                     summary == null ? null : summary.updatedAt(), payload, Instant.now());
+            if (isCancelled(dhbOrderStatusCode(firstNonBlank(detail.status(),
+                    first(map(detail.attributes()), "OrderStatus", "orderStatus", "StatusName", "status"))))) {
+                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw);
+            }
+            // 订货宝明确清零的订单属于无效订单；缺失金额不能按零金额删除。
+            if (zeroSettlementOrder(detail.attributes())) {
+                store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
+                        "订货宝零金额无效订单已排除 sourceOrderNo=" + sourceOrderNo, "DHB_ZERO_AMOUNT_ORDER");
+                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw);
+            }
             syncObservedUnitDictionaries(caller.tenantId(), task.taskId(), runId,
                     "orderLine.sourceUnit", payload);
             ExternalObjectMapping existing = store.findActiveMapping(caller.tenantId(), task.connectorId(),
@@ -583,7 +601,7 @@ public final class DhbOrderSyncService {
                     customerRegionCache);
             var intake=orderProjectionClient.registerSourceOrder(orderServiceCaller(caller.tenantId()),
                     new com.rigour.order.api.v1.model.HistorySyncModels.SourceOrder(task.connectorId(),sourceOrderNo,
-                        prepared.command(),detail.amount()==null?summary.amount():detail.amount(),raw.payloadChecksum()));
+                        prepared.command(),sourceSalesAmount(detail.attributes(), prepared.command().lines()),raw.payloadChecksum()));
             if (intake==null) throw new IllegalStateException("历史订单保护接口未返回结果");
             if (!"NEW".equals(intake.state())) {
                 if ("BOUND".equals(intake.state())) {
@@ -644,6 +662,23 @@ public final class DhbOrderSyncService {
         }
     }
 
+    private ProjectionOutcome cancelSourceOrder(CallerIdentity caller, SyncTaskContext task, UUID runId,
+                                                String sourceOrderNo, RawObjectPersistResult raw) {
+        var result = orderProjectionClient.cancelSourceOrder(orderServiceCaller(caller.tenantId()),
+                new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(task.connectorId(), sourceOrderNo));
+        if (result == null) throw new IllegalStateException("来源取消接口未返回结果");
+        if (!"CANCELLED".equals(result.state())) {
+            recordRejected(caller, task, runId, raw, sourceOrderNo, "DHB_CANCELLATION_REVIEW",
+                    result.reason(), "MAPPING", Map.of("required", "取消部分核对"), Map.of("sourceOrderNo", sourceOrderNo));
+            return ProjectionOutcome.REVIEW;
+        }
+        store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+        resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
+        store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
+                "订货宝取消订单已排除业务投影 sourceOrderNo=" + sourceOrderNo, null);
+        return ProjectionOutcome.CHANGED;
+    }
+
     /**
      * 仅对明确标记为 NEW 的历史来源应用 8 月 31 日兜底业务日期。
      * HISTORY_PENDING/BOUND 仍保持历史保护流程，避免误把待核对来源投影成新单。
@@ -664,12 +699,13 @@ public final class DhbOrderSyncService {
 
     private void syncReceipts(CallerIdentity caller, SyncTaskContext task, UUID runId,
                               Window window, int pageSize, int pageLimit, Counts counts) {
+        for (String sourceStatus : List.of("pend_receipt", "pend_receipted", "canceled")) {
         PageRequest pageRequest = PageRequest.first(pageSize);
         int pages = 0;
         while (true) {
             Page<Receipt> page = client.getReceipts(task.connector(),
                     new ReceiptQuery(pageRequest, null, null,
-                            window == null ? null : window.from(), "all"));
+                            window == null ? null : window.from(), sourceStatus));
             pages++;
             counts.fetched += page.items().size();
             for (Receipt receipt : page.items()) {
@@ -682,6 +718,7 @@ public final class DhbOrderSyncService {
                 break;
             }
             pageRequest = page.nextRequest();
+        }
         }
     }
 
@@ -872,7 +909,7 @@ public final class DhbOrderSyncService {
                                                   Map<String, Object> sourceOrderLocks) {
         return switch (replayTarget.sourceObjectType()) {
             case SOURCE_OBJECT_SALES_ORDER ->
-                    projectOrder(caller, task, runId, replayOrderSummary(replayTarget.sourceId()),
+                    projectOrder(caller, task, runId, replayOrderSummary(caller.tenantId(), task.connectorId(), replayTarget.sourceId()),
                             employeeCache, customerRegionCache);
             case SOURCE_OBJECT_ERP_STOCK_OUT, SOURCE_OBJECT_SALES_SHIPMENT ->
                     projectShipment(caller, task, runId, replayShipmentSummary(replayTarget.sourceId()),
@@ -889,7 +926,9 @@ public final class DhbOrderSyncService {
     }
 
     /** 单笔历史订单重放从详情接口读取业务字段，仍复用客户/商品映射与历史日期保护。 */
-    private static OrderSummary replayOrderSummary(String sourceId) {
+    private OrderSummary replayOrderSummary(UUID tenantId, UUID connectorId, String sourceId) {
+        OrderSummary saved = store.findOrderSummary(tenantId, connectorId, sourceId);
+        if (saved != null) return saved;
         return new OrderSummary(sourceId, sourceId, null, null, null, null, null, null,
                 Map.of("OrderSN", sourceId));
     }
@@ -1041,6 +1080,11 @@ public final class DhbOrderSyncService {
                     RAW_OBJECT_RECEIPT, sourceReceiptNo,
                     receipt == null || receipt.updatedAt() == null ? null : receipt.updatedAt().toString(),
                     receipt == null ? null : receipt.updatedAt(), attributes, Instant.now());
+            if (receipt.transactionAt() != null && receipt.transactionAt().isBefore(HISTORY_CUTOVER)) {
+                // 切换日前以飞书回款为事实，不用订货宝重建或改写历史付款日。
+                store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                return ProjectionOutcome.ACCEPTED;
+            }
             ExternalObjectMapping receiptCustomer=optionalMappingAny(caller.tenantId(),task.connectorId(),List.of("CUSTOMER"),
                 receipt==null?List.of():java.util.stream.Stream.of(receipt.customerNumber(),receipt.customerGuid()).filter(Objects::nonNull).toList());
             String normalizedReceiptStatus=receiptIntakeStatus(receipt);
@@ -1049,6 +1093,11 @@ public final class DhbOrderSyncService {
                     receiptSourceOrderNo(receipt,attributes),receiptCustomer==null?null:receiptCustomer.internalObjectId(),
                     receipt.amount(),receipt.transactionAt(),normalizedReceiptStatus,receipt.updatedAt(),raw.payloadChecksum()));
             if(receiptIntake==null)throw new IllegalStateException("回款接续接口未返回结果");
+            if ("ORDER_CANCELLED".equals(receiptIntake.state())) {
+                store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_PAYMENT, sourceReceiptNo);
+                return ProjectionOutcome.ACCEPTED;
+            }
             if(!"NEW".equals(receiptIntake.state())) {
                 if(Set.of("ALLOCATED","BASELINE_COVERED","CANCELLED").contains(receiptIntake.state())) {
                     projectFundReceipt(caller, task, runId, sourceReceiptNo, receipt, attributes, raw);
@@ -1109,7 +1158,8 @@ public final class DhbOrderSyncService {
                     paymentCommand.paidAmount(),paymentCommand.voucherKeys(),paymentCommand.remark(),
                     paymentCommand.revision(),paymentCommand.sourceCreatedAt(),paymentCommand.sourceUpdatedAt(),
                     paymentCommand.sourceModifierId(),paymentCommand.sourceModifierName(),
-                    paymentCommand.syncedBy(),paymentCommand.syncedAt()));
+                    paymentCommand.syncedBy(),paymentCommand.syncedAt(),paymentCommand.sourcePaymentStatusCode(),
+                    paymentCommand.sourceCheckedBy(),paymentCommand.sourceCheckedAt()));
             SalesPaymentRecordDetailView projected =
                     upsertSalesPayment(caller.tenantId(), existing, current, prepared);
             store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
@@ -1403,6 +1453,8 @@ public final class DhbOrderSyncService {
         }
         List<SalesOrderLineCommand> expectedLines = expected.lines() == null ? List.of() : expected.lines();
         if (expectedLines.isEmpty()) return true;
+        if (!sameDecimal(current.payableAmount(), salesLinesNetAmount(expectedLines)
+                .subtract(zeroIfNull(expected.discountAmount())))) return false;
         if (!sameDecimal(current.totalQuantity(), sumLineQuantity(expectedLines))) return false;
         if (current.lines().size() != expectedLines.size()) return false;
         for (int i = 0; i < expectedLines.size(); i++) {
@@ -1432,7 +1484,8 @@ public final class DhbOrderSyncService {
                 && Objects.equals(current.productCodeSnapshot(), expected.productCodeSnapshot())
                 && Objects.equals(current.skuCodeSnapshot(), expected.skuCodeSnapshot())
                 && sameDecimal(current.quantity(), expected.quantity())
-                && sameDecimal(current.unitPrice(), expected.unitPrice());
+                && sameDecimal(current.unitPrice(), expected.unitPrice())
+                && (blank(expected.sourceLineId()) || Objects.equals(current.sourceLineId(), expected.sourceLineId()));
     }
 
     private static BigDecimal sumLineQuantity(List<SalesOrderLineCommand> lines) {
@@ -1479,6 +1532,35 @@ public final class DhbOrderSyncService {
                         && line.productVariantId() != null
                         && line.shippedQuantity() != null
                         && line.shippedQuantity().compareTo(BigDecimal.ZERO) > 0);
+    }
+
+    /** 对账预览复用正式同步的商品、金额和映射规则；不落库，不更新游标。 */
+    public java.util.function.BiFunction<OrderSummary, OrderDetail, SalesOrderCommand>
+            orderReconciliationPreview(UUID tenantId, UUID connectorId) {
+        Map<String, EmployeeProjection> employees = new LinkedHashMap<>();
+        Map<Long, Optional<String>> regions = new LinkedHashMap<>();
+        return (summary, detail) -> {
+            Objects.requireNonNull(summary, "订单列表证据不能为空");
+            Objects.requireNonNull(detail, "订单明细证据不能为空");
+            return prepareSalesOrder(tenantId, connectorId, summary.orderNumber(), summary, detail,
+                    employees, true, regions).command();
+        };
+    }
+
+    static boolean zeroSettlementOrder(Map<String, Object> content) {
+        BigDecimal settlement = decimal(firstObject(content, "DiscountTotal"));
+        return settlement != null && settlement.signum() == 0;
+    }
+
+    /** OrderTotal 是折前商品总额；历史关联与正式订单均使用优惠后结算金额。 */
+    static BigDecimal sourceSalesAmount(Map<String, Object> content, List<SalesOrderLineCommand> lines) {
+        BigDecimal settlement = decimal(firstObject(content, "DiscountTotal"));
+        return settlement == null ? salesLinesNetAmount(lines) : settlement;
+    }
+
+    private static BigDecimal salesLinesNetAmount(List<SalesOrderLineCommand> lines) {
+        return lines.stream().map(line -> line.quantity().multiply(line.unitPrice())
+                .subtract(zeroIfNull(line.discountAmount()))).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     private PreparedSalesOrder prepareSalesOrder(UUID tenantId, UUID connectorId,
@@ -1581,6 +1663,13 @@ public final class DhbOrderSyncService {
                 summary == null ? null : summary.updatedAt(),
                 "OrderUpdateTime", "order_update_time", "UpdateTime", "update_time",
                 "ModifyTime", "modify_time", "updatedAt");
+        BigDecimal orderDiscount = salesLinesNetAmount(lines).subtract(sourceSalesAmount(content, lines));
+        if (orderDiscount.signum() < 0) {
+            throw new ProjectionRejected("DHB_ORDER_SETTLEMENT_MISMATCH",
+                    "订货宝结算金额高于明细折后合计，需核对运费、税费或明细金额",
+                    "DETAIL", Map.of("required", "DiscountTotal <= line net amount"),
+                    Map.of("sourceOrderNo", sourceOrderNo));
+        }
         SalesOrderCommand command = new SalesOrderCommand(
                 requiredInternalId(customer, sourceOrderNo, "客户"),
                 SOURCE_SYSTEM_DINGHUOBAO,
@@ -1605,7 +1694,7 @@ public final class DhbOrderSyncService {
                 null,
                 null,
                 null,
-                null,
+                orderDiscount,
                 first(content, list, "OrderRemark", "Remark", "remark"),
                 lines,
                 !cancelled && shouldSubmit(internalStatusCode),
@@ -1692,14 +1781,17 @@ public final class DhbOrderSyncService {
                     "DETAIL", Map.of("required", "Amount > 0"),
                     Map.of("sourceReceiptNo", sourceReceiptNo));
         }
-        Instant paymentTime = sourceBusinessTime(
-                "DHB_RECEIPT_BUSINESS_TIME_MISSING",
-                "订货宝收款单缺少交易/创建/更新时间，不能生成销售回款记录",
-                "sourceReceiptNo",
-                sourceReceiptNo,
-                receipt == null ? null : receipt.transactionAt(),
-                receipt == null ? null : receipt.createdAt(),
-                receipt == null ? null : receipt.updatedAt());
+        Instant paymentTime = receipt == null ? null : receipt.transactionAt();
+        if (paymentTime == null) throw new ProjectionRejected("DHB_RECEIPT_BUSINESS_TIME_MISSING",
+                "订货宝缺少付款日期 ReceiptsDate，不能以录入或修改时间代替", "DETAIL",
+                Map.of("required", "ReceiptsDate"), Map.of("sourceReceiptNo", sourceReceiptNo));
+        String status = switch (verifiedReceiptStatus(receipt.status())) {
+            case "CONFIRMED" -> "CHECKED";
+            case "PENDING" -> "PENDING";
+            case "CANCELLED" -> "CANCELLED";
+            default -> throw new ProjectionRejected("DHB_RECEIPT_STATUS_MISSING",
+                    "缺少可核实的收款确认状态", "STATUS", Map.of(), Map.of("sourceReceiptNo", sourceReceiptNo));
+        };
         SalesPaymentRecordCommand command = new SalesPaymentRecordCommand(
                 connectorId,
                 SOURCE_SYSTEM_DINGHUOBAO,
@@ -1718,7 +1810,10 @@ public final class DhbOrderSyncService {
                 null,
                 null,
                 SYNC_ACTOR,
-                Instant.now());
+                Instant.now(), status,
+                "CHECKED".equals(status) ? first(attributes, "ConfirmName", "ConfirmUserName", "AuditName") : null,
+                "CHECKED".equals(status) ? firstInstant(attributes, Map.of(), null,
+                        "ConfirmDate", "ConfirmTime", "AuditDate", "AuditTime") : null);
         return new PreparedSalesPayment(sourceReceiptNo, sourceOrderNo, command);
     }
 
@@ -3105,7 +3200,10 @@ public final class DhbOrderSyncService {
                     zeroIfNull(unitPrice),
                     null,
                     zeroIfNull(lineDiscountAmount),
-                    first(row, "remark", "Remark"));
+                    first(row, "remark", "Remark"),
+                    first(row, "orders_list_id", "OrdersListId", "OrdersListID", "orderListId",
+                            "order_list_id", "OrderProductId", "OrderProductID", "OrderGoodsId",
+                            "OrderGoodsID", "ContentId", "ContentID", "id", "Id", "ID"));
             merged.compute(duplicateKey, (ignored, current) ->
                     current == null ? SalesOrderLineAccumulator.from(line) : current.merge(line));
         }
@@ -3434,7 +3532,8 @@ public final class DhbOrderSyncService {
                 source.collectorNameSnapshot(), source.paymentTime(), source.paymentMethodCode(),
                 source.paidAmount(), source.voucherKeys(), source.remark(), revision,
                 source.sourceCreatedAt(), source.sourceUpdatedAt(), source.sourceModifierId(),
-                source.sourceModifierName(), source.syncedBy(), source.syncedAt());
+                source.sourceModifierName(), source.syncedBy(), source.syncedAt(), source.sourcePaymentStatusCode(),
+                source.sourceCheckedBy(), source.sourceCheckedAt());
     }
 
     private static FundDocumentCommand withRevision(FundDocumentCommand source, Integer revision) {
@@ -3530,19 +3629,19 @@ public final class DhbOrderSyncService {
         String value=lower(sourceStatus);
         if(value==null)return "UNKNOWN";
         if(paymentCancelled(value))return "CANCELLED";
-        if(Set.of("confirmed","confirm","receipted","received","completed","finished","已收款","已确认","已审核").contains(value))return "CONFIRMED";
+        if(Set.of("pend_receipted","confirmed","confirm","receipted","received","completed","finished","已收款","已确认","已审核").contains(value))return "CONFIRMED";
         if(value.startsWith("pend")||Set.of("draft","new","waiting","wait","created").contains(value)||value.contains("待"))return "PENDING";
         return "UNKNOWN";
     }
 
     /**
-     * 收款单入账状态：订货宝收款单接口不返回状态字段，缺省按已确认入账（拉取范围只含有效收款单）；
+     * 收款单入账状态：接口未返回状态时必须由明确的状态筛选提供证据；
      * 显式出现未识别状态值时保留 UNKNOWN 交人工核对，取消状态仍按取消处理。
      */
     static String receiptIntakeStatus(DhbClient.Receipt receipt) {
         if(receiptCancelled(receipt==null?null:receipt.status()))return "CANCELLED";
         if(receipt==null)return "UNKNOWN";
-        if(receipt.status()==null||receipt.status().isBlank())return "CONFIRMED";
+        if(receipt.status()==null||receipt.status().isBlank())return "UNKNOWN";
         return verifiedReceiptStatus(receipt.status());
     }
 
@@ -3579,7 +3678,8 @@ public final class DhbOrderSyncService {
         String source = firstNonBlank(sourceStatus,
                 first(attributes, "Status", "status", "PayStatus", "payStatus", "paymentStatus"));
         String value = lower(source);
-        if (value == null) return "CONFIRMED";
+        if (value == null) return "PENDING";
+        if ("pend_receipted".equals(value)) return "CONFIRMED";
         if (paymentCancelled(value) || value.contains("取消")) return "CANCELLED";
         if (Set.of("pending", "wait", "waiting", "new", "draft", "created", "pend",
                 "pend_receipt", "pend_receipted").contains(value) || value.startsWith("pend")
@@ -3746,10 +3846,10 @@ public final class DhbOrderSyncService {
 
     private static Instant sourceConfirmedAt(String statusCode, Instant typed, Map<String, Object> attributes) {
         if (!"CONFIRMED".equals(statusCode)) return null;
-        return firstInstant(attributes, Map.of(), typed,
+        return firstInstant(attributes, Map.of(), null,
                 "ConfirmDate", "confirmDate", "ConfirmTime", "confirmTime",
                 "AuditDate", "auditDate", "AuditTime", "auditTime",
-                "CheckDate", "checkDate", "UpdateDate", "updateDate", "UpdateTime", "updateTime");
+                "CheckDate", "checkDate");
     }
 
     private List<String> sourceAttachmentKeys(Connector connector, String sourceDocumentNo,
@@ -4455,6 +4555,7 @@ public final class DhbOrderSyncService {
 
     private static final class SalesOrderLineAccumulator {
         private final Long productId;
+        private final String sourceLineId;
         private final Long productVariantId;
         private final String productCodeSnapshot;
         private final String skuCodeSnapshot;
@@ -4468,6 +4569,7 @@ public final class DhbOrderSyncService {
 
         private SalesOrderLineAccumulator(SalesOrderLineCommand line) {
             this.productId = line.productId();
+            this.sourceLineId = line.sourceLineId();
             this.productVariantId = line.productVariantId();
             this.productCodeSnapshot = line.productCodeSnapshot();
             this.skuCodeSnapshot = line.skuCodeSnapshot();
@@ -4498,7 +4600,7 @@ public final class DhbOrderSyncService {
                     : BigDecimal.ZERO;
             return new SalesOrderLineCommand(productId, productVariantId, productCodeSnapshot,
                     skuCodeSnapshot, productNameSnapshot, specificationSnapshot, unitCode,
-                    quantity, unitPrice, null, discountAmount, remark);
+                    quantity, unitPrice, null, discountAmount, remark, sourceLineId);
         }
 
         private static String mergedRemark(String left, String right) {

@@ -695,7 +695,15 @@ public final class DhbClientAdapter implements DhbClient {
         putIfPresent(values, "status", query.status());
         ApiEnvelope response = callBusiness(connector, "getReceiptsList", values);
         List<Map<String, Object>> rows = rows(response, "getReceiptsList");
-        List<Receipt> items = rows.stream().map(DhbClientAdapter::receipt).toList();
+        // 返回体不含状态，以服务端明确筛选的状态补充来源证据；all 不能推断。
+        List<Receipt> items = rows.stream().map(row -> {
+            Map<String, Object> valuesWithStatus = new LinkedHashMap<>(row);
+            if (!valuesWithStatus.containsKey("Status") && query.status() != null
+                    && java.util.Set.of("pend_receipt", "pend_receipted", "canceled").contains(query.status())) {
+                valuesWithStatus.put("Status", query.status());
+            }
+            return receipt(valuesWithStatus);
+        }).toList();
         logPage(connector, "getReceiptsList", query.page(), response, items.size());
         return new Page<>(query.page(), response.total(), items);
     }

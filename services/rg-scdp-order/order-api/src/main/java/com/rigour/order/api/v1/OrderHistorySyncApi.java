@@ -15,8 +15,20 @@ public interface OrderHistorySyncApi {
     @PostMapping(BASE + "/source-orders")
     ApiResponse<Intake> sourceOrder(@RequestBody SourceOrder command);
 
+    @PostMapping(BASE + "/source-orders/cancel")
+    ApiResponse<Intake> cancelSourceOrder(@RequestBody CancelSourceOrder command);
+
     @PostMapping(BASE + "/new-order")
     ApiResponse<Void> confirmNew(@RequestBody NewOrder command);
+
+    @PostMapping(BASE + "/historical-new-order")
+    ApiResponse<Void> confirmHistoricalNew(@RequestBody NewOrder command);
+
+    @PostMapping(BASE + "/delete-unlinked-history")
+    ApiResponse<Void> deleteUnlinkedHistory(@RequestBody DeleteUnlinkedHistory command);
+
+    @PostMapping(BASE + "/normalize-group")
+    ApiResponse<java.util.Map<String, Long>> normalizeGroup(@RequestBody NormalizeGroup command);
 
     @PostMapping(BASE + "/groups")
     ApiResponse<String> bind(@RequestBody Bind command);

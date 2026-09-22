@@ -1021,6 +1021,7 @@ public class MybatisPlusSalesOrderRepository
             entity.setDiscountRate(item.discountRate());
             entity.setDiscountAmount(item.discountAmount());
             entity.setLineAmount(item.lineAmount());
+            entity.setSourceLineId(item.sourceLineId());
             entity.setRemark(item.remark());
             entity.setRevision(1);
             entity.setCreatedBy(auditActor(actorId));
@@ -1217,7 +1218,7 @@ public class MybatisPlusSalesOrderRepository
                 entity.getDiscountRate(),
                 entity.getDiscountAmount(),
                 entity.getLineAmount(),
-                entity.getRemark());
+                entity.getRemark(), entity.getSourceLineId());
     }
 
     private static LocalDateTime local(Instant instant) {

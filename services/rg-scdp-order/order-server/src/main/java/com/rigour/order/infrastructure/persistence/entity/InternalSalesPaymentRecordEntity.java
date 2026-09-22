@@ -9,6 +9,15 @@ import java.time.LocalDateTime;
 /** 自研销售回款记录实体，对应 `order_payment_record`。 */
 @TableName("order_payment_record")
 public class InternalSalesPaymentRecordEntity {
+    private String paymentStatusCode;
+    private String checkedBy;
+    private LocalDateTime checkedAt;
+    public String getPaymentStatusCode() { return paymentStatusCode; }
+    public void setPaymentStatusCode(String value) { paymentStatusCode = value; }
+    public String getCheckedBy() { return checkedBy; }
+    public void setCheckedBy(String value) { checkedBy = value; }
+    public LocalDateTime getCheckedAt() { return checkedAt; }
+    public void setCheckedAt(LocalDateTime value) { checkedAt = value; }
     @TableId(type = IdType.AUTO)
     private Long id;
     private String tenantId;

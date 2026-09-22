@@ -305,7 +305,20 @@ public final class OrderSalesPaymentRecordService {
                 text(command.sourceModifierId(), 80, "sourceModifierId"),
                 text(command.sourceModifierName(), 100, "sourceModifierName"),
                 text(command.syncedBy(), 50, "syncedBy"),
-                command.syncedAt());
+                command.syncedAt(),
+                sourcePaymentStatus(command),
+                text(command.sourceCheckedBy(), 50, "sourceCheckedBy"),
+                command.sourceCheckedAt());
+    }
+
+    private String sourcePaymentStatus(SalesPaymentRecordCommand command) {
+        String status = command.sourcePaymentStatusCode();
+        if (status == null) return null;
+        if (!"DINGHUOBAO".equals(command.sourceSystemCode())
+                || !java.util.Set.of("CHECKED", "PENDING", "CANCELLED").contains(status)) {
+            throw badRequest("来源收款状态无效");
+        }
+        return status;
     }
 
     private List<String> voucherKeys(List<String> values) {

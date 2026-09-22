@@ -24,7 +24,32 @@ public record SalesPaymentRecordCommand(
         String sourceModifierId,
         String sourceModifierName,
         String syncedBy,
+        Instant syncedAt,
+        String sourcePaymentStatusCode,
+        String sourceCheckedBy,
+        Instant sourceCheckedAt) {
+    public SalesPaymentRecordCommand(
+        UUID connectorId,
+        String sourceSystemCode,
+        String sourceDocumentNo,
+        Long orderId,
+        String collectorStaffCode,
+        String collectorNameSnapshot,
+        Instant paymentTime,
+        String paymentMethodCode,
+        BigDecimal paidAmount,
+        List<String> voucherKeys,
+        String remark,
+        Integer revision,
+        Instant sourceCreatedAt,
+        Instant sourceUpdatedAt,
+        String sourceModifierId,
+        String sourceModifierName,
+        String syncedBy,
         Instant syncedAt) {
+        this(connectorId, sourceSystemCode, sourceDocumentNo, orderId, collectorStaffCode, collectorNameSnapshot, paymentTime, paymentMethodCode, paidAmount, voucherKeys, remark, revision, sourceCreatedAt, sourceUpdatedAt, sourceModifierId, sourceModifierName, syncedBy, syncedAt, null, null, null);
+    }
+
     public SalesPaymentRecordCommand {
         voucherKeys = voucherKeys == null ? List.of() : List.copyOf(voucherKeys);
     }

@@ -15,5 +15,22 @@ public record SalesOrderLineCommand(
         BigDecimal unitPrice,
         BigDecimal discountRate,
         BigDecimal discountAmount,
-        String remark) {
+        String remark,
+        String sourceLineId) {
+    public SalesOrderLineCommand(
+            Long productId,
+            Long productVariantId,
+            String productCodeSnapshot,
+            String skuCodeSnapshot,
+            String productNameSnapshot,
+            String specificationSnapshot,
+            String unitCode,
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            BigDecimal discountRate,
+            BigDecimal discountAmount,
+            String remark) {
+        this(productId, productVariantId, productCodeSnapshot, skuCodeSnapshot, productNameSnapshot, specificationSnapshot, unitCode, quantity, unitPrice, discountRate, discountAmount, remark, null);
+    }
+
 }

@@ -82,6 +82,16 @@ public final class OrderRegisterModels {
             String syncedBy,
             Instant syncedAt,
             Integer revision) {
+        @com.fasterxml.jackson.annotation.JsonProperty("discountAmount")
+        public BigDecimal discountAmount() {
+            return originalAmount == null || payableAmount == null ? null : originalAmount.subtract(payableAmount);
+        }
+
+        @com.fasterxml.jackson.annotation.JsonProperty("discountRate")
+        public BigDecimal discountRate() {
+            return discountAmount() == null || originalAmount.signum() == 0 ? null
+                    : discountAmount().divide(originalAmount, 8, java.math.RoundingMode.HALF_UP);
+        }
     }
 
     /** 订单明细行；整单字段来自订单头，金额按明细行聚合，不跨单位求和。 */
@@ -100,7 +110,11 @@ public final class OrderRegisterModels {
             BigDecimal quantity,
             BigDecimal unitPrice,
             BigDecimal lineAmount,
-            /** 分摊到本明细的回款金额：订单实收按「明细金额 / 订单应收」比例分摊，部分回款也按比例。 */
+            /** 整单实际应收按订货金额比例分摊；优惠额为明细订货金额减分摊应收。 */
+            BigDecimal orderAmount,
+            BigDecimal discountAmount,
+            BigDecimal discountRate,
+            /** 分摊收款金额：按明细订货金额占整单的比例分摊账本已收金额，累计差额处理分币尾差。 */
             BigDecimal receivedAmount,
             String orderNo,
             /** 来源系统单号；页面与订单列表口径一致，便于按来源核对。 */
@@ -117,6 +131,7 @@ public final class OrderRegisterModels {
             Long departmentId,
             String departmentName,
             String orderStatusCode,
+            String paymentStatusCode,
             Instant orderDate,
             Integer revision,
             String createdBy,

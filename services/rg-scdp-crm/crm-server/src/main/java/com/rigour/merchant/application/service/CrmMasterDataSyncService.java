@@ -80,6 +80,15 @@ public final class CrmMasterDataSyncService {
         this.employeeDirectory = employeeDirectory;
     }
 
+    public void confirmIndependentCustomer(CallerIdentity caller, UUID connectorId, String sourceId,
+            long revision, boolean allowUnmappedOwner, String evidence) {
+        if (caller == null || caller.tenantId() == null || caller.userId() == null
+                || !caller.permissions().containsAll(Set.of("crm:customer:sync", "crm:customer:create")))
+            throw new AuthorizationDeniedException("crm:customer:create");
+        store.confirmIndependentCustomer(caller.tenantId(), connectorId, sourceId, revision,
+                allowUnmappedOwner, evidence, caller.userId());
+    }
+
     public SyncResult run(SyncCommand command) {
         CallerIdentity caller = AuthorizationContext.requireCurrent();
         if (caller.tenantId() == null || caller.userId() == null) {
@@ -122,6 +131,13 @@ public final class CrmMasterDataSyncService {
     public SyncResult runSelected(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
             int maxPages, Instant from, Instant to, String objectType,
             boolean incremental, Instant createdBefore, UUID initiatedBy) {
+        return runSelected(caller,connectorId,sourceTaskId,maxPages,from,to,objectType,
+                incremental,createdBefore,initiatedBy,stage -> {});
+    }
+
+    public SyncResult runSelected(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
+            int maxPages, Instant from, Instant to, String objectType,
+            boolean incremental, Instant createdBefore, UUID initiatedBy, java.util.function.Consumer<String> progress) {
         requireScheduledCaller(caller);
         CrmMasterDataObjectType selected = CrmMasterDataObjectType.parse(objectType);
         if ((incremental || createdBefore != null) && selected != CrmMasterDataObjectType.CUSTOMER)
@@ -146,7 +162,7 @@ public final class CrmMasterDataSyncService {
                             Instant lower = cursor == null ? null : cursor.minusSeconds(300);
                             SyncObjectResult result = runObject(caller.tenantId(), connectorId, initiatedBy,
                                     sourceTaskId, selected, pages, initiatedBy == null ? "SCHEDULED" : "MANUAL", guard,
-                                    lower, lower == null ? null : watermark, createdBefore, watermark);
+                                    lower, lower == null ? null : watermark, createdBefore, watermark, progress);
                             return new SyncResult(UUID.randomUUID(), result.status(), List.of(result));
                         }
                         return runBatchUnderLease(caller.tenantId(), connectorId, initiatedBy,
@@ -202,6 +218,14 @@ public final class CrmMasterDataSyncService {
             UUID sourceTaskId, CrmMasterDataObjectType objectType, int maxPages,
             String triggerType, LeaseGuard leaseGuard, Instant from, Instant to,
             Instant createdBefore, Instant watermark) {
+        return runObject(tenantId,connectorId,actorId,sourceTaskId,objectType,maxPages,triggerType,
+                leaseGuard,from,to,createdBefore,watermark,stage -> {});
+    }
+
+    private SyncObjectResult runObject(UUID tenantId, UUID connectorId, UUID actorId,
+            UUID sourceTaskId, CrmMasterDataObjectType objectType, int maxPages,
+            String triggerType, LeaseGuard leaseGuard, Instant from, Instant to,
+            Instant createdBefore, Instant watermark, java.util.function.Consumer<String> progress) {
         UUID runId;
         try {
             runId = store.startRun(tenantId, connectorId, actorId, sourceTaskId,
@@ -214,6 +238,7 @@ public final class CrmMasterDataSyncService {
         }
         Accumulator counts = new Accumulator();
         try {
+            progress.accept("正在读取订货宝客户增量资料");
             Collected collected = from == null
                     ? client.collect(tenantServiceCaller(tenantId), connectorId, objectType, maxPages)
                     : client.collect(tenantServiceCaller(tenantId), connectorId, objectType, maxPages, from, to);
@@ -232,15 +257,19 @@ public final class CrmMasterDataSyncService {
                 collected = new Collected(objectType, eligible.size(), collected.pages(), eligible);
             }
             counts.pages = collected.pages();
+            Map<String, Map<String, Object>> employeeCache = new LinkedHashMap<>();
+            Set<String> employeeLookups = new LinkedHashSet<>();
             for (int begin = 0; begin < collected.items().size(); begin += IMPORT_BATCH_SIZE) {
                 int end = Math.min(begin + IMPORT_BATCH_SIZE, collected.items().size());
                 List<SourceRecord> batch = collected.items().subList(begin, end);
                 if (objectType == CrmMasterDataObjectType.CUSTOMER) {
-                    batch = enrichEmployee(tenantId, connectorId, batch);
+                    batch = enrichEmployee(tenantId, connectorId, batch, employeeCache, employeeLookups);
                 }
                 store.importRecords(tenantId, connectorId, runId, objectType,
                         batch).forEach(counts::add);
+                progress.accept("客户已核对 " + end + " / " + collected.items().size() + " 条");
             }
+            progress.accept("正在核对客户字典和登记映射");
             Audit dictionaryAudit = dictionaryCoverage.sync(tenantId, collected);
             int mappingAccepted = registerExternalObjectMappings(
                     tenantId, connectorId, runId, objectType);
@@ -273,13 +302,14 @@ public final class CrmMasterDataSyncService {
     }
 
     private List<SourceRecord> enrichEmployee(UUID tenantId, UUID connectorId,
-                                              List<SourceRecord> records) {
+            List<SourceRecord> records, Map<String, Map<String, Object>> cache, Set<String> lookedUp) {
         if (records == null || records.isEmpty()) return List.of();
         LinkedHashSet<String> sourceStaffIds = new LinkedHashSet<>();
         records.forEach(record -> collectStaffSourceIds(record.sourceFields(), sourceStaffIds));
-        List<ResolvedEmployee> resolved = sourceStaffIds.isEmpty() ? List.of() : employeeDirectory.resolveDinghuobaoEmployees(
-                tenantServiceCaller(tenantId), connectorId.toString(), List.copyOf(sourceStaffIds));
-        Map<String, Map<String, Object>> bySourceId = new LinkedHashMap<>();
+        List<String> missing = sourceStaffIds.stream().filter(id -> !lookedUp.contains(id)).toList();
+        List<ResolvedEmployee> resolved = missing.isEmpty() ? List.of() : employeeDirectory.resolveDinghuobaoEmployees(
+                tenantServiceCaller(tenantId), connectorId.toString(), missing);
+        lookedUp.addAll(missing);
         for (ResolvedEmployee employee : resolved) {
             String sourceStaffId = cleanStaffId(employee.sourceStaffId());
             if (sourceStaffId == null) continue;
@@ -290,8 +320,11 @@ public final class CrmMasterDataSyncService {
             item.put("sourceStaffId", sourceStaffId);
             item.put("employeeCode", employeeCode);
             item.put("employeeName", employeeName);
-            bySourceId.put(sourceStaffId, item);
+            cache.put(sourceStaffId, item);
         }
+        // 缓存仅限本次执行；每条来源载荷仍只包含当前批次用到的员工，避免污染校验和。
+        Map<String, Map<String, Object>> bySourceId = new LinkedHashMap<>();
+        sourceStaffIds.forEach(id -> { if(cache.containsKey(id)) bySourceId.put(id,cache.get(id)); });
         return records.stream().map(record -> {
             Map<String, Object> fields = new LinkedHashMap<>(record.sourceFields());
             fields.put(EMPLOYEE_BY_SOURCE_ID, bySourceId);
@@ -457,7 +490,7 @@ public final class CrmMasterDataSyncService {
         return result;
     }
 
-    private static void requireScheduledCaller(CallerIdentity caller) {
+    static void requireScheduledCaller(CallerIdentity caller) {
         if (caller == null || caller.tenantId() == null || caller.userId() != null
                 || !"SERVICE".equals(caller.principalScope())
                 || (!caller.permissions().contains("integration:dhb:read")

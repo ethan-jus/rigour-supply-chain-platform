@@ -23,14 +23,17 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private final com.rigour.order.application.port.out.OrderAttributionClient owners;
     private final com.rigour.order.application.port.out.OrderSalesPaymentRecordStore payments;
+    private final com.rigour.order.application.service.sales.OrderSalesOrderService salesOrders;
 
     public JdbcOrderHistorySyncStore(
             JdbcTemplate jdbc,
             com.rigour.order.application.port.out.OrderAttributionClient owners,
-            com.rigour.order.application.port.out.OrderSalesPaymentRecordStore payments) {
+            com.rigour.order.application.port.out.OrderSalesPaymentRecordStore payments,
+            com.rigour.order.application.service.sales.OrderSalesOrderService salesOrders) {
         this.jdbc = jdbc;
         this.owners = owners;
         this.payments = payments;
+        this.salesOrders = salesOrders;
     }
 
     private static LocalDateTime ts(Instant v) {
@@ -268,6 +271,46 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         return rows;
     }
 
+    /** 来源取消只删除业务投影，保留来源、关联、核销审计记录。 */
+    @Transactional
+    public Intake cancelSourceOrder(String t, String actor, CancelSourceOrder c) {
+        require(c != null && c.connectorId() != null, "来源连接器缺失");
+        id(c.sourceNo());
+        require(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM order_sync_source WHERE tenant_id=? AND source_no=? AND connector_id<>?",
+                Long.class, t, c.sourceNo(), c.connectorId().toString()) == 0,
+                "来源单属于其他连接器，不能执行删除");
+        var sources = source(t, c.connectorId(), c.sourceNo(), true);
+        String group = sources.isEmpty() ? null : text(sources.getFirst(), "group_id");
+        jdbc.update("UPDATE order_sync_source SET state='CANCELLED',revision=revision+1"
+                        + " WHERE tenant_id=? AND connector_id=? AND source_no=? AND state<>'CANCELLED'",
+                t, c.connectorId().toString(), c.sourceNo());
+        // 一张历史单可能对应多张来源单，不能因其中一张取消删除其他有效订单。
+        if (group != null && jdbc.queryForObject(
+                "SELECT COUNT(*) FROM order_sync_source WHERE tenant_id=? AND group_id=? AND state<>'CANCELLED'",
+                Long.class, t, group) > 0) {
+            return new Intake("CANCELLATION_REVIEW", group, "关联组仍有有效来源订单，需拆分核对后删除取消部分");
+        }
+        var orders = jdbc.queryForList(
+                "SELECT o.id FROM order_sales_order o WHERE o.tenant_id=? AND o.deleted=0 AND"
+                        + " ((o.source_system_code='DINGHUOBAO' AND o.source_order_no=?) OR EXISTS"
+                        + " (SELECT 1 FROM order_history_member m WHERE m.tenant_id=o.tenant_id"
+                        + " AND m.order_id=o.id AND m.group_id=?)) FOR UPDATE", t, c.sourceNo(), group);
+        for (var order : orders) {
+            long orderId = num(order, "id");
+            jdbc.update("UPDATE order_payment_record SET deleted=1,revision=revision+1,updated_by=?,"
+                            + " updated_time=UTC_TIMESTAMP(6) WHERE tenant_id=? AND order_id=? AND deleted=0",
+                    actor, t, orderId);
+            jdbc.update("UPDATE order_sales_order_line SET deleted=1,revision=revision+1,updated_by=?,"
+                            + " updated_time=UTC_TIMESTAMP(6) WHERE tenant_id=? AND order_id=? AND deleted=0",
+                    actor, t, orderId);
+            jdbc.update("UPDATE order_sales_order SET deleted=1,order_status_code='CANCELLED',"
+                            + " revision=revision+1,updated_by=?,updated_time=UTC_TIMESTAMP(6)"
+                            + " WHERE tenant_id=? AND id=? AND deleted=0", actor, t, orderId);
+        }
+        return new Intake("CANCELLED", group, null);
+    }
+
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Intake sourceOrder(String t, SourceOrder c) {
         require(
@@ -306,8 +349,11 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         if (!rows.isEmpty()) {
             var old = rows.getFirst();
             group = text(old, "group_id");
+            if ("CANCELLED".equals(text(old, "state")))
+                return new Intake("CANCELLED", group, "来源订单已取消，不能自动恢复");
             require(num(old, "customer_id") == c.order().customerId(), "来源订单客户发生变化，必须先人工核对");
-            if (c.checksum().equals(text(old, "checksum"))) {
+            if (c.checksum().equals(text(old, "checksum"))
+                    && money(old, "amount").compareTo(amount) == 0) {
                 String stored = text(old, "state");
                 // 历史关联进度会改变新旧订单判定：校验和未变也要按当前关联状态重算，只允许向上收敛。
                 if (Set.of("HISTORY_PENDING", "NEW_OR_HISTORY_REVIEW", "DATE_REVIEW").contains(stored)
@@ -326,7 +372,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
             if (group != null) {
                 var previous = JSON.readValue(text(old, "payload"), SalesOrderCommand.class);
                 if (money(old, "amount").compareTo(amount) == 0
-                        && previous.lines().equals(c.order().lines()))
+                        && sameSourceLines(previous.lines(), c.order().lines()))
                     return new Intake("BOUND", group, null);
                 jdbc.update(
                         "UPDATE order_sync_source SET"
@@ -401,6 +447,215 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     }
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public void confirmHistoricalNew(String t, String actor, NewOrder c) {
+        require(c != null && c.source() != null, "请选择待确认历史来源订单");
+        HistorySyncRules.evidence(c.evidence());
+        var ref = c.source();
+        var s = one("SELECT * FROM order_sync_source WHERE tenant_id=? AND connector_id=?"
+                + " AND source_no=? FOR UPDATE", t, ref.connectorId().toString(), ref.sourceNo());
+        require(num(s, "revision") == ref.revision() && s.get("group_id") == null
+                && "HISTORY_PENDING".equals(text(s, "state")), "历史来源版本或关联状态已改变");
+        require(s.get("source_date") != null && instant(s.get("source_date")).isBefore(HistorySyncRules.CUTOVER),
+                "仅允许切换日前的未关联历史订单补新增");
+        require(jdbc.queryForObject("SELECT COUNT(*) FROM order_sales_order WHERE tenant_id=?"
+                + " AND source_system_code='DINGHUOBAO' AND source_order_no=? AND deleted=0",
+                Long.class, t, ref.sourceNo()) == 0, "来源订单已经存在，不能重复补新增");
+        jdbc.update("UPDATE order_sync_source SET state='NEW',classification_evidence=?,"
+                + "classification_actor=?,revision=revision+1 WHERE tenant_id=? AND connector_id=? AND source_no=?",
+                c.evidence(), actor, t, ref.connectorId().toString(), ref.sourceNo());
+    }
+
+    /** 已批准的历史清理：保留行和原业务字段，只打删除标记；任何回款或关联均阻止删除。 */
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public void deleteUnlinkedHistory(String t, String actor, DeleteUnlinkedHistory c) {
+        require(c != null && c.orderId() > 0 && c.revision() >= 0, "历史订单或版本无效");
+        HistorySyncRules.evidence(c.evidence());
+        var o = order(t, c.orderId());
+        require(num(o, "revision") == c.revision() && "FEISHU".equals(text(o, "source_system_code")),
+                "只允许按原版本清理飞书历史孤立单");
+        require(o.get("order_date") != null && instant(o.get("order_date")).isBefore(HistorySyncRules.CUTOVER),
+                "仅允许清理切换日前历史订单");
+        require(money(o, "paid_amount").signum() == 0, "订单有已收金额，不能删除");
+        for (String table : List.of("order_history_member", "order_payment_record", "order_sync_allocation",
+                "order_sync_product_allocation", "order_refund_record", "order_financial_event",
+                "order_fulfillment_execution")) {
+            require(jdbc.queryForObject("SELECT COUNT(*) FROM " + table + " WHERE tenant_id=? AND order_id=?",
+                    Long.class, t, c.orderId()) == 0, "订单存在关联、回款或执行引用，不能删除: " + table);
+        }
+        for (var ref : Map.of("order_fund_document", "related_order_id", "order_sales_shipment", "sales_order_id",
+                "order_invoice", "sales_order_id").entrySet()) {
+            require(jdbc.queryForObject("SELECT COUNT(*) FROM " + ref.getKey() + " WHERE tenant_id=? AND "
+                    + ref.getValue() + "=?", Long.class, t, c.orderId()) == 0, "订单存在业务引用，不能删除: " + ref.getKey());
+        }
+        require(jdbc.queryForObject("SELECT COUNT(*) FROM order_number_mapping WHERE tenant_id=?"
+                + " AND internal_order_no=? AND deleted=0", Long.class, t, text(o, "order_no")) == 0,
+                "订单已有订货宝单号关联，不能删除");
+        var now = ts(Instant.now());
+        String remark = (text(o, "remark") == null ? "" : text(o, "remark") + "\n") + "历史对齐逻辑删除：" + c.evidence();
+        require(remark.length() <= 1000, "原备注过长，无法保存删除证据");
+        require(jdbc.update("UPDATE order_sales_order SET deleted=1,revision=revision+1,updated_by=?,"
+                + "updated_time=?,remark=? WHERE tenant_id=? AND id=? AND revision=? AND deleted=0",
+                actor, now, remark, t, c.orderId(), c.revision()) == 1, "订单已被修改");
+        jdbc.update("UPDATE order_sales_order_line SET deleted=1,revision=revision+1,updated_by=?,updated_time=?"
+                + " WHERE tenant_id=? AND order_id=? AND deleted=0", actor, now, t, c.orderId());
+    }
+
+    /** 每个旧组独立原子迁移；回款按明确拆分计划守恒，所有原值进入本域审计。 */
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public Map<String, Long> normalizeGroup(String t, String actor, NormalizeGroup c) {
+        require(c != null && c.operationId() != null && c.connectorId() != null, "对齐操作身份缺失");
+        HistorySyncRules.evidence(c.evidence());
+        String request = JSON.writeValueAsString(c);
+        var done = jdbc.queryForList("SELECT request_json,result_json FROM order_history_reconciliation_audit"
+                + " WHERE tenant_id=? AND operation_id=?", t, c.operationId().toString());
+        if (!done.isEmpty()) {
+            require(request.equals(text(done.getFirst(), "request_json")), "幂等操作的内容发生变化");
+            var result = new LinkedHashMap<String, Long>();
+            JSON.readTree(text(done.getFirst(), "result_json")).properties().forEach(e -> result.put(e.getKey(), e.getValue().asLong()));
+            return result;
+        }
+        var group = one("SELECT * FROM order_history_group WHERE tenant_id=? AND id=? FOR UPDATE", t, c.groupId());
+        var originalSources = jdbc.queryForList("SELECT * FROM order_sync_source WHERE tenant_id=? AND group_id=? ORDER BY source_no FOR UPDATE", t, c.groupId());
+        var originalMembers = jdbc.queryForList("SELECT * FROM order_history_member WHERE tenant_id=? AND group_id=? ORDER BY order_id FOR UPDATE", t, c.groupId());
+        require(originalSources.size() > 1 || originalMembers.size() > 1, "仅用于拆合组的一单一单规范化");
+        require(c.targets() != null && c.orders() != null && c.payments() != null
+                && c.targets().size() == originalSources.size() && c.orders().size() == originalMembers.size(), "组成员不完整");
+        var before = new LinkedHashMap<String, Object>();
+        before.put("group", group); before.put("sources", originalSources); before.put("members", originalMembers);
+        Set<Long> memberIds = new TreeSet<>();
+        originalMembers.forEach(m -> memberIds.add(num(m, "order_id")));
+        Map<Long, Map<String, Object>> oldOrders = new TreeMap<>();
+        for (var ref : c.orders().stream().sorted(Comparator.comparingLong(HistoryOrderRef::orderId)).toList()) {
+            require(memberIds.contains(ref.orderId()) && !oldOrders.containsKey(ref.orderId()), "历史订单不在当前组或重复");
+            var o = order(t, ref.orderId());
+            require(num(o, "revision") == ref.revision() && num(o, "customer_id") == num(group, "customer_id"), "订单版本或门店改变");
+            oldOrders.put(ref.orderId(), o);
+        }
+        before.put("orders", oldOrders.values());
+        var oldPayments = new TreeMap<Long, Map<String, Object>>();
+        var oldLines = new ArrayList<Map<String, Object>>();
+        var oldAllocations = new ArrayList<Map<String, Object>>();
+        var oldFunds = new ArrayList<Map<String, Object>>();
+        for (long id : memberIds) {
+            for (String table : List.of("order_fulfillment_execution", "order_refund_record", "order_financial_event", "order_sync_product_allocation"))
+                require(jdbc.queryForObject("SELECT COUNT(*) FROM " + table + " WHERE tenant_id=? AND order_id=?", Long.class, t, id) == 0, "存在不能自动迁移的引用: " + table);
+            for (String table : List.of("order_sales_shipment", "order_invoice"))
+                require(jdbc.queryForObject("SELECT COUNT(*) FROM " + table + " WHERE tenant_id=? AND sales_order_id=?", Long.class, t, id) == 0, "存在不能自动迁移的引用: " + table);
+            jdbc.queryForList("SELECT * FROM order_payment_record WHERE tenant_id=? AND order_id=? AND deleted=0 ORDER BY id FOR UPDATE", t, id)
+                    .forEach(p -> oldPayments.put(num(p, "id"), p));
+            oldLines.addAll(jdbc.queryForList("SELECT * FROM order_sales_order_line WHERE tenant_id=? AND order_id=? AND deleted=0", t, id));
+            oldAllocations.addAll(jdbc.queryForList("SELECT * FROM order_sync_allocation WHERE tenant_id=? AND order_id=? FOR UPDATE", t, id));
+            oldFunds.addAll(jdbc.queryForList("SELECT * FROM order_fund_document WHERE tenant_id=? AND related_order_id=? AND deleted=0 FOR UPDATE", t, id));
+        }
+        var oldReceipts = jdbc.queryForList("SELECT * FROM order_sync_receipt WHERE tenant_id=? AND group_id=? FOR UPDATE", t, c.groupId());
+        before.put("lines", oldLines); before.put("payments", oldPayments.values()); before.put("allocations", oldAllocations);
+        before.put("funds", oldFunds); before.put("receipts", oldReceipts);
+        HistorySyncRules.equal(oldOrders.values().stream().map(o -> money(o, "paid_amount")).reduce(BigDecimal.ZERO, BigDecimal::add),
+                oldPayments.values().stream().map(p -> money(p, "paid_amount")).reduce(BigDecimal.ZERO, BigDecimal::add), "原订单已收与回款记录合计");
+        var sourceByNo = new TreeMap<String, Map<String, Object>>();
+        originalSources.forEach(s -> sourceByNo.put(text(s, "source_no"), s));
+        Set<Long> reused = new HashSet<>(); Set<String> selected = new HashSet<>();
+        for (var target : c.targets()) {
+            var ref = target.source(); var source = sourceByNo.get(ref.sourceNo());
+            require(source != null && selected.add(ref.sourceNo()) && c.connectorId().equals(ref.connectorId())
+                    && ref.connectorId().toString().equals(text(source, "connector_id")) && num(source, "revision") == ref.revision(), "来源成员或版本不符");
+            require(target.command() != null && Objects.equals(target.command().customerId(), num(group, "customer_id")), "订单客户不能跨门店");
+            require(target.sourceOrder() != null && ref.connectorId().equals(target.sourceOrder().connectorId())
+                    && ref.sourceNo().equals(target.sourceOrder().sourceNo())
+                    && Objects.equals(target.sourceOrder().order().customerId(), target.command().customerId())
+                    && target.sourceOrder().order().lines().equals(target.command().lines()), "缺少一致的来源明细证据");
+            if (target.orderId() != null) require(oldOrders.containsKey(target.orderId()) && reused.add(target.orderId()), "每张旧订单只能对应一个来源单");
+            else require("DINGHUOBAO".equals(target.command().sourceSystemCode()) && ref.sourceNo().equals(target.command().sourceOrderNo()), "新单来源身份不符");
+        }
+        require(c.payments().size() == oldPayments.size(), "回款清单发生变化");
+        Set<Long> plannedPayments = new HashSet<>();
+        for (var split : c.payments()) {
+            var payment = oldPayments.get(split.paymentId());
+            require(payment != null && plannedPayments.add(split.paymentId()) && num(payment, "revision") == split.revision(), "回款版本或清单不符");
+            require(split.portions() != null && !split.portions().isEmpty(), "回款不能丢失");
+            BigDecimal sum = BigDecimal.ZERO; Set<String> seen = new HashSet<>();
+            for (var part : split.portions()) {
+                require(selected.contains(part.sourceNo()) && seen.add(part.sourceNo()) && part.amount() != null && part.amount().signum() > 0, "回款拆分无效");
+                sum = sum.add(part.amount());
+            }
+            HistorySyncRules.equal(sum, money(payment, "paid_amount"), "拆分前后回款总额");
+            if (oldAllocations.stream().anyMatch(a -> num(a, "payment_id") == split.paymentId()))
+                require(split.portions().size() == 1, "已有订货宝核销记录不能跨来源拆分");
+        }
+        var result = new LinkedHashMap<String, Long>();
+        for (var target : c.targets()) {
+            var saved = target.orderId() == null ? salesOrders.create(target.command()) : salesOrders.update(target.orderId(), target.command());
+            result.put(target.source().sourceNo(), saved.id());
+        }
+        var now = ts(Instant.now());
+        for (var split : c.payments()) {
+            var original = oldPayments.get(split.paymentId()); int index = 0;
+            for (var part : split.portions()) {
+                long targetId = result.get(part.sourceNo()); var targetOrder = order(t, targetId);
+                String evidence = "历史单号规范化 " + c.operationId() + "；原回款 " + text(original, "payment_no") + "(" + split.paymentId() + ")；对应 " + part.sourceNo();
+                if (index++ == 0) {
+                    jdbc.update("UPDATE order_payment_record SET order_id=?,sales_order_no_snapshot=?,paid_amount=?,remark=?,updated_by=?,updated_time=?,revision=revision+1 WHERE tenant_id=? AND id=? AND revision=? AND deleted=0",
+                            targetId, text(targetOrder, "order_no"), part.amount(), evidence, actor, now, t, split.paymentId(), split.revision());
+                    for (var allocation : oldAllocations) if (num(allocation, "payment_id") == split.paymentId()) {
+                        var receipt = oldReceipts.stream().filter(r -> text(r, "receipt_no").equals(text(allocation, "receipt_no"))).findFirst().orElseThrow();
+                        require(part.sourceNo().equals(text(receipt, "source_order_no")), "回款必须对应订货宝原订单号");
+                        jdbc.update("UPDATE order_sync_allocation SET order_id=? WHERE tenant_id=? AND connector_id=? AND receipt_no=? AND order_id=?",
+                                targetId, t, text(allocation, "connector_id"), text(allocation, "receipt_no"), num(allocation, "order_id"));
+                    }
+                } else {
+                    var copy = new LinkedHashMap<>(original); copy.remove("id"); copy.remove("transaction_no_key");
+                    copy.put("payment_no", "HPR" + UUID.randomUUID().toString().replace("-", ""));
+                    String sourceNo = text(original, "source_document_no");
+                    copy.put("source_document_no", sourceNo == null ? null : sourceNo + "#H" + c.operationId().toString().substring(0, 8) + "-" + index);
+                    copy.put("order_id", targetId); copy.put("sales_order_no_snapshot", text(targetOrder, "order_no")); copy.put("paid_amount", part.amount());
+                    copy.put("transaction_no", null); copy.put("remark", evidence); copy.put("revision", 0);
+                    copy.put("created_by", actor); copy.put("updated_by", actor); copy.put("created_time", now); copy.put("updated_time", now);
+                    new org.springframework.jdbc.core.simple.SimpleJdbcInsert(jdbc).withTableName("order_payment_record").usingColumns(copy.keySet().toArray(String[]::new)).usingGeneratedKeyColumns("id").executeAndReturnKey(copy);
+                }
+            }
+        }
+        for (var fund : oldFunds) {
+            String sourceNo = text(fund, "source_order_no");
+            if (!result.containsKey(sourceNo)) sourceNo = oldReceipts.stream().filter(r -> Objects.equals(text(r, "receipt_no"), text(fund, "source_document_no")))
+                    .map(r -> text(r, "source_order_no")).findFirst().orElse(null);
+            require(result.containsKey(sourceNo), "资金单的订单归属无法证明");
+            var targetOrder = order(t, result.get(sourceNo));
+            jdbc.update("UPDATE order_fund_document SET related_order_id=?,sales_order_no_snapshot=?,revision=revision+1,updated_by=?,updated_time=? WHERE tenant_id=? AND id=?",
+                    result.get(sourceNo), text(targetOrder, "order_no"), actor, now, t, num(fund, "id"));
+        }
+        var baseline = originalMembers.getFirst().get("baseline_at");
+        require(originalMembers.stream().allMatch(m -> Objects.equals(m.get("baseline_at"), baseline)), "原组期初时点不一致");
+        jdbc.update("DELETE FROM order_history_member WHERE tenant_id=? AND group_id=?", t, c.groupId());
+        for (var entry : result.entrySet()) {
+            String no = entry.getKey(); long id = entry.getValue(); var targetOrder = order(t, id);
+            BigDecimal paid = jdbc.queryForObject("SELECT COALESCE(SUM(paid_amount),0) FROM order_payment_record WHERE tenant_id=? AND order_id=? AND deleted=0", BigDecimal.class, t, id);
+            BigDecimal allocated = jdbc.queryForObject("SELECT COALESCE(SUM(amount),0) FROM order_sync_allocation WHERE tenant_id=? AND order_id=?", BigDecimal.class, t, id);
+            BigDecimal payable = money(targetOrder, "payable_amount");
+            require(paid.compareTo(payable) <= 0, "拆合组回款超过订单金额，请保留人工复核");
+            String newGroup = UUID.randomUUID().toString();
+            jdbc.update("INSERT INTO order_history_group(tenant_id,id,customer_id,evidence,actor_id,created_at,source_amount,order_amount,difference_amount,difference_reason) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    t, newGroup, num(group, "customer_id"), c.evidence() + "；原组 " + c.groupId(), actor, now, money(targetOrder, "original_amount"), payable, money(targetOrder, "original_amount").subtract(payable), "订货宝原价与折后金额分别保留");
+            jdbc.update("INSERT INTO order_history_member(tenant_id,order_id,group_id,baseline_at,opening_paid) VALUES(?,?,?,?,?)", t, id, newGroup, baseline, paid.subtract(allocated));
+            var sourceOrder = c.targets().stream().filter(v -> v.source().sourceNo().equals(no)).findFirst().orElseThrow().sourceOrder();
+            jdbc.update("UPDATE order_sync_source SET group_id=?,state='BOUND',source_date=?,amount=?,payload=?,checksum=?,revision=revision+1 WHERE tenant_id=? AND connector_id=? AND source_no=?",
+                    newGroup, ts(sourceOrder.order().orderDate()), sourceOrder.amount(), JSON.writeValueAsString(sourceOrder.order()), sourceOrder.checksum(), t, c.connectorId().toString(), no);
+            jdbc.update("UPDATE order_sync_receipt SET group_id=?,revision=revision+1 WHERE tenant_id=? AND group_id=? AND source_order_no=?", newGroup, t, c.groupId(), no);
+            jdbc.update("UPDATE order_sales_order SET paid_amount=?,unpaid_amount=?,source_unpaid_amount=?,payment_status_code=?,payment_time=(SELECT MAX(payment_time) FROM order_payment_record p WHERE p.tenant_id=? AND p.order_id=? AND p.deleted=0),revision=revision+1,updated_by=?,updated_time=? WHERE tenant_id=? AND id=?",
+                    paid, payable.subtract(paid), payable.subtract(paid), paid.signum() == 0 ? "UNPAID" : paid.compareTo(payable) >= 0 ? "PAID" : "PARTIAL_PAID", t, id, actor, now, t, id);
+        }
+        require(jdbc.queryForObject("SELECT COUNT(*) FROM order_sync_receipt WHERE tenant_id=? AND group_id=?", Long.class, t, c.groupId()) == 0, "尚有回款未迁移");
+        for (long id : memberIds) if (!result.containsValue(id)) {
+            require(jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_record WHERE tenant_id=? AND order_id=? AND deleted=0", Long.class, t, id) == 0, "旧订单回款未迁完");
+            jdbc.update("UPDATE order_sales_order SET deleted=1,paid_amount=0,unpaid_amount=0,source_unpaid_amount=0,revision=revision+1,updated_by=?,updated_time=? WHERE tenant_id=? AND id=?", actor, now, t, id);
+            jdbc.update("UPDATE order_sales_order_line SET deleted=1,revision=revision+1,updated_by=?,updated_time=? WHERE tenant_id=? AND order_id=? AND deleted=0", actor, now, t, id);
+        }
+        jdbc.update("DELETE FROM order_history_group WHERE tenant_id=? AND id=?", t, c.groupId());
+        jdbc.update("INSERT INTO order_history_reconciliation_audit(tenant_id,operation_id,group_id,request_json,before_json,result_json,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                t, c.operationId().toString(), c.groupId(), request, JSON.writeValueAsString(before), JSON.writeValueAsString(result), actor, now);
+        return result;
+    }
+
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public String bind(String t, String actor, Bind c) {
         require(
                 c != null && c.customerId() > 0 && !c.sources().isEmpty() && !c.orders().isEmpty(),
@@ -428,7 +683,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                     num(s, "customer_id") == c.customerId()
                             && num(s, "revision") == ref.revision()
                             && s.get("group_id") == null
-                            && !"NEW".equals(text(s, "state")),
+                            && !Set.of("NEW", "CANCELLED").contains(text(s, "state")),
                     "来源门店、版本或关联状态不符");
             // 已投影的订货宝单必须先受控排除重复，不能靠新增关联掩盖重复统计。
             require(
@@ -614,6 +869,8 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         ? List.<Map<String, Object>>of()
                         : source(t, c.connectorId(), c.sourceOrderNo(), true);
         String group = sources.isEmpty() ? null : text(sources.getFirst(), "group_id");
+        if (!sources.isEmpty() && "CANCELLED".equals(text(sources.getFirst(), "state")))
+            return new Intake("ORDER_CANCELLED", group, "订单已取消，回款保留在来源记录中");
         Long customer = c.customerId();
         if (!sources.isEmpty()) {
             long owner = num(sources.getFirst(), "customer_id");
@@ -640,7 +897,8 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         if (!sources.isEmpty() && "SOURCE_CHANGED_REVIEW".equals(text(sources.getFirst(), "state")))
             state = "SOURCE_CHANGED_REVIEW";
         if (c.occurredAt() == null) state = "PAYMENT_TIME_REVIEW";
-        else if (!"CONFIRMED".equals(c.status()) && !"CANCELLED".equals(c.status()))
+        else if (!"CONFIRMED".equals(c.status()) && !"CANCELLED".equals(c.status())
+                && !(newSource && "PENDING".equals(c.status())))
             state = "STATUS_REVIEW";
         var old =
                 jdbc.queryForList(
@@ -670,7 +928,8 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 if (group == null
                         && !sources.isEmpty()
                         && "NEW".equals(text(sources.getFirst(), "state"))
-                        && "CONFIRMED".equals(c.status())
+                        && !"BASELINE_COVERED".equals(text(v, "state"))
+                        && Set.of("CONFIRMED", "PENDING").contains(c.status())
                         && c.occurredAt() != null) return receiptResult(t, c, "NEW", null);
                 return receiptResult(t, c, text(v, "state"), group);
             }
@@ -703,6 +962,9 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         text(v, "group_id"),
                         "金额、时间、状态或期初覆盖发生变化，已保留原入账事实与新来源，等待核实");
             }
+            // 人工对账已覆盖的回款仅更新来源元数据，不能重新激活旧核销或生成第二份回款。
+            if ("BASELINE_COVERED".equals(text(v, "state")) && "CONFIRMED".equals(c.status()))
+                state = "BASELINE_COVERED";
             jdbc.update(
                     "INSERT INTO"
                         + " order_sync_receipt_revision(tenant_id,connector_id,receipt_no,revision,payload,created_at)"
@@ -792,10 +1054,11 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
             }
             return new Intake("CANCELLED", group, null);
         }
+        if ("BASELINE_COVERED".equals(state)) return receiptResult(t, c, state, group);
         if (group == null
                 && !sources.isEmpty()
                 && "NEW".equals(text(sources.getFirst(), "state"))
-                && "CONFIRMED".equals(c.status())
+                && Set.of("CONFIRMED", "PENDING").contains(c.status())
                 && c.occurredAt() != null) return receiptResult(t, c, "NEW", null);
         if (group != null
                 && "ALLOCATION_PENDING".equals(state)
@@ -1006,8 +1269,8 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         String no = "HS" + id;
         jdbc.update(
                 "INSERT INTO"
-                    + " order_payment_record(id,tenant_id,payment_no,connector_id,source_system_code,source_document_no,order_id,sales_order_no_snapshot,customer_id,customer_code_snapshot,customer_name_snapshot,collector_staff_code,collector_name_snapshot,payment_time,paid_amount,remark,created_by,updated_by,created_time,updated_time,revision,deleted)"
-                    + " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0)",
+                    + " order_payment_record(id,tenant_id,payment_no,connector_id,source_system_code,source_document_no,order_id,sales_order_no_snapshot,customer_id,customer_code_snapshot,customer_name_snapshot,collector_staff_code,collector_name_snapshot,payment_time,paid_amount,remark,created_by,updated_by,created_time,updated_time,source_record_id,payment_status_code,revision,deleted)"
+                    + " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'CHECKED',1,0)",
                 id,
                 t,
                 no,
@@ -1027,7 +1290,8 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 "SYSTEM",
                 "SYSTEM",
                 ts(Instant.now()),
-                ts(Instant.now()));
+                ts(Instant.now()),
+                c.receiptNo());
         jdbc.update(
                 "UPDATE order_sync_allocation SET payment_id=? WHERE tenant_id=? AND connector_id=?"
                     + " AND receipt_no=? AND order_id=?",
@@ -1173,10 +1437,13 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         to);
         var receipts =
                 jdbc.queryForList(
-                        "SELECT collector_staff_code employee_code,MAX(collector_name_snapshot)"
-                            + " employee_name,SUM(paid_amount) amount FROM order_payment_record"
-                            + " WHERE tenant_id=? AND deleted=0 AND payment_time>=? AND"
-                            + " payment_time<? GROUP BY collector_staff_code",
+                        "SELECT p.collector_staff_code employee_code,MAX(p.collector_name_snapshot)"
+                            + " employee_name,SUM(p.paid_amount) amount FROM order_payment_record p"
+                            + " JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id"
+                            + " WHERE p.tenant_id=? AND p.deleted=0 AND o.deleted=0"
+                            + " AND o.order_status_code<>'CANCELLED'"
+                            + " AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time>=? AND"
+                            + " p.payment_time<? GROUP BY p.collector_staff_code",
                         t,
                         from,
                         to);
@@ -1200,7 +1467,9 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             + " order_sync_product_allocation a JOIN order_sync_receipt r ON"
                             + " r.tenant_id=a.tenant_id AND r.connector_id=a.connector_id AND"
                             + " r.receipt_no=a.receipt_no JOIN order_sales_order_line l ON"
-                            + " l.tenant_id=a.tenant_id AND l.id=a.line_id WHERE a.tenant_id=? AND"
+                            + " l.tenant_id=a.tenant_id AND l.id=a.line_id JOIN order_sales_order o ON"
+                            + " o.tenant_id=l.tenant_id AND o.id=l.order_id WHERE a.tenant_id=? AND"
+                            + " l.deleted=0 AND o.deleted=0 AND o.order_status_code<>'CANCELLED' AND"
                             + " r.source_status='CONFIRMED' AND r.occurred_at>=? AND"
                             + " r.occurred_at<? GROUP BY l.product_id,l.product_variant_id",
                         t,
@@ -1223,7 +1492,10 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 "product_pending_amount",
                 jdbc.queryForObject(
                                 "SELECT COALESCE(SUM(p.paid_amount),0) FROM order_payment_record p"
-                                    + " WHERE p.tenant_id=? AND p.deleted=0 AND p.payment_time>=?"
+                                    + " JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id"
+                                    + " WHERE p.tenant_id=? AND p.deleted=0 AND o.deleted=0"
+                                    + " AND o.order_status_code<>'CANCELLED'"
+                                    + " AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time>=?"
                                     + " AND p.payment_time<?",
                                 BigDecimal.class,
                                 t,
@@ -1317,4 +1589,19 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 c.receiptNo());
         projectOwner(t, c.connectorId(), c.receiptNo());
     }
+    private static boolean sameSourceLines(
+            java.util.List<com.rigour.order.api.v1.model.SalesOrderLineCommand> left,
+            java.util.List<com.rigour.order.api.v1.model.SalesOrderLineCommand> right) {
+        return left.stream().map(JdbcOrderHistorySyncStore::businessLine).toList()
+                .equals(right.stream().map(JdbcOrderHistorySyncStore::businessLine).toList());
+    }
+
+    private static com.rigour.order.api.v1.model.SalesOrderLineCommand businessLine(
+            com.rigour.order.api.v1.model.SalesOrderLineCommand line) {
+        return new com.rigour.order.api.v1.model.SalesOrderLineCommand(line.productId(), line.productVariantId(),
+                line.productCodeSnapshot(), line.skuCodeSnapshot(), line.productNameSnapshot(),
+                line.specificationSnapshot(), line.unitCode(), line.quantity(), line.unitPrice(),
+                line.discountRate(), line.discountAmount(), line.remark());
+    }
+
 }

@@ -658,6 +658,24 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
         return row == null ? null : row.cursorValue;
     }
 
+    @Override
+    public OrderSummary findOrderSummary(UUID tenantId, UUID connectorId, String sourceOrderId) {
+        IntegrationOrderMirrorEntity mirror = findOrderMirrorRow(tenantId, connectorId, sourceOrderId);
+        if (mirror == null) return null;
+        IntegrationRawLandingEntity raw = mirror.rawLandingId == null ? null
+                : first(rawLandingMapper.selectList(Wrappers.<IntegrationRawLandingEntity>query()
+                        .eq("tenant_id", bin(tenantId))
+                        .eq("connector_id", bin(connectorId))
+                        .eq("id", mirror.rawLandingId)
+                        .eq("source_object_type", SOURCE_OBJECT_TYPE)
+                        .eq("source_id", sourceOrderId)
+                        .last("LIMIT 1")));
+        Map<String, Object> attributes = raw == null ? Map.of() : readJsonMap(raw.payloadJson);
+        return new OrderSummary(mirror.sourceOrderId, mirror.orderNo, mirror.sourceStatus,
+                mirror.amount, instant(mirror.orderTime), raw == null ? null : instant(raw.sourceUpdatedAt),
+                text(attributes.get("ClientNO")), text(attributes.get("PayStatus")), attributes);
+    }
+
     private UUID upsertOrderMirror(UUID tenantId, UUID connectorId,
                                    OrderSummary order, UUID rawId) {
         IntegrationOrderMirrorEntity existing = findOrderMirrorRow(tenantId, connectorId, order.sourceId());

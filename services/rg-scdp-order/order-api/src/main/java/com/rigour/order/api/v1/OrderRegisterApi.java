@@ -45,7 +45,12 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) String paymentStatusCode,
             @RequestParam(required = false) Boolean hasUnpaid,
             @RequestParam(required = false) String invoiceStatusCode,
-            @RequestParam(required = false) Boolean dhbLinked);
+            @RequestParam(required = false) Boolean dhbLinked,
+            @RequestParam(required = false) String dhbOrderNo,
+            @RequestParam(required = false) Boolean hasDiscount,
+            @RequestParam(required = false) String sortBy,
+            @RequestParam(required = false) String sortDirection,
+            @RequestParam(required = false) String createdBy);
 
     @GetMapping(BASE_PATH + "/lines")
     ApiResponse<OrderRegisterPage<OrderRegisterLineView>> lines(
@@ -64,7 +69,11 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) String orderStatusCode,
             @RequestParam(required = false) String productKeyword,
             @RequestParam(required = false) String productCode,
-            @RequestParam(required = false) List<Long> productIds);
+            @RequestParam(required = false) List<Long> productIds,
+            @RequestParam(required = false) String paymentStatusCode,
+            @RequestParam(required = false) Boolean hasDiscount,
+            @RequestParam(required = false) String sortBy,
+            @RequestParam(required = false) String sortDirection);
 
     @GetMapping(BASE_PATH + "/payments")
     ApiResponse<OrderRegisterPage<OrderRegisterPaymentView>> payments(
@@ -87,7 +96,8 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) Instant paymentTimeFrom,
             @RequestParam(required = false) Instant paymentTimeTo,
             @RequestParam(required = false) String sortBy,
-            @RequestParam(required = false) String sortDirection);
+            @RequestParam(required = false) String sortDirection,
+            @RequestParam(required = false) String createdBy);
 
     /** 财务核对回款：与银行流水核对后写入交易单号，用于凭证验重与对账。 */
     @PostMapping(BASE_PATH + "/payments/{id}/check")
@@ -151,7 +161,12 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) String orderStatusCode,
             @RequestParam(required = false) String paymentStatusCode,
             @RequestParam(required = false) Boolean hasUnpaid,
-            @RequestParam(required = false) String invoiceStatusCode);
+            @RequestParam(required = false) String invoiceStatusCode,
+            @RequestParam(required = false) String dhbOrderNo,
+            @RequestParam(required = false) Boolean hasDiscount,
+            @RequestParam(required = false) String sortBy,
+            @RequestParam(required = false) String sortDirection,
+            @RequestParam(required = false) String createdBy);
 
     @GetMapping(value = BASE_PATH + "/lines/export", produces = "text/csv;charset=UTF-8")
     ResponseEntity<byte[]> exportLines(
@@ -168,7 +183,11 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) String orderStatusCode,
             @RequestParam(required = false) String productKeyword,
             @RequestParam(required = false) String productCode,
-            @RequestParam(required = false) List<Long> productIds);
+            @RequestParam(required = false) List<Long> productIds,
+            @RequestParam(required = false) String paymentStatusCode,
+            @RequestParam(required = false) Boolean hasDiscount,
+            @RequestParam(required = false) String sortBy,
+            @RequestParam(required = false) String sortDirection);
 
     @GetMapping(value = BASE_PATH + "/payments/export", produces = "text/csv;charset=UTF-8")
     ResponseEntity<byte[]> exportPayments(
@@ -187,7 +206,8 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) String transactionNo,
             @RequestParam(required = false) String paymentStatusCode,
             @RequestParam(required = false) Instant paymentTimeFrom,
-            @RequestParam(required = false) Instant paymentTimeTo);
+            @RequestParam(required = false) Instant paymentTimeTo,
+            @RequestParam(required = false) String createdBy);
 
     @GetMapping(value = BASE_PATH + "/statistics/receivables/export", produces = "text/csv;charset=UTF-8")
     ResponseEntity<byte[]> exportReceivables(

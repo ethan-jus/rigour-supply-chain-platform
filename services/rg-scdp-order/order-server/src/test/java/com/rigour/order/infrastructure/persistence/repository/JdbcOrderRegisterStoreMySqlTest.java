@@ -263,7 +263,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                                 null, null, null, null, null, null, null,
                                 Instant.parse("2026-08-31T16:00:00Z"),
                                 Instant.parse("2026-09-01T16:00:00Z"),
-                                null, null, null, null, null));
+                                null, null, null, null, null, null, null, null, null, null));
 
         assertThat(page.items()).singleElement()
                 .satisfies(view -> assertThat(view.orderDate()).isEqualTo(Instant.parse("2026-08-31T16:00:00Z")));
@@ -284,6 +284,12 @@ class JdbcOrderRegisterStoreMySqlTest {
                 tenant);
 
         assertThat(orderNumbers(tenant, true)).containsExactly("SO-DHB-LINK-1");
+        var matched = store.orders(tenant, 0, 20, new OrderCriteria(
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, "0911.0001", null, null, null, null));
+        assertThat(matched.items()).extracting(v -> v.orderNo()).containsExactly("SO-DHB-LINK-1");
+        assertThat(matched.total()).isEqualTo(1);
+        assertThat(matched.totals().get("payableAmount")).isEqualByComparingTo("10");
+
         assertThat(orderNumbers(tenant, false)).containsExactly("SO-DHB-LINK-2");
         assertThat(orderNumbers(tenant, null))
                 .containsExactlyInAnyOrder("SO-DHB-LINK-1", "SO-DHB-LINK-2");
@@ -315,6 +321,10 @@ class JdbcOrderRegisterStoreMySqlTest {
         }
 
         assertThat(orderNumbers(tenant, true)).containsExactly("SO-DHB-HIST-1");
+        assertThat(store.orders(tenant, 0, 20, new OrderCriteria(
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, "0912.0002", null, null, null, null)).items())
+                .extracting(v -> v.orderNo()).containsExactly("SO-DHB-HIST-1");
+
         assertThat(orderNumbers(tenant, false)).containsExactly("SO-DHB-HIST-2");
         assertThat(orderNumbersWithDhbNo(tenant))
                 .containsEntry("SO-DHB-HIST-1", "DH.20260912.0001+DH.20260912.0002");
@@ -327,7 +337,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new OrderCriteria(
                                 null, null, null, null, null, null, null, null, null, null, null, null,
-                                null, null))
+                                null, null, null, null, null, null, null))
                 .items()
                 .stream()
                 .collect(java.util.stream.Collectors.toMap(
@@ -344,6 +354,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         insertLine(tenant, orderId, 2, "皮头", "40");
         insertPayment(tenant, "PAY-LINE-1", orderId, "2026-09-12T05:00:00Z", 50, "RECEIVED", null);
 
+        jdbc.update("UPDATE order_sales_order SET paid_amount=50,unpaid_amount=50 WHERE tenant_id=? AND id=?", tenant, orderId);
         // 部分回款：按明细金额占订单应收的比例分摊（60% / 40%），合计等于订单实收
         var partial = lineStats(tenant, "台呢");
         assertThat(partial.total()).isEqualTo(1);
@@ -354,12 +365,279 @@ class JdbcOrderRegisterStoreMySqlTest {
 
         // 全部回款：明细分摊回到各自明细金额
         insertPayment(tenant, "PAY-LINE-2", orderId, "2026-09-13T05:00:00Z", 50, "CHECKED", "TXN-LINE-2");
+        jdbc.update("UPDATE order_sales_order SET paid_amount=100,unpaid_amount=0 WHERE tenant_id=? AND id=?", tenant, orderId);
         var full = lineStats(tenant, null);
         assertThat(full.items()).hasSize(2);
         assertThat(full.items())
-                .extracting(view -> view.receivedAmount().toPlainString())
-                .containsExactlyInAnyOrder("60.00", "40.00");
+                .extracting(view -> view.receivedAmount().stripTrailingZeros().toPlainString())
+                .containsExactlyInAnyOrder("60", "40");
         assertThat(lineTotals(tenant, null).get("receivedAmount")).isEqualByComparingTo("100.00");
+    }
+
+    @Test
+    void allThreeListsFilterFrozenDepartmentRegionAndEmployeeAndCreators() {
+        String tenant = UUID.randomUUID().toString();
+        long a = order(tenant, "FILTER-A", 1L, "C1", "客户甲", "OLD", "OLD", "旧归属", "2026-09-11T05:00:00Z", 80, 0);
+        long b = order(tenant, "FILTER-B", 2L, "C2", "客户乙", "NEW", "E10", "另一人", "2026-09-11T05:00:00Z", 90, 0);
+        insertLine(tenant, a, 1, "商品", "100");
+        insertLine(tenant, b, 1, "商品", "100");
+        insertPayment(tenant, "PAY-A", a, "2026-09-12T05:00:00Z", 10, "CHECKED", null);
+        insertPayment(tenant, "PAY-B", b, "2026-09-12T05:00:00Z", 20, "CHECKED", null);
+        jdbc.update("UPDATE order_sales_order SET source_creator_name='来源创建人' WHERE tenant_id=? AND id=?", tenant, a);
+        jdbc.update("INSERT INTO order_attribution_snapshot(tenant_id,order_id,state,employee_code,employee_name,"
+                + "department_id,department_name,department_path,region_code,region_path,source_version,"
+                + "customer_revision,employee_revision,organization_version,resolved_at,frozen_at,revision)"
+                + " VALUES(?,?,'FROZEN','E1','新归属',11,'武汉市','[]','NEW','[]','v1',1,1,1,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),1)", tenant, a);
+        for (java.util.Set<Long> departments : java.util.List.of(java.util.Set.of(11L), java.util.Set.of(12L))) {
+            long expected = departments.contains(11L) ? 1 : 0;
+            var orders = store.orders(tenant, 0, 20, new OrderCriteria(null,null,null,null,"NEW","E1",departments,
+                    null,null,null,null,null,null,null,null,null,null,null,"来源创建人"));
+            var lines = store.lines(tenant, 0, 20, new LineCriteria(null,null,null,null,"NEW","E1",departments,
+                    null,null,null,null,null,null,null,null,null,null));
+            var payments = store.payments(tenant, 0, 20, new PaymentCriteria(null,null,null,null,"NEW","E1",departments,
+                    null,null,null,null,null,null,null,null,null,null,"来源创建人"));
+            assertThat(orders.total()).isEqualTo(expected);
+            assertThat(lines.total()).isEqualTo(expected);
+            assertThat(payments.total()).isEqualTo(expected);
+            if (expected == 1) {
+                assertThat(orders.items().getFirst().orderNo()).isEqualTo("FILTER-A");
+                assertThat(lines.items().getFirst().orderNo()).isEqualTo("FILTER-A");
+                assertThat(payments.items().getFirst().orderNo()).isEqualTo("FILTER-A");
+            }
+        }
+        assertThat(store.orders(tenant,0,20,new OrderCriteria(null,null,null,null,null,null,null,null,null,null,
+                null,null,null,null,null,null,null,null,"不存在的创建人")).total()).isZero();
+    }
+
+    @Test
+    void orderDiscountFilterAndSortingApplyBeforePaginationAndToTotals() {
+        String tenant = UUID.randomUUID().toString();
+        long a = order(tenant, "SORT-A", 1L, "C1", "客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 80, 0);
+        long b = order(tenant, "SORT-B", 1L, "C1", "客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 150, 0);
+        long c = order(tenant, "SORT-C", 1L, "C1", "客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 100, 0);
+        insertLine(tenant, a, 1, "商品", "100");
+        insertLine(tenant, b, 1, "商品", "200");
+        insertLine(tenant, c, 1, "商品", "100");
+        for (String sort : List.of("payableAmount", "discountAmount", "discountRate")) {
+            var criteria = orderDiscountCriteria(true, sort, "desc");
+            var first = store.orders(tenant, 0, 1, criteria);
+            assertThat(first.total()).isEqualTo(2);
+            assertThat(first.items().getFirst().orderNo()).isEqualTo("SORT-B");
+            assertThat(first.totals().get("payableAmount")).isEqualByComparingTo("230");
+            assertThat(first.totals().get("discountAmount")).isEqualByComparingTo("70");
+            assertThat(store.orders(tenant, 1, 1, criteria).items().getFirst().orderNo()).isEqualTo("SORT-A");
+            assertThat(store.orders(tenant, 0, 1, orderDiscountCriteria(true, sort, "asc")).items().getFirst().orderNo()).isEqualTo("SORT-A");
+        }
+        var noDiscount = store.orders(tenant, 0, 20, orderDiscountCriteria(false, "discountAmount", "desc"));
+        assertThat(noDiscount.total()).isEqualTo(1);
+        assertThat(noDiscount.items().getFirst().orderNo()).isEqualTo("SORT-C");
+        assertThat(noDiscount.totals().get("discountAmount")).isEqualByComparingTo("0");
+        assertThat(store.orders(tenant, 0, 20, orderDiscountCriteria(null, null, null)).total()).isEqualTo(3);
+    }
+
+    private OrderCriteria orderDiscountCriteria(Boolean hasDiscount, String sort, String direction) {
+        return new OrderCriteria(null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, hasDiscount, sort, direction, null);
+    }
+
+    @Test
+    void orderAmountsUseLinePriceTimesQuantityAndWeightedDiscountAcrossAllFilteredOrders() {
+        String tenant = UUID.randomUUID().toString();
+        long first = order(tenant, "METRIC-1", 1L, "C1", "客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 90, 0);
+        long second = order(tenant, "METRIC-2", 1L, "C1", "客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 240, 0);
+        insertLine(tenant, first, 1, "商品一", "60");
+        insertLine(tenant, first, 2, "商品二", "40");
+        insertLine(tenant, second, 1, "商品三", "300");
+        jdbc.update("UPDATE order_sales_order_line SET unit_price=12.5,quantity=3.2 WHERE tenant_id=? AND order_id=? AND line_no=2", tenant, first);
+        // 故意让来源头金额、明细金额与单价乘数量不一致，确保使用指定公式。
+        jdbc.update("UPDATE order_sales_order SET original_amount=999,paid_amount=20,unpaid_amount=payable_amount-20 WHERE tenant_id=?", tenant);
+        jdbc.update("UPDATE order_sales_order_line SET line_amount=1 WHERE tenant_id=?", tenant);
+        insertPayment(tenant, "METRIC-P1", first, "2026-09-12T05:00:00Z", 12, "CHECKED", null);
+        insertPayment(tenant, "METRIC-P2", first, "2026-09-12T05:00:00Z", 8, "CHECKED", null);
+        insertPayment(tenant, "METRIC-P3", first, "2026-09-12T05:00:00Z", 99, "CANCELLED", null);
+        var criteria = new OrderCriteria(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        var page = store.orders(tenant, 0, 1, criteria);
+        assertThat(page.total()).isEqualTo(2);
+        assertThat(page.items()).hasSize(1);
+        assertThat(page.totals().get("originalAmount")).isEqualByComparingTo("400");
+        assertThat(page.totals().get("payableAmount")).isEqualByComparingTo("330");
+        assertThat(page.totals().get("discountAmount")).isEqualByComparingTo("70");
+        assertThat(page.totals().get("discountRate")).isEqualByComparingTo("0.175");
+        assertThat(page.totals().get("paidAmount")).isEqualByComparingTo("40");
+        assertThat(page.totals().get("unpaidAmount")).isEqualByComparingTo("290");
+        assertThat(page.totals().get("checkedAmount")).isEqualByComparingTo("20");
+        var filtered = store.orders(tenant, 0, 20, new OrderCriteria("METRIC-1", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null));
+        assertThat(filtered.totals().get("originalAmount")).isEqualByComparingTo("100");
+        assertThat(filtered.totals().get("discountRate")).isEqualByComparingTo("0.1");
+        var item = filtered.items().getFirst();
+        assertThat(item.discountAmount()).isEqualByComparingTo("10");
+        var json = tools.jackson.databind.json.JsonMapper.builder().build().valueToTree(item);
+        assertThat(json.get("discountRate").asDouble()).isEqualTo(0.1);
+        // 缺少明细后不能把不完整的合计当成准确订货金额。
+        jdbc.update("UPDATE order_sales_order_line SET deleted=1 WHERE tenant_id=? AND order_id=?", tenant, first);
+        var missing = store.orders(tenant, 0, 20, criteria);
+        assertThat(missing.totals().get("missingLineOrderCount")).isEqualByComparingTo("1");
+        assertThat(missing.totals()).doesNotContainKeys("originalAmount", "discountAmount", "discountRate");
+        assertThat(missing.items().stream().filter(row -> row.id().equals(first)).findFirst().orElseThrow().originalAmount()).isNull();
+        jdbc.update("UPDATE order_sales_order_line SET unit_price=0 WHERE tenant_id=? AND order_id=?", tenant, second);
+        var zero = store.orders(tenant, 0, 20, new OrderCriteria("METRIC-2", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null));
+        assertThat(zero.totals().get("originalAmount")).isEqualByComparingTo("0");
+        assertThat(zero.totals()).doesNotContainKey("discountRate");
+        assertThat(zero.items().getFirst().discountRate()).isNull();
+        assertThat(zero.items().getFirst().discountAmount()).isEqualByComparingTo("-240");
+    }
+
+    @Test
+    void orderAndLineStatisticsAgreeAndDeduplicateEntitiesInsteadOfAmountsOrNames() {
+        String tenant = UUID.randomUUID().toString();
+        var criteria = new OrderCriteria(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        for (int i = 0; i < 3; i++) {
+            long id = order(tenant, "SAME-" + i, i == 2 ? 2L : 1L, "C" + i, "同名客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 80, 0);
+            insertLine(tenant, id, 1, "商品A", "60");
+            insertLine(tenant, id, 2, "商品B", "40");
+        }
+        jdbc.update("UPDATE order_sales_order SET paid_amount=30,unpaid_amount=50 WHERE tenant_id=?", tenant);
+        var orders = store.orders(tenant, 0, 1, criteria).totals();
+        var lines = lineStats(tenant, null).totals();
+        assertThat(orders.get("customerCount")).isEqualByComparingTo("2");
+        assertThat(lines.get("productCount")).isEqualByComparingTo("1");
+        assertThat(lines.get("lineAmount")).isEqualByComparingTo("300");
+        assertThat(lines.get("orderAmount")).isEqualByComparingTo("240");
+        assertThat(lines.get("discountAmount")).isEqualByComparingTo("60");
+        assertThat(lines.get("discountRate")).isEqualByComparingTo("0.2");
+        assertThat(lines.get("receivedAmount")).isEqualByComparingTo("90");
+        assertThat(lines.get("unpaidAmount")).isEqualByComparingTo("150");
+        for (String key : List.of("originalAmount", "payableAmount", "paidAmount", "unpaidAmount", "discountAmount", "discountRate", "customerCount")) {
+            assertThat(lines.get(key)).as(key).isEqualByComparingTo(orders.get(key));
+        }
+        var product = lineStats(tenant, "商品A").totals();
+        assertThat(product.get("lineAmount")).isEqualByComparingTo("180");
+        assertThat(product.get("orderAmount")).isEqualByComparingTo("144");
+        assertThat(product.get("discountAmount")).isEqualByComparingTo("36");
+        assertThat(product.get("receivedAmount")).isEqualByComparingTo("54");
+        order(tenant, "NO-LINES", 3L, "C3", "未补明细", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 10, 0);
+        var incomplete = lineStats(tenant, null).totals();
+        assertThat(incomplete.get("orderAmount")).isEqualByComparingTo(store.orders(tenant, 0, 1, criteria).totals().get("payableAmount"));
+        assertThat(incomplete).doesNotContainKeys("lineAmount", "discountAmount", "discountRate");
+        assertThat(lineStats(tenant, "不存在").totals().get("orderAmount")).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void productAllocationMatchesTwentyEightyExampleAndPreservesEveryCent() {
+        String tenant = UUID.randomUUID().toString();
+        long id = order(tenant, "DISCOUNT", 1L, "C1", "客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 80, 0);
+        insertLine(tenant, id, 1, "方便面", "20");
+        insertLine(tenant, id, 2, "台呢", "80");
+        jdbc.update("UPDATE order_sales_order SET paid_amount=40,unpaid_amount=40 WHERE tenant_id=?", tenant);
+        var noodles = lineStats(tenant, "方便面").totals();
+        assertThat(noodles.get("lineAmount")).isEqualByComparingTo("20");
+        assertThat(noodles.get("orderAmount")).isEqualByComparingTo("16");
+        assertThat(noodles.get("discountAmount")).isEqualByComparingTo("4");
+        assertThat(noodles.get("discountRate")).isEqualByComparingTo("0.2");
+        assertThat(noodles.get("receivedAmount")).isEqualByComparingTo("8");
+        assertThat(noodles.get("unpaidAmount")).isEqualByComparingTo("8");
+        var cloth = lineStats(tenant, "台呢").totals();
+        var all = lineStats(tenant, null).totals();
+        for (String key : List.of("lineAmount", "orderAmount", "discountAmount", "receivedAmount", "unpaidAmount")) {
+            assertThat(noodles.get(key).add(cloth.get(key))).as(key).isEqualByComparingTo(all.get(key));
+        }
+        String roundingTenant = UUID.randomUUID().toString();
+        long rounded = order(roundingTenant, "ROUND", 1L, "C1", "客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 1, 0);
+        for (int i = 1; i <= 3; i++) insertLine(roundingTenant, rounded, i, "商品" + i, "1");
+        jdbc.update("UPDATE order_sales_order SET paid_amount=0.01,unpaid_amount=0.99 WHERE tenant_id=?", roundingTenant);
+        BigDecimal payable = BigDecimal.ZERO, paid = BigDecimal.ZERO, unpaid = BigDecimal.ZERO;
+        for (int i = 1; i <= 3; i++) {
+            var part = lineStats(roundingTenant, "商品" + i).totals();
+            payable = payable.add(part.get("orderAmount"));
+            paid = paid.add(part.get("receivedAmount"));
+            unpaid = unpaid.add(part.get("unpaidAmount"));
+        }
+        assertThat(payable).isEqualByComparingTo("1");
+        assertThat(paid).isEqualByComparingTo("0.01");
+        assertThat(unpaid).isEqualByComparingTo("0.99");
+        jdbc.update("UPDATE order_sales_order_line SET unit_price=0 WHERE tenant_id=?", roundingTenant);
+        var unknown = lineStats(roundingTenant, "商品1").totals();
+        assertThat(unknown.get("unallocatableOrderCount")).isEqualByComparingTo("1");
+        assertThat(unknown).doesNotContainKeys("orderAmount", "discountAmount", "discountRate", "receivedAmount", "unpaidAmount");
+    }
+
+    @Test
+    void discountFiltersAndGlobalSortUseAllocatedLineAmountsBeforePagination() {
+        String tenant = UUID.randomUUID().toString();
+        long a = order(tenant, "DIS-A", 1L, "C1", "客户", "HZ", "EMP1", "张三", "2026-09-11T05:00:00Z", 80, 0);
+        insertLine(tenant, a, 1, "方便面", "20");
+        insertLine(tenant, a, 2, "台呢", "80");
+        long b = order(tenant, "DIS-B", 1L, "C1", "客户", "HZ", "EMP1", "张三", "2026-09-12T05:00:00Z", 90, 0);
+        insertLine(tenant, b, 1, "台呢", "100");
+        long c = order(tenant, "DIS-C", 1L, "C1", "客户", "HZ", "EMP1", "张三", "2026-09-13T05:00:00Z", 100, 0);
+        insertLine(tenant, c, 1, "台呢", "100");
+        var discounted = discountCriteria(null, true, "discountAmount", "desc");
+        var first = store.lines(tenant, 0, 1, discounted);
+        var second = store.lines(tenant, 1, 1, discounted);
+        assertThat(first.total()).isEqualTo(3);
+        assertThat(first.items().getFirst().orderNo()).isEqualTo("DIS-A");
+        assertThat(first.items().getFirst().discountAmount()).isEqualByComparingTo("16");
+        assertThat(first.items().getFirst().orderAmount()).isEqualByComparingTo("64");
+        assertThat(first.items().getFirst().discountRate()).isEqualByComparingTo("0.2");
+        assertThat(second.items().getFirst().discountAmount()).isEqualByComparingTo("10");
+        assertThat(first.totals().get("discountAmount")).isEqualByComparingTo("30");
+        assertThat(first.totals().get("orderAmount")).isEqualByComparingTo("170");
+        assertThat(first.totals()).isEqualTo(second.totals());
+        var cloth = store.lines(tenant, 0, 20, discountCriteria("台呢", true, "discountRate", "asc"));
+        assertThat(cloth.items()).extracting(OrderRegisterLineView::orderNo).containsExactly("DIS-B", "DIS-A");
+        assertThat(cloth.totals().get("discountAmount")).isEqualByComparingTo("26");
+        assertThat(cloth.totals().get("orderAmount")).isEqualByComparingTo("154");
+        assertThat(cloth.totals().get("quantitySum")).isEqualByComparingTo("2");
+        var fullPrice = store.lines(tenant, 0, 20, discountCriteria(null, false, "discountRate", "desc"));
+        assertThat(fullPrice.items()).extracting(OrderRegisterLineView::orderNo).containsExactly("DIS-C");
+        assertThat(fullPrice.totals().get("discountAmount")).isEqualByComparingTo("0");
+        assertThat(store.lines(tenant, 0, 20, discountCriteria(null, null, "discountAmount", "asc")).items())
+                .extracting(OrderRegisterLineView::discountAmount)
+                .usingComparatorForType(BigDecimal::compareTo, BigDecimal.class)
+                .containsExactly(new BigDecimal("0"), new BigDecimal("4"), new BigDecimal("10"), new BigDecimal("16"));
+    }
+
+    @Test
+    void zeroGrossHasNoInventedDiscountAndRoundingRemainsStableUnderDiscountFilter() {
+        String tenant = UUID.randomUUID().toString();
+        long a = order(tenant, "ROUND", 1L, "C1", "客户", "HZ", "EMP1", "张三", "2026-09-11T05:00:00Z", 2, 0);
+        insertLine(tenant, a, 1, "一", "1"); insertLine(tenant, a, 2, "二", "1"); insertLine(tenant, a, 3, "三", "1");
+        var result = store.lines(tenant, 0, 20, discountCriteria(null, true, "discountAmount", "desc"));
+        assertThat(result.items().stream().map(OrderRegisterLineView::discountAmount).reduce(BigDecimal.ZERO, BigDecimal::add)).isEqualByComparingTo("1");
+        assertThat(result.totals().get("discountAmount")).isEqualByComparingTo("1");
+        jdbc.update("UPDATE order_sales_order_line SET unit_price=0 WHERE tenant_id=?", tenant);
+        var unknown = store.lines(tenant, 0, 20, discountCriteria(null, null, "discountRate", "desc"));
+        assertThat(unknown.items()).allSatisfy(row -> {
+            assertThat(row.orderAmount()).isNull(); assertThat(row.discountAmount()).isNull(); assertThat(row.discountRate()).isNull();
+        });
+        assertThat(store.lines(tenant, 0, 20, discountCriteria(null, true, null, null)).total()).isZero();
+        assertThat(store.lines(tenant, 0, 20, discountCriteria(null, false, null, null)).total()).isZero();
+    }
+
+    private static LineCriteria discountCriteria(String product, Boolean discounted, String sort, String direction) {
+        return new LineCriteria(null, null, null, null, null, null, null, null, null, null, product, null, null, null, discounted, sort, direction);
+    }
+
+    @Test
+    void linePaymentStatusMatchesOrderAndFiltersRowsAndTotals() {
+        String tenant = UUID.randomUUID().toString();
+        for (String status : List.of("UNPAID", "PARTIAL_PAID", "PAID")) {
+            long id = order(tenant, "SO-STATUS-" + status, 1L, "C-1", "状态客户", "HZ", "EMP-1", "张三",
+                    "2026-09-11T05:00:00Z", 100, 0);
+            jdbc.update("UPDATE order_sales_order SET payment_status_code=? WHERE tenant_id=? AND id=?", status, tenant, id);
+            insertLine(tenant, id, 1, "商品一", "60");
+            insertLine(tenant, id, 2, "商品二", "40");
+        }
+        for (String status : List.of("UNPAID", "PARTIAL_PAID", "PAID")) {
+            var page = store.lines(tenant, 0, 50, new LineCriteria(
+                    null, null, null, null, null, null, null, null, null, null, null, null, null, status, null, null, null));
+            assertThat(page.total()).isEqualTo(2);
+            assertThat(page.items()).extracting(OrderRegisterLineView::paymentStatusCode).containsOnly(status);
+            assertThat(page.items()).extracting(OrderRegisterLineView::orderNo).containsOnly("SO-STATUS-" + status);
+            assertThat(page.totals().get("lineAmount")).isEqualByComparingTo("100");
+            assertThat(page.totals().get("orderAmount")).isEqualByComparingTo("100");
+        }
+        assertThat(lineStats(tenant, null).total()).isEqualTo(6);
     }
 
     private static OrderRegisterPage<OrderRegisterLineView> lineStats(
@@ -370,7 +648,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                 50,
                 new LineCriteria(
                         null, null, null, null, null, null, null, null, null, null,
-                        productKeyword, null, null));
+                        productKeyword, null, null, null, null, null, null));
     }
 
     private static Map<String, BigDecimal> lineTotals(String tenant, String productKeyword) {
@@ -380,7 +658,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new LineCriteria(
                                 null, null, null, null, null, null, null, null, null, null,
-                                productKeyword, null, null))
+                                productKeyword, null, null, null, null, null, null))
                 .totals();
     }
 
@@ -419,7 +697,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new OrderCriteria(
                                 "83087", null, "台球", null, null, null, null, null, null, null, null,
-                                null, null, null));
+                                null, null, null, null, null, null, null, null));
         assertThat(orderPage.items()).extracting(view -> view.orderNo())
                 .containsExactly("SO-FUZZY-830871");
 
@@ -432,6 +710,8 @@ class JdbcOrderRegisterStoreMySqlTest {
                         + " 'SYSTEM',UTC_TIMESTAMP(6),'SYSTEM',UTC_TIMESTAMP(6),0)",
                 tenant,
                 orderId);
+        jdbc.update("UPDATE order_sales_order_line SET source_line_id='DHB-LINE-123' WHERE tenant_id=? AND order_id=?", tenant, orderId);
+        jdbc.update("UPDATE order_payment_record SET source_record_id=NULL,source_document_no='FR.20260912.001' WHERE tenant_id=? AND payment_no='PAY-FUZZY-1'", tenant);
         var linePage =
                 store.lines(
                         tenant,
@@ -439,8 +719,9 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new LineCriteria(
                                 "83087", null, "台球", null, null, null, null, null, null, null, null,
-                                null, null));
+                                null, null, null, null, null, null));
         assertThat(linePage.items()).hasSize(1);
+        assertThat(linePage.items().getFirst().sourceLineId()).isEqualTo("DHB-LINE-123");
         assertThat(linePage.items().getFirst().orderNo()).isEqualTo("SO-FUZZY-830871");
 
         // 回款列表
@@ -451,9 +732,31 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new PaymentCriteria(
                                 "83087", null, "台球", null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null));
+                                null, null, null, null, null, null, null));
         assertThat(paymentPage.items()).hasSize(1);
+        assertThat(paymentPage.items().getFirst().sourceRecordId()).isEqualTo("FR.20260912.001");
         assertThat(paymentPage.items().getFirst().orderNo()).isEqualTo("SO-FUZZY-830871");
+    }
+
+    @Test
+    void paymentTotalsDeduplicateMatchingOrdersAndKeepFullLedgerBalance() {
+        String tenant = UUID.randomUUID().toString();
+        long first = order(tenant, "PAY-METRIC-1", 1L, "C1", "客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 100, 0);
+        order(tenant, "PAY-METRIC-OTHER", 2L, "C2", "另一客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 999, 0);
+        insertPayment(tenant, "MATCH-1", first, "2026-09-12T05:00:00Z", 20, "CHECKED", null);
+        insertPayment(tenant, "MATCH-2", first, "2026-09-12T06:00:00Z", 30, "RECEIVED", null);
+        insertPayment(tenant, "OLDER", first, "2026-09-11T05:00:00Z", 10, "RECEIVED", null);
+        insertPayment(tenant, "MATCH-CANCEL", first, "2026-09-12T07:00:00Z", 88, "CANCELLED", null);
+        jdbc.update("UPDATE order_sales_order SET paid_amount=60,unpaid_amount=40 WHERE tenant_id=? AND id=?", tenant, first);
+        var page = store.payments(tenant, 0, 1, new PaymentCriteria(
+                null, null, null, null, null, null, null, null, null, null,
+                null, null, null, Instant.parse("2026-09-12T00:00:00Z"), Instant.parse("2026-09-13T00:00:00Z"), null, null, null));
+        assertThat(page.items()).hasSize(1);
+        assertThat(page.totals().get("relatedOrderAmount")).isEqualByComparingTo("100");
+        assertThat(page.totals().get("receivedAmount")).isEqualByComparingTo("50");
+        assertThat(page.totals().get("checkedAmount")).isEqualByComparingTo("20");
+        assertThat(page.totals().get("unpaidAmount")).isEqualByComparingTo("40");
+        assertThat(page.totals().get("customerCount")).isEqualByComparingTo("1");
     }
 
     private static long orderId(String tenant, String orderNo) {
@@ -473,7 +776,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new OrderCriteria(
                                 null, null, null, null, null, null, null, null, null, null, null, null,
-                                null, dhbLinked))
+                                null, dhbLinked, null, null, null, null, null))
                 .items()
                 .stream()
                 .map(view -> view.orderNo())
@@ -487,7 +790,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new OrderCriteria(
                                 null, null, null, null, null, null, null, null, null, null, null, null,
-                                invoiceStatusCode, null))
+                                invoiceStatusCode, null, null, null, null, null, null))
                 .items()
                 .stream()
                 .map(view -> view.orderNo())
@@ -733,7 +1036,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                 store.orders(
                         tenant, 0, 10,
                         new OrderCriteria(null, null, "审计客户", null, null, null, null,
-                                null, null, null, null, null, null, null));
+                                null, null, null, null, null, null, null, null, null, null, null, null));
 
         assertThat(page.items()).hasSize(2);
         var withSource =
@@ -776,7 +1079,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         tenant, 0, 10,
                         new com.rigour.order.application.port.out.OrderRegisterStore.LineCriteria(
                                 null, null, null, null, null, null, null, null, null, null, null,
-                                null, null));
+                                null, null, null, null, null, null));
 
         assertThat(page.items()).hasSize(2);
         var source =
@@ -792,7 +1095,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         .orElseThrow();
         assertThat(fallback.createdBy()).isEqualTo("双人核对");
         assertThat(fallback.updatedBy()).isEqualTo("李四");
-        assertThat(page.totals()).containsEntry("lineAmount", new BigDecimal("40.000000"));
+        assertThat(page.totals().get("lineAmount")).isEqualByComparingTo("40");
     }
 
     private static void insertLine(String tenant, long orderId, String productCode) {

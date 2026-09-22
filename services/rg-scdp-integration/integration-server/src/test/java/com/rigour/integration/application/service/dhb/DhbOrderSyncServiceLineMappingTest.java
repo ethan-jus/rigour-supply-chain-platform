@@ -40,6 +40,49 @@ import static org.mockito.Mockito.when;
 
 class DhbOrderSyncServiceLineMappingTest {
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"listCancelled", "detailCancelled", "zeroSettlement"})
+    void invalidSourceSkipsCustomerProductAndDeletedOrderLookup(String scenario) throws Exception {
+        boolean cancelledInList = "listCancelled".equals(scenario);
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID();
+        var store = mock(DhbSyncStore.class);
+        var client = mock(DhbClient.class);
+        var projection = mock(OrderSalesOrderProjectionClient.class);
+        var service = new DhbOrderSyncService(store, client, projection, proxy(HrDhbStaffSyncClient.class));
+        var callerMethod = DhbOrderSyncService.class.getDeclaredMethod("orderServiceCaller", UUID.class);
+        callerMethod.setAccessible(true);
+        var caller = (com.rigour.shared.context.CallerIdentity) callerMethod.invoke(null, tenant);
+        var task = new DhbSyncStore.SyncTaskContext(tenant, UUID.randomUUID(), connector,
+                "orders", "ORDER", "ACTIVE", "https://example.test", "secret", "ACTIVE", 100, 1, 0, true);
+        var summary = new DhbClient.OrderSummary("D1", "D1", cancelledInList ? "cancelled" : "stockup",
+                BigDecimal.ONE, Instant.now(), Instant.now(), null, null, Map.of());
+        var raw = new DhbSyncStore.RawObjectPersistResult(UUID.randomUUID(), "hash", true);
+        when(store.persistRawObject(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(raw);
+        when(client.getOrderContent(any(), eq("D1"))).thenReturn(new DhbClient.OrderDetail("D1", "zeroSettlement".equals(scenario) ? "finished" : "cancelled",
+                BigDecimal.ONE, "zeroSettlement".equals(scenario) ? Map.of("DiscountTotal", "0.0000") : Map.of()));
+        when(projection.cancelSourceOrder(any(), any())).thenReturn(
+                new com.rigour.order.api.v1.model.HistorySyncModels.Intake("CANCELLED", null, null));
+        var method = DhbOrderSyncService.class.getDeclaredMethod("projectOrder",
+                com.rigour.shared.context.CallerIdentity.class, DhbSyncStore.SyncTaskContext.class,
+                UUID.class, DhbClient.OrderSummary.class, Map.class, Map.class);
+        method.setAccessible(true);
+        assertThat(method.invoke(service, caller, task, UUID.randomUUID(), summary, new HashMap<>(), new HashMap<>()))
+                .isEqualTo(DhbOrderSyncService.ProjectionOutcome.CHANGED);
+        verify(projection).cancelSourceOrder(any(), eq(new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(connector, "D1")));
+        org.mockito.Mockito.verifyNoMoreInteractions(projection);
+        if (cancelledInList) org.mockito.Mockito.verifyNoInteractions(client);
+        verify(store).markRawProcessed(tenant, raw.rawLandingId());
+    }
+
+    @Test
+    void zeroSettlementRequiresExplicitZeroNotMissingOrNonzeroAmount() {
+        assertThat(DhbOrderSyncService.zeroSettlementOrder(Map.of("DiscountTotal", "0.0000"))).isTrue();
+        assertThat(DhbOrderSyncService.zeroSettlementOrder(Map.of("DiscountTotal", "222.30"))).isFalse();
+        assertThat(DhbOrderSyncService.zeroSettlementOrder(Map.of("DiscountTotal", "-1"))).isFalse();
+        assertThat(DhbOrderSyncService.zeroSettlementOrder(Map.of("OrderTotal", "0"))).isFalse();
+        assertThat(DhbOrderSyncService.zeroSettlementOrder(Map.of())).isFalse();
+    }
+
     @Test
     void historyReviewRemainsVisibleWithoutBlockingCheckpointStatus() {
         DhbOrderSyncService.Counts counts = new DhbOrderSyncService.Counts();
@@ -73,6 +116,7 @@ class DhbOrderSyncServiceLineMappingTest {
                         orderProductRow("LINE-2", "PROD-1", "SKU-1", "3", "12.00"))));
 
         assertThat(lines).hasSize(2);
+        assertThat(lines).extracting(SalesOrderLineCommand::sourceLineId).containsExactly("LINE-1", "LINE-2");
         assertThat(lines.getFirst().quantity()).isEqualByComparingTo("2");
         assertThat(lines.getFirst().unitPrice()).isEqualByComparingTo("10.00");
         assertThat(lines.getFirst().productCodeSnapshot()).isEqualTo("SP202608220001");
@@ -129,6 +173,38 @@ class DhbOrderSyncServiceLineMappingTest {
     }
 
     @Test
+    void salesPaymentUsesActualTransferDateAndExplicitConfirmationWithoutInventingAuditTime() throws Exception {
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID();
+        Map<MappingKey, ExternalObjectMapping> mappings = new HashMap<>();
+        mappings.put(key(tenant, connector, "SALES_ORDER", "DH-1"),
+                mapping("SALES_ORDER", "DH-1", "DH-1", "ORDER", "SALES_ORDER", 100L, "SO-1"));
+        var service = service(storeWithMappings(mappings));
+        Method prepare = DhbOrderSyncService.class.getDeclaredMethod("prepareSalesPayment",
+                UUID.class, UUID.class, String.class, DhbClient.Receipt.class, Map.class);
+        prepare.setAccessible(true);
+        for (String state : List.of("pend_receipted", "pend_receipt")) {
+            var receipt = new DhbClient.Receipt("FR-1", "FR-1", "DH-1", "C-1", null, "13", "Offline",
+                    new BigDecimal("80"), state, Instant.parse("2026-09-03T16:00:00Z"),
+                    Instant.parse("2026-09-05T01:00:00Z"), Instant.parse("2026-09-06T01:00:00Z"),
+                    null, null, null, null, null, Map.of());
+            Object result = prepare.invoke(service, tenant, connector, "FR-1", receipt, Map.of());
+            Method accessor = result.getClass().getDeclaredMethod("command");
+            accessor.setAccessible(true);
+            var command = (com.rigour.order.api.v1.model.SalesPaymentRecordCommand) accessor.invoke(result);
+            assertThat(command.paymentTime()).isEqualTo(Instant.parse("2026-09-03T16:00:00Z"));
+            assertThat(command.sourcePaymentStatusCode()).isEqualTo(state.equals("pend_receipted") ? "CHECKED" : "PENDING");
+            assertThat(command.sourceCheckedAt()).isNull();
+            assertThat(command.sourceCheckedBy()).isNull();
+        }
+        var missing = new DhbClient.Receipt("FR-2", "FR-2", "DH-1", "C-1", null, "13", "Offline",
+                new BigDecimal("80"), "pend_receipted", null, Instant.now(), Instant.now(),
+                null, null, null, null, null, Map.of());
+        assertThatThrownBy(() -> prepare.invoke(service, tenant, connector, "FR-2", missing, Map.of()))
+                .isInstanceOf(InvocationTargetException.class)
+                .hasCauseInstanceOf(RuntimeException.class);
+    }
+
+    @Test
     void projectsDhbReceiptSourcePaymentFieldsToFundDocument() {
         UUID tenantId = UUID.randomUUID();
         UUID connectorId = UUID.randomUUID();
@@ -162,7 +238,7 @@ class DhbOrderSyncServiceLineMappingTest {
         assertThat(command.bankAccountNo()).isEqualTo("11050171360000002801");
         assertThat(command.submittedAt()).isEqualTo(Instant.parse("2026-08-26T06:39:00Z"));
         assertThat(command.confirmedAt()).isNull();
-        assertThat(command.documentStatusCode()).isEqualTo("PENDING");
+        assertThat(command.documentStatusCode()).isEqualTo("CONFIRMED");
         assertThat(command.sourceAttachmentKeys()).containsExactly("202608260239531787726393103.png");
     }
 
@@ -238,7 +314,7 @@ class DhbOrderSyncServiceLineMappingTest {
         assertThat(command.paymentSerialNo()).isEqualTo("252112_FP.20260826.0001");
         assertThat(command.bankAccountNo()).isEqualTo("11050171360000002801");
         assertThat(command.submittedAt()).isEqualTo(Instant.parse("2026-08-26T07:00:00Z"));
-        assertThat(command.confirmedAt()).isEqualTo(Instant.parse("2026-08-26T07:01:00Z"));
+        assertThat(command.confirmedAt()).isNull();
         assertThat(command.sourceAttachmentKeys()).containsExactly("payment-proof.png");
     }
 
@@ -549,6 +625,47 @@ class DhbOrderSyncServiceLineMappingTest {
         assertThat(command.customerId()).isEqualTo(401L);
         assertThat(command.customerCodeSnapshot()).isEqualTo("CRM202608250001");
         assertThat(command.customerNameSnapshot()).isEqualTo("上海客户");
+    }
+
+    @Test
+    void usesSettlementAmountWithoutDoubleCountingLineDiscount() {
+        UUID tenantId = UUID.randomUUID();
+        UUID connectorId = UUID.randomUUID();
+        Map<MappingKey, ExternalObjectMapping> mappings = new HashMap<>();
+        mappings.put(key(tenantId, connectorId, "CUSTOMER", "CUSTOMER-SOURCE-ID"),
+                mapping("CUSTOMER", "CUSTOMER-SOURCE-ID", "C-001",
+                        "CRM", "CUSTOMER", 401L, "CRM202608250001"));
+        mappings.put(key(tenantId, connectorId, "PRODUCT_SPU", "PROD-1"),
+                mapping("PRODUCT_SPU", "PROD-1", "P-1", "ERP", "PRODUCT", 10L, "SP202608220001"));
+        mappings.put(key(tenantId, connectorId, "PRODUCT_SKU", "PROD-1::SKU-1"),
+                mapping("PRODUCT_SKU", "PROD-1::SKU-1", "SKU-1",
+                        "ERP", "PRODUCT_VARIANT", 11L, "SK202608220001"));
+        DhbOrderSyncService service = service(storeWithMappings(mappings));
+
+        var row = new HashMap<String, Object>(orderProductRow("LINE-1", "PROD-1", "SKU-1", "36", "6.50"));
+        row.put("orders_units_number", "3");
+        row.put("order_units_price", "78");
+        row.put("orders_units", "container_units");
+        row.put("DiscountAmount", "11.70");
+        var content = new HashMap<String, Object>(Map.of("ClientNO", "C-001",
+                "OrderDate", "2026-09-20 15:37:00", "OrderTotal", "234.00",
+                "DiscountTotal", "222.30", "OrderProduct", List.of(row)));
+        var command = prepareSalesOrderCommand(service, tenantId, connectorId, content);
+        var line = command.lines().getFirst();
+        assertThat(line.quantity()).isEqualByComparingTo("3");
+        assertThat(line.unitPrice()).isEqualByComparingTo("78");
+        assertThat(line.discountAmount()).isEqualByComparingTo("11.70");
+        assertThat(command.discountAmount()).isZero();
+        assertThat(DhbOrderSyncService.sourceSalesAmount(content, command.lines())).isEqualByComparingTo("222.30");
+
+        // 只有整单优惠时，差额进入整单优惠；不能忽略，也不能重复扣已有明细优惠。
+        row.put("DiscountAmount", "0");
+        command = prepareSalesOrderCommand(service, tenantId, connectorId, content);
+        assertThat(command.discountAmount()).isEqualByComparingTo("11.70");
+        content.put("DiscountTotal", "0");
+        command = prepareSalesOrderCommand(service, tenantId, connectorId, content);
+        assertThat(command.discountAmount()).isEqualByComparingTo("234");
+        assertThat(DhbOrderSyncService.sourceSalesAmount(content, command.lines())).isZero();
     }
 
     @Test

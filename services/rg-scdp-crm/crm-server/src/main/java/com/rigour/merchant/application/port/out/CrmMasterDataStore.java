@@ -8,6 +8,11 @@ import java.util.UUID;
 
 /** CRM 主数据同步持久化端口；实现必须在 SQL 条件中绑定 tenant_id。 */
 public interface CrmMasterDataStore {
+    default void confirmIndependentCustomer(UUID tenantId, UUID connectorId, String sourceId,
+            long revision, boolean allowUnmappedOwner, String evidence, UUID actorId) {
+        throw new UnsupportedOperationException("独立来源客户确认尚未实现");
+    }
+
     default UUID startRun(UUID tenantId, UUID connectorId, UUID actorId,
                           CrmMasterDataObjectType objectType, int maxPages,
                           String triggerType) {

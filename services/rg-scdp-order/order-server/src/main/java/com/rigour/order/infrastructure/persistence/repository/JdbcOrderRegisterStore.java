@@ -55,6 +55,12 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
     private static final TypeReference<List<String>> STRING_LIST = new TypeReference<>() {};
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(6);
 
+    /** 先逐单聚合明细，避免多明细与多收款连接造成金额倍增；缺少明细不冒充零。 */
+    private static final String ORDER_ORIGINAL_JOIN =
+            " LEFT JOIN (SELECT tenant_id,order_id,SUM(unit_price * quantity) AS original_amount"
+                    + " FROM order_sales_order_line WHERE deleted=0 GROUP BY tenant_id,order_id) ol"
+                    + " ON ol.tenant_id=o.tenant_id AND ol.order_id=o.id ";
+
     private final JdbcTemplate jdbc;
     private final OrderDataScope scopes;
 
@@ -72,7 +78,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                         1,
                         new OrderCriteria(
                                 orderNo, null, null, null, null, null, null, null, null, null, null, null,
-                                null, null))
+                                null, null, null, null, null, null, null))
                 .items()
                 .stream()
                 .findFirst();
@@ -85,6 +91,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         long total =
                 jdbc.queryForObject(
                         "SELECT COUNT(*) FROM order_sales_order o "
+                                + ORDER_ORIGINAL_JOIN
                                 + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
                                 + " WHERE "
                                 + where.sql()
@@ -103,13 +110,14 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
                                 + " snap.department_id,snap.department_name,"
                                 + " o.order_status_code,o.payment_status_code,o.data_quality_status_code,"
-                                + " o.original_amount,"
+                                + " ol.original_amount,"
                                 + " o.payable_amount,o.paid_amount,o.unpaid_amount,"
                                 + " COALESCE(pc.checked_amount,0) AS checked_amount,"
                                 + " o.order_date,o.shipment_time,o.created_by,o.created_time,"
                                 + " o.updated_by,o.updated_time,o.synced_by,o.synced_at,o.revision,"
                                 + " o.source_creator_name,o.source_created_at,o.source_modifier_name,o.source_updated_at "
                                 + " FROM order_sales_order o "
+                                + ORDER_ORIGINAL_JOIN
                                 + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
                                 + " LEFT JOIN order_number_mapping m ON m.tenant_id=o.tenant_id AND m.dhb_order_no=o.order_no AND m.state='ACTIVE' AND m.deleted=0 "
                                 + " LEFT JOIN (SELECT tenant_id,order_id,SUM(paid_amount) AS checked_amount "
@@ -118,7 +126,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + "             GROUP BY tenant_id,order_id) pc ON pc.tenant_id=o.tenant_id AND pc.order_id=o.id "
                                 + " WHERE "
                                 + where.sql()
-                                + " ORDER BY o.order_date DESC,o.id DESC LIMIT ? OFFSET ?",
+                                + orderOrderBy(criteria) + " LIMIT ? OFFSET ?",
                         (rs, i) ->
                                 new OrderRegisterOrderView(
                                         rs.getLong("id"),
@@ -144,7 +152,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                         rs.getString("data_quality_status_code"),
                                         null,
                                         null,
-                                        decimal(rs, "original_amount"),
+                                        rs.getBigDecimal("original_amount"),
                                         decimal(rs, "payable_amount"),
                                         decimal(rs, "paid_amount"),
                                         decimal(rs, "unpaid_amount"),
@@ -172,6 +180,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                         "SELECT COUNT(*) FROM order_sales_order_line l "
                                 + " JOIN order_sales_order o ON o.tenant_id=l.tenant_id AND o.id=l.order_id AND o.deleted=0 "
                                 + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
+                                + LINE_ALLOCATION_JOIN
                                 + " WHERE "
                                 + where.sql()
                                 + " LIMIT 1",
@@ -179,34 +188,37 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                         where.args().toArray());
         var items =
                 jdbc.query(
-                        "SELECT l.id,l.order_id,l.line_no,l.product_id,l.product_variant_id,"
+                        "SELECT l.id,l.order_id,l.line_no,l.source_line_id,l.product_id,l.product_variant_id,"
                                 + " l.product_code_snapshot,l.sku_code_snapshot,l.product_name_snapshot,"
                                 + " l.specification_snapshot,l.unit_code,l.quantity,l.unit_price,"
-                                + " l.line_amount,l.revision,o.order_no,o.source_order_no,"
+                                + " l.unit_price*l.quantity AS line_amount,l.revision,o.order_no,o.source_order_no,"
                                 + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                                 + " o.customer_id,"
                                 + " o.customer_code_snapshot,o.customer_name_snapshot,"
                                 + " COALESCE(snap.region_code,o.region_code) AS region_code,"
                                 + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                                 + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
-                                + " snap.department_id,snap.department_name,o.order_status_code,o.order_date,"
-                                + " " + LINE_RECEIVED_AMOUNT_EXPRESSION + " AS received_amount,"
+                                + " snap.department_id,snap.department_name,o.order_status_code,o.payment_status_code,o.order_date,"
+                                + " " + allocatedAmount("payable_amount") + " AS allocated_order_amount,"
+                                + " " + lineDiscountAmount() + " AS allocated_discount_amount,"
+                                + " " + lineDiscountRate() + " AS allocated_discount_rate,"
+                                + " " + allocatedAmount("paid_amount") + " AS received_amount,"
                                 + " o.created_by,o.created_time,o.updated_by,o.updated_time,"
                                 + " o.source_creator_name,o.source_created_at,o.source_modifier_name,o.source_updated_at,"
                                 + " o.synced_by,o.synced_at "
                                 + " FROM order_sales_order_line l "
                                 + " JOIN order_sales_order o ON o.tenant_id=l.tenant_id AND o.id=l.order_id AND o.deleted=0 "
                                 + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
-                                + ORDER_RECEIVED_JOIN
+                                + LINE_ALLOCATION_JOIN
                                 + " WHERE "
                                 + where.sql()
-                                + " ORDER BY o.order_date DESC,l.id DESC LIMIT ? OFFSET ?",
+                                + " ORDER BY " + lineOrderBy(criteria) + " LIMIT ? OFFSET ?",
                         (rs, i) ->
                                 new OrderRegisterLineView(
                                         rs.getLong("id"),
                                         rs.getLong("order_id"),
                                         rs.getInt("line_no"),
-                                        null,
+                                        rs.getString("source_line_id"),
                                         nullableLong(rs, "product_id"),
                                         nullableLong(rs, "product_variant_id"),
                                         rs.getString("product_code_snapshot"),
@@ -217,7 +229,10 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                         decimal(rs, "quantity"),
                                         decimal(rs, "unit_price"),
                                         decimal(rs, "line_amount"),
-                                        decimal(rs, "received_amount"),
+                                        rs.getBigDecimal("allocated_order_amount"),
+                                        rs.getBigDecimal("allocated_discount_amount"),
+                                        rs.getBigDecimal("allocated_discount_rate"),
+                                        rs.getBigDecimal("received_amount"),
                                         rs.getString("order_no"),
                                         rs.getString("source_order_no"),
                                         rs.getString("dhb_order_no"),
@@ -231,6 +246,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                         nullableLong(rs, "department_id"),
                                         rs.getString("department_name"),
                                         rs.getString("order_status_code"),
+                                        rs.getString("payment_status_code"),
                                         instant(rs, "order_date"),
                                         rs.getInt("revision"),
                                         first(rs.getString("source_creator_name"), rs.getString("created_by")),
@@ -240,42 +256,64 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                         rs.getString("synced_by"),
                                         instant(rs, "synced_at")),
                         append(where.args(), step, begin).toArray());
-        var totals =
-                jdbc.queryForObject(
-                        "SELECT COALESCE(SUM(l.line_amount),0) AS line_amount,"
-                                + " COALESCE(SUM(" + LINE_RECEIVED_AMOUNT_EXPRESSION + "),0) AS received_amount,"
-                                + " COUNT(DISTINCT COALESCE(CAST(o.customer_id AS CHAR), o.customer_name_snapshot)) AS customer_count,"
-                                + " COUNT(DISTINCT COALESCE(CAST(l.product_id AS CHAR), l.product_code_snapshot)) AS product_count,"
-                                + " COALESCE(SUM(l.quantity),0) AS quantity_sum "
-                                + " FROM order_sales_order_line l "
-                                + " JOIN order_sales_order o ON o.tenant_id=l.tenant_id AND o.id=l.order_id AND o.deleted=0 "
-                                + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
-                                + ORDER_RECEIVED_JOIN
-                                + " WHERE "
-                                + where.sql()
-                                + " LIMIT 1",
-                        (rs, i) ->
-                                Map.of(
-                                        "lineAmount", rs.getBigDecimal("line_amount"),
-                                        "receivedAmount", rs.getBigDecimal("received_amount"),
-                                        "customerCount", BigDecimal.valueOf(rs.getLong("customer_count")),
-                                        "productCount", BigDecimal.valueOf(rs.getLong("product_count")),
-                                        "quantitySum", rs.getBigDecimal("quantity_sum")),
-                        where.args().toArray());
-        // 订单金额按命中的订单去重后取折后应收合计，与明细金额（折前）并列展示，二者口径不同。
-        BigDecimal orderAmount =
-                jdbc.queryForObject(
-                        "SELECT COALESCE(SUM(x.payable_amount),0) FROM order_sales_order x WHERE x.id IN ("
-                                + " SELECT o.id FROM order_sales_order_line l "
-                                + " JOIN order_sales_order o ON o.tenant_id=l.tenant_id AND o.id=l.order_id AND o.deleted=0 "
-                                + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
-                                + " WHERE "
-                                + where.sql()
-                                + ") LIMIT 1",
-                        BigDecimal.class,
-                        where.args().toArray());
-        Map<String, BigDecimal> resultTotals = new LinkedHashMap<>(totals == null ? Map.of() : totals);
-        resultTotals.put("orderAmount", orderAmount);
+        var totals = jdbc.queryForMap(
+                "SELECT COALESCE(SUM(l.unit_price*l.quantity),0) line_amount,"
+                        + " COUNT(DISTINCT l.product_id) product_count,"
+                        + " COALESCE(SUM(" + allocatedAmount("payable_amount") + "),0) allocated_order_amount,"
+                        + " COALESCE(SUM(" + allocatedAmount("paid_amount") + "),0) allocated_paid_amount,"
+                        + " COALESCE(SUM(" + allocatedAmount("unpaid_amount") + "),0) allocated_unpaid_amount,"
+                        + " COUNT(DISTINCT CASE WHEN la.original_amount=0 AND (o.payable_amount<>0 OR o.paid_amount<>0 OR o.unpaid_amount<>0) THEN o.id END) allocation_missing_count,"
+                        + " COALESCE(SUM(l.quantity),0) quantity_sum"
+                        + " FROM order_sales_order_line l"
+                        + " JOIN order_sales_order o ON o.tenant_id=l.tenant_id AND o.id=l.order_id AND o.deleted=0"
+                        + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN'"
+                        + LINE_ALLOCATION_JOIN
+                        + " WHERE " + where.sql(), where.args().toArray());
+        // 与订单列表复用同一订单范围、账本及计算规则。按订单主键取整单一次，不能 SUM(DISTINCT 金额)。
+        var orderWhere = orderWhere(tenantId, new OrderCriteria(
+                criteria.orderNo(), criteria.customerId(), criteria.customerName(), criteria.customerCode(),
+                criteria.regionCode(), criteria.ownerEmployeeCode(), criteria.departmentIds(),
+                criteria.orderDateFrom(), criteria.orderDateTo(), criteria.orderStatusCode(),
+                criteria.paymentStatusCode(), null, null, null, null, null, null, null, null));
+        boolean lineFiltered = criteria.hasDiscount() != null || (criteria.productKeyword() != null && !criteria.productKeyword().isBlank())
+                || (criteria.productCode() != null && !criteria.productCode().isBlank())
+                || (criteria.productIds() != null && !criteria.productIds().isEmpty());
+        if (lineFiltered) {
+            orderWhere.and("o.id IN (SELECT l.order_id FROM order_sales_order_line l"
+                    + " JOIN order_sales_order o ON o.tenant_id=l.tenant_id AND o.id=l.order_id AND o.deleted=0"
+                    + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN'"
+                    + LINE_ALLOCATION_JOIN
+                    + " WHERE " + where.sql() + ")", where.args().toArray());
+        }
+        Map<String, BigDecimal> resultTotals = new LinkedHashMap<>(orderTotals(orderWhere));
+        resultTotals.put("orderAmount", resultTotals.get("payableAmount"));
+        resultTotals.put("receivedAmount", resultTotals.get("paidAmount"));
+        if (lineFiltered || resultTotals.get("missingLineOrderCount").signum() == 0) {
+            resultTotals.put("lineAmount", decimal(totals, "line_amount"));
+        }
+        if (lineFiltered) {
+            BigDecimal unknown = decimal(totals, "allocation_missing_count");
+            resultTotals.put("unallocatableOrderCount", unknown);
+            // 商品条件下全部财务指标使用相同的明细范围，不把整单金额归给某个商品。
+            for (String key : List.of("orderAmount", "payableAmount", "receivedAmount", "paidAmount", "unpaidAmount", "discountAmount", "discountRate")) {
+                resultTotals.remove(key);
+            }
+            if (unknown.signum() == 0) {
+                BigDecimal original = decimal(totals, "line_amount");
+                BigDecimal payable = decimal(totals, "allocated_order_amount");
+                resultTotals.put("orderAmount", payable);
+                resultTotals.put("payableAmount", payable);
+                resultTotals.put("receivedAmount", decimal(totals, "allocated_paid_amount"));
+                resultTotals.put("paidAmount", decimal(totals, "allocated_paid_amount"));
+                resultTotals.put("unpaidAmount", decimal(totals, "allocated_unpaid_amount"));
+                resultTotals.put("discountAmount", original.subtract(payable));
+                if (original.signum() != 0) {
+                    resultTotals.put("discountRate", original.subtract(payable).divide(original, 8, java.math.RoundingMode.HALF_UP));
+                }
+            }
+        }
+        resultTotals.put("productCount", decimal(totals, "product_count"));
+        resultTotals.put("quantitySum", decimal(totals, "quantity_sum"));
         return new OrderRegisterPage<>(
                 total,
                 begin,
@@ -301,7 +339,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                         where.args().toArray());
         var items =
                 jdbc.query(
-                        "SELECT p.id,p.payment_no,p.source_record_id,p.order_id,o.order_no,"
+                        "SELECT p.id,p.payment_no,COALESCE(NULLIF(p.source_record_id,''),NULLIF(p.source_document_no,'')) AS source_record_id,p.order_id,o.order_no,"
                                 + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                                 + " p.customer_id,p.customer_code_snapshot,p.customer_name_snapshot,"
                                 + " COALESCE(snap.region_code,o.region_code) AS region_code,"
@@ -645,25 +683,41 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
     }
 
     private Map<String, BigDecimal> orderTotals(String tenantId, OrderCriteria criteria) {
-        var where = orderWhere(tenantId, criteria);
-        var row =
-                jdbc.queryForMap(
-                        "SELECT COALESCE(SUM(o.original_amount),0) original_amount,"
-                                + " COALESCE(SUM(o.payable_amount),0) payable_amount,"
-                                + " COALESCE(SUM(o.paid_amount),0) paid_amount,"
-                                + " COALESCE(SUM(o.unpaid_amount),0) unpaid_amount "
-                                + " FROM order_sales_order o "
-                                + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
-                                + " WHERE "
-                                + where.sql()
-                                + " LIMIT 1",
-                        where.args().toArray());
+        return orderTotals(orderWhere(tenantId, criteria));
+    }
+
+    private Map<String, BigDecimal> orderTotals(Sql where) {
+        var row = jdbc.queryForMap(
+                "SELECT COALESCE(SUM(ol.original_amount),0) original_amount,"
+                        + " COALESCE(SUM(CASE WHEN ol.original_amount IS NULL THEN 1 ELSE 0 END),0) missing_line_count,"
+                        + " COUNT(DISTINCT o.customer_id) customer_count,"
+                        + " COALESCE(SUM(o.payable_amount),0) payable_amount,"
+                        + " COALESCE(SUM(o.paid_amount),0) paid_amount,"
+                        + " COALESCE(SUM(o.unpaid_amount),0) unpaid_amount,"
+                        + " COALESCE(SUM((SELECT SUM(p.paid_amount) FROM order_payment_record p"
+                        + " WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.deleted=0"
+                        + " AND p.payment_status_code='CHECKED')),0) checked_amount"
+                        + " FROM order_sales_order o "
+                        + ORDER_ORIGINAL_JOIN
+                        + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
+                        + " WHERE " + where.sql(), where.args().toArray());
         Map<String, BigDecimal> totals = new LinkedHashMap<>();
-        totals.put("originalAmount", decimal(row, "original_amount"));
-        totals.put("payableAmount", decimal(row, "payable_amount"));
+        BigDecimal original = decimal(row, "original_amount");
+        BigDecimal payable = decimal(row, "payable_amount");
+        BigDecimal missing = decimal(row, "missing_line_count");
+        totals.put("customerCount", decimal(row, "customer_count"));
+        totals.put("missingLineOrderCount", missing);
+        if (missing.signum() == 0) {
+            totals.put("originalAmount", original);
+            totals.put("discountAmount", original.subtract(payable));
+            if (original.signum() != 0) {
+                totals.put("discountRate", original.subtract(payable).divide(original, 8, java.math.RoundingMode.HALF_UP));
+            }
+        }
+        totals.put("payableAmount", payable);
         totals.put("paidAmount", decimal(row, "paid_amount"));
         totals.put("unpaidAmount", decimal(row, "unpaid_amount"));
-        totals.put("checkedAmount", ZERO);
+        totals.put("checkedAmount", decimal(row, "checked_amount"));
         return totals;
     }
 
@@ -683,20 +737,25 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + where.sql()
                                 + " LIMIT 1",
                         where.args().toArray());
-        // 应收金额按订单表口径：符合条件的订单金额合计，不受付款条件影响（与订单列表同口径）。
-        var orderWhere = paymentOrderSideWhere(tenantId, criteria);
-        var related =
-                jdbc.queryForMap(
-                        "SELECT COALESCE(SUM(o.payable_amount),0) related_amount FROM order_sales_order o WHERE "
-                                + orderWhere.sql()
-                                + " LIMIT 1",
-                        orderWhere.args().toArray());
+        // 与回款行使用同一筛选与权限范围；订单先去重，余额保留完整账本口径（含历史期初）。
+        var related = jdbc.queryForMap(
+                "SELECT COALESCE(SUM(m.payable_amount),0) related_amount,"
+                        + " COALESCE(SUM(m.unpaid_amount),0) unpaid_amount,"
+                        + " COUNT(DISTINCT m.customer_id) customer_count FROM ("
+                        + " SELECT DISTINCT o.id,o.payable_amount,o.unpaid_amount,o.customer_id"
+                        + " FROM order_payment_record p"
+                        + " JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id AND o.deleted=0"
+                        + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN'"
+                        + " WHERE " + where.sql() + ") m",
+                where.args().toArray());
         Map<String, BigDecimal> totals = new LinkedHashMap<>();
         totals.put("receivedAmount", decimal(row, "received_amount"));
         totals.put("checkedAmount", decimal(row, "checked_amount"));
         totals.put("pendingDocumentAmount", decimal(row, "pending_amount"));
         totals.put("cancelledDocumentAmount", decimal(row, "cancelled_amount"));
         totals.put("relatedOrderAmount", decimal(related, "related_amount"));
+        totals.put("unpaidAmount", decimal(related, "unpaid_amount"));
+        totals.put("customerCount", decimal(related, "customer_count"));
         return totals;
     }
 
@@ -772,22 +831,22 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 args.toArray());
     }
 
-    /**
-     * 明细级回款分摊：订单实收（RECEIVED/CHECKED）按「明细金额 / 订单应收」比例分摊到明细。
-     * 部分回款同样按比例，保证 Σ明细回款 = 订单实收；订单应收为 0 时不分摊。
-     */
-    private static final String LINE_RECEIVED_AMOUNT_EXPRESSION =
-            "CASE WHEN o.payable_amount > 0"
-                    + " THEN ROUND(l.line_amount * COALESCE(pr.received_amount,0) / o.payable_amount, 2)"
-                    + " ELSE 0 END";
+    /** 在商品过滤前按整单计算累计权重；累计金额之差吸收分币尾差，筛选和分页不改变分摊。 */
+    private static final String LINE_ALLOCATION_JOIN =
+            " JOIN (SELECT tenant_id,id,"
+                    + " SUM(unit_price*quantity) OVER (PARTITION BY tenant_id,order_id) AS original_amount,"
+                    + " SUM(unit_price*quantity) OVER (PARTITION BY tenant_id,order_id ORDER BY line_no,id ROWS UNBOUNDED PRECEDING) AS cumulative_amount,"
+                    + " COALESCE(SUM(unit_price*quantity) OVER (PARTITION BY tenant_id,order_id ORDER BY line_no,id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0) AS previous_amount"
+                    + " FROM order_sales_order_line WHERE deleted=0) la ON la.tenant_id=l.tenant_id AND la.id=l.id ";
 
-    /** 订单实收合计（与回款列表「实收金额」同口径：已收款 + 已核对）。 */
-    private static final String ORDER_RECEIVED_JOIN =
-            " LEFT JOIN (SELECT tenant_id,order_id,"
-                    + " SUM(CASE WHEN payment_status_code IN ('RECEIVED','CHECKED') THEN paid_amount ELSE 0 END)"
-                    + " AS received_amount FROM order_payment_record WHERE deleted=0"
-                    + " GROUP BY tenant_id,order_id) pr"
-                    + " ON pr.tenant_id=o.tenant_id AND pr.order_id=o.id ";
+    private static String allocatedAmount(String column) {
+        String amount = "o." + column;
+        return "CASE WHEN la.original_amount=0 THEN CASE WHEN " + amount + "=0 THEN 0 ELSE NULL END ELSE "
+                + "(CASE WHEN la.cumulative_amount=la.original_amount THEN " + amount
+                + " ELSE ROUND(" + amount + "*la.cumulative_amount/la.original_amount,2) END) - "
+                + "(CASE WHEN la.previous_amount=la.original_amount THEN " + amount
+                + " ELSE ROUND(" + amount + "*la.previous_amount/la.original_amount,2) END) END";
+    }
 
     /** 与列表展示同一口径：订货宝订单号来自 order_number_mapping，或订货宝来源单号兜底。 */
     /**
@@ -804,21 +863,38 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                     + " s.tenant_id=hm.tenant_id AND s.group_id=hm.group_id AND s.state='BOUND'"
                     + " WHERE hm.tenant_id=o.tenant_id AND hm.order_id=o.id))";
 
+    private static String orderOrderBy(OrderCriteria c) {
+        String column = switch (c.sortBy() == null ? "" : c.sortBy()) {
+            case "payableAmount" -> "o.payable_amount";
+            case "discountAmount" -> "(ol.original_amount-o.payable_amount)";
+            case "discountRate" -> "((ol.original_amount-o.payable_amount)/NULLIF(ol.original_amount,0))";
+            case "orderNo" -> "o.order_no";
+            case "createdTime" -> "COALESCE(o.source_created_at,o.created_time)";
+            case "syncedAt" -> "o.synced_at";
+            default -> "o.order_date";
+        };
+        return " ORDER BY " + column + ("asc".equalsIgnoreCase(c.sortDirection()) ? " ASC" : " DESC") + ",o.id DESC";
+    }
+
     private Sql orderWhere(String tenantId, OrderCriteria c) {
         var where = new Sql();
         where.and("o.tenant_id=?", tenantId);
         where.and("o.deleted=0");
         like(where, "o.order_no", c.orderNo());
+        like(where, DHB_ORDER_NO_EXPRESSION, c.dhbOrderNo());
         eq(where, "o.customer_id", c.customerId());
         like(where, "o.customer_name_snapshot", c.customerName());
         like(where, "o.customer_code_snapshot", c.customerCode());
-        like(where, "o.region_code", c.regionCode());
-        like(where, "o.owner_employee_code", c.ownerEmployeeCode());
+        like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
+        eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
         inIds(where, "snap.department_id", c.departmentIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
         eq(where, "o.payment_status_code", c.paymentStatusCode());
+        if (c.hasDiscount() != null) {
+            where.and("(ol.original_amount-o.payable_amount)" + (c.hasDiscount() ? " > 0" : " <= 0"));
+        }
         if (Boolean.TRUE.equals(c.hasUnpaid())) where.and("o.unpaid_amount>0");
         if (Boolean.FALSE.equals(c.hasUnpaid())) where.and("o.unpaid_amount=0");
         if (Boolean.TRUE.equals(c.dhbLinked())) where.and(DHB_ORDER_NO_EXPRESSION + " IS NOT NULL");
@@ -835,9 +911,29 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                             + " AND inv.sales_order_id=o.id AND inv.deleted=0 AND inv.status=?)",
                     c.invoiceStatusCode());
         }
+        eq(where, "COALESCE(NULLIF(TRIM(o.source_creator_name),''),o.created_by)", c.createdBy());
         var scope = scopes.predicate("order:read", "o.", null);
         where.and("(" + scope.sql() + ")", scope.args().toArray());
         return where;
+    }
+
+    private static String lineDiscountAmount() {
+        return "(l.unit_price*l.quantity - (" + allocatedAmount("payable_amount") + "))";
+    }
+
+    private static String lineDiscountRate() {
+        return "(" + lineDiscountAmount() + "/NULLIF(l.unit_price*l.quantity,0))";
+    }
+
+    private static String lineOrderBy(LineCriteria c) {
+        String column = switch (c.sortBy() == null ? "" : c.sortBy()) {
+            case "orderNo" -> "o.order_no";
+            case "lineAmount" -> "l.unit_price*l.quantity";
+            case "discountAmount" -> lineDiscountAmount();
+            case "discountRate" -> lineDiscountRate();
+            default -> "o.order_date";
+        };
+        return column + ("asc".equalsIgnoreCase(c.sortDirection()) ? " ASC" : " DESC") + ",l.id DESC";
     }
 
     private Sql lineWhere(String tenantId, LineCriteria c) {
@@ -848,12 +944,13 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         eq(where, "o.customer_id", c.customerId());
         like(where, "o.customer_name_snapshot", c.customerName());
         like(where, "o.customer_code_snapshot", c.customerCode());
-        like(where, "o.region_code", c.regionCode());
-        like(where, "o.owner_employee_code", c.ownerEmployeeCode());
+        like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
+        eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
         inIds(where, "snap.department_id", c.departmentIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
+        eq(where, "o.payment_status_code", c.paymentStatusCode());
         if (c.productKeyword() != null && !c.productKeyword().isBlank()) {
             where.and(
                     "(l.product_name_snapshot LIKE ? OR l.product_code_snapshot LIKE ? OR l.sku_code_snapshot LIKE ?)",
@@ -869,26 +966,9 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                             + ")",
                     c.productIds().toArray());
         }
-        var scope = scopes.predicate("order:read", "o.", null);
-        where.and("(" + scope.sql() + ")", scope.args().toArray());
-        return where;
-    }
-
-    /** 应收金额只看订单侧条件；付款侧条件（收款编码/交易单号/收款状态/付款时间）不参与。 */
-    private Sql paymentOrderSideWhere(String tenantId, PaymentCriteria c) {
-        var where = new Sql();
-        where.and("o.tenant_id=?", tenantId);
-        where.and("o.deleted=0");
-        like(where, "o.order_no", c.orderNo());
-        eq(where, "o.customer_id", c.customerId());
-        like(where, "o.customer_name_snapshot", c.customerName());
-        like(where, "o.customer_code_snapshot", c.customerCode());
-        like(where, "o.region_code", c.regionCode());
-        like(where, "o.owner_employee_code", c.ownerEmployeeCode());
-        inIds(where, "snap.department_id", c.departmentIds());
-        ge(where, "o.order_date", c.orderDateFrom());
-        lt(where, "o.order_date", c.orderDateTo());
-        eq(where, "o.order_status_code", c.orderStatusCode());
+        if (c.hasDiscount() != null) {
+            where.and(lineDiscountAmount() + (c.hasDiscount() ? " > 0" : " <= 0"));
+        }
         var scope = scopes.predicate("order:read", "o.", null);
         where.and("(" + scope.sql() + ")", scope.args().toArray());
         return where;
@@ -914,8 +994,8 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         eq(where, "o.customer_id", c.customerId());
         like(where, "o.customer_name_snapshot", c.customerName());
         like(where, "o.customer_code_snapshot", c.customerCode());
-        like(where, "o.region_code", c.regionCode());
-        like(where, "o.owner_employee_code", c.ownerEmployeeCode());
+        like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
+        eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
         inIds(where, "snap.department_id", c.departmentIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
@@ -925,6 +1005,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         eq(where, "p.payment_status_code", c.paymentStatusCode());
         ge(where, "p.payment_time", c.paymentTimeFrom());
         lt(where, "p.payment_time", c.paymentTimeTo());
+        eq(where, "COALESCE(NULLIF(TRIM(o.source_creator_name),''),p.created_by)", c.createdBy());
         var scope = scopes.predicate("order:read", "o.", null);
         where.and("(" + scope.sql() + ")", scope.args().toArray());
         return where;
@@ -1102,7 +1183,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         return new OrderRegisterPaymentView(
                 rs.getLong("id"),
                 rs.getString("payment_no"),
-                first(rs.getString("source_record_id"), rs.getString("payment_no")),
+                rs.getString("source_record_id"),
                 rs.getLong("order_id"),
                 rs.getString("order_no"),
                 rs.getString("dhb_order_no"),
@@ -1135,7 +1216,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
     }
 
     private static final String PAYMENT_ROW_SELECT =
-            "SELECT p.id,p.payment_no,p.source_record_id,p.order_id,o.order_no,"
+            "SELECT p.id,p.payment_no,COALESCE(NULLIF(p.source_record_id,''),NULLIF(p.source_document_no,'')) AS source_record_id,p.order_id,o.order_no,"
                     + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                     + " p.customer_id,p.customer_code_snapshot,p.customer_name_snapshot,"
                     + " COALESCE(snap.region_code,o.region_code) AS region_code,"

@@ -539,6 +539,34 @@ class DhbSyncOrchestrationServiceTest {
     }
 
     @Test
+    void backgroundOrderPackageContinuesEverySliceWithoutAnotherBrowserRequest() {
+        service=serviceWithIncrementalWindow("2026-09-04T00:00:00+08:00",Instant.parse("2026-09-22T08:00:00Z"));
+        when(orderSyncService.runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10))).thenReturn(orderResult());
+        var stages=new ArrayList<String>();
+        var result=service.runPage(manualCaller(),new DhbPageSyncCommand(
+                DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE,CONNECTOR_ID,null,null,10,true),stages::add,true);
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        verify(orderSyncService,org.mockito.Mockito.times(9)).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10));
+        verify(objectCheckpoints,org.mockito.Mockito.times(9)).completed(any(),any(),any(),any(),any());
+        assertThat(stages).hasSize(9).anyMatch(s->s.contains("订单及明细")).anyMatch(s->s.contains("收款"));
+    }
+
+    @Test
+    void backgroundCustomerUsesShortRequestJobClientOnly() {
+        when(crmClient.syncLatestCustomersInBackground(any(),eq(CONNECTOR_ID),eq(CRM_TASK_ID),eq(10),any(),any()))
+                .thenReturn(crmResult());
+        var result=service.runPage(manualCaller(),new DhbPageSyncCommand(
+                DhbPageSyncCommand.Scope.CUSTOMER,CONNECTOR_ID,null,null,10,true),stage->{},true);
+        assertThat(result.tenants()).hasSize(1);
+        verify(crmClient,never()).syncLatestCustomers(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any());
+        verifyNoOrderCall();
+    }
+
+    private void verifyNoOrderCall() {
+        org.mockito.Mockito.verifyNoInteractions(orderSyncService);
+    }
+
+    @Test
     void incrementalOrderPackageBootstrapsAtCutoverDefaultWithoutScheduledWindowFrom() {
         service = serviceWithIncrementalWindow(null, Instant.parse("2026-09-18T08:00:00Z"));
         Instant cutover = Instant.parse("2026-09-03T16:00:00Z");
@@ -774,17 +802,17 @@ class DhbSyncOrchestrationServiceTest {
     void receiptUnknownStateIsNeverAnEffectivePayment() {
         assertThat(DhbOrderSyncService.verifiedReceiptStatus("unexpected-status")).isEqualTo("UNKNOWN");
         assertThat(DhbOrderSyncService.verifiedReceiptStatus(null)).isEqualTo("UNKNOWN");
-        assertThat(DhbOrderSyncService.verifiedReceiptStatus("pend_receipted")).isEqualTo("PENDING");
+        assertThat(DhbOrderSyncService.verifiedReceiptStatus("pend_receipted")).isEqualTo("CONFIRMED");
         assertThat(DhbOrderSyncService.verifiedReceiptStatus("cancelled")).isEqualTo("CANCELLED");
     }
 
     @Test
-    void receiptWithoutSourceStatusIsTreatedAsConfirmed() {
+    void receiptWithoutSourceStatusRequiresEvidence() {
         assertThat(DhbOrderSyncService.receiptIntakeStatus(null)).isEqualTo("UNKNOWN");
         assertThat(DhbOrderSyncService.receiptIntakeStatus(receiptWithStatus(null)))
-                .isEqualTo("CONFIRMED");
+                .isEqualTo("UNKNOWN");
         assertThat(DhbOrderSyncService.receiptIntakeStatus(receiptWithStatus("")))
-                .isEqualTo("CONFIRMED");
+                .isEqualTo("UNKNOWN");
         assertThat(DhbOrderSyncService.receiptIntakeStatus(receiptWithStatus("confirmed")))
                 .isEqualTo("CONFIRMED");
         assertThat(DhbOrderSyncService.receiptIntakeStatus(receiptWithStatus("cancelled")))

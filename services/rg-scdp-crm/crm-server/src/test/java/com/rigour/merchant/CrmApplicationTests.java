@@ -1437,6 +1437,54 @@ SELECT COUNT(*) FROM crm_contact c
     }
 
     @Test
+    void confirmedIndependentSourcesAllowSameCityNameButNotSharedLoginAccounts() {
+        UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID(), actor=UUID.randomUUID();
+        var type=CrmMasterDataObjectType.CUSTOMER; var run=start(tenant,connector,actor,type);
+        var original=customerRecord("同名独立门店");
+        assertThat(store.importRecord(tenant,connector,run,type,original).created()).isEqualTo(1);
+        var f=new LinkedHashMap<String,Object>(original.sourceFields());
+        f.put("clientGUID","SECOND"); f.put("clientNO","SECOND"); f.put("clientAccount","independent-login");
+        var second=new SourceRecord("SECOND","SECOND",original.sourceName(),"T",original.sourceCreatedAt(),original.sourceUpdatedAt(),f);
+        assertThat(store.importRecord(tenant,connector,run,type,second).unmapped()).isEqualTo(1);
+        var originalParty=customerTargetId(tenant,connector);
+        jdbcTemplate.update("UPDATE crm_source_binding SET target_id=? WHERE tenant_id=UUID_TO_BIN(?) AND source_object_id='SECOND'",originalParty,tenant.toString());
+        long revision=sourceRevision(tenant,"SECOND");
+        assertThatThrownBy(()->store.confirmIndependentCustomer(UUID.randomUUID(),connector,"SECOND",revision,false,"用户确认独立门店",actor)).hasMessageContaining("不存在");
+        assertThatThrownBy(()->store.confirmIndependentCustomer(tenant,connector,"SECOND",revision+1,false,"用户确认独立门店",actor)).hasMessageContaining("版本");
+        store.confirmIndependentCustomer(tenant,connector,"SECOND",revision,false,"用户确认独立门店",actor);
+        assertThat(jdbcTemplate.queryForObject("SELECT independence_previous_target_id FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND source_object_id='SECOND'",byte[].class,tenant.toString())).isEqualTo(originalParty);
+        assertThat(store.importRecord(tenant,connector,run,type,second).created()).isEqualTo(1);
+        assertThat(store.importRecord(tenant,connector,run,type,second).duplicates()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(DISTINCT target_id) FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND source_object_type='CUSTOMER'",Integer.class,tenant.toString())).isEqualTo(2);
+        f.put("clientGUID","THIRD");f.put("clientNO","THIRD");
+        var third=new SourceRecord("THIRD","THIRD",original.sourceName(),"T",original.sourceCreatedAt(),original.sourceUpdatedAt(),f);
+        assertThat(store.importRecord(tenant,connector,run,type,third).unmapped()).isEqualTo(1);
+        store.confirmIndependentCustomer(tenant,connector,"THIRD",sourceRevision(tenant,"THIRD"),false,"独立但不能复用登录账号",actor);
+        assertThat(store.importRecord(tenant,connector,run,type,third).unmapped()).isEqualTo(1);
+        assertThatThrownBy(()->store.confirmIndependentCustomer(tenant,connector,"CLIENT-GUID-1",sourceRevision(tenant,"CLIENT-GUID-1"),false,"不能拆开已关联客户",actor)).hasMessageContaining("不能拆开");
+    }
+
+    @Test
+    void confirmedNewCustomerMayKeepUnknownOwnerWithoutInventingOrErasingEmployees() {
+        UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID(), actor=UUID.randomUUID();
+        var type=CrmMasterDataObjectType.CUSTOMER;var run=start(tenant,connector,actor,type);
+        var original=customerRecord("缺少员工的新客户");var f=new LinkedHashMap<String,Object>(original.sourceFields());
+        f.remove("_employeeBySourceId");
+        var record=new SourceRecord(original.sourceId(),original.sourceCode(),original.sourceName(),"T",original.sourceCreatedAt(),original.sourceUpdatedAt(),f);
+        assertThat(store.importRecord(tenant,connector,run,type,record).unmapped()).isEqualTo(1);
+        store.confirmIndependentCustomer(tenant,connector,record.sourceId(),sourceRevision(tenant,record.sourceId()),true,"补录客户但员工保持待对应",actor);
+        assertThat(store.importRecord(tenant,connector,run,type,record).created()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT owner_employee_code FROM crm_customer WHERE tenant_id=?",String.class,tenant.toString())).isNull();
+        jdbcTemplate.update("UPDATE crm_customer SET owner_employee_code='EMP-KNOWN',owner_employee_name_snapshot='已确认员工' WHERE tenant_id=?",tenant.toString());
+        assertThat(store.importRecord(tenant,connector,run,type,record).unmapped()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT owner_employee_code FROM crm_customer WHERE tenant_id=?",String.class,tenant.toString())).isEqualTo("EMP-KNOWN");
+    }
+
+    private long sourceRevision(UUID tenant,String sourceId) {
+        return jdbcTemplate.queryForObject("SELECT revision FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND source_object_type='CUSTOMER' AND source_object_id=?",Long.class,tenant.toString(),sourceId);
+    }
+
+    @Test
     void sourceDuplicateAccountIsPendingWithoutCreatingAnotherCustomer() {
         UUID tenant=UUID.randomUUID(),connector=UUID.randomUUID(),actor=UUID.randomUUID();
         var type=CrmMasterDataObjectType.CUSTOMER; var run=start(tenant,connector,actor,type);

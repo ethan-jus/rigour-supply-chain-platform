@@ -602,6 +602,8 @@ class DhbClientAdapterTest {
                         "pend_receipted"));
 
         assertThat(receipts.items().getFirst().receiptNumber()).isEqualTo("FR-1");
+        assertThat(receipts.items().getFirst().status()).isEqualTo("pend_receipted");
+        assertThat(receipts.items().getFirst().attributes().get("Status")).isEqualTo("pend_receipted");
         assertThat(receipts.items().getFirst().amount()).isEqualByComparingTo("88.00");
         assertThat(receipts.items().getFirst().transactionAt())
                 .isEqualTo(Instant.parse("2026-07-31T16:00:00Z"));

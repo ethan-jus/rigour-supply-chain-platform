@@ -25,6 +25,9 @@ public interface DhbSyncStore {
     PagePersistResult persistOrderPage(UUID tenantId, UUID taskId, UUID runId,
                                       List<OrderSummary> orders, Instant receivedAt);
 
+    /** 重放复用已落地的列表证据；没有镜像时返回 null，不从单号推断业务时间。 */
+    OrderSummary findOrderSummary(UUID tenantId, UUID connectorId, String sourceOrderId);
+
     RawObjectPersistResult persistRawObject(UUID tenantId, UUID connectorId, UUID runId,
                                             String sourceObjectType, String sourceId,
                                             String sourceVersion, Instant sourceUpdatedAt,

@@ -63,7 +63,7 @@ public final class HttpHrEmployeeDisplayClient implements HrEmployeeDisplayClien
         if (departmentId == null) return Set.of();
         if (!Boolean.TRUE.equals(includeSubDepartments)) return Set.of(departmentId);
         URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path("/api/v1/hr/departments")
+                .path("/api/v1/hr/employee-departments")
                 .build()
                 .encode()
                 .toUri();

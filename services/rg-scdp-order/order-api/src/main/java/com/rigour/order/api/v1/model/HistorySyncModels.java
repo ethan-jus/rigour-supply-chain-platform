@@ -8,6 +8,8 @@ import java.util.*;
 public final class HistorySyncModels {
     private HistorySyncModels() {}
 
+    public record CancelSourceOrder(UUID connectorId, String sourceNo) {}
+
     public record SourceOrder(
             UUID connectorId,
             String sourceNo,
@@ -25,6 +27,20 @@ public final class HistorySyncModels {
     public record SourceRef(UUID connectorId, String sourceNo, int revision) {}
 
     public record NewOrder(SourceRef source, String evidence) {}
+
+    public record DeleteUnlinkedHistory(long orderId, int revision, String evidence) {}
+
+    public record HistoryOrderRef(long orderId, int revision) {}
+
+    public record SourceTarget(SourceRef source, Long orderId, SalesOrderCommand command, SourceOrder sourceOrder) {}
+
+    public record PaymentPortion(String sourceNo, BigDecimal amount) {}
+
+    public record PaymentSplit(long paymentId, int revision, List<PaymentPortion> portions) {}
+
+    public record NormalizeGroup(UUID operationId, UUID connectorId, String groupId,
+                                 List<HistoryOrderRef> orders, List<SourceTarget> targets,
+                                 List<PaymentSplit> payments, String evidence) {}
 
     public record Baseline(long orderId, int revision, Instant cutoff, BigDecimal openingPaid) {}
 

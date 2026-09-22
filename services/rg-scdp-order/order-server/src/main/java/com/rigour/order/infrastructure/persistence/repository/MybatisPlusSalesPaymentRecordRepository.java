@@ -226,6 +226,13 @@ public class MybatisPlusSalesPaymentRecordRepository
                                                 InternalSalesPaymentRecordEntity::getUpdatedBy,
                                                 actorId)
                                         .set(InternalSalesPaymentRecordEntity::getUpdatedTime, now);
+        if (command.sourcePaymentStatusCode() != null) {
+            update.set(InternalSalesPaymentRecordEntity::getPaymentStatusCode, command.sourcePaymentStatusCode())
+                    .set(InternalSalesPaymentRecordEntity::getCheckedBy,
+                            "CHECKED".equals(command.sourcePaymentStatusCode()) ? command.sourceCheckedBy() : null)
+                    .set(InternalSalesPaymentRecordEntity::getCheckedAt,
+                            "CHECKED".equals(command.sourcePaymentStatusCode()) ? local(command.sourceCheckedAt()) : null);
+        }
         if (command.sourceCreatedAt() != null)
             update.set(
                     InternalSalesPaymentRecordEntity::getSourceCreatedAt,
@@ -363,6 +370,11 @@ public class MybatisPlusSalesPaymentRecordRepository
             LocalDateTime now) {
         InternalSalesPaymentRecordEntity entity = new InternalSalesPaymentRecordEntity();
         entity.setTenantId(tenantId);
+        entity.setPaymentStatusCode(command.sourcePaymentStatusCode() == null ? "RECEIVED" : command.sourcePaymentStatusCode());
+        if ("CHECKED".equals(command.sourcePaymentStatusCode())) {
+            entity.setCheckedBy(command.sourceCheckedBy());
+            entity.setCheckedAt(local(command.sourceCheckedAt()));
+        }
         entity.setPaymentNo(paymentNo);
         entity.setConnectorId(uuidText(command.connectorId()));
         entity.setSourceSystemCode(command.sourceSystemCode());
@@ -405,7 +417,8 @@ public class MybatisPlusSalesPaymentRecordRepository
                                 Wrappers.<InternalSalesPaymentRecordEntity>lambdaQuery()
                                         .eq(InternalSalesPaymentRecordEntity::getTenantId, tenantId)
                                         .eq(InternalSalesPaymentRecordEntity::getOrderId, orderId)
-                                        .eq(InternalSalesPaymentRecordEntity::getDeleted, 0));
+                                        .eq(InternalSalesPaymentRecordEntity::getDeleted, 0)
+                                        .in(InternalSalesPaymentRecordEntity::getPaymentStatusCode, "RECEIVED", "CHECKED"));
         BigDecimal paidAmount =
                 payments.stream()
                         .map(InternalSalesPaymentRecordEntity::getPaidAmount)

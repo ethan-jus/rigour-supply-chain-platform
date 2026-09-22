@@ -47,6 +47,44 @@ class CrmMasterDataSyncServiceTest {
     private static final UUID TASK_ID = UUID.fromString("019fb600-0000-7000-8000-000000000003");
 
     @Test
+    void independentCustomerConfirmationRecordsAuthorizedTenantUser() {
+        CrmMasterDataStore store = mock(CrmMasterDataStore.class);
+        CrmMasterDataSyncService service = syncService(mock(DhbCrmMasterDataClient.class),
+                mock(DhbCrmSyncTargetDiscoveryClient.class), store,
+                mock(CrmDictionaryCoverageService.class), passthroughLease());
+        UUID actor = UUID.randomUUID();
+        CallerIdentity caller = new CallerIdentity("TENANT", actor, TENANT_ID, actor, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of(),
+                Set.of("crm:customer:sync", "crm:customer:create"));
+
+        service.confirmIndependentCustomer(caller, CONNECTOR_ID, "SOURCE-1", 7, true, "confirmed");
+
+        verify(store).confirmIndependentCustomer(TENANT_ID, CONNECTOR_ID, "SOURCE-1", 7,
+                true, "confirmed", actor);
+    }
+
+    @Test
+    void independentCustomerConfirmationRejectsServiceOrMissingPermission() {
+        CrmMasterDataStore store = mock(CrmMasterDataStore.class);
+        CrmMasterDataSyncService service = syncService(mock(DhbCrmMasterDataClient.class),
+                mock(DhbCrmSyncTargetDiscoveryClient.class), store,
+                mock(CrmDictionaryCoverageService.class), passthroughLease());
+        UUID actor = UUID.randomUUID();
+        CallerIdentity missingPermission = new CallerIdentity("TENANT", actor, TENANT_ID, actor, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("crm:customer:sync"));
+        CallerIdentity serviceCaller = new CallerIdentity("SERVICE", actor, TENANT_ID, null, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of(),
+                Set.of("crm:customer:sync", "crm:customer:create"));
+
+        for (CallerIdentity caller : List.of(missingPermission, serviceCaller)) {
+            assertThatThrownBy(() -> service.confirmIndependentCustomer(caller, CONNECTOR_ID,
+                    "SOURCE-1", 7, true, "confirmed"))
+                    .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        }
+        org.mockito.Mockito.verifyNoInteractions(store);
+    }
+
+    @Test
     void scheduledRunUsesErpCompatibleDependencyOrderAndCompletesEachObject() {
         DhbCrmMasterDataClient client = mock(DhbCrmMasterDataClient.class);
         DhbCrmSyncTargetDiscoveryClient discovery = mock(DhbCrmSyncTargetDiscoveryClient.class);
@@ -426,6 +464,31 @@ class CrmMasterDataSyncServiceTest {
                 && records.getFirst().sourceCreatedAt().equals(pending.sourceCreatedAt())
                 && records.getFirst().sourceFields().get("_employeeBySourceId").equals(Map.of())));
         verify(store).completeCustomerWindow(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void repeatedEmployeeIdsAreResolvedOnceAcrossCustomerBatchesAndProgressIsReported() {
+        var client=mock(DhbCrmMasterDataClient.class);
+        var store=mock(CrmMasterDataStore.class);
+        var dictionaries=mock(CrmDictionaryCoverageService.class);
+        var employees=mock(HrEmployeeDirectoryClient.class);
+        var service=new CrmMasterDataSyncService(client,mock(DhbCrmSyncTargetDiscoveryClient.class),store,
+                dictionaries,passthroughLease(),mock(ExternalObjectMappingClient.class),employees);
+        var records=IntStream.range(0,401).mapToObj(i->new SourceRecord("C"+i,null,"fixture",null,null,null,
+                Map.<String,Object>of("staffID","S1"))).toList();
+        when(store.startRun(any(),any(),any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any())).thenReturn(UUID.randomUUID());
+        when(client.collect(any(),eq(CONNECTOR_ID),eq(CrmMasterDataObjectType.CUSTOMER),eq(10)))
+                .thenReturn(new Collected(CrmMasterDataObjectType.CUSTOMER,401,1,records));
+        when(store.importRecords(any(),any(),any(),any(),any())).thenAnswer(call->{
+            List<SourceRecord> batch=call.getArgument(4);return batch.stream().map(r->ImportResult.duplicateOne()).toList();
+        });
+        when(dictionaries.sync(any(),any())).thenReturn(Audit.empty());
+        when(store.completeCustomerWindow(any(),any(),any(),any(),any())).thenAnswer(call->call.getArgument(3));
+        var stages=new java.util.ArrayList<String>();
+        service.runSelected(scheduledCaller(),CONNECTOR_ID,TASK_ID,10,null,null,"CUSTOMER",true,null,null,stages::add);
+        verify(employees,org.mockito.Mockito.times(1)).resolveDinghuobaoEmployees(any(),eq(CONNECTOR_ID.toString()),eq(List.of("S1")));
+        verify(store,org.mockito.Mockito.times(3)).importRecords(any(),any(),any(),any(),any());
+        assertThat(stages).contains("客户已核对 200 / 401 条","客户已核对 400 / 401 条","客户已核对 401 / 401 条");
     }
 
     private static CallerIdentity scheduledCaller() {

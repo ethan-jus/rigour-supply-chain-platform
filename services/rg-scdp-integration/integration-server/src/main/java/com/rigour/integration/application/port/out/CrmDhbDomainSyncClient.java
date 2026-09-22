@@ -7,6 +7,13 @@ import java.util.UUID;
 
 /** Integration 编排器触发 CRM 领域服务同步的端口。 */
 public interface CrmDhbDomainSyncClient {
+    default SyncResult syncLatestCustomersInBackground(CallerIdentity caller, UUID connectorId,
+            UUID sourceTaskId, int maxPages, UUID initiatedBy, java.util.function.Consumer<String> progress) {
+        throw new UnsupportedOperationException("CRM客户端尚未支持后台客户同步");
+    }
+    class OutcomeUnknown extends RuntimeException {
+        public OutcomeUnknown(String message, Throwable cause) { super(message, cause); }
+    }
     default SyncResult sync(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
                             int maxPages) {
         return sync(caller, connectorId, sourceTaskId, maxPages, null, null);

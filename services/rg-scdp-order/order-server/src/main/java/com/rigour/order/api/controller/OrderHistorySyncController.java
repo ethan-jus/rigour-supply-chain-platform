@@ -24,9 +24,27 @@ public class OrderHistorySyncController implements OrderHistorySyncApi {
         return ApiResponse.success(service.sourceOrder(c));
     }
 
+    public ApiResponse<Intake> cancelSourceOrder(CancelSourceOrder c) {
+        return ApiResponse.success(service.cancelSourceOrder(c));
+    }
+
     public ApiResponse<Void> confirmNew(NewOrder c) {
         service.confirmNew(c);
         return ApiResponse.success(null);
+    }
+
+    public ApiResponse<Void> confirmHistoricalNew(NewOrder c) {
+        service.confirmHistoricalNew(c);
+        return ApiResponse.success(null);
+    }
+
+    public ApiResponse<Void> deleteUnlinkedHistory(DeleteUnlinkedHistory c) {
+        service.deleteUnlinkedHistory(c);
+        return ApiResponse.success(null);
+    }
+
+    public ApiResponse<java.util.Map<String, Long>> normalizeGroup(NormalizeGroup c) {
+        return ApiResponse.success(service.normalizeGroup(c));
     }
 
     public ApiResponse<String> bind(Bind c) {

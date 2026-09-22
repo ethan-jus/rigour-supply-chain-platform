@@ -173,6 +173,43 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
 
     @Override
     @Transactional
+    public void confirmIndependentCustomer(UUID tenantId, UUID connectorId, String sourceId,
+            long revision, boolean allowUnmappedOwner, String evidence, UUID actorId) {
+        Objects.requireNonNull(tenantId); Objects.requireNonNull(connectorId); Objects.requireNonNull(actorId);
+        if (clean(sourceId) == null || clean(evidence) == null || evidence.length() > 1000)
+            throw new IllegalArgumentException("来源客户及独立建档确认依据不能为空，依据最多1000字");
+        identities.lock(tenantId.toString());
+        var source = binding(tenantId, connectorId, CrmMasterDataObjectType.CUSTOMER, sourceId, true);
+        if (source == null || !Objects.equals(source.revision, revision))
+            throw new BusinessException(ErrorCode.CONFLICT, "来源客户不存在或版本已变化", List.of());
+        if (Boolean.TRUE.equals(source.independentConfirmed)) {
+            if (!Objects.equals(source.unresolvedOwnerAllowed, allowUnmappedOwner)
+                    || !Objects.equals(source.independenceEvidence, evidence))
+                throw new BusinessException(ErrorCode.CONFLICT, "独立建档确认内容与原记录不同", List.of());
+            return;
+        }
+        if (clean(source.primaryCustomerSourceId) != null || !"UNRESOLVED".equals(source.bindingStatus))
+            throw new BusinessException(ErrorCode.CONFLICT, "只允许确认尚未关联的来源客户，不能拆开既有客户绑定", List.of());
+        if (bindingMapper.update(null, Wrappers.<SourceBindingEntity>update()
+                .eq("tenant_id", bytes(tenantId)).eq("connector_id", bytes(connectorId))
+                .eq("id", source.id).eq("revision", revision).eq("deleted", 0)
+                .set("independent_confirmed", true).set("unresolved_owner_allowed", allowUnmappedOwner)
+                .set("independence_evidence", evidence).set("independence_actor", actorId.toString())
+                .set("independence_previous_target_id", source.targetId).set("target_id", null)
+                .set("independence_confirmed_at", now()).set("updated_by", actorId.toString())
+                .set("updated_time", now()).setSql("revision=revision+1")) != 1)
+            throw new BusinessException(ErrorCode.CONFLICT, "来源客户版本已变化", List.of());
+    }
+
+    private boolean ownerPendingAllowed(UUID tenantId, SourceBindingEntity binding) {
+        if (binding == null || !Boolean.TRUE.equals(binding.unresolvedOwnerAllowed)) return false;
+        var existing = binding.targetId == null ? null : internalCustomerByPartyId(tenantId, uuid(binding.targetId));
+        // Explicitly permit a new unassigned customer, never erase a known employee on later sync.
+        return existing == null || clean(existing.getOwnerEmployeeCode()) == null;
+    }
+
+    @Override
+    @Transactional
     public UUID startRun(
             UUID tenantId,
             UUID connectorId,
@@ -732,7 +769,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         // Use the same city facts that the master projection retains; the source address can be a district path.
         String identityConflict = identities.conflict(tenantId.toString(), identityCustomer == null ? null : identityCustomer.getId(),
                 first(value(f,"clientCompanyName"),record.sourceName()), value(f,"clientAccount"), identityCity,
-                identityCustomer != null && "LOCAL".equals(identityCustomer.getRegionManagementMode()) ? identityCustomer.getRegionCode() : identityRegion);
+                identityCustomer != null && "LOCAL".equals(identityCustomer.getRegionManagementMode()) ? identityCustomer.getRegionCode() : identityRegion,
+                binding != null && Boolean.TRUE.equals(binding.independentConfirmed));
         return identityConflict;
     }
 
@@ -747,8 +785,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         StaffRef primary = staffRefs(fields).primary();
         EmployeeRef resolved = employee(fields, primary.sourceId(), null);
         String code = null, message = null;
-        if (usableStaffId(primary.sourceId()) == null || clean(resolved.employeeCode()) == null
-                || clean(resolved.employeeName()) == null) {
+        if (!ownerPendingAllowed(tenantId, binding) && (usableStaffId(primary.sourceId()) == null || clean(resolved.employeeCode()) == null
+                || clean(resolved.employeeName()) == null)) {
             code = "CUSTOMER_EMPLOYEE_MAPPING_REQUIRED";
             message = "所属业务员未对应本系统员工，客户未更新；请先维护员工对应关系后重试";
         } else if (customerAreaCode(tenantId, sourceTarget(tenantId, connectorId,
@@ -776,7 +814,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             SourceRecord record,
             LocalDateTime now,
             boolean sourceChanged) {
-        if (customerHistoryCutover != null && (binding == null || binding.targetId == null)) {
+        if (customerHistoryCutover != null && (binding == null || !Boolean.TRUE.equals(binding.independentConfirmed))
+                && (binding == null || binding.targetId == null)) {
             boolean preCutover = record.sourceCreatedAt() == null
                     || record.sourceCreatedAt().isBefore(customerHistoryCutover);
             // 用户规则：同城市同名才视为同一门店；不同城市的同名门店必须作为独立客户保留。
@@ -794,7 +833,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         UUID partyId = targetId(binding);
         Map<String, Object> f = record.sourceFields();
         StaffRef primaryOwner = staffRefs(f).primary();
-        if (clean(primaryOwner.sourceId()) != null && !"0".equals(primaryOwner.sourceId())
+        if (!ownerPendingAllowed(tenantId, binding) && clean(primaryOwner.sourceId()) != null && !"0".equals(primaryOwner.sourceId())
                 && employee(f, primaryOwner.sourceId(), primaryOwner.name()).employeeCode() == null)
             return Target.unresolved("CUSTOMER_EMPLOYEE_MAPPING_REQUIRED", "订货宝业务员尚未关联本系统员工，保留原归属待处理");
 

@@ -18,6 +18,9 @@ public class InternalSalesOrderLineEntity {
     private Long orderId;
     /** 行号。 */
     private Integer lineNo;
+    private String sourceLineId;
+    public String getSourceLineId() { return sourceLineId; }
+    public void setSourceLineId(String value) { sourceLineId = value; }
     /** ERP 商品ID。 */
     private Long productId;
     /** ERP 商品规格ID。 */

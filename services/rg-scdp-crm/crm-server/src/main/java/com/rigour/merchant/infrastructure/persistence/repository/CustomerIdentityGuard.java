@@ -14,6 +14,11 @@ public final class CustomerIdentityGuard {
     public CustomerIdentityGuard(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
     public String conflict(String tenant, Long id, String name, String account, String city, String region) {
+        return conflict(tenant, id, name, account, city, region, false);
+    }
+
+    public String conflict(String tenant, Long id, String name, String account, String city, String region,
+                           boolean allowSameName) {
         lock(tenant);
         var previous = id == null ? java.util.List.<Map<String,Object>>of() : jdbc.queryForList(
                 "SELECT customer_name,login_account,city_name,region_code FROM crm_customer WHERE tenant_id=? AND id=? AND deleted=0 FOR UPDATE",tenant,id);
@@ -31,7 +36,7 @@ public final class CustomerIdentityGuard {
         for (var other : candidates) {
             if (accountChanged && !normalize(account).isEmpty() && normalize(account).equals(normalize(text(other,"login_account"))))
                 return "客户账号已被其他客户使用，请使用唯一的客户账号";
-            if (nameChanged && cityKey != null && normalize(name).equals(normalize(text(other,"customer_name")))
+            if (!allowSameName && nameChanged && cityKey != null && normalize(name).equals(normalize(text(other,"customer_name")))
                     && cityKey.equals(cityKey(tenant,text(other,"city_name"),text(other,"region_code"))))
                 return "同一城市已存在相同客户名称，请核对现有客户";
         }

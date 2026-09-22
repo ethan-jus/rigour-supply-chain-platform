@@ -96,7 +96,9 @@ public class OrderRegisterService {
             String paymentStatusCode,
             Boolean hasUnpaid,
             String invoiceStatusCode,
-            Boolean dhbLinked) {
+            Boolean dhbLinked,
+            String dhbOrderNo,
+            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy) {
         CallerIdentity actor = actor(READ_PERMISSION);
         var criteria =
                 new OrderCriteria(
@@ -113,7 +115,7 @@ public class OrderRegisterService {
                         text(paymentStatusCode, 64, "paymentStatusCode"),
                         hasUnpaid,
                         invoiceStatusCode(invoiceStatusCode),
-                        dhbLinked);
+                        dhbLinked, text(dhbOrderNo, 80, "dhbOrderNo"), hasDiscount, sortBy, sortDirection, text(createdBy, 200, "createdBy"));
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         var result = store.orders(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withInvoiceStatuses(
@@ -180,7 +182,11 @@ public class OrderRegisterService {
             String orderStatusCode,
             String productKeyword,
             String productCode,
-            List<Long> productIds) {
+            List<Long> productIds,
+            String paymentStatusCode,
+            Boolean hasDiscount,
+            String sortBy,
+            String sortDirection) {
         CallerIdentity actor = actor(READ_PERMISSION);
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         var criteria =
@@ -197,7 +203,8 @@ public class OrderRegisterService {
                         text(orderStatusCode, 64, "orderStatusCode"),
                         text(productKeyword, 200, "productKeyword"),
                         text(productCode, 128, "productCode"),
-                        filterProductIds(productIds));
+                        filterProductIds(productIds),
+                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection);
         var result = store.lines(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withDepartmentNames(actor, withRegionNames(actor, result));
     }
@@ -222,7 +229,7 @@ public class OrderRegisterService {
             Instant paymentTimeFrom,
             Instant paymentTimeTo,
             String sortBy,
-            String sortDirection) {
+            String sortDirection, String createdBy) {
         CallerIdentity actor = actor(READ_PERMISSION);
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         requireRange(paymentTimeFrom, paymentTimeTo, "paymentTimeFrom不能晚于paymentTimeTo");
@@ -244,7 +251,7 @@ public class OrderRegisterService {
                         paymentTimeFrom,
                         paymentTimeTo,
                         text(sortBy, 32, "sortBy"),
-                        text(sortDirection, 8, "sortDirection"));
+                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"));
         var result = store.payments(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
     }
@@ -466,12 +473,12 @@ public class OrderRegisterService {
                             v.id(), v.orderId(), v.lineNo(), v.sourceLineId(), v.productId(),
                             v.productVariantId(), v.productCode(), v.skuCode(), v.productName(),
                             v.specification(), v.unitCode(), v.quantity(), v.unitPrice(),
-                            v.lineAmount(), v.receivedAmount(), v.orderNo(), v.sourceOrderNo(),
+                            v.lineAmount(), v.orderAmount(), v.discountAmount(), v.discountRate(), v.receivedAmount(), v.orderNo(), v.sourceOrderNo(),
                             v.dhbOrderNo(), v.customerId(),
                             v.customerCode(), v.customerName(), v.regionCode(), name,
                             v.ownerEmployeeCode(),
                             v.ownerEmployeeName(), v.departmentId(), v.departmentName(),
-                            v.orderStatusCode(), v.orderDate(), v.revision(),
+                            v.orderStatusCode(), v.paymentStatusCode(), v.orderDate(), v.revision(),
                             v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
                             v.syncedBy(), v.syncedAt());
         }
@@ -555,12 +562,12 @@ public class OrderRegisterService {
                             v.id(), v.orderId(), v.lineNo(), v.sourceLineId(), v.productId(),
                             v.productVariantId(), v.productCode(), v.skuCode(), v.productName(),
                             v.specification(), v.unitCode(), v.quantity(), v.unitPrice(),
-                            v.lineAmount(), v.receivedAmount(), v.orderNo(), v.sourceOrderNo(),
+                            v.lineAmount(), v.orderAmount(), v.discountAmount(), v.discountRate(), v.receivedAmount(), v.orderNo(), v.sourceOrderNo(),
                             v.dhbOrderNo(), v.customerId(),
                             v.customerCode(), v.customerName(), v.regionCode(), v.regionName(),
                             v.ownerEmployeeCode(),
                             v.ownerEmployeeName(), v.departmentId(), department, v.orderStatusCode(),
-                            v.orderDate(), v.revision(),
+                            v.paymentStatusCode(), v.orderDate(), v.revision(),
                             v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
                             v.syncedBy(), v.syncedAt());
         }
