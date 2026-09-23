@@ -2,6 +2,8 @@ server:
   port: 26888
 
 spring:
+  flyway:
+    locations: classpath:db/migration,classpath:db/bootstrap
   application:
     name: rigour-analytics-bi-service
 

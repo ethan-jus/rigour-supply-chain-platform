@@ -47,7 +47,12 @@ public final class FlywayServiceRunner {
                 .dataSource(jdbcUrl, requiredEnv("DB_USER"), requiredEnv("DB_PASSWORD"))
                 .defaultSchema(schema)
                 .schemas(schema)
-                .locations("filesystem:" + location)
+                .locations("filesystem:" + location,
+                        "filesystem:" + java.nio.file.Path.of(location).resolveSibling("bootstrap"))
+                .baselineOnMigrate(false)
+                .cleanDisabled(true)
+                .validateOnMigrate(true)
+                .outOfOrder(false)
                 .load();
         switch (action) {
             case "info" -> printInfo(schema, flyway.info());

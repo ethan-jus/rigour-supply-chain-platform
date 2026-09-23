@@ -3,6 +3,8 @@ server:
   # 本机启动的固定端口；Gateway默认将 /api/v1/orders/** 转发到此端口。
   port: 26885
 spring:
+  flyway:
+    locations: classpath:db/migration,classpath:db/bootstrap
   application:
     # 同时作为Nacos Data ID前缀，DEV会读取 rigour-order-center-service.yaml。
     name: rigour-order-center-service

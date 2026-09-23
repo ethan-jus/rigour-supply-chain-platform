@@ -69,6 +69,9 @@ rigour:
         # 仅local开发使用；生产必须改为false，并在allowed-origins中填写明确HTTPS来源。
         allow-insecure-lan: true
         allow-insecure-loopback: true
+        # 临时HTTP部署可显式开启，仅放行allowed-origins中的精确来源，不放宽issuer校验。
+        # 恢复HTTPS后关闭；不接受通配符、路径、查询参数或片段。
+        allow-insecure-http-origins: false
       signing:
         # JWT/ID Token签名运行开关：加载iam_signing_key的ACTIVE RSA私钥并发布JWKS。
         # 不负责生成私钥；local-signing-key只是一项一次性本机初始化辅助功能。

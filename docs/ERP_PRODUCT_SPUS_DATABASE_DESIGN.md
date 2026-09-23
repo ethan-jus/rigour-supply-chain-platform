@@ -76,7 +76,7 @@ CREATE TABLE erp_product_spu (
     KEY idx_erp_product_spu_status (tenant_id, internal_status, updated_at),
     KEY idx_erp_product_spu_putaway (tenant_id, source_putaway),
     KEY idx_erp_product_spu_sync (tenant_id, synced_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
 COMMENT='ERP 商品/SPU 本地业务模型';
 ```
 
@@ -150,7 +150,7 @@ CREATE TABLE erp_master_data_sync_run (
         CHECK (trigger_type IN ('MANUAL', 'SCHEDULED', 'RETRY')),
     KEY idx_erp_master_data_sync_run_tenant_time (tenant_id, started_at),
     KEY idx_erp_master_data_sync_run_status (tenant_id, status, started_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
 COMMENT='ERP 商品主数据同步批次';
 ```
 
@@ -193,7 +193,7 @@ CREATE TABLE erp_master_data_sync_checkpoint (
         UNIQUE (tenant_id, connector_id, source_system, object_type),
     CONSTRAINT ck_erp_master_data_sync_checkpoint_cursor
         CHECK (cursor_type IN ('TIME_WINDOW', 'PAGE_TOKEN', 'SOURCE_VERSION'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
 COMMENT='ERP 商品主数据增量同步游标';
 ```
 

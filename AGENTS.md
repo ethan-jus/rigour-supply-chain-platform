@@ -42,6 +42,7 @@
 - 按影响范围检查引用和验证；涉及跨仓库接口时再检查相关仓库。
 - 有实际使用方的兼容层可以保留，并说明用途。
 - 已执行的 Flyway 迁移文件不得删除或改写，只能新增迁移推进数据库演进。
+- Platform 新建数据库、表和字符列统一使用 `utf8mb4` / `utf8mb4_general_ci`。新库使用 `db/bootstrap` 中冻结的 B 基线，已有库保留原 V 迁移校验；两类脚本发布后均不得改写。存量排序规则通过评审后的手动维护转换，生产启动仍关闭 Flyway。修改数据库脚本后运行 `python3 scripts/database/prepare-general-ci-baselines.py --check`，流程见 `docs/DATABASE_COLLATION_POLICY.md`。
 - DEV/local 按用户 2026-09-16 确认的方式在服务启动时执行 Flyway；DEV 统一使用 root，专用开发密码直接维护在 application-dev.yml，Flyway 复用数据源，不另设迁移账号或环境变量。保留历史校验并禁用 clean、自动 baseline 和乱序迁移；不得为绕过缺表或冲突而关闭迁移或执行 repair。此约定仅限 DEV，生产配置与隔离测试分别处理。
 
 共享环境和部署参考 `../共享DEV研发规范_v1.0.md`；本地开发按实际影响选择流程。

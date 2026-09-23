@@ -2,6 +2,8 @@ server:
   port: 26889
 
 spring:
+  flyway:
+    locations: classpath:db/migration,classpath:db/bootstrap
   application:
     name: rigour-hr-payroll-service
   profiles:

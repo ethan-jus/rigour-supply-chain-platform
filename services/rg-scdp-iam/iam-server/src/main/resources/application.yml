@@ -15,7 +15,7 @@ spring:
     name: rigour-tenant-iam-service
   flyway:
     enabled: true
-    locations: classpath:db/migration
+    locations: classpath:db/migration,classpath:db/bootstrap
     validate-on-migrate: true
     baseline-on-migrate: false
     out-of-order: false

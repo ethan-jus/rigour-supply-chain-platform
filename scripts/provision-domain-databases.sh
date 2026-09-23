@@ -103,7 +103,7 @@ for service in "${services[@]}"; do
 
   mysql_admin <<SQL
 CREATE DATABASE IF NOT EXISTS \`${schema_sql}\`
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
 CREATE USER IF NOT EXISTS '${app_user_sql}'@'${account_host_sql}' IDENTIFIED BY '${app_password_sql}';
 CREATE USER IF NOT EXISTS '${migrator_user_sql}'@'${account_host_sql}' IDENTIFIED BY '${migrator_password_sql}';
 $(if [[ "$rotate_existing_passwords" == "true" ]]; then
