@@ -114,6 +114,31 @@ class TenantAdministratorEffectivePermissionsTest {
     }
 
     @Test
+    void concurrentIdentityReadsCompleteWithOnePooledConnection() throws Exception {
+        try (var pool = new com.zaxxer.hikari.HikariDataSource()) {
+            pool.setJdbcUrl(dataSource.getUrl());
+            pool.setUsername("sa");
+            pool.setPassword("");
+            pool.setMaximumPoolSize(1);
+            pool.setMinimumIdle(1);
+            pool.setConnectionTimeout(500);
+            var pooledReader = new JdbcIdentityAccessReader(new JdbcTemplate(pool),
+                    mock(com.rigour.tenant.iam.application.port.out.AppSettingsStore.class));
+            try (var executor = java.util.concurrent.Executors.newFixedThreadPool(5)) {
+                var tasks = java.util.stream.IntStream.range(0, 20)
+                        .<java.util.concurrent.Callable<Set<String>>>mapToObj(i ->
+                                () -> pooledReader.readCurrentUser(query("admin")).permissions())
+                        .toList();
+                for (var result : executor.invokeAll(tasks, 15, java.util.concurrent.TimeUnit.SECONDS)) {
+                    assertThat(result.get()).containsExactlyInAnyOrder(READ, WRITE);
+                }
+            }
+            assertThat(pool.getHikariPoolMXBean().getActiveConnections()).isZero();
+            assertThat(pool.getHikariPoolMXBean().getThreadsAwaitingConnection()).isZero();
+        }
+    }
+
+    @Test
     void administratorGetsEntitledCatalogDynamicallyWithoutWideningOrdinaryRoles() {
         assertThat(permissions("admin")).containsExactlyInAnyOrder(READ, WRITE);
         assertThat(permissions("sales")).containsExactly(READ);

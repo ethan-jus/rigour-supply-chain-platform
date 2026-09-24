@@ -56,11 +56,15 @@ public final class JdbcIdentityAccessReader implements IdentityAccessReader {
                                         "TENANT",
                                         rs.getString("username"),
                                         rs.getString("display_name"),
-                                        tenantRoles(tenantId, userId),
-                                        tenantPermissions(tenantId, userId)),
+                                        Set.of(),
+                                        Set.of()),
                         tenantId,
                         userId);
-        return exactlyOne(users);
+        // JdbcTemplate has released the user-query connection before further reads borrow one.
+        CurrentUser user = exactlyOne(users);
+        return new CurrentUser(user.id(), user.tenantId(), user.tenantName(), user.principalScope(),
+                user.username(), user.displayName(),
+                tenantRoles(tenantId, userId), tenantPermissions(tenantId, userId));
     }
 
     @Override

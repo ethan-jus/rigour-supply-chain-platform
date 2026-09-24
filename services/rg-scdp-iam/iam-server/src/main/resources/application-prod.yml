@@ -30,6 +30,7 @@ spring:
     hikari:
       maximum-pool-size: ${DB_POOL_MAX:5}
       minimum-idle: 1
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:60000}
       data-source-properties:
         rewriteBatchedStatements: true
   data:

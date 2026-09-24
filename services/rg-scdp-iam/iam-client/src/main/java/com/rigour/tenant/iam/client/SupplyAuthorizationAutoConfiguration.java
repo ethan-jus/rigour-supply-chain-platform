@@ -22,8 +22,9 @@ public class SupplyAuthorizationAutoConfiguration {
             @Value(
                             "${rigour.supply-authorization.iam-base-url:${IAM_BASE_URL:http://rigour-tenant-iam-service}}")
                     String base,
-            RestClient.Builder restClientBuilder) {
-        return new HttpSupplyAuthorizationClient(signer, base, restClientBuilder);
+            RestClient.Builder restClientBuilder,
+            @Value("${rigour.supply-authorization.read-timeout:5s}") java.time.Duration readTimeout) {
+        return new HttpSupplyAuthorizationClient(signer, base, restClientBuilder, readTimeout);
     }
 
     @Bean

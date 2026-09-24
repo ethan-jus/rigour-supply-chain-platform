@@ -46,6 +46,7 @@ rigour:
         v1: "${RIGOUR_CONTEXT_TRUST_KEY_V1}"
   gateway:
     security:
+      current-token-read-timeout: 60s
       enabled: true
       issuer: "${OIDC_ISSUER}"
       jwk-set-uri: "${IAM_JWK_SET_URI:http://rigour-tenant-iam-service/oauth2/jwks}"

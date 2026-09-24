@@ -83,7 +83,7 @@ class HttpSupplyAuthorizationClientTest {
                     new HttpSupplyAuthorizationClient(
                             signer,
                             "http://127.0.0.1:" + server.getAddress().getPort(),
-                            org.springframework.web.client.RestClient.builder());
+                            org.springframework.web.client.RestClient.builder(), java.time.Duration.ofSeconds(60));
             var result = client.authorization(caller, "order:read");
             assertThat(result.mode()).isEqualTo("ACTIVE");
             assertThat(calls.get()).isEqualTo(1);
