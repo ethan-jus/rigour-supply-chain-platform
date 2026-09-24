@@ -31,7 +31,7 @@ spring:
       password: "bf34d06b828c6a2045152916d7a151efff33bf7f"
   flyway:
     enabled: true
-    locations: classpath:db/migration
+    locations: classpath:db/migration,classpath:db/bootstrap
     validate-on-migrate: true
     baseline-on-migrate: false
     clean-disabled: true

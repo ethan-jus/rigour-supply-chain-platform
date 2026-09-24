@@ -6,7 +6,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-/** Authorization Server总开关与公开Issuer；仅显式本地模式允许loopback HTTP。 */
+/** Authorization Server总开关与公开Issuer；HTTP来源例外必须显式配置。 */
 @ConfigurationProperties(prefix = "rigour.iam.oidc.server")
 public final class OidcServerProperties {
 
@@ -41,6 +41,8 @@ public final class OidcServerProperties {
     private boolean allowInsecureLoopback;
     /** 仅供本机开发时通过局域网IP访问SCDP；生产配置必须保持false并使用HTTPS。 */
     private boolean allowInsecureLan;
+    /** 临时HTTP部署只放行allowed-origins中的精确来源，不扩大Issuer或私网来源规则。 */
+    private boolean allowInsecureHttpOrigins;
 
     public boolean isEnabled() {
         return enabled;
@@ -70,6 +72,8 @@ public final class OidcServerProperties {
     public void setAllowInsecureLoopback(boolean value) { this.allowInsecureLoopback = value; }
     public boolean isAllowInsecureLan() { return allowInsecureLan; }
     public void setAllowInsecureLan(boolean value) { this.allowInsecureLan = value; }
+    public boolean isAllowInsecureHttpOrigins() { return allowInsecureHttpOrigins; }
+    public void setAllowInsecureHttpOrigins(boolean value) { this.allowInsecureHttpOrigins = value; }
 
     public List<String> requireAllowedOrigins() {
         List<String> origins = allowedOrigins.stream().map(String::strip).peek(value -> {
@@ -79,10 +83,12 @@ public final class OidcServerProperties {
             } catch (IllegalArgumentException exception) {
                 throw new IllegalStateException("OIDC allowed origin is invalid", exception);
             }
-            if (!isAllowedScheme(uri) || uri.getHost() == null
+            boolean allowedScheme = isAllowedScheme(uri)
+                    || allowInsecureHttpOrigins && "http".equalsIgnoreCase(uri.getScheme());
+            if (!allowedScheme || uri.getHost() == null
                     || uri.getUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null
                     || uri.getRawPath() != null && !uri.getRawPath().isEmpty()) {
-                throw new IllegalStateException("OIDC allowed origin must be an exact HTTPS origin or approved loopback HTTP origin");
+                throw new IllegalStateException("OIDC allowed origin must be an exact HTTPS origin or explicitly approved HTTP origin");
             }
         }).toList();
         if (origins.isEmpty()) {
@@ -94,8 +100,8 @@ public final class OidcServerProperties {
     /**
      * 返回CORS实际使用的来源规则。
      *
-     * <p>生产环境只使用配置文件/Nacos中明确列出的HTTPS来源；local开发打开
-     * allow-insecure-lan后，才额外加入RFC1918私网HTTP模式，以支持本机IP变化和局域网调试。</p>
+     * <p>默认只使用明确列出的HTTPS来源；临时HTTP部署的来源例外仍为精确匹配。
+     * local开发打开allow-insecure-lan后，才额外加入RFC1918私网HTTP模式。</p>
      */
     public List<String> requireAllowedOriginPatterns() {
         LinkedHashSet<String> patterns = new LinkedHashSet<>(requireAllowedOrigins());

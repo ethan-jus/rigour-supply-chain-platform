@@ -2,6 +2,8 @@ server:
   port: 26883
 
 spring:
+  flyway:
+    locations: classpath:db/migration,classpath:db/bootstrap
   application:
     name: rigour-merchant-crm-service
   profiles:

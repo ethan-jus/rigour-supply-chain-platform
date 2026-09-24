@@ -46,7 +46,7 @@ public final class IntegrationFlywayMaintenance {
 
         Flyway flyway = Flyway.configure()
                 .dataSource(url, user, password)
-                .locations("classpath:db/migration")
+                .locations("classpath:db/migration", "classpath:db/bootstrap")
                 .load();
 
         RepairResult repair = flyway.repair();

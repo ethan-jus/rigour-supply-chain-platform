@@ -10,8 +10,8 @@ spring:
   cloud:
     nacos:
       server-addr: "127.0.0.1:8848" # 注意不要多写端口
-      username: "nacos"
-      password: "nacos123456"
+      username: "${NACOS_USERNAME}"
+      password: "${NACOS_PASSWORD}"
       discovery:
         namespace: "516560f3-8b30-4975-84cb-c55f89b912ae" # 截图里的命名空间ID
         register-enabled: true
