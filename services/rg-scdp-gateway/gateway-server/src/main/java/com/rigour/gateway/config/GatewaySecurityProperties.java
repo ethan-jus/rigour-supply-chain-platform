@@ -83,7 +83,7 @@ public final class GatewaySecurityProperties {
         }
         requireIamCurrentTokenUri();
         requirePositiveTimeout(currentTokenConnectTimeout, "current-token-connect-timeout", 30);
-        requirePositiveTimeout(currentTokenReadTimeout, "current-token-read-timeout", 60);
+        requirePositiveTimeout(currentTokenReadTimeout, "current-token-read-timeout", 300);
     }
 
     public List<String> requireAudience() {

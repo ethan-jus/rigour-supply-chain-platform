@@ -30,8 +30,10 @@ spring:
     hikari:
       maximum-pool-size: ${DB_POOL_MAX:5}
       minimum-idle: 1
-      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:60000}
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:300000}
       data-source-properties:
+        connectTimeout: 300000
+        socketTimeout: 300000
         rewriteBatchedStatements: true
   data:
     redis:

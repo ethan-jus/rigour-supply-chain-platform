@@ -19,6 +19,9 @@ spring:
         namespace: "${NACOS_NAMESPACE}"
         group: DEFAULT_GROUP
         file-extension: yml
+  http:
+    clients:
+      read-timeout: 300s
   flyway:
     # 从 DEV 全量 SQL 导入，生产启动不执行迁移或自动基线。
     enabled: false
@@ -46,7 +49,7 @@ rigour:
         v1: "${RIGOUR_CONTEXT_TRUST_KEY_V1}"
   gateway:
     security:
-      current-token-read-timeout: 60s
+      current-token-read-timeout: 300s
       enabled: true
       issuer: "${OIDC_ISSUER}"
       jwk-set-uri: "${IAM_JWK_SET_URI:http://rigour-tenant-iam-service/oauth2/jwks}"
