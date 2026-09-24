@@ -58,16 +58,16 @@ class SupplyDashboardOperatingAnalysisTest {
         store = mock(SupplyDashboardStore.class);
         when(store.operatingAnalysis(any(), any(), any()))
                 .thenReturn(new OperatingAnalysisData(null, null, null, null));
-        var scopes = new BiDataScopeService(mock(com.rigour.analytics.application.port.out.BiDataScopeStore.class), Clock.fixed(NOW, ZoneOffset.UTC), mock(BiDataScopeRenewer.class));
+        var scopes = new BiDataScopeService(mock(com.rigour.analytics.application.port.out.BiDataScopeStore.class));
         service = new SupplyDashboardQueryService(store, Clock.fixed(NOW, ZoneOffset.UTC), scopes);
         mvc = MockMvcBuilders.standaloneSetup(new AnalyticsSupplyDashboardController(service, null, null, null, scopes))
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
-        TestAuthorizationContext.set(caller("analytics:dashboard:read"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read"));
     }
 
     @AfterEach
     void clearContext() {
-        TestAuthorizationContext.clear();
+        com.rigour.analytics.TestRoleScope.clear();
     }
 
     @Test
@@ -78,7 +78,7 @@ class SupplyDashboardOperatingAnalysisTest {
                         .param("customerTypeCode", " store ").param("sourceSystemCode", " dhb "))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"))
-                .andExpect(jsonPath("$.data.length()").value(9))
+                .andExpect(jsonPath("$.data.length()").value(13))
                 .andExpect(jsonPath("$.data.from").value("2026-09-01T00:00:00Z"))
                 .andExpect(jsonPath("$.data.to").value("2026-09-10T23:59:59.999999Z"))
                 .andExpect(jsonPath("$.data.generatedAt").value(NOW.toString()))
@@ -87,7 +87,8 @@ class SupplyDashboardOperatingAnalysisTest {
                 .andExpect(jsonPath("$.data.previousSalesRanking").isEmpty())
                 .andExpect(jsonPath("$.data.cityProducts").isEmpty())
                 .andExpect(jsonPath("$.data.cityCustomers").isEmpty())
-                .andExpect(jsonPath("$.data.salesReceipts").isEmpty());
+                .andExpect(jsonPath("$.data.salesReceipts").isEmpty())
+                .andExpect(jsonPath("$.data.salesPeople").isEmpty());
 
         ArgumentCaptor<SupplyDashboardFilter> current = ArgumentCaptor.forClass(SupplyDashboardFilter.class);
         ArgumentCaptor<SupplyDashboardFilter> previous = ArgumentCaptor.forClass(SupplyDashboardFilter.class);
@@ -171,11 +172,11 @@ class SupplyDashboardOperatingAnalysisTest {
 
     @Test
     void deniesMissingCallerMissingPermissionAndPlatformCallerBeforeAnyQuery() throws Exception {
-        TestAuthorizationContext.clear();
+        com.rigour.analytics.TestRoleScope.clear();
         mvc.perform(get(PATH)).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("IAM_FORBIDDEN"));
-        TestAuthorizationContext.set(caller("analytics:dashboard:refresh"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:refresh"));
         mvc.perform(get(PATH)).andExpect(status().isForbidden());
-        TestAuthorizationContext.set(new CallerIdentity("PLATFORM", USER, null, null, USER,
+        com.rigour.analytics.TestRoleScope.set(new CallerIdentity("PLATFORM", USER, null, null, USER,
                 UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("*:*:*")));
         mvc.perform(get(PATH)).andExpect(status().isForbidden());
         verifyNoInteractions(store);
@@ -244,7 +245,7 @@ class SupplyDashboardOperatingAnalysisTest {
 
     @Test
     void emptyTenantDefaultsToClockAndWildcardPermissionIsPreserved() {
-        TestAuthorizationContext.set(caller("*:*:*"));
+        com.rigour.analytics.TestRoleScope.set(caller("*:*:*"));
         var result = service.operatingAnalysis(null, null, " ", " ", " ", null, " ");
         assertThat(result.to()).isEqualTo(NOW);
         assertThat(result.from()).isEqualTo(Instant.parse("2026-08-31T16:00:00Z"));

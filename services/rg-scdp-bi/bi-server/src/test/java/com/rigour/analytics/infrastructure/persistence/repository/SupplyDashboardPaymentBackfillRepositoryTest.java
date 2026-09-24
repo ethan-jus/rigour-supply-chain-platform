@@ -78,7 +78,7 @@ public class SupplyDashboardPaymentBackfillRepositoryTest {
         jdbc.execute(
                 """
 CREATE TABLE bi_source_crm_crm_customer (
-    tenant_id VARCHAR(64), id BIGINT, region_code VARCHAR(64), owner_employee_code VARCHAR(50))
+    tenant_id VARCHAR(64), id BIGINT, region_code VARCHAR(64), owner_employee_code VARCHAR(50),deleted INT DEFAULT 0)
 """);
         mapper = session.getMapper(SupplyDashboardQueryMapper.class);
         repository = new MybatisPlusSupplyDashboardRepository(mapper);
@@ -120,9 +120,12 @@ CREATE TABLE bi_source_crm_crm_customer (
     @ParameterizedTest
     @CsvSource(
             value = {
-                "ORDER_OWNER,CUSTOMER_OWNER,COLLECTOR,ORDER_OWNER",
-                "'',CUSTOMER_OWNER,COLLECTOR,NULL",
-                "NULL,'',COLLECTOR,NULL",
+                "ORDER_OWNER,CUSTOMER_OWNER,COLLECTOR,CUSTOMER_OWNER",
+                "'',CUSTOMER_OWNER,COLLECTOR,CUSTOMER_OWNER",
+                "NULL,'',COLLECTOR,COLLECTOR",
+                "ORDER_OWNER,NULL,NULL,ORDER_OWNER",
+                "ORDER_OWNER,UNKNOWN,MULTI,ORDER_OWNER",
+                "ORDER_OWNER,'   ',COLLECTOR,COLLECTOR",
                 "NULL,NULL,NULL,NULL"
             },
             nullValues = "NULL")
@@ -133,7 +136,7 @@ CREATE TABLE bi_source_crm_crm_customer (
                 TENANT,
                 orderOwner);
         jdbc.update(
-                "INSERT INTO bi_source_crm_crm_customer VALUES (?, 20, 'SH', ?)",
+                "INSERT INTO bi_source_crm_crm_customer(tenant_id,id,region_code,owner_employee_code) VALUES (?, 20, 'SH', ?)",
                 TENANT,
                 customerOwner);
         jdbc.update(

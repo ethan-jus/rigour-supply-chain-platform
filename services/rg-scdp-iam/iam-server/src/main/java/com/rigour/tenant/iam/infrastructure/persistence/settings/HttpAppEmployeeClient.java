@@ -1,5 +1,7 @@
 package com.rigour.tenant.iam.infrastructure.persistence.settings;
 
+import com.rigour.shared.core.exception.RequestValidationException;
+
 import com.rigour.shared.context.RequestHeaders;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.shared.core.api.ApiResponse;
@@ -72,7 +74,7 @@ public final class HttpAppEmployeeClient implements AppEmployeeClient {
     @Override
     public Map<String, Employee> employees(UUID tenant, List<String> codes) {
         if (codes.isEmpty()) return Map.of();
-        if (codes.size() > 100) throw new IllegalArgumentException("单次核验最多 100 个员工");
+        if (codes.size() > 100) throw new RequestValidationException("单次核验最多 100 个员工");
         URI uri =
                 UriComponentsBuilder.fromUri(base)
                         .path("/api/v1/hr/employee-identities/resolve")

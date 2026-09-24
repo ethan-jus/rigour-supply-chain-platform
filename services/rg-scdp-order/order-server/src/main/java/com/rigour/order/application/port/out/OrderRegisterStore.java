@@ -31,6 +31,9 @@ public interface OrderRegisterStore {
     OrderRegisterPage<OrderRegisterPaymentView> payments(
             String tenantId, int begin, int step, PaymentCriteria criteria);
 
+    List<com.rigour.order.api.v1.model.OrderRegisterModels.MonthlyPerformanceRow> monthlyPerformance(
+            String tenantId, Instant from, Instant to);
+
     /** 财务核对回款：写入交易单号（用于凭证验重与对账）并标记已核对。 */
     OrderRegisterPaymentView checkPayment(
             String tenantId,
@@ -97,7 +100,7 @@ public interface OrderRegisterStore {
             String paymentStatusCode,
             Boolean hasDiscount,
             String sortBy,
-            String sortDirection) {
+            String sortDirection, Long productVariantId) {
     }
 
     record PaymentCriteria(
@@ -120,7 +123,7 @@ public interface OrderRegisterStore {
             /** 排序字段：paymentTime / createdTime / syncedAt；空按收款时间倒序。 */
             String sortBy,
             String sortDirection,
-            String createdBy, List<Long> productIds) {
+            String createdBy, List<Long> productIds, Long productVariantId) {
     }
 
     record PeriodCriteria(

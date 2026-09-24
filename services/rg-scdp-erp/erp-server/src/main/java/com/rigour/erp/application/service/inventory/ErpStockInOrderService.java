@@ -275,7 +275,7 @@ public final class ErpStockInOrderService {
     }
 
     private static CallerIdentity action(String action) {
-        com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(action, WRITE_PERMISSION);
+
         return actor(
                 com.rigour.tenant.iam.client.SupplyAuthorizationContext.current()
                                 .map(

@@ -21,10 +21,13 @@ import org.springframework.security.web.util.matcher.OrRequestMatcher;
 /** 将统一登录表单转换为携带租户范围与安全元数据的IAM认证请求。 */
 public final class IamLoginAuthenticationFilter extends AbstractAuthenticationProcessingFilter {
 
-    public IamLoginAuthenticationFilter(AuthenticationManager authenticationManager) {
+    private final String defaultTenantCode;
+
+    public IamLoginAuthenticationFilter(AuthenticationManager authenticationManager, String defaultTenantCode) {
         super(new OrRequestMatcher(
                 PathPatternRequestMatcher.pathPattern(HttpMethod.POST, "/login"),
                 PathPatternRequestMatcher.pathPattern(HttpMethod.POST, "/scdp/login")), authenticationManager);
+        this.defaultTenantCode = normalized(defaultTenantCode);
     }
 
     @Override
@@ -32,6 +35,7 @@ public final class IamLoginAuthenticationFilter extends AbstractAuthenticationPr
             HttpServletRequest request, HttpServletResponse response) throws AuthenticationException {
         try {
             String tenantCode = normalized(request.getParameter("tenantCode"));
+            if (tenantCode == null) tenantCode = defaultTenantCode;
             String requestedScope = normalized(request.getParameter("principalScope"));
             if (tenantCode == null || (requestedScope != null && !"TENANT".equalsIgnoreCase(requestedScope)))
                 throw new IllegalArgumentException("SCDP requires a tenant account");

@@ -30,6 +30,7 @@ public final class SupplyAuthorizationFilter extends OncePerRequestFilter {
         com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView initial;
         try {
             initial = client.authorization(caller, "supply:application:access");
+            if (!"ACTIVE".equals(initial.mode())) throw new IllegalStateException("供应链授权协议不一致");
         } catch (RestClientResponseException e) {
             response.sendError(
                     e.getStatusCode().value() == 401 || e.getStatusCode().value() == 403
@@ -42,13 +43,11 @@ public final class SupplyAuthorizationFilter extends OncePerRequestFilter {
             return;
         }
         try (var state = SupplyAuthorizationContext.open(client, caller, initial)) {
-            if (state.active()) {
-                try (var permissions =
-                        AuthorizationContext.useVerifiedApplication(
-                                "SUPPLY_CHAIN", initial.permissions())) {
-                    chain.doFilter(request, response);
-                }
-            } else chain.doFilter(request, response);
+            try (var permissions =
+                    AuthorizationContext.useVerifiedApplication(
+                            "SUPPLY_CHAIN", initial.permissions())) {
+                chain.doFilter(request, response);
+            }
         }
     }
 }

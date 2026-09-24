@@ -73,6 +73,11 @@ public class OrderHistorySyncService {
         return store.receipt(a.tenantId().toString(), c);
     }
 
+    public Intake historicalReceiptStatus(Receipt c) {
+        var a = actor(true, true);
+        return store.historicalReceiptStatus(a.tenantId().toString(), c);
+    }
+
     public void allocate(Allocate c) {
         var a = actor(true, false);
         store.allocate(a.tenantId().toString(), a.principalId().toString(), c);

@@ -10,6 +10,8 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
+import static com.rigour.analytics.infrastructure.persistence.scope.PaymentPerformanceSql.*;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -20,6 +22,12 @@ import java.util.Map;
  * 时区表；不得将转换结果写回事实时间或同步水位。
  */
 public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSourceMarkerEntity> {
+    @Delete("DELETE FROM bi_sales_contact_city_dim WHERE tenant_id = #{tenantId}")
+    int clearCityDimension(@Param("tenantId") String tenantId);
+
+    @Insert(com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.INSERT)
+    int refreshCityDimension(@Param("tenantId") String tenantId);
+
     @Delete("DELETE FROM bi_customer_attribute_current WHERE tenant_id = #{tenantId}")
     int clearCustomerAttributes(@Param("tenantId") String tenantId);
 
@@ -62,6 +70,39 @@ ON DUPLICATE KEY UPDATE category_code=VALUES(category_code), category_name=VALUE
 """)
     int refreshCategorySnapshot(
             @Param("tenantId") String tenantId, @Param("syncedAt") LocalDateTime syncedAt);
+
+    /** 保留城市在职零业绩人员；历史业绩人员即使调离城市，也按事实查询其真实状态。 */
+    @Select("""
+<script>
+SELECT e.employee_code AS ownerStaffCode, e.employee_name AS ownerStaffName,
+       e.employment_status AS employmentStatus
+  FROM bi_employee_dim e
+ WHERE e.tenant_id = #{tenantId}
+<if test="ownerStaffCode != null">AND e.employee_code = #{ownerStaffCode}</if>
+   AND #{regionCode} IS NOT NULL
+   AND (EXISTS (
+       SELECT 1 FROM bi_sales_contact_city_dim c
+        WHERE c.tenant_id=e.tenant_id AND c.region_code=#{regionCode}
+          AND (e.department_id=c.department_id
+               OR REPLACE(REPLACE(REPLACE(e.department_path,'[',','),']',','),' ','')
+                  LIKE CONCAT('%,',c.department_id,',%')))
+       OR EXISTS (
+       SELECT 1 FROM bi_sales_order_fact o
+        WHERE o.tenant_id=e.tenant_id AND o.owner_staff_code=e.employee_code
+          AND o.region_code=#{regionCode} AND o.deleted=0 AND o.order_status_code&lt;&gt;'CANCELLED'
+          AND o.order_date&gt;=#{from} AND o.order_date&lt;=#{to})
+       OR EXISTS (
+       SELECT 1 FROM bi_sales_payment_fact p
+        WHERE p.tenant_id=e.tenant_id AND p.owner_staff_code=e.employee_code
+          AND p.region_code=#{regionCode} AND p.deleted=0
+          AND p.payment_time&gt;=#{from} AND p.payment_time&lt;=#{to}))
+ ORDER BY e.employee_code
+</script>
+""")
+    List<Map<String, Object>> citySalesPeople(
+            @Param("tenantId") String tenantId, @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to, @Param("regionCode") String regionCode,
+            @Param("ownerStaffCode") String ownerStaffCode);
 
     @Select(
             "SELECT category_id AS id, parent_id AS parentId FROM bi_product_category_dim WHERE"
@@ -780,7 +821,7 @@ SELECT COUNT(*) AS paymentCount,
    AND p.region_code = #{regionCode}
 </if>
 <if test="ownerStaffCode != null">
-   AND p.collector_staff_code = #{ownerStaffCode}
+   AND p.owner_staff_code = #{ownerStaffCode}
 </if>
 <if test="customerTypeCode != null">
    AND p.customer_type_code = #{customerTypeCode}
@@ -994,7 +1035,7 @@ SELECT 'receipt_amount' AS metricCode,
    AND p.region_code = #{regionCode}
 </if>
 <if test="ownerStaffCode != null">
-   AND p.collector_staff_code = #{ownerStaffCode}
+   AND p.owner_staff_code = #{ownerStaffCode}
 </if>
 <if test="customerTypeCode != null">
    AND p.customer_type_code = #{customerTypeCode}
@@ -1112,12 +1153,12 @@ SELECT l.region_code AS regionCode,
             @Param("customerTypeCode") String customerTypeCode,
             @Param("sourceSystemCode") String sourceSystemCode);
 
-    /** 实际回款按逐笔固化回款人员汇总，订单原销售不分享该笔回款业绩。 */
+    /** 按到账日期和已解析的业绩销售汇总，不使用原始回款经办人分组。 */
     @Select(
             """
 <script>
-SELECT p.collector_staff_code AS ownerStaffCode,
-       COALESCE(MAX(NULLIF(TRIM(p.collector_staff_name), '')), p.collector_staff_code) AS ownerStaffName,
+SELECT p.owner_staff_code AS ownerStaffCode,
+       COALESCE(MAX(NULLIF(TRIM(p.owner_staff_name), '')), p.owner_staff_code) AS ownerStaffName,
        COALESCE(SUM(p.paid_amount), 0) AS paidAmount,
        COUNT(*) AS paymentCount,
        COUNT(DISTINCT p.customer_id) AS customerCount
@@ -1126,13 +1167,13 @@ SELECT p.collector_staff_code AS ownerStaffCode,
    AND p.deleted = 0
    AND p.payment_time &gt;= #{from}
    AND p.payment_time &lt;= #{to}
-   AND NULLIF(TRIM(p.collector_staff_code), '') IS NOT NULL
-   AND UPPER(TRIM(p.collector_staff_code)) NOT IN ('UNKNOWN', 'MULTI')
+   AND NULLIF(TRIM(p.owner_staff_code), '') IS NOT NULL
+   AND UPPER(TRIM(p.owner_staff_code)) NOT IN ('UNKNOWN', 'MULTI')
 <if test="regionCode != null">
    AND p.region_code = #{regionCode}
 </if>
 <if test="ownerStaffCode != null">
-   AND p.collector_staff_code = #{ownerStaffCode}
+   AND p.owner_staff_code = #{ownerStaffCode}
 </if>
 <if test="customerTypeCode != null">
    AND p.customer_type_code = #{customerTypeCode}
@@ -1140,11 +1181,118 @@ SELECT p.collector_staff_code AS ownerStaffCode,
 <if test="sourceSystemCode != null">
    AND p.source_system_code = #{sourceSystemCode}
 </if>
- GROUP BY p.collector_staff_code
+ GROUP BY p.owner_staff_code
  ORDER BY paidAmount DESC, ownerStaffCode
 </script>
 """)
     List<Map<String, Object>> salesReceipts(
+            @Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode,
+            @Param("ownerStaffCode") String ownerStaffCode,
+            @Param("customerTypeCode") String customerTypeCode,
+            @Param("sourceSystemCode") String sourceSystemCode);
+
+    /** 仅按到账日期聚合城市回款，不按订单日期过滤或关联订单行。 */
+    @Select(
+            """
+<script>
+SELECT COALESCE(NULLIF(TRIM(p.region_code), ''), 'UNKNOWN') AS regionCode,
+       COALESCE(MAX(NULLIF(TRIM(p.region_name), '')), MAX(NULLIF(TRIM(p.region_code), '')), '归属待核对') AS regionName,
+       COALESCE(SUM(p.paid_amount), 0) AS receiptAmount,
+       COUNT(*) AS paymentCount,
+       COUNT(DISTINCT p.customer_id) AS customerCount
+  FROM bi_sales_payment_fact p
+ WHERE p.tenant_id = #{tenantId}
+   AND p.deleted = 0
+   AND p.payment_time &gt;= #{from}
+   AND p.payment_time &lt;= #{to}
+<if test="regionCode != null">
+   AND p.region_code = #{regionCode}
+</if>
+<if test="ownerStaffCode != null">
+   AND p.owner_staff_code = #{ownerStaffCode}
+</if>
+<if test="customerTypeCode != null">
+   AND p.customer_type_code = #{customerTypeCode}
+</if>
+<if test="sourceSystemCode != null">
+   AND p.source_system_code = #{sourceSystemCode}
+</if>
+ GROUP BY COALESCE(NULLIF(TRIM(p.region_code), ''), 'UNKNOWN')
+ ORDER BY receiptAmount DESC, regionCode
+</script>
+""")
+    List<Map<String, Object>> cityReceipts(
+            @Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode,
+            @Param("ownerStaffCode") String ownerStaffCode,
+            @Param("customerTypeCode") String customerTypeCode,
+            @Param("sourceSystemCode") String sourceSystemCode);
+
+
+    /** 城市主数据决定覆盖范围，零成交城市也有目标；全年目标逐月合计，配置优先于默认值。 */
+    @Select("""
+<script>
+SELECT c.region_code AS regionCode,c.city_name AS regionName,m.n AS goalMonth,
+       COALESCE(MAX(CASE WHEN t.metric_code='SALES_AMOUNT' THEN t.target_value END),100000) AS salesTarget,
+       COALESCE(MAX(CASE WHEN t.metric_code='RECEIPT_AMOUNT' THEN t.target_value END),100000) AS receiptTarget,
+       COALESCE(MAX(CASE WHEN t.metric_code='NEW_CUSTOMER' THEN t.target_value END),200) AS newCustomerTarget,
+       COALESCE(MAX(CASE WHEN t.metric_code='REPEAT_CUSTOMER' THEN t.target_value END),100) AS repeatCustomerTarget,
+       COUNT(t.id) AS configuredCount
+  FROM bi_sales_contact_city_dim c
+ CROSS JOIN (SELECT 1 n UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+             UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8
+             UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11 UNION ALL SELECT 12) m
+  LEFT JOIN bi_business_target t ON t.tenant_id=c.tenant_id AND t.dimension_type='CITY'
+   AND t.dimension_code=c.region_code AND t.deleted=0
+   AND YEAR(t.target_month)=#{year} AND MONTH(t.target_month)=m.n
+   AND t.metric_code IN ('SALES_AMOUNT','RECEIPT_AMOUNT','NEW_CUSTOMER','REPEAT_CUSTOMER')
+ WHERE c.tenant_id=#{tenantId} AND TRIM(c.region_code) &lt;&gt; ''
+<if test="regionCode != null"> AND c.region_code=#{regionCode} </if>
+ GROUP BY c.region_code,c.city_name,m.n ORDER BY c.region_code,m.n
+</script>
+""")
+    List<Map<String,Object>> cityMonthlyGoals(@Param("tenantId") String tenantId,
+            @Param("year") int year, @Param("regionCode") String regionCode);
+
+    /** 分母为期间成交去重客户；分子为其中在期间起点前已有有效订单者。
+     * 历史订单仅判断客户是否曾购买，不按当前销售/城市重新截断客户历史。 */
+    @Select("""
+<script>
+SELECT COUNT(DISTINCT o.customer_id) AS orderingCustomerCount,
+       COUNT(DISTINCT CASE WHEN EXISTS (
+           SELECT 1 FROM bi_dashboard_customer_history h
+            WHERE h.tenant_id = o.tenant_id AND h.customer_id = o.customer_id
+              AND h.first_order_date &lt; #{from}
+       ) THEN o.customer_id ELSE NULL END) AS returningCustomerCount,
+       COUNT(DISTINCT CASE WHEN EXISTS (
+           SELECT 1 FROM bi_dashboard_customer_history h
+            WHERE h.tenant_id=o.tenant_id AND h.customer_id=o.customer_id
+              AND h.first_order_date &gt;= #{from} AND h.first_order_date &lt;= #{to}
+       ) THEN o.customer_id END) AS newCustomerCount,
+       COUNT(DISTINCT CASE WHEN EXISTS (
+           SELECT 1 FROM bi_dashboard_customer_history h
+            WHERE h.tenant_id=o.tenant_id AND h.customer_id=o.customer_id
+              AND (YEAR(TIMESTAMPADD(HOUR,8,h.first_order_date))*12
+                   + MONTH(TIMESTAMPADD(HOUR,8,h.first_order_date)))
+                &lt; (YEAR(TIMESTAMPADD(HOUR,8,o.order_date))*12
+                   + MONTH(TIMESTAMPADD(HOUR,8,o.order_date)))
+       ) THEN o.customer_id END) AS annualReturningCustomerCount
+  FROM bi_sales_order_fact o
+ WHERE o.tenant_id = #{tenantId} AND o.deleted = 0
+   AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.order_date &gt;= #{from} AND o.order_date &lt;= #{to}
+<if test="regionCode != null"> AND o.region_code = #{regionCode} </if>
+<if test="ownerStaffCode != null"> AND o.owner_staff_code = #{ownerStaffCode} </if>
+<if test="customerTypeCode != null"> AND o.customer_type_code = #{customerTypeCode} </if>
+<if test="sourceSystemCode != null"> AND o.source_system_code = #{sourceSystemCode} </if>
+</script>
+""")
+    Map<String, Object> customerRetention(
             @Param("tenantId") String tenantId,
             @Param("from") LocalDateTime from,
             @Param("to") LocalDateTime to,
@@ -1905,7 +2053,8 @@ SELECT t.dimension_type AS dimensionType,
            WHEN 'CONTACTED_CUSTOMER' THEN '建联客户数'
            WHEN 'COOPERATED_CUSTOMER' THEN '合作客户数'
            WHEN 'SALES_AMOUNT' THEN '销售额'
-           WHEN 'PAID_AMOUNT' THEN '回款额'
+           WHEN 'PAID_AMOUNT' THEN '订单累计回款额'
+           WHEN 'RECEIPT_AMOUNT' THEN '到账回款额'
            ELSE t.metric_code
        END AS metricName,
        COUNT(DISTINCT t.target_month) AS configuredMonthCount,
@@ -2031,6 +2180,24 @@ SELECT t.dimension_type AS dimensionType,
                    AND o.source_system_code = #{sourceSystemCode}
 </if>
                  GROUP BY COALESCE(o.region_code, 'UNKNOWN')
+                UNION ALL
+                SELECT 'RECEIPT_AMOUNT', COALESCE(p.region_code, 'UNKNOWN'), SUM(p.paid_amount)
+                  FROM bi_sales_payment_fact p
+                 WHERE p.tenant_id = #{tenantId} AND p.deleted = 0
+                   AND p.payment_time &gt;= #{from} AND p.payment_time &lt;= #{to}
+                   AND EXISTS (
+                       SELECT 1 FROM bi_business_target configured
+                        WHERE configured.tenant_id = p.tenant_id AND configured.deleted = 0
+                          AND configured.dimension_type = 'CITY'
+                          AND configured.dimension_code = COALESCE(p.region_code, 'UNKNOWN')
+                          AND configured.metric_code = 'RECEIPT_AMOUNT'
+                          AND configured.target_month = DATE_FORMAT(TIMESTAMPADD(HOUR, 8, p.payment_time), '%Y-%m-01')
+                   )
+<if test="regionCode != null"> AND p.region_code = #{regionCode} </if>
+<if test="ownerStaffCode != null"> AND p.owner_staff_code = #{ownerStaffCode} </if>
+<if test="customerTypeCode != null"> AND p.customer_type_code = #{customerTypeCode} </if>
+<if test="sourceSystemCode != null"> AND p.source_system_code = #{sourceSystemCode} </if>
+                 GROUP BY COALESCE(p.region_code, 'UNKNOWN')
           ) actual_rows
          GROUP BY metricCode, dimensionCode
   ) actuals ON actuals.metricCode = t.metric_code AND actuals.dimensionCode = t.dimension_code
@@ -2069,7 +2236,8 @@ SELECT t.dimension_type AS dimensionType,
        t.metric_code AS metricCode,
        CASE t.metric_code
            WHEN 'SALES_AMOUNT' THEN '销售额'
-           WHEN 'PAID_AMOUNT' THEN '回款额'
+           WHEN 'PAID_AMOUNT' THEN '订单累计回款额'
+           WHEN 'RECEIPT_AMOUNT' THEN '到账回款额'
            WHEN 'CONTACTED_CUSTOMER' THEN '建联客户数'
            WHEN 'COOPERATED_CUSTOMER' THEN '合作客户数'
            ELSE t.metric_code
@@ -2194,6 +2362,24 @@ SELECT t.dimension_type AS dimensionType,
                    AND o.source_system_code = #{sourceSystemCode}
 </if>
                  GROUP BY COALESCE(o.owner_staff_code, 'UNKNOWN')
+                UNION ALL
+                SELECT 'RECEIPT_AMOUNT', COALESCE(p.owner_staff_code, 'UNKNOWN'), SUM(p.paid_amount)
+                  FROM bi_sales_payment_fact p
+                 WHERE p.tenant_id = #{tenantId} AND p.deleted = 0
+                   AND p.payment_time &gt;= #{from} AND p.payment_time &lt;= #{to}
+                   AND EXISTS (
+                       SELECT 1 FROM bi_business_target configured
+                        WHERE configured.tenant_id = p.tenant_id AND configured.deleted = 0
+                          AND configured.dimension_type = 'SALES_OWNER'
+                          AND configured.dimension_code = COALESCE(p.owner_staff_code, 'UNKNOWN')
+                          AND configured.metric_code = 'RECEIPT_AMOUNT'
+                          AND configured.target_month = DATE_FORMAT(TIMESTAMPADD(HOUR, 8, p.payment_time), '%Y-%m-01')
+                   )
+<if test="regionCode != null"> AND p.region_code = #{regionCode} </if>
+<if test="ownerStaffCode != null"> AND p.owner_staff_code = #{ownerStaffCode} </if>
+<if test="customerTypeCode != null"> AND p.customer_type_code = #{customerTypeCode} </if>
+<if test="sourceSystemCode != null"> AND p.source_system_code = #{sourceSystemCode} </if>
+                 GROUP BY COALESCE(p.owner_staff_code, 'UNKNOWN')
           ) actual_rows
          GROUP BY metricCode, dimensionCode
   ) actuals ON actuals.metricCode = t.metric_code AND actuals.dimensionCode = t.dimension_code
@@ -2654,35 +2840,13 @@ SELECT 'INVENTORY' AS riskType,
 
     @Select(
             """
-SELECT optionType, optionValue, COALESCE(MAX(NULLIF(optionLabel, '')), optionValue) AS optionLabel,
-       SUM(usageCount) AS usageCount
-  FROM (
-        SELECT 'REGION' AS optionType, region_code AS optionValue,
-               COALESCE(MAX(NULLIF(region_name, '')), region_code) AS optionLabel,
-               COUNT(*) AS usageCount
-          FROM bi_sales_order_fact
-         WHERE tenant_id = #{tenantId} AND deleted = 0 AND region_code IS NOT NULL
-         GROUP BY region_code
-        UNION ALL
-        SELECT 'REGION', region_code, COALESCE(MAX(region_name), region_code), COUNT(*)
-          FROM bi_city_cost_record
-         WHERE tenant_id = #{tenantId} AND deleted = 0 AND region_code IS NOT NULL
-         GROUP BY region_code
-        UNION ALL
-        SELECT 'REGION', region_code, COALESCE(MAX(NULLIF(region_name, '')), region_code), COUNT(*)
-          FROM bi_customer_dim
-         WHERE tenant_id = #{tenantId} AND deleted = 0 AND region_code IS NOT NULL
-         GROUP BY region_code
-        UNION ALL
-        SELECT 'REGION', region_code, COALESCE(MAX(city_name), region_code), COUNT(*)
-          FROM bi_employee_dim WHERE tenant_id = #{tenantId} AND region_code IS NOT NULL GROUP BY region_code
-        UNION ALL
-        SELECT 'REGION', region_code, COALESCE(MAX(city_name), region_code), COUNT(*)
-          FROM bi_sales_contact_fact WHERE tenant_id = #{tenantId} AND region_code IS NOT NULL GROUP BY region_code
-  ) options
- GROUP BY optionType, optionValue
- ORDER BY usageCount DESC, optionValue
- LIMIT 100
+SELECT 'REGION' AS optionType,c.region_code AS optionValue,c.city_name AS optionLabel,
+       COUNT(o.order_id) AS usageCount
+  FROM bi_sales_contact_city_dim c
+  LEFT JOIN bi_sales_order_fact o ON o.tenant_id=c.tenant_id AND o.region_code=c.region_code AND o.deleted=0
+ WHERE c.tenant_id=#{tenantId}
+ GROUP BY c.region_code,c.city_name
+ ORDER BY usageCount DESC,c.region_code
 """)
     List<Map<String, Object>> regionOptions(@Param("tenantId") String tenantId);
 
@@ -3202,7 +3366,9 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
            AND o.region_code = #{regionCode}
 </if>
 <if test="ownerStaffCode != null">
-           AND NULLIF(p.collector_staff_code, '') = #{ownerStaffCode}
+           AND
+""" + OWNER + """
+ = #{ownerStaffCode}
 </if>
 <if test="customerTypeCode != null">
            AND c.customer_type_code = #{customerTypeCode}
@@ -3221,7 +3387,7 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
            AND b.region_code = #{regionCode}
 </if>
 <if test="ownerStaffCode != null">
-           AND b.collector_staff_code = #{ownerStaffCode}
+           AND b.owner_staff_code = #{ownerStaffCode}
 </if>
 <if test="customerTypeCode != null">
            AND b.customer_type_code = #{customerTypeCode}
@@ -3248,7 +3414,9 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
            AND o.region_code = #{regionCode}
 </if>
 <if test="ownerStaffCode != null">
-           AND NULLIF(p.collector_staff_code, '') = #{ownerStaffCode}
+           AND
+""" + OWNER + """
+ = #{ownerStaffCode}
 </if>
 <if test="customerTypeCode != null">
            AND c.customer_type_code = #{customerTypeCode}
@@ -3267,7 +3435,7 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
            AND b.region_code = #{regionCode}
 </if>
 <if test="ownerStaffCode != null">
-           AND b.collector_staff_code = #{ownerStaffCode}
+           AND b.owner_staff_code = #{ownerStaffCode}
 </if>
 <if test="customerTypeCode != null">
            AND b.customer_type_code = #{customerTypeCode}
@@ -4517,12 +4685,15 @@ INSERT INTO bi_etl_run (
             SELECT COUNT(*) AS rowCount,
                    COALESCE(SUM(p.paid_amount), 0) AS amount,
                    COUNT(DISTINCT NULLIF(NULLIF(o.region_code, ''), '')) AS regionCount,
-                   COUNT(DISTINCT NULLIF(o.owner_employee_code, '')) AS ownerCount,
+                   COUNT(DISTINCT
+""" + OWNER + """
+) AS ownerCount,
                    COALESCE(SUM(CRC32(CONCAT_WS('|',
                        p.id,
                        p.order_id,
                        COALESCE(NULLIF(o.region_code, ''), ''),
-                       COALESCE(NULLIF(o.owner_employee_code, ''), ''),
+                       COALESCE(""" + OWNER + """
+, ''),
                        COALESCE(p.collector_staff_code, ''),
                        COALESCE(p.customer_id, o.customer_id, 0),
                        FORMAT(COALESCE(p.paid_amount, 0), 6),
@@ -5249,8 +5420,8 @@ SELECT p.tenant_id, p.id, p.payment_no, p.order_id, COALESCE(p.sales_order_no_sn
        COALESCE(p.customer_name_snapshot, o.customer_name_snapshot, c.customer_name),
        c.customer_type_code, ct.type_name,
        NULLIF(o.region_code, ''), ca.area_name,
-       NULLIF(o.owner_employee_code, ''),
-       COALESCE(o.owner_employee_name_snapshot, o.owner_sales_name),
+       """ + OWNER + "," + NAME + """
+,
        p.collector_staff_code, p.collector_name_snapshot,
        p.payment_time, p.payment_method_code, p.paid_amount,
        GREATEST(p.updated_time, COALESCE(o.updated_time, p.updated_time),
@@ -5343,24 +5514,40 @@ INNER JOIN bi_order_authority snapshot
     int alignOrderLineAttribution(
             @Param("tenantId") String tenantId, @Param("syncedAt") LocalDateTime syncedAt);
 
-    @Update(
-            """
-UPDATE bi_sales_payment_fact p
-INNER JOIN bi_order_authority snapshot
-  ON snapshot.tenant_id=p.tenant_id AND snapshot.order_id=p.order_id
- AND snapshot.attribution_state='FROZEN'
-   SET p.region_name=IF(p.region_code <=> snapshot.region_code,p.region_name,snapshot.region_code),
-       p.region_code=snapshot.region_code,
-       p.owner_staff_code=snapshot.employee_code,
-       p.owner_staff_name=snapshot.employee_name,
-       p.synced_time=#{syncedAt},p.updated_time=#{syncedAt}
- WHERE p.tenant_id=#{tenantId}
-   AND (NOT(p.region_code <=> snapshot.region_code)
-     OR NOT(p.owner_staff_code <=> snapshot.employee_code)
-     OR NOT(p.owner_staff_name <=> snapshot.employee_name))
-""")
+    @Update(ALIGN)
     int alignPaymentOrderAttribution(
             @Param("tenantId") String tenantId, @Param("syncedAt") LocalDateTime syncedAt);
+
+    /** 历史订单未冻结部门时使用订单销售的当前HR部门，不回退到客户地区。 */
+    @Update("""
+UPDATE bi_sales_order_fact o
+LEFT JOIN bi_order_authority a ON a.tenant_id=o.tenant_id AND a.order_id=o.order_id
+LEFT JOIN bi_source_hr_hr_employee e ON e.tenant_id=o.tenant_id AND e.employee_code=o.owner_staff_code
+LEFT JOIN bi_sales_contact_city_dim c ON c.tenant_id=o.tenant_id
+ AND (c.department_id=CASE WHEN a.attribution_state='FROZEN' THEN a.department_id ELSE e.department_id END
+      OR JSON_CONTAINS(CASE WHEN a.attribution_state='FROZEN' THEN a.department_path ELSE e.department_path END,CAST(c.department_id AS JSON)))
+SET o.region_code=COALESCE(c.region_code,CASE WHEN
+       (CASE WHEN a.attribution_state='FROZEN' THEN a.department_id ELSE e.department_id END) IS NOT NULL
+       THEN 'OUTSIDE_CITY' ELSE 'UNKNOWN' END),
+    o.region_name=COALESCE(c.city_name,CASE WHEN
+       (CASE WHEN a.attribution_state='FROZEN' THEN a.department_id ELSE e.department_id END) IS NOT NULL
+       THEN '非城市销售部门' ELSE '销售归属待核对' END)
+WHERE o.tenant_id=#{tenantId}
+""")
+    int alignOperatingOrderCities(@Param("tenantId") String tenantId);
+
+    @Update("""
+UPDATE bi_sales_order_line_fact l JOIN bi_sales_order_fact o ON o.tenant_id=l.tenant_id AND o.order_id=l.order_id
+SET l.region_code=o.region_code,l.region_name=o.region_name WHERE l.tenant_id=#{tenantId}
+""")
+    int alignOperatingOrderLineCities(@Param("tenantId") String tenantId);
+
+    @Update("""
+UPDATE bi_sales_payment_fact p LEFT JOIN bi_sales_order_fact o ON o.tenant_id=p.tenant_id AND o.order_id=p.order_id
+SET p.region_code=COALESCE(o.region_code,'UNKNOWN'),p.region_name=COALESCE(o.region_name,'销售归属待核对')
+WHERE p.tenant_id=#{tenantId}
+""")
+    int alignOperatingPaymentCities(@Param("tenantId") String tenantId);
 
     @Select(
             """

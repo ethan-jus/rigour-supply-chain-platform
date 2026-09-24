@@ -18,7 +18,8 @@ public final class HttpSupplyAuthorizationClient implements SupplyAuthorizationC
     private final TrustedContextSigner signer;
     private final URI base;
 
-    public HttpSupplyAuthorizationClient(TrustedContextSigner signer, String baseUrl, RestClient.Builder restClientBuilder) {
+    public HttpSupplyAuthorizationClient(
+            TrustedContextSigner signer, String baseUrl, RestClient.Builder restClientBuilder) {
         this.signer = signer;
         this.base = URI.create(baseUrl.replaceAll("/+$", ""));
         if (!Set.of("http", "https").contains(base.getScheme()) || base.getUserInfo() != null)
@@ -33,11 +34,6 @@ public final class HttpSupplyAuthorizationClient implements SupplyAuthorizationC
     @Override
     public SupplyAuthorizationView authorization(CallerIdentity caller, String action) {
         return read(caller, action, "authorization");
-    }
-
-    @Override
-    public SupplyAuthorizationView candidate(CallerIdentity caller, String action) {
-        return read(caller, action, "candidate");
     }
 
     private SupplyAuthorizationView read(CallerIdentity caller, String action, String endpoint) {
@@ -61,35 +57,8 @@ public final class HttpSupplyAuthorizationClient implements SupplyAuthorizationC
                 || !caller.tenantId().equals(result.tenantId())
                 || !caller.userId().equals(result.userId())
                 || !action.equals(result.action())
-                || !Set.of("PREPARING", "ACTIVE").contains(result.mode()))
-            throw new IllegalStateException("IAM 授权上下文不一致");
+                || !"ACTIVE".equals(result.mode())) throw new IllegalStateException("IAM 授权上下文不一致");
         return result;
-    }
-
-    @Override
-    public void observe(CallerIdentity caller, String action, String legacyAction) {
-        URI uri = base.resolve("/internal/v1/iam/supply/observations");
-        client.post()
-                .uri(uri)
-                .headers(h -> headers(caller, "POST", uri).forEach(h::set))
-                .body(
-                        new com.rigour.tenant.iam.api.v1.IamSupplyAuthorizationApi.Observation(
-                                action, legacyAction))
-                .retrieve()
-                .toBodilessEntity();
-    }
-
-    @Override
-    public void observeData(
-            CallerIdentity caller,
-            com.rigour.tenant.iam.api.v1.model.SupplyDataObservation request) {
-        URI uri = base.resolve("/internal/v1/iam/supply/data-observations");
-        client.post()
-                .uri(uri)
-                .headers(h -> headers(caller, "POST", uri).forEach(h::set))
-                .body(request)
-                .retrieve()
-                .toBodilessEntity();
     }
 
     private Map<String, String> headers(CallerIdentity caller, String method, URI uri) {

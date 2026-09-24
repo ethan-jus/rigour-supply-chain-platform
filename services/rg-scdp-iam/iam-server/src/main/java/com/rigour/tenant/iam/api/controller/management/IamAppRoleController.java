@@ -36,11 +36,26 @@ public final class IamAppRoleController {
 
     @PostMapping("/roles")
     public Role create(@RequestBody RoleCommand c) {
+        com.rigour.tenant.iam.application.service.settings.RoleDataScopes.validate(c.dataScope());
         return service.save(IamAppSettingsController.actor(), null, c);
     }
 
     @PutMapping("/roles/{id}")
     public Role update(@PathVariable UUID id, @RequestBody RoleCommand c) {
+        com.rigour.tenant.iam.application.service.settings.RoleDataScopes.validate(c.dataScope());
+        return service.save(IamAppSettingsController.actor(), id, c);
+    }
+
+    // 独立版本入口，避免旧服务忽略新字段后误保存为空授权。
+    @PostMapping("/roles/unified")
+    public Role createUnified(@RequestBody RoleCommand c) {
+        com.rigour.tenant.iam.application.service.settings.RoleDataScopes.validate(c.dataScope());
+        return service.save(IamAppSettingsController.actor(), null, c);
+    }
+
+    @PutMapping("/roles/{id}/unified")
+    public Role updateUnified(@PathVariable UUID id, @RequestBody RoleCommand c) {
+        com.rigour.tenant.iam.application.service.settings.RoleDataScopes.validate(c.dataScope());
         return service.save(IamAppSettingsController.actor(), id, c);
     }
 

@@ -114,7 +114,7 @@ public final class CrmCustomerQueryService {
     }
 
     private static CallerIdentity actor(String permission) {
-        com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(permission, permission);
+
         CallerIdentity caller = AuthorizationContext.requireCurrent();
         if (caller.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
         AuthorizationContext.requirePermission(permission);

@@ -24,6 +24,7 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
                         "order_refund_record", "order_financial_event", "order_fulfillment_execution",
                         "order_fund_document", "order_sales_shipment", "order_invoice", "order_number_mapping",
                         "order_history_reconciliation_audit",
+                        "order_dhb_projection_change_audit",
                         "order_sync_product_allocation",
                         "order_sync_allocation",
                         "order_sync_receipt_revision",

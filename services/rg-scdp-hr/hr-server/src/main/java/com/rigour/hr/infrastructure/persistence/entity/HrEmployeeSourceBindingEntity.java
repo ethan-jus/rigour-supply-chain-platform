@@ -16,6 +16,11 @@ public class HrEmployeeSourceBindingEntity {
     public String sourceTenantKey;
     public String sourceEmployeeId;
     public String sourceAccountName;
+    public String sourceEmployeeName;
+    public String sourceMobile;
+    public Boolean reviewRequired;
+    public String reviewReason;
+    public Long reviewVersion;
     public String sourcePayloadHash;
     public String sourcePayloadJson;
     public LocalDateTime sourceCreatedAt;

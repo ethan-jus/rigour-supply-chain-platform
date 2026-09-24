@@ -1,32 +1,87 @@
 package com.rigour.shared.core.web;
 
+import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.core.api.ApiErrorDetail;
 import com.rigour.shared.core.api.ApiResponse;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
-import com.rigour.shared.context.AuthorizationDeniedException;
+import com.rigour.shared.core.exception.RequestValidationException;
+import com.rigour.shared.core.exception.StateConflictException;
 import jakarta.validation.ConstraintViolationException;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.ResponseEntity;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotWritableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.client.ResourceAccessException;
-import org.springframework.web.servlet.resource.NoResourceFoundException;
-
-import java.util.List;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 /**
  * 将框架异常和业务异常格式化为统一错误契约。
  * 未知异常只返回稳定通用文案，完整堆栈仅写服务端日志，避免向客户端暴露内部实现。
  */
 @RestControllerAdvice
-public class GlobalExceptionHandler {
+public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /** 框架决定协议状态及 Allow/Retry-After 等头；这里只统一安全的响应体。 */
+    @Override
+    protected ResponseEntity<Object> handleExceptionInternal(Exception exception, Object body,
+            HttpHeaders headers, HttpStatusCode status,
+            WebRequest request) {
+        ApiResponse<Void> failure;
+        if (exception instanceof MethodArgumentNotValidException validation) {
+            failure = handleMethodArgumentNotValid(validation).getBody();
+        } else {
+            ErrorCode code = switch (status.value()) {
+                case 400 -> ErrorCode.BAD_REQUEST;
+                case 401 -> ErrorCode.UNAUTHORIZED;
+                case 403 -> ErrorCode.FORBIDDEN;
+                case 404 -> ErrorCode.NOT_FOUND;
+                case 405 -> ErrorCode.METHOD_NOT_ALLOWED;
+                case 406 -> ErrorCode.NOT_ACCEPTABLE;
+                case 409 -> ErrorCode.CONFLICT;
+                case 413 -> ErrorCode.PAYLOAD_TOO_LARGE;
+                case 415 -> ErrorCode.UNSUPPORTED_MEDIA_TYPE;
+                case 422 -> ErrorCode.VALIDATION_FAILED;
+                case 429 -> ErrorCode.RATE_LIMITED;
+                case 503 -> ErrorCode.SERVICE_UNAVAILABLE;
+                default -> status.is5xxServerError() ? ErrorCode.INTERNAL_ERROR : ErrorCode.BAD_REQUEST;
+            };
+            failure = ApiResponse.error(code);
+        }
+        if (status.is5xxServerError()) {
+            if (isClientDisconnect(exception)) return null;
+            log.error("框架处理请求失败 requestId={}",
+                    com.rigour.shared.context.RequestContext.getRequestId(), exception);
+        }
+        return super.handleExceptionInternal(exception, failure, headers, status, request);
+    }
+
+    @ExceptionHandler(RequestValidationException.class)
+    ResponseEntity<ApiResponse<Void>> handleRequestValidation(RequestValidationException exception) {
+        return ResponseEntity.badRequest().body(ApiResponse.error("VALIDATION_FAILED", exception.getMessage(), List.of()));
+    }
+
+    @ExceptionHandler(StateConflictException.class)
+    ResponseEntity<ApiResponse<Void>> handleStateConflict(StateConflictException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error("CONFLICT", exception.getMessage(), List.of()));
+    }
+
+    @ExceptionHandler(DuplicateKeyException.class)
+    ResponseEntity<ApiResponse<Void>> handleDuplicateKey(DuplicateKeyException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(
+                "CONFLICT", "编码或关联关系已存在，请检查后重试", List.of()));
+    }
 
     @ExceptionHandler(BusinessException.class)
     ResponseEntity<ApiResponse<Void>> handleBusinessException(BusinessException exception) {
@@ -35,7 +90,6 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(errorCode.getCode(), exception.getMessage(), exception.getDetails()));
     }
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
     ResponseEntity<ApiResponse<Void>> handleMethodArgumentNotValid(MethodArgumentNotValidException exception) {
         List<ApiErrorDetail> details = exception.getBindingResult().getFieldErrors().stream()
                 .map(error -> new ApiErrorDetail(error.getField(), "VALIDATION", error.getDefaultMessage()))
@@ -69,12 +123,6 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ErrorCode.SERVICE_UNAVAILABLE));
     }
 
-    @ExceptionHandler(NoResourceFoundException.class)
-    ResponseEntity<ApiResponse<Void>> handleNoResourceFound(NoResourceFoundException exception) {
-        return ResponseEntity.status(ErrorCode.NOT_FOUND.getHttpStatus())
-                .body(ApiResponse.error(ErrorCode.NOT_FOUND));
-    }
-
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiResponse<Void>> handleUnexpectedException(Exception exception) {
         if (isClientDisconnect(exception)) {
@@ -83,7 +131,8 @@ public class GlobalExceptionHandler {
                     exception.getClass().getSimpleName());
             return null;
         }
-        log.error("未处理的服务异常", exception);
+        log.error("未处理的服务异常 requestId={}",
+                com.rigour.shared.context.RequestContext.getRequestId(), exception);
         return ResponseEntity.status(ErrorCode.INTERNAL_ERROR.getHttpStatus())
                 .body(ApiResponse.error(ErrorCode.INTERNAL_ERROR));
     }

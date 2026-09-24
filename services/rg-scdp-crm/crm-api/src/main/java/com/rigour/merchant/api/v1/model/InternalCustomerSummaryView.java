@@ -32,12 +32,11 @@ public record InternalCustomerSummaryView(
         String businessCreatedByName,
         String businessCreationSource,
         String loginAccount,
-        String dhbCustomerCode,
         Instant syncedAt,
         String syncedBy,
         String remark,
         String updatedBy,
-        java.util.List<String> dhbCustomerCodes) {
+        boolean dhbLinked) {
     public InternalCustomerSummaryView(
         Long id,
         String customerCode,
@@ -67,19 +66,15 @@ public record InternalCustomerSummaryView(
         String businessCreatedByName,
         String businessCreationSource,
         String loginAccount,
-        String dhbCustomerCode,
         Instant syncedAt,
         String syncedBy,
         String remark,
         String updatedBy) {
-        this(id, customerCode, customerName, contactName, contactPhone, customerTypeCode, regionCode, regionName, cityName, customerSourceName, businessCategoryName, ownerSalesUserId, ownerSalesName, ownerEmployeeCode, ownerEmployeeNameSnapshot, settlementTypeCode, statusCode, sourceSystemCode, sourceDocumentNo, sourceCreatedAt, sourceUpdatedAt, revision, updatedTime, businessCreatedAt, businessCreatedById, businessCreatedByName, businessCreationSource, loginAccount, dhbCustomerCode, syncedAt, syncedBy, remark, updatedBy, dhbCustomerCode == null || dhbCustomerCode.isBlank() ? java.util.List.of() : java.util.List.of(dhbCustomerCode));
+        this(id, customerCode, customerName, contactName, contactPhone, customerTypeCode, regionCode, regionName, cityName, customerSourceName, businessCategoryName, ownerSalesUserId, ownerSalesName, ownerEmployeeCode, ownerEmployeeNameSnapshot, settlementTypeCode, statusCode, sourceSystemCode, sourceDocumentNo, sourceCreatedAt, sourceUpdatedAt, revision, updatedTime, businessCreatedAt, businessCreatedById, businessCreatedByName, businessCreationSource, loginAccount, syncedAt, syncedBy, remark, updatedBy, false);
     }
 
-    public InternalCustomerSummaryView withDhbCustomerCodes(java.util.List<String> codes) {
-        java.util.LinkedHashSet<String> combined = new java.util.LinkedHashSet<>();
-        if (dhbCustomerCode != null && !dhbCustomerCode.isBlank()) combined.add(dhbCustomerCode);
-        if (codes != null) combined.addAll(codes);
-        return new InternalCustomerSummaryView(id, customerCode, customerName, contactName, contactPhone, customerTypeCode, regionCode, regionName, cityName, customerSourceName, businessCategoryName, ownerSalesUserId, ownerSalesName, ownerEmployeeCode, ownerEmployeeNameSnapshot, settlementTypeCode, statusCode, sourceSystemCode, sourceDocumentNo, sourceCreatedAt, sourceUpdatedAt, revision, updatedTime, businessCreatedAt, businessCreatedById, businessCreatedByName, businessCreationSource, loginAccount, dhbCustomerCode, syncedAt, syncedBy, remark, updatedBy, java.util.List.copyOf(combined));
+    public InternalCustomerSummaryView withDhbLinked(boolean linked) {
+        return new InternalCustomerSummaryView(id, customerCode, customerName, contactName, contactPhone, customerTypeCode, regionCode, regionName, cityName, customerSourceName, businessCategoryName, ownerSalesUserId, ownerSalesName, ownerEmployeeCode, ownerEmployeeNameSnapshot, settlementTypeCode, statusCode, sourceSystemCode, sourceDocumentNo, sourceCreatedAt, sourceUpdatedAt, revision, updatedTime, businessCreatedAt, businessCreatedById, businessCreatedByName, businessCreationSource, loginAccount, syncedAt, syncedBy, remark, updatedBy, linked);
     }
 
     public InternalCustomerSummaryView(
@@ -110,7 +105,7 @@ public record InternalCustomerSummaryView(
         String businessCreatedById,
         String businessCreatedByName,
         String businessCreationSource) {
-        this(id, customerCode, customerName, contactName, contactPhone, customerTypeCode, regionCode, regionName, cityName, customerSourceName, businessCategoryName, ownerSalesUserId, ownerSalesName, ownerEmployeeCode, ownerEmployeeNameSnapshot, settlementTypeCode, statusCode, sourceSystemCode, sourceDocumentNo, sourceCreatedAt, sourceUpdatedAt, revision, updatedTime, businessCreatedAt, businessCreatedById, businessCreatedByName, businessCreationSource, null, null, null, null, null, null);
+        this(id, customerCode, customerName, contactName, contactPhone, customerTypeCode, regionCode, regionName, cityName, customerSourceName, businessCategoryName, ownerSalesUserId, ownerSalesName, ownerEmployeeCode, ownerEmployeeNameSnapshot, settlementTypeCode, statusCode, sourceSystemCode, sourceDocumentNo, sourceCreatedAt, sourceUpdatedAt, revision, updatedTime, businessCreatedAt, businessCreatedById, businessCreatedByName, businessCreationSource, null, null, null, null, null);
     }
 
 

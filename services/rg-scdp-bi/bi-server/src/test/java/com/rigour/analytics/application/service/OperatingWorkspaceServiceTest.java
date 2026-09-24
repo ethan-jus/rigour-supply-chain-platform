@@ -47,6 +47,12 @@ class OperatingWorkspaceServiceTest {
         assertThatThrownBy(() -> service.saveTarget(target(value, 0))).isInstanceOf(BusinessException.class);
         verify(store, never()).saveTarget(any(), any(), any(), any());
     }
+    @Test void acceptsSeparateReceiptTargetWithoutRewritingCohortPaymentTargets() {
+        var command = new TargetCommand("2026-09", "CITY", "BJ", "北京", "RECEIPT_AMOUNT", new BigDecimal("100.00"), null, 0);
+        service.saveTarget(command);
+        verify(store).saveTarget(eq(TENANT.toString()), eq(USER.toString()),
+                argThat(c -> c.metricCode().equals("RECEIPT_AMOUNT") && c.targetValue().compareTo(new BigDecimal("100")) == 0), eq(NOW));
+    }
     @Test void acceptsZeroAndPassesRevisionWithoutRounding() {
         service.saveTarget(target("0.00", 7));
         verify(store).saveTarget(eq(TENANT.toString()), eq(USER.toString()),

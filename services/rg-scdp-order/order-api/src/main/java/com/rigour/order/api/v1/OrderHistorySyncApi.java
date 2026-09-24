@@ -36,6 +36,10 @@ public interface OrderHistorySyncApi {
     @PostMapping(BASE + "/receipts")
     ApiResponse<Intake> receipt(@RequestBody Receipt command);
 
+    /** 只推进已存在历史回款的状态，不新增回款或覆盖历史业务事实。 */
+    @PostMapping(BASE + "/receipts/historical-status")
+    ApiResponse<Intake> historicalReceiptStatus(@RequestBody Receipt command);
+
     @PostMapping(BASE + "/allocations")
     ApiResponse<Void> allocate(@RequestBody Allocate command);
 

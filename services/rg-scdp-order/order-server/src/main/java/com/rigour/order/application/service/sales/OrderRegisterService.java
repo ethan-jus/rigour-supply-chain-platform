@@ -122,7 +122,13 @@ public class OrderRegisterService {
                 actor, withDepartmentNames(actor, withRegionNames(actor, result)));
     }
 
-    /** 商品筛选集合由前端分类解析或商品下拉给出，限制上限避免超长 SQL。 */
+    /** 规格必须与一个已选商品组合使用；仓储在同一明细上匹配两个条件。 */
+    private static void validateVariantFilter(List<Long> productIds, Long variantId) {
+        if (variantId != null && (variantId <= 0 || productIds == null || productIds.size() != 1 || productIds.get(0) == null || productIds.get(0) <= 0)) {
+            throw badRequest("请选择一个商品后再选择商品规格");
+        }
+    }
+
     private static List<Long> filterProductIds(List<Long> values) {
         if (values == null || values.isEmpty()) return null;
         LinkedHashSet<Long> ids = new LinkedHashSet<>();
@@ -186,8 +192,10 @@ public class OrderRegisterService {
             String paymentStatusCode,
             Boolean hasDiscount,
             String sortBy,
-            String sortDirection) {
+            String sortDirection,
+            Long productVariantId) {
         CallerIdentity actor = actor(READ_PERMISSION);
+        validateVariantFilter(productIds, productVariantId);
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         var criteria =
                 new LineCriteria(
@@ -204,7 +212,7 @@ public class OrderRegisterService {
                         text(productKeyword, 200, "productKeyword"),
                         text(productCode, 128, "productCode"),
                         filterProductIds(productIds),
-                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection);
+                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection, productVariantId);
         var result = store.lines(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withDepartmentNames(actor, withRegionNames(actor, result));
     }
@@ -230,8 +238,10 @@ public class OrderRegisterService {
             Instant paymentTimeTo,
             String sortBy,
             String sortDirection, String createdBy,
-            List<Long> productIds) {
+            List<Long> productIds,
+            Long productVariantId) {
         CallerIdentity actor = actor(READ_PERMISSION);
+        validateVariantFilter(productIds, productVariantId);
         if (productIds != null && (productIds.size() > 10000 || productIds.stream().anyMatch(id -> id == null || id < 0))) {
             throw badRequest("productIds无效或超过10000个");
         }
@@ -255,9 +265,42 @@ public class OrderRegisterService {
                         paymentTimeFrom,
                         paymentTimeTo,
                         text(sortBy, 32, "sortBy"),
-                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds);
+                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, productVariantId);
         var result = store.payments(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
+    }
+
+    public com.rigour.order.api.v1.model.OrderRegisterModels.MonthlyPerformanceReport monthlyPerformance(
+            String monthFrom, String monthTo) {
+        CallerIdentity actor = actor(READ_PERMISSION);
+        java.time.YearMonth from;
+        java.time.YearMonth to;
+        var zone = java.time.ZoneId.of("Asia/Shanghai");
+        try {
+            from = java.time.YearMonth.parse(monthFrom);
+            to = java.time.YearMonth.parse(monthTo);
+        } catch (RuntimeException e) { throw badRequest("月份格式必须为YYYY-MM"); }
+        if (to.isBefore(from) || to.isAfter(java.time.YearMonth.now(zone))
+                || java.time.temporal.ChronoUnit.MONTHS.between(from, to) > 23) {
+            throw badRequest("请选择不超过24个月且不晚于本月的月份范围");
+        }
+        Instant generatedAt = Instant.now();
+        Instant end = to.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant();
+        var rows = store.monthlyPerformance(actor.tenantId().toString(),
+                from.atDay(1).atStartOfDay(zone).toInstant(), end.isAfter(generatedAt) ? generatedAt : end);
+        Set<String> codes = new LinkedHashSet<>();
+        rows.forEach(row -> { if (row.regionCode() != null && !row.regionCode().isBlank()) codes.add(row.regionCode()); });
+        Map<String, String> names = new LinkedHashMap<>();
+        if (!codes.isEmpty()) {
+            // 导出必须能辨认城市；依赖失败直接提示重试，不生成只有编码的正式报表。
+            for (var area : crmAreaDisplayClient.resolve(crmServiceCaller(actor.tenantId()), codes)) {
+                if (area != null && area.areaCode() != null && area.areaName() != null) names.put(area.areaCode(), area.areaName());
+            }
+        }
+        var namedRows = rows.stream().map(row -> new com.rigour.order.api.v1.model.OrderRegisterModels.MonthlyPerformanceRow(
+                row.month(), row.regionCode(), row.regionCode() == null ? "未归属城市" : names.getOrDefault(row.regionCode(), row.regionCode()),
+                row.employeeCode(), row.employeeName(), row.transactionAmount(), row.receivedAmount(), row.unpaidAmount())).toList();
+        return new com.rigour.order.api.v1.model.OrderRegisterModels.MonthlyPerformanceReport(monthFrom, monthTo, generatedAt, namedRows);
     }
 
     public PeriodStatisticsView periodStatistics(
@@ -769,8 +812,6 @@ public class OrderRegisterService {
     }
 
     private static CallerIdentity actor(String permission) {
-        if (READ_PERMISSION.equals(permission))
-            com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(permission, permission);
         CallerIdentity caller = AuthorizationContext.requireCurrent();
         if (caller.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
         AuthorizationContext.requirePermission(permission);
@@ -778,7 +819,7 @@ public class OrderRegisterService {
     }
 
     private static CallerIdentity action(String permission) {
-        com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(permission, WRITE_PERMISSION);
+
         return actor(permission);
     }
 

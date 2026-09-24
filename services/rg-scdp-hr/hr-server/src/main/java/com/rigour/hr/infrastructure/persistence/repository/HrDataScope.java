@@ -35,9 +35,9 @@ public final class HrDataScope {
                 SupplyAuthorizationContext.current().isPresent()
                         ? SupplyAuthorizationContext.requireAction(action)
                         : client.authorization(caller, action);
-        if ("ACTIVE".equals(result.mode()) && !result.functionAllowed())
+        if (!"ACTIVE".equals(result.mode()) || !result.functionAllowed())
             throw new AuthorizationDeniedException(action);
-        return "ACTIVE".equals(result.mode()) ? result : null;
+        return result;
     }
 
     public Predicate employeePredicate(String action, String alias) {
@@ -117,36 +117,9 @@ public final class HrDataScope {
         return query.apply(sql.toString(), p.args().toArray());
     }
 
-    public void compareRecord(String tenant, long id, String action, boolean oldAllowed) {
-        SupplyAuthorizationContext.compare(
-                action,
-                "HR",
-                Long.toString(id),
-                () ->
-                        oldAllowed
-                                && jdbc.queryForObject(
-                                                "SELECT COUNT(*) FROM hr_employee WHERE tenant_id=?"
-                                                    + " AND id=? AND deleted=0",
-                                                Integer.class,
-                                                tenant,
-                                                id)
-                                        == 1,
-                next -> {
-                    var p = employeePredicate(next, "");
-                    var args = new ArrayList<Object>(List.of(tenant, id));
-                    args.addAll(p.args());
-                    return jdbc.queryForObject(
-                                    "SELECT COUNT(*) FROM hr_employee WHERE tenant_id=? AND id=?"
-                                            + " AND deleted=0 AND "
-                                            + p.sql(),
-                                    Integer.class,
-                                    args.toArray())
-                            == 1;
-                });
-    }
+
 
     public void requireEmployee(String tenant, long id, String action) {
-        compareRecord(tenant, id, action, true);
         Predicate p = employeePredicate(action, "");
         List<Object> args = new ArrayList<>(List.of(tenant, id));
         args.addAll(p.args());

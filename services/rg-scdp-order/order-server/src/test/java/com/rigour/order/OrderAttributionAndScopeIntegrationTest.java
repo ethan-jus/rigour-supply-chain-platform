@@ -538,7 +538,7 @@ class OrderAttributionAndScopeIntegrationTest {
                         10,
                         new com.rigour.order.application.port.out.OrderRegisterStore.PaymentCriteria(
                                 null, null, null, null, null, null, null, null, null, null,
-                                "PAY-SYNC-0001", null, null, null, null, null, null, null, null));
+                                "PAY-SYNC-0001", null, null, null, null, null, null, null, null, null));
         var paymentView = paymentPage.items().getFirst();
         assertThat(paymentView.syncedBy()).isEqualTo("系统自动同步");
         assertThat(paymentView.syncedAt()).isEqualTo(syncedAt);
@@ -1129,62 +1129,7 @@ class OrderAttributionAndScopeIntegrationTest {
                 0);
     }
 
-    @Test
-    void preparingDataComparisonUsesActualFrozenOrderScopeWithoutFilteringTheLegacyRequest() {
-        long own = order("shadow-own", 1L), other = order("shadow-other", 2L);
-        when(customer.resolve(any(), eq(1L)))
-                .thenReturn(
-                        attribution("own", "EMP-A", 10, List.of(10L), "HZ", List.of("HZ"), true));
-        when(customer.resolve(any(), eq(2L)))
-                .thenReturn(
-                        attribution("other", "EMP-B", 10, List.of(10L), "HZ", List.of("HZ"), true));
-        tx.executeWithoutResult(
-                t -> {
-                    writer.prepare(tenant, own, true, false);
-                    writer.prepare(tenant, other, true, false);
-                });
-        jdbc.update(
-                "UPDATE order_sales_order SET order_status_code='SUBMITTED' WHERE tenant_id=?",
-                tenant);
-        var clauses =
-                List.of(
-                        new Clause(
-                                UUID.randomUUID(), "ORDER", "SELF", none(), all(), none(), false));
-        var p =
-                new SupplyAuthorizationView(
-                        "PREPARING",
-                        actor.tenantId(),
-                        actor.userId(),
-                        "EMP-A",
-                        7,
-                        1,
-                        1,
-                        1,
-                        Set.of("order:read"),
-                        "order:read",
-                        true,
-                        clauses,
-                        all(),
-                        all());
-        when(iam.candidate(any(), eq("order:read"))).thenReturn(p);
-        try (var ctx =
-                com.rigour.tenant.iam.client.SupplyAuthorizationContext.open(iam, actor, p)) {
-            scopes.compareRecord(tenant, own, "order:read", true, null);
-            scopes.compareRecord(tenant, other, "order:read", true, null);
-            assertThat(scopes.predicate("order:read", "o.", null).sql()).isEqualTo("1=1");
-            assertThat(ctx.active()).isFalse();
-        }
-        var captured =
-                org.mockito.ArgumentCaptor.forClass(
-                        com.rigour.tenant.iam.api.v1.model.SupplyDataObservation.class);
-        verify(iam, times(2)).observeData(any(), captured.capture());
-        assertThat(captured.getAllValues())
-                .extracting(
-                        com.rigour.tenant.iam.api.v1.model.SupplyDataObservation::proposedAllowed)
-                .containsExactly(true, false);
-        assertThat(captured.getAllValues())
-                .allMatch(com.rigour.tenant.iam.api.v1.model.SupplyDataObservation::legacyAllowed);
-    }
+
 
     private void reviewPermissions() {
         for (String action :
@@ -1500,14 +1445,6 @@ class OrderAttributionAndScopeIntegrationTest {
         return new Limit("SPECIFIED", List.of(refs));
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
-    private com.rigour.order.application.port.out.SupplyReadinessStore supplyReadiness;
 
-    @org.junit.jupiter.api.Test
-    void readinessChecksRunAgainstTheMigratedTenantSchema() {
-        var report = supplyReadiness.inspect(java.util.UUID.randomUUID().toString());
-        org.assertj.core.api.Assertions.assertThat(report.contractVersion()).isEqualTo(1);
-        org.assertj.core.api.Assertions.assertThat(report.version()).isNotBlank();
-        org.assertj.core.api.Assertions.assertThat(report.checks()).allMatch(c -> c.count() == 0);
-    }
+
 }

@@ -49,7 +49,7 @@ class HrPlaceholderMigrationTest {
                  WHERE ui.route_key='supply.hr.employees'
                 """);
 
-        Flyway.configure().dataSource(ds).load().migrate();
+        Flyway.configure().dataSource(ds).target("107").load().migrate();
 
         assertThat(jdbc.queryForObject("SELECT r.status FROM iam_resource r JOIN iam_resource_ui ui ON ui.resource_id=r.id WHERE ui.route_key='supply.hr.index'", String.class)).isEqualTo("DISABLED");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM iam_app_menu_node n JOIN iam_resource_ui ui ON ui.resource_id=n.resource_id WHERE ui.route_key='supply.hr.index' AND (n.status='ACTIVE' OR n.visible=1)", Integer.class)).isZero();

@@ -10,3 +10,11 @@ NACOS_NAMESPACE: "ethan-local"
 ---
 server:
   port: 26888
+
+# 本机承担经营看板同步；共享 dev 默认关闭，避免个人实例重复调度。
+rigour:
+  analytics:
+    supply-dashboard:
+      refresh:
+        enabled: ${RIGOUR_ANALYTICS_SUPPLY_REFRESH_ENABLED:true}
+        fixed-delay-ms: 3600000

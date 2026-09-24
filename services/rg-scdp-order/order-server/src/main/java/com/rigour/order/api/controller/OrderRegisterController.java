@@ -102,7 +102,8 @@ public class OrderRegisterController implements OrderRegisterApi {
             String paymentStatusCode,
             Boolean hasDiscount,
             String sortBy,
-            String sortDirection) {
+            String sortDirection,
+            Long productVariantId) {
         return ApiResponse.success(
                 service.lines(
                         begin,
@@ -120,7 +121,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         orderStatusCode,
                         productKeyword,
                         productCode,
-                        productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection));
+                        productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId));
     }
 
     @Override
@@ -145,7 +146,8 @@ public class OrderRegisterController implements OrderRegisterApi {
             Instant paymentTimeTo,
             String sortBy,
             String sortDirection, String createdBy,
-            List<Long> productIds) {
+            List<Long> productIds,
+            Long productVariantId) {
         return ApiResponse.success(
                 service.payments(
                         begin,
@@ -167,7 +169,13 @@ public class OrderRegisterController implements OrderRegisterApi {
                         paymentTimeFrom,
                         paymentTimeTo,
                         sortBy,
-                        sortDirection, createdBy, productIds));
+                        sortDirection, createdBy, productIds, productVariantId));
+    }
+
+    @Override
+    public ApiResponse<com.rigour.order.api.v1.model.OrderRegisterModels.MonthlyPerformanceReport> monthlyPerformance(
+            String monthFrom, String monthTo) {
+        return ApiResponse.success(service.monthlyPerformance(monthFrom, monthTo));
     }
 
     @Override
@@ -360,7 +368,8 @@ public class OrderRegisterController implements OrderRegisterApi {
             String paymentStatusCode,
             Boolean hasDiscount,
             String sortBy,
-            String sortDirection) {
+            String sortDirection,
+            Long productVariantId) {
         List<OrderRegisterLineView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -380,7 +389,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                             orderStatusCode,
                             productKeyword,
                             productCode,
-                            productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection);
+                            productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
@@ -436,7 +445,8 @@ public class OrderRegisterController implements OrderRegisterApi {
             Instant paymentTimeTo, String createdBy,
             List<Long> productIds,
             String sortBy,
-            String sortDirection) {
+            String sortDirection,
+            Long productVariantId) {
         List<OrderRegisterPaymentView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -460,7 +470,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                             paymentTimeFrom,
                             paymentTimeTo,
                             sortBy,
-                            sortDirection, createdBy, productIds);
+                            sortDirection, createdBy, productIds, productVariantId);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }

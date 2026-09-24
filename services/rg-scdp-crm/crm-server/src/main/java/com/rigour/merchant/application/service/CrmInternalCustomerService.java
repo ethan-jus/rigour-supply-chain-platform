@@ -70,7 +70,7 @@ public class CrmInternalCustomerService {
             String regionCode, String ownerSalesUserId, String ownerEmployeeCode, String statusCode,
             String sortBy, String sortDirection) {
         return customers(begin, step, customerCode, customerName, contactPhone, customerTypeCode,
-                regionCode, ownerSalesUserId, ownerEmployeeCode, statusCode, sortBy, sortDirection, null, null, null, null, null, null);
+                regionCode, ownerSalesUserId, ownerEmployeeCode, statusCode, sortBy, sortDirection, null, null, null, null, null);
     }
 
     public PageView<InternalCustomerSummaryView> customers(
@@ -84,8 +84,8 @@ public class CrmInternalCustomerService {
             String ownerSalesUserId,
             String ownerEmployeeCode,
             String statusCode, String sortBy, String sortDirection, String loginAccount,
-            java.time.LocalDate createdFrom, java.time.LocalDate createdTo, String creatorName, String dhbCustomerCode, String dhbLinkStatus) {
-        if (!java.util.Set.of("businessCreatedAt", "syncedAt", "dhbCustomerCode").contains(sortBy)
+            java.time.LocalDate createdFrom, java.time.LocalDate createdTo, String creatorName, String dhbLinkStatus) {
+        if (!java.util.Set.of("businessCreatedAt", "syncedAt").contains(sortBy)
                 || !java.util.Set.of("asc", "desc").contains(sortDirection))
             throw new IllegalArgumentException("不支持的客户排序条件");
         if (createdFrom != null && createdTo != null && createdFrom.isAfter(createdTo))
@@ -102,7 +102,7 @@ public class CrmInternalCustomerService {
                         code(regionCode, "regionCode", false),
                         text(ownerSalesUserId, 64, "ownerSalesUserId"),
                         text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        customerStatus(statusCode, false), sortBy, sortDirection, text(loginAccount, 160, "loginAccount"), createdFrom, createdTo, text(creatorName, 200, "creatorName"), text(dhbCustomerCode, 100, "dhbCustomerCode"), dhbLinkStatus);
+                        customerStatus(statusCode, false), sortBy, sortDirection, text(loginAccount, 160, "loginAccount"), createdFrom, createdTo, text(creatorName, 200, "creatorName"), dhbLinkStatus);
         PageView<InternalCustomerSummaryView> result =
                 store.customers(tenantId, pageBegin(begin), pageStep(step), criteria);
         log.debug(

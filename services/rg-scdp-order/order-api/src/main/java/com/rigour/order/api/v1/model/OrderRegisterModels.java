@@ -236,7 +236,16 @@ public final class OrderRegisterModels {
 
     /** 分析分摊，不代表来源付款单指定了具体商品。 */
     public record PaymentProductAllocation(Long lineId, Long productId, String productCode,
-            String productName, BigDecimal originalAmount, BigDecimal allocatedAmount, boolean matched) {}
+            String productName, Long productVariantId, String skuCode, String specification,
+            BigDecimal originalAmount, BigDecimal allocatedAmount, boolean matched) {}
+
+    /** 交易额按下单月份、回款按实际回款月份；未回款为截至月末的累计欠款，当前月截至导出时。 */
+    public record MonthlyPerformanceRow(String month, String regionCode, String regionName,
+            String employeeCode, String employeeName, BigDecimal transactionAmount,
+            BigDecimal receivedAmount, BigDecimal unpaidAmount) {}
+
+    public record MonthlyPerformanceReport(String monthFrom, String monthTo, Instant generatedAt,
+            List<MonthlyPerformanceRow> rows) {}
 
     /** 期间统计合计；五项口径与分组行一致。 */
     public record PeriodTotals(

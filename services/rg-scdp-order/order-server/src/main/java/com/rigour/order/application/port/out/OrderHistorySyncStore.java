@@ -22,6 +22,8 @@ public interface OrderHistorySyncStore {
 
     Intake receipt(String tenant, Receipt c);
 
+    Intake historicalReceiptStatus(String tenant, Receipt c);
+
     void allocate(String tenant, String actor, Allocate c);
 
     void allocateProducts(String tenant, String actor, AllocateProducts c);

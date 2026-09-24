@@ -15,7 +15,9 @@ class PeopleFilterOptionsRepositoryTest {
         var ds = new SingleConnectionDataSource("jdbc:h2:mem:people_filters_" + UUID.randomUUID() + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE", "sa", "", true);
         try {
             var jdbc = new JdbcTemplate(ds);
-            jdbc.execute("CREATE TABLE bi_sales_order_fact (tenant_id VARCHAR, deleted INT, order_status_code VARCHAR, region_code VARCHAR, region_name VARCHAR, owner_staff_code VARCHAR, owner_staff_name VARCHAR, customer_type_code VARCHAR, customer_type_name VARCHAR, source_system_code VARCHAR)");
+            jdbc.execute("CREATE TABLE bi_sales_order_fact (order_id BIGINT, tenant_id VARCHAR, deleted INT, order_status_code VARCHAR, region_code VARCHAR, region_name VARCHAR, owner_staff_code VARCHAR, owner_staff_name VARCHAR, customer_type_code VARCHAR, customer_type_name VARCHAR, source_system_code VARCHAR)");
+            jdbc.execute("CREATE TABLE bi_sales_contact_city_dim(tenant_id VARCHAR,region_code VARCHAR,city_name VARCHAR)");
+            jdbc.update("INSERT INTO bi_sales_contact_city_dim VALUES('T','BJ','北京'),('T','SH','上海'),('OTHER','X','其他')");
             jdbc.execute("CREATE TABLE bi_customer_dim AS SELECT *, CAST(NULL AS VARCHAR) status_code FROM bi_sales_order_fact");
             jdbc.execute("CREATE TABLE bi_sales_order_line_fact (tenant_id VARCHAR, deleted INT, order_status_code VARCHAR, region_code VARCHAR, owner_staff_code VARCHAR, product_category_id BIGINT, product_category_name VARCHAR, product_category_code VARCHAR)");
             jdbc.execute("CREATE TABLE bi_employee_dim (tenant_id VARCHAR, employee_code VARCHAR, employee_name VARCHAR, region_code VARCHAR, city_name VARCHAR)");

@@ -31,6 +31,11 @@ public interface OrderSalesOrderProjectionClient {
         throw new UnsupportedOperationException("必须先部署回款接续接口");
     }
 
+    default com.rigour.order.api.v1.model.HistorySyncModels.Intake syncHistoricalReceiptStatus(CallerIdentity caller,
+            com.rigour.order.api.v1.model.HistorySyncModels.Receipt command) {
+        throw new UnsupportedOperationException("必须先部署历史回款状态接续接口");
+    }
+
 
     SalesOrderDetailView salesOrder(CallerIdentity caller, Long id);
 

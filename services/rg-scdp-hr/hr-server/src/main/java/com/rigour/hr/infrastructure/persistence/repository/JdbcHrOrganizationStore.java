@@ -606,6 +606,20 @@ SELECT ancestor_id FROM hr_department_closure WHERE tenant_id=? AND descendant_i
     }
 
     @Override
+    public List<String> departmentMembers(String tenant, List<Long> ids, boolean descendants) {
+        String marks = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+        var args = new ArrayList<Object>();
+        args.add(tenant);
+        args.addAll(ids);
+        String department = descendants
+                ? "EXISTS(SELECT 1 FROM hr_department_closure dc WHERE dc.tenant_id=e.tenant_id AND dc.descendant_id=e.department_id AND dc.ancestor_id IN (" + marks + "))"
+                : "e.department_id IN (" + marks + ")";
+        List<String> result = jdbc.queryForList("SELECT e.employee_code FROM hr_employee e JOIN hr_department d ON d.tenant_id=e.tenant_id AND d.id=e.department_id WHERE e.tenant_id=? AND e.deleted=0 AND d.deleted=0 AND d.status_code='ACTIVE' AND " + department + " ORDER BY e.employee_code LIMIT 10001", String.class, args.toArray());
+        if (result.size() > 10000) throw new IllegalStateException("部门人员范围超过单次授权查询上限");
+        return result;
+    }
+
+    @Override
     public List<HrAssignmentView> assignments(String tenant, long employeeId) {
         scopes.requireEmployee(tenant, employeeId, "hr:employee:read");
         return jdbc.query(

@@ -9,8 +9,6 @@ import java.util.UUID;
 public final class AppMemberModels {
     private AppMemberModels() {}
 
-    public record Limit(String mode, List<String> references) {}
-
     public record Assignment(UUID roleId, Map<UUID, Map<String, List<String>>> parameters) {}
 
     public record Member(
@@ -24,11 +22,12 @@ public final class AppMemberModels {
             String employeeCode,
             Employee employee,
             List<Assignment> roles,
-            Limit regionLimit,
-            Limit warehouseLimit,
             boolean usable,
-            String unavailableReason, String createdByName, java.time.Instant createdTime,
-            String updatedByName, java.time.Instant updatedTime) {}
+            String unavailableReason,
+            String createdByName,
+            java.time.Instant createdTime,
+            String updatedByName,
+            java.time.Instant updatedTime) {}
 
     public record Page(List<Member> items, long total, int page, int pageSize) {}
 
@@ -43,8 +42,6 @@ public final class AppMemberModels {
             String remark,
             long version,
             List<Assignment> roles,
-            Limit regionLimit,
-            Limit warehouseLimit,
             String bindingReason) {}
 
     public record VersionedMember(UUID id, long version) {}

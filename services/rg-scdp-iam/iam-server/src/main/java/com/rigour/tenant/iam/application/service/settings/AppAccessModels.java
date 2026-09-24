@@ -5,7 +5,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-/** 角色规则按动作保存完整条件；用户分配具体部门、地区和仓库参数。 */
+/** 角色统一数据范围；动作条件由后端根据菜单权限生成。 */
 public final class AppAccessModels {
     private AppAccessModels() {}
 
@@ -20,6 +20,8 @@ public final class AppAccessModels {
             boolean includeDescendants,
             Map<String, List<String>> references) {}
 
+    public record RoleDataScope(String mode, List<String> departmentIds) {}
+
     public record Role(
             UUID id,
             String code,
@@ -30,7 +32,33 @@ public final class AppAccessModels {
             long version,
             int userCount,
             Set<UUID> menuNodeIds,
-            List<ScopeRule> rules) {}
+            List<ScopeRule> rules,
+            RoleDataScope dataScope) {
+        public Role(
+                UUID id,
+                String code,
+                String name,
+                String description,
+                String status,
+                boolean protectedRole,
+                long version,
+                int userCount,
+                Set<UUID> menuNodeIds,
+                List<ScopeRule> rules) {
+            this(
+                    id,
+                    code,
+                    name,
+                    description,
+                    status,
+                    protectedRole,
+                    version,
+                    userCount,
+                    menuNodeIds,
+                    rules,
+                    null);
+        }
+    }
 
     public record RoleCommand(
             String code,
@@ -39,7 +67,8 @@ public final class AppAccessModels {
             String status,
             long version,
             Set<UUID> menuNodeIds,
-            List<ScopeRule> rules) {}
+            List<ScopeRule> rules,
+            RoleDataScope dataScope) {}
 
     public record RoleImpact(
             UUID id,

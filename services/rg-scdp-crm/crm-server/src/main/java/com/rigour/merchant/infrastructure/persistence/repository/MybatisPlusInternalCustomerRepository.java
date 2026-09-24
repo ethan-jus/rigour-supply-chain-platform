@@ -109,22 +109,14 @@ public class MybatisPlusInternalCustomerRepository
         long total =
                 mapper.selectCount(scopes.apply(query(tenantId, criteria), "crm:customer:read"));
         var listing = scopes.apply(query(tenantId, criteria), "crm:customer:read");
-        if ("dhbCustomerCode".equals(criteria.sortBy())) {
-            String direction = "asc".equals(criteria.sortDirection()) ? "ASC" : "DESC";
-            // Numeric source codes sort numerically; missing associations always remain last.
-            listing.last("ORDER BY CASE WHEN NULLIF(TRIM(dhb_customer_code),'') IS NULL THEN 1 ELSE 0 END ASC, "
-                    + "CASE WHEN dhb_customer_code REGEXP '^[0-9]+$' THEN CAST(dhb_customer_code AS DECIMAL(65,0)) END " + direction
-                    + ", dhb_customer_code " + direction + ", id DESC LIMIT " + step + " OFFSET " + begin);
-        } else {
-            listing.orderBy(true, "asc".equals(criteria.sortDirection()),
-                    "syncedAt".equals(criteria.sortBy()) ? InternalCustomerEntity::getSyncedAt : InternalCustomerEntity::getBusinessCreatedAt)
-                    .orderByDesc(InternalCustomerEntity::getId).last("LIMIT " + step + " OFFSET " + begin);
-        }
+        listing.orderBy(true, "asc".equals(criteria.sortDirection()),
+                "syncedAt".equals(criteria.sortBy()) ? InternalCustomerEntity::getSyncedAt : InternalCustomerEntity::getBusinessCreatedAt)
+                .orderByDesc(InternalCustomerEntity::getId).last("LIMIT " + step + " OFFSET " + begin);
         List<InternalCustomerSummaryView> items = mapper.selectList(listing).stream()
                 .map(MybatisPlusInternalCustomerRepository::summary).toList();
-        var codes = sourceCodes(tenantId, items.stream().map(InternalCustomerSummaryView::id).toList());
+        var linked = linkedCustomerIds(tenantId, items.stream().map(InternalCustomerSummaryView::id).toList());
         return new PageView<>(total, begin, step, items.stream()
-                .map(item -> item.withDhbCustomerCodes(codes.get(item.id()))).toList());
+                .map(item -> item.withDhbLinked(linked.contains(item.id()))).toList());
     }
 
     @Override
@@ -152,15 +144,12 @@ public class MybatisPlusInternalCustomerRepository
                                                                 "crm:customer:read")
                                                         .last("LIMIT 1")))
                         .map(MybatisPlusInternalCustomerRepository::detail);
-        scopes.compareRecord(tenantId, id, "crm:customer:read", found.isPresent());
-        return found.map(item -> item.withDhbCustomerCodes(sourceCodes(tenantId, List.of(id)).get(id)));
+
+        return found.map(item -> item.withDhbLinked(linkedCustomerIds(tenantId, List.of(id)).contains(id)));
     }
 
-    private Map<Long, List<String>> sourceCodes(String tenant, List<Long> ids) {
-        Map<Long, List<String>> result = new java.util.LinkedHashMap<>();
-        if (!ids.isEmpty()) getBaseMapper().customerSourceCodes(tenant, ids).forEach(row ->
-                result.computeIfAbsent(row.customerId(), ignored -> new java.util.ArrayList<>()).add(row.sourceCode()));
-        return result;
+    private java.util.Set<Long> linkedCustomerIds(String tenant, List<Long> ids) {
+        return ids.isEmpty() ? java.util.Set.of() : new java.util.HashSet<>(getBaseMapper().linkedCustomerIds(tenant, ids));
     }
 
     @Override
@@ -327,7 +316,7 @@ public class MybatisPlusInternalCustomerRepository
                 actorId,
                 "编辑客户主责或归属地区",
                 false);
-        return detail(requireActive(tenantId, id));
+        return detail(requireActive(tenantId, id)).withDhbLinked(linkedCustomerIds(tenantId, List.of(id)).contains(id));
     }
 
     @Override
@@ -746,14 +735,12 @@ public class MybatisPlusInternalCustomerRepository
         }
         if (criteria.loginAccount() != null) query.like(InternalCustomerEntity::getLoginAccount, criteria.loginAccount());
         if (criteria.creatorName() != null) query.eq(InternalCustomerEntity::getBusinessCreatedByName, criteria.creatorName());
-        if (criteria.dhbCustomerCode() != null) query.and(match -> match
-                .like(InternalCustomerEntity::getDhbCustomerCode, criteria.dhbCustomerCode())
-                .or().apply("EXISTS (SELECT 1 FROM crm_source_binding b WHERE b.tenant_id=UUID_TO_BIN({0}) "
+        if (criteria.dhbLinkStatus() != null) {
+            String binding = "EXISTS (SELECT 1 FROM crm_source_binding b WHERE b.tenant_id=UUID_TO_BIN({0}) "
                     + "AND b.target_id=crm_customer.party_id AND b.source_object_type='CUSTOMER' "
-                    + "AND b.source_system='DINGHUOBAO' AND b.binding_status='RESOLVED' AND b.deleted=0 "
-                    + "AND b.source_code LIKE {1})", tenantId, "%" + criteria.dhbCustomerCode() + "%"));
-        if ("LINKED".equals(criteria.dhbLinkStatus())) query.apply("NULLIF(TRIM(dhb_customer_code),'') IS NOT NULL");
-        if ("UNLINKED".equals(criteria.dhbLinkStatus())) query.apply("NULLIF(TRIM(dhb_customer_code),'') IS NULL");
+                    + "AND b.source_system='DINGHUOBAO' AND b.binding_status='RESOLVED' AND b.deleted=0)";
+            query.apply(("UNLINKED".equals(criteria.dhbLinkStatus()) ? "NOT " : "") + binding, tenantId);
+        }
         // Business dates are selected in China time; the persisted audit timestamps are UTC.
         var zone = java.time.ZoneId.of("Asia/Shanghai");
         if (criteria.createdFrom() != null) query.ge(InternalCustomerEntity::getBusinessCreatedAt,
@@ -1439,7 +1426,7 @@ public class MybatisPlusInternalCustomerRepository
                 instant(entity.getBusinessCreatedAt()),
                 entity.getBusinessCreatedById(),
                 entity.getBusinessCreatedByName(),
-                entity.getBusinessCreationSource(), entity.getLoginAccount(), entity.getDhbCustomerCode(),
+                entity.getBusinessCreationSource(), entity.getLoginAccount(),
                 instant(entity.getSyncedAt()), entity.getSyncedBy(), entity.getRemark(), entity.getUpdatedBy());
     }
 
@@ -1476,7 +1463,7 @@ public class MybatisPlusInternalCustomerRepository
                 instant(entity.getBusinessCreatedAt()),
                 entity.getBusinessCreatedById(),
                 entity.getBusinessCreatedByName(),
-                entity.getBusinessCreationSource(), entity.getLoginAccount(), entity.getDhbCustomerCode(),
+                entity.getBusinessCreationSource(), entity.getLoginAccount(),
                 instant(entity.getSyncedAt()), entity.getSyncedBy());
     }
 

@@ -488,7 +488,27 @@ public class MybatisPlusSupplyDashboardRepository
                                                 decimal(row, "paidAmount"),
                                                 number(row, "paymentCount"),
                                                 number(row, "customerCount")))
-                        .toList());
+                        .toList(),
+                mapper.cityReceipts(tenantId, from, to, filter.regionCode(), filter.ownerStaffCode(),
+                        filter.customerTypeCode(), filter.sourceSystemCode()).stream()
+                        .map(row -> new CityReceiptItem(text(row, "regionCode"), text(row, "regionName"),
+                                decimal(row, "receiptAmount"), number(row, "paymentCount"), number(row, "customerCount")))
+                        .toList(),
+                retention(mapper.customerRetention(tenantId, from, to, filter.regionCode(),
+                        filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())),
+                mapper.cityMonthlyGoals(tenantId, from.plusHours(8).getYear(), filter.regionCode()).stream()
+                        .map(row -> new CityMonthlyGoal(text(row,"regionCode"),text(row,"regionName"),
+                                number(row,"goalMonth").intValue(),decimal(row,"salesTarget"),decimal(row,"receiptTarget"),
+                                decimal(row,"newCustomerTarget"),decimal(row,"repeatCustomerTarget"),number(row,"configuredCount").intValue()))
+                        .toList(),
+                mapper.citySalesPeople(tenantId, from, to, filter.regionCode(), filter.ownerStaffCode()).stream()
+                        .map(row -> new SalesPerson(text(row, "ownerStaffCode"), text(row, "ownerStaffName"),
+                                text(row, "employmentStatus"))).toList());
+    }
+
+    private static CustomerRetention retention(Map<String, Object> row) {
+        return new CustomerRetention(number(row, "orderingCustomerCount"), number(row, "returningCustomerCount"),
+                number(row,"newCustomerCount"),number(row,"annualReturningCustomerCount"));
     }
 
     @Override
@@ -619,11 +639,29 @@ public class MybatisPlusSupplyDashboardRepository
     @org.springframework.beans.factory.annotation.Autowired
     private com.rigour.analytics.infrastructure.persistence.scope.BiPeopleProjector people;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.rigour.analytics.infrastructure.persistence.scope.BiDashboardProductProjector dashboardProducts;
+
+    @Override
+    public long refreshDashboardProductFacts(String tenant, long runId, Instant syncedAt) {
+        return dashboardProducts.refresh(tenant, runId, syncedAt);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.rigour.analytics.application.port.out.EmployeeAnalyticsStore employeeAnalytics;
+
     @Override
     public void synchronizeSourceSnapshots(String tenant) {
-        people.refresh(java.util.UUID.fromString(tenant));
         sources.refresh(java.util.UUID.fromString(tenant));
+        // 经营同步已镜像 HR；销售榜的离职状态必须同步更新，不依赖拜访服务。
+        employeeAnalytics.refresh(tenant, Instant.now());
         authority.refresh(java.util.UUID.fromString(tenant));
+        dashboardProducts.retireMissingFacts(tenant);
+    }
+
+    @Override
+    public void synchronizePeopleSnapshots(String tenant) {
+        people.refresh(java.util.UUID.fromString(tenant));
     }
 
     @Override
@@ -768,6 +806,9 @@ public class MybatisPlusSupplyDashboardRepository
         mapper.clearCustomerAttributes(tenantId);
         affected += mapper.refreshCustomerAttributes(tenantId, localSyncedAt);
         mapper.completeCustomerAttributes(tenantId, localSyncedAt);
+        // 销售部城市目录每小时同步，包含零成交城市，独立于销售拜访。
+        mapper.clearCityDimension(tenantId);
+        affected += mapper.refreshCityDimension(tenantId);
         return sourceResult("CRM_CUSTOMER", "客户/门店", summary, affected);
     }
 
@@ -849,6 +890,11 @@ public class MybatisPlusSupplyDashboardRepository
         affected += mapper.alignOrderFactAttribution(tenantId, localSyncedAt);
         affected += mapper.alignOrderLineAttribution(tenantId, localSyncedAt);
         affected += mapper.alignPaymentOrderAttribution(tenantId, localSyncedAt);
+        mapper.clearCityDimension(tenantId);
+        affected += mapper.refreshCityDimension(tenantId);
+        affected += mapper.alignOperatingOrderCities(tenantId);
+        affected += mapper.alignOperatingOrderLineCities(tenantId);
+        affected += mapper.alignOperatingPaymentCities(tenantId);
         return affected;
     }
 

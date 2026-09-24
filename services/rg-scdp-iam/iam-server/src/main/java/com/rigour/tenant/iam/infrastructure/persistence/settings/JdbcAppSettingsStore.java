@@ -1,5 +1,7 @@
 package com.rigour.tenant.iam.infrastructure.persistence.settings;
 
+import com.rigour.shared.core.exception.RequestValidationException;
+import com.rigour.shared.core.exception.StateConflictException;
 import com.rigour.tenant.iam.application.port.out.AppSettingsStore;
 import com.rigour.tenant.iam.application.service.management.ManagementModels.Actor;
 import com.rigour.tenant.iam.application.service.management.ManagementModels.NavigationNode;
@@ -89,14 +91,12 @@ SELECT COUNT(*) FROM iam_user u JOIN iam_tenant t ON t.id=u.tenant_id
     public Context context(Actor actor) {
         requireIdentity(actor);
         if (!initialized(actor))
-            return new Context(false, canBootstrap(actor), "PREPARING", 0, Set.of());
+            return new Context(false, canBootstrap(actor), "ACTIVE", 0, Set.of());
         return jdbc.queryForObject(
                 """
 SELECT authorization_mode,version FROM iam_app_settings WHERE tenant_id=? AND application_id=?
 """,
-                (rs, row) ->
-                        new Context(
-                                true, false, rs.getString(1), rs.getLong(2), permissions(actor)),
+                (rs, row) -> new Context(true, false, "ACTIVE", rs.getLong(2), permissions(actor)),
                 bin(actor.tenantId()),
                 bin(applicationId()));
     }
@@ -124,12 +124,14 @@ SELECT COUNT(*) FROM iam_user_role ur JOIN iam_role r ON r.tenant_id=ur.tenant_i
                             "SELECT id FROM iam_tenant WHERE id=? FOR UPDATE",
                             byte[].class,
                             bin(actor.tenantId()));
-                    if (initialized(actor)) throw new IllegalStateException("供应链设置已初始化，请刷新");
+                    if (initialized(actor)) throw new StateConflictException("供应链设置已初始化，请刷新");
                     if (!canBootstrap(actor))
                         throw new AccessDeniedException("只有当前租户受保护管理员可执行首次初始化");
                     UUID app = applicationId();
                     jdbc.update(
-                            "INSERT INTO iam_app_settings(tenant_id,application_id) VALUES(?,?)",
+                            "INSERT INTO"
+                                + " iam_app_settings(tenant_id,application_id,authorization_mode)"
+                                + " VALUES(?,?,'ACTIVE')",
                             bin(actor.tenantId()),
                             bin(app));
                     List<Node> seed = seedMenus(actor);
@@ -178,34 +180,6 @@ VALUES(?,?,?,'SUPPLY_BOOTSTRAP_ADMIN','供应链初始化管理员',TRUE)
                                 bin(app),
                                 bin(role),
                                 bin(node.id()));
-                    Set<String> seededActions = new HashSet<>();
-                    for (Node node : seed) {
-                        String object =
-                                com.rigour.tenant.iam.domain.model.settings.AppScopeRules
-                                        .objectType(node.permissionCode());
-                        if (object != null && seededActions.add(node.permissionCode()))
-                            jdbc.update(
-                                    """
-INSERT INTO iam_app_scope_rule(tenant_id,application_id,id,role_id,action_code,object_type,scope_mode,department_mode,region_mode,warehouse_mode,include_descendants)
-VALUES(?,?,?,?,?,?,'ALL','ALL','ALL','ALL',TRUE)
-""",
-                                    bin(actor.tenantId()),
-                                    bin(app),
-                                    bin(UUID.randomUUID()),
-                                    bin(role),
-                                    node.permissionCode(),
-                                    object);
-                    }
-                    for (String dimension : List.of("REGION", "WAREHOUSE"))
-                        jdbc.update(
-                                """
-INSERT INTO iam_app_member_scope_limit(tenant_id,application_id,user_id,dimension,scope_mode)
-VALUES(?,?,?,?,'ALL')
-""",
-                                bin(actor.tenantId()),
-                                bin(app),
-                                bin(actor.principalId()),
-                                dimension);
                     audit(actor, "SETTINGS_INITIALIZE", app.toString(), "显式初始化供应链设置，保留原应用角色");
                     bump(actor);
                 });
@@ -428,7 +402,7 @@ SELECT m.member_kind,b.employee_code,b.hr_access_version FROM iam_app_member m
     /** 在同一应用配置锁内写入后复核，失败会回滚整个授权变更。 */
     public void requireManagementEntry(Actor actor) {
         if (!hasManagementEntryExcludingRole(actor, null))
-            throw new IllegalArgumentException("不能移除最后一个可用供应链管理入口，请先完成管理员交接");
+            throw new RequestValidationException("不能移除最后一个可用供应链管理入口，请先完成管理员交接");
     }
 
     boolean hasManagementEntryExcludingRole(Actor actor, UUID excludedRole) {
@@ -450,31 +424,34 @@ SELECT m.member_kind,b.employee_code,b.hr_access_version FROM iam_app_member m
     }
 
     Set<String> permissionsExcludingRole(Actor actor, UUID excludedRole) {
-        Set<UUID> grants = protectedAdministratorRole(actor, excludedRole) != null
-                ? rows(actor).stream().map(Node::id).collect(Collectors.toSet())
-                : new HashSet<>(
-                        jdbc.query(
-                                "SELECT g.menu_node_id FROM iam_app_member_role mr JOIN"
-                                    + " iam_app_role r ON r.tenant_id=mr.tenant_id AND"
-                                    + " r.application_id=mr.application_id AND r.id=mr.role_id JOIN"
-                                    + " iam_app_role_grant g ON g.tenant_id=r.tenant_id AND"
-                                    + " g.application_id=r.application_id AND g.role_id=r.id WHERE"
-                                    + " mr.tenant_id=? AND mr.application_id=? AND mr.user_id=? AND"
-                                    + " r.status='ACTIVE' AND r.deleted_at IS NULL"
-                                        + (excludedRole == null ? "" : " AND r.id<>?"),
-                                (rs, n) -> UuidBinaryCodec.decode(rs.getBytes(1)),
-                                excludedRole == null
-                                        ? new Object[] {
-                                            bin(actor.tenantId()),
-                                            bin(applicationId()),
-                                            bin(actor.principalId())
-                                        }
-                                        : new Object[] {
-                                            bin(actor.tenantId()),
-                                            bin(applicationId()),
-                                            bin(actor.principalId()),
-                                            bin(excludedRole)
-                                        }));
+        Set<UUID> grants =
+                protectedAdministratorRole(actor, excludedRole) != null
+                        ? rows(actor).stream().map(Node::id).collect(Collectors.toSet())
+                        : new HashSet<>(
+                                jdbc.query(
+                                        "SELECT g.menu_node_id FROM iam_app_member_role mr JOIN"
+                                            + " iam_app_role r ON r.tenant_id=mr.tenant_id AND"
+                                            + " r.application_id=mr.application_id AND"
+                                            + " r.id=mr.role_id JOIN iam_app_role_grant g ON"
+                                            + " g.tenant_id=r.tenant_id AND"
+                                            + " g.application_id=r.application_id AND"
+                                            + " g.role_id=r.id WHERE mr.tenant_id=? AND"
+                                            + " mr.application_id=? AND mr.user_id=? AND"
+                                            + " r.status='ACTIVE' AND r.deleted_at IS NULL"
+                                                + (excludedRole == null ? "" : " AND r.id<>?"),
+                                        (rs, n) -> UuidBinaryCodec.decode(rs.getBytes(1)),
+                                        excludedRole == null
+                                                ? new Object[] {
+                                                    bin(actor.tenantId()),
+                                                    bin(applicationId()),
+                                                    bin(actor.principalId())
+                                                }
+                                                : new Object[] {
+                                                    bin(actor.tenantId()),
+                                                    bin(applicationId()),
+                                                    bin(actor.principalId()),
+                                                    bin(excludedRole)
+                                                }));
         Map<UUID, Node> nodes =
                 rows(actor).stream().collect(Collectors.toMap(Node::id, Function.identity()));
         Set<UUID> entitled =
@@ -501,8 +478,9 @@ SELECT m.member_kind,b.employee_code,b.hr_access_version FROM iam_app_member m
 
     /** 内置管理员动态拥有本企业已配置功能，不依赖初始化时的授权快照。 */
     UUID protectedAdministratorRole(Actor actor, UUID excludedRole) {
-        return jdbc.query(
-                """
+        return jdbc
+                .query(
+                        """
 SELECT r.id FROM iam_app_member m
   JOIN iam_user u ON u.tenant_id=m.tenant_id AND u.id=m.user_id
   JOIN iam_tenant t ON t.id=m.tenant_id
@@ -512,12 +490,25 @@ SELECT r.id FROM iam_app_member m
    AND m.member_kind='PROTECTED' AND m.status='ACTIVE' AND m.deleted_at IS NULL
    AND u.status='ACTIVE' AND u.deleted_at IS NULL AND t.status='ACTIVE' AND t.deleted_at IS NULL
    AND r.protected_role=1 AND r.status='ACTIVE' AND r.deleted_at IS NULL
-""" + (excludedRole == null ? "" : " AND r.id<>?") + " ORDER BY r.id",
-                (rs, n) -> uuid(rs, "id"),
-                excludedRole == null
-                        ? new Object[] {bin(actor.tenantId()), bin(applicationId()), bin(actor.principalId())}
-                        : new Object[] {bin(actor.tenantId()), bin(applicationId()), bin(actor.principalId()), bin(excludedRole)})
-                .stream().findFirst().orElse(null);
+"""
+                                + (excludedRole == null ? "" : " AND r.id<>?")
+                                + " ORDER BY r.id",
+                        (rs, n) -> uuid(rs, "id"),
+                        excludedRole == null
+                                ? new Object[] {
+                                    bin(actor.tenantId()),
+                                    bin(applicationId()),
+                                    bin(actor.principalId())
+                                }
+                                : new Object[] {
+                                    bin(actor.tenantId()),
+                                    bin(applicationId()),
+                                    bin(actor.principalId()),
+                                    bin(excludedRole)
+                                })
+                .stream()
+                .findFirst()
+                .orElse(null);
     }
 
     public boolean protectedAdministrator(Actor actor) {
@@ -569,12 +560,12 @@ SELECT g.menu_node_id FROM iam_app_member m
                         (rs, n) -> rs.getLong(1),
                         bin(actor.tenantId()),
                         bin(applicationId()));
-        if (row.size() != 1) throw new IllegalStateException("请先初始化供应链设置");
+        if (row.size() != 1) throw new StateConflictException("请先初始化供应链设置");
     }
 
     @Override
     public Node saveMenu(Actor actor, UUID id, MenuCommand c) {
-        if (c == null) throw new IllegalArgumentException("菜单参数不能为空");
+        if (c == null) throw new RequestValidationException("菜单参数不能为空");
         UUID target = id == null ? UUID.randomUUID() : id;
         tx.executeWithoutResult(
                 status -> {
@@ -589,13 +580,13 @@ SELECT g.menu_node_id FROM iam_app_member m
                                             .filter(n -> n.id().equals(id))
                                             .findFirst()
                                             .orElseThrow(
-                                                    () -> new IllegalArgumentException("菜单不存在"));
+                                                    () -> new RequestValidationException("菜单不存在"));
                     if ((old == null ? 0 : old.version()) != c.version())
-                        throw new IllegalStateException("菜单已被修改，请刷新");
+                        throw new StateConflictException("菜单已被修改，请刷新");
                     if (old != null
                             && (!Objects.equals(old.resourceId(), c.resourceId())
                                     || !old.type().equals(c.type())))
-                        throw new IllegalArgumentException("编辑不能更换菜单类型或绑定功能");
+                        throw new RequestValidationException("编辑不能更换菜单类型或绑定功能");
                     Node feature =
                             c.resourceId() == null
                                     ? null
@@ -607,22 +598,23 @@ SELECT g.menu_node_id FROM iam_app_member m
                                                             new AccessDeniedException(
                                                                     "功能不在本租户供应链可用目录中"));
                     if (feature != null && !feature.type().equals(c.type()))
-                        throw new IllegalArgumentException("菜单类型与功能不一致");
+                        throw new RequestValidationException("菜单类型与功能不一致");
                     if ("BUTTON".equals(c.type())) {
                         Node parent =
                                 list.stream()
                                         .filter(n -> n.id().equals(c.parentId()))
                                         .findFirst()
-                                        .orElseThrow(() -> new IllegalArgumentException("请选择所属页面"));
+                                        .orElseThrow(
+                                                () -> new RequestValidationException("请选择所属页面"));
                         if (feature == null
                                 || !Objects.equals(feature.parentId(), parent.resourceId()))
-                            throw new IllegalArgumentException("操作不属于所选页面");
+                            throw new RequestValidationException("操作不属于所选页面");
                     }
                     boolean customPage = "PAGE".equals(c.type()) && feature == null;
                     if ("PAGE".equals(c.type())) {
                         if (feature != null
                                 && (feature.routeKey() == null || feature.routePath() == null))
-                            throw new IllegalArgumentException("已注册页面缺少路由配置");
+                            throw new RequestValidationException("已注册页面缺少路由配置");
                         if (customPage) validateCustomPage(c);
                     }
                     String customRouteKey = null;
@@ -630,8 +622,7 @@ SELECT g.menu_node_id FROM iam_app_member m
                     String customComponentPath = null;
                     String customPermissionCode = null;
                     if (customPage) {
-                        customRouteKey =
-                                old == null ? customRouteKey(c, target) : old.routeKey();
+                        customRouteKey = old == null ? customRouteKey(c, target) : old.routeKey();
                         customRoutePath = c.routePath().strip();
                         customComponentPath = c.componentPath().strip();
                         customPermissionCode =
@@ -746,13 +737,11 @@ INSERT INTO iam_app_menu_node(tenant_id,application_id,id,parent_id,resource_id,
         String componentPath = c.componentPath() == null ? null : c.componentPath().strip();
         if ((routePath == null || routePath.isEmpty())
                 && (componentPath == null || componentPath.isEmpty()))
-            throw new IllegalArgumentException(
-                    "请选择已注册页面，或填写自定义页面的路由地址与组件路径");
+            throw new RequestValidationException("请选择已注册页面，或填写自定义页面的路由地址与组件路径");
         if (routePath == null || !CUSTOM_ROUTE_PATH.matcher(routePath).matches())
-            throw new IllegalArgumentException("自定义页面路由地址必须以 /supply-chain/ 开头");
+            throw new RequestValidationException("自定义页面路由地址必须以 /supply-chain/ 开头");
         if (componentPath == null || !CUSTOM_COMPONENT_PATH.matcher(componentPath).matches())
-            throw new IllegalArgumentException(
-                    "自定义页面组件路径必须以 supply-chain/ 开头并以 .vue 结尾");
+            throw new RequestValidationException("自定义页面组件路径必须以 supply-chain/ 开头并以 .vue 结尾");
     }
 
     @Override
@@ -762,7 +751,7 @@ INSERT INTO iam_app_menu_node(tenant_id,application_id,id,parent_id,resource_id,
                 rows(actor).stream()
                         .filter(n -> n.id().equals(id))
                         .findFirst()
-                        .orElseThrow(() -> new IllegalArgumentException("菜单不存在"));
+                        .orElseThrow(() -> new RequestValidationException("菜单不存在"));
         return impact(actor, node);
     }
 
@@ -808,13 +797,13 @@ SELECT COUNT(DISTINCT mr.user_id) FROM iam_app_member_role mr JOIN iam_app_role_
                             rows(actor).stream()
                                     .filter(n -> n.id().equals(id))
                                     .findFirst()
-                                    .orElseThrow(() -> new IllegalArgumentException("菜单不存在"));
-                    if (node.version() != version) throw new IllegalStateException("菜单已被修改，请重新预览");
-                    if (node.protectedNode()) throw new IllegalArgumentException("不能删除系统管理恢复入口");
+                                    .orElseThrow(() -> new RequestValidationException("菜单不存在"));
+                    if (node.version() != version) throw new StateConflictException("菜单已被修改，请重新预览");
+                    if (node.protectedNode()) throw new RequestValidationException("不能删除系统管理恢复入口");
                     Impact impact = impact(actor, node);
-                    if (impact.childCount() > 0) throw new IllegalArgumentException("请先移动或删除子菜单");
+                    if (impact.childCount() > 0) throw new RequestValidationException("请先移动或删除子菜单");
                     if (!impact.roleNames().isEmpty()) {
-                        if (!revoke) throw new IllegalArgumentException("请先确认撤销受影响角色的授权");
+                        if (!revoke) throw new RequestValidationException("请先确认撤销受影响角色的授权");
                         requirePermission(actor, "supply:role:grant");
                     }
                     jdbc.update(
@@ -932,31 +921,6 @@ SELECT DISTINCT r.id,r.parent_id,r.resource_type,r.display_name,r.permission_cod
         Map<UUID, Node> index =
                 all.stream().collect(Collectors.toMap(Node::id, Function.identity()));
         Set<UUID> granted = grantIds(actor);
-        String mode =
-                jdbc.queryForObject(
-                        "SELECT authorization_mode FROM iam_app_settings WHERE tenant_id=? AND"
-                                + " application_id=?",
-                        String.class,
-                        bin(actor.tenantId()),
-                        bin(applicationId()));
-        if ("PREPARING".equals(mode)) {
-            Set<UUID> legacy =
-                    new HashSet<>(
-                            jdbc.query(
-                                    """
-SELECT rr.resource_id FROM iam_user_role ur
-  JOIN iam_effective_tenant_role_resource rr ON rr.tenant_id=ur.tenant_id AND rr.role_id=ur.role_id
- WHERE ur.tenant_id=? AND ur.user_id=? AND ur.status='ACTIVE'
-   AND ur.effective_from<=UTC_TIMESTAMP(6) AND (ur.effective_to IS NULL OR ur.effective_to>UTC_TIMESTAMP(6))
-""",
-                                    (rs, n) -> uuid(rs, "resource_id"),
-                                    bin(actor.tenantId()),
-                                    bin(actor.principalId())));
-            all.stream()
-                    .filter(n -> legacy.contains(n.resourceId()))
-                    .map(Node::id)
-                    .forEach(granted::add);
-        }
         Set<UUID> entitled =
                 catalogRows(actor).stream().map(Node::resourceId).collect(Collectors.toSet());
         var allowed = new HashSet<UUID>();
@@ -1035,10 +999,10 @@ VALUES(?,?,?,?,?,?,'SUCCESS',?)
     public AuditPage audits(Actor actor, String action, String keyword, int page, int size) {
         requirePermission(actor, "supply:audit:read");
         if (page < 1 || size < 1 || size > 100 || (long) (page - 1) * size > 1000000)
-            throw new IllegalArgumentException("分页范围无效");
+            throw new RequestValidationException("分页范围无效");
         String actionFilter = action == null || action.isBlank() ? null : action.strip();
         String key = keyword == null || keyword.isBlank() ? null : keyword.strip();
-        if (key != null && key.length() > 100) throw new IllegalArgumentException("关键词过长");
+        if (key != null && key.length() > 100) throw new RequestValidationException("关键词过长");
         String where =
                 " WHERE a.tenant_id=? AND a.application_id=? AND (? IS NULL OR a.action_code=?) AND"
                         + " (? IS NULL OR a.target_id LIKE ? OR u.username LIKE ?)";

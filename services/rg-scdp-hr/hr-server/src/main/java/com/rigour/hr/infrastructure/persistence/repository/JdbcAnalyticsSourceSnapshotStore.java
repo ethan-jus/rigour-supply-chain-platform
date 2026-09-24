@@ -26,6 +26,17 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
 
     private static final Map<String, Definition> DATASETS =
             Map.of(
+                    "HR_DEPARTMENT",
+                    new Definition(
+                            """
+(SELECT d.id,d.tenant_id,d.department_code,d.department_name,d.parent_id,d.status_code,d.deleted,
+ COALESCE((SELECT JSON_ARRAYAGG(c.ancestor_id) FROM hr_department_closure c
+   WHERE c.tenant_id=d.tenant_id AND c.descendant_id=d.id),JSON_ARRAY(d.id)) department_path
+ FROM hr_department d) source_rows
+""",
+                            List.of("id","tenant_id","department_code","department_name","parent_id","status_code","deleted","department_path"),
+                            false,false,
+                            "CONCAT(COUNT(*),':',COALESCE(SUM(CAST(CRC32(CONCAT_WS('|',id,department_code,department_name,COALESCE(parent_id,0),status_code,deleted,department_path)) AS UNSIGNED)),0))"),
                     "HR_EMPLOYEE",
                     new Definition(
                             """

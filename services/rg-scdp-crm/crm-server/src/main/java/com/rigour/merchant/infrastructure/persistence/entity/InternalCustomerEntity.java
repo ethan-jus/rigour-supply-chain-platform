@@ -449,9 +449,6 @@ public class InternalCustomerEntity {
     private String loginAccount;
     public String getLoginAccount() { return loginAccount; }
     public void setLoginAccount(String value) { this.loginAccount = value; }
-    private String dhbCustomerCode;
-    public String getDhbCustomerCode() { return dhbCustomerCode; }
-    public void setDhbCustomerCode(String value) { this.dhbCustomerCode = value; }
     private LocalDateTime syncedAt;
     public LocalDateTime getSyncedAt() { return syncedAt; }
     public void setSyncedAt(LocalDateTime value) { this.syncedAt = value; }

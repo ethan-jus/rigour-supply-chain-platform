@@ -65,7 +65,7 @@ class HttpSupplyAuthorizationClientTest {
                         exchange.sendResponseHeaders(valid ? 204 : 403, -1);
                     } else {
                         String response =
-                                "{\"mode\":\"PREPARING\",\"tenantId\":\""
+                                "{\"mode\":\"ACTIVE\",\"tenantId\":\""
                                         + tenant
                                         + "\",\"userId\":\""
                                         + user
@@ -85,20 +85,9 @@ class HttpSupplyAuthorizationClientTest {
                             "http://127.0.0.1:" + server.getAddress().getPort(),
                             org.springframework.web.client.RestClient.builder());
             var result = client.authorization(caller, "order:read");
-            assertThat(result.mode()).isEqualTo("PREPARING");
-            client.observe(caller, "order:create", "order:write");
-            assertThat(calls.get()).isEqualTo(2);
+            assertThat(result.mode()).isEqualTo("ACTIVE");
+            assertThat(calls.get()).isEqualTo(1);
             assertThat(invalid.get()).isZero();
-            assertThat(body.get())
-                    .contains("\"action\":\"order:create\"", "\"legacyAction\":\"order:write\"");
-            assertThat(client.candidate(caller, "order:read").applicationVersion()).isEqualTo(9);
-            client.observeData(
-                    caller,
-                    new com.rigour.tenant.iam.api.v1.model.SupplyDataObservation(
-                            "order:read", "ORDER", "123", 9, 0, 0, 0, true, false));
-            assertThat(calls.get()).isEqualTo(4);
-            assertThat(invalid.get()).isZero();
-            assertThat(body.get()).contains("\"recordKey\":\"123\"", "\"proposedAllowed\":false");
 
         } finally {
             server.stop(0);

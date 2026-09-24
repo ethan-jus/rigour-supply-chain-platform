@@ -57,6 +57,7 @@ class HistoryOrderSyncTest {
                     + " BIGINT,product_id BIGINT,product_variant_id BIGINT,unit_code"
                     + " VARCHAR(32),quantity DECIMAL(20,6),deleted INT)");
         try (var c = ds.getConnection()) {
+            ScriptUtils.executeSqlScript(c, new ClassPathResource("db/migration/V50__dhb_projection_change_audit.sql"));
             ScriptUtils.executeSqlScript(
                     c,
                     new ClassPathResource(
@@ -652,21 +653,378 @@ class HistoryOrderSyncTest {
     }
 
     @Test
-    void changedConfirmedAmountPreservesOriginalFactAndBalance() {
+    void changedConfirmedAmountUpdatesExactReceiptAndKeepsAuditWithoutDuplicating() {
         order(1, 1, "1000", "0", "10");
         intake("D1", 1, "1000", "10");
         bind(List.of("D1"), List.of(base(1, "0")));
         pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
         assertThat(pay(receipt("R1", "D1", "500", "CONFIRMED", "h2")).state())
-                .isEqualTo("SOURCE_CHANGED_REVIEW");
-        assertThat(paid(1)).isEqualByComparingTo("300");
+                .isEqualTo("SYNCED");
+        assertThat(paid(1)).isEqualByComparingTo("500");
         assertThat(db.queryForObject("SELECT amount FROM order_sync_receipt", BigDecimal.class))
-                .isEqualByComparingTo("300");
+                .isEqualByComparingTo("500");
         assertThat(
                         db.queryForObject(
                                 "SELECT paid_amount FROM order_payment_record WHERE deleted=0",
                                 BigDecimal.class))
-                .isEqualByComparingTo("300");
+                .isEqualByComparingTo("500");
+        pay(receipt("R1", "D1", "500", "CONFIRMED", "h2"));
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void boundOneToOneUpdatesCommercialDataAndPreservesHistoricalIdentity() {
+        order(1, 1, "1000", "300", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "300")));
+        db.execute("ALTER TABLE order_sales_order ADD payment_voucher_keys_json VARCHAR(1000)");
+        db.update("UPDATE order_sales_order SET payment_voucher_keys_json='[\"original-proof\"]'");
+        when(salesOrders.update(eq(1L), any())).thenAnswer(call -> {
+            SalesOrderCommand c = call.getArgument(1);
+            assertThat(c.sourceSystemCode()).isEqualTo("FEISHU");
+            assertThat(c.sourceOrderNo()).isEqualTo("F1");
+            assertThat(c.orderDate()).isEqualTo(date);
+            assertThat(c.ownerEmployeeCode()).isEqualTo("ZHANG");
+            assertThat(c.paymentVoucherKeys()).containsExactly("original-proof");
+            assertThat(c.lines().getFirst().quantity()).isEqualByComparingTo("8");
+            db.update("UPDATE order_sales_order SET payable_amount=800 WHERE id=1");
+            return JsonMapper.builder().build().readValue("{\"id\":1,\"payableAmount\":800}",
+                    com.rigour.order.api.v1.model.SalesOrderDetailView.class);
+        });
+        var result = tx.execute(s -> store.sourceOrder(tenant, source("D1", 1, "800", "8")));
+        assertThat(result.state()).isEqualTo("UPDATED");
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        assertThat(db.queryForObject("SELECT unpaid_amount FROM order_sales_order", BigDecimal.class)).isEqualByComparingTo("500");
+        assertThat(db.queryForObject("SELECT difference_amount FROM order_history_group", BigDecimal.class)).isZero();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit", Integer.class)).isEqualTo(1);
+        tx.execute(s -> store.sourceOrder(tenant, source("D1", 1, "800", "8")));
+        verify(salesOrders, times(1)).update(eq(1L), any());
+    }
+
+    @Test
+    void boundCommercialUpdateDoesNotResurrectReconciledOpeningPayment() {
+        order(1, 1, "1000", "296.40", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "296.40")));
+        // 已完成的历史对账退出了旧款，但当年的关联期初仍保留旧值。
+        db.update("UPDATE order_sales_order SET paid_amount=0,unpaid_amount=1000,payment_status_code='UNPAID'");
+        db.update("INSERT INTO order_payment_record(id,tenant_id,order_id,paid_amount,payment_status_code,deleted)"
+                + " VALUES(99,?,1,296.4,'RECEIVED',1)", tenant);
+        when(salesOrders.update(eq(1L), any())).thenAnswer(call -> {
+            db.update("UPDATE order_sales_order SET payable_amount=800 WHERE id=1");
+            return JsonMapper.builder().build().readValue("{\"id\":1,\"payableAmount\":800}",
+                    com.rigour.order.api.v1.model.SalesOrderDetailView.class);
+        });
+        assertThat(tx.execute(s -> store.sourceOrder(tenant, source("D1", 1, "800", "8"))).state())
+                .isEqualTo("UPDATED");
+        assertThat(paid(1)).isZero();
+        assertThat(db.queryForObject("SELECT opening_paid FROM order_history_member", BigDecimal.class)).isZero();
+        assertThat(db.queryForObject("SELECT unpaid_amount FROM order_sales_order", BigDecimal.class)).isEqualByComparingTo("800");
+        assertThat(db.queryForObject("SELECT deleted FROM order_payment_record WHERE id=99", Integer.class)).isEqualTo(1);
+        pay(receipt("R2", "D1", "100", "CONFIRMED", "new-payment"));
+        assertThat(paid(1)).isEqualByComparingTo("100");
+        tx.execute(s -> store.sourceOrder(tenant, source("D1", 1, "800", "8")));
+        assertThat(paid(1)).isEqualByComparingTo("100");
+        verify(salesOrders, times(1)).update(eq(1L), any());
+    }
+
+    @Test
+    void boundCommercialUpdateKeepsActiveAllocationsWithoutDoubleCounting() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
+        db.update("UPDATE order_history_member SET opening_paid=296.4");
+        when(salesOrders.update(eq(1L), any())).thenAnswer(call -> {
+            db.update("UPDATE order_sales_order SET payable_amount=800 WHERE id=1");
+            return JsonMapper.builder().build().readValue("{\"id\":1,\"payableAmount\":800}",
+                    com.rigour.order.api.v1.model.SalesOrderDetailView.class);
+        });
+        tx.execute(s -> store.sourceOrder(tenant, source("D1", 1, "800", "8")));
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        assertThat(db.queryForObject("SELECT opening_paid FROM order_history_member", BigDecimal.class)).isZero();
+        assertThat(db.queryForObject("SELECT SUM(amount) FROM order_sync_allocation", BigDecimal.class)).isEqualByComparingTo("300");
+        pay(receipt("R2", "D1", "100", "CONFIRMED", "h2"));
+        assertThat(paid(1)).isEqualByComparingTo("400");
+    }
+
+    @Test
+    void boundUpdateFailureRollsBackSourceAndAudit() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        when(salesOrders.update(eq(1L), any())).thenThrow(new IllegalStateException("执行约束阻止覆盖"));
+        assertThatThrownBy(() -> tx.execute(s -> store.sourceOrder(tenant, source("D1", 1, "800", "8"))))
+                .hasMessageContaining("执行约束阻止覆盖");
+        assertThat(db.queryForObject("SELECT amount FROM order_sync_source", BigDecimal.class)).isEqualByComparingTo("1000");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit", Integer.class)).isZero();
+        doReturn(JsonMapper.builder().build().readValue("{\"id\":1,\"payableAmount\":800}",
+                com.rigour.order.api.v1.model.SalesOrderDetailView.class)).when(salesOrders).update(eq(1L), any());
+        assertThatThrownBy(() -> tx.execute(s -> store.sourceOrder(tenant, source("D1", 1, "900", "9"))))
+                .hasMessageContaining("来源明细折后金额与订单金额不一致");
+        assertThat(db.queryForObject("SELECT amount FROM order_sync_source", BigDecimal.class)).isEqualByComparingTo("1000");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit", Integer.class)).isZero();
+    }
+
+    @Test
+    void splitBaselineReceiptChangesKeepVouchersDatesAndTotalThenCancelOnce() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
+        db.execute("ALTER TABLE order_payment_record ADD voucher_keys_json VARCHAR(1000)");
+        db.update("UPDATE order_payment_record SET paid_amount=150,voucher_keys_json='[\"proof\"]'");
+        db.update("INSERT INTO order_payment_record(id,tenant_id,connector_id,source_system_code,source_record_id,source_document_no,"
+                + "order_id,customer_id,paid_amount,payment_status_code,payment_time,collector_staff_code,revision,deleted,voucher_keys_json)"
+                + " SELECT id+1,tenant_id,connector_id,source_system_code,source_record_id,'R1#C21-2',order_id,customer_id,150,"
+                + "payment_status_code,payment_time,'ZHANG',0,0,voucher_keys_json FROM order_payment_record");
+        db.update("UPDATE order_sync_receipt SET state='BASELINE_COVERED',occurred_at=?", java.sql.Timestamp.from(date));
+        db.update("UPDATE order_history_member SET opening_paid=300");
+        var before = db.queryForList("SELECT id,payment_time,voucher_keys_json FROM order_payment_record ORDER BY id");
+        assertThat(pay(receipt("R1", "D1", "500", "CONFIRMED", "h2")).state()).isEqualTo("SYNCED");
+        assertThat(paid(1)).isEqualByComparingTo("500");
+        assertThat(db.queryForList("SELECT id,payment_time,voucher_keys_json FROM order_payment_record ORDER BY id")).isEqualTo(before);
+        assertThat(db.queryForList("SELECT paid_amount FROM order_payment_record", BigDecimal.class))
+                .allSatisfy(a -> assertThat(a).isEqualByComparingTo("250"));
+        pay(receipt("R1", "D1", "500", "CONFIRMED", "h2"));
+        assertThat(paid(1)).isEqualByComparingTo("500");
+        pay(receipt("R1", "D1", "500", "CANCELLED", "h3"));
+        pay(receipt("R1", "D1", "500", "CANCELLED", "h3"));
+        assertThat(paid(1)).isZero();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record WHERE deleted=0", Integer.class)).isZero();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit", Integer.class)).isEqualTo(2);
+    }
+
+    private void pendingHistoricalReceipt() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "initial"));
+        db.update("DELETE FROM order_sync_allocation");
+        db.update("UPDATE order_sync_receipt SET occurred_at=?,source_status='PENDING',state='STATUS_REVIEW'", java.sql.Timestamp.from(date));
+        db.update("UPDATE order_payment_record SET payment_time=?,payment_status_code='PENDING'", java.sql.Timestamp.from(date.minusSeconds(86400)));
+        db.update("UPDATE order_sales_order SET paid_amount=0,unpaid_amount=1000");
+        db.execute("CREATE TABLE order_fund_document(id BIGINT,tenant_id VARCHAR(36),connector_id VARCHAR(36),"
+                + "source_system_code VARCHAR(32),direction_code VARCHAR(20),source_document_no VARCHAR(128),"
+                + "document_status_code VARCHAR(32),amount DECIMAL(20,2),occurred_time TIMESTAMP,"
+                + "revision INT,updated_by VARCHAR(50),updated_time TIMESTAMP,deleted INT)");
+        db.update("INSERT INTO order_fund_document VALUES(1,?,?,'DINGHUOBAO','RECEIPT','R1','PENDING',300,?,0,NULL,NULL,0)",
+                tenant, connector.toString(), java.sql.Timestamp.from(date));
+    }
+
+    private Receipt historicalStatus(String status, String hash) {
+        return new Receipt(connector, "R1", "D1", 1L, new BigDecimal("300"), date.plusSeconds(86400),
+                status, paidAt.plusSeconds(86400), hash);
+    }
+
+    private Intake syncHistorical(Receipt c) {
+        return tx.execute(s -> store.historicalReceiptStatus(tenant, c));
+    }
+
+    @Test
+    void historicalPendingConfirmationPreservesDatesAndIsIdempotent() {
+        pendingHistoricalReceipt();
+        var orderDate = db.queryForObject("SELECT order_date FROM order_sales_order", java.sql.Timestamp.class);
+        var paymentDate = db.queryForObject("SELECT payment_time FROM order_payment_record", java.sql.Timestamp.class);
+        var command = historicalStatus("CONFIRMED", "confirmed");
+        assertThat(syncHistorical(command).state()).isEqualTo("SYNCED");
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        assertThat(db.queryForObject("SELECT opening_paid FROM order_history_member", BigDecimal.class)).isEqualByComparingTo("300");
+        assertThat(db.queryForObject("SELECT payment_status_code FROM order_payment_record", String.class)).isEqualTo("CHECKED");
+        assertThat(db.queryForObject("SELECT state FROM order_sync_receipt", String.class)).isEqualTo("SYNCED");
+        assertThat(db.queryForObject("SELECT occurred_at FROM order_sync_receipt", java.sql.Timestamp.class)).isEqualTo(java.sql.Timestamp.from(date));
+        assertThat(db.queryForObject("SELECT payment_time FROM order_payment_record", java.sql.Timestamp.class)).isEqualTo(paymentDate);
+        assertThat(db.queryForObject("SELECT order_date FROM order_sales_order", java.sql.Timestamp.class)).isEqualTo(orderDate);
+        assertThat(db.queryForObject("SELECT occurred_time FROM order_fund_document", java.sql.Timestamp.class)).isEqualTo(java.sql.Timestamp.from(date));
+        assertThat(db.queryForObject("SELECT document_status_code FROM order_fund_document", String.class)).isEqualTo("CONFIRMED");
+        var before = db.queryForList("SELECT * FROM order_payment_record");
+        int audits = db.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit", Integer.class);
+        assertThat(syncHistorical(command).state()).isEqualTo("SYNCED");
+        assertThat(db.queryForList("SELECT * FROM order_payment_record")).isEqualTo(before);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit", Integer.class)).isEqualTo(audits);
+        assertThat(paid(1)).isEqualByComparingTo("300");
+    }
+
+    @Test
+    void historicalAmountChangeIsRetriableReviewWithoutChangingMoney() {
+        pendingHistoricalReceipt();
+        var change = new Receipt(connector, "R1", "D1", 1L, new BigDecimal("400"), date, "CONFIRMED", paidAt.plusSeconds(1), "changed");
+        assertThat(syncHistorical(change).state()).isEqualTo("SOURCE_CHANGED_REVIEW");
+        assertThat(db.queryForObject("SELECT paid_amount FROM order_payment_record", BigDecimal.class)).isEqualByComparingTo("300");
+        assertThat(paid(1)).isZero();
+        assertThat(db.queryForObject("SELECT pending_checksum FROM order_sync_receipt", String.class)).isEqualTo("changed");
+        assertThat(syncHistorical(historicalStatus("CONFIRMED", "fixed")).state()).isEqualTo("SYNCED");
+        assertThat(db.queryForObject("SELECT pending_checksum FROM order_sync_receipt", String.class)).isNull();
+    }
+
+    @Test
+    void historicalMissingPaymentDoesNotCreateOrAcknowledgePayment() {
+        pendingHistoricalReceipt();
+        db.update("DELETE FROM order_payment_record");
+        assertThat(syncHistorical(historicalStatus("CONFIRMED", "confirmed")).state()).isEqualTo("SOURCE_CHANGED_REVIEW");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isZero();
+        assertThat(paid(1)).isZero();
+    }
+
+    @Test
+    void historicalConfirmationKeepsExistingAllocationEffective() {
+        pendingHistoricalReceipt();
+        long paymentId = db.queryForObject("SELECT id FROM order_payment_record", Long.class);
+        db.update("INSERT INTO order_sync_allocation(tenant_id,connector_id,receipt_no,order_id,amount,payment_id,evidence,actor_id,created_at)"
+                + " VALUES(?,?,?,1,300,?,'已有关联','test',?)", tenant, connector.toString(), "R1", paymentId,
+                java.sql.Timestamp.from(paidAt));
+        assertThat(syncHistorical(historicalStatus("CONFIRMED", "confirmed")).state()).isEqualTo("SYNCED");
+        assertThat(db.queryForObject("SELECT state FROM order_sync_receipt", String.class)).isEqualTo("ALLOCATED");
+        assertThat(db.queryForObject("SELECT opening_paid FROM order_history_member", BigDecimal.class)).isZero();
+        assertThat(paid(1)).isEqualByComparingTo("300");
+    }
+
+    @Test
+    void unknownHistoricalReceiptRemainsReviewAndCannotCrossTenantOrConnector() {
+        pendingHistoricalReceipt();
+        var other = new Receipt(UUID.randomUUID(), "R1", "D1", 1L, new BigDecimal("300"), date, "CONFIRMED", paidAt, "other");
+        assertThat(syncHistorical(other).state()).isEqualTo("HISTORY_REVIEW");
+        assertThat(tx.execute(s -> store.historicalReceiptStatus(UUID.randomUUID().toString(), historicalStatus("CONFIRMED", "other"))).state())
+                .isEqualTo("HISTORY_REVIEW");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sync_receipt", Integer.class)).isEqualTo(1);
+        assertThat(paid(1)).isZero();
+    }
+
+    @Test
+    void historicalCancellationAndStaleResponsesCannotDuplicateMoney() {
+        pendingHistoricalReceipt();
+        syncHistorical(historicalStatus("CONFIRMED", "confirmed"));
+        assertThat(syncHistorical(historicalStatus("CANCELLED", "cancelled")).state()).isEqualTo("CANCELLED");
+        assertThat(paid(1)).isZero();
+        assertThat(syncHistorical(historicalStatus("CANCELLED", "cancelled")).state()).isEqualTo("CANCELLED");
+        var stale = new Receipt(connector, "R1", "D1", 1L, new BigDecimal("300"), date, "CONFIRMED", paidAt, "stale");
+        assertThat(syncHistorical(stale).state()).isEqualTo("STALE");
+        assertThat(syncHistorical(historicalStatus("CONFIRMED", "restore")).state()).isEqualTo("SOURCE_CHANGED_REVIEW");
+        assertThat(paid(1)).isZero();
+    }
+
+    @Test
+    void receivedBeforeFinancialCheckCountsOnceAndConfirmationOnlyChecksIt() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        assertThat(pay(receipt("R1", "D1", "300", "RECEIVED", "same-source")).state()).isEqualTo("ALLOCATED");
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        assertThat(db.queryForObject("SELECT payment_status_code FROM order_payment_record", String.class)).isEqualTo("RECEIVED");
+        assertThat(pay(receipt("R1", "D1", "300", "CONFIRMED", "same-source")).state()).isEqualTo("SYNCED");
+        assertThat(db.queryForObject("SELECT payment_status_code FROM order_payment_record", String.class)).isEqualTo("CHECKED");
+        assertThat(db.queryForObject("SELECT source_status FROM order_sync_receipt", String.class)).isEqualTo("CONFIRMED");
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "same-source"));
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        pay(receipt("R1", "D1", "300", "CANCELLED", "cancel"));
+        assertThat(paid(1)).isZero();
+    }
+
+    @Test
+    void historicalReceivedCountsBeforeFinancialCheckWithoutChangingDates() {
+        pendingHistoricalReceipt();
+        assertThat(syncHistorical(historicalStatus("RECEIVED", "unreviewed")).state()).isEqualTo("SYNCED");
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        assertThat(db.queryForObject("SELECT payment_status_code FROM order_payment_record", String.class)).isEqualTo("RECEIVED");
+        assertThat(db.queryForObject("SELECT document_status_code FROM order_fund_document", String.class)).isEqualTo("PENDING");
+        assertThat(syncHistorical(historicalStatus("CONFIRMED", "checked")).state()).isEqualTo("SYNCED");
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        assertThat(db.queryForObject("SELECT payment_status_code FROM order_payment_record", String.class)).isEqualTo("CHECKED");
+        assertThat(db.queryForObject("SELECT payment_time FROM order_payment_record", java.sql.Timestamp.class))
+                .isEqualTo(java.sql.Timestamp.from(date.minusSeconds(86400)));
+    }
+
+    @Test
+    void sameRawChecksumCanUpgradeReceiptTimeWithoutDuplicatingMoneyOrChangingHistory() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
+        var orderBefore = db.queryForObject("SELECT order_date FROM order_sales_order", java.time.LocalDateTime.class);
+        Instant operation = Instant.parse("2026-09-11T07:47:02Z");
+        var upgraded = new Receipt(connector, "R1", "D1", 1L, new BigDecimal("300"), operation,
+                "CONFIRMED", paidAt, "h1");
+        assertThat(pay(upgraded).state()).isEqualTo("SYNCED");
+        pay(upgraded);
+        assertThat(db.queryForObject("SELECT payment_time FROM order_payment_record", java.time.LocalDateTime.class))
+                .isEqualTo(java.time.LocalDateTime.ofInstant(operation, java.time.ZoneOffset.UTC));
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit", Integer.class)).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT order_date FROM order_sales_order", java.time.LocalDateTime.class)).isEqualTo(orderBefore);
+        assertThat(paid(1)).isEqualByComparingTo("300");
+    }
+
+    @Test
+    void newlyAllocatedHistoricalReceiptUsesFallbackButKeepsRawOccurredAt() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        db.update("UPDATE order_history_member SET baseline_at=?", java.sql.Timestamp.from(date));
+        Instant sourceDate = Instant.parse("2026-09-02T00:00:00Z");
+        var receipt = new Receipt(connector, "R1", "D1", 1L, new BigDecimal("300"), sourceDate, "CONFIRMED", paidAt, "h1");
+        assertThat(pay(receipt).state()).isEqualTo("ALLOCATED");
+        assertThat(db.queryForObject("SELECT payment_time FROM order_payment_record", java.time.LocalDateTime.class))
+                .isEqualTo(java.time.LocalDateTime.ofInstant(com.rigour.order.domain.sync.HistorySyncRules.HISTORICAL_FALLBACK, java.time.ZoneOffset.UTC));
+        assertThat(db.queryForObject("SELECT occurred_at FROM order_sync_receipt", java.time.LocalDateTime.class))
+                .isEqualTo(java.time.LocalDateTime.ofInstant(sourceDate, java.time.ZoneOffset.UTC));
+        pay(receipt);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+        assertThat(paid(1)).isEqualByComparingTo("300");
+    }
+
+    @Test
+    void historicalReceiptDateSurvivesMultipleSourceDateChanges() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
+        var historical = java.sql.Timestamp.from(com.rigour.order.domain.sync.HistorySyncRules.HISTORICAL_FALLBACK);
+        db.update("UPDATE order_payment_record SET payment_time=?", historical);
+        db.update("UPDATE order_sync_receipt SET occurred_at=?", java.sql.Timestamp.from(date));
+        pay(receipt("R1", "D1", "400", "CONFIRMED", "h2"));
+        // 第一次更新后来源 occurred_at 已变为切换点之后，第二次仍须保护业务日期。
+        pay(receipt("R1", "D1", "500", "CONFIRMED", "h3"));
+        assertThat(db.queryForObject("SELECT payment_time FROM order_payment_record", java.sql.Timestamp.class))
+                .isEqualTo(historical);
+        assertThat(paid(1)).isEqualByComparingTo("500");
+        pay(receipt("R1", "D1", "500", "CONFIRMED", "h3"));
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void netRefundAdjustedReceiptIsNotOverwrittenByRawSourceAmount() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
+        db.update("UPDATE order_payment_record SET paid_amount=200");
+        assertThat(pay(receipt("R1", "D1", "500", "CONFIRMED", "h2")).state()).isEqualTo("SOURCE_CHANGED_REVIEW");
+        assertThat(db.queryForObject("SELECT paid_amount FROM order_payment_record", BigDecimal.class)).isEqualByComparingTo("200");
+        // 待处理版本在阻塞解除后可以重试，不被 pending_checksum 永久挡住。
+        db.update("UPDATE order_payment_record SET paid_amount=300");
+        assertThat(pay(receipt("R1", "D1", "500", "CONFIRMED", "h2")).state()).isEqualTo("SYNCED");
+        assertThat(paid(1)).isEqualByComparingTo("500");
+    }
+
+    @Test
+    void baselineReceiptCanMoveBetweenPendingAndConfirmedWithoutDuplicate() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
+        db.update("UPDATE order_sync_receipt SET state='BASELINE_COVERED'");
+        db.update("UPDATE order_history_member SET opening_paid=300");
+        assertThat(pay(receipt("R1", "D1", "300", "PENDING", "h2")).state()).isEqualTo("SYNCED");
+        assertThat(paid(1)).isZero();
+        assertThat(pay(receipt("R1", "D1", "300", "CONFIRMED", "h3")).state()).isEqualTo("SYNCED");
+        assertThat(paid(1)).isEqualByComparingTo("300");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+        var stale = new Receipt(connector, "R1", "D1", 1L, new BigDecimal("900"), paidAt, "CONFIRMED", paidAt.minusSeconds(1), "old");
+        assertThat(pay(stale).state()).isEqualTo("STALE");
+        assertThat(paid(1)).isEqualByComparingTo("300");
     }
 
     @Test

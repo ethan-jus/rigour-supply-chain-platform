@@ -28,7 +28,7 @@ public class OperatingWorkspaceService {
     public static final String ACTION_WRITE = "analytics:operations:write";
     private static final Set<String> DIMENSIONS = Set.of("CITY", "SALES_OWNER");
     private static final Set<String> METRICS =
-            Set.of("SALES_AMOUNT", "PAID_AMOUNT", "CONTACTED_CUSTOMER", "COOPERATED_CUSTOMER");
+            Set.of("SALES_AMOUNT", "PAID_AMOUNT", "RECEIPT_AMOUNT", "CONTACTED_CUSTOMER", "COOPERATED_CUSTOMER", "NEW_CUSTOMER", "REPEAT_CUSTOMER");
     private static final Set<String> KINDS = Set.of("COLLECTION", "CUSTOMER", "STOCK");
     private static final Set<String> STATUSES =
             Set.of("OPEN", "IN_PROGRESS", "RESOLVED", "DISMISSED");

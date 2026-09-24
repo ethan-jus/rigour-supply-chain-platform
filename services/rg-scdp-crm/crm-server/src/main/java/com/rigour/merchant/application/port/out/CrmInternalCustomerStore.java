@@ -45,12 +45,12 @@ public interface CrmInternalCustomerStore {
             String ownerSalesUserId,
             String ownerEmployeeCode,
             String statusCode, String sortBy, String sortDirection, String loginAccount,
-            java.time.LocalDate createdFrom, java.time.LocalDate createdTo, String creatorName, String dhbCustomerCode, String dhbLinkStatus) {
+            java.time.LocalDate createdFrom, java.time.LocalDate createdTo, String creatorName, String dhbLinkStatus) {
         public CustomerSearchCriteria(String customerCode, String customerName, String contactPhone,
                 String customerTypeCode, String regionCode, String ownerSalesUserId, String ownerEmployeeCode,
                 String statusCode, String sortBy, String sortDirection, String loginAccount,
                 java.time.LocalDate createdFrom, java.time.LocalDate createdTo, String creatorName) {
-            this(customerCode,customerName,contactPhone,customerTypeCode,regionCode,ownerSalesUserId,ownerEmployeeCode,statusCode,sortBy,sortDirection,loginAccount,createdFrom,createdTo,creatorName,null,null);
+            this(customerCode,customerName,contactPhone,customerTypeCode,regionCode,ownerSalesUserId,ownerEmployeeCode,statusCode,sortBy,sortDirection,loginAccount,createdFrom,createdTo,creatorName,null);
         }
         public CustomerSearchCriteria(String customerCode, String customerName, String contactPhone,
                 String customerTypeCode, String regionCode, String ownerSalesUserId, String ownerEmployeeCode,

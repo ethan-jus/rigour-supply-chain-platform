@@ -198,6 +198,7 @@ public final class DhbSyncOrchestrationService {
     public void validatePageTarget(CallerIdentity actor,
             com.rigour.integration.api.v1.model.DhbPageSyncCommand command) {
         requireManualCaller(actor);
+        requireSalespersonPermission(actor, command);
         if (command == null || targets(actor.tenantId(), TargetSelection.CONFIGURED).values().stream()
                 .noneMatch(b -> b.key.connectorId().equals(command.connectorId())))
             throw new IllegalArgumentException("当前租户没有该连接器同步任务");
@@ -207,10 +208,35 @@ public final class DhbSyncOrchestrationService {
             com.rigour.integration.api.v1.model.DhbPageSyncCommand command,
             java.util.function.Consumer<String> progress, boolean background) {
         requireManualCaller(actor);
+        requireSalespersonPermission(actor, command);
         if (command == null) throw new IllegalArgumentException("同步范围不能为空");
         TargetBucket bucket = targets(actor.tenantId(), TargetSelection.CONFIGURED).values().stream()
                 .filter(b -> b.key.connectorId().equals(command.connectorId())).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("当前租户没有该连接器同步任务"));
+        return executePage(actor, command, progress, background, bucket);
+    }
+
+    public void validateBusinessChain(UUID tenant, UUID connector) {
+        var bucket = targets(tenant, TargetSelection.CONFIGURED).values().stream()
+                .filter(b -> b.key.connectorId().equals(connector)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("当前租户没有该连接器同步任务"));
+        if (bucket.crmTarget == null || bucket.orderTarget == null)
+            throw new IllegalArgumentException("请先配置客户与订单同步目标");
+    }
+
+    public DhbSyncOrchestrationResult runScheduledChain(UUID tenant, UUID connector,
+            java.util.function.Consumer<String> progress) {
+        validateBusinessChain(tenant, connector);
+        var bucket = targets(tenant, TargetSelection.CONFIGURED).values().stream()
+                .filter(b -> b.key.connectorId().equals(connector)).findFirst().orElseThrow();
+        return executePage(serviceCaller(tenant), new com.rigour.integration.api.v1.model.DhbPageSyncCommand(
+                com.rigour.integration.api.v1.model.DhbPageSyncCommand.Scope.BUSINESS_CHAIN,
+                connector, null, null, properties.getMaxPages(), true), progress, true, bucket);
+    }
+
+    private DhbSyncOrchestrationResult executePage(CallerIdentity actor,
+            com.rigour.integration.api.v1.model.DhbPageSyncCommand command,
+            java.util.function.Consumer<String> progress, boolean background, TargetBucket bucket) {
         Instant start=clock.instant();
         String type=command.scope().name();
         int pages=maxPages(command.maxPages());
@@ -219,6 +245,28 @@ public final class DhbSyncOrchestrationService {
                     List<DhbSyncOrchestrationStepView> steps=new ArrayList<>();
                     CallerIdentity caller=serviceCaller(actor.tenantId());
                     switch (command.scope()) {
+                        case BUSINESS_CHAIN -> {
+                            validateBusinessChain(actor.tenantId(), command.connectorId());
+                            runStaffStep(bucket, caller, pages, null, steps, true, progress);
+                            if (!dependenciesReady(steps)) {
+                                steps.add(skipped("CRM", "CUSTOMER", "业务员同步未完成，暂停客户及订单同步"));
+                                steps.add(skipped("ORDER", "ORDER_SALES_PACKAGE", "等待业务员关联完成"));
+                                break;
+                            }
+                            progress.accept("业务员核对完成，正在同步客户资料及待关联记录");
+                            var customers = crmClient.syncLatestCustomersInBackground(caller,
+                                    bucket.key.connectorId(), bucket.crmTarget.taskId(), pages, actor.userId() == null ? null : actor.principalId(), progress);
+                            for (var item : customers.objects()) steps.add(crmStep(item, customers.status()));
+                            if (!dependencyCompleted(customers.status()) || !dependenciesReady(steps) || customers.objects().isEmpty()) {
+                                steps.add(skipped("ORDER", "ORDER_SALES_PACKAGE", "客户同步未完成，暂停订单同步"));
+                                break;
+                            }
+                            var protectedCaller = new CallerIdentity(caller.principalScope(), caller.principalId(),
+                                    caller.tenantId(), null, null, caller.sessionId(), 0, 0, 0,
+                                    Set.of("DHB_SYNC_ORCHESTRATOR", "DHB_PROTECT_HISTORY"), caller.permissions());
+                            runIncrementalOrderPackageSteps(protectedCaller, bucket, pages, steps, progress, true);
+                        }
+                        case SALESPERSON -> runStaffStep(bucket, caller, pages, null, steps, true, progress);
                         case SALES_ORDER, RECEIPT, PAYMENT, SHIPMENT, TRANSFER -> {
                             if (bucket.orderTarget == null) throw new IllegalArgumentException("未配置订单同步任务");
                             SyncRunView r=orderSyncService.runOrderPull(caller,bucket.orderTarget.taskId(),
@@ -254,8 +302,17 @@ public final class DhbSyncOrchestrationService {
                     var tenants=List.of(new DhbSyncOrchestrationTenantView(actor.tenantId(),command.connectorId(),
                             aggregateStepStatus(steps),steps));
                     return new DhbSyncOrchestrationResult(UUID.randomUUID(),aggregateTenantStatus(tenants),
-                        "MANUAL_"+type,start,clock.instant(),tenants);
+                        ("SERVICE".equals(actor.principalScope()) ? "SCHEDULED_" : "MANUAL_")+type,start,clock.instant(),tenants);
                 });
+    }
+
+    static boolean dependenciesReady(List<DhbSyncOrchestrationStepView> steps) {
+        return !steps.isEmpty() && steps.stream().allMatch(s -> dependencyCompleted(s.status()));
+    }
+
+    private static boolean dependencyCompleted(String status) {
+        // Row-level risks are durable and checked again by each order; only an incomplete batch stops the chain.
+        return "SUCCEEDED".equals(status) || "SUCCEEDED_WITH_WARNINGS".equals(status);
     }
 
     public DhbSyncOrchestrationResult runScheduled() {
@@ -394,28 +451,43 @@ public final class DhbSyncOrchestrationService {
     private boolean runIamStaffStep(TargetBucket bucket, CallerIdentity caller, int maxPages,
                                     SyncWindow syncWindow,
                                     List<DhbSyncOrchestrationStepView> steps) {
+        return runStaffStep(bucket, caller, maxPages, syncWindow, steps, false, stage -> {});
+    }
+
+    private boolean runStaffStep(TargetBucket bucket, CallerIdentity caller, int maxPages,
+                                    SyncWindow syncWindow, List<DhbSyncOrchestrationStepView> steps,
+                                    boolean salespeopleOnly, java.util.function.Consumer<String> progress) {
         try {
             DhbClient.Connector connector = connector(bucket);
-            PageRequest request = PageRequest.first(1_000);
+            PageRequest request = PageRequest.first(salespeopleOnly ? 100 : 1_000);
             long fetched = 0;
             int created = 0;
             int updated = 0;
             int unchanged = 0;
             int failed = 0;
+            boolean incomplete = false;
             List<String> failures = new ArrayList<>();
             for (int pageNo = 0; pageNo < maxPages; pageNo++) {
+                progress.accept("正在读取订货宝业务员第 " + (pageNo + 1) + " 页");
                 Page<Staff> page = dhbClient.getStaff(connector,
-                        new StaffQuery(request, null, null, null, null, timeWindow(syncWindow)));
-                List<Staff> items = page.items();
+                        new StaffQuery(request, salespeopleOnly ? "salesman" : null, null, null, null, timeWindow(syncWindow)));
+                List<Staff> items = salespeopleOnly ? page.items().stream()
+                        .filter(item -> "salesman".equalsIgnoreCase(item.staffType())).toList() : page.items();
                 fetched += items.size();
                 List<RawLanding> raw = new ArrayList<>();
                 List<DhbStaffRow> rows = new ArrayList<>();
                 String sourceTenantKey = sourceTenantKey(bucket);
                 for (Staff item : items) {
-                    String sourceStaffId = firstNonBlank(item.sourceId(), item.staffId(), item.accountId());
+                    String sourceStaffId = salespeopleOnly ? firstNonBlank(item.staffId())
+                            : firstNonBlank(item.sourceId(), item.staffId(), item.accountId());
                     if (sourceStaffId == null) {
                         failed++;
                         failures.add("sourceStaffId为空");
+                        continue;
+                    }
+                    if (salespeopleOnly && (item.staffName() == null || item.staffName().isBlank())) {
+                        failed++;
+                        failures.add("来源员工 " + sourceStaffId + " 缺少姓名，请先在订货宝补齐");
                         continue;
                     }
                     String payloadJson = payloadJson(item.attributes());
@@ -429,6 +501,7 @@ public final class DhbSyncOrchestrationService {
                 }
                 store.persistRawLandings(caller.tenantId(), bucket.key.connectorId(), raw);
                 if (!rows.isEmpty()) {
+                    progress.accept("正在关联/补录业务员第 " + (pageNo + 1) + " 页，累计读取 " + fetched + " 人");
                     StaffSyncResult result = hrEmployeeClient.sync(caller, rows);
                     created += result.created();
                     updated += result.updated();
@@ -437,17 +510,23 @@ public final class DhbSyncOrchestrationService {
                     failures.addAll(result.failureMessages());
                 }
                 if (!page.hasNext()) break;
+                if (pageNo + 1 == maxPages) {
+                    failed++;
+                    incomplete = true;
+                    failures.add("达到分页上限，仍有来源业务员未核对，请继续同步");
+                }
                 request = page.nextRequest();
             }
-            String status = failed > 0 ? "SUCCEEDED_WITH_WARNINGS" : "SUCCEEDED";
+            String status = incomplete ? "PARTIAL" : failed > 0 ? "SUCCEEDED_WITH_WARNINGS" : "SUCCEEDED";
             String message = failed > 0
                     ? "失败" + failed + "条；未变化" + unchanged + "条；" + oneLine(String.join("；", failures))
                     : "未变化" + unchanged + "条";
-            steps.add(new DhbSyncOrchestrationStepView("IAM", "STAFF", status, null,
-                    fetched, created + updated, failed, Map.of(), message));
+            steps.add(new DhbSyncOrchestrationStepView("HR", "STAFF", status, null,
+                    fetched, created + updated, 0, Map.of(), message,
+                    (long) created, (long) updated, 0L, (long) unchanged, (long) failed));
             return false;
         } catch (RuntimeException error) {
-            steps.add(failed("IAM", "STAFF", error));
+            steps.add(failed("HR", "STAFF", error));
             return true;
         }
     }
@@ -653,7 +732,13 @@ public final class DhbSyncOrchestrationService {
     }
 
     private static DhbSyncOrchestrationStepView crmStep(SyncObjectResult result) {
-        return new DhbSyncOrchestrationStepView("CRM", result.objectType(), result.status(),
+        return crmStep(result, null);
+    }
+
+    private static DhbSyncOrchestrationStepView crmStep(SyncObjectResult result, String batchStatus) {
+        String status = "SUCCEEDED_WITH_WARNINGS".equals(batchStatus) && "SUCCEEDED".equals(result.status())
+                ? batchStatus : result.status();
+        return new DhbSyncOrchestrationStepView("CRM", result.objectType(), status,
                 result.runId(), result.fetched(), result.created() + result.changed() + result.repaired(),
                 result.unmapped(), result.dictionaryRevisions(), null,
                 result.created(), result.changed(), result.repaired(), result.duplicates(), result.rejected());
@@ -691,6 +776,8 @@ public final class DhbSyncOrchestrationService {
                                                  int pages, List<DhbSyncOrchestrationStepView> steps,
                                                  java.util.function.Consumer<String> progress, boolean background) {
         Instant bootstrap = properties.incrementalWindowFromInstant();
+        if (caller.roles().contains("DHB_PROTECT_HISTORY") && bootstrap.isBefore(Instant.parse("2026-09-03T16:00:00Z")))
+            bootstrap = Instant.parse("2026-09-03T16:00:00Z");
         Instant end = clock.instant().minus(SCHEDULED_WINDOW_SAFETY_LAG);
         for (String type : List.of("SALES_ORDER", "RECEIPT", "PAYMENT")) {
             Instant cursor = objectCheckpoints.successfulTo(
@@ -716,8 +803,12 @@ public final class DhbSyncOrchestrationService {
                                                                  int pages, java.util.function.Consumer<String> progress,
                                                                  boolean background) {
         ScopeTotals totals = new ScopeTotals();
+        boolean pending = false;
         Instant windowFrom = from;
-        Duration sliceWindow = properties.effectiveIncrementalWindow();
+        // 收款源仅接受更新时间下限；多片会反复读取并丢弃后续记录。后台一次扫描至固定上限，
+        // 仍由 runOrderPull 本地过滤上限，完整分页成功后才推进收款游标。
+        Duration sliceWindow = background && "RECEIPT".equals(type)
+                ? Duration.between(from, end) : properties.effectiveIncrementalWindow();
         for (int slice = 0; (background || slice < MAX_INCREMENTAL_SLICES) && windowFrom.isBefore(end); slice++) {
             Instant windowTo = windowFrom.plus(sliceWindow);
             if (windowTo.isAfter(end)) windowTo = end;
@@ -726,14 +817,18 @@ public final class DhbSyncOrchestrationService {
                     + incrementalWindowText(windowTo) + "；本阶段已核对 " + totals.fetched + " 条");
             SyncRunView result;
             try {
-                result = orderSyncService.runOrderPull(caller, bucket.orderTarget.taskId(),
-                        new SyncRunCommand(windowFrom, windowTo, null, null, null, type), pages);
+                var sliceCommand = new SyncRunCommand(windowFrom, windowTo, null, null, null, type);
+                result = background
+                        ? orderSyncService.runOrderPull(caller, bucket.orderTarget.taskId(), sliceCommand, pages, progress)
+                        : orderSyncService.runOrderPull(caller, bucket.orderTarget.taskId(), sliceCommand, pages);
             } catch (RuntimeException error) {
                 return totals.step(type, "FAILED",
                         incrementalFailureMessage(oneLine(error.getMessage()), windowFrom, from));
             }
             totals.add(result);
-            if (!"SUCCEEDED".equals(result.status())) {
+            boolean safelyCaptured = "DHB_DURABLE_PROJECTION_PENDING".equals(result.errorCode());
+            pending |= safelyCaptured;
+            if (!"SUCCEEDED".equals(result.status()) && !safelyCaptured) {
                 String detail = result.errorMessage() == null
                         ? "订货宝订单同步返回" + result.status() : oneLine(result.errorMessage());
                 return totals.step(type, result.status(),
@@ -748,7 +843,8 @@ public final class DhbSyncOrchestrationService {
                         + "；剩余未同步时段至 " + incrementalWindowText(end)
                         + "，请再次点击「开始同步」继续推进"
                 : null;
-        return totals.step(type, "SUCCEEDED", message);
+        return totals.step(type, pending ? "PARTIAL" : "SUCCEEDED", pending
+                ? "来源扫描已推进；业务仍有待处理项，下次单笔重试，不表示全部入账成功" : message);
     }
 
     private static String incrementalFailureMessage(String detail, Instant failedFrom, Instant startedFrom) {
@@ -907,6 +1003,15 @@ public final class DhbSyncOrchestrationService {
                 || !caller.permissions().contains("integration:dhb:write"))
                 && !caller.permissions().contains("*:*:*")) {
             throw new AuthorizationDeniedException("integration:dhb:write");
+        }
+    }
+
+    private static void requireSalespersonPermission(CallerIdentity actor,
+            com.rigour.integration.api.v1.model.DhbPageSyncCommand command) {
+        if (command != null && (command.scope() == com.rigour.integration.api.v1.model.DhbPageSyncCommand.Scope.SALESPERSON
+                || command.scope() == com.rigour.integration.api.v1.model.DhbPageSyncCommand.Scope.BUSINESS_CHAIN)
+                && !actor.permissions().contains("hr:employee:sync") && !actor.permissions().contains("*:*:*")) {
+            throw new AuthorizationDeniedException("hr:employee:sync");
         }
     }
 

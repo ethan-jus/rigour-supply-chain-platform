@@ -1,5 +1,7 @@
 package com.rigour.tenant.iam.domain.model.settings;
 
+import com.rigour.shared.core.exception.RequestValidationException;
+
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -36,37 +38,37 @@ public final class AppMenuTree {
         var resources = new HashSet<UUID>();
         for (Node node : nodes) {
             if (!List.of("MENU", "PAGE", "BUTTON").contains(node.type()))
-                throw new IllegalArgumentException("菜单类型无效");
+                throw new RequestValidationException("菜单类型无效");
             if (node.name() == null || node.name().isBlank() || node.name().length() > 128)
-                throw new IllegalArgumentException("菜单名称应为 1 到 128 个字符");
+                throw new RequestValidationException("菜单名称应为 1 到 128 个字符");
             if (!List.of("ACTIVE", "DISABLED").contains(node.status()))
-                throw new IllegalArgumentException("菜单状态无效");
+                throw new RequestValidationException("菜单状态无效");
             if (node.iconKey() != null && !AppMenuIcons.KEYS.contains(node.iconKey()))
-                throw new IllegalArgumentException("请选择有效的内置图标");
+                throw new RequestValidationException("请选择有效的内置图标");
             if ("BUTTON".equals(node.type()) && node.resourceId() == null)
-                throw new IllegalArgumentException("按钮必须绑定已实现功能");
+                throw new RequestValidationException("按钮必须绑定已实现功能");
             if ("PAGE".equals(node.type())
                     && node.resourceId() == null
                     && (blank(node.routeKey())
                             || blank(node.routePath())
                             || blank(node.componentPath())))
-                throw new IllegalArgumentException("自定义页面必须填写路由地址和组件路径");
+                throw new RequestValidationException("自定义页面必须填写路由地址和组件路径");
             if (node.resourceId() != null && !resources.add(node.resourceId()))
-                throw new IllegalArgumentException("该功能已添加到菜单");
+                throw new RequestValidationException("该功能已添加到菜单");
             Node parent = node.parentId() == null ? null : index.get(node.parentId());
             if (node.parentId() != null && parent == null)
-                throw new IllegalArgumentException("上级菜单不存在或不属于当前应用");
+                throw new RequestValidationException("上级菜单不存在或不属于当前应用");
             if ("BUTTON".equals(node.type()) && (parent == null || !"PAGE".equals(parent.type())))
-                throw new IllegalArgumentException("按钮必须添加到页面下");
+                throw new RequestValidationException("按钮必须添加到页面下");
             if (!"BUTTON".equals(node.type()) && parent != null && !"MENU".equals(parent.type()))
-                throw new IllegalArgumentException("目录和页面的上级只能是目录");
+                throw new RequestValidationException("目录和页面的上级只能是目录");
             var seen = new HashSet<UUID>();
             Node cursor = node;
             while (cursor != null) {
-                if (!seen.add(cursor.id())) throw new IllegalArgumentException("菜单不能移动到自身或子菜单下");
+                if (!seen.add(cursor.id())) throw new RequestValidationException("菜单不能移动到自身或子菜单下");
                 if (node.protectedNode()
                         && (!"ACTIVE".equals(cursor.status()) || !cursor.visible()))
-                    throw new IllegalArgumentException("系统管理恢复入口及其上级不能隐藏或停用");
+                    throw new RequestValidationException("系统管理恢复入口及其上级不能隐藏或停用");
                 cursor = cursor.parentId() == null ? null : index.get(cursor.parentId());
             }
         }

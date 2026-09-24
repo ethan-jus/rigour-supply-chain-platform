@@ -2,12 +2,13 @@ package com.rigour.tenant.iam.infrastructure.persistence.settings;
 
 import static com.rigour.tenant.iam.infrastructure.persistence.settings.JdbcAppSettingsStore.bin;
 
+import com.rigour.shared.core.exception.RequestValidationException;
+import com.rigour.shared.core.exception.StateConflictException;
 import com.rigour.tenant.iam.application.port.out.*;
 import com.rigour.tenant.iam.application.port.out.AppEmployeeClient.Employee;
 import com.rigour.tenant.iam.application.service.management.ManagementModels.Actor;
 import com.rigour.tenant.iam.application.service.settings.AppAccessModels.Role;
 import com.rigour.tenant.iam.application.service.settings.AppMemberModels.*;
-import com.rigour.tenant.iam.domain.model.settings.AppScopeRules;
 import com.rigour.tenant.iam.infrastructure.persistence.UuidBinaryCodec;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -17,7 +18,6 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Repository
 public class JdbcAppMemberStore implements AppMemberStore {
@@ -26,7 +26,6 @@ public class JdbcAppMemberStore implements AppMemberStore {
     private final JdbcAppRoleStore roles;
     private final AppEmployeeClient employees;
     private final PasswordHasher passwords;
-    private final AppReferenceValidator references;
     private final TransactionTemplate tx;
 
     public JdbcAppMemberStore(
@@ -35,9 +34,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
             JdbcAppRoleStore roles,
             AppEmployeeClient employees,
             PasswordHasher passwords,
-            PlatformTransactionManager manager,
-            AppReferenceValidator references) {
-        this.references = references;
+            PlatformTransactionManager manager) {
         this.jdbc = jdbc;
         this.settings = settings;
         this.roles = roles;
@@ -64,7 +61,9 @@ public class JdbcAppMemberStore implements AppMemberStore {
             String remark,
             long version,
             String employeeCode,
-            long accessVersion, java.time.Instant createdTime, java.time.Instant updatedTime) {}
+            long accessVersion,
+            java.time.Instant createdTime,
+            java.time.Instant updatedTime) {}
 
     private static final String SELECT =
             "SELECT m.*,u.username,u.display_name,u.status AS"
@@ -90,14 +89,16 @@ public class JdbcAppMemberStore implements AppMemberStore {
                                 r.getString("remark"),
                                 r.getLong("version"),
                                 r.getString("employee_code"),
-                                r.getLong("hr_access_version"), r.getTimestamp("created_at").toInstant(), r.getTimestamp("updated_at").toInstant()),
+                                r.getLong("hr_access_version"),
+                                r.getTimestamp("created_at").toInstant(),
+                                r.getTimestamp("updated_at").toInstant()),
                 args.toArray());
     }
 
     private Raw raw(Actor a, UUID id) {
         return raw(a, " AND m.user_id=?", bin(id)).stream()
                 .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("供应链用户不存在"));
+                .orElseThrow(() -> new RequestValidationException("供应链用户不存在"));
     }
 
     private Member view(Actor a, Raw r, Employee employee) {
@@ -130,18 +131,32 @@ public class JdbcAppMemberStore implements AppMemberStore {
                 r.employeeCode(),
                 employee,
                 assigned,
-                limit(a, r.id(), "REGION"),
-                limit(a, r.id(), "WAREHOUSE"),
                 reason == null,
-                reason, auditActor(a,r.id(),true),r.createdTime(),auditActor(a,r.id(),false),r.updatedTime());
+                reason,
+                auditActor(a, r.id(), true),
+                r.createdTime(),
+                auditActor(a, r.id(), false),
+                r.updatedTime());
     }
 
     private String auditActor(Actor a, UUID id, boolean created) {
-        var found=jdbc.query("SELECT u.display_name FROM iam_app_audit log LEFT JOIN iam_user u ON u.tenant_id=log.tenant_id AND u.id=log.actor_id WHERE log.tenant_id=? AND log.application_id=? AND log.target_id=? AND "
-                +(created?"log.action_code='MEMBER_CREATE'":"log.action_code IN ('MEMBER_CREATE','MEMBER_UPDATE','MEMBER_STATUS','MEMBER_BATCH_ROLES','MEMBER_PASSWORD_RESET')")
-                +" ORDER BY log.occurred_at "+(created?"ASC":"DESC")+",log.id LIMIT 1",
-                (rs,n)->rs.getString(1),tenant(a),app(),id.toString());
-        return found.isEmpty()?null:found.getFirst();
+        var found =
+                jdbc.query(
+                        "SELECT u.display_name FROM iam_app_audit log LEFT JOIN iam_user u ON"
+                            + " u.tenant_id=log.tenant_id AND u.id=log.actor_id WHERE"
+                            + " log.tenant_id=? AND log.application_id=? AND log.target_id=? AND "
+                                + (created
+                                        ? "log.action_code='MEMBER_CREATE'"
+                                        : "log.action_code IN"
+                                              + " ('MEMBER_CREATE','MEMBER_UPDATE','MEMBER_STATUS','MEMBER_BATCH_ROLES','MEMBER_PASSWORD_RESET')")
+                                + " ORDER BY log.occurred_at "
+                                + (created ? "ASC" : "DESC")
+                                + ",log.id LIMIT 1",
+                        (rs, n) -> rs.getString(1),
+                        tenant(a),
+                        app(),
+                        id.toString());
+        return found.isEmpty() ? null : found.getFirst();
     }
 
     private Member view(Actor a, UUID id) {
@@ -158,31 +173,47 @@ public class JdbcAppMemberStore implements AppMemberStore {
     public Page members(Actor a, String keyword, int page, int size, Long departmentId) {
         settings.requirePermission(a, "supply:user:read");
         if (page < 1 || size < 1 || size > 100 || page > 100000)
-            throw new IllegalArgumentException("分页参数无效");
+            throw new RequestValidationException("分页参数无效");
         String filter = keyword == null ? "" : keyword.strip();
-        if (filter.length() > 128) throw new IllegalArgumentException("搜索词过长");
+        if (filter.length() > 128) throw new RequestValidationException("搜索词过长");
         String suffix = " AND (u.username LIKE ? OR b.employee_code LIKE ?)";
         String pattern = "%" + filter + "%";
         if (departmentId != null) {
-            if (departmentId <= 0) throw new IllegalArgumentException("部门 ID 无效");
+            if (departmentId <= 0) throw new RequestValidationException("部门 ID 无效");
             // 只读取账号和 HR 身份元数据；先按当前主部门及祖先筛选，再计数和分页。
-            List<Raw> candidates = raw(a, suffix + " ORDER BY m.created_at DESC,m.user_id", pattern, pattern);
+            List<Raw> candidates =
+                    raw(a, suffix + " ORDER BY m.created_at DESC,m.user_id", pattern, pattern);
             List<Raw> matched = new ArrayList<>();
-            Map<String,Employee> identities = new HashMap<>();
-            for (int start=0; start<candidates.size(); start+=100) {
-                var batch=candidates.subList(start,Math.min(start+100,candidates.size()));
-                var codes=batch.stream().map(Raw::employeeCode).filter(Objects::nonNull).distinct().toList();
-                var found=employees.employees(a.tenantId(),codes);
-                for (var row:batch) {
-                    var employee=row.employeeCode()==null?null:found.get(row.employeeCode());
-                    if (employee!=null && (departmentId.equals(employee.departmentId())
-                            || employee.departmentAncestorIds().contains(departmentId))) {
-                        matched.add(row); identities.put(row.employeeCode(),employee);
+            Map<String, Employee> identities = new HashMap<>();
+            for (int start = 0; start < candidates.size(); start += 100) {
+                var batch = candidates.subList(start, Math.min(start + 100, candidates.size()));
+                var codes =
+                        batch.stream()
+                                .map(Raw::employeeCode)
+                                .filter(Objects::nonNull)
+                                .distinct()
+                                .toList();
+                var found = employees.employees(a.tenantId(), codes);
+                for (var row : batch) {
+                    var employee =
+                            row.employeeCode() == null ? null : found.get(row.employeeCode());
+                    if (employee != null
+                            && (departmentId.equals(employee.departmentId())
+                                    || employee.departmentAncestorIds().contains(departmentId))) {
+                        matched.add(row);
+                        identities.put(row.employeeCode(), employee);
                     }
                 }
             }
-            return new Page(matched.stream().skip((long)(page-1)*size).limit(size)
-                    .map(row -> view(a,row,identities.get(row.employeeCode()))).toList(),matched.size(),page,size);
+            return new Page(
+                    matched.stream()
+                            .skip((long) (page - 1) * size)
+                            .limit(size)
+                            .map(row -> view(a, row, identities.get(row.employeeCode())))
+                            .toList(),
+                    matched.size(),
+                    page,
+                    size);
         }
         List<Raw> rows =
                 raw(
@@ -241,12 +272,12 @@ public class JdbcAppMemberStore implements AppMemberStore {
 
     @Override
     public Member save(Actor a, UUID id, Command c) {
-        if (c == null) throw new IllegalArgumentException("用户参数不能为空");
+        if (c == null) throw new RequestValidationException("用户参数不能为空");
         settings.requirePermission(a, id == null ? "supply:user:create" : "supply:user:update");
         String code = text(c.employeeCode(), 50, "关联员工");
         Employee employee = employees.employee(a.tenantId(), code);
         if (!employee.usable())
-            throw new IllegalArgumentException("员工不可关联：" + employee.unavailableReason());
+            throw new RequestValidationException("员工不可关联：" + employee.unavailableReason());
         String initialHash =
                 id == null && c.existingUserId() == null
                         ? passwords.hash(password(c.initialPassword()))
@@ -258,11 +289,11 @@ public class JdbcAppMemberStore implements AppMemberStore {
                             a, id == null ? "supply:user:create" : "supply:user:update");
                     Raw old = id == null ? null : raw(a, id);
                     if (old != null) editable(old, c.version());
-                    else if (c.version() != 0) throw new IllegalArgumentException("新增用户版本无效");
+                    else if (c.version() != 0) throw new RequestValidationException("新增用户版本无效");
                     if (!Set.of("ACTIVE", "DISABLED").contains(c.status()))
-                        throw new IllegalArgumentException("用户状态无效");
+                        throw new RequestValidationException("用户状态无效");
                     if (c.remark() != null && c.remark().length() > 500)
-                        throw new IllegalArgumentException("备注不能超过 500 字符");
+                        throw new RequestValidationException("备注不能超过 500 字符");
                     boolean bindingChanged =
                             old == null
                                     || !Objects.equals(old.employeeCode(), code)
@@ -281,18 +312,11 @@ public class JdbcAppMemberStore implements AppMemberStore {
                                             && "ACTIVE".equals(c.status()))
                                     || bindingChanged
                                     || old == null
-                                    || !previous.equals(c.roles())
-                                    || !limit(a, id, "REGION").equals(c.regionLimit())
-                                    || !limit(a, id, "WAREHOUSE").equals(c.warehouseLimit());
+                                    || !previous.equals(c.roles());
                     if (grantChanged) settings.requirePermission(a, "supply:user:assign-role");
                     validateAssignments(
-                            a,
-                            c.roles(),
-                            c.regionLimit(),
-                            c.warehouseLimit(),
-                            "ACTIVE".equals(c.status()),
-                            grantChanged,
-                            employee);
+                            a, c.roles(), "ACTIVE".equals(c.status()), grantChanged, employee);
+
                     UUID target = id;
                     if (target == null) {
                         target =
@@ -306,7 +330,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
                             String username =
                                     text(c.username(), 64, "登录账号").toLowerCase(Locale.ROOT);
                             if (!username.matches("[a-z0-9][a-z0-9._@-]{2,63}"))
-                                throw new IllegalArgumentException("账号为 3 至 64 位字母、数字或 . _ @ -");
+                                throw new RequestValidationException("账号为 3 至 64 位字母、数字或 . _ @ -");
                             jdbc.update(
                                     "INSERT INTO"
                                         + " iam_user(id,tenant_id,username,display_name,status,created_at,created_by,updated_at,updated_by)"
@@ -330,7 +354,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
                                                 + " AND status='ACTIVE' AND deleted_at IS NULL",
                                         tenant(a),
                                         bin(target))
-                                != 1) throw new IllegalArgumentException("已有登录账号不可用");
+                                != 1) throw new RequestValidationException("已有登录账号不可用");
                         if (settings.count(
                                         "SELECT COUNT(*) FROM iam_app_member WHERE tenant_id=? AND"
                                             + " application_id=? AND user_id=? AND deleted_at IS"
@@ -338,7 +362,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
                                         tenant(a),
                                         app(),
                                         bin(target))
-                                > 0) throw new IllegalArgumentException("账号已经开通供应链");
+                                > 0) throw new RequestValidationException("账号已经开通供应链");
                         jdbc.update(
                                 "INSERT INTO"
                                     + " iam_app_member(tenant_id,application_id,user_id,member_kind,status,remark)"
@@ -368,7 +392,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
                                         app(),
                                         code,
                                         bin(target))
-                                > 0) throw new IllegalArgumentException("该员工已关联其他供应链用户");
+                                > 0) throw new RequestValidationException("该员工已关联其他供应链用户");
                         jdbc.update(
                                 "UPDATE iam_app_employee_binding_history SET"
                                     + " effective_to=UTC_TIMESTAMP(6) WHERE tenant_id=? AND"
@@ -400,8 +424,6 @@ public class JdbcAppMemberStore implements AppMemberStore {
                                 bin(a.principalId()));
                     }
                     persistAssignments(a, target, c.roles());
-                    persistLimit(a, target, "REGION", c.regionLimit());
-                    persistLimit(a, target, "WAREHOUSE", c.warehouseLimit());
                     settings.requireManagementEntry(a);
                     settings.bump(a);
                     settings.audit(
@@ -426,18 +448,18 @@ public class JdbcAppMemberStore implements AppMemberStore {
                             + " effective_from<=UTC_TIMESTAMP(6) AND effective_to>UTC_TIMESTAMP(6)",
                         Integer.class,
                         tenant(a));
-        if (limits.size() != 1) throw new IllegalStateException("租户订阅状态无效");
+        if (limits.size() != 1) throw new StateConflictException("租户订阅状态无效");
         if (settings.count(
                         "SELECT COUNT(*) FROM iam_user WHERE tenant_id=? AND status IN"
                                 + " ('ACTIVE','LOCKED') AND deleted_at IS NULL",
                         tenant(a))
-                >= limits.getFirst()) throw new IllegalStateException("登录账号数量已达到订阅上限");
+                >= limits.getFirst()) throw new StateConflictException("登录账号数量已达到订阅上限");
     }
 
     private void editable(Raw r, long version) {
         if ("PROTECTED".equals(r.kind()))
-            throw new IllegalArgumentException("受保护的恢复账号不允许在普通用户入口修改");
-        if (r.version() != version) throw new IllegalStateException("用户已修改，请刷新");
+            throw new RequestValidationException("受保护的恢复账号不允许在普通用户入口修改");
+        if (r.version() != version) throw new StateConflictException("用户已修改，请刷新");
     }
 
     public List<Assignment> assignments(Actor a, UUID user) {
@@ -446,154 +468,36 @@ public class JdbcAppMemberStore implements AppMemberStore {
                         + " user_id=? ORDER BY role_id",
                 (rs, n) -> {
                     UUID role = UuidBinaryCodec.decode(rs.getBytes(1));
-                    Map<UUID, Map<String, List<String>>> parameters = new LinkedHashMap<>();
-                    jdbc.query(
-                            "SELECT scope_rule_id,dimension,reference_key FROM"
-                                    + " iam_app_member_role_scope WHERE tenant_id=? AND"
-                                    + " application_id=? AND user_id=? AND role_id=? ORDER BY"
-                                    + " scope_rule_id,dimension,reference_key",
-                            r -> {
-                                parameters
-                                        .computeIfAbsent(
-                                                UuidBinaryCodec.decode(r.getBytes(1)),
-                                                key -> new LinkedHashMap<>())
-                                        .computeIfAbsent(r.getString(2), key -> new ArrayList<>())
-                                        .add(r.getString(3));
-                            },
-                            tenant(a),
-                            app(),
-                            bin(user),
-                            bin(role));
-                    return new Assignment(role, parameters);
+                    return new Assignment(role, Map.of());
                 },
                 tenant(a),
                 app(),
                 bin(user));
     }
 
-    public Limit limit(Actor a, UUID user, String dimension) {
-        List<String> modes =
-                jdbc.queryForList(
-                        "SELECT scope_mode FROM iam_app_member_scope_limit WHERE tenant_id=? AND"
-                                + " application_id=? AND user_id=? AND dimension=?",
-                        String.class,
-                        tenant(a),
-                        app(),
-                        bin(user),
-                        dimension);
-        List<String> refs =
-                jdbc.queryForList(
-                        "SELECT reference_key FROM iam_app_member_limit_reference WHERE tenant_id=?"
-                                + " AND application_id=? AND user_id=? AND dimension=? ORDER BY"
-                                + " reference_key",
-                        String.class,
-                        tenant(a),
-                        app(),
-                        bin(user),
-                        dimension);
-        return new Limit(modes.isEmpty() ? "NONE" : modes.getFirst(), refs);
-    }
-
-    private static void validLimit(Limit limit) {
-        if (limit == null
-                || limit.references() == null
-                || !Set.of("NONE", "ALL", "SPECIFIED").contains(limit.mode())
-                || limit.references().size() > 1000) throw new IllegalArgumentException("用户适用范围无效");
-        if ("SPECIFIED".equals(limit.mode()) == limit.references().isEmpty())
-            throw new IllegalArgumentException("指定范围须选择至少一项；其他模式不能保留引用");
-        if (new HashSet<>(limit.references()).size() != limit.references().size())
-            throw new IllegalArgumentException("范围不能重复");
-        for (String ref : limit.references()) text(ref, 128, "范围标识");
-    }
-
     private void validateAssignments(
             Actor a,
             List<Assignment> next,
-            Limit region,
-            Limit warehouse,
             boolean active,
             boolean delegation,
             Employee targetEmployee) {
-        validLimit(region);
-        validLimit(warehouse);
-        references.requireActive(a.tenantId(), "REGION", region.references());
-        references.requireActive(a.tenantId(), "WAREHOUSE", warehouse.references());
         if (next == null || next.size() > 50 || (active && next.isEmpty()))
-            throw new IllegalArgumentException("启用用户至少选择一个有效角色，最多 50 个角色");
+            throw new RequestValidationException("启用用户至少选择一个有效角色，最多 50 个角色");
         Set<UUID> seen = new HashSet<>();
-        if (delegation && !roles.protectedAdministrator(a)) {
-            within(region, limit(a, a.principalId(), "REGION"));
-            within(warehouse, limit(a, a.principalId(), "WAREHOUSE"));
-        }
         for (Assignment assignment : next) {
             if (assignment == null
                     || !seen.add(assignment.roleId())
                     || assignment.parameters() == null)
-                throw new IllegalArgumentException("角色分配重复或参数无效");
+                throw new RequestValidationException("角色分配重复或参数无效");
             Role role = roles.role(a, assignment.roleId());
             if (!"ACTIVE".equals(role.status()) || role.protectedRole())
-                throw new IllegalArgumentException("请选择有效普通角色");
+                throw new RequestValidationException("请选择有效普通角色");
             if (delegation) {
                 roles.requireDelegable(a, role.menuNodeIds(), role.rules());
                 roles.requireCurrentDepartmentDelegable(a, targetEmployee, role.rules());
             }
-            Map<UUID, com.rigour.tenant.iam.application.service.settings.AppAccessModels.ScopeRule>
-                    rulesById =
-                            role.rules().stream().collect(Collectors.toMap(r -> r.id(), r -> r));
-            for (var parameter : assignment.parameters().entrySet()) {
-                var rule = rulesById.get(parameter.getKey());
-                if (rule == null || parameter.getValue() == null)
-                    throw new IllegalArgumentException("角色数据规则已变化，请刷新");
-                for (var refs : parameter.getValue().entrySet()) {
-                    String mode =
-                            switch (refs.getKey()) {
-                                case "DEPARTMENT" -> rule.departmentMode();
-                                case "REGION" -> rule.regionMode();
-                                case "WAREHOUSE" -> rule.warehouseMode();
-                                default -> "INVALID";
-                            };
-                    if (!Set.of("MEMBER", "MANAGED").contains(mode)
-                            || refs.getValue() == null
-                            || refs.getValue().isEmpty()
-                            || refs.getValue().size() > 1000)
-                        throw new IllegalArgumentException("角色范围参数无效");
-                    for (String ref : refs.getValue()) text(ref, 128, "范围标识");
-                    references.requireActive(a.tenantId(), refs.getKey(), refs.getValue());
-                    if (delegation && !roles.protectedAdministrator(a)) {
-                        Set<String> allowed =
-                                assignments(a, a.principalId()).stream()
-                                        .filter(x -> x.roleId().equals(role.id()))
-                                        .flatMap(
-                                                x ->
-                                                        x
-                                                                .parameters()
-                                                                .getOrDefault(rule.id(), Map.of())
-                                                                .getOrDefault(
-                                                                        refs.getKey(), List.of())
-                                                                .stream())
-                                        .collect(Collectors.toSet());
-                        if (!allowed.containsAll(refs.getValue()))
-                            throw new AccessDeniedException("分配范围超出可授予边界");
-                    }
-                }
-            }
-            for (var rule : role.rules())
-                for (String dimension : AppScopeRules.DIMENSIONS) {
-                    String mode =
-                            switch (dimension) {
-                                case "DEPARTMENT" -> rule.departmentMode();
-                                case "REGION" -> rule.regionMode();
-                                default -> rule.warehouseMode();
-                            };
-                    if (Set.of("MANAGED", "MEMBER").contains(mode)
-                            && assignment
-                                    .parameters()
-                                    .getOrDefault(rule.id(), Map.of())
-                                    .getOrDefault(dimension, List.of())
-                                    .isEmpty())
-                        throw new IllegalArgumentException(
-                                "请补齐角色“" + role.name() + "”的" + dimension + "范围");
-                }
+            if (!assignment.parameters().isEmpty())
+                throw new RequestValidationException("数据范围请在角色中统一设置");
         }
     }
 
@@ -616,15 +520,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
 
     private static void requireNotSelf(Actor actor, UUID target) {
         if (actor.principalId().equals(target))
-            throw new IllegalArgumentException("不能禁用或删除当前登录的供应链账号");
-    }
-
-    private static void within(Limit target, Limit bound) {
-        if ("ALL".equals(bound.mode()) || "NONE".equals(target.mode())) return;
-        if (!"SPECIFIED".equals(target.mode())
-                || !"SPECIFIED".equals(bound.mode())
-                || !bound.references().containsAll(target.references()))
-            throw new AccessDeniedException("用户适用范围超出可授予边界");
+            throw new RequestValidationException("不能禁用或删除当前登录的供应链账号");
     }
 
     private void persistAssignments(Actor a, UUID user, List<Assignment> next) {
@@ -648,55 +544,12 @@ public class JdbcAppMemberStore implements AppMemberStore {
                     app(),
                     bin(user),
                     bin(x.roleId()));
-            for (var rule : x.parameters().entrySet())
-                for (var dim : rule.getValue().entrySet())
-                    for (String ref : dim.getValue())
-                        jdbc.update(
-                                "INSERT INTO"
-                                    + " iam_app_member_role_scope(tenant_id,application_id,user_id,role_id,scope_rule_id,dimension,reference_key)"
-                                    + " VALUES(?,?,?,?,?,?,?)",
-                                tenant(a),
-                                app(),
-                                bin(user),
-                                bin(x.roleId()),
-                                bin(rule.getKey()),
-                                dim.getKey(),
-                                ref);
         }
-    }
-
-    private void persistLimit(Actor a, UUID user, String dimension, Limit limit) {
-        jdbc.update(
-                "DELETE FROM iam_app_member_limit_reference WHERE tenant_id=? AND application_id=?"
-                        + " AND user_id=? AND dimension=?",
-                tenant(a),
-                app(),
-                bin(user),
-                dimension);
-        jdbc.update(
-                "INSERT INTO"
-                    + " iam_app_member_scope_limit(tenant_id,application_id,user_id,dimension,scope_mode)"
-                    + " VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE scope_mode=VALUES(scope_mode)",
-                tenant(a),
-                app(),
-                bin(user),
-                dimension,
-                limit.mode());
-        for (String ref : limit.references())
-            jdbc.update(
-                    "INSERT INTO"
-                        + " iam_app_member_limit_reference(tenant_id,application_id,user_id,dimension,reference_key)"
-                        + " VALUES(?,?,?,?,?)",
-                    tenant(a),
-                    app(),
-                    bin(user),
-                    dimension,
-                    ref);
     }
 
     @Override
     public void status(Actor a, UUID id, StatusCommand c) {
-        if (c == null) throw new IllegalArgumentException("状态参数不能为空");
+        if (c == null) throw new RequestValidationException("状态参数不能为空");
         tx.executeWithoutResult(
                 status -> {
                     settings.lock(a);
@@ -705,20 +558,13 @@ public class JdbcAppMemberStore implements AppMemberStore {
                     editable(old, c.version());
                     if ("DISABLED".equals(c.status())) requireNotSelf(a, id);
                     if (!Set.of("ACTIVE", "DISABLED").contains(c.status()))
-                        throw new IllegalArgumentException("状态无效");
+                        throw new RequestValidationException("状态无效");
                     if ("ACTIVE".equals(c.status())) {
                         settings.requirePermission(a, "supply:user:assign-role");
                         Employee employee = employees.employee(a.tenantId(), old.employeeCode());
                         if (!employee.usable() || employee.accessVersion() != old.accessVersion())
-                            throw new IllegalArgumentException("员工状态已变化，请编辑用户重新核验授权");
-                        validateAssignments(
-                                a,
-                                assignments(a, id),
-                                limit(a, id, "REGION"),
-                                limit(a, id, "WAREHOUSE"),
-                                true,
-                                true,
-                                employee);
+                            throw new RequestValidationException("员工状态已变化，请编辑用户重新核验授权");
+                        validateAssignments(a, assignments(a, id), true, true, employee);
                     }
                     jdbc.update(
                             "UPDATE iam_app_member SET"
@@ -744,7 +590,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
                     editable(old, version);
                     requireNotSelf(a, id);
                     if (!"DISABLED".equals(old.status()))
-                        throw new IllegalArgumentException("请先禁用供应链用户");
+                        throw new RequestValidationException("请先禁用供应链用户");
                     persistAssignments(a, id, List.of());
                     jdbc.update(
                             "DELETE FROM iam_app_employee_binding WHERE tenant_id=? AND"
@@ -797,9 +643,9 @@ public class JdbcAppMemberStore implements AppMemberStore {
                 || c.members().size() > 100
                 || c.roles() == null
                 || !Set.of("APPEND", "REMOVE", "REPLACE").contains(c.mode()))
-            throw new IllegalArgumentException("批量分配最多 100 人，模式必须为追加、移除或替换");
+            throw new RequestValidationException("批量分配最多 100 人，模式必须为追加、移除或替换");
         if (c.members().stream().map(VersionedMember::id).distinct().count() != c.members().size())
-            throw new IllegalArgumentException("用户不能重复");
+            throw new RequestValidationException("用户不能重复");
         if (checkVersion
                 && jdbc.queryForObject(
                                 "SELECT version FROM iam_app_settings WHERE tenant_id=? AND"
@@ -807,7 +653,8 @@ public class JdbcAppMemberStore implements AppMemberStore {
                                 Long.class,
                                 tenant(a),
                                 app())
-                        != c.applicationVersion()) throw new IllegalStateException("授权配置已变化，请重新预览");
+                        != c.applicationVersion())
+            throw new StateConflictException("授权配置已变化，请重新预览");
         for (var member : c.members()) {
             Raw r = raw(a, member.id());
             editable(r, member.version());
@@ -815,8 +662,6 @@ public class JdbcAppMemberStore implements AppMemberStore {
             validateAssignments(
                     a,
                     next,
-                    limit(a, r.id(), "REGION"),
-                    limit(a, r.id(), "WAREHOUSE"),
                     "ACTIVE".equals(r.status()),
                     true,
                     employees.employee(a.tenantId(), r.employeeCode()));
@@ -868,7 +713,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
 
     @Override
     public void resetPassword(Actor a, UUID id, PasswordCommand c) {
-        if (c == null) throw new IllegalArgumentException("密码参数不能为空");
+        if (c == null) throw new RequestValidationException("密码参数不能为空");
         settings.requirePermission(a, "supply:user:reset-password");
         String hash = passwords.hash(password(c.password()));
         tx.executeWithoutResult(
@@ -885,7 +730,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
                                     hash,
                                     tenant(a),
                                     bin(id));
-                    if (changed != 1) throw new IllegalStateException("该登录账号没有可重置的密码凭证");
+                    if (changed != 1) throw new StateConflictException("该登录账号没有可重置的密码凭证");
                     jdbc.update(
                             "UPDATE iam_user SET"
                                 + " security_version=security_version+1,version=version+1,updated_at=UTC_TIMESTAMP(6)"
@@ -907,13 +752,11 @@ public class JdbcAppMemberStore implements AppMemberStore {
 
     private static String text(String value, int max, String label) {
         if (value == null || value.isBlank() || value.strip().length() > max)
-            throw new IllegalArgumentException(label + "不能为空且不能超过 " + max + " 字符");
+            throw new RequestValidationException(label + "不能为空且不能超过 " + max + " 字符");
         return value.strip();
     }
 
     private static String password(String value) {
-        if (value == null || value.length() < 14 || value.length() > 128)
-            throw new IllegalArgumentException("密码长度需为 14 至 128 位");
-        return value;
+        return com.rigour.tenant.iam.domain.model.settings.MemberPasswordPolicy.validate(value);
     }
 }

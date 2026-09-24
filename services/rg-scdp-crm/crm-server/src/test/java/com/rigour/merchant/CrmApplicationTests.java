@@ -175,7 +175,7 @@ class CrmApplicationTests {
                                  WHERE table_schema = DATABASE() AND table_name LIKE 'crm\\_%'
                                 """,
                                 Integer.class))
-                .isEqualTo(25);
+                .isEqualTo(26);
         assertThat(
                         jdbcTemplate.queryForList(
                                 """
@@ -184,6 +184,7 @@ class CrmApplicationTests {
                                 """,
                                 String.class))
                 .contains(
+                        "crm_customer_sync_job",
                         "crm_party",
                         "crm_customer_profile",
                         "crm_contact",
@@ -955,6 +956,24 @@ SELECT COUNT(*) FROM crm_contact c
             assertThat(city.items()).hasSize(1);
             assertThat(queryStore.customers(tenant, 0, 1, null, null).total()).isEqualTo(3);
             assertThat(queryStore.shippingAddresses(tenant, 0, 1, null).total()).isEqualTo(3);
+            // 部门范围用 HR 主责员工集合过滤，且不能越过用户 HZ 地区上限。
+            var base = customerPolicy(caller, "ALL");
+            var all = new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Limit("ALL", List.of());
+            var department = new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Limit("SPECIFIED", List.of("10"));
+            var rule = new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Clause(UUID.randomUUID(), "CUSTOMER", "DEPARTMENT", department, all, all, false);
+            var deptPolicy = new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView(base.mode(), base.tenantId(), base.userId(), base.employeeCode(),
+                    base.applicationVersion(), base.memberVersion(), base.employeeRevision(), base.organizationVersion(), base.permissions(), base.action(), true,
+                    List.of(rule), base.regionLimit(), base.warehouseLimit());
+            org.mockito.Mockito.when(employeeClient.departmentMembers(tenantKey, List.of("10"), false)).thenReturn(List.of("EMP-A"));
+            org.mockito.Mockito.when(authorizations.authorization(caller, "crm:customer:read")).thenReturn(deptPolicy);
+            assertThat(internalCustomerStore.customers(tenantKey, 0, 1, criteria).total()).isEqualTo(1);
+            assertThat(queryStore.customers(tenant, 0, 1, null, null).total()).isEqualTo(1);
+            assertThat(internalCustomerStore.customer(tenantKey, hidden.id())).isEmpty();
+            org.mockito.Mockito.when(employeeClient.departmentMembers(tenantKey, List.of("10"), false)).thenReturn(List.of());
+            assertThat(internalCustomerStore.customers(tenantKey, 0, 1, criteria).total()).isZero();
+            org.mockito.Mockito.when(employeeClient.departmentMembers(tenantKey, List.of("10"), false)).thenThrow(new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "HR unavailable"));
+            assertThatThrownBy(() -> internalCustomerStore.customers(tenantKey, 0, 1, criteria)).hasMessageContaining("HR unavailable");
+
         } finally {
             com.rigour.shared.context.TestAuthorizationContext.clear();
         }
@@ -1238,13 +1257,12 @@ SELECT COUNT(*) FROM crm_contact c
         thirdFields.put("clientGUID", "THIRD"); thirdFields.put("clientNO", "C-THIRD");
         var third = new SourceRecord("THIRD", "C-THIRD", "已确认主客户", "T", secondary.sourceCreatedAt(), secondary.sourceUpdatedAt(), thirdFields);
         assertThat(store.importRecord(tenant, connector, run, type, third).repaired()).isEqualTo(1);
-        assertThat(internalCustomerStore.customer(tenant.toString(), customerId).orElseThrow().dhbCustomerCodes())
-                .containsExactly("C-001", "C-SECONDARY", "C-THIRD");
-        var aliasFilter = new CrmInternalCustomerStore.CustomerSearchCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,"C-THIRD","LINKED");
+        assertThat(internalCustomerStore.customer(tenant.toString(), customerId).orElseThrow().dhbLinked()).isTrue();
+        var aliasFilter = new CrmInternalCustomerStore.CustomerSearchCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,"LINKED");
         var matches = internalCustomerStore.customers(tenant.toString(),0,1,aliasFilter);
         assertThat(matches.total()).isEqualTo(1);
         assertThat(matches.items().getFirst().id()).isEqualTo(customerId);
-        assertThat(matches.items().getFirst().dhbCustomerCodes()).containsExactly("C-001", "C-SECONDARY", "C-THIRD");
+        assertThat(matches.items().getFirst().dhbLinked()).isTrue();
         assertThat(internalCustomerStore.customers(UUID.randomUUID().toString(),0,10,aliasFilter).total()).isZero();
         var mappings = store.externalObjectMappings(tenant, connector, run, type);
         assertThat(mappings).hasSize(3);
@@ -1270,12 +1288,25 @@ SELECT COUNT(*) FROM crm_contact c
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer WHERE tenant_id=?", Integer.class, tenant.toString())).isZero();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_party WHERE tenant_id=UUID_TO_BIN(?)", Integer.class, tenant.toString())).isZero();
         assertThat(store.importRecord(tenant, connector, run, type, good).created()).isEqualTo(1);
+        assertThat(store.externalObjectMappings(tenant, connector, run, type)).singleElement()
+                .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("ACTIVE"));
         var before = jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?", tenant.toString());
         assertThat(before.get("owner_employee_code")).isEqualTo("EMP-PRIMARY");
         assertThat(before.get("owner_employee_name_snapshot")).isEqualTo("本系统员工");
         // Same source payload, but HR no longer resolves it: cannot take the duplicate fast path.
         assertThat(store.importRecord(tenant, connector, run, type, unresolvedEmployee).unmapped()).isEqualTo(1);
         assertThat(jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?", tenant.toString())).usingRecursiveComparison().isEqualTo(before);
+        assertThat(store.externalObjectMappings(tenant, connector, run, type)).singleElement()
+                .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("CONFLICT"));
+        assertThat(store.pendingCustomerRecords(tenant, connector)).hasSize(1);
+        // The same source version recovers after HR association is repaired; historical creation stays intact.
+        assertThat(store.importRecord(tenant, connector, run, type, good).unmapped()).isZero();
+        assertThat(store.externalObjectMappings(tenant, connector, run, type)).singleElement()
+                .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("ACTIVE"));
+        assertThat(store.pendingCustomerRecords(tenant, connector)).isEmpty();
+        assertThat(jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?", tenant.toString()).get("business_created_at"))
+                .isEqualTo(before.get("business_created_at"));
+        before = jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?", tenant.toString());
         for (String areaId : List.of("UNKNOWN-AREA", "")) {
             fields = new LinkedHashMap<>(good.sourceFields()); fields.put("clientArea", areaId);
             fields.put("clientAreaName", "订货宝地区名称不能直接写入");
@@ -1291,14 +1322,74 @@ SELECT COUNT(*) FROM crm_contact c
     }
 
     @Test
-    void customerProfileSyncExposesLoginCodeAndActorWithoutChangingCreation() {
+    void legacyResolvedCustomerWithoutOwnerIsRetriedAndCannotKeepAnActiveOrderMapping() {
+        UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID(), actor=UUID.randomUUID();
+        var type=CrmMasterDataObjectType.CUSTOMER;
+        var run=start(tenant,connector,actor,type);
+        var record=customerRecord("旧规则漏检客户");
+        assertThat(store.importRecord(tenant,connector,run,type,record).created()).isEqualTo(1);
+        jdbcTemplate.update("UPDATE crm_customer SET owner_employee_code=NULL,owner_employee_name_snapshot=NULL WHERE tenant_id=?",tenant.toString());
+        assertThat(store.pendingCustomerRecords(tenant,connector)).hasSize(1);
+        assertThat(store.externalObjectMappings(tenant,connector,run,type)).singleElement()
+                .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("CONFLICT"));
+        assertThat(store.importRecords(tenant,connector,run,type,List.of(record)).getFirst().repaired()).isEqualTo(1);
+        assertThat(store.pendingCustomerRecords(tenant,connector)).isEmpty();
+        assertThat(store.externalObjectMappings(tenant,connector,run,type)).singleElement()
+                .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("ACTIVE"));
+        finish(tenant,connector,run,type,CrmMasterDataStore.ImportResult.repairedOne());
+    }
+
+    @Test
+    void syncMatchesOnlyUniqueSameCityNameAndPreservesHistoricalCreation() {
+        for (String scenario : List.of("different-city", "unique", "multiple", "account-conflict")) {
+            UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID(), actor=UUID.randomUUID();
+            var run=start(tenant,connector,actor,CrmMasterDataObjectType.CUSTOMER);
+            String city="different-city".equals(scenario)?"南京地区":"上海地区";
+            queryStore.createCustomerArea(tenant,"LEGACY-CITY",new com.rigour.merchant.api.v1.model.CrmCustomerAreaCommand(city,null,"ACTIVE",0,1),actor);
+            for (int i=0;i<("multiple".equals(scenario)?2:1);i++)
+                jdbcTemplate.update("INSERT INTO crm_customer(tenant_id,customer_code,customer_name,region_code,source_system_code,status_code,revision,created_time,updated_time,business_created_at,business_created_by_name,owner_management_mode,owner_employee_code) VALUES(?,?,?,?, 'FEISHU','ACTIVE',0,'2026-04-01 01:02:03','2026-04-01 01:02:03','2026-04-01 01:02:03','历史创建人','LOCAL','OLD-OWNER')",tenant.toString(),"LEGACY-"+i,"同城匹配门店","LEGACY-CITY");
+            if ("account-conflict".equals(scenario))
+                jdbcTemplate.update("INSERT INTO crm_customer(tenant_id,customer_code,customer_name,login_account,status_code,revision,created_time,updated_time) VALUES(?,'OTHER','其他客户','customer001','ACTIVE',0,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",tenant.toString());
+            var typeRun=start(tenant,connector,actor,CrmMasterDataObjectType.CUSTOMER_TYPE);
+            var typeResult=store.importRecord(tenant,connector,typeRun,CrmMasterDataObjectType.CUSTOMER_TYPE,
+                    new SourceRecord("TYPE-1","TYPE-1","批发客户","T",null,null,mapOf("typeName","批发客户")));
+            finish(tenant,connector,typeRun,CrmMasterDataObjectType.CUSTOMER_TYPE,typeResult);
+            var original=customerRecord("同城匹配门店");
+            var fields=new LinkedHashMap<String,Object>(original.sourceFields());fields.put("clientType","TYPE-1");
+            var source=new SourceRecord(original.sourceId(),original.sourceCode(),original.sourceName(),original.sourceStatus(),original.sourceCreatedAt(),original.sourceUpdatedAt(),fields);
+            var before=jdbcTemplate.queryForMap("SELECT id,created_time,business_created_at,business_created_by_name,source_system_code FROM crm_customer WHERE tenant_id=? AND customer_code='LEGACY-0'",tenant.toString());
+            var result=store.importRecord(tenant,connector,run,CrmMasterDataObjectType.CUSTOMER,source);
+            if ("different-city".equals(scenario)) {
+                assertThat(result.created()).isEqualTo(1);
+            } else if ("unique".equals(scenario)) {
+                assertThat(result.repaired()).isEqualTo(1);
+                assertThat(store.pendingCustomerRecords(tenant,connector)).isEmpty();
+                assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer WHERE tenant_id=?",Integer.class,tenant.toString())).isEqualTo(1);
+                var current=jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?",tenant.toString());
+                assertThat(current.get("login_account")).isEqualTo("customer001");
+                assertThat(current.get("owner_employee_code")).isNotEqualTo("OLD-OWNER").isNotNull();
+                assertThat(current.get("customer_type_code")).isNotNull();
+                assertThat(current.get("settlement_type_code")).isEqualTo("prepaid");
+                assertThat(store.importRecord(tenant,connector,run,CrmMasterDataObjectType.CUSTOMER,source).duplicates()).isEqualTo(1);
+            } else {
+                assertThat(result.unmapped()).isEqualTo(1);
+                assertThat(store.pendingCustomerRecords(tenant,connector)).hasSize(1);
+                assertThat(jdbcTemplate.queryForObject("SELECT login_account FROM crm_customer WHERE tenant_id=? AND customer_code='LEGACY-0'",String.class,tenant.toString())).isNull();
+            }
+            assertThat(jdbcTemplate.queryForMap("SELECT id,created_time,business_created_at,business_created_by_name,source_system_code FROM crm_customer WHERE tenant_id=? AND customer_code='LEGACY-0'",tenant.toString())).isEqualTo(before);
+            finish(tenant,connector,run,CrmMasterDataObjectType.CUSTOMER,result);
+        }
+    }
+
+    @Test
+    void customerProfileSyncExposesAccountAndBindingWithoutChangingCreation() {
         UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID(), actor=UUID.randomUUID();
         var type=CrmMasterDataObjectType.CUSTOMER;UUID run=start(tenant,connector,actor,type);
         var record=customerRecord("账号同步客户");
         finish(tenant,connector,run,type,store.importRecord(tenant,connector,run,type,record));
         var row=jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?",tenant.toString());
         assertThat(row.get("login_account")).isEqualTo("customer001");
-        assertThat(row.get("dhb_customer_code")).isEqualTo("C-001");
+        assertThat(row).doesNotContainKey("dhb_customer_code");
         assertThat(row.get("settlement_type_code")).isEqualTo("prepaid");
         assertThat(row.get("synced_by")).isEqualTo(actor.toString());
         Object creation=row.get("business_created_at"), modified=row.get("updated_time");
@@ -1311,7 +1402,7 @@ SELECT COUNT(*) FROM crm_contact c
         assertThat(next.get("business_created_at")).isEqualTo(creation);
         assertThat(next.get("updated_time")).isEqualTo(modified);
         var view=internalCustomerStore.customer(tenant.toString(),((Number)row.get("id")).longValue()).orElseThrow();
-        assertThat(view.loginAccount()).isEqualTo("customer001");assertThat(view.dhbCustomerCode()).isEqualTo("C-001");assertThat(view.syncedAt()).isNotNull();
+        assertThat(view.loginAccount()).isEqualTo("customer001");assertThat(view.dhbLinked()).isTrue();assertThat(view.syncedAt()).isNotNull();
     }
 
     @Test
@@ -1475,6 +1566,10 @@ SELECT COUNT(*) FROM crm_contact c
         store.confirmIndependentCustomer(tenant,connector,record.sourceId(),sourceRevision(tenant,record.sourceId()),true,"补录客户但员工保持待对应",actor);
         assertThat(store.importRecord(tenant,connector,run,type,record).created()).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT owner_employee_code FROM crm_customer WHERE tenant_id=?",String.class,tenant.toString())).isNull();
+        // Permission to create an unassigned customer does not authorize incomplete order attribution.
+        assertThat(store.pendingCustomerRecords(tenant,connector)).hasSize(1);
+        assertThat(store.externalObjectMappings(tenant,connector,run,type)).singleElement()
+                .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("CONFLICT"));
         jdbcTemplate.update("UPDATE crm_customer SET owner_employee_code='EMP-KNOWN',owner_employee_name_snapshot='已确认员工' WHERE tenant_id=?",tenant.toString());
         assertThat(store.importRecord(tenant,connector,run,type,record).unmapped()).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT owner_employee_code FROM crm_customer WHERE tenant_id=?",String.class,tenant.toString())).isEqualTo("EMP-KNOWN");
@@ -1498,26 +1593,27 @@ SELECT COUNT(*) FROM crm_contact c
     }
 
     @Test
-    void dhbCodeFiltersNaturalSortAndAreaSubtreeApplyBeforePagination() {
-        UUID t=UUID.randomUUID(), a=UUID.randomUUID(); String tenant=t.toString();
+    void accountAndRealBindingFiltersApplyBeforePaginationAndRespectTenant() {
+        UUID t=UUID.randomUUID(), a=UUID.randomUUID(), connector=UUID.randomUUID(); String tenant=t.toString();
         queryStore.createCustomerArea(t,"ZJ",new com.rigour.merchant.api.v1.model.CrmCustomerAreaCommand("浙江省",null,"ACTIVE",0,1),a);
         queryStore.createCustomerArea(t,"HZ",new com.rigour.merchant.api.v1.model.CrmCustomerAreaCommand("杭州市","ZJ","ACTIVE",0,1),a);
         queryStore.createCustomerArea(t,"HZ_CHILD",new com.rigour.merchant.api.v1.model.CrmCustomerAreaCommand("余杭区","HZ","ACTIVE",0,1),a);
-        String[] codes={"2","10","100",null,""};
-        for (int i=0;i<codes.length;i++) {
-            var c=internalCustomerStore.create(tenant,"DHB-SORT-"+i,identityCommand("编码测试"+i,i==0?"HZ":"HZ_CHILD","dhb-sort-"+i,null),a.toString());
-            jdbcTemplate.update("UPDATE crm_customer SET dhb_customer_code=? WHERE tenant_id=? AND id=?",codes[i],tenant,c.id());
+        for (int i=0;i<5;i++) {
+            var c=internalCustomerStore.create(tenant,"DHB-LINK-"+i,identityCommand("账号测试"+i,i==0?"HZ":"HZ_CHILD","account-"+i,null),a.toString());
+            jdbcTemplate.update("UPDATE crm_customer SET party_id=UUID_TO_BIN(?) WHERE tenant_id=? AND id=?",UUID.randomUUID().toString(),tenant,c.id());
+            byte[] party=jdbcTemplate.queryForObject("SELECT party_id FROM crm_customer WHERE tenant_id=? AND id=?",byte[].class,tenant,c.id());
+            // Even a filled account does not imply an established source association.
+            if (i<3) jdbcTemplate.update("INSERT INTO crm_source_binding(id,tenant_id,connector_id,source_system,source_object_type,source_object_id,target_type,target_id,binding_status,source_fields_json,source_payload_hash,synced_at,created_time,updated_time) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'DINGHUOBAO','CUSTOMER',?,'PARTY',?,'RESOLVED',JSON_OBJECT(),REPEAT('0',64),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",UUID.randomUUID().toString(),tenant,connector.toString(),"S"+i,party);
         }
-        var asc=new CrmInternalCustomerStore.CustomerSearchCriteria(null,null,null,null,"ZJ",null,null,null,"dhbCustomerCode","asc",null,null,null,null,null,null);
-        assertThat(internalCustomerStore.customers(tenant,0,3,asc).items()).extracting(item -> item.dhbCustomerCode()).containsExactly("2","10","100");
-        assertThat(internalCustomerStore.customers(tenant,1,1,asc).items().getFirst().dhbCustomerCode()).isEqualTo("10");
-        var desc=new CrmInternalCustomerStore.CustomerSearchCriteria(null,null,null,null,"ZJ",null,null,null,"dhbCustomerCode","desc",null,null,null,null,null,"LINKED");
-        assertThat(internalCustomerStore.customers(tenant,0,10,desc).items()).extracting(item -> item.dhbCustomerCode()).containsExactly("100","10","2");
-        var missing=new CrmInternalCustomerStore.CustomerSearchCriteria(null,null,null,null,"HZ",null,null,null,"dhbCustomerCode","asc",null,null,null,null,null,"UNLINKED");
+        var linked=new CrmInternalCustomerStore.CustomerSearchCriteria(null,null,null,null,"ZJ",null,null,null,"businessCreatedAt","asc",null,null,null,null,"LINKED");
+        var page=internalCustomerStore.customers(tenant,1,1,linked);
+        assertThat(page.total()).isEqualTo(3);
+        assertThat(page.items()).hasSize(1).allSatisfy(v -> assertThat(v.dhbLinked()).isTrue());
+        var missing=new CrmInternalCustomerStore.CustomerSearchCriteria(null,null,null,null,"HZ",null,null,null,"businessCreatedAt","asc",null,null,null,null,"UNLINKED");
         assertThat(internalCustomerStore.customers(tenant,0,10,missing).total()).isEqualTo(2);
-        var code=new CrmInternalCustomerStore.CustomerSearchCriteria(null,null,null,null,"ZJ",null,null,null,"dhbCustomerCode","asc",null,null,null,null,"10","LINKED");
-        assertThat(internalCustomerStore.customers(tenant,0,10,code).items()).extracting(item -> item.dhbCustomerCode()).containsExactly("10","100");
-        assertThat(internalCustomerStore.customers(UUID.randomUUID().toString(),0,10,asc).items()).isEmpty();
+        var account=new CrmInternalCustomerStore.CustomerSearchCriteria(null,null,null,null,"ZJ",null,null,null,"businessCreatedAt","asc","account-1",null,null,null,"LINKED");
+        assertThat(internalCustomerStore.customers(tenant,0,10,account).items()).extracting(v -> v.loginAccount()).containsExactly("account-1");
+        assertThat(internalCustomerStore.customers(UUID.randomUUID().toString(),0,10,linked).items()).isEmpty();
     }
 
     @Test
@@ -1752,12 +1848,5 @@ SELECT COUNT(*) FROM crm_contact c
         }
         return result;
     }
-    @org.springframework.beans.factory.annotation.Autowired private com.rigour.merchant.application.port.out.SupplyReadinessStore supplyReadiness;
-    @org.junit.jupiter.api.Test
-    void readinessChecksRunAgainstTheMigratedTenantSchema() {
-      var report=supplyReadiness.inspect(java.util.UUID.randomUUID().toString());
-      org.assertj.core.api.Assertions.assertThat(report.contractVersion()).isEqualTo(1);
-      org.assertj.core.api.Assertions.assertThat(report.version()).isNotBlank();
-      org.assertj.core.api.Assertions.assertThat(report.checks()).allMatch(c->c.count()==0);
-    }
+
 }

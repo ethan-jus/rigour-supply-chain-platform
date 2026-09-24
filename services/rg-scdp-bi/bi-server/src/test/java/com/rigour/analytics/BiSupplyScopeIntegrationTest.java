@@ -64,6 +64,7 @@ class BiSupplyScopeIntegrationTest {
             productionMapper;
 
     @MockitoBean com.rigour.analytics.application.port.out.BiAuthoritySource authority;
+    @Autowired com.rigour.analytics.infrastructure.persistence.scope.BiDashboardProductProjector dashboardProducts;
     @Autowired JdbcTemplate jdbc;
     @Autowired SqlSessionFactory sessions;
     @MockitoBean SupplyAuthorizationClient iam;
@@ -95,6 +96,133 @@ class BiSupplyScopeIntegrationTest {
     @AfterEach
     void clear() {
         TestAuthorizationContext.clear();
+    }
+
+    @Test
+    void departmentAndSelfUseOwnersAndDoNotGrantUnattributedInventory() {
+        jdbc.update("INSERT INTO bi_source_hr_hr_employee(id,tenant_id,employee_code,employee_name,employment_status,department_id,department_path) VALUES(1,?,'A','员工甲','ACTIVE',10,JSON_ARRAY(10)),(2,?,'B','员工乙','ACTIVE',20,JSON_ARRAY(20))", tenant, tenant);
+        jdbc.update("INSERT INTO bi_customer_authority(tenant_id,customer_id,employee_code,region_code,region_path,source_revision) VALUES(?,1,'A','HZ',JSON_ARRAY('HZ'),1),(?,2,'B','HZ',JSON_ARRAY('HZ'),1),(?,3,'A','NB',JSON_ARRAY('NB'),1)", tenant, tenant, tenant);
+        var policy = policy(List.of(clause("DEPARTMENT", specified("10"), all(), all())), all(), all());
+        var filter = com.rigour.analytics.infrastructure.persistence.scope.BiScopePredicates.predicate(policy, "CUSTOMER");
+        var args = new ArrayList<Object>(); args.add(tenant); args.addAll(filter.args());
+        assertThat(jdbc.queryForList("SELECT a.customer_id FROM bi_customer_authority a WHERE a.tenant_id=? AND " + filter.text(), Long.class, args.toArray())).containsExactly(1L, 3L);
+        var inventory = com.rigour.analytics.infrastructure.persistence.scope.BiScopePredicates.predicate(policy, "INVENTORY");
+        assertThat(jdbc.queryForList("SELECT f.warehouse_id FROM (SELECT 7 warehouse_id UNION ALL SELECT 8) f WHERE " + inventory.text(), Long.class, inventory.args().toArray())).isEmpty();
+        var self = policy(List.of(clause("SELF", all(), all(), all())), all(), all());
+        var selfFilter = com.rigour.analytics.infrastructure.persistence.scope.BiScopePredicates.predicate(self, "CUSTOMER");
+        var selfArgs = new ArrayList<Object>(); selfArgs.add(tenant); selfArgs.addAll(selfFilter.args());
+        assertThat(jdbc.queryForList("SELECT a.customer_id FROM bi_customer_authority a WHERE a.tenant_id=? AND " + selfFilter.text(), Long.class, selfArgs.toArray())).containsExactly(1L, 3L);
+    }
+
+    @Test
+    void salesDepartmentsProvideZeroOrderCityGoalsAndRespectAuthorization() {
+        for (var city : List.of("HZ", "NB")) {
+            jdbc.update("INSERT INTO bi_source_crm_crm_customer_area"
+                    + " (id,tenant_id,area_code,area_name,status,deleted)"
+                    + " VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE',0)",
+                    UUID.randomUUID().toString(),tenant,city,city);
+        }
+        department(1,null,"SALES","销售部");
+        department(2,1L,"HZ","HZ");
+        department(3,1L,"NB","NB");
+        department(4,null,"KA","KA销售部");
+        assertThat(productionMapper.refreshCityDimension(tenant)).isEqualTo(2);
+        jdbc.update("INSERT INTO bi_region_authority(tenant_id,region_code,region_path)"
+                    + " VALUES(?,'HZ',JSON_ARRAY('HZ')),(?,'NB',JSON_ARRAY('NB'))",tenant,tenant);
+        var p = policy(List.of(clause("REGION", none(), specified("HZ"), none())), all(), all());
+        when(iam.authorization(any(), any())).thenReturn(p);
+        try (var ctx = SupplyAuthorizationContext.open(iam, actor, p)) {
+            var goals = productionMapper.cityMonthlyGoals(tenant,2026,null);
+            assertThat(goals).hasSize(12);
+            assertThat(goals).allSatisfy(row -> {
+                assertThat(row.get("regionCode")).isEqualTo("HZ");
+                assertThat(new java.math.BigDecimal(row.get("salesTarget").toString()))
+                        .isEqualByComparingTo("100000");
+            });
+        }
+    }
+
+    @Test
+    void repeatCustomerHistorySurvivesCityAndSalesTransferWhileCurrentOrdersRemainScoped() {
+        fact(1,"B","OTHER_CITY",20,11,20);
+        fact(2,"A","HZ",10,11,30);
+        jdbc.update("UPDATE bi_sales_order_fact SET customer_id=7,order_status_code='COMPLETED',order_date=CASE WHEN order_id=1 THEN '2026-08-01' ELSE '2026-09-15' END WHERE tenant_id=?",tenant);
+        dashboardProducts.refresh(tenant,1,java.time.Instant.now());
+        var self=policy(List.of(clause("SELF",none(),all(),none())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(self);
+        try(var ctx=SupplyAuthorizationContext.open(iam,actor,self)) {
+            var result=productionMapper.customerRetention(tenant,java.time.LocalDateTime.parse("2026-08-31T16:00:00"),
+                    java.time.LocalDateTime.parse("2026-09-30T16:00:00"),null,null,null,null);
+            assertThat(((Number)result.get("orderingCustomerCount")).longValue()).isEqualTo(1);
+            assertThat(((Number)result.get("returningCustomerCount")).longValue()).isEqualTo(1);
+        }
+    }
+
+    void department(long id,Long parent,String code,String name) {
+        jdbc.update("INSERT INTO bi_source_hr_hr_department(id,tenant_id,department_code,department_name,parent_id,status_code,deleted,department_path) VALUES(?,?,?,?,?,'ACTIVE',0,JSON_ARRAY(1,?))",id,tenant,code,name,parent,id);
+    }
+
+    @Test
+    void operatingCitiesUseOrderSalesDepartmentAndConserveLateReceiptsWithoutChangingAuthority() {
+        department(1,null,"SALES","销售部");
+        department(10,1L,"CITY-HZ","杭州市");
+        department(20,1L,"CITY-BJ","北京市");
+        department(30,null,"KA","KA销售部");
+        productionMapper.refreshCityDimension(tenant);
+        fact(1,"A","GZ",10,11,100); // frozen Hangzhou department, Guangzhou customer region
+        fact(2,"B","GZ",20,11,200);
+        fact(3,"C","GZ",30,11,300);
+        fact(4,"MISSING","GZ",20,11,400);
+        jdbc.update("UPDATE bi_order_authority SET attribution_state='REVIEW',department_id=NULL,department_path=JSON_ARRAY() WHERE tenant_id=? AND order_id IN(2,3,4)",tenant);
+        jdbc.update("INSERT INTO bi_source_hr_hr_employee(id,tenant_id,employee_code,employee_name,employment_status,department_id,department_path) VALUES (1,?,'A','A','ACTIVE',20,JSON_ARRAY(1,20)),(2,?,'B','B','ACTIVE',20,JSON_ARRAY(1,20)),(3,?,'C','C','ACTIVE',30,JSON_ARRAY(30))",tenant,tenant,tenant);
+        jdbc.update("INSERT INTO bi_sales_payment_fact(tenant_id,payment_id,order_id,payment_time,paid_amount,synced_time) VALUES(?,1,1,'2026-09-15',50,UTC_TIMESTAMP(6))",tenant);
+        jdbc.update("INSERT INTO bi_sales_order_line_fact(tenant_id,order_id,order_line_id,order_date,synced_time) VALUES(?,1,1,'2026-08-01',UTC_TIMESTAMP(6))",tenant);
+        for (int repeat=0;repeat<2;repeat++) {
+            productionMapper.alignOperatingOrderCities(tenant);
+            productionMapper.alignOperatingOrderLineCities(tenant);
+            productionMapper.alignOperatingPaymentCities(tenant);
+        }
+        assertThat(jdbc.queryForList("SELECT region_code FROM bi_sales_order_fact WHERE tenant_id=? ORDER BY order_id",String.class,tenant)).containsExactly("CITY-HZ","CITY-BJ","OUTSIDE_CITY","UNKNOWN");
+        assertThat(jdbc.queryForObject("SELECT SUM(payable_amount) FROM bi_sales_order_fact WHERE tenant_id=?",java.math.BigDecimal.class,tenant)).isEqualByComparingTo("1000");
+        assertThat(jdbc.queryForObject("SELECT region_code FROM bi_sales_payment_fact WHERE tenant_id=?",String.class,tenant)).isEqualTo("CITY-HZ");
+        assertThat(jdbc.queryForObject("SELECT region_code FROM bi_sales_order_line_fact WHERE tenant_id=?",String.class,tenant)).isEqualTo("CITY-HZ");
+        assertThat(jdbc.queryForObject("SELECT region_code FROM bi_order_authority WHERE tenant_id=? AND order_id=1",String.class,tenant)).isEqualTo("GZ");
+        var geographical=policy(List.of(clause("REGION",none(),specified("GZ"),none())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(geographical);
+        try(var ctx=SupplyAuthorizationContext.open(iam,actor,geographical);var session=sessions.openSession()) {
+            assertThat(session.getMapper(Queries.class).total(tenant)).isEqualTo(100);
+        }
+        var p=policy(List.of(clause("DEPARTMENT",specified("10"),all(),none())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(p);
+        try(var ctx=SupplyAuthorizationContext.open(iam,actor,p)) {
+            assertThat(productionMapper.cityMonthlyGoals(tenant,2026,null)).hasSize(12).allSatisfy(row->assertThat(row.get("regionCode")).isEqualTo("CITY-HZ"));
+        }
+    }
+
+    @Test
+    void dashboardAllocationsPublishOnMysqlAndConserveLatePaymentAndDiscountedOrderAmounts() {
+        jdbc.update("""
+                INSERT INTO bi_sales_order_fact(tenant_id,order_id,order_date,payable_amount,paid_amount,synced_time)
+                VALUES(?,1,'2026-08-01',10,5,UTC_TIMESTAMP(6))
+                """, tenant);
+        for (int i=1;i<=3;i++) jdbc.update("""
+                INSERT INTO bi_sales_order_line_fact(tenant_id,order_id,order_line_id,order_date,unit_price,quantity,synced_time)
+                VALUES(?,1,?,'2026-08-01',1,1,UTC_TIMESTAMP(6))
+                """, tenant,i);
+        jdbc.update("""
+                INSERT INTO bi_sales_payment_fact(tenant_id,payment_id,order_id,payment_time,paid_amount,synced_time)
+                VALUES(?,1,1,'2026-09-15',5,UTC_TIMESTAMP(6))
+                """,tenant);
+        dashboardProducts.refresh(tenant,1,java.time.Instant.now());
+        dashboardProducts.refresh(tenant,2,java.time.Instant.now());
+        assertThat(jdbc.queryForObject("SELECT SUM(sales_amount) FROM bi_dashboard_order_product WHERE tenant_id=?",
+                java.math.BigDecimal.class,tenant)).isEqualByComparingTo("10");
+        assertThat(jdbc.queryForObject("SELECT SUM(cohort_paid_amount) FROM bi_dashboard_order_product WHERE tenant_id=?",
+                java.math.BigDecimal.class,tenant)).isEqualByComparingTo("5");
+        assertThat(jdbc.queryForObject("SELECT SUM(allocated_amount) FROM bi_dashboard_payment_product WHERE tenant_id=? AND payment_time>='2026-09-01'",
+                java.math.BigDecimal.class,tenant)).isEqualByComparingTo("5");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_dashboard_payment_product WHERE tenant_id=?",
+                Integer.class,tenant)).isEqualTo(3);
     }
 
     @Test
@@ -192,6 +320,7 @@ class BiSupplyScopeIntegrationTest {
                         new com.rigour.analytics.application.port.out.BiSourceSnapshotClient.Page(
                                 "v1", List.of(row)));
         dashboardStore.synchronizeSourceSnapshots(tenant);
+        dashboardStore.synchronizePeopleSnapshots(tenant);
         assertThat(
                         jdbc.queryForObject(
                                 "SELECT department_id FROM bi_employee_dim WHERE tenant_id=? AND"
@@ -220,7 +349,7 @@ class BiSupplyScopeIntegrationTest {
         assertThat(
                         jdbc.queryForObject(
                                 "SELECT source_version FROM bi_source_snapshot_checkpoint WHERE"
-                                    + " tenant_id=? AND dataset='HR_EMPLOYEE'",
+                                    + " tenant_id=? AND dataset='PEOPLE_HR_EMPLOYEE'",
                                 String.class,
                                 tenant))
                 .isEqualTo("v2");
@@ -358,7 +487,7 @@ class BiSupplyScopeIntegrationTest {
     }
 
     @Test
-    void oldSuperRoleCannotBypassDepartmentOrWarehouseRestrictions() {
+    void oldRoleNameCannotBypassDepartmentAndAllScopeIncludesTenantInventory() {
         fact(1, "A", "HZ", 10, 11, 100);
         fact(2, "B", "HZ", 20, 22, 900);
         var policy =
@@ -375,11 +504,11 @@ class BiSupplyScopeIntegrationTest {
                 tenant,
                 tenant);
         var inventory =
-                policy(List.of(clause("WAREHOUSE", none(), none(), specified("11"))), all(), all());
+                policy(List.of(clause("ALL", all(), all(), all())), all(), all());
         when(iam.authorization(any(), any())).thenReturn(inventory);
         try (var authorization = SupplyAuthorizationContext.open(iam, actor, inventory);
                 var session = sessions.openSession()) {
-            assertThat(session.getMapper(Queries.class).stock(tenant)).isEqualTo(3);
+            assertThat(session.getMapper(Queries.class).stock(tenant)).isEqualTo(12);
             assertThatThrownBy(() -> session.getMapper(Queries.class).crossSchema(tenant))
                     .hasRootCauseInstanceOf(AuthorizationDeniedException.class);
         }
@@ -467,6 +596,7 @@ class BiSupplyScopeIntegrationTest {
                         + " VALUES(?,'HZ',JSON_ARRAY('HZ')),(?,'NB',JSON_ARRAY('NB'))",
                 tenant,
                 tenant);
+        jdbc.update("INSERT INTO bi_sales_contact_city_dim(tenant_id,region_code,city_name,source_region_code) VALUES(?,'HZ','杭州','HZ'),(?,'NB','宁波','NB')",tenant,tenant);
         for (var target :
                 List.of(
                         new String[] {"CITY", "HZ"},
@@ -513,7 +643,22 @@ class BiSupplyScopeIntegrationTest {
         }
     }
 
+    @Test
+    void departmentScopeFiltersCityCostsUsingCityDepartmentRatherThanRegionAuthority() {
+        jdbc.update("INSERT INTO bi_sales_contact_city_dim(tenant_id,region_code,city_name,department_id,department_path) VALUES(?,'HZ','杭州',10,JSON_ARRAY(10)),(?,'NB','宁波',20,JSON_ARRAY(20))", tenant, tenant);
+        jdbc.update("INSERT INTO bi_city_cost_record(tenant_id,region_code,cost_type_code,cost_date,cost_amount,source_system_code,source_record_id) VALUES(?,'HZ','COST',UTC_TIMESTAMP(6),5,'MANUAL_IMPORT','scope-hz'),(?,'NB','COST',UTC_TIMESTAMP(6),99,'MANUAL_IMPORT','scope-nb')", tenant, tenant);
+        var p = policy(List.of(clause("DEPARTMENT", specified("10"), all(), all())), all(), all());
+        when(iam.authorization(any(), any())).thenReturn(p);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, p); var session = sessions.openSession()) {
+            assertThat(scopeService.effective().unavailableSubjects()).doesNotContain("CITY_COST");
+            assertThat(session.getMapper(Queries.class).cityCosts(tenant)).isEqualTo(5);
+        }
+    }
+
     interface Queries {
+        @Select("SELECT COALESCE(SUM(cost_amount),0) FROM bi_city_cost_record WHERE tenant_id=#{tenant}")
+        long cityCosts(@Param("tenant") String tenant);
+
         @Select(
                 "SELECT CONCAT(dimension_type,':',dimension_code) FROM bi_business_target WHERE"
                         + " tenant_id=#{tenant} AND deleted=0")
@@ -546,16 +691,8 @@ class BiSupplyScopeIntegrationTest {
         long crossSchema(@Param("tenant") String tenant);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
-    private com.rigour.analytics.application.port.out.SupplyReadinessStore supplyReadiness;
 
-    @org.junit.jupiter.api.Test
-    void readinessChecksRunAgainstTheMigratedTenantSchema() {
-        var report = supplyReadiness.inspect(java.util.UUID.randomUUID().toString());
-        org.assertj.core.api.Assertions.assertThat(report.contractVersion()).isEqualTo(1);
-        org.assertj.core.api.Assertions.assertThat(report.version()).isNotBlank();
-        org.assertj.core.api.Assertions.assertThat(report.checks()).allMatch(c -> c.count() == 0);
-    }
+
 
     @Autowired com.rigour.analytics.application.port.out.SupplyDashboardStore dashboardStore;
     @Autowired com.rigour.analytics.application.service.BiDataScopeService scopeService;
@@ -633,13 +770,12 @@ class BiSupplyScopeIntegrationTest {
     }
 
     @Test
-    void warehouseAnalyticsRoleCanOpenItsInventorySubject() {
+    void removedWarehouseModeCannotGrantInventory() {
         var p = policy(List.of(clause("WAREHOUSE", none(), none(), specified("11"))), all(), all());
         when(iam.authorization(any(), eq("analytics:dashboard:read"))).thenReturn(p);
         try (var ctx = SupplyAuthorizationContext.open(iam, actor, p)) {
             assertThat(scopeService.effective().unavailableSubjects())
-                    .doesNotContain("INVENTORY")
-                    .contains("CITY_COST", "SOURCE_GOVERNANCE");
+                    .contains("INVENTORY", "CITY_COST", "SOURCE_GOVERNANCE");
         }
     }
 

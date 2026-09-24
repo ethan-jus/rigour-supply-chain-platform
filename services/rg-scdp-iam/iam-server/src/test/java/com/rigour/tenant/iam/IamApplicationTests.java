@@ -516,7 +516,14 @@ class IamApplicationTests {
                 1);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.integration.%'",
-                4);
+                5);
+        assertCount(
+                "SELECT COUNT(*) FROM iam_resource_ui ui JOIN iam_resource r ON r.id=ui.resource_id"
+                        + " JOIN iam_resource_ui parent ON parent.resource_id=r.parent_id"
+                        + " WHERE ui.route_key='supply.integration.schedules'"
+                        + " AND ui.route_path='/supply-chain/integration/schedules'"
+                        + " AND parent.route_key='supply.integration.sync-control.menu' AND ui.visible=1",
+                1);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE"
                         + " route_key='supply.integration.feishu-import' AND"
@@ -1241,67 +1248,17 @@ INSERT INTO iam_user_credential (
         return new TenantIdentityFixture(tenantId, tenantCode, userId, username);
     }
 
-    @org.springframework.test.context.bean.override.mockito.MockitoBean
-    private com.rigour.tenant.iam.application.port.out.AppReadinessClient readiness;
 
-    @Test
-    void activationRechecksVersionsAndRefusesUnavailableDomains() {
-        var f = insertTenantAdministrator();
-        appSettingsStore.initialize(f.actor());
-        var healthy =
-                java.util.List.of("hr", "crm", "erp", "order", "bi", "settings").stream()
-                        .map(
-                                d ->
-                                        new com.rigour.tenant.iam.application.service.settings
-                                                .AppCutoverModels.Domain(
-                                                d, "v1", java.util.List.of()))
-                        .toList();
-        org.mockito.Mockito.when(readiness.inspect(f.actor().tenantId())).thenReturn(healthy);
-        var first = cutover.inspect(f.actor());
-        assertThat(first.ready()).as(first.issues().toString()).isTrue();
-        var unhealthy = new java.util.ArrayList<>(healthy);
-        unhealthy.set(
-                0,
-                new com.rigour.tenant.iam.application.service.settings.AppCutoverModels.Domain(
-                        "hr",
-                        "UNAVAILABLE",
-                        java.util.List.of(
-                                new com.rigour.tenant.iam.application.service.settings
-                                        .AppCutoverModels.Issue(
-                                        "SERVICE_hr", "BLOCKING", 1, "无法核验 HR"))));
-        org.mockito.Mockito.when(readiness.inspect(f.actor().tenantId())).thenReturn(unhealthy);
-        assertThatThrownBy(
-                        () ->
-                                cutover.activate(
-                                        f.actor(),
-                                        new com.rigour.tenant.iam.application.service.settings
-                                                .AppCutoverModels.Command(
-                                                first.version(),
-                                                first.fingerprint(),
-                                                "已核对权限配置",
-                                                true)))
-                .isInstanceOf(IllegalStateException.class);
-        assertThat(appSettingsStore.context(f.actor()).mode()).isEqualTo("PREPARING");
-        org.mockito.Mockito.when(readiness.inspect(f.actor().tenantId())).thenReturn(healthy);
-        var result =
-                cutover.activate(
-                        f.actor(),
-                        new com.rigour.tenant.iam.application.service.settings.AppCutoverModels
-                                .Command(first.version(), first.fingerprint(), "已核对权限配置", true));
-        assertThat(result.mode()).isEqualTo("ACTIVE");
-        assertThat(result.version()).isGreaterThan(first.version());
-        assertThat(
-                        appSettingsStore
-                                .audits(f.actor(), "AUTHORIZATION_ACTIVATE", null, 1, 20)
-                                .total())
-                .isEqualTo(1);
-    }
+
 
     @Test
     void permissionPreviewUsesSavedApplicationRulesWithoutActivatingOrCrossingTenants() {
         var first = insertTenantAdministrator();
         var other = insertTenantAdministrator();
         appSettingsStore.initialize(first.actor());
+        // 显式禁用候选动作构造新旧授权差异，不依赖历史菜单登记遗漏。
+        jdbcTemplate.update("UPDATE iam_app_menu_node n JOIN iam_resource r ON r.id=n.resource_id SET n.status='DISABLED' WHERE n.tenant_id=? AND r.permission_code='crm:customer:read'",
+                uuidBytes(first.actor().tenantId()));
         appSettingsStore.initialize(other.actor());
         var before = appSettingsStore.context(first.actor());
         var preview =
@@ -1316,11 +1273,11 @@ INSERT INTO iam_user_credential (
                                 .policy()
                                 .functionAllowed())
                 .isTrue();
-        assertThat(preview.proposedPermissions())
+        assertThat(preview.permissions())
                 .contains("supply:menu:read")
                 .doesNotContain("crm:customer:read");
         assertThat(preview.applicationVersion()).isEqualTo(before.version());
-        assertThat(appSettingsStore.context(first.actor()).mode()).isEqualTo("PREPARING");
+        assertThat(appSettingsStore.context(first.actor()).mode()).isEqualTo("ACTIVE");
         assertThatThrownBy(
                         () ->
                                 cutover.preview(
@@ -1331,7 +1288,7 @@ INSERT INTO iam_user_credential (
     }
 
     @Autowired private com.rigour.tenant.iam.application.port.out.AppSettingsStore appSettingsStore;
-    @Autowired private com.rigour.tenant.iam.application.port.out.AppCutoverStore cutover;
+    @Autowired private com.rigour.tenant.iam.application.port.out.AppPermissionPreviewStore cutover;
 
     @Test
     void supplySettingsPersistMenuHierarchyAndProtectTenantBoundaries() {
@@ -1671,6 +1628,113 @@ INSERT INTO iam_user_credential (
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     private com.rigour.tenant.iam.application.port.out.AppEmployeeClient appEmployees;
 
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private com.rigour.tenant.iam.application.port.out.AppReferenceClient scopeReferences;
+
+    @Test
+    void unifiedRoleScopePersistsAllFourModesAndKeepsActionAndUserBoundaries() {
+        var root = insertTenantAdministrator().actor();
+        appSettingsStore.initialize(root);
+        org.mockito.Mockito.when(scopeReferences.references(root.tenantId(), "DEPARTMENT"))
+                .thenReturn(List.of(new com.rigour.tenant.iam.application.port.out.AppReferenceClient.Reference("10", "销售部", null, "ACTIVE", 1)));
+        var role = supplyTestRole(root, "UNIFIED_TEST", Set.of("order:read", "crm:customer:read", "analytics:dashboard:read", "erp:inventory:read"), List.of());
+        supplyTestEmployee(root, "UNIFIED-EMP", 10, List.of(10L));
+        var member = appMembers.save(root, null, supplyTestCommand("unified-test", "UNIFIED-EMP", "ACTIVE", 0, List.of(supplyTestAssignment(role))));
+        for (String mode : List.of("ALL", "CUSTOM", "DEPARTMENT", "SELF")) {
+            var scope = new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleDataScope(mode, "CUSTOM".equals(mode) ? List.of("10") : List.of());
+            role = appRoles.saveRole(root, role.id(), new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleCommand(
+                    role.code(), role.name(), null, "ACTIVE", role.version(), role.menuNodeIds(), List.of(), scope));
+            assertThat(role.dataScope()).isEqualTo(scope);
+            var current = appAuthorization.authorization(supplyTestCaller(new Actor("TENANT", member.id(), root.tenantId())), "order:read");
+            assertThat(current.mode()).isEqualTo("ACTIVE");
+            assertThat(current.functionAllowed()).isTrue();
+            assertThat(current.clauses()).singleElement().satisfies(c -> assertThat(c.scopeMode()).isEqualTo("CUSTOM".equals(mode) ? "DEPARTMENT" : mode));
+            assertThat(role.rules()).hasSize(4);
+            var preview = cutover.preview(root, member.id(), "order:read").policy();
+            assertThat(preview.clauses()).hasSize(1);
+            assertThat(preview.clauses().getFirst().scopeMode()).isEqualTo("CUSTOM".equals(mode) ? "DEPARTMENT" : mode);
+            assertThat(preview.clauses().getFirst().includeDescendants()).isFalse();
+            if (List.of("CUSTOM", "DEPARTMENT").contains(mode))
+                assertThat(preview.clauses().getFirst().departments().references()).containsExactly("10");
+            assertThat(preview.regionLimit().mode()).isEqualTo("ALL");
+            assertThat(preview.warehouseLimit().mode()).isEqualTo("ALL");
+            var inventory = cutover.preview(root, member.id(), "erp:inventory:read").policy();
+            assertThat(inventory.clauses().getFirst().scopeMode()).isEqualTo("CUSTOM".equals(mode) ? "DEPARTMENT" : mode);
+            assertThat(inventory.warehouseLimit().mode()).isEqualTo("ALL");
+            assertThat(cutover.preview(root, member.id(), "order:update").policy().clauses()).isEmpty();
+        }
+        var orderOnly = supplyTestRole(root, "UNIFIED_ORDER_ALL", Set.of("order:read"), List.of());
+        orderOnly = appRoles.saveRole(root, orderOnly.id(), new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleCommand(
+                orderOnly.code(), orderOnly.name(), null, "ACTIVE", orderOnly.version(), orderOnly.menuNodeIds(), List.of(),
+                new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleDataScope("ALL", List.of())));
+        appMembers.save(root, member.id(), supplyTestCommand("unified-test", "UNIFIED-EMP", "ACTIVE", member.version(), List.of(supplyTestAssignment(role), supplyTestAssignment(orderOnly))));
+        assertThat(cutover.preview(root, member.id(), "order:read").policy().clauses()).hasSize(2);
+        assertThat(cutover.preview(root, member.id(), "crm:customer:read").policy().clauses()).singleElement()
+                .satisfies(clause -> assertThat(clause.scopeMode()).isEqualTo("SELF"));
+        var managerRole = supplyTestRole(root, "SCOPED_AUTHORIZER", Set.of("supply:role:read", "supply:role:update", "supply:role:grant", "order:read"), List.of());
+        managerRole = appRoles.saveRole(root, managerRole.id(), new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleCommand(
+                managerRole.code(), managerRole.name(), null, "ACTIVE", managerRole.version(), managerRole.menuNodeIds(), List.of(),
+                new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleDataScope("ALL", List.of())));
+        supplyTestEmployee(root, "SCOPE-MANAGER", 20, List.of(20L));
+        var manager = appMembers.save(root, null, supplyTestCommand("scope-manager", "SCOPE-MANAGER", "ACTIVE", 0, List.of(supplyTestAssignment(managerRole))));
+        var targetRole = orderOnly;
+        var narrowed = appRoles.saveRole(new Actor("TENANT", manager.id(), root.tenantId()), targetRole.id(),
+                new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleCommand(targetRole.code(), targetRole.name(), null, "ACTIVE", targetRole.version(), targetRole.menuNodeIds(), List.of(),
+                        new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleDataScope("SELF", List.of())));
+        assertThat(narrowed.dataScope().mode()).isEqualTo("SELF");
+        var finalRole = role;
+        assertThatThrownBy(() -> appRoles.saveRole(root, finalRole.id(), new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleCommand(
+                finalRole.code(), finalRole.name(), null, "ACTIVE", finalRole.version(), finalRole.menuNodeIds(), List.of(),
+                new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleDataScope("CUSTOM", List.of()))))
+                .hasMessageContaining("至少选择一个部门");
+        assertThat(appRoles.roles(root).stream().filter(r -> r.id().equals(finalRole.id())).findFirst().orElseThrow().version()).isEqualTo(finalRole.version());
+        assertThatThrownBy(() -> appRoles.saveRole(root, finalRole.id(), new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleCommand(
+                finalRole.code(), finalRole.name(), null, "ACTIVE", finalRole.version(), finalRole.menuNodeIds(), List.of(), null)))
+                .hasMessageContaining("请选择全部数据");
+    }
+
+    @Test
+    void supplyRoleAcceptsLowercaseCodeAndKeepsSavedGrants() {
+        var actor = insertTenantAdministrator().actor();
+        appSettingsStore.initialize(actor);
+        var role = supplyTestRole(actor, "sys_dev", Set.of("supply:menu:read"), List.of());
+        assertThat(role.code()).isEqualTo("SYS_DEV");
+        assertThat(appRoles.roles(actor)).anySatisfy(saved -> {
+            assertThat(saved.id()).isEqualTo(role.id());
+            assertThat(saved.code()).isEqualTo("SYS_DEV");
+            assertThat(saved.menuNodeIds()).isEqualTo(role.menuNodeIds());
+        });
+    }
+
+    @Test
+    void supplyPasswordCreationAndResetEnforceComplexityAndPersistHashes() {
+        var actor = insertTenantAdministrator().actor();
+        appSettingsStore.initialize(actor);
+        var role = supplyTestRole(actor, "PASSWORD_TEST", Set.of("supply:menu:read"), List.of());
+        var employee = supplyTestEmployee(actor, "EMP-PASSWORD", 2, List.of(1L, 2L));
+        var member = appMembers.save(actor, null, supplyTestCommand("password-test",
+                employee.employeeCode(), "ACTIVE", 0, List.of(supplyTestAssignment(role))));
+        java.util.function.Supplier<String> hash = () -> jdbcTemplate.queryForObject(
+                "SELECT password_hash FROM iam_user_credential WHERE tenant_id=? AND user_id=? AND credential_type='PASSWORD'",
+                String.class, uuidBytes(actor.tenantId()), uuidBytes(member.id()));
+        assertThat(passwordHasher.matches("R7!mK2xp", hash.get())).isTrue();
+        String tenantCode = jdbcTemplate.queryForObject("SELECT tenant_code FROM iam_tenant WHERE id=?",
+                String.class, uuidBytes(actor.tenantId()));
+        assertThat(authenticationProvider.authenticate(loginToken(PrincipalScope.TENANT,
+                tenantCode, "password-test", "R7!mK2xp")).isAuthenticated()).isTrue();
+        var original = hash.get();
+        assertThatThrownBy(() -> appMembers.resetPassword(actor, member.id(),
+                new com.rigour.tenant.iam.application.service.settings.AppMemberModels.PasswordCommand(
+                        "Password1!", member.version())))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("弱密码");
+        assertThat(hash.get()).isEqualTo(original);
+        appMembers.resetPassword(actor, member.id(),
+                new com.rigour.tenant.iam.application.service.settings.AppMemberModels.PasswordCommand(
+                        "R7!mK2xpQ9#v", member.version()));
+        assertThat(passwordHasher.matches("R7!mK2xpQ9#v", hash.get())).isTrue();
+        assertThat(passwordHasher.matches("R7!mK2xp", hash.get())).isFalse();
+    }
+
     @Test
     void supplyMemberEmployeeBindingAndRoleBatchRemainApplicationLocal() {
         var fixture = insertTenantAdministrator();
@@ -1693,13 +1757,11 @@ INSERT INTO iam_user_credential (
                                 "ACTIVE",
                                 0,
                                 java.util.Set.of(grant.id()),
-                                java.util.List.of()));
+                                java.util.List.of(), testDataScope(java.util.List.of())));
         var assignment =
                 new com.rigour.tenant.iam.application.service.settings.AppMemberModels.Assignment(
                         role.id(), java.util.Map.of());
-        var none =
-                new com.rigour.tenant.iam.application.service.settings.AppMemberModels.Limit(
-                        "NONE", java.util.List.of());
+
         var employee =
                 new com.rigour.tenant.iam.application.port.out.AppEmployeeClient.Employee(
                         1,
@@ -1726,14 +1788,12 @@ INSERT INTO iam_user_credential (
                                 .Command(
                                 null,
                                 "sales-test",
-                                "Long-local-test-password-123",
+                                "R7!mK2xp",
                                 employee.employeeCode(),
                                 "ACTIVE",
                                 null,
                                 0,
                                 java.util.List.of(assignment),
-                                none,
-                                none,
                                 null));
         var memberActor = new Actor("TENANT", member.id(), actor.tenantId());
         assertThat(
@@ -1770,14 +1830,12 @@ INSERT INTO iam_user_credential (
                                                 .AppMemberModels.Command(
                                                 null,
                                                 "duplicate-sales",
-                                                "Long-local-test-password-123",
+                                                "R7!mK2xp",
                                                 employee.employeeCode(),
                                                 "ACTIVE",
                                                 null,
                                                 0,
                                                 java.util.List.of(assignment),
-                                                none,
-                                                none,
                                                 null)))
                 .hasMessageContaining("已关联其他");
         assertThat(
@@ -1862,6 +1920,155 @@ INSERT INTO iam_user_credential (
                 .hasMessageContaining("重新核验");
     }
 
+    @Test
+    void supplyCrudLifecyclePersistsRulesAndCleansAssociationsWithoutDeletingLogin() {
+        var actor = insertTenantAdministrator().actor();
+        appSettingsStore.initialize(actor);
+        var folder = appSettingsStore.saveMenu(actor, null,
+                new com.rigour.tenant.iam.application.service.settings.AppSettingsModels.MenuCommand(
+                        null, "MENU", null, "验收目录", "Folder", 7, true, "ACTIVE", 0, null, null, null, null));
+        var renamed = appSettingsStore.saveMenu(actor, folder.id(),
+                new com.rigour.tenant.iam.application.service.settings.AppSettingsModels.MenuCommand(
+                        null, "MENU", null, "验收目录改名", "Folder", 9, true, "ACTIVE", folder.version(), null, null, null, null));
+        assertThat(renamed.version()).isGreaterThan(folder.version());
+        assertThat(renamed.name()).isEqualTo("验收目录改名");
+        var rule = new com.rigour.tenant.iam.application.service.settings.AppAccessModels.ScopeRule(
+                null, "order:read", "ORDER", "SELF", "NONE", "ALL", "ALL", false, Map.of());
+        var role = supplyTestRole(actor, "LIFECYCLE_SALES", Set.of("order:read"), List.of(rule));
+        var grants = new java.util.HashSet<>(role.menuNodeIds());
+        grants.add(renamed.id());
+        var updatedRole = appRoles.saveRole(actor, role.id(),
+                new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleCommand(
+                        role.code(), "角色改名", "说明已修改", "ACTIVE", role.version(), grants, role.rules(), testDataScope(role.rules())));
+        assertThat(updatedRole.name()).isEqualTo("角色改名");
+        assertThat(updatedRole.rules()).hasSize(1);
+        assertThat(updatedRole.rules().getFirst().id()).isEqualTo(role.rules().getFirst().id());
+        var employee = supplyTestEmployee(actor, "LIFECYCLE-EMP", 10, List.of(10L));
+        var member = appMembers.save(actor, null, supplyTestCommand(
+                "lifecycle-user", employee.employeeCode(), "ACTIVE", 0, List.of(supplyTestAssignment(updatedRole))));
+        var preview = cutover.preview(actor, member.id(), "order:read");
+        assertThat(preview.policy().functionAllowed()).isTrue();
+        assertThat(preview.policy().clauses()).hasSize(1);
+        assertThat(preview.policy().clauses().getFirst().scopeMode()).isEqualTo("SELF");
+        assertThat(appRoles.impact(actor, role.id()).userCount()).isEqualTo(1);
+        var caller = supplyTestCaller(new Actor("TENANT", member.id(), actor.tenantId()));
+        var effective = appAuthorization.authorization(caller, "order:read");
+        assertThat(effective.mode()).isEqualTo("ACTIVE");
+        assertThat(effective.functionAllowed()).isTrue();
+        assertThat(effective.clauses()).hasSize(1);
+        assertThat(effective.clauses().getFirst().scopeMode()).isEqualTo("SELF");
+        assertThat(appAuthorization.authorization(caller, "order:write").functionAllowed()).isFalse();
+        assertThatThrownBy(() -> appMembers.delete(actor, member.id(), member.version()))
+                .hasMessageContaining("请先禁用");
+        assertThatThrownBy(() -> appRoles.deleteRole(actor, role.id(), updatedRole.version(), false))
+                .hasMessageContaining("请先禁用");
+        assertThat(appSettingsStore.menuImpact(actor, renamed.id()).roleNames()).contains("角色改名");
+        appSettingsStore.deleteMenu(actor, renamed.id(), renamed.version(), true);
+        assertThat(appRoles.roles(actor).stream().filter(r -> r.id().equals(role.id())).findFirst().orElseThrow().menuNodeIds())
+                .doesNotContain(renamed.id());
+        var disabled = appMembers.save(actor, member.id(), supplyTestCommand(
+                "lifecycle-user", employee.employeeCode(), "DISABLED", member.version(), List.of()));
+        assertThat(disabled.roles()).isEmpty();
+        assertThatThrownBy(() -> appAuthorization.authorization(caller, "order:read"))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        assertThat(cutover.preview(actor, member.id(), "order:read").policy()).isNull();
+        assertThat(cutover.preview(actor, member.id(), "order:read").permissions()).isEmpty();
+        appMembers.delete(actor, member.id(), disabled.version());
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_app_member_role WHERE tenant_id=? AND user_id=?",
+                Integer.class, uuidBytes(actor.tenantId()), uuidBytes(member.id()))).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_app_employee_binding WHERE tenant_id=? AND user_id=?",
+                Integer.class, uuidBytes(actor.tenantId()), uuidBytes(member.id()))).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_user WHERE tenant_id=? AND id=? AND deleted_at IS NULL",
+                Integer.class, uuidBytes(actor.tenantId()), uuidBytes(member.id()))).isEqualTo(1);
+        var currentRole = appRoles.roles(actor).stream().filter(r -> r.id().equals(role.id())).findFirst().orElseThrow();
+        var retired = appRoles.saveRole(actor, role.id(),
+                new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleCommand(
+                        currentRole.code(), currentRole.name(), null, "DISABLED", currentRole.version(), currentRole.menuNodeIds(), currentRole.rules(), testDataScope(currentRole.rules())));
+        appRoles.deleteRole(actor, role.id(), retired.version(), false);
+        assertThat(appRoles.roles(actor)).noneMatch(r -> r.id().equals(role.id()));
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_app_scope_rule WHERE tenant_id=? AND role_id=?",
+                Integer.class, uuidBytes(actor.tenantId()), uuidBytes(role.id()))).isZero();
+    }
+
+    @Test
+    void supplyPermissionCatalogCoversBusinessActionsAndUpgradePreservesTenantChoices() {
+        var actor = insertTenantAdministrator().actor();
+        appSettingsStore.initialize(actor);
+        var required = Set.of("order:invoice:write", "order:payment:check", "crm:customer:read",
+                "crm:customer:write", "erp:product-price:read", "erp:product-price:write",
+                "erp:product:read", "erp:product:write", "erp:supply:read", "erp:supply:write");
+        var nodes = appRoles.grantableMenus(actor);
+        var targets = nodes.stream().filter(n -> n.permissionCode() != null && required.contains(n.permissionCode())).toList();
+        assertThat(targets).hasSize(10);
+        for (var node : targets) {
+            assertThat(node.type()).isEqualTo("BUTTON");
+            assertThat(nodes.stream().filter(n -> n.id().equals(node.parentId())).findFirst().orElseThrow().type())
+                    .isEqualTo("PAGE");
+        }
+        var ordinary = supplyTestRole(actor, "NO_AUTOMATIC_GRANTS", Set.of("supply:user:read"), List.of());
+        var kept = targets.stream().filter(n -> "crm:customer:read".equals(n.permissionCode())).findFirst().orElseThrow();
+        appSettingsStore.saveMenu(actor, kept.id(),
+                new com.rigour.tenant.iam.application.service.settings.AppSettingsModels.MenuCommand(
+                        kept.parentId(), kept.type(), kept.resourceId(), "企业自定义权限名称", null,
+                        777, false, "DISABLED", kept.version(), null, null, null, null));
+        var removed = targets.stream().filter(n -> "erp:product:read".equals(n.permissionCode())).findFirst().orElseThrow();
+        appSettingsStore.deleteMenu(actor, removed.id(), removed.version(), true);
+        // 模拟 V119 已初始化企业缺少其余八项资源节点，而不是重新初始化覆盖全部配置。
+        for (var node : targets) {
+            if (node.id().equals(kept.id()) || node.id().equals(removed.id())) continue;
+            jdbcTemplate.update("DELETE FROM iam_app_role_grant WHERE tenant_id=? AND menu_node_id=?",
+                    uuidBytes(actor.tenantId()), uuidBytes(node.id()));
+            jdbcTemplate.update("DELETE FROM iam_app_menu_node WHERE tenant_id=? AND id=?",
+                    uuidBytes(actor.tenantId()), uuidBytes(node.id()));
+        }
+        long version = appSettingsStore.context(actor).version();
+        Runnable migrate = () -> jdbcTemplate.execute((org.springframework.jdbc.core.ConnectionCallback<Void>) connection -> {
+            // 复现 DEV：库默认 general_ci，历史资源表显式使用 0900_ai_ci。
+            try (var statement = connection.createStatement()) {
+                statement.execute("ALTER DATABASE rigour_iam COLLATE utf8mb4_general_ci");
+                try {
+                    org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
+                            new org.springframework.core.io.ClassPathResource("db/migration/V120__iam_complete_supply_permission_nodes.sql"));
+                } finally {
+                    statement.execute("ALTER DATABASE rigour_iam COLLATE utf8mb4_0900_ai_ci");
+                }
+            }
+            return null;
+        });
+        migrate.run();
+        var migrated = appRoles.grantableMenus(actor);
+        assertThat(migrated.stream().filter(n -> n.permissionCode() != null && required.contains(n.permissionCode()))).hasSize(9);
+        var preserved = migrated.stream().filter(n -> n.id().equals(kept.id())).findFirst().orElseThrow();
+        assertThat(preserved.name()).isEqualTo("企业自定义权限名称");
+        assertThat(preserved.sortOrder()).isEqualTo(777);
+        assertThat(preserved.status()).isEqualTo("DISABLED");
+        assertThat(migrated).noneMatch(n -> n.id().equals(removed.id()));
+        assertThat(appRoles.roles(actor).stream().filter(r -> r.id().equals(ordinary.id())).findFirst().orElseThrow().menuNodeIds())
+                .isEqualTo(ordinary.menuNodeIds());
+        assertThat(appSettingsStore.context(actor).mode()).isEqualTo("ACTIVE");
+        assertThat(appSettingsStore.context(actor).version()).isEqualTo(version + 1);
+        migrate.run();
+        assertThat(appRoles.grantableMenus(actor)).hasSize(migrated.size());
+        assertThat(appSettingsStore.context(actor).version()).isEqualTo(version + 1);
+    }
+
+    @Test
+    void missingSettingsTargetsReturnSafeValidationErrors() {
+        var actor = insertTenantAdministrator().actor();
+        appSettingsStore.initialize(actor);
+        var missing = UUID.randomUUID();
+        assertThatThrownBy(() -> appRoles.impact(actor, missing))
+                .isInstanceOf(com.rigour.shared.core.exception.RequestValidationException.class).hasMessage("角色不存在");
+        assertThatThrownBy(() -> appSettingsStore.menuImpact(actor, missing))
+                .isInstanceOf(com.rigour.shared.core.exception.RequestValidationException.class).hasMessage("菜单不存在");
+        assertThatThrownBy(() -> appSettingsStore.saveMenu(actor, missing,
+                new com.rigour.tenant.iam.application.service.settings.AppSettingsModels.MenuCommand(
+                        null, "MENU", null, "已删除目录", "Folder", 9, true, "ACTIVE", 0, null, null, null, null)))
+                .isInstanceOf(com.rigour.shared.core.exception.RequestValidationException.class).hasMessage("菜单不存在");
+        assertThatThrownBy(() -> appMembers.delete(actor, missing, 0))
+                .isInstanceOf(com.rigour.shared.core.exception.RequestValidationException.class).hasMessage("供应链用户不存在");
+    }
+
     private com.rigour.tenant.iam.application.service.settings.AppAccessModels.Role supplyTestRole(
             Actor actor,
             String code,
@@ -1881,7 +2088,7 @@ INSERT INTO iam_user_credential (
                 actor,
                 null,
                 new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleCommand(
-                        code, code, null, "ACTIVE", 0, nodes, rules));
+                        code, code, null, "ACTIVE", 0, nodes, rules, testDataScope(rules)));
     }
 
     private com.rigour.tenant.iam.application.port.out.AppEmployeeClient.Employee
@@ -1917,20 +2124,15 @@ INSERT INTO iam_user_credential (
                                     com.rigour.tenant.iam.application.service.settings
                                             .AppMemberModels.Assignment>
                             roles) {
-        var none =
-                new com.rigour.tenant.iam.application.service.settings.AppMemberModels.Limit(
-                        "NONE", List.of());
         return new com.rigour.tenant.iam.application.service.settings.AppMemberModels.Command(
                 null,
                 username,
-                "Local-permission-regression-password-123",
+                "R7!mK2xp",
                 employee,
                 status,
                 null,
                 version,
                 roles,
-                none,
-                none,
                 "测试员工关联更正");
     }
 
@@ -2017,17 +2219,8 @@ INSERT INTO iam_user_credential (
                                 "ACTIVE",
                                 0,
                                 List.of(supplyTestAssignment(current))));
-        var child =
-                appMembers.save(
-                        actor,
-                        null,
-                        supplyTestCommand(
-                                "child-department",
-                                "CHILD",
-                                "ACTIVE",
-                                0,
-                                List.of(supplyTestAssignment(descendants))));
-        assertThat(child.employee().departmentId()).isEqualTo(11L);
+        assertThatThrownBy(() -> appMembers.save(actor, null, supplyTestCommand("child-department", "CHILD", "ACTIVE", 0,
+                List.of(supplyTestAssignment(descendants))))).hasMessageContaining("当前部门超出");
         assertThatThrownBy(
                         () ->
                                 appMembers.save(
@@ -2175,7 +2368,7 @@ INSERT INTO iam_user_credential (
                         "DISABLED",
                         role.version(),
                         role.menuNodeIds(),
-                        role.rules());
+                        role.rules(), testDataScope(role.rules()));
         assertThatThrownBy(() -> appRoles.saveRole(actor, role.id(), disabled))
                 .hasMessageContaining("最后一个有效角色");
         assertThatThrownBy(() -> appRoles.deleteRole(actor, role.id(), role.version(), true))
@@ -2322,7 +2515,7 @@ INSERT INTO iam_user_credential (
                                                 "DISABLED",
                                                 management.version(),
                                                 management.menuNodeIds(),
-                                                management.rules())))
+                                                management.rules(), management.dataScope())))
                 .hasMessageContaining("管理入口");
         assertThat(
                         jdbcTemplate.queryForObject(
@@ -2369,15 +2562,12 @@ INSERT INTO iam_user_credential (
     }
 
     @Test
-    void customerAssignmentTargetPreservesLegacyAccessAndChecksActiveUserCapsAndTenant() {
+    void customerAssignmentTargetRequiresSavedAuthorizationAndActiveSameTenantUser() {
         var root = insertTenantAdministrator().actor();
         var legacyCaller = supplyTestCaller(root);
         supplyTestEmployee(root, "NO-LOGIN", 10, List.of(10L));
-        var uninitialized =
-                appAuthorization.customerAssignmentTarget(legacyCaller, "NO-LOGIN", null);
-        assertThat(uninitialized.usable()).isTrue();
-        assertThat(uninitialized.userId()).isNull();
-        assertThat(uninitialized.regionLimit().mode()).isEqualTo("ALL");
+        assertThatThrownBy(() -> appAuthorization.customerAssignmentTarget(legacyCaller, "NO-LOGIN", null))
+                .hasMessageContaining("供应链尚未初始化");
         appSettingsStore.initialize(root);
         assertThat(
                         appAuthorization
@@ -2399,7 +2589,7 @@ INSERT INTO iam_user_credential (
                                 List.of(supplyTestAssignment(viewer))));
         var target = appAuthorization.customerAssignmentTarget(legacyCaller, null, member.id());
         assertThat(target.userId()).isEqualTo(member.id());
-        assertThat(target.regionLimit().mode()).isEqualTo("NONE");
+        assertThat(target.regionLimit().mode()).isEqualTo("ALL");
         assertThat(target.usable()).isTrue();
         jdbcTemplate.update(
                 "UPDATE iam_app_settings SET authorization_mode='ACTIVE' WHERE tenant_id=?",
@@ -2428,275 +2618,25 @@ INSERT INTO iam_user_credential (
                                 .customerAssignmentTarget(legacyCaller, "WITH-LOGIN", null)
                                 .regionLimit()
                                 .mode())
-                .isEqualTo("NONE");
+                .isEqualTo("ALL");
     }
 
-    @Test
-    void preparingCustomerAssignmentDoesNotActivateDraftMemberRestrictionsBeforeCutover() {
-        var root = insertTenantAdministrator().actor();
-        appSettingsStore.initialize(root);
-        var caller = supplyTestCaller(root);
-        var viewer =
-                supplyTestRole(root, "PREPARING_VIEWER", Set.of("supply:menu:read"), List.of());
-        var employee = supplyTestEmployee(root, "DRAFT-MEMBER", 10, List.of(10L));
-        var member =
-                appMembers.save(
-                        root,
-                        null,
-                        supplyTestCommand(
-                                "draft-member",
-                                "DRAFT-MEMBER",
-                                "DISABLED",
-                                0,
-                                List.of(supplyTestAssignment(viewer))));
-        var legacyTarget = appAuthorization.customerAssignmentTarget(caller, "DRAFT-MEMBER", null);
-        assertThat(legacyTarget.usable()).isTrue();
-        assertThat(legacyTarget.regionLimit().mode()).isEqualTo("ALL");
-        var configurationTarget =
-                appAuthorization.customerAssignmentTarget(caller, null, member.id());
-        assertThat(configurationTarget.usable()).isFalse();
-        assertThat(configurationTarget.regionLimit().mode()).isEqualTo("NONE");
-        org.mockito.Mockito.when(appEmployees.employee(root.tenantId(), "DRAFT-MEMBER"))
-                .thenReturn(
-                        new com.rigour.tenant.iam.application.port.out.AppEmployeeClient.Employee(
-                                employee.id(),
-                                employee.employeeCode(),
-                                employee.employeeName(),
-                                "LEFT",
-                                employee.departmentId(),
-                                employee.departmentName(),
-                                employee.positionCode(),
-                                employee.positionName(),
-                                employee.departmentAncestorIds(),
-                                2,
-                                employee.organizationVersion(),
-                                1,
-                                false,
-                                "员工已离职"));
-        assertThat(appAuthorization.customerAssignmentTarget(caller, "DRAFT-MEMBER", null).usable())
-                .isFalse();
-        assertThat(
-                        appAuthorization
-                                .customerAssignmentTarget(caller, "DRAFT-MEMBER", null)
-                                .unavailableReason())
-                .isEqualTo("员工已离职");
-        org.mockito.Mockito.when(appEmployees.employee(root.tenantId(), "DRAFT-MEMBER"))
-                .thenThrow(new IllegalStateException("HR 服务暂时无法核验"));
-        assertThatThrownBy(
-                        () ->
-                                appAuthorization.customerAssignmentTarget(
-                                        caller, "DRAFT-MEMBER", null))
-                .hasMessageContaining("HR 服务暂时无法核验");
-        org.mockito.Mockito.doReturn(employee)
-                .when(appEmployees)
-                .employee(root.tenantId(), "DRAFT-MEMBER");
-        jdbcTemplate.update(
-                "UPDATE iam_app_settings SET authorization_mode='ACTIVE' WHERE tenant_id=?",
-                uuidBytes(root.tenantId()));
-        var activeTarget = appAuthorization.customerAssignmentTarget(caller, "DRAFT-MEMBER", null);
-        assertThat(activeTarget.usable()).isFalse();
-        assertThat(activeTarget.unavailableReason()).isEqualTo("目标用户已禁用");
-        assertThat(activeTarget.regionLimit().mode()).isEqualTo("NONE");
-    }
+
 
     @Autowired
     private com.rigour.tenant.iam.application.port.out.AppAuthorizationStore appAuthorization;
 
-    @Test
-    void realRequestShadowKeepsOldAndNewDecisionsSeparateAndRejectsExpiredSessions() {
-        var f = insertTenantAdministrator();
-        var other = insertTenantAdministrator();
-        appSettingsStore.initialize(f.actor());
-        appSettingsStore.initialize(other.actor());
-        var a = f.actor();
-        var session = UUID.randomUUID();
-        jdbcTemplate.update(
-                "INSERT INTO"
-                    + " iam_auth_session(id,principal_scope,tenant_id,principal_id,client_type,device_name,issued_at,last_seen_at,expires_at,status,version)"
-                    + " VALUES(?,'TENANT',?,?,'WEB','shadow-test',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL"
-                    + " 1 HOUR),'ACTIVE',0)",
-                uuidBytes(session),
-                uuidBytes(a.tenantId()),
-                uuidBytes(a.principalId()));
-        long userVersion =
-                jdbcTemplate.queryForObject(
-                        "SELECT security_version FROM iam_user WHERE tenant_id=? AND id=?",
-                        Long.class,
-                        uuidBytes(a.tenantId()),
-                        uuidBytes(a.principalId()));
-        long tenantVersion =
-                jdbcTemplate.queryForObject(
-                        "SELECT policy_version FROM iam_tenant WHERE id=?",
-                        Long.class,
-                        uuidBytes(a.tenantId()));
-        var caller =
-                new com.rigour.shared.context.CallerIdentity(
-                        "TENANT",
-                        a.principalId(),
-                        a.tenantId(),
-                        a.principalId(),
-                        null,
-                        session,
-                        0,
-                        userVersion,
-                        tenantVersion,
-                        java.util.Set.of(),
-                        java.util.Set.of());
-        appAuthorization.observe(caller, "crm:customer:read", "crm:customer:read");
-        appAuthorization.observe(caller, "crm:customer:read", "crm:customer:read");
-        var rows = cutover.observations(a, 1, 20);
-        assertThat(rows.total()).isEqualTo(1);
-        var row = rows.items().getFirst();
-        assertThat(row.sampleCount()).isEqualTo(2);
-        assertThat(row.legacyAllowed()).isTrue();
-        assertThat(row.proposedAllowed()).isFalse();
-        assertThat(row.policyJson()).contains("legacyRoles", "TENANT_SUPER_ADMIN");
-        assertThat(cutover.observations(other.actor(), 1, 20).total()).isZero();
-        var candidate = appAuthorization.candidate(caller, "crm:customer:read");
-        assertThat(candidate.mode()).isEqualTo("PREPARING");
-        assertThat(candidate.functionAllowed()).isFalse();
-        var data =
-                new com.rigour.tenant.iam.application.model.settings.AppDataObservation(
-                        "crm:customer:read",
-                        "CRM",
-                        "record-123",
-                        candidate.applicationVersion(),
-                        candidate.memberVersion(),
-                        candidate.employeeRevision(),
-                        candidate.organizationVersion(),
-                        true,
-                        false);
-        appAuthorization.observeData(caller, data);
-        appAuthorization.observeData(caller, data);
-        var dataPage = cutover.dataObservations(a, 1, 1);
-        assertThat(dataPage.total()).isEqualTo(1);
-        assertThat(dataPage.items().getFirst().sampleCount()).isEqualTo(2);
-        assertThat(dataPage.items().getFirst().proposedAllowed()).isFalse();
-        assertThat(cutover.dataObservations(other.actor(), 1, 20).total()).isZero();
-        assertThatThrownBy(
-                        () ->
-                                appAuthorization.observeData(
-                                        caller,
-                                        new com.rigour.tenant.iam.application.model.settings
-                                                .AppDataObservation(
-                                                data.action(),
-                                                data.domain(),
-                                                data.recordKey(),
-                                                data.applicationVersion() + 1,
-                                                data.memberVersion(),
-                                                data.employeeRevision(),
-                                                data.organizationVersion(),
-                                                true,
-                                                false)))
-                .hasMessageContaining("已变化");
-        assertThatThrownBy(
-                        () ->
-                                appAuthorization.observeData(
-                                        caller,
-                                        new com.rigour.tenant.iam.application.model.settings
-                                                .AppDataObservation(
-                                                data.action(),
-                                                data.domain(),
-                                                data.recordKey(),
-                                                data.applicationVersion(),
-                                                data.memberVersion(),
-                                                data.employeeRevision(),
-                                                data.organizationVersion(),
-                                                true,
-                                                true)))
-                .hasMessageContaining("功能授权");
 
-        assertThat(appSettingsStore.context(a).mode()).isEqualTo("PREPARING");
-        jdbcTemplate.update(
-                "UPDATE iam_auth_session SET"
-                    + " status='REVOKED',revoked_at=UTC_TIMESTAMP(6),revoke_reason='shadow-test'"
-                    + " WHERE id=?",
-                uuidBytes(session));
-        assertThatThrownBy(
-                        () ->
-                                appAuthorization.observe(
-                                        caller, "crm:customer:read", "crm:customer:read"))
-                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
-        assertThat(cutover.observations(a, 1, 20).items().getFirst().sampleCount()).isEqualTo(2);
-    }
 
-    @Autowired private com.rigour.tenant.iam.application.port.out.AppLegacyRoleStore legacyRoles;
 
-    @Test
-    void legacyRoleImportPreservesSourceAndStartsDisabledWithoutBusinessDataGrants() {
-        var f = insertTenantAdministrator();
-        var other = insertTenantAdministrator();
-        appSettingsStore.initialize(f.actor());
-        appSettingsStore.initialize(other.actor());
-        var source =
-                legacyRoles.sources(f.actor()).stream()
-                        .filter(r -> r.id().equals(f.roleId()))
-                        .findFirst()
-                        .orElseThrow();
-        long sourceCount =
-                jdbcTemplate.queryForObject(
-                        "SELECT COUNT(*) FROM iam_role_resource WHERE tenant_id=? AND role_id=?",
-                        Long.class,
-                        uuidBytes(f.actor().tenantId()),
-                        uuidBytes(f.roleId()));
-        assertThatThrownBy(
-                        () ->
-                                legacyRoles.importRole(
-                                        f.actor(),
-                                        f.roleId(),
-                                        new com.rigour.tenant.iam.application.service.settings
-                                                .AppLegacyRoleModels.Command(
-                                                "迁入测试", source.applicationVersion(), "stale")))
-                .isInstanceOf(IllegalStateException.class);
-        var imported =
-                legacyRoles.importRole(
-                        f.actor(),
-                        f.roleId(),
-                        new com.rigour.tenant.iam.application.service.settings.AppLegacyRoleModels
-                                .Command(
-                                "迁入测试", source.applicationVersion(), source.fingerprint()));
-        assertThat(imported.status()).isEqualTo("DISABLED");
-        assertThat(imported.rules()).isNotEmpty().allMatch(r -> r.scopeMode().equals("NONE"));
-        assertThat(imported.userCount()).isZero();
-        assertThat(
-                        jdbcTemplate.queryForObject(
-                                "SELECT COUNT(*) FROM iam_role_resource WHERE tenant_id=? AND"
-                                        + " role_id=?",
-                                Long.class,
-                                uuidBytes(f.actor().tenantId()),
-                                uuidBytes(f.roleId())))
-                .isEqualTo(sourceCount);
-        assertThat(
-                        legacyRoles.sources(f.actor()).stream()
-                                .filter(r -> r.id().equals(f.roleId()))
-                                .findFirst()
-                                .orElseThrow()
-                                .importedRoleId())
-                .isEqualTo(imported.id());
-        assertThat(legacyRoles.sources(other.actor())).noneMatch(r -> r.id().equals(f.roleId()));
-        var latest =
-                legacyRoles.sources(f.actor()).stream()
-                        .filter(r -> r.id().equals(f.roleId()))
-                        .findFirst()
-                        .orElseThrow();
-        assertThatThrownBy(
-                        () ->
-                                legacyRoles.importRole(
-                                        f.actor(),
-                                        f.roleId(),
-                                        new com.rigour.tenant.iam.application.service.settings
-                                                .AppLegacyRoleModels.Command(
-                                                "重复",
-                                                latest.applicationVersion(),
-                                                latest.fingerprint())))
-                .hasMessageContaining("已迁入");
-        assertThat(
-                        jdbcTemplate.queryForObject(
-                                "SELECT COUNT(*) FROM iam_app_legacy_role_mapping WHERE"
-                                        + " tenant_id=?",
-                                Long.class,
-                                uuidBytes(f.actor().tenantId())))
-                .isEqualTo(1);
+
+    private static com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleDataScope testDataScope(
+            List<com.rigour.tenant.iam.application.service.settings.AppAccessModels.ScopeRule> rules) {
+        if (rules.isEmpty()) return new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleDataScope("ALL", List.of());
+        var rule = rules.getFirst();
+        return new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleDataScope(
+                "DEPARTMENT".equals(rule.scopeMode()) && "SPECIFIED".equals(rule.departmentMode()) ? "CUSTOM" : rule.scopeMode(),
+                "SPECIFIED".equals(rule.departmentMode()) ? rule.references().getOrDefault("DEPARTMENT", List.of()) : List.of());
     }
 
     private TenantAdminFixture insertTenantAdministrator() {

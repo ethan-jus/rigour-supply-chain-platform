@@ -8,6 +8,7 @@ import com.rigour.tenant.iam.infrastructure.security.oidc.PublicRefreshClientAut
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.rigour.tenant.iam.infrastructure.security.session.IamLoginAuthenticationFilter;
+import com.rigour.tenant.iam.infrastructure.security.session.PasswordAuthenticationProperties;
 import com.rigour.tenant.iam.infrastructure.security.session.IamSessionLogoutHandler;
 import com.rigour.tenant.iam.infrastructure.security.session.OidcPromptLoginFilter;
 import com.rigour.tenant.iam.infrastructure.security.session.OidcLoginAuthenticationSuccessHandler;
@@ -188,11 +189,12 @@ public class IamAuthorizationServerSecurityConfiguration {
             AuthenticationManager authenticationManager,
             SecurityContextRepository securityContextRepository,
             IamSessionLogoutHandler logoutHandler,
+            PasswordAuthenticationProperties passwordProperties,
             OidcServerProperties serverProperties,
             @Qualifier("oidcCorsConfigurationSource") CorsConfigurationSource oidcCorsConfigurationSource,
             RequestCache oidcRequestCache
     ) throws Exception {
-        IamLoginAuthenticationFilter loginFilter = new IamLoginAuthenticationFilter(authenticationManager);
+        IamLoginAuthenticationFilter loginFilter = new IamLoginAuthenticationFilter(authenticationManager, passwordProperties.getDefaultTenantCode());
         loginFilter.setSecurityContextRepository(securityContextRepository);
         OidcLoginAuthenticationSuccessHandler successHandler =
                 new OidcLoginAuthenticationSuccessHandler(oidcRequestCache);

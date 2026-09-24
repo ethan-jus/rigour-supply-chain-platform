@@ -7,6 +7,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "rigour.iam.authentication.password")
 public final class PasswordAuthenticationProperties {
 
+    private String defaultTenantCode;
+
+    public String getDefaultTenantCode() { return defaultTenantCode; }
+
+    public void setDefaultTenantCode(String defaultTenantCode) { this.defaultTenantCode = defaultTenantCode; }
+
     private int maximumFailedAttempts = 5;
     private Duration lockDuration = Duration.ofMinutes(15);
     private Duration sessionTimeToLive = Duration.ofHours(8);

@@ -46,7 +46,9 @@ public class CityContactRefreshTest {
                     + " business_links_ready INT)");
         jdbc.execute(
                 "CREATE TABLE bi_sales_contact_city_dim (tenant_id VARCHAR, region_code VARCHAR,"
-                    + " city_name VARCHAR)");
+                    + " city_name VARCHAR, department_id BIGINT, department_path VARCHAR, source_region_code VARCHAR)");
+        jdbc.execute("CREATE TABLE bi_source_hr_hr_department(tenant_id VARCHAR,id BIGINT,department_code VARCHAR,department_name VARCHAR,parent_id BIGINT,status_code VARCHAR,deleted INT,department_path VARCHAR)");
+        jdbc.update("INSERT INTO bi_source_hr_hr_department VALUES ('T',1,'SALES','销售部',NULL,'ACTIVE',0,'[1]'),('T',2,'BJ','北京',1,'ACTIVE',0,'[1,2]')");
         jdbc.update(
                 "INSERT INTO bi_source_crm_crm_customer_area VALUES"
                     + " ('T','REGION','华北',NULL,0,'ACTIVE'),('T','BJ','北京','REGION',0,'ACTIVE')");

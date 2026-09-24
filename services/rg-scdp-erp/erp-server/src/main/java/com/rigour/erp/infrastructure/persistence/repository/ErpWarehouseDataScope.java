@@ -35,9 +35,9 @@ public final class ErpWarehouseDataScope {
                 SupplyAuthorizationContext.current().isPresent()
                         ? SupplyAuthorizationContext.requireAction(action)
                         : client.authorization(caller, action);
-        if ("ACTIVE".equals(p.mode()) && !p.functionAllowed())
+        if (!"ACTIVE".equals(p.mode()) || !p.functionAllowed())
             throw new AuthorizationDeniedException(action);
-        return "ACTIVE".equals(p.mode()) ? p : null;
+        return p;
     }
 
     public Predicate predicate(String action, String... fields) {
@@ -96,35 +96,7 @@ public final class ErpWarehouseDataScope {
                         "erp_transfer_order")
                 .contains(table)) throw new IllegalArgumentException("未知业务表");
         var p = predicate(action, fields);
-        if ("1=1".equals(p.sql())) {
-            SupplyAuthorizationContext.compare(
-                    action,
-                    "ERP",
-                    table + ":" + id,
-                    () ->
-                            jdbc.queryForObject(
-                                            "SELECT COUNT(*) FROM "
-                                                    + table
-                                                    + " WHERE tenant_id=? AND id=? AND deleted=0",
-                                            Integer.class,
-                                            tenant,
-                                            id)
-                                    == 1,
-                    next -> {
-                        var candidate = predicate(next, fields);
-                        var values = new ArrayList<Object>(List.of(tenant, id));
-                        values.addAll(candidate.args());
-                        return jdbc.queryForObject(
-                                        "SELECT COUNT(*) FROM "
-                                                + table
-                                                + " WHERE tenant_id=? AND id=? AND deleted=0 AND "
-                                                + candidate.sql(),
-                                        Integer.class,
-                                        values.toArray())
-                                == 1;
-                    });
-            return true;
-        }
+        if ("1=1".equals(p.sql())) return true;
         List<Object> args = new ArrayList<>(List.of(tenant, id));
         args.addAll(p.args());
         return jdbc.queryForObject(

@@ -43,7 +43,6 @@ rocketmq:
 rigour:
   crm:
     # 飞书门店历史与订货宝客户建档口径的切换点（北京时间 9 月 4 日零点）。
-    customer-history-cutover: "2026-09-03T16:00:00Z"
   supply-authorization:
     iam-base-url: "http://rigour-tenant-iam-service"
   context:

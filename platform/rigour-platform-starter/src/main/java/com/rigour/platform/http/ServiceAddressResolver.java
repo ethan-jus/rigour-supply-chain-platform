@@ -2,7 +2,6 @@ package com.rigour.platform.http;
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,6 +14,7 @@ import org.springframework.http.client.ClientHttpRequestExecution;
 import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.http.client.support.HttpRequestWrapper;
+import org.springframework.web.util.UriComponentsBuilder;
 
 /**
  * 出站 HTTP 的服务名寻址：请求主机名命中注册中心服务名时改写为实例地址，
@@ -124,18 +124,14 @@ public final class ServiceAddressResolver implements ClientHttpRequestIntercepto
     }
 
     private static URI rewrite(URI target, URI original) {
-        try {
-            return new URI(
-                    target.getScheme(),
-                    null,
-                    target.getHost(),
-                    target.getPort(),
-                    original.getRawPath(),
-                    original.getRawQuery(),
-                    original.getRawFragment());
-        } catch (URISyntaxException exception) {
-            throw new IllegalStateException("服务实例地址无法用于请求改写: " + target, exception);
-        }
+        // 原路径和查询已经编码且参与签名，只替换实例地址，不能再次转义百分号。
+        return UriComponentsBuilder.fromUri(original)
+                .scheme(target.getScheme())
+                .userInfo(null)
+                .host(target.getHost())
+                .port(target.getPort())
+                .build(true)
+                .toUri();
     }
 
     private static final class ResolvedUriRequest extends HttpRequestWrapper {

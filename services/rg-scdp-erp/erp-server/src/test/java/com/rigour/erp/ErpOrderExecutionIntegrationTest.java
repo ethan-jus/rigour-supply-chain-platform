@@ -81,9 +81,9 @@ class ErpOrderExecutionIntegrationTest {
                 .thenAnswer(
                         i ->
                                 policy(
-                                        "PREPARING",
+                                        "ACTIVE",
                                         i.getArgument(1),
-                                        List.of(),
+                                        List.of(new Clause(UUID.randomUUID(), "INVENTORY", "ALL", new Limit("ALL", List.of()), new Limit("ALL", List.of()), new Limit("ALL", List.of()), false)),
                                         new Limit("ALL", List.of())));
         jdbc.update(
                 "INSERT INTO"
@@ -349,14 +349,7 @@ class ErpOrderExecutionIntegrationTest {
         return jdbc.queryForObject(
                 "SELECT COUNT(*) FROM " + table + " WHERE tenant_id=?", Integer.class, tenant);
     }
-    @org.springframework.beans.factory.annotation.Autowired private com.rigour.erp.application.port.out.SupplyReadinessStore supplyReadiness;
-    @org.junit.jupiter.api.Test
-    void readinessChecksRunAgainstTheMigratedTenantSchema() {
-      var report=supplyReadiness.inspect(java.util.UUID.randomUUID().toString());
-      org.assertj.core.api.Assertions.assertThat(report.contractVersion()).isEqualTo(1);
-      org.assertj.core.api.Assertions.assertThat(report.version()).isNotBlank();
-      org.assertj.core.api.Assertions.assertThat(report.checks()).allMatch(c->c.count()==0);
-    }
+
     @Autowired com.rigour.erp.application.port.out.ErpProcurementOrderStore procurements;
     @Test
     void procurementReadsAndMutationsStayInsideTheirWarehouseScope() {

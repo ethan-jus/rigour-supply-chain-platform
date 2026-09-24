@@ -65,15 +65,18 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    void mapsMissingStaticResourceToNotFoundResponse() {
+    void mapsMissingStaticResourceToNotFoundResponse() throws Exception {
         RequestContext.set("request-not-found", "zh-CN");
-        ResponseEntity<ApiResponse<Void>> response = handler.handleNoResourceFound(
-                new NoResourceFoundException(HttpMethod.GET, "", "favicon.ico"));
+        ResponseEntity<Object> response = handler.handleException(
+                new NoResourceFoundException(HttpMethod.GET, "", "favicon.ico"),
+                new org.springframework.web.context.request.ServletWebRequest(
+                        new org.springframework.mock.web.MockHttpServletRequest(),
+                        new org.springframework.mock.web.MockHttpServletResponse()));
 
         assertThat(response.getStatusCode().value()).isEqualTo(404);
         assertThat(response.getBody()).isNotNull();
-        assertThat(response.getBody().code()).isEqualTo("NOT_FOUND");
-        assertThat(response.getBody().requestId()).isEqualTo("request-not-found");
+        assertThat(((ApiResponse<?>) response.getBody()).code()).isEqualTo("NOT_FOUND");
+        assertThat(((ApiResponse<?>) response.getBody()).requestId()).isEqualTo("request-not-found");
     }
 
     @Test

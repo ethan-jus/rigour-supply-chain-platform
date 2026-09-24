@@ -42,15 +42,7 @@ public class JdbcCityContactAnalyticsStore implements CityContactAnalyticsStore 
         jdbc.update("DELETE FROM bi_sales_contact_fact WHERE tenant_id = :tenant", args);
         jdbc.update("DELETE FROM bi_sales_contact_city_dim WHERE tenant_id = :tenant", args);
         jdbc.update(
-                """
-                INSERT INTO bi_sales_contact_city_dim (tenant_id, region_code, city_name)
-                SELECT :tenant, area_code, area_name FROM bi_source_crm_crm_customer_area
-                 WHERE tenant_id = UUID_TO_BIN(:tenant) AND deleted = 0 AND status = 'ACTIVE'
-                   AND NOT EXISTS (SELECT 1 FROM bi_source_crm_crm_customer_area child
-                        WHERE child.tenant_id = bi_source_crm_crm_customer_area.tenant_id
-                          AND child.parent_area_code = bi_source_crm_crm_customer_area.area_code
-                          AND child.deleted = 0 AND child.status = 'ACTIVE')
-                """,
+                com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.INSERT.replace("#{tenantId}", ":tenant"),
                 args);
         int count =
                 jdbc.update(

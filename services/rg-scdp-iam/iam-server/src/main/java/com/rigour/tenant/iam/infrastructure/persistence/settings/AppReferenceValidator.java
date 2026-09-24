@@ -1,5 +1,7 @@
 package com.rigour.tenant.iam.infrastructure.persistence.settings;
 
+import com.rigour.shared.core.exception.RequestValidationException;
+
 import com.rigour.tenant.iam.application.port.out.AppReferenceClient;
 
 import org.springframework.stereotype.Component;
@@ -23,7 +25,7 @@ public final class AppReferenceValidator {
         for (var ref : references(tenant, dimension)) values.put(ref.key(), ref);
         for (String key : keys)
             if (!values.containsKey(key) || !"ACTIVE".equals(values.get(key).status()))
-                throw new IllegalArgumentException("请选择本租户有效的授权范围：" + dimension + " / " + key);
+                throw new RequestValidationException("请选择本租户有效的授权范围：" + dimension + " / " + key);
     }
 
     @SuppressWarnings("unchecked")

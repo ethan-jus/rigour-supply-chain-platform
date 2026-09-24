@@ -7,7 +7,7 @@ import com.rigour.tenant.iam.client.SupplyAuthorizationContext;
 
 import java.util.*;
 
-/** BI 数据过滤器。每条角色条件完整求交，再合并角色并应用成员上限。SQL 片段只由固定字段构造。 */
+/** BI 数据过滤器。按菜单动作对应的角色条件过滤并合并多个角色。SQL 片段只由固定字段构造。 */
 public final class BiScopePredicates {
     private BiScopePredicates() {}
 
@@ -54,18 +54,22 @@ public final class BiScopePredicates {
                     || "NONE".equals(c.scopeMode())) continue;
             List<Object> values = new ArrayList<>();
             List<String> and = new ArrayList<>();
-            boolean people = Set.of("EMPLOYEE", "VISIT").contains(kind);
+            boolean people = Set.of("EMPLOYEE", "VISIT", "CITY").contains(kind);
             boolean order = "ORDER".equals(kind),
                     inventory = "INVENTORY".equals(kind),
                     customer = "CUSTOMER".equals(kind),
                     object = "OBJECT".equals(kind);
-            if (inventory
-                    && (!Set.of("WAREHOUSE", "ALL").contains(c.scopeMode())
-                            || !unlimited(c.departments())
-                            || !unlimited(c.regions()))) continue;
-            if (!order && !inventory && !people && !unlimited(c.departments())) continue;
+            // 库存汇总没有人员或部门归属，受限角色不能将缺失归属解释为全部数据。
+            if (inventory) {
+                if (!Set.of("ALL").contains(c.scopeMode())) continue;
+                and.add(ids(c.warehouses(), "f.warehouse_id", values));
+                or.add("(" + String.join(" AND ", and) + ")");
+                args.addAll(values);
+                continue;
+            }
             if (!order && !inventory && !unlimited(c.warehouses())) continue;
-            if ("CITY".equals(kind) && !Set.of("REGION", "ALL").contains(c.scopeMode())) continue;
+            if ("CITY".equals(kind)
+                    && !Set.of("REGION", "DEPARTMENT", "ALL").contains(c.scopeMode())) continue;
             switch (c.scopeMode()) {
                 case "SELF" -> {
                     if (p.employeeCode() == null || inventory) continue;
@@ -73,7 +77,7 @@ public final class BiScopePredicates {
                     values.add(p.employeeCode());
                 }
                 case "DEPARTMENT" -> {
-                    if ((!order && !people) || "NONE".equals(c.departments().mode())) continue;
+                    if ("NONE".equals(c.departments().mode())) continue;
                 }
                 case "REGION" -> {
                     if (inventory || "NONE".equals(c.regions().mode())) continue;
@@ -95,6 +99,24 @@ public final class BiScopePredicates {
                                 "a.department_path",
                                 true,
                                 values));
+            if ((customer || object) && !unlimited(c.departments())) {
+                values.add(p.tenantId().toString());
+                String department =
+                        path(
+                                c.departments(),
+                                c.includeDescendants(),
+                                "scope_employee.department_id",
+                                "scope_employee.department_path",
+                                true,
+                                values);
+                and.add(
+                        "EXISTS(SELECT 1 FROM bi_source_hr_hr_employee scope_employee WHERE"
+                                + " scope_employee.tenant_id=? AND scope_employee.employee_code="
+                                + (object ? "f.employee_code" : "a.employee_code")
+                                + " AND "
+                                + department
+                                + ")");
+            }
             if (!inventory && !"NONE".equals(c.regions().mode()))
                 and.add(
                         path(
@@ -195,9 +217,13 @@ public final class BiScopePredicates {
         var args = new ArrayList<Object>(city.args());
         args.addAll(employee.args());
         return new Sql(
-                "((f.dimension_type='CITY' AND EXISTS(SELECT 1 FROM bi_region_authority a WHERE"
-                        + " a.tenant_id=f.tenant_id AND a.region_code=f.dimension_code AND "
+                "((f.dimension_type='CITY' AND EXISTS(SELECT 1 FROM bi_sales_contact_city_dim c"
+                        + " LEFT JOIN bi_region_authority a ON a.tenant_id=c.tenant_id AND"
+                        + " a.region_code=c.source_region_code WHERE c.tenant_id=f.tenant_id AND"
+                        + " c.region_code=f.dimension_code AND "
                         + city.text()
+                                .replace("a.department_id", "c.department_id")
+                                .replace("a.department_path", "c.department_path")
                         + ")) OR (f.dimension_type='SALES_OWNER' AND EXISTS(SELECT 1 FROM"
                         + " bi_employee_target_footprint fp WHERE fp.tenant_id=f.tenant_id AND"
                         + " fp.employee_code=f.dimension_code) AND NOT EXISTS(SELECT 1 FROM"
@@ -256,7 +282,7 @@ public final class BiScopePredicates {
                 tenant,
                 "bi_employee_dim",
                 "LEFT JOIN bi_region_authority a ON a.tenant_id=f.tenant_id AND"
-                    + " a.region_code=f.region_code",
+                        + " a.region_code=f.region_code",
                 new Sql(
                         employee.text()
                                 .replace("a.employee_code", "f.employee_code")
@@ -270,8 +296,8 @@ public final class BiScopePredicates {
                 tenant,
                 "bi_sales_contact_fact",
                 "LEFT JOIN bi_region_authority a ON a.tenant_id=f.tenant_id AND"
-                    + " a.region_code=f.region_code LEFT JOIN bi_source_hr_hr_employee e ON"
-                    + " e.tenant_id=f.tenant_id AND e.employee_code=f.owner_staff_code",
+                        + " a.region_code=f.region_code LEFT JOIN bi_source_hr_hr_employee e ON"
+                        + " e.tenant_id=f.tenant_id AND e.employee_code=f.owner_staff_code",
                 new Sql(
                         visit.text()
                                 .replace("a.employee_code", "f.owner_staff_code")
@@ -285,11 +311,13 @@ public final class BiScopePredicates {
                 tenant,
                 "bi_sales_contact_city_dim",
                 "LEFT JOIN bi_region_authority a ON a.tenant_id=f.tenant_id AND"
-                    + " a.region_code=f.region_code",
+                        + " a.region_code=f.source_region_code",
                 new Sql(
                         "("
                                 + city.text()
-                                + " OR EXISTS(SELECT 1 FROM bi_sales_contact_fact v WHERE"
+                                        .replace("a.department_id", "f.department_id")
+                                        .replace("a.department_path", "f.department_path")
+                                + " OR EXISTS(SELECT 1 FROM bi_sales_order_fact v WHERE"
                                 + " v.tenant_id=f.tenant_id AND v.region_code=f.region_code))",
                         city.args()));
         add(
@@ -300,7 +328,7 @@ public final class BiScopePredicates {
                 "",
                 new Sql(
                         "EXISTS(SELECT 1 FROM bi_customer_dim c WHERE c.tenant_id=f.tenant_id AND"
-                            + " c.customer_id=f.customer_id)",
+                                + " c.customer_id=f.customer_id)",
                         List.of()));
         for (String table : List.of("bi_inventory_balance_current", "bi_inventory_operation_fact"))
             add(ctes, args, tenant, table, "", predicate(p, "INVENTORY"));
@@ -310,8 +338,14 @@ public final class BiScopePredicates {
                 tenant,
                 "bi_city_cost_record",
                 "LEFT JOIN bi_region_authority a ON a.tenant_id=f.tenant_id AND"
-                        + " a.region_code=f.region_code",
-                predicate(p, "CITY"));
+                    + " a.region_code=f.region_code LEFT JOIN bi_sales_contact_city_dim"
+                    + " city_department ON city_department.tenant_id=f.tenant_id AND"
+                    + " city_department.region_code=f.region_code",
+                new Sql(
+                        city.text()
+                                .replace("a.department_id", "city_department.department_id")
+                                .replace("a.department_path", "city_department.department_path"),
+                        city.args()));
         add(
                 ctes,
                 args,

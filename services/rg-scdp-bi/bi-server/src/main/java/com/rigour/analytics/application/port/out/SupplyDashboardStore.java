@@ -26,6 +26,8 @@ public interface SupplyDashboardStore {
 
     void synchronizeSourceSnapshots(String tenantId);
 
+    void synchronizePeopleSnapshots(String tenantId);
+
     List<String> refreshTenantIds();
 
     boolean acquireRefreshLock(String tenantId, String lockCode, Instant now, Instant lockedUntil);
@@ -80,6 +82,8 @@ public interface SupplyDashboardStore {
     SourceRefreshResult refreshSalesPaymentFact(
             String tenantId, Instant from, Instant to, Instant syncedAt);
 
+    long refreshDashboardProductFacts(String tenantId, long runId, Instant syncedAt);
+
     long alignFrozenOrderAttribution(String tenantId, Instant syncedAt);
 
     SourceRefreshResult refreshInventoryBalanceCurrent(String tenantId, Instant syncedAt);
@@ -102,15 +106,52 @@ public interface SupplyDashboardStore {
             List<RankingItem> previousSalesRanking,
             List<CityProductItem> cityProducts,
             List<CityCustomerItem> cityCustomers,
-            List<SalesReceiptItem> salesReceipts) {
+            List<SalesReceiptItem> salesReceipts,
+            List<CityReceiptItem> cityReceipts,
+            CustomerRetention customerRetention, List<CityMonthlyGoal> cityMonthlyGoals, List<SalesPerson> salesPeople) {
+        public OperatingAnalysisData(List<RankingItem> previousSalesRanking, List<CityProductItem> cityProducts,
+                List<CityCustomerItem> cityCustomers, List<SalesReceiptItem> salesReceipts,
+                List<CityReceiptItem> cityReceipts, CustomerRetention customerRetention, List<CityMonthlyGoal> cityMonthlyGoals) {
+            this(previousSalesRanking, cityProducts, cityCustomers, salesReceipts, cityReceipts, customerRetention, cityMonthlyGoals, List.of());
+        }
+        public OperatingAnalysisData(List<RankingItem> previousSalesRanking, List<CityProductItem> cityProducts,
+                List<CityCustomerItem> cityCustomers, List<SalesReceiptItem> salesReceipts,
+                List<CityReceiptItem> cityReceipts, CustomerRetention customerRetention) {
+            this(previousSalesRanking, cityProducts, cityCustomers, salesReceipts, cityReceipts, customerRetention, List.of());
+        }
+        public OperatingAnalysisData(List<RankingItem> previousSalesRanking,
+                List<CityProductItem> cityProducts, List<CityCustomerItem> cityCustomers,
+                List<SalesReceiptItem> salesReceipts) {
+            this(previousSalesRanking, cityProducts, cityCustomers, salesReceipts, List.of(), null);
+        }
         public OperatingAnalysisData {
             previousSalesRanking =
                     List.copyOf(previousSalesRanking == null ? List.of() : previousSalesRanking);
             cityProducts = List.copyOf(cityProducts == null ? List.of() : cityProducts);
             cityCustomers = List.copyOf(cityCustomers == null ? List.of() : cityCustomers);
             salesReceipts = List.copyOf(salesReceipts == null ? List.of() : salesReceipts);
+            cityReceipts = List.copyOf(cityReceipts == null ? List.of() : cityReceipts);
+            salesPeople = List.copyOf(salesPeople == null ? List.of() : salesPeople);
+            cityMonthlyGoals = List.copyOf(cityMonthlyGoals == null ? List.of() : cityMonthlyGoals);
         }
     }
+
+    record SalesPerson(String ownerStaffCode, String ownerStaffName, String employmentStatus) {}
+
+    /** 到账日期范围内的城市收款，包含历史订单本期到账。 */
+    record CityReceiptItem(String regionCode, String regionName, BigDecimal receiptAmount,
+            Long paymentCount, Long customerCount) {}
+
+    /** 当前期间成交客户中，在期间起点之前已有有效订单的客户。 */
+    record CustomerRetention(Long orderingCustomerCount, Long returningCustomerCount,
+            Long newCustomerCount, Long annualReturningCustomerCount) {
+        public CustomerRetention(Long orderingCustomerCount, Long returningCustomerCount) {
+            this(orderingCustomerCount, returningCustomerCount, null, null);
+        }
+    }
+    record CityMonthlyGoal(String regionCode, String regionName, Integer month,
+            BigDecimal salesTarget, BigDecimal receiptTarget, BigDecimal newCustomerTarget,
+            BigDecimal repeatCustomerTarget, Integer configuredCount) {}
 
     /** 城市分类金额及去重订单、客户数，不含数量单位。 */
     record CityProductItem(

@@ -660,8 +660,7 @@ public final class OrderFundDocumentService {
     }
 
     private static CallerIdentity readActor() {
-        com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(
-                "order:fund:read", READ_PERMISSION);
+
         return actor(
                 com.rigour.tenant.iam.client.SupplyAuthorizationContext.current()
                                 .map(
@@ -673,7 +672,7 @@ public final class OrderFundDocumentService {
     }
 
     private static CallerIdentity actionActor(String action) {
-        com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(action, WRITE_PERMISSION);
+
         return actor(
                 com.rigour.tenant.iam.client.SupplyAuthorizationContext.current()
                                 .map(

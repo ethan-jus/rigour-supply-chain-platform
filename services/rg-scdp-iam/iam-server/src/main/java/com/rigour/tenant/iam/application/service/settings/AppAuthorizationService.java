@@ -21,20 +21,6 @@ public final class AppAuthorizationService {
         return store.customerAssignmentTarget(caller, employeeCode, userId);
     }
 
-    public AppAuthorizationSnapshot candidate(CallerIdentity caller, String action) {
-        return store.candidate(caller, action);
-    }
-
-    public void observeData(
-            CallerIdentity caller,
-            com.rigour.tenant.iam.application.model.settings.AppDataObservation request) {
-        store.observeData(caller, request);
-    }
-
-    public void observe(CallerIdentity caller, String action, String legacyAction) {
-        store.observe(caller, action, legacyAction);
-    }
-
     public AppAuthorizationSnapshot authorization(CallerIdentity caller, String action) {
         return store.authorization(caller, action);
     }

@@ -120,7 +120,28 @@ public final class HttpCrmEmployeeClient implements CrmEmployeeClient {
         }
     }
 
+    @Override
+    public List<String> departmentMembers(String tenant, List<String> departments, boolean descendants) {
+        URI uri = UriComponentsBuilder.fromUri(base).path("/api/v1/hr/employee-identities/department-members")
+                .queryParam("includeDescendants", descendants).build().toUri();
+        try {
+            ApiResponse<List<String>> response = client.post().uri(uri)
+                    .headers(h -> headers(tenant, uri, "POST").forEach(h::set))
+                    .body(departments.stream().map(Long::valueOf).toList()).retrieve()
+                    .body(new ParameterizedTypeReference<>() {});
+            if (response == null || !"OK".equals(response.code()) || response.data() == null)
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "部门人员范围暂时无法核验");
+            return response.data();
+        } catch (RestClientException e) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "部门人员范围暂时无法核验", e);
+        }
+    }
+
     private Map<String, String> headers(String tenant, URI uri) {
+        return headers(tenant, uri, "GET");
+    }
+
+    private Map<String, String> headers(String tenant, URI uri, String method) {
         Map<String, String> h = new LinkedHashMap<>();
         h.put(RequestHeaders.PRINCIPAL_SCOPE, "SERVICE");
         h.put(
@@ -135,7 +156,7 @@ public final class HttpCrmEmployeeClient implements CrmEmployeeClient {
         h.put(RequestHeaders.USER_SECURITY_VERSION, "0");
         h.put(RequestHeaders.TENANT_POLICY_VERSION, "0");
         h.put(RequestHeaders.PERMISSIONS, "hr:employee:identity-read");
-        var signed = signer.sign("GET", uri.getRawPath(), uri.getRawQuery(), h);
+        var signed = signer.sign(method, uri.getRawPath(), uri.getRawQuery(), h);
         h.put(RequestHeaders.CONTEXT_KEY_ID, signed.keyId());
         h.put(RequestHeaders.CONTEXT_TIMESTAMP, signed.timestamp());
         h.put(RequestHeaders.CONTEXT_SIGNATURE, signed.signature());

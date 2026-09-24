@@ -2,9 +2,12 @@ package com.rigour.tenant.iam.infrastructure.persistence.settings;
 
 import static com.rigour.tenant.iam.infrastructure.persistence.settings.JdbcAppSettingsStore.bin;
 
+import com.rigour.shared.core.exception.RequestValidationException;
+import com.rigour.shared.core.exception.StateConflictException;
 import com.rigour.tenant.iam.application.port.out.AppRoleStore;
 import com.rigour.tenant.iam.application.service.management.ManagementModels.Actor;
 import com.rigour.tenant.iam.application.service.settings.AppAccessModels.*;
+import com.rigour.tenant.iam.application.service.settings.RoleDataScopes;
 import com.rigour.tenant.iam.domain.model.settings.AppMenuTree;
 import com.rigour.tenant.iam.domain.model.settings.AppMenuTree.Node;
 import com.rigour.tenant.iam.domain.model.settings.AppScopeRules;
@@ -71,6 +74,17 @@ public class JdbcAppRoleStore implements AppRoleStore {
                         + " IS NULL ORDER BY protected_role DESC,role_name,id",
                 (r, n) -> {
                     UUID id = UuidBinaryCodec.decode(r.getBytes("id"));
+                    var scope =
+                            new RoleDataScope(
+                                    r.getString("data_scope_mode"),
+                                    tools.jackson.databind.json.JsonMapper.builder()
+                                            .build()
+                                            .readValue(
+                                                    r.getString("data_scope_departments") == null
+                                                            ? "[]"
+                                                            : r.getString("data_scope_departments"),
+                                                    new tools.jackson.core.type.TypeReference<
+                                                            List<String>>() {}));
                     return new Role(
                             id,
                             r.getString("role_code"),
@@ -86,7 +100,8 @@ public class JdbcAppRoleStore implements AppRoleStore {
                                     app(),
                                     bin(id)),
                             grants(a, id),
-                            rules(a, id));
+                            rules(a, id, scope),
+                            scope);
                 },
                 tenant(a),
                 app());
@@ -96,7 +111,7 @@ public class JdbcAppRoleStore implements AppRoleStore {
         return all(a).stream()
                 .filter(r -> r.id().equals(id))
                 .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("角色不存在"));
+                .orElseThrow(() -> new RequestValidationException("角色不存在"));
     }
 
     private Set<UUID> grants(Actor a, UUID id) {
@@ -110,38 +125,18 @@ public class JdbcAppRoleStore implements AppRoleStore {
                         bin(id)));
     }
 
-    private List<ScopeRule> rules(Actor a, UUID role) {
-        return jdbc.query(
-                "SELECT * FROM iam_app_scope_rule WHERE tenant_id=? AND application_id=? AND"
-                        + " role_id=? ORDER BY action_code",
-                (r, n) -> {
-                    UUID id = UuidBinaryCodec.decode(r.getBytes("id"));
-                    Map<String, List<String>> refs = new TreeMap<>();
-                    jdbc.query(
-                            "SELECT dimension,reference_key FROM iam_app_scope_reference WHERE"
-                                + " tenant_id=? AND application_id=? AND scope_rule_id=? ORDER BY"
-                                + " reference_key",
-                            rs -> {
-                                refs.computeIfAbsent(rs.getString(1), key -> new ArrayList<>())
-                                        .add(rs.getString(2));
-                            },
-                            tenant(a),
-                            app(),
-                            bin(id));
-                    return new ScopeRule(
-                            id,
-                            r.getString("action_code"),
-                            r.getString("object_type"),
-                            r.getString("scope_mode"),
-                            r.getString("department_mode"),
-                            r.getString("region_mode"),
-                            r.getString("warehouse_mode"),
-                            r.getBoolean("include_descendants"),
-                            Map.copyOf(refs));
-                },
-                tenant(a),
-                app(),
-                bin(role));
+    private List<ScopeRule> rules(Actor a, UUID role, RoleDataScope scope) {
+        if (scope.mode() == null) return List.of();
+        var grants = grants(a, role);
+        return settings.rows(a).stream()
+                .filter(n -> grants.contains(n.id()))
+                .map(Node::permissionCode)
+                .filter(Objects::nonNull)
+                .distinct()
+                .sorted()
+                .map(action -> RoleDataScopes.rule(scope, action))
+                .filter(Objects::nonNull)
+                .toList();
     }
 
     @Override
@@ -151,34 +146,41 @@ public class JdbcAppRoleStore implements AppRoleStore {
     }
 
     @Override
-    public Role saveRole(Actor a, UUID id, RoleCommand c) {
-        if (c == null) throw new IllegalArgumentException("角色参数不能为空");
+    public Role saveRole(Actor a, UUID id, RoleCommand command) {
+        if (command == null) throw new RequestValidationException("角色参数不能为空");
         return tx.execute(
                 status -> {
                     settings.lock(a);
+                    RoleCommand c = unifiedCommand(a, command);
                     settings.requirePermission(
                             a, id == null ? "supply:role:create" : "supply:role:update");
                     Role old = id == null ? null : role(a, id);
                     if (old != null && old.protectedRole())
-                        throw new IllegalArgumentException("受保护的恢复角色不支持普通编辑");
+                        throw new RequestValidationException("受保护的恢复角色不支持普通编辑");
+                    if (old != null && old.dataScope() != null && c.dataScope() == null)
+                        throw new RequestValidationException("角色已使用统一数据范围，请刷新页面后重试");
                     if (c.version() != (old == null ? 0 : old.version()))
-                        throw new IllegalStateException("角色已修改，请刷新");
-                    String code = text(c.code(), 64, "角色编码"), name = text(c.name(), 128, "角色名称");
+                        throw new StateConflictException("角色已修改，请刷新");
+                    String code = text(c.code(), 64, "角色编码").toUpperCase(java.util.Locale.ROOT),
+                            name = text(c.name(), 128, "角色名称");
                     if (!code.matches("[A-Z][A-Z0-9_]{1,63}"))
-                        throw new IllegalArgumentException("角色编码使用大写字母、数字和下划线，且以字母开头");
+                        throw new RequestValidationException("角色编码使用大写字母、数字和下划线，且以字母开头");
                     if (old != null && !old.code().equals(code))
-                        throw new IllegalArgumentException("角色编码不能修改");
+                        throw new RequestValidationException("角色编码不能修改");
                     if (!Set.of("ACTIVE", "DISABLED").contains(c.status()))
-                        throw new IllegalArgumentException("角色状态无效");
+                        throw new RequestValidationException("角色状态无效");
                     if (c.description() != null && c.description().length() > 500)
-                        throw new IllegalArgumentException("角色说明过长");
+                        throw new RequestValidationException("角色说明过长");
                     if (c.menuNodeIds() == null || c.rules() == null)
-                        throw new IllegalArgumentException("请提交完整菜单授权和数据规则");
+                        throw new RequestValidationException("请提交完整菜单授权和数据规则");
+                    boolean scopeChanged =
+                            !Objects.equals(old == null ? null : old.dataScope(), c.dataScope());
                     boolean grantsChanged =
-                            old == null
-                                    ? !c.menuNodeIds().isEmpty() || !c.rules().isEmpty()
-                                    : !old.menuNodeIds().equals(c.menuNodeIds())
-                                            || !old.rules().equals(c.rules());
+                            scopeChanged
+                                    || (old == null
+                                            ? !c.menuNodeIds().isEmpty() || !c.rules().isEmpty()
+                                            : !old.menuNodeIds().equals(c.menuNodeIds())
+                                                    || !old.rules().equals(c.rules()));
                     if (grantsChanged) {
                         settings.requirePermission(a, "supply:role:grant");
                         requireDelegable(a, c.menuNodeIds(), c.rules());
@@ -214,7 +216,7 @@ public class JdbcAppRoleStore implements AppRoleStore {
                     for (UUID node : c.menuNodeIds())
                         if (!nodes.containsKey(node)
                                 || !AppMenuTree.enabled(nodes.get(node), nodes))
-                            throw new IllegalArgumentException("授权菜单不存在或已停用");
+                            throw new RequestValidationException("授权菜单不存在或已停用");
                     Set<String> actions =
                             c.menuNodeIds().stream()
                                     .map(nodes::get)
@@ -225,7 +227,7 @@ public class JdbcAppRoleStore implements AppRoleStore {
                     for (ScopeRule rule : c.rules()) {
                         if (!ruleActions.add(rule.actionCode())
                                 || !actions.contains(rule.actionCode()))
-                            throw new IllegalArgumentException("规则动作重复或未授予对应功能");
+                            throw new RequestValidationException("规则动作重复或未授予对应功能");
                         AppScopeRules.validate(
                                 rule.actionCode(),
                                 rule.objectType(),
@@ -243,11 +245,11 @@ public class JdbcAppRoleStore implements AppRoleStore {
                             && "DISABLED".equals(c.status())) {
                         RoleImpact impact = roleImpact(a, old);
                         if (!impact.lastRoleUsernames().isEmpty())
-                            throw new IllegalArgumentException(
+                            throw new RequestValidationException(
                                     "不能停用启用用户的最后一个有效角色，请先分配替代角色："
                                             + String.join("、", impact.lastRoleUsernames()));
                         if (!impact.managementEntryUsernames().isEmpty())
-                            throw new IllegalArgumentException("请先完成管理员交接，不能移除最后一个可用管理入口");
+                            throw new RequestValidationException("请先完成管理员交接，不能移除最后一个可用管理入口");
                     }
                     UUID target = id == null ? UUID.randomUUID() : id;
                     if (old == null)
@@ -288,7 +290,24 @@ public class JdbcAppRoleStore implements AppRoleStore {
                                 app(),
                                 bin(target),
                                 bin(node));
-                    saveRules(a, target, old == null ? List.of() : old.rules(), c.rules());
+                    if (c.dataScope() != null)
+                        jdbc.update(
+                                "UPDATE iam_app_role SET data_scope_mode=?,data_scope_departments=?"
+                                    + " WHERE tenant_id=? AND application_id=? AND id=?",
+                                c.dataScope().mode(),
+                                tools.jackson.databind.json.JsonMapper.builder()
+                                        .build()
+                                        .writeValueAsString(c.dataScope().departmentIds()),
+                                tenant(a),
+                                app(),
+                                bin(target));
+                    if (c.dataScope() != null)
+                        jdbc.update(
+                                "DELETE FROM iam_app_member_role_scope WHERE tenant_id=? AND"
+                                    + " application_id=? AND role_id=?",
+                                tenant(a),
+                                app(),
+                                bin(target));
                     settings.requireManagementEntry(a);
                     settings.bump(a);
                     settings.audit(
@@ -300,100 +319,69 @@ public class JdbcAppRoleStore implements AppRoleStore {
                                     + c.menuNodeIds().size()
                                     + " 项；数据规则 "
                                     + c.rules().size()
-                                    + " 项");
+                                    + " 项"
+                                    + (c.dataScope() == null
+                                            ? ""
+                                            : "；统一范围 "
+                                                    + c.dataScope().mode()
+                                                    + "；部门 "
+                                                    + c.dataScope().departmentIds()));
                     return role(a, target);
                 });
     }
 
-    private void saveRules(Actor a, UUID role, List<ScopeRule> old, List<ScopeRule> next) {
-        Map<String, ScopeRule> existing =
-                old.stream().collect(Collectors.toMap(ScopeRule::actionCode, Function.identity()));
-        Set<String> retained = next.stream().map(ScopeRule::actionCode).collect(Collectors.toSet());
-        for (ScopeRule removed : old)
-            if (!retained.contains(removed.actionCode())) deleteRule(a, removed.id());
-        for (ScopeRule rule : next) {
-            ScopeRule previous = existing.get(rule.actionCode());
-            UUID id = previous == null ? UUID.randomUUID() : previous.id();
-            if (rule.id() != null && (previous == null || !rule.id().equals(id)))
-                throw new IllegalArgumentException("规则标识已变化，请刷新");
-            if (previous == null)
-                jdbc.update(
-                        "INSERT INTO"
-                            + " iam_app_scope_rule(tenant_id,application_id,id,role_id,action_code,object_type,scope_mode,department_mode,region_mode,warehouse_mode,include_descendants)"
-                            + " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                        tenant(a),
-                        app(),
-                        bin(id),
-                        bin(role),
-                        rule.actionCode(),
-                        rule.objectType(),
-                        rule.scopeMode(),
-                        rule.departmentMode(),
-                        rule.regionMode(),
-                        rule.warehouseMode(),
-                        rule.includeDescendants());
-            else
-                jdbc.update(
-                        "UPDATE iam_app_scope_rule SET"
-                            + " object_type=?,scope_mode=?,department_mode=?,region_mode=?,warehouse_mode=?,include_descendants=?,version=version+1"
-                            + " WHERE tenant_id=? AND application_id=? AND id=?",
-                        rule.objectType(),
-                        rule.scopeMode(),
-                        rule.departmentMode(),
-                        rule.regionMode(),
-                        rule.warehouseMode(),
-                        rule.includeDescendants(),
-                        tenant(a),
-                        app(),
-                        bin(id));
-            jdbc.update(
-                    "DELETE FROM iam_app_scope_reference WHERE tenant_id=? AND application_id=? AND"
-                            + " scope_rule_id=?",
-                    tenant(a),
-                    app(),
-                    bin(id));
-            for (var dimension : rule.references().entrySet())
-                for (String ref : dimension.getValue())
-                    jdbc.update(
-                            "INSERT INTO"
-                                + " iam_app_scope_reference(tenant_id,application_id,scope_rule_id,dimension,reference_key)"
-                                + " VALUES(?,?,?,?,?)",
-                            tenant(a),
-                            app(),
-                            bin(id),
-                            dimension.getKey(),
-                            ref);
-        }
+    private RoleCommand unifiedCommand(Actor a, RoleCommand c) {
+        RoleDataScopes.validate(c.dataScope());
+        references.requireActive(a.tenantId(), "DEPARTMENT", c.dataScope().departmentIds());
+        if (c.menuNodeIds() == null) throw new RequestValidationException("请提交菜单授权");
+        List<ScopeRule> rules =
+                settings.rows(a).stream()
+                        .filter(n -> c.menuNodeIds().contains(n.id()))
+                        .map(Node::permissionCode)
+                        .filter(Objects::nonNull)
+                        .distinct()
+                        .sorted()
+                        .map(action -> RoleDataScopes.rule(c.dataScope(), action))
+                        .filter(Objects::nonNull)
+                        .toList();
+        return new RoleCommand(
+                c.code(),
+                c.name(),
+                c.description(),
+                c.status(),
+                c.version(),
+                c.menuNodeIds(),
+                rules,
+                c.dataScope());
     }
 
-    private void deleteRule(Actor a, UUID id) {
-        jdbc.update(
-                "DELETE FROM iam_app_member_role_scope WHERE tenant_id=? AND application_id=? AND"
-                        + " scope_rule_id=?",
-                tenant(a),
-                app(),
-                bin(id));
-        jdbc.update(
-                "DELETE FROM iam_app_scope_reference WHERE tenant_id=? AND application_id=? AND"
-                        + " scope_rule_id=?",
-                tenant(a),
-                app(),
-                bin(id));
-        jdbc.update(
-                "DELETE FROM iam_app_scope_rule WHERE tenant_id=? AND application_id=? AND id=?",
-                tenant(a),
-                app(),
-                bin(id));
+    private static boolean grantsAction(Role role, ScopeRule rule, Map<UUID, Node> menus) {
+        return role.menuNodeIds().stream()
+                .map(menus::get)
+                .filter(Objects::nonNull)
+                .anyMatch(
+                        n ->
+                                rule.actionCode().equals(n.permissionCode())
+                                        && AppMenuTree.enabled(n, menus));
+    }
+
+    private static boolean covers(ScopeRule owned, ScopeRule requested) {
+        return sameCondition(owned, requested)
+                || (Objects.equals(owned.actionCode(), requested.actionCode())
+                        && "ALL".equals(owned.scopeMode())
+                        && "ALL".equals(owned.departmentMode())
+                        && "ALL".equals(owned.regionMode())
+                        && "ALL".equals(owned.warehouseMode()));
     }
 
     private static void validateReferences(ScopeRule rule) {
-        if (rule.references() == null) throw new IllegalArgumentException("规则引用不能为空");
+        if (rule.references() == null) throw new RequestValidationException("规则引用不能为空");
         for (var refs : rule.references().entrySet()) {
             if (!AppScopeRules.DIMENSIONS.contains(refs.getKey())
                     || refs.getValue() == null
                     || refs.getValue().size() > 1000
                     || refs.getValue().size() != new HashSet<>(refs.getValue()).size())
-                throw new IllegalArgumentException("规则引用维度或数量无效");
+                throw new RequestValidationException("规则引用维度或数量无效");
             for (String ref : refs.getValue()) text(ref, 128, "授权范围标识");
         }
         for (String dimension : AppScopeRules.DIMENSIONS) {
@@ -406,7 +394,7 @@ public class JdbcAppRoleStore implements AppRoleStore {
             boolean specified = "SPECIFIED".equals(mode),
                     has = !rule.references().getOrDefault(dimension, List.of()).isEmpty();
             if (specified != has)
-                throw new IllegalArgumentException(specified ? "指定范围至少选择一项" : "只有指定范围可以保存固定引用");
+                throw new RequestValidationException(specified ? "指定范围至少选择一项" : "只有指定范围可以保存固定引用");
         }
     }
 
@@ -437,10 +425,13 @@ public class JdbcAppRoleStore implements AppRoleStore {
         List<ScopeRule> ownedRules =
                 all(a).stream()
                         .filter(r -> roleIds.contains(r.id()) && "ACTIVE".equals(r.status()))
-                        .flatMap(r -> r.rules().stream())
+                        .flatMap(
+                                r ->
+                                        r.rules().stream()
+                                                .filter(rule -> grantsAction(r, rule, menus)))
                         .toList();
         for (ScopeRule r : rules)
-            if (ownedRules.stream().noneMatch(o -> sameCondition(o, r)))
+            if (ownedRules.stream().noneMatch(o -> covers(o, r)))
                 throw new AccessDeniedException("数据规则超出当前可授予边界");
     }
 
@@ -450,13 +441,58 @@ public class JdbcAppRoleStore implements AppRoleStore {
             List<ScopeRule> rules) {
         if (protectedAdministrator(actor)
                 || rules.stream().noneMatch(r -> "CURRENT".equals(r.departmentMode()))) return;
+        Set<UUID> assigned =
+                new HashSet<>(
+                        jdbc.query(
+                                "SELECT role_id FROM iam_app_member_role WHERE tenant_id=? AND"
+                                    + " application_id=? AND user_id=?",
+                                (r, n) -> UuidBinaryCodec.decode(r.getBytes(1)),
+                                tenant(actor),
+                                app(),
+                                bin(actor.principalId())));
+        var menus =
+                settings.rows(actor).stream()
+                        .collect(Collectors.toMap(Node::id, Function.identity()));
+        var ownedAll =
+                all(actor).stream()
+                        .filter(r -> assigned.contains(r.id()) && "ACTIVE".equals(r.status()))
+                        .flatMap(
+                                r ->
+                                        r.rules().stream()
+                                                .filter(
+                                                        rule ->
+                                                                "ALL".equals(rule.scopeMode())
+                                                                        && "ALL"
+                                                                                .equals(
+                                                                                        rule
+                                                                                                .departmentMode())
+                                                                        && "ALL"
+                                                                                .equals(
+                                                                                        rule
+                                                                                                .regionMode())
+                                                                        && "ALL"
+                                                                                .equals(
+                                                                                        rule
+                                                                                                .warehouseMode())
+                                                                        && grantsAction(
+                                                                                r, rule, menus)))
+                        .map(ScopeRule::actionCode)
+                        .collect(Collectors.toSet());
+        var restricted =
+                rules.stream()
+                        .filter(
+                                rule ->
+                                        "CURRENT".equals(rule.departmentMode())
+                                                && !ownedAll.contains(rule.actionCode()))
+                        .toList();
+        if (restricted.isEmpty()) return;
         record Binding(String code, long access) {}
         Binding binding =
                 jdbc
                         .query(
                                 "SELECT employee_code,hr_access_version FROM"
-                                    + " iam_app_employee_binding WHERE tenant_id=? AND"
-                                    + " application_id=? AND user_id=?",
+                                        + " iam_app_employee_binding WHERE tenant_id=? AND"
+                                        + " application_id=? AND user_id=?",
                                 (rs, n) -> new Binding(rs.getString(1), rs.getLong(2)),
                                 tenant(actor),
                                 app(),
@@ -467,7 +503,7 @@ public class JdbcAppRoleStore implements AppRoleStore {
         var employee = employees.employee(actor.tenantId(), binding.code());
         if (employee == null || !employee.usable() || employee.accessVersion() != binding.access())
             throw new AccessDeniedException("操作者员工关联已失效，请重新核验授权");
-        for (var rule : rules)
+        for (var rule : restricted)
             if ("CURRENT".equals(rule.departmentMode()))
                 JdbcAppMemberStore.requireCurrentDepartmentWithin(
                         employee, target, rule.includeDescendants());
@@ -557,13 +593,12 @@ public class JdbcAppRoleStore implements AppRoleStore {
                     settings.lock(a);
                     settings.requirePermission(a, "supply:role:delete");
                     Role role = role(a, id);
-                    if (role.protectedRole()) throw new IllegalArgumentException("不能删除受保护的恢复角色");
-                    if (role.version() != version) throw new IllegalStateException("角色已修改，请刷新");
+                    if (role.protectedRole()) throw new RequestValidationException("不能删除受保护的恢复角色");
+                    if (role.version() != version) throw new StateConflictException("角色已修改，请刷新");
                     if (!"DISABLED".equals(role.status()))
-                        throw new IllegalArgumentException("请先禁用角色，再解除用户关联后删除");
+                        throw new RequestValidationException("请先禁用角色，再解除用户关联后删除");
                     if (role.userCount() > 0)
-                        throw new IllegalArgumentException("角色仍分配给用户，请先完成交接并解除关联");
-                    for (ScopeRule rule : role.rules()) deleteRule(a, rule.id());
+                        throw new RequestValidationException("角色仍分配给用户，请先完成交接并解除关联");
                     jdbc.update(
                             "DELETE FROM iam_app_role_grant WHERE tenant_id=? AND application_id=?"
                                     + " AND role_id=?",
@@ -595,7 +630,7 @@ public class JdbcAppRoleStore implements AppRoleStore {
 
     private static String text(String value, int max, String label) {
         if (value == null || value.isBlank() || value.strip().length() > max)
-            throw new IllegalArgumentException(label + "不能为空且不能超过 " + max + " 字符");
+            throw new RequestValidationException(label + "不能为空且不能超过 " + max + " 字符");
         return value.strip();
     }
 }

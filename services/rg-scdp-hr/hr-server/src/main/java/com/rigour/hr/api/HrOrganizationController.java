@@ -66,6 +66,11 @@ public final class HrOrganizationController implements HrOrganizationApi {
     }
 
     @Override
+    public ApiResponse<List<String>> departmentMembers(List<Long> departmentIds, boolean includeDescendants) {
+        return ApiResponse.success(service.departmentMembers(departmentIds, includeDescendants));
+    }
+
+    @Override
     public ApiResponse<List<HrEmployeeIdentityView>> resolveIdentities(List<String> codes) {
         return ApiResponse.success(service.resolveIdentities(codes));
     }

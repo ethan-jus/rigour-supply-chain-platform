@@ -362,37 +362,10 @@ public final class OrderDataScope {
         requireOrder(tenant, id, action, null);
     }
 
-    public void compareRecord(
-            String tenant, long id, String action, boolean oldAllowed, Long warehouse) {
-        SupplyAuthorizationContext.compare(
-                action,
-                "ORDER",
-                Long.toString(id),
-                () ->
-                        oldAllowed
-                                && jdbc.queryForObject(
-                                                "SELECT COUNT(*) FROM order_sales_order WHERE"
-                                                    + " tenant_id=? AND id=? AND deleted=0",
-                                                Integer.class,
-                                                tenant,
-                                                id)
-                                        == 1,
-                next -> {
-                    var p = predicate(next, action, "o.", warehouse, null, true);
-                    var args = new ArrayList<Object>(List.of(tenant, id));
-                    args.addAll(p.args());
-                    return jdbc.queryForObject(
-                                    "SELECT COUNT(*) FROM order_sales_order o WHERE o.tenant_id=?"
-                                            + " AND o.id=? AND o.deleted=0 AND "
-                                            + p.sql(),
-                                    Integer.class,
-                                    args.toArray())
-                            == 1;
-                });
-    }
+
 
     public void requireOrder(String tenant, long id, String action, Long warehouse) {
-        compareRecord(tenant, id, action, true, warehouse);
+
         var p = predicate(action, "o.", warehouse);
         List<Object> args = new ArrayList<>(List.of(tenant, id));
         args.addAll(p.args());

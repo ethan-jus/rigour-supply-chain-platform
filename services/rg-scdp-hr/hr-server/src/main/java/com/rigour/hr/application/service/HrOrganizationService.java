@@ -122,6 +122,15 @@ public final class HrOrganizationService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "员工不存在", List.of()));
     }
 
+    public List<String> departmentMembers(List<Long> ids, boolean descendants) {
+        CallerIdentity caller = AuthorizationContext.requireCurrent();
+        if (!"SERVICE".equals(caller.principalScope())) throw new AuthorizationDeniedException("service-identity-reader");
+        CallerIdentity actor = identityActor();
+        if (ids == null || ids.isEmpty() || ids.size() > 1000 || ids.stream().anyMatch(id -> id == null || id <= 0))
+            throw bad("部门范围无效");
+        return store.departmentMembers(actor.tenantId().toString(), ids.stream().distinct().toList(), descendants);
+    }
+
     public List<HrEmployeeIdentityView> resolveIdentities(List<String> codes) {
         CallerIdentity actor = identityActor();
         if (codes == null || codes.size() > 100) throw bad("单次核验最多 100 个员工");
@@ -158,7 +167,7 @@ public final class HrOrganizationService {
     }
 
     private static CallerIdentity actor(String permission) {
-        com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(permission, permission);
+
         CallerIdentity actor = AuthorizationContext.requireCurrent();
         if (actor.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
         AuthorizationContext.requirePermission(permission);

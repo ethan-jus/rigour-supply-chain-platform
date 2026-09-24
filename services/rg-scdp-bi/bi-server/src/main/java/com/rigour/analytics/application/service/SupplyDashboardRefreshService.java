@@ -69,6 +69,12 @@ public final class SupplyDashboardRefreshService {
     private final boolean scheduledEnabled;
     private final Duration lookback;
     private final Duration lockTtl;
+    private com.rigour.analytics.application.port.out.BiScheduleCoordinator scheduleCoordinator;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureSchedules(com.rigour.analytics.application.port.out.BiScheduleCoordinator schedules) {
+        this.scheduleCoordinator = schedules;
+    }
 
     public SupplyDashboardRefreshService(
             SupplyDashboardStore store,
@@ -95,15 +101,18 @@ public final class SupplyDashboardRefreshService {
 
     public SupplyDashboardRefreshRunView refreshCurrentTenant(
             SupplyDashboardRefreshCommand command) {
+        requireRefreshAuthority();
+        CallerIdentity actor = AuthorizationContext.requireCurrent();
+        return view(refreshTenant(actor.tenantId().toString(), JOB_MANUAL, RefreshSelection.from(command)));
+    }
+
+    public void requireRefreshAuthority() {
         CallerIdentity actor = AuthorizationContext.requireCurrent();
         if (actor.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
         AuthorizationContext.requirePermission(WRITE_PERMISSION);
-        if (com.rigour.tenant.iam.client.SupplyAuthorizationContext.current()
-                .map(com.rigour.tenant.iam.client.SupplyAuthorizationContext::active)
-                .orElse(false)) {
             var p =
                     com.rigour.tenant.iam.client.SupplyAuthorizationContext.requireAction(
-                            "analytics:dashboard:read");
+                            WRITE_PERMISSION);
             boolean full =
                     "ALL".equals(p.regionLimit().mode())
                             && "ALL".equals(p.warehouseLimit().mode())
@@ -121,15 +130,11 @@ public final class SupplyDashboardRefreshService {
                                                                     .contains(
                                                                             c.warehouses().mode()));
             if (!full) throw new AuthorizationDeniedException("bi-refresh-global-scope");
-        }
-        return view(
-                refreshTenant(
-                        actor.tenantId().toString(), JOB_MANUAL, RefreshSelection.from(command)));
     }
 
     @Scheduled(
             fixedDelayString =
-                    "${rigour.analytics.supply-dashboard.refresh.fixed-delay-ms:1800000}",
+                    "${rigour.analytics.supply-dashboard.refresh.fixed-delay-ms:3600000}",
             initialDelayString =
                     "${rigour.analytics.supply-dashboard.refresh.initial-delay-ms:60000}")
     public void refreshScheduledTenants() {
@@ -153,8 +158,42 @@ public final class SupplyDashboardRefreshService {
             log.warn("Sales来源租户读取失败，继续刷新其他来源已知租户", exception);
         }
         for (String tenantId : allTenants) {
+            // 一旦页面接管（包括停用），旧小时入口不再触发该租户。
+            if (scheduleCoordinator != null) {
+                try { if (scheduleCoordinator.managed(java.util.UUID.fromString(tenantId))) continue; }
+                catch (RuntimeException e) {
+                    log.warn("无法确认集中调度状态，本轮旧入口跳过，避免重复刷新 tenantId={}",tenantId);
+                    continue;
+                }
+            }
             try {
-                refreshTenant(tenantId, JOB_HOURLY);
+                // 当前事实量较小，按小时重算全部历史，覆盖补款和旧数据更正。
+                // 上游镜像仍按版本跳过未变化的数据集，不重复请求外部订货宝。
+                RefreshRun run =
+                        refreshTenant(
+                                tenantId,
+                                JOB_HOURLY,
+                                new RefreshSelection(
+                                        sourceCodeSet(
+                                                List.of(
+                                                        CUSTOMER,
+                                                        ORDER,
+                                                        ORDER_LINE,
+                                                        PRODUCT,
+                                                        PAYMENT,
+                                                        INVENTORY,
+                                                        INVENTORY_OPERATION,
+                                                        RECONCILIATION)),
+                                        true));
+                log.info(
+                        "供应链 BI 定时刷新结束 tenantId={} runId={} status={} pulled={} written={}"
+                            + " reason={}",
+                        tenantId,
+                        run.id(),
+                        run.statusCode(),
+                        run.pulledCount(),
+                        run.upsertedCount(),
+                        run.failureReason());
             } catch (RuntimeException exception) {
                 log.warn(
                         "供应链 BI 定时刷新失败, tenantId={}: {}",
@@ -163,6 +202,12 @@ public final class SupplyDashboardRefreshService {
                         exception);
             }
         }
+    }
+
+    public SupplyDashboardRefreshRunView refreshConfiguredTenant(String tenantId) {
+        return view(refreshTenant(tenantId, JOB_HOURLY, new RefreshSelection(
+                sourceCodeSet(List.of(CUSTOMER, ORDER, ORDER_LINE, PRODUCT, PAYMENT,
+                        INVENTORY, INVENTORY_OPERATION, RECONCILIATION)), true)));
     }
 
     RefreshRun refreshTenant(String tenantId, String jobCode) {
@@ -344,7 +389,17 @@ public final class SupplyDashboardRefreshService {
                                                         upperBound,
                                                         syncedAt)));
             }
-            if (selection.includes(EMPLOYEE)) {
+            boolean peopleReady = true;
+            if (selection.includes(EMPLOYEE) || selection.includes(CONTACT)) {
+                try {
+                    store.synchronizePeopleSnapshots(tenantId);
+                } catch (RuntimeException exception) {
+                    peopleReady = false;
+                    failures.add(failureReason("人员/拜访源镜像", exception));
+                    log.warn("人员/拜访源镜像失败 tenantId={}", tenantId, exception);
+                }
+            }
+            if (peopleReady && selection.includes(EMPLOYEE)) {
                 collectRefreshResult(
                         results,
                         failures,
@@ -357,7 +412,7 @@ public final class SupplyDashboardRefreshService {
                                         EMPLOYEE,
                                         syncedAt -> employees.refresh(tenantId, syncedAt)));
             }
-            if (selection.includes(CONTACT)) {
+            if (peopleReady && selection.includes(CONTACT)) {
                 collectRefreshResult(
                         results,
                         failures,
@@ -377,6 +432,20 @@ public final class SupplyDashboardRefreshService {
                 if (item.watermarkTime() != null
                         && (watermark == null || item.watermarkTime().isAfter(watermark))) {
                     watermark = item.watermarkTime();
+                }
+            }
+            if (failures.isEmpty()
+                    && selection.includes(ORDER)
+                    && selection.includes(ORDER_LINE)
+                    && selection.includes(PRODUCT)
+                    && selection.includes(PAYMENT)) {
+                try {
+                    upserted +=
+                            store.refreshDashboardProductFacts(
+                                    tenantId, run.id(), Instant.now(clock));
+                } catch (RuntimeException exception) {
+                    failures.add(failureReason("看板商品分摊", exception));
+                    log.warn("看板商品分摊刷新失败 tenantId={}", tenantId, exception);
                 }
             }
             Instant completedAt = Instant.now(clock);

@@ -1,6 +1,7 @@
 package com.rigour.order.infrastructure.persistence.repository;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.rigour.order.domain.sync.HistorySyncRules;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.rigour.order.api.v1.model.OrderPageView;
@@ -144,7 +145,7 @@ public class MybatisPlusSalesOrderRepository
                                 .eq(InternalSalesOrderEntity::getDeleted, 0),
                         "order:read");
         var row = getBaseMapper().selectOne(visible);
-        scopes.compareRecord(tenantId, id, "order:read", row != null, null);
+
         return Optional.ofNullable(row)
                 .map(order -> detail(order, lines(tenantId, id), shipmentStatus(tenantId, id)));
     }
@@ -249,7 +250,8 @@ public class MybatisPlusSalesOrderRepository
                                                 command.ownerEmployeeNameSnapshot())
                                         .set(
                                                 InternalSalesOrderEntity::getOrderDate,
-                                                local(command.orderDate()))
+                                                local(HistorySyncRules.businessDate(command.sourceSystemCode(),
+                                                        command.orderDate(), instant(existing.getOrderDate()))))
                                         .set(
                                                 InternalSalesOrderEntity::getOrderStatusCode,
                                                 command.orderStatusCode())
@@ -971,7 +973,7 @@ public class MybatisPlusSalesOrderRepository
         entity.setOwnerSalesName(command.ownerSalesName());
         entity.setOwnerEmployeeCode(command.ownerEmployeeCode());
         entity.setOwnerEmployeeNameSnapshot(command.ownerEmployeeNameSnapshot());
-        entity.setOrderDate(local(command.orderDate()));
+        entity.setOrderDate(local(HistorySyncRules.businessDate(command.sourceSystemCode(), command.orderDate(), null)));
         entity.setOrderStatusCode(command.orderStatusCode());
         entity.setOrderTypeCode(command.orderTypeCode());
         entity.setPaymentMethodCode(command.paymentMethodCode());

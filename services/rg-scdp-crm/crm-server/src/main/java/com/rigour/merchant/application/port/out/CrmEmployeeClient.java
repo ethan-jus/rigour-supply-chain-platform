@@ -26,5 +26,7 @@ public interface CrmEmployeeClient {
 
     Owner owner(String tenant, String employeeCode);
 
+    List<String> departmentMembers(String tenant, List<String> departments, boolean descendants);
+
     List<Owner> search(String tenant, String keyword);
 }

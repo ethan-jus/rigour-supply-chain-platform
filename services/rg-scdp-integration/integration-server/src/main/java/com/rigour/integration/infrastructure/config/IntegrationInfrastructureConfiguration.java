@@ -414,9 +414,8 @@ public final class IntegrationInfrastructureConfiguration {
 
     @Bean
     DhbSyncOrchestrationScheduler dhbSyncOrchestrationScheduler(
-            DhbSyncOrchestrationService service, DhbSyncOrchestrationProperties properties,
-            com.rigour.integration.application.service.dhb.DhbContinuousOrderSyncService continuous) {
-        return new DhbSyncOrchestrationScheduler(service, properties,continuous);
+            com.rigour.integration.application.service.dhb.DhbScheduleService schedules) {
+        return new DhbSyncOrchestrationScheduler(schedules);
     }
 
     @Bean

@@ -15,17 +15,4 @@ public interface IamSupplyAuthorizationApi {
             @RequestParam(required = false) String employeeCode,
             @RequestParam(required = false) java.util.UUID userId);
 
-    @GetMapping("/internal/v1/iam/supply/candidate")
-    SupplyAuthorizationView candidate(@RequestParam String action);
-
-    @org.springframework.web.bind.annotation.PostMapping(
-            "/internal/v1/iam/supply/data-observations")
-    void observeData(
-            @org.springframework.web.bind.annotation.RequestBody
-                    com.rigour.tenant.iam.api.v1.model.SupplyDataObservation request);
-
-    record Observation(String action, String legacyAction) {}
-
-    @org.springframework.web.bind.annotation.PostMapping("/internal/v1/iam/supply/observations")
-    void observe(@org.springframework.web.bind.annotation.RequestBody Observation request);
 }

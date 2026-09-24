@@ -1,5 +1,7 @@
 package com.rigour.tenant.iam.application.service.settings;
 
+import com.rigour.shared.core.exception.RequestValidationException;
+
 import com.rigour.tenant.iam.application.port.out.*;
 import com.rigour.tenant.iam.application.service.management.ManagementModels.Actor;
 import com.rigour.tenant.iam.application.service.settings.AppMemberModels.*;
@@ -35,7 +37,7 @@ public final class AppMemberService {
         if (!permissions.contains("supply:user:create")
                 && !permissions.contains("supply:user:rebind"))
             throw new org.springframework.security.access.AccessDeniedException("无权选择员工");
-        if (begin < 0 || step < 1 || step > 100) throw new IllegalArgumentException("员工分页参数无效");
+        if (begin < 0 || step < 1 || step > 100) throw new RequestValidationException("员工分页参数无效");
         return employees.search(a.tenantId(), keyword, begin, step);
     }
 

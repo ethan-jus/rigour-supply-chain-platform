@@ -39,7 +39,7 @@ class SupplyAuthorizationContextTest {
     }
 
     @Test
-    void preparingObservationCannotChangeEnforcementAndFailuresAreVisibleButDoNotGrant() {
+    void preparingModeCannotRestoreLegacyAuthorization() {
         UUID user = UUID.randomUUID();
         var caller =
                 new CallerIdentity(
@@ -52,48 +52,35 @@ class SupplyAuthorizationContextTest {
                         0,
                         0,
                         0,
-                        Set.of(),
-                        Set.of("order:write"));
-        var p =
+                        Set.of("TENANT_SUPER_ADMIN"),
+                        Set.of("*:*:*"));
+        var active = view(caller, "order:read", 1);
+        var preparing =
                 new SupplyAuthorizationView(
                         "PREPARING",
-                        caller.tenantId(),
-                        caller.userId(),
-                        null,
+                        active.tenantId(),
+                        active.userId(),
+                        active.employeeCode(),
                         1,
-                        0,
-                        0,
-                        0,
-                        Set.of(),
-                        "supply:application:access",
-                        false,
-                        List.of(),
-                        new SupplyAuthorizationView.Limit("NONE", List.of()),
-                        new SupplyAuthorizationView.Limit("NONE", List.of()));
-        var count = new java.util.concurrent.atomic.AtomicInteger();
-        SupplyAuthorizationClient client =
-                new SupplyAuthorizationClient() {
-                    public SupplyAuthorizationView authorization(CallerIdentity c, String a) {
-                        throw new AssertionError("不应切换到新业务决定");
-                    }
-
-                    public void observe(CallerIdentity c, String a, String old) {
-                        count.incrementAndGet();
-                        throw new IllegalStateException("offline");
-                    }
-                };
-        try (var ctx = SupplyAuthorizationContext.open(client, caller, p)) {
-            SupplyAuthorizationContext.observe("order:create", "order:write");
-            SupplyAuthorizationContext.observe("order:create", "order:write");
-            assertThat(ctx.active()).isFalse();
-            assertThat(SupplyAuthorizationContext.requireAction("order:create")).isSameAs(p);
-            assertThat(count.get()).isEqualTo(1);
-        }
+                        1,
+                        1,
+                        1,
+                        active.permissions(),
+                        active.action(),
+                        true,
+                        active.clauses(),
+                        active.regionLimit(),
+                        active.warehouseLimit());
+        assertThatThrownBy(
+                        () ->
+                                SupplyAuthorizationContext.open(
+                                        (c, action) -> preparing, caller, preparing))
+                .isInstanceOf(IllegalStateException.class);
         assertThat(SupplyAuthorizationContext.current()).isEmpty();
     }
 
     @Test
-    void dataSamplingIsBoundedAndDoesNotChangeThePreparingPolicy() {
+    void anAllowedReadCannotGrantAnUnconfiguredButton() {
         UUID user = UUID.randomUUID();
         var caller =
                 new CallerIdentity(
@@ -108,67 +95,30 @@ class SupplyAuthorizationContextTest {
                         0,
                         Set.of(),
                         Set.of("order:read"));
-        var p =
-                new SupplyAuthorizationView(
-                        "PREPARING",
-                        caller.tenantId(),
-                        user,
-                        "EMP-1",
-                        5,
-                        2,
-                        3,
-                        4,
-                        Set.of("order:read"),
-                        "order:read",
-                        true,
-                        List.of(),
-                        new SupplyAuthorizationView.Limit("ALL", List.of()),
-                        new SupplyAuthorizationView.Limit("ALL", List.of()));
-        var observations =
-                new ArrayList<com.rigour.tenant.iam.api.v1.model.SupplyDataObservation>();
-        var requests = new java.util.concurrent.atomic.AtomicInteger();
-        SupplyAuthorizationClient client =
-                new SupplyAuthorizationClient() {
-                    public SupplyAuthorizationView authorization(CallerIdentity a, String action) {
-                        throw new AssertionError("准备期不可换业务决定");
-                    }
-
-                    public SupplyAuthorizationView candidate(CallerIdentity a, String action) {
-                        requests.incrementAndGet();
-                        return p;
-                    }
-
-                    public void observeData(
-                            CallerIdentity a,
-                            com.rigour.tenant.iam.api.v1.model.SupplyDataObservation r) {
-                        observations.add(r);
-                    }
-                };
-        try (var ctx = SupplyAuthorizationContext.open(client, caller, p)) {
-            for (int i = 0; i < 50; i++)
-                SupplyAuthorizationContext.compare(
-                        "order:read", "ORDER", "record-" + i, true, ignored -> false);
-            assertThat(observations).hasSize(20);
-            assertThat(requests.get()).isEqualTo(1);
-            assertThat(observations).allMatch(x -> x.legacyAllowed() && !x.proposedAllowed());
-            assertThat(ctx.active()).isFalse();
-            assertThat(SupplyAuthorizationContext.requireAction("order:read")).isSameAs(p);
+        var initial = view(caller, "order:read", 1);
+        try (var context =
+                SupplyAuthorizationContext.open(
+                        (c, action) ->
+                                new SupplyAuthorizationView(
+                                        "ACTIVE",
+                                        c.tenantId(),
+                                        c.userId(),
+                                        "E1",
+                                        1,
+                                        1,
+                                        1,
+                                        1,
+                                        Set.of("order:read"),
+                                        action,
+                                        false,
+                                        List.of(),
+                                        initial.regionLimit(),
+                                        initial.warehouseLimit()),
+                        caller,
+                        initial)) {
+            assertThatThrownBy(() -> SupplyAuthorizationContext.requireAction("order:delete"))
+                    .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
         }
-    }
-
-    @Test
-    void absenceOfPreparingContextDoesNotExecuteComparisonQueries() {
-        assertThat(SupplyAuthorizationContext.current()).isEmpty();
-        SupplyAuthorizationContext.compare(
-                "order:read",
-                "ORDER",
-                "1",
-                () -> {
-                    throw new AssertionError("不应额外查询旧数据");
-                },
-                ignored -> {
-                    throw new AssertionError("不应查询候选数据");
-                });
     }
 
     private static SupplyAuthorizationView view(CallerIdentity c, String action, long version) {

@@ -86,11 +86,11 @@ class SupplyDashboardQueryServiceTest {
 
     @AfterEach
     void clearContext() {
-        TestAuthorizationContext.clear();
+        com.rigour.analytics.TestRoleScope.clear();
     }
 
     @Test
-    void scheduledRefreshIsEnabledAndDefaultsToThirtyMinutes() throws NoSuchMethodException {
+    void scheduledRefreshIsEnabledAndDefaultsToOneHour() throws NoSuchMethodException {
         assertThat(BiApplication.class.getAnnotation(EnableScheduling.class))
                 .isNotNull();
         Method refreshMethod =
@@ -99,7 +99,7 @@ class SupplyDashboardQueryServiceTest {
 
         assertThat(scheduled).isNotNull();
         assertThat(scheduled.fixedDelayString())
-                .isEqualTo("${rigour.analytics.supply-dashboard.refresh.fixed-delay-ms:1800000}");
+                .isEqualTo("${rigour.analytics.supply-dashboard.refresh.fixed-delay-ms:3600000}");
         assertThat(scheduled.initialDelayString())
                 .isEqualTo("${rigour.analytics.supply-dashboard.refresh.initial-delay-ms:60000}");
     }
@@ -237,7 +237,7 @@ class SupplyDashboardQueryServiceTest {
         FakeStore store = new FakeStore();
         SupplyDashboardQueryService service =
                 new SupplyDashboardQueryService(store, Clock.fixed(NOW, ZoneOffset.UTC), scopes());
-        TestAuthorizationContext.set(caller("analytics:dashboard:read"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read"));
 
         SupplyDashboardOverviewView result =
                 service.overview(
@@ -363,7 +363,7 @@ class SupplyDashboardQueryServiceTest {
                         store,
                         Clock.fixed(Instant.parse("2026-09-01T02:00:00Z"), ZoneOffset.UTC),
                         scopes());
-        TestAuthorizationContext.set(caller("analytics:dashboard:read"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read"));
 
         SupplyDashboardOverviewView result =
                 service.overview(null, null, null, null, null, null, null);
@@ -380,7 +380,7 @@ class SupplyDashboardQueryServiceTest {
         store.latestSalesOrderDate = Optional.of(Instant.parse("2026-08-31T16:00:00Z"));
         var service =
                 new SupplyDashboardQueryService(store, Clock.fixed(NOW, ZoneOffset.UTC), scopes());
-        TestAuthorizationContext.set(caller("analytics:dashboard:read"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read"));
         var result = service.overview(null, null, null, null, null, null, null);
         assertThat(result.from()).isEqualTo(Instant.parse("2026-08-31T16:00:00Z"));
         assertThat(result.to()).isEqualTo(result.from());
@@ -391,7 +391,7 @@ class SupplyDashboardQueryServiceTest {
         SupplyDashboardQueryService service =
                 new SupplyDashboardQueryService(
                         new FakeStore(), Clock.fixed(NOW, ZoneOffset.UTC), scopes());
-        TestAuthorizationContext.set(caller("analytics:dashboard:read"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read"));
 
         assertThatThrownBy(
                         () ->
@@ -410,7 +410,7 @@ class SupplyDashboardQueryServiceTest {
         store.sourceSystemBreakdown = null;
         SupplyDashboardQueryService service =
                 new SupplyDashboardQueryService(store, Clock.fixed(NOW, ZoneOffset.UTC), scopes());
-        TestAuthorizationContext.set(caller("analytics:dashboard:read"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read"));
 
         SupplyDashboardOverviewView result =
                 service.overview(null, null, null, null, null, null, null);
@@ -423,7 +423,7 @@ class SupplyDashboardQueryServiceTest {
         SupplyDashboardQueryService service =
                 new SupplyDashboardQueryService(
                         new FakeStore(), Clock.fixed(NOW, ZoneOffset.UTC), scopes());
-        TestAuthorizationContext.set(caller("order:read"));
+        com.rigour.analytics.TestRoleScope.set(caller("order:read"));
 
         assertThatThrownBy(() -> service.overview(null, null, null, null, null, null, null))
                 .isInstanceOf(AuthorizationDeniedException.class);
@@ -442,7 +442,7 @@ class SupplyDashboardQueryServiceTest {
                         false,
                         Duration.ofHours(2),
                         Duration.ofMinutes(55));
-        TestAuthorizationContext.set(caller("analytics:refresh:write"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read", "analytics:refresh:write"));
 
         SupplyDashboardRefreshRunView result = service.refreshCurrentTenant();
 
@@ -465,7 +465,7 @@ class SupplyDashboardQueryServiceTest {
                         false,
                         Duration.ofHours(2),
                         Duration.ofMinutes(55));
-        TestAuthorizationContext.set(caller("analytics:refresh:write"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read", "analytics:refresh:write"));
 
         SupplyDashboardRefreshRunView result =
                 service.refreshCurrentTenant(
@@ -496,7 +496,7 @@ class SupplyDashboardQueryServiceTest {
                         false,
                         Duration.ofHours(2),
                         Duration.ofMinutes(55));
-        TestAuthorizationContext.set(caller("analytics:refresh:write"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read", "analytics:refresh:write"));
 
         SupplyDashboardRefreshRunView result =
                 service.refreshCurrentTenant(
@@ -532,6 +532,19 @@ class SupplyDashboardQueryServiceTest {
     }
 
     @Test
+    void hourlyRefreshRecomputesHistoricalFactsAndDoesNotDependOnPeopleServices() {
+        FakeStore store = new FakeStore();
+        store.watermarks.put("ORDER_SALES_ORDER", NOW.minusSeconds(60));
+        SupplyDashboardRefreshService service = new SupplyDashboardRefreshService(
+                store, employeeStore(), contactStore(), Clock.fixed(NOW, ZoneOffset.UTC),
+                true, Duration.ofHours(2), Duration.ofMinutes(55));
+        service.refreshScheduledTenants();
+        assertThat(store.orderFrom).isEqualTo(Instant.EPOCH);
+        assertThat(store.peopleSnapshotCalls).isZero();
+        assertThat(store.refreshedSources).contains("ORDER_PAYMENT_RECORD", "ORDER_SALES_ORDER_LINE");
+    }
+
+    @Test
     void refreshContinuesOtherSourcesWhenOneSourceFails() {
         FakeStore store = new FakeStore();
         store.failingSources.add("CRM_CUSTOMER");
@@ -544,7 +557,7 @@ class SupplyDashboardQueryServiceTest {
                         false,
                         Duration.ofHours(2),
                         Duration.ofMinutes(55));
-        TestAuthorizationContext.set(caller("analytics:refresh:write"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read", "analytics:refresh:write"));
 
         SupplyDashboardRefreshRunView result = service.refreshCurrentTenant();
 
@@ -575,7 +588,7 @@ class SupplyDashboardQueryServiceTest {
                         false,
                         Duration.ofHours(2),
                         Duration.ofMinutes(55));
-        TestAuthorizationContext.set(caller("analytics:refresh:write"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read", "analytics:refresh:write"));
 
         assertThatThrownBy(
                         () ->
@@ -594,7 +607,7 @@ class SupplyDashboardQueryServiceTest {
         FakeStore store = new FakeStore();
         SupplyDashboardCityCostImportService service =
                 new SupplyDashboardCityCostImportService(store, Clock.fixed(NOW, ZoneOffset.UTC));
-        TestAuthorizationContext.set(caller("analytics:city-cost:write"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:city-cost:write"));
 
         SupplyDashboardCityCostImportResultView result =
                 service.importRecords(
@@ -627,7 +640,7 @@ class SupplyDashboardQueryServiceTest {
         FakeStore store = new FakeStore();
         SupplyDashboardGovernanceService service =
                 new SupplyDashboardGovernanceService(store, Clock.fixed(NOW, ZoneOffset.UTC));
-        TestAuthorizationContext.set(caller("analytics:dashboard:read"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read"));
 
         SupplyDashboardDataTrustView result = service.trust();
 
@@ -652,7 +665,7 @@ class SupplyDashboardQueryServiceTest {
         FakeStore store = new FakeStore();
         SupplyDashboardGovernanceService service =
                 new SupplyDashboardGovernanceService(store, Clock.fixed(NOW, ZoneOffset.UTC));
-        TestAuthorizationContext.set(caller("analytics:dashboard:read"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read"));
 
         SupplyDashboardReconciliationView result =
                 service.reconciliation(null, null, null, null, null, null, "dhb");
@@ -667,7 +680,7 @@ class SupplyDashboardQueryServiceTest {
         SupplyDashboardGovernanceService service =
                 new SupplyDashboardGovernanceService(
                         new FakeStore(), Clock.fixed(NOW, ZoneOffset.UTC));
-        TestAuthorizationContext.set(caller("analytics:dashboard:read"));
+        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read"));
 
         SupplyDashboardFilterOptionsView result = service.filterOptions();
 
@@ -681,7 +694,7 @@ class SupplyDashboardQueryServiceTest {
         FakeStore store = new FakeStore();
         SupplyDashboardGovernanceService service =
                 new SupplyDashboardGovernanceService(store, Clock.fixed(NOW, ZoneOffset.UTC));
-        TestAuthorizationContext.set(
+        com.rigour.analytics.TestRoleScope.set(
                 caller("analytics:dashboard:read", "analytics:legacy-archive:write"));
 
         SupplyDashboardFeishuArchiveView result =
@@ -727,9 +740,7 @@ class SupplyDashboardQueryServiceTest {
     private static BiDataScopeService scopes() {
         return new BiDataScopeService(
                 org.mockito.Mockito.mock(
-                        com.rigour.analytics.application.port.out.BiDataScopeStore.class),
-                Clock.fixed(NOW, ZoneOffset.UTC),
-                org.mockito.Mockito.mock(BiDataScopeRenewer.class));
+                        com.rigour.analytics.application.port.out.BiDataScopeStore.class));
     }
 
     private static String mapperSql(String methodName, Class<?>... parameterTypes)
@@ -796,6 +807,7 @@ class SupplyDashboardQueryServiceTest {
     }
 
     private static final class FakeStore implements SupplyDashboardStore {
+        int peopleSnapshotCalls;
         @Override
         public OperatingAnalysisData operatingAnalysis(
                 String tenantId,
@@ -1277,6 +1289,9 @@ class SupplyDashboardQueryServiceTest {
         }
 
         @Override
+        public void synchronizePeopleSnapshots(String tenantId) { peopleSnapshotCalls++; }
+
+        @Override
         public void synchronizeSourceSnapshots(String tenantId) {}
 
         @Override
@@ -1413,6 +1428,11 @@ class SupplyDashboardQueryServiceTest {
             refreshedSources.add("ORDER_PAYMENT_RECORD");
             return new SourceRefreshResult(
                     "ORDER_PAYMENT_RECORD", "销售回款记录", 2L, 2L, 0L, to.minusSeconds(10));
+        }
+
+        @Override
+        public long refreshDashboardProductFacts(String tenantId, long runId, Instant syncedAt) {
+            return 0;
         }
 
         @Override

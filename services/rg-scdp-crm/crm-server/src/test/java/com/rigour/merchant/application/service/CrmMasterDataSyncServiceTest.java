@@ -205,6 +205,35 @@ class CrmMasterDataSyncServiceTest {
         });
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void incompleteOrderMappingRemainsVisibleEvenWhenCustomerWasExplicitlyCreatedWithoutOwner(boolean published) {
+        var client=mock(DhbCrmMasterDataClient.class);
+        var store=mock(CrmMasterDataStore.class);
+        var dictionaries=mock(CrmDictionaryCoverageService.class);
+        var mappingClient=mock(ExternalObjectMappingClient.class);
+        var service=syncService(client,mock(DhbCrmSyncTargetDiscoveryClient.class),store,dictionaries,passthroughLease(),mappingClient);
+        when(mappingClient.upsert(any(),any())).thenReturn(new ExternalObjectMappingBatchResult(1,published ? 1 : 0));
+        when(store.startRun(any(),any(),any(),any(),any(),eq(10),any())).thenReturn(UUID.randomUUID());
+        when(client.collect(any(),any(),eq(CrmMasterDataObjectType.CUSTOMER),eq(10)))
+                .thenReturn(new Collected(CrmMasterDataObjectType.CUSTOMER,0,1,List.of()));
+        when(dictionaries.sync(any(),any())).thenReturn(Audit.empty());
+        var conflict=new ExternalObjectMappingCommand(CONNECTOR_ID,"DINGHUOBAO","CUSTOMER","WAIT","WAIT",
+                "CRM","CUSTOMER",1L,"WAIT","CONFLICT",TASK_ID,null,null,null,null,"员工待补");
+        when(store.externalObjectMappings(any(),any(),any(),eq(CrmMasterDataObjectType.CUSTOMER))).thenReturn(List.of(conflict));
+        if (!published) {
+            assertThatThrownBy(() -> service.runSelected(scheduledCaller(),CONNECTOR_ID,TASK_ID,10,null,null,"CUSTOMER",true,null))
+                    .hasMessageContaining("客户映射未全部登记");
+            verify(store).failRun(any(),any(),any(),any(),any());
+            verify(store,never()).completeCustomerWindow(any(),any(),any(),any(),any());
+            return;
+        }
+        when(store.completeCustomerWindow(any(),any(),any(),any(),any())).thenAnswer(call -> call.getArgument(3));
+        var result=service.runSelected(scheduledCaller(),CONNECTOR_ID,TASK_ID,10,null,null,"CUSTOMER",true,null);
+        assertThat(result.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
+        assertThat(result.objects()).singleElement().satisfies(object -> assertThat(object.unmapped()).isEqualTo(1));
+    }
+
     @Test
     void externalObjectMappingsAreRegisteredInBatches() {
         DhbCrmMasterDataClient client = mock(DhbCrmMasterDataClient.class);
@@ -447,7 +476,11 @@ class CrmMasterDataSyncServiceTest {
         var client = mock(DhbCrmMasterDataClient.class);
         var store = mock(CrmMasterDataStore.class);
         var dictionaries = mock(CrmDictionaryCoverageService.class);
-        var service = syncService(client, mock(DhbCrmSyncTargetDiscoveryClient.class), store, dictionaries, passthroughLease());
+        var employees = mock(HrEmployeeDirectoryClient.class);
+        var service = new CrmMasterDataSyncService(client, mock(DhbCrmSyncTargetDiscoveryClient.class), store,
+                dictionaries, passthroughLease(), mock(ExternalObjectMappingClient.class), employees);
+        when(employees.resolveDinghuobaoEmployees(any(), any(), eq(List.of("STALE"))))
+                .thenReturn(List.of(), List.of(new HrEmployeeDirectoryClient.ResolvedEmployee(CONNECTOR_ID.toString(), "STALE", "EMP-REPAIRED", "已修复员工", "ACTIVE")));
         Instant cursor = Instant.parse("2026-09-15T16:00:00Z");
         var pending = new SourceRecord("pending", null, "待对应门店", null, cursor.minusSeconds(100000), cursor, Map.of("staffID", "STALE", "_employeeBySourceId", Map.of("STALE", Map.of("employeeCode", "INVALID", "employeeName", "不可信来源名"))));
         when(store.customerSyncCursor(TENANT_ID, CONNECTOR_ID)).thenReturn(cursor);
@@ -455,7 +488,7 @@ class CrmMasterDataSyncServiceTest {
         when(store.startRun(any(), any(), any(), any(), any(), eq(10), any())).thenReturn(UUID.randomUUID());
         when(client.collect(any(), any(), eq(CrmMasterDataObjectType.CUSTOMER), eq(10), any(), any()))
                 .thenReturn(new Collected(CrmMasterDataObjectType.CUSTOMER, 0, 1, List.of()));
-        when(store.importRecords(any(), any(), any(), any(), any())).thenReturn(List.of(ImportResult.unmappedOne()));
+        when(store.importRecords(any(), any(), any(), any(), any())).thenReturn(List.of(ImportResult.unmappedOne()), List.of(ImportResult.repairedOne()));
         when(dictionaries.sync(any(), any())).thenReturn(Audit.empty());
         when(store.completeCustomerWindow(any(), any(), any(), any(), any())).thenAnswer(v -> v.getArgument(3));
         var result = service.runSelected(scheduledCaller(), CONNECTOR_ID, TASK_ID, 10, null, null, "CUSTOMER", true, null);
@@ -464,6 +497,13 @@ class CrmMasterDataSyncServiceTest {
                 && records.getFirst().sourceCreatedAt().equals(pending.sourceCreatedAt())
                 && records.getFirst().sourceFields().get("_employeeBySourceId").equals(Map.of())));
         verify(store).completeCustomerWindow(any(), any(), any(), any(), any());
+        var recovered = service.runSelected(scheduledCaller(), CONNECTOR_ID, TASK_ID, 10, null, null, "CUSTOMER", true, null);
+        assertThat(recovered.status()).isEqualTo("SUCCEEDED");
+        verify(store).importRecords(any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER), org.mockito.ArgumentMatchers.argThat(records ->
+                records.size() == 1 && records.getFirst().sourceCreatedAt().equals(pending.sourceCreatedAt())
+                        && records.getFirst().sourceUpdatedAt().equals(pending.sourceUpdatedAt())
+                        && records.getFirst().sourceFields().get("_employeeBySourceId").toString().contains("EMP-REPAIRED")));
+        verify(employees, org.mockito.Mockito.times(2)).resolveDinghuobaoEmployees(any(), any(), eq(List.of("STALE")));
     }
 
     @Test

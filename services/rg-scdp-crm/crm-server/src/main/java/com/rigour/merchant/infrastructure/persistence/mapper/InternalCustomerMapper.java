@@ -5,20 +5,18 @@ import com.rigour.merchant.infrastructure.persistence.entity.InternalCustomerEnt
 
 /** CRM 自研客户表 Mapper。 */
 public interface InternalCustomerMapper extends BaseMapper<InternalCustomerEntity> {
-    record CustomerSourceCodeRow(Long customerId, String sourceCode) {}
 
     @org.apache.ibatis.annotations.Select("""
         <script>
-        SELECT c.id customerId, b.source_code sourceCode
+        SELECT DISTINCT c.id
         FROM crm_customer c JOIN crm_source_binding b ON b.tenant_id=UUID_TO_BIN(c.tenant_id)
           AND b.target_id=c.party_id AND b.source_object_type='CUSTOMER'
           AND b.source_system='DINGHUOBAO' AND b.binding_status='RESOLVED' AND b.deleted=0
-        WHERE c.tenant_id=#{tenant} AND c.deleted=0 AND NULLIF(TRIM(b.source_code),'') IS NOT NULL
+        WHERE c.tenant_id=#{tenant} AND c.deleted=0
           AND c.id IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
-        ORDER BY b.primary_customer_source_id IS NOT NULL, b.source_code
         </script>
         """)
-    java.util.List<CustomerSourceCodeRow> customerSourceCodes(
+    java.util.List<Long> linkedCustomerIds(
         @org.apache.ibatis.annotations.Param("tenant") String tenant,
         @org.apache.ibatis.annotations.Param("ids") java.util.List<Long> ids);
 
@@ -34,7 +32,7 @@ public interface InternalCustomerMapper extends BaseMapper<InternalCustomerEntit
     int refreshDefaultShipping(@org.apache.ibatis.annotations.Param("tenant") String tenant,
             @org.apache.ibatis.annotations.Param("party") byte[] party);
     @org.apache.ibatis.annotations.Update("""
-        UPDATE crm_customer c SET login_account=#{account}, dhb_customer_code=#{code},
+        UPDATE crm_customer c SET login_account=#{account},
             settlement_type_code=COALESCE(#{settlement},settlement_type_code),
             synced_at=#{time}, synced_by=COALESCE((SELECT r.created_by FROM crm_sync_run r
                 WHERE r.tenant_id=UUID_TO_BIN(#{tenant}) AND r.id=#{run}), 'SYSTEM'),
@@ -45,7 +43,6 @@ public interface InternalCustomerMapper extends BaseMapper<InternalCustomerEntit
             @org.apache.ibatis.annotations.Param("party") byte[] party,
             @org.apache.ibatis.annotations.Param("run") byte[] run,
             @org.apache.ibatis.annotations.Param("account") String account,
-            @org.apache.ibatis.annotations.Param("code") String code,
             @org.apache.ibatis.annotations.Param("settlement") String settlement,
             @org.apache.ibatis.annotations.Param("time") java.time.LocalDateTime time);
     @org.apache.ibatis.annotations.Select("SELECT COUNT(*) FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(#{tenantId}) AND source_system='DINGHUOBAO' AND source_object_type='CUSTOMER' AND target_id=#{partyId} AND binding_status='RESOLVED' AND deleted=0")

@@ -408,8 +408,7 @@ public final class OrderSalesRefundRecordService {
     }
 
     private static CallerIdentity readActor() {
-        com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(
-                "order:refund:read", READ_PERMISSION);
+
         return actor(
                 com.rigour.tenant.iam.client.SupplyAuthorizationContext.current()
                                 .map(
@@ -421,7 +420,7 @@ public final class OrderSalesRefundRecordService {
     }
 
     private static CallerIdentity actionActor(String action) {
-        com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(action, WRITE_PERMISSION);
+
         return actor(
                 com.rigour.tenant.iam.client.SupplyAuthorizationContext.current()
                                 .map(

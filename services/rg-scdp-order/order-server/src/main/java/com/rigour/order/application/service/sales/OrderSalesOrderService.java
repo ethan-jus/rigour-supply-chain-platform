@@ -1615,7 +1615,7 @@ public final class OrderSalesOrderService {
     }
 
     private static CallerIdentity action(String action) {
-        com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(action, WRITE_PERMISSION);
+
         return actor(
                 com.rigour.tenant.iam.client.SupplyAuthorizationContext.current()
                                 .map(
@@ -1627,8 +1627,6 @@ public final class OrderSalesOrderService {
     }
 
     private static CallerIdentity actor(String permission) {
-        if (READ_PERMISSION.equals(permission))
-            com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(permission, permission);
         CallerIdentity caller = AuthorizationContext.requireCurrent();
         if (caller.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
         AuthorizationContext.requirePermission(permission);

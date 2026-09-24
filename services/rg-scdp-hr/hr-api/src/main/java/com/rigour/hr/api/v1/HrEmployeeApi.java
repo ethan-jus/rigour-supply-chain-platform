@@ -28,7 +28,9 @@ public interface HrEmployeeApi {
             @RequestParam(required = false) Long departmentId,
             @RequestParam(required = false) Boolean includeSubDepartments,
             @RequestParam(required = false) String positionCode,
-            @RequestParam(required = false) String jobGrade);
+            @RequestParam(required = false) String jobGrade,
+            @RequestParam(required = false) String sortBy,
+            @RequestParam(required = false) String sortDirection);
 
     @GetMapping(BASE_PATH + "/{id}")
     ApiResponse<HrEmployeeView> employee(@PathVariable("id") Long id);

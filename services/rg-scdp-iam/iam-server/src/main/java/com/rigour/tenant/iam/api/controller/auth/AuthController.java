@@ -1,6 +1,8 @@
 package com.rigour.tenant.iam.api.controller.auth;
 
 import com.rigour.tenant.iam.infrastructure.security.oidc.OidcServerProperties;
+import com.rigour.tenant.iam.application.port.out.LoginTenantQuery;
+import com.rigour.tenant.iam.infrastructure.security.session.PasswordAuthenticationProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
@@ -26,8 +28,14 @@ public final class AuthController {
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private final OidcServerProperties oidcServerProperties;
+    private final LoginTenantQuery tenants;
+    private final PasswordAuthenticationProperties passwordProperties;
 
-    public AuthController(OidcServerProperties oidcServerProperties) {
+    public AuthController(OidcServerProperties oidcServerProperties,
+            LoginTenantQuery tenants,
+            PasswordAuthenticationProperties passwordProperties) {
+        this.tenants = tenants;
+        this.passwordProperties = passwordProperties;
         this.oidcServerProperties = oidcServerProperties;
     }
 
@@ -48,7 +56,7 @@ public final class AuthController {
         String scriptNonce = scriptNonce();
         String scdpFormActions = String.join(" ", oidcServerProperties.requireAllowedOrigins());
         String message = error != null
-                ? "<div class=\"notice notice--error\" role=\"alert\">账号、密码或企业编码不正确，请重试。</div>"
+                ? "<div class=\"notice notice--error\" role=\"alert\">用户名或密码不正确，请重试。</div>"
                 : logout != null ? "<div class=\"notice notice--success\" role=\"status\">你已安全退出瑞盖供应链数字化平台。</div>" : "";
         String html = """
                 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -97,15 +105,16 @@ public final class AuthController {
                 <div id="login-timeout" class="notice notice--error" role="alert" hidden>登录请求已返回，但页面未完成跳转，请重新提交。</div>
                 <form id="login-form" method="post" action="/login" autocomplete="on">
                 <input type="hidden" name="%s" value="%s">
-                <label>企业编码<input name="tenantCode" required maxlength="32" autocomplete="organization" placeholder="请输入企业编码"></label>
+                <p class="subtitle">%s</p>
                 <label>用户名<input name="username" maxlength="64" required autocomplete="username" autofocus placeholder="请输入用户名"></label>
-                <label>密码<span class="password-field"><input id="password-input" type="password" name="password" minlength="14" maxlength="128" required autocomplete="current-password" placeholder="请输入密码"><button class="password-toggle" id="password-toggle" type="button" aria-label="显示密码"><svg id="eye-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>
+                <label>密码<span class="password-field"><input id="password-input" type="password" name="password" minlength="8" maxlength="128" required autocomplete="current-password" placeholder="请输入密码"><button class="password-toggle" id="password-toggle" type="button" aria-label="显示密码"><svg id="eye-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>
                 <button id="login-submit" class="submit" type="submit"><span id="login-idle" class="button-content">安全登录</span><span id="login-pending" class="button-content" hidden><span class="spinner" aria-hidden="true"></span>正在验证身份…</span></button></form>
                 <p class="agreement">请使用企业管理员分配的账号登录。如无法登录，请联系本企业管理员。</p></div></section></main>
                 <script nonce="%s">const form=document.getElementById('login-form');const button=document.getElementById('login-submit');const idle=document.getElementById('login-idle');const pending=document.getElementById('login-pending');const timeout=document.getElementById('login-timeout');const passwordInput=document.getElementById('password-input');const passwordToggle=document.getElementById('password-toggle');passwordToggle.addEventListener('click',()=>{const show=passwordInput.type==='password';passwordInput.type=show?'text':'password';passwordToggle.setAttribute('aria-label',show?'隐藏密码':'显示密码')});let submitted=false;let resetTimer;const reset=()=>{submitted=false;form.removeAttribute('aria-busy');button.removeAttribute('aria-disabled');button.classList.remove('is-pending');idle.hidden=false;pending.hidden=true;timeout.hidden=false};form.addEventListener('submit',event=>{if(submitted){event.preventDefault();return}submitted=true;timeout.hidden=true;form.setAttribute('aria-busy','true');button.setAttribute('aria-disabled','true');button.classList.add('is-pending');idle.hidden=true;pending.hidden=false;resetTimer=setTimeout(reset,12000)});window.addEventListener('pagehide',()=>clearTimeout(resetTimer),{once:true});</script></body></html>
                 """.formatted(message,
                 HtmlUtils.htmlEscape(csrfToken.getParameterName()),
                 HtmlUtils.htmlEscape(csrfToken.getToken()),
+                HtmlUtils.htmlEscape(java.util.Objects.toString(tenants.name(passwordProperties.getDefaultTenantCode()), "企业工作空间")),
                 scriptNonce);
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())

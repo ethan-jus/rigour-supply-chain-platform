@@ -393,9 +393,9 @@ class JdbcOrderRegisterStoreMySqlTest {
             var orders = store.orders(tenant, 0, 20, new OrderCriteria(null,null,null,null,"NEW","E1",departments,
                     null,null,null,null,null,null,null,null,null,null,null,"来源创建人"));
             var lines = store.lines(tenant, 0, 20, new LineCriteria(null,null,null,null,"NEW","E1",departments,
-                    null,null,null,null,null,null,null,null,null,null));
+                    null,null,null,null,null,null,null,null,null,null, null));
             var payments = store.payments(tenant, 0, 20, new PaymentCriteria(null,null,null,null,"NEW","E1",departments,
-                    null,null,null,null,null,null,null,null,null,null,"来源创建人", null));
+                    null,null,null,null,null,null,null,null,null,null,"来源创建人", null, null));
             assertThat(orders.total()).isEqualTo(expected);
             assertThat(lines.total()).isEqualTo(expected);
             assertThat(payments.total()).isEqualTo(expected);
@@ -615,7 +615,7 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     private static LineCriteria discountCriteria(String product, Boolean discounted, String sort, String direction) {
-        return new LineCriteria(null, null, null, null, null, null, null, null, null, null, product, null, null, null, discounted, sort, direction);
+        return new LineCriteria(null, null, null, null, null, null, null, null, null, null, product, null, null, null, discounted, sort, direction, null);
     }
 
     @Test
@@ -630,7 +630,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         }
         for (String status : List.of("UNPAID", "PARTIAL_PAID", "PAID")) {
             var page = store.lines(tenant, 0, 50, new LineCriteria(
-                    null, null, null, null, null, null, null, null, null, null, null, null, null, status, null, null, null));
+                    null, null, null, null, null, null, null, null, null, null, null, null, null, status, null, null, null, null));
             assertThat(page.total()).isEqualTo(2);
             assertThat(page.items()).extracting(OrderRegisterLineView::paymentStatusCode).containsOnly(status);
             assertThat(page.items()).extracting(OrderRegisterLineView::orderNo).containsOnly("SO-STATUS-" + status);
@@ -648,7 +648,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                 50,
                 new LineCriteria(
                         null, null, null, null, null, null, null, null, null, null,
-                        productKeyword, null, null, null, null, null, null));
+                        productKeyword, null, null, null, null, null, null, null));
     }
 
     private static Map<String, BigDecimal> lineTotals(String tenant, String productKeyword) {
@@ -658,7 +658,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new LineCriteria(
                                 null, null, null, null, null, null, null, null, null, null,
-                                productKeyword, null, null, null, null, null, null))
+                                productKeyword, null, null, null, null, null, null, null))
                 .totals();
     }
 
@@ -684,6 +684,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(page.totals().get("relatedOrderAmount")).isEqualByComparingTo("16");
         assertThat(page.totals().get("unpaidAmount")).isEqualByComparingTo("2");
         assertThat(page.totals().get("customerCount")).isEqualByComparingTo("1");
+        assertThat(page.totals().get("quantitySum")).isEqualByComparingTo("1");
         var dated = store.payments(tenant, 0, 20, allocationCriteria(List.of(101L), Instant.parse("2026-09-03T00:00:00Z")));
         assertThat(dated.total()).isEqualTo(1);
         assertThat(dated.totals().get("receivedAmount")).isEqualByComparingTo("10");
@@ -691,9 +692,17 @@ class JdbcOrderRegisterStoreMySqlTest {
         var both = store.payments(tenant, 0, 20, allocationCriteria(List.of(101L,102L), null));
         assertThat(both.total()).isEqualTo(2);
         assertThat(both.totals().get("receivedAmount")).isEqualByComparingTo("70");
+        assertThat(both.totals().get("quantitySum")).isEqualByComparingTo("2");
+        assertThat(dated.totals().get("quantitySum")).isEqualByComparingTo("1");
+        assertThat(store.payments(tenant,0,1,allocationCriteria(null,null)).totals().get("quantitySum")).isEqualByComparingTo("2");
+        assertThat(store.payments(tenant,0,20,allocationCriteria(List.of(0L),null)).totals().get("quantitySum")).isZero();
         assertThat(both.totals().get("relatedOrderAmount")).isEqualByComparingTo("80");
         assertThat(store.payments(tenant,0,20,allocationCriteria(List.of(0L),null)).total()).isZero();
         assertThat(store.payments(UUID.randomUUID().toString(),0,20,criteria).total()).isZero();
+        jdbc.update("UPDATE order_sales_order_line SET quantity=2.5,unit_price=8 WHERE tenant_id=? AND product_id=101",tenant);
+        assertThat(store.payments(tenant,0,1,criteria).totals().get("quantitySum")).isEqualByComparingTo("2.5");
+        jdbc.update("UPDATE order_sales_order_line SET deleted=1 WHERE tenant_id=? AND product_id=102",tenant);
+        assertThat(store.payments(tenant,0,1,allocationCriteria(null,null)).totals().get("quantitySum")).isEqualByComparingTo("2.5");
     }
 
     @Test
@@ -716,9 +725,77 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(zero.totals().get("receivedAmount")).isEqualByComparingTo("0");
     }
 
+    @Test
+    void variantFiltersUseWholeOrderDenominatorForLinesPaymentsAndTotals() {
+        String tenant=UUID.randomUUID().toString();
+        long id=order(tenant,"SKU-ORDER",1L,"C1","规格客户","HZ","EMP-1","张三","2026-09-01T00:00:00Z",80,0);
+        allocationLine(tenant,id,1,101,"20");
+        allocationLine(tenant,id,2,101,"30");
+        allocationLine(tenant,id,3,102,"50");
+        jdbc.update("UPDATE order_sales_order_line SET product_variant_id=1000+line_no,sku_code_snapshot=CONCAT('SKU',line_no),specification_snapshot=CONCAT('规格',line_no) WHERE tenant_id=?",tenant);
+        insertPayment(tenant,"SKU-PAY",id,"2026-09-02T00:00:00Z",50,"CHECKED",null);
+        var lines=store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,List.of(101L),null,null,null,null,1001L));
+        assertThat(lines.total()).isEqualTo(1);
+        assertThat(lines.totals().get("lineAmount")).isEqualByComparingTo("20");
+        assertThat(lines.items().getFirst().orderAmount()).isEqualByComparingTo("16");
+        var payments=store.payments(tenant,0,20,new PaymentCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,List.of(101L),1001L));
+        assertThat(payments.total()).isEqualTo(1);
+        assertThat(payments.totals().get("receivedAmount")).isEqualByComparingTo("10");
+        assertThat(payments.totals().get("quantitySum")).isEqualByComparingTo("1");
+        assertThat(payments.items().getFirst().productAllocations()).filteredOn(v -> v.matched()).hasSize(1);
+        assertThat(payments.items().getFirst().productAllocations().getFirst().specification()).isEqualTo("规格1");
+        assertThat(store.payments(tenant,0,20,new PaymentCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,List.of(102L),1001L)).total()).isZero();
+    }
+
+    @Test
+    void monthlyPerformanceUsesPaymentMonthAndMonthEndBalancesWithoutDuplication() {
+        String tenant=UUID.randomUUID().toString();
+        long april=order(tenant,"MONTH-APR",1L,"C1","月报客户","OLD","EMP-OLD","原销售","2026-03-31T16:00:00Z",100,0);
+        jdbc.update("UPDATE order_sales_order SET paid_amount=100,unpaid_amount=0 WHERE id=?",april);
+        jdbc.update("INSERT INTO order_attribution_snapshot(tenant_id,order_id,state,employee_code,employee_name,department_id,department_name,department_path,region_code,region_path,source_version,customer_revision,employee_revision,organization_version,resolved_at,frozen_at,revision) VALUES(?,?,'FROZEN','EMP-1','张三',11,'杭州','[]','HZ','[]','v1',1,1,1,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),1)",tenant,april);
+        insertPayment(tenant,"MONTH-P1",april,"2026-04-30T16:00:00Z",40,"CHECKED",null);
+        insertPayment(tenant,"MONTH-P2",april,"2026-05-15T00:00:00Z",60,"RECEIVED",null);
+        long may=order(tenant,"MONTH-MAY",1L,"C1","月报客户","HZ","EMP-1","张三","2026-04-30T16:00:00Z",20,0);
+        jdbc.update("UPDATE order_sales_order SET paid_amount=20,unpaid_amount=0 WHERE id=?",may);
+        insertPayment(tenant,"MONTH-P3",may,"2026-05-15T00:00:00Z",20,"RECEIVED",null);
+        insertPayment(tenant,"MONTH-PENDING",may,"2026-04-15T00:00:00Z",999,"PENDING",null);
+        insertPayment(tenant,"MONTH-CANCELLED",may,"2026-04-15T00:00:00Z",999,"CANCELLED",null);
+        order(tenant,"MONTH-OTHER-CITY",1L,"C1","月报客户","BJ","EMP-1","张三","2026-04-15T00:00:00Z",15,0);
+        order(tenant,"MONTH-OTHER-SALES",1L,"C1","月报客户","HZ","EMP-2","李四","2026-04-15T00:00:00Z",20,0);
+        order(tenant,"MONTH-UNKNOWN",1L,"C1","未归属客户",null,null,null,"2026-04-15T00:00:00Z",10,0);
+        long cancelled=order(tenant,"MONTH-CANCEL",1L,"C1","取消客户","HZ","EMP-1","张三","2026-04-15T00:00:00Z",100,0);
+        jdbc.update("UPDATE order_sales_order SET order_status_code='CANCELLED' WHERE id=?",cancelled);
+        order(tenant,"MONTH-DELETED",1L,"C1","删除客户","HZ","EMP-1","张三","2026-04-15T00:00:00Z",100,1);
+        order(tenant,"MONTH-ZERO",1L,"C1","零金额客户","HZ","EMP-1","张三","2026-04-15T00:00:00Z",0,0);
+        order(tenant,"MONTH-OUTSIDE",1L,"C1","范围外","HZ","EMP-1","张三","2026-09-30T16:00:00Z",100,0);
+        var from=Instant.parse("2026-03-31T16:00:00Z");
+        var to=Instant.parse("2026-09-30T16:00:00Z");
+        var rows=store.monthlyPerformance(tenant,from,to);
+        assertThat(rows).hasSize(20);
+        var row=rows.stream().filter(v -> "2026-04".equals(v.month()) && "HZ".equals(v.regionCode()) && "EMP-1".equals(v.employeeCode())).findFirst().orElseThrow();
+        assertThat(row.transactionAmount()).isEqualByComparingTo("100");
+        assertThat(row.receivedAmount()).isEqualByComparingTo("0");
+        assertThat(row.unpaidAmount()).isEqualByComparingTo("100");
+        var mayRow=rows.stream().filter(v -> "2026-05".equals(v.month()) && "HZ".equals(v.regionCode()) && "EMP-1".equals(v.employeeCode())).findFirst().orElseThrow();
+        assertThat(mayRow.transactionAmount()).isEqualByComparingTo("20");
+        assertThat(mayRow.receivedAmount()).isEqualByComparingTo("120");
+        assertThat(mayRow.unpaidAmount()).isZero();
+        var mayOnly=store.monthlyPerformance(tenant,Instant.parse("2026-04-30T16:00:00Z"),Instant.parse("2026-05-31T16:00:00Z"));
+        assertThat(mayOnly.stream().filter(v -> "HZ".equals(v.regionCode()) && "EMP-1".equals(v.employeeCode())).findFirst().orElseThrow().receivedAmount()).isEqualByComparingTo("120");
+        var partial=store.monthlyPerformance(tenant,from,Instant.parse("2026-05-10T00:00:00Z"));
+        var partialMay=partial.stream().filter(v -> "2026-05".equals(v.month()) && "HZ".equals(v.regionCode()) && "EMP-1".equals(v.employeeCode())).findFirst().orElseThrow();
+        assertThat(partialMay.receivedAmount()).isEqualByComparingTo("40");
+        assertThat(partialMay.unpaidAmount()).isEqualByComparingTo("80");
+        assertThat(rows.stream().map(v -> v.transactionAmount()).reduce(BigDecimal.ZERO,BigDecimal::add)).isEqualByComparingTo("165");
+        assertThat(store.monthlyPerformance(UUID.randomUUID().toString(),from,to)).isEmpty();
+        var scope=org.mockito.Mockito.mock(OrderDataScope.class);
+        org.mockito.Mockito.when(scope.predicate("order:read","o.",null)).thenReturn(new OrderDataScope.Predicate("o.id=?",List.of(april)));
+        assertThat(new JdbcOrderRegisterStore(jdbc,scope).monthlyPerformance(tenant,from,to)).hasSize(2);
+    }
+
     private static PaymentCriteria allocationCriteria(List<Long> products, Instant before) {
         return new PaymentCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,
-                null,before,null,null,null,products);
+                null,before,null,null,null,products, null);
     }
 
     private static void allocationLine(String tenant,long orderId,int line,long product,String amount) {
@@ -784,7 +861,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new LineCriteria(
                                 "83087", null, "台球", null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null));
+                                null, null, null, null, null, null, null));
         assertThat(linePage.items()).hasSize(1);
         assertThat(linePage.items().getFirst().sourceLineId()).isEqualTo("DHB-LINE-123");
         assertThat(linePage.items().getFirst().orderNo()).isEqualTo("SO-FUZZY-830871");
@@ -797,7 +874,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new PaymentCriteria(
                                 "83087", null, "台球", null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null));
+                                null, null, null, null, null, null, null, null, null));
         assertThat(paymentPage.items()).hasSize(1);
         assertThat(paymentPage.items().getFirst().sourceRecordId()).isEqualTo("FR.20260912.001");
         assertThat(paymentPage.items().getFirst().orderNo()).isEqualTo("SO-FUZZY-830871");
@@ -815,13 +892,14 @@ class JdbcOrderRegisterStoreMySqlTest {
         jdbc.update("UPDATE order_sales_order SET paid_amount=60,unpaid_amount=40 WHERE tenant_id=? AND id=?", tenant, first);
         var page = store.payments(tenant, 0, 1, new PaymentCriteria(
                 null, null, null, null, null, null, null, null, null, null,
-                null, null, null, Instant.parse("2026-09-12T00:00:00Z"), Instant.parse("2026-09-13T00:00:00Z"), null, null, null, null));
+                null, null, null, Instant.parse("2026-09-12T00:00:00Z"), Instant.parse("2026-09-13T00:00:00Z"), null, null, null, null, null));
         assertThat(page.items()).hasSize(1);
         assertThat(page.totals().get("relatedOrderAmount")).isEqualByComparingTo("100");
         assertThat(page.totals().get("receivedAmount")).isEqualByComparingTo("50");
         assertThat(page.totals().get("checkedAmount")).isEqualByComparingTo("20");
         assertThat(page.totals().get("unpaidAmount")).isEqualByComparingTo("40");
         assertThat(page.totals().get("customerCount")).isEqualByComparingTo("1");
+        assertThat(page.totals().get("quantitySum")).isZero();
     }
 
     private static long orderId(String tenant, String orderNo) {
@@ -1144,7 +1222,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         tenant, 0, 10,
                         new com.rigour.order.application.port.out.OrderRegisterStore.LineCriteria(
                                 null, null, null, null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null));
+                                null, null, null, null, null, null, null));
 
         assertThat(page.items()).hasSize(2);
         var source =

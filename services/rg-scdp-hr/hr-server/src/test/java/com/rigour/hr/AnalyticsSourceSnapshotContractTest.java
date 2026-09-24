@@ -47,7 +47,7 @@ class AnalyticsSourceSnapshotContractTest {
                     + " VARCHAR(50),position_name VARCHAR(120),deleted INT)");
         jdbc.execute(
                 "CREATE TABLE hr_department(tenant_id VARCHAR(64),id BIGINT,department_name"
-                    + " VARCHAR(128),deleted INT)");
+                    + " VARCHAR(128),deleted INT,department_code VARCHAR(50),parent_id BIGINT,status_code VARCHAR(16))");
         jdbc.execute(
                 "CREATE TABLE hr_department_closure(tenant_id VARCHAR(64),ancestor_id"
                     + " BIGINT,descendant_id BIGINT)");
@@ -57,7 +57,7 @@ class AnalyticsSourceSnapshotContractTest {
                     + " VALUES(1,?,'A','张三','ACTIVE',10,1,1,0),(2,?,'B','其他租户','ACTIVE',10,1,1,0)",
                 tenant,
                 other);
-        jdbc.update("INSERT INTO hr_department VALUES(?,10,'杭州部门',0)", tenant);
+        jdbc.update("INSERT INTO hr_department(tenant_id,id,department_name,deleted,department_code,parent_id,status_code) VALUES(?,10,'杭州部门',0,'HZ',1,'ACTIVE')", tenant);
         jdbc.update("INSERT INTO hr_department_closure VALUES(?,1,10),(?,10,10)", tenant, tenant);
 
         var store = new JdbcAnalyticsSourceSnapshotStore(jdbc);
@@ -109,6 +109,15 @@ class AnalyticsSourceSnapshotContractTest {
                             assertThat(row.get("department_path")).contains("10");
                             assertThat(row).doesNotContainKeys("phone", "id_card_no");
                         });
+        var departments = controller.page("HR_DEPARTMENT", "");
+        assertThat(departments.items()).singleElement().satisfies(row -> {
+            assertThat(row.get("department_code")).isEqualTo("HZ");
+            assertThat(row.get("parent_id")).isEqualTo("1");
+            assertThat(row.get("department_path")).contains("10");
+        });
+        jdbc.update("UPDATE hr_department SET status_code='INACTIVE' WHERE tenant_id=?", tenant);
+        assertThat(store.version(tenant,"HR_DEPARTMENT")).isNotEqualTo(departments.version());
+        assertThat(store.page(other,"HR_DEPARTMENT","").items()).isEmpty();
         jdbc.update("INSERT INTO hr_department_closure VALUES(?,2,10)", tenant);
         assertThat(store.version(tenant, dataset)).isNotEqualTo(version);
         jdbc.update("UPDATE hr_employee SET deleted=1 WHERE tenant_id=?", tenant);

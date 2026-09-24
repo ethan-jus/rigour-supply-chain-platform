@@ -1,6 +1,8 @@
 package com.rigour.tenant.iam.api.controller.auth;
 
 import com.rigour.tenant.iam.infrastructure.security.oidc.IamTokenClaimsResolver;
+import com.rigour.tenant.iam.application.port.out.LoginTenantQuery;
+import com.rigour.tenant.iam.infrastructure.security.session.PasswordAuthenticationProperties;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -16,7 +18,12 @@ import org.springframework.web.bind.annotation.RestController;
 public final class ScdpSessionController {
     private final IamTokenClaimsResolver claimsResolver;
 
-    public ScdpSessionController(JdbcTemplate jdbcTemplate) {
+    private final LoginTenantQuery tenants;
+    private final PasswordAuthenticationProperties passwordProperties;
+
+    public ScdpSessionController(JdbcTemplate jdbcTemplate, LoginTenantQuery tenants, PasswordAuthenticationProperties passwordProperties) {
+        this.tenants = tenants;
+        this.passwordProperties = passwordProperties;
         this.claimsResolver = new IamTokenClaimsResolver(jdbcTemplate);
     }
 
@@ -31,8 +38,8 @@ public final class ScdpSessionController {
             authenticated = false;
         }
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(new BrowserSession(authenticated, csrf.getParameterName(), csrf.getToken()));
+                .body(new BrowserSession(authenticated, csrf.getParameterName(), csrf.getToken(), tenants.name(passwordProperties.getDefaultTenantCode())));
     }
 
-    public record BrowserSession(boolean authenticated, String csrfParameter, String csrfToken) {}
+    public record BrowserSession(boolean authenticated, String csrfParameter, String csrfToken, String tenantName) {}
 }

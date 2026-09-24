@@ -45,7 +45,7 @@ class ScdpSingleProductMigrationTest {
         jdbc.execute("INSERT INTO iam_app_settings(tenant_id,application_id) SELECT UUID_TO_BIN('019facff-0000-7000-8000-000000000002'),id FROM iam_application WHERE app_code='SUPPLY_CHAIN'");
         jdbc.execute("INSERT INTO iam_app_menu_node(tenant_id,application_id,id,resource_id,node_type,display_name) SELECT UUID_TO_BIN('019facff-0000-7000-8000-000000000002'),application_id,id,id,'PAGE','销售菜单保留名称' FROM iam_resource WHERE resource_code='SUPPLY_CHAIN.PAGE.SALES_DASHBOARD'");
         jdbc.execute("INSERT INTO iam_tenant_subscription(id,tenant_id,package_version_id,status,effective_from,effective_to,user_limit,created_at,updated_at) SELECT UUID_TO_BIN(UUID()),UUID_TO_BIN('019facff-0000-7000-8000-000000000002'),id,'ACTIVE',UTC_TIMESTAMP(6),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 YEAR),100,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6) FROM iam_tenant_package_version WHERE id=UUID_TO_BIN('019facf3-0000-7000-8000-000000000002')");
-        Flyway.configure().dataSource(ds).load().migrate();
+        Flyway.configure().dataSource(ds).target("106").load().migrate();
         assertThat(jdbc.queryForObject("SELECT HEX(id) FROM iam_oauth_client WHERE client_id='rigour-scdp-browser'", String.class)).isEqualTo(oldId);
         assertThat(jdbc.queryForObject("SELECT HEX(id) FROM iam_oauth_client WHERE client_id='rigour-scdp-desktop'", String.class)).isEqualTo(existingId);
         assertThat(jdbc.queryForObject("SELECT status FROM iam_oauth_client WHERE client_id='rigour-portal-desktop'", String.class)).isEqualTo("DISABLED");

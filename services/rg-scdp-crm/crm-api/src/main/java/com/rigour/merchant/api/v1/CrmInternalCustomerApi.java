@@ -39,7 +39,6 @@ public interface CrmInternalCustomerApi {
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso=org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate createdFrom,
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso=org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate createdTo,
             @RequestParam(required = false) String creatorName,
-            @RequestParam(required = false) String dhbCustomerCode,
             @RequestParam(required = false) String dhbLinkStatus);
 
     @GetMapping(BASE_PATH + "/creators")

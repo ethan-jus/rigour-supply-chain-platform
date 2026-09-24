@@ -30,5 +30,6 @@ public record HrEmployeeView(
         Instant createdTime,
         String updatedBy,
         Instant updatedTime, Long departmentId, String departmentLeaderName,
-        String createdByName, String updatedByName, HrEmployeeProfile profile, String jobGrade) {
+        String createdByName, String updatedByName, HrEmployeeProfile profile, String jobGrade,
+        java.util.List<String> dhbStaffIds, java.util.List<String> dhbAccountNames, int dhbReviewCount) {
 }

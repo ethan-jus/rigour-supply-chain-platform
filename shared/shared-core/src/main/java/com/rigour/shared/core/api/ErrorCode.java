@@ -9,6 +9,12 @@ import org.springframework.http.HttpStatus;
 public enum ErrorCode {
 
     BAD_REQUEST("BAD_REQUEST", "请求参数无效", HttpStatus.BAD_REQUEST),
+    VALIDATION_FAILED("VALIDATION_FAILED", "参数校验失败", HttpStatus.BAD_REQUEST),
+    METHOD_NOT_ALLOWED("METHOD_NOT_ALLOWED", "请求方式不支持", HttpStatus.METHOD_NOT_ALLOWED),
+    NOT_ACCEPTABLE("NOT_ACCEPTABLE", "不支持请求的响应格式", HttpStatus.NOT_ACCEPTABLE),
+    PAYLOAD_TOO_LARGE("PAYLOAD_TOO_LARGE", "上传文件或请求内容超过大小限制", HttpStatus.PAYLOAD_TOO_LARGE),
+    UNSUPPORTED_MEDIA_TYPE("UNSUPPORTED_MEDIA_TYPE", "请求内容格式不支持", HttpStatus.UNSUPPORTED_MEDIA_TYPE),
+    RATE_LIMITED("RATE_LIMITED", "请求过于频繁，请稍后重试", HttpStatus.TOO_MANY_REQUESTS),
     UNAUTHORIZED("UNAUTHORIZED", "未认证或令牌无效", HttpStatus.UNAUTHORIZED),
     FORBIDDEN("FORBIDDEN", "无权执行当前操作", HttpStatus.FORBIDDEN),
     NOT_FOUND("NOT_FOUND", "资源不存在", HttpStatus.NOT_FOUND),

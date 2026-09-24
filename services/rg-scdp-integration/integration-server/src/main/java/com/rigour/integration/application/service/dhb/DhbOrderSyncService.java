@@ -25,6 +25,7 @@ import com.rigour.integration.application.port.out.DhbClient.TransferStockInVouc
 import com.rigour.integration.application.port.out.DhbClient.TransferStockOutVoucher;
 import com.rigour.integration.application.port.out.DhbClient.TransferStockOutVoucherLine;
 import com.rigour.integration.application.port.out.DhbSyncStore;
+import com.rigour.integration.application.port.out.DhbIncrementalWorkStore;
 import com.rigour.integration.application.port.out.DhbSyncStore.DeadLetterWrite;
 import com.rigour.integration.application.port.out.DhbSyncStore.ExternalObjectMapping;
 import com.rigour.integration.application.port.out.DhbSyncStore.ExternalObjectMappingWrite;
@@ -75,6 +76,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -245,6 +247,9 @@ public final class DhbOrderSyncService {
             Set.copyOf(UNIT_ALIASES.values());
 
     private final DhbSyncStore store;
+    @org.springframework.beans.factory.annotation.Autowired
+    private DhbIncrementalWorkStore incrementalWork;
+    private static final tools.jackson.databind.json.JsonMapper WORK_JSON = tools.jackson.databind.json.JsonMapper.builder().build();
     private final DhbClient client;
     private final OrderSalesOrderProjectionClient orderProjectionClient;
     private final ErpStockOutProjectionClient erpStockOutProjectionClient;
@@ -330,6 +335,11 @@ public final class DhbOrderSyncService {
 
     public SyncRunView runOrderPull(CallerIdentity caller, UUID taskId, SyncRunCommand command,
                                     Integer maxPages) {
+        return runOrderPull(caller, taskId, command, maxPages, stage -> { });
+    }
+
+    public SyncRunView runOrderPull(CallerIdentity caller, UUID taskId, SyncRunCommand command,
+                                    Integer maxPages, java.util.function.Consumer<String> progress) {
         Objects.requireNonNull(caller, "caller cannot be null");
         Objects.requireNonNull(taskId, "taskId cannot be null");
 
@@ -373,6 +383,8 @@ public final class DhbOrderSyncService {
         ExecutorService detailExecutor = newDetailExecutor();
         try {
             if (replayTarget == null) {
+                if (incrementalWork != null && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT").contains(selectedScope == null ? "" : selectedScope))
+                    retryPending(caller, task, started.runId(), selectedScope, windowTo, counts, progress, employeeCache, customerRegionCache);
                 if (selectedScope == null || "SALES_ORDER".equals(selectedScope)) {
                 PageRequest pageRequest = PageRequest.first(pageSize);
                 int pages = 0;
@@ -384,9 +396,19 @@ public final class DhbOrderSyncService {
                     counts.fetched += page.items().size();
                     store.persistOrderPage(caller.tenantId(), taskId, started.runId(),
                             page.items(), Instant.now());
+                    var pageProgress = new DhbPageProgress(progress, "订单及明细", pages,
+                            page.items().size(), page.request().begin(), page.total());
+                    var items = workItems(page.items());
+                    var applied = stageWork(caller, task, "SALES_ORDER", items);
                     counts.addAll(projectDetails(detailExecutor, "order-detail", page.items(),
-                            order -> projectOrder(caller, task, started.runId(), order, employeeCache,
-                                    customerRegionCache)));
+                            order -> {
+                                var item = items.get(workId(order));
+                                var outcome = applied.contains(item.id()) ? ProjectionOutcome.DUPLICATE
+                                        : applyWork(caller, task, "SALES_ORDER", item,
+                                                () -> projectOrder(caller, task, started.runId(), order, employeeCache, customerRegionCache));
+                                pageProgress.completed(outcome);
+                                return outcome;
+                            }));
                     if (page.hasNext() && pages >= pageLimit) throw new IllegalStateException("DHB_PAGE_LIMIT_REACHED: 分页未读取完毕，未推进游标，请缩小时间范围");
                     if (!page.hasNext()) {
                         break;
@@ -401,22 +423,32 @@ public final class DhbOrderSyncService {
                 syncShipments(caller, task, started.runId(), window, pageSize, pageLimit, counts,
                         employeeCache, sourceOrderLocks, detailExecutor);
                 if (selectedScope == null || "RECEIPT".equals(selectedScope))
-                syncReceipts(caller, task, started.runId(), window, pageSize, pageLimit, counts);
+                syncReceipts(caller, task, started.runId(), window, pageSize, pageLimit, counts, progress);
                 if (selectedScope == null || "PAYMENT".equals(selectedScope))
-                syncPayments(caller, task, started.runId(), window, pageSize, pageLimit, counts);
+                syncPayments(caller, task, started.runId(), window, pageSize, pageLimit, counts, progress);
             } else {
                 counts.fetched = 1;
                 counts.add(projectReplayTarget(caller, task, started.runId(), replayTarget,
                         employeeCache, customerRegionCache, sourceOrderLocks));
             }
 
-            String status = counts.status();
+            boolean durable = incrementalWork != null && replayTarget == null
+                    && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT").contains(selectedScope == null ? "" : selectedScope);
+            long remaining = durable ? incrementalWork.pendingCount(caller.tenantId(), task.connectorId(), selectedScope) : 0;
+            String status = remaining > 0 ? "PARTIAL" : counts.status();
             String errorCode = counts.rejected == 0 ? null
                     : replayTarget == null ? "DHB_ORDER_PROJECTION_PARTIAL" : "DHB_ORDER_REPLAY_PARTIAL";
             String errorMessage = counts.rejected == 0 ? null
                     : replayTarget == null
                     ? "部分订货宝订单缺少客户/商品/SKU映射或无法映射到自研销售订单，checkpoint 未推进"
                     : "订货宝单对象重放未完成，checkpoint 未推进";
+            if (durable && (remaining > 0 || counts.rejected > 0 || counts.review > 0)) {
+                // 到这里列表已完整读取且每项已可靠保存。业务待处理不能误称全部成功。
+                status = "PARTIAL";
+                errorCode = "DHB_DURABLE_PROJECTION_PENDING";
+                errorMessage = "本窗口来源已完整保存；仍有 " + remaining + " 条业务待处理，下次按单重试，不重扫历史窗口";
+            }
+            long pendingCount = durable ? Math.max(remaining, counts.rejected + counts.review) : counts.rejected;
             store.recordSyncLog(caller.tenantId(), taskId, started.runId(),
                     counts.rejected == 0 ? "INFO" : "WARN",
                     (replayTarget == null ? "订货宝订单同步结束 " : "订货宝单对象重放结束 ")
@@ -426,10 +458,10 @@ public final class DhbOrderSyncService {
                     errorCode);
             store.finishRun(caller.tenantId(), caller.userId(), taskId, started.runId(),
                     windowFrom, selectedScope == null ? windowTo : null, status, counts.fetched, counts.accepted,
-                    counts.duplicate, counts.rejected,
+                    counts.duplicate, pendingCount,
                     windowTo == null ? null : windowTo.toString(), errorCode, errorMessage);
             return new SyncRunView(started.runId(), taskId, status, windowFrom, windowTo,
-                    counts.fetched, counts.accepted, counts.duplicate, counts.rejected,
+                    counts.fetched, counts.accepted, counts.duplicate, pendingCount,
                     counts.created, counts.changed, counts.repaired, errorCode, errorMessage);
         } catch (RuntimeException error) {
             String errorCode = "DHB_SYNC_FAILED";
@@ -449,6 +481,66 @@ public final class DhbOrderSyncService {
             shutdownDetailExecutor(detailExecutor);
             MAPPING_LOOKUP_CACHE.remove();
             UNIT_DICTIONARY_SYNC_CACHE.remove();
+        }
+    }
+
+    private static String workId(Object value) {
+        String id = value instanceof OrderSummary o ? firstNonBlank(o.orderNumber(), o.sourceId())
+                : value instanceof Receipt r ? firstNonBlank(r.receiptNumber(), r.sourceId())
+                : value instanceof Payment p ? firstNonBlank(p.paymentNumber(), p.sourceId()) : null;
+        return id == null ? "missing-" + fingerprint(WORK_JSON.writeValueAsString(value)) : id;
+    }
+
+    private static String fingerprint(String payload) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+
+    private static Map<String, DhbIncrementalWorkStore.Item> workItems(List<?> values) {
+        var items = new LinkedHashMap<String, DhbIncrementalWorkStore.Item>();
+        for (var value : values) {
+            String payload = WORK_JSON.writeValueAsString(value), id = workId(value);
+            Instant updated = value instanceof OrderSummary o ? o.updatedAt()
+                    : value instanceof Receipt r ? r.updatedAt() : ((Payment) value).updatedAt();
+            items.put(id, new DhbIncrementalWorkStore.Item(id, fingerprint(payload), payload, updated));
+        }
+        return items;
+    }
+
+    private Set<String> stageWork(CallerIdentity caller, SyncTaskContext task, String type,
+                                  Map<String, DhbIncrementalWorkStore.Item> items) {
+        return incrementalWork == null ? Set.of() : incrementalWork.stage(caller.tenantId(), task.connectorId(),
+                type, List.copyOf(items.values()), Instant.now());
+    }
+
+    private ProjectionOutcome applyWork(CallerIdentity caller, SyncTaskContext task, String type,
+                                        DhbIncrementalWorkStore.Item item, java.util.function.Supplier<ProjectionOutcome> apply) {
+        var result = apply.get();
+        if (incrementalWork != null) incrementalWork.complete(caller.tenantId(), task.connectorId(), type,
+                item, result != ProjectionOutcome.REJECTED && result != ProjectionOutcome.REVIEW, Instant.now());
+        return result;
+    }
+
+    private void retryPending(CallerIdentity caller, SyncTaskContext task, UUID runId, String type,
+                              Instant upperBound, Counts counts, java.util.function.Consumer<String> progress,
+                              Map<String, EmployeeProjection> employees, Map<Long, Optional<String>> regions) {
+        var pending = incrementalWork.pending(caller.tenantId(), task.connectorId(), type, 100, Instant.now()).stream()
+                .filter(i -> upperBound == null || i.sourceUpdatedAt() == null || !i.sourceUpdatedAt().isAfter(upperBound)).toList();
+        if (pending.isEmpty()) return;
+        var page = new DhbPageProgress(progress, "单笔重试（" + type + "）", 1, pending.size(), 0, pending.size());
+        for (var item : pending) {
+            var outcome = applyWork(caller, task, type, item, () -> switch (type) {
+                case "SALES_ORDER" -> projectOrder(caller, task, runId,
+                        WORK_JSON.readValue(item.payload(), OrderSummary.class), employees, regions);
+                case "RECEIPT" -> projectReceipt(caller, task, runId, WORK_JSON.readValue(item.payload(), Receipt.class));
+                case "PAYMENT" -> projectPayment(caller, task, runId, WORK_JSON.readValue(item.payload(), Payment.class));
+                default -> throw new IllegalArgumentException("不支持的重试对象");
+            });
+            counts.fetched++;
+            counts.add(outcome);
+            page.completed(outcome);
         }
     }
 
@@ -563,6 +655,12 @@ public final class DhbOrderSyncService {
 
         RawObjectPersistResult raw = null;
         try {
+            if (protectHistory(caller)) {
+                Instant business = firstInstant(Map.of(), map(summary.attributes()), null, "OrderDate", "order_date");
+                if (business == null) throw new ProjectionRejected("DHB_ORDER_BUSINESS_TIME_MISSING",
+                        "定时同步缺少原下单日期，需核对后处理", "DETAIL", Map.of(), Map.of("sourceOrderNo", sourceOrderNo));
+                if (business.isBefore(HISTORY_CUTOVER)) return ProjectionOutcome.DUPLICATE;
+            }
             if (isCancelled(dhbOrderStatusCode(firstNonBlank(summary.status(),
                     first(map(summary.attributes()), "OrderStatus", "orderStatus", "StatusName", "status"))))) {
                 raw = store.persistRawObject(caller.tenantId(), task.connectorId(), runId,
@@ -604,7 +702,12 @@ public final class DhbOrderSyncService {
                         prepared.command(),sourceSalesAmount(detail.attributes(), prepared.command().lines()),raw.payloadChecksum()));
             if (intake==null) throw new IllegalStateException("历史订单保护接口未返回结果");
             if (!"NEW".equals(intake.state())) {
-                if ("BOUND".equals(intake.state())) {
+                if ("UPDATED".equals(intake.state())) {
+                    store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                    resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
+                    return ProjectionOutcome.CHANGED;
+                }
+                if (Set.of("BOUND", "STALE").contains(intake.state())) {
                     store.markRawProcessed(caller.tenantId(),raw.rawLandingId());
                     return ProjectionOutcome.DUPLICATE;
                 }
@@ -698,7 +801,8 @@ public final class DhbOrderSyncService {
     }
 
     private void syncReceipts(CallerIdentity caller, SyncTaskContext task, UUID runId,
-                              Window window, int pageSize, int pageLimit, Counts counts) {
+                              Window window, int pageSize, int pageLimit, Counts counts,
+                              java.util.function.Consumer<String> progress) {
         for (String sourceStatus : List.of("pend_receipt", "pend_receipted", "canceled")) {
         PageRequest pageRequest = PageRequest.first(pageSize);
         int pages = 0;
@@ -708,11 +812,22 @@ public final class DhbOrderSyncService {
                             window == null ? null : window.from(), sourceStatus));
             pages++;
             counts.fetched += page.items().size();
-            for (Receipt receipt : page.items()) {
+            var selected = page.items().stream().filter(receipt -> receipt.updatedAt() == null || window == null
+                    || window.to() == null || !receipt.updatedAt().isAfter(window.to())).toList();
+            var items = workItems(selected);
+            var applied = stageWork(caller, task, "RECEIPT", items);
+            var pageProgress = selected.isEmpty() ? null : new DhbPageProgress(progress, "收款（" + sourceStatus + "）", pages,
+                    selected.size(), page.request().begin(), page.total());
+            for (Receipt receipt : selected) {
                 // 来源接口仅支持更新时间下限；本地补上上限，不能把范围以后的款提前纳入本批。
                 if(receipt.updatedAt()!=null && window!=null && window.to()!=null && receipt.updatedAt().isAfter(window.to()))continue;
-                counts.add(projectReceipt(caller, task, runId, receipt));
+                var item = items.get(workId(receipt));
+                var outcome = applied.contains(item.id()) ? ProjectionOutcome.DUPLICATE
+                        : applyWork(caller, task, "RECEIPT", item, () -> projectReceipt(caller, task, runId, receipt));
+                counts.add(outcome);
+                pageProgress.completed(outcome);
             }
+            progress.accept("收款第 " + pages + " 页已处理（" + sourceStatus + "）；当前窗口累计读取 " + counts.fetched + " 条");
             if (page.hasNext() && pages >= pageLimit) throw new IllegalStateException("DHB_PAGE_LIMIT_REACHED: 分页未读取完毕，未推进游标，请缩小时间范围");
                     if (!page.hasNext()) {
                 break;
@@ -723,7 +838,8 @@ public final class DhbOrderSyncService {
     }
 
     private void syncPayments(CallerIdentity caller, SyncTaskContext task, UUID runId,
-                              Window window, int pageSize, int pageLimit, Counts counts) {
+                              Window window, int pageSize, int pageLimit, Counts counts,
+                              java.util.function.Consumer<String> progress) {
         PageRequest pageRequest = PageRequest.first(pageSize);
         int pages = 0;
         while (true) {
@@ -731,9 +847,14 @@ public final class DhbOrderSyncService {
                     new PaymentQuery(pageRequest, null, timeWindow(window), "all"));
             pages++;
             counts.fetched += page.items().size();
+            var items = workItems(page.items());
+            var applied = stageWork(caller, task, "PAYMENT", items);
             for (Payment payment : page.items()) {
-                counts.add(projectPayment(caller, task, runId, payment));
+                var item = items.get(workId(payment));
+                counts.add(applied.contains(item.id()) ? ProjectionOutcome.DUPLICATE
+                        : applyWork(caller, task, "PAYMENT", item, () -> projectPayment(caller, task, runId, payment)));
             }
+            progress.accept("付款第 " + pages + " 页已处理；当前窗口已读取 " + counts.fetched + " 条");
             if (page.hasNext() && pages >= pageLimit) throw new IllegalStateException("DHB_PAGE_LIMIT_REACHED: 分页未读取完毕，未推进游标，请缩小时间范围");
                     if (!page.hasNext()) {
                 break;
@@ -1076,32 +1197,39 @@ public final class DhbOrderSyncService {
 
         RawObjectPersistResult raw = null;
         try {
+            boolean historicalStatusOnly = protectHistory(caller)
+                    && sourceBusinessTime("DHB_RECEIPT_BUSINESS_TIME_MISSING",
+                        "缺少原回款日期，无法确认历史边界", "sourceReceiptNo", sourceReceiptNo, receipt.transactionAt())
+                        .isBefore(HISTORY_CUTOVER);
             raw = store.persistRawObject(caller.tenantId(), task.connectorId(), runId,
                     RAW_OBJECT_RECEIPT, sourceReceiptNo,
                     receipt == null || receipt.updatedAt() == null ? null : receipt.updatedAt().toString(),
                     receipt == null ? null : receipt.updatedAt(), attributes, Instant.now());
-            if (receipt.transactionAt() != null && receipt.transactionAt().isBefore(HISTORY_CUTOVER)) {
-                // 切换日前以飞书回款为事实，不用订货宝重建或改写历史付款日。
-                store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
-                return ProjectionOutcome.ACCEPTED;
-            }
             ExternalObjectMapping receiptCustomer=optionalMappingAny(caller.tenantId(),task.connectorId(),List.of("CUSTOMER"),
                 receipt==null?List.of():java.util.stream.Stream.of(receipt.customerNumber(),receipt.customerGuid()).filter(Objects::nonNull).toList());
             String normalizedReceiptStatus=receiptIntakeStatus(receipt);
-            var receiptIntake=orderProjectionClient.registerReceipt(orderServiceCaller(caller.tenantId()),
-                new com.rigour.order.api.v1.model.HistorySyncModels.Receipt(task.connectorId(),sourceReceiptNo,
+            var receiptCommand = new com.rigour.order.api.v1.model.HistorySyncModels.Receipt(task.connectorId(),sourceReceiptNo,
                     receiptSourceOrderNo(receipt,attributes),receiptCustomer==null?null:receiptCustomer.internalObjectId(),
-                    receipt.amount(),receipt.transactionAt(),normalizedReceiptStatus,receipt.updatedAt(),raw.payloadChecksum()));
+                    receipt.amount(),receiptBusinessTime(receipt,sourceReceiptNo),normalizedReceiptStatus,receipt.updatedAt(),raw.payloadChecksum());
+            var receiptIntake = historicalStatusOnly
+                    ? orderProjectionClient.syncHistoricalReceiptStatus(orderServiceCaller(caller.tenantId()), receiptCommand)
+                    : orderProjectionClient.registerReceipt(orderServiceCaller(caller.tenantId()), receiptCommand);
             if(receiptIntake==null)throw new IllegalStateException("回款接续接口未返回结果");
+            if ("STALE".equals(receiptIntake.state())) {
+                store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                return ProjectionOutcome.DUPLICATE;
+            }
             if ("ORDER_CANCELLED".equals(receiptIntake.state())) {
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
                 resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_PAYMENT, sourceReceiptNo);
                 return ProjectionOutcome.ACCEPTED;
             }
             if(!"NEW".equals(receiptIntake.state())) {
-                if(Set.of("ALLOCATED","BASELINE_COVERED","CANCELLED").contains(receiptIntake.state())) {
-                    projectFundReceipt(caller, task, runId, sourceReceiptNo, receipt, attributes, raw);
+                if(Set.of("ALLOCATED","BASELINE_COVERED","CANCELLED","SYNCED").contains(receiptIntake.state())) {
+                    if (!historicalStatusOnly)
+                        projectFundReceipt(caller, task, runId, sourceReceiptNo, receipt, attributes, raw);
                     store.markRawProcessed(caller.tenantId(),raw.rawLandingId());
+                    resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_PAYMENT, sourceReceiptNo);
                     return ProjectionOutcome.ACCEPTED;
                 }
                 throw new ProjectionRejected("DHB_RECEIPT_"+receiptIntake.state(),
@@ -1201,6 +1329,11 @@ public final class DhbOrderSyncService {
 
         RawObjectPersistResult raw = null;
         try {
+            if (protectHistory(caller)) {
+                Instant business = sourceBusinessTime("DHB_PAYMENT_BUSINESS_TIME_MISSING",
+                        "缺少原付款日期，无法确认历史边界", "sourcePaymentNo", sourcePaymentNo, payment.transactionAt());
+                if (business.isBefore(HISTORY_CUTOVER)) return ProjectionOutcome.DUPLICATE;
+            }
             Instant sourceUpdatedAt = firstNonNull(
                     payment == null ? null : payment.transactionAt(),
                     payment == null ? null : payment.createdAt());
@@ -1274,10 +1407,10 @@ public final class DhbOrderSyncService {
                     current = orderProjectionClient.cancelSalesOrderBySource(
                             serviceCaller, current.id(), current.revision());
                 }
-                return ensureSalesOrderSourceProjection(serviceCaller, current, prepared);
+                if (prepared.cancelled()) return ensureSalesOrderSourceProjection(serviceCaller, current, prepared);
             }
         }
-        SalesOrderCommand command = withRevision(prepared.command(),
+        SalesOrderCommand command = withRevision(current == null ? prepared.command() : withExistingOrderContext(prepared.command(), current),
                 current == null ? null : current.revision());
         SalesOrderDetailView saved = current == null
                 ? orderProjectionClient.createSalesOrder(serviceCaller, command)
@@ -1659,6 +1792,7 @@ public final class DhbOrderSyncService {
                 sourceOrderNo,
                 firstInstant(content, list, summary == null ? null : summary.createdAt(),
                         "OrderDate", "order_date", "createdAt"));
+        Instant sourceCreatedAt = firstInstant(content, list, orderDate, "CreateDate", "createDate");
         Instant sourceUpdatedAt = firstInstant(content, list,
                 summary == null ? null : summary.updatedAt(),
                 "OrderUpdateTime", "order_update_time", "UpdateTime", "update_time",
@@ -1700,7 +1834,7 @@ public final class DhbOrderSyncService {
                 !cancelled && shouldSubmit(internalStatusCode),
                 null,
                 sourceOrderNo,
-                orderDate,
+                sourceCreatedAt,
                 sourceUpdatedAt,
                 firstClean(sourceModifierIds),
                 firstNonBlank(sourceModifier.employeeName(), firstClean(sourceModifierNames)),
@@ -1781,12 +1915,10 @@ public final class DhbOrderSyncService {
                     "DETAIL", Map.of("required", "Amount > 0"),
                     Map.of("sourceReceiptNo", sourceReceiptNo));
         }
-        Instant paymentTime = receipt == null ? null : receipt.transactionAt();
-        if (paymentTime == null) throw new ProjectionRejected("DHB_RECEIPT_BUSINESS_TIME_MISSING",
-                "订货宝缺少付款日期 ReceiptsDate，不能以录入或修改时间代替", "DETAIL",
-                Map.of("required", "ReceiptsDate"), Map.of("sourceReceiptNo", sourceReceiptNo));
+        Instant paymentTime = receiptBusinessTime(receipt, sourceReceiptNo);
         String status = switch (verifiedReceiptStatus(receipt.status())) {
             case "CONFIRMED" -> "CHECKED";
+            case "RECEIVED" -> "RECEIVED";
             case "PENDING" -> "PENDING";
             case "CANCELLED" -> "CANCELLED";
             default -> throw new ProjectionRejected("DHB_RECEIPT_STATUS_MISSING",
@@ -1869,14 +2001,7 @@ public final class DhbOrderSyncService {
                     "DETAIL", Map.of("required", "Amount > 0"),
                     Map.of("sourceReceiptNo", sourceReceiptNo));
         }
-        Instant occurredTime = sourceBusinessTime(
-                "DHB_RECEIPT_BUSINESS_TIME_MISSING",
-                "订货宝收款单缺少交易/创建/更新时间，不能生成资金收款单",
-                "sourceReceiptNo",
-                sourceReceiptNo,
-                receipt == null ? null : receipt.transactionAt(),
-                receipt == null ? null : receipt.createdAt(),
-                receipt == null ? null : receipt.updatedAt());
+        Instant occurredTime = receiptBusinessTime(receipt, sourceReceiptNo);
         String statusCode = fundDocumentStatusCode(receipt == null ? null : receipt.status(), attributes);
         String customerNo = firstNonBlank(
                 receipt == null ? null : receipt.customerNumber(),
@@ -3525,6 +3650,21 @@ public final class DhbOrderSyncService {
                 source.sourceModifierName(), source.syncedBy(), source.syncedAt());
     }
 
+    private static SalesOrderCommand withExistingOrderContext(SalesOrderCommand source, SalesOrderDetailView current) {
+        var vouchers = new LinkedHashSet<>(current.paymentVoucherKeys());
+        if (source.paymentVoucherKeys() != null) vouchers.addAll(source.paymentVoucherKeys());
+        return new SalesOrderCommand(source.customerId(), current.sourceSystemCode(), current.sourceOrderNo(),
+                source.sourceStatusCode(), source.sourceCreatorId(), source.sourceCreatorStaffCode(),
+                source.sourceCreatorName(), source.customerCodeSnapshot(), source.customerNameSnapshot(),
+                source.contactNameSnapshot(), source.contactPhoneSnapshot(), firstNonBlank(current.regionCode(), source.regionCode()),
+                firstNonBlank(current.ownerSalesUserId(), source.ownerSalesUserId()), firstNonBlank(current.ownerSalesName(), source.ownerSalesName()),
+                firstNonBlank(current.ownerEmployeeCode(), source.ownerEmployeeCode()),
+                firstNonBlank(current.ownerEmployeeNameSnapshot(), source.ownerEmployeeNameSnapshot()), current.orderDate(), source.orderTypeCode(),
+                source.paymentMethodCode(), List.copyOf(vouchers), source.sourceUnpaidAmount(), source.discountRate(), source.discountAmount(),
+                source.remark(), source.lines(), source.submit(), source.revision(), source.businessOrderNoOverride(),
+                source.sourceCreatedAt(), source.sourceUpdatedAt(), source.sourceModifierId(), source.sourceModifierName(), source.syncedBy(), source.syncedAt());
+    }
+
     private static SalesPaymentRecordCommand withRevision(
             SalesPaymentRecordCommand source, Integer revision) {
         return new SalesPaymentRecordCommand(source.connectorId(), source.sourceSystemCode(),
@@ -3628,6 +3768,8 @@ public final class DhbOrderSyncService {
     static String verifiedReceiptStatus(String sourceStatus) {
         String value=lower(sourceStatus);
         if(value==null)return "UNKNOWN";
+        // 订货宝待财务确认已经是回款；财务确认仅推进到已核对。
+        if("pend_receipt".equals(value))return "RECEIVED";
         if(paymentCancelled(value))return "CANCELLED";
         if(Set.of("pend_receipted","confirmed","confirm","receipted","received","completed","finished","已收款","已确认","已审核").contains(value))return "CONFIRMED";
         if(value.startsWith("pend")||Set.of("draft","new","waiting","wait","created").contains(value)||value.contains("待"))return "PENDING";
@@ -4282,6 +4424,29 @@ public final class DhbOrderSyncService {
         return null;
     }
 
+    private static boolean protectHistory(CallerIdentity caller) {
+        return "SERVICE".equals(caller.principalScope()) && caller.roles().contains("DHB_PROTECT_HISTORY");
+    }
+
+    static Instant receiptBusinessTime(Receipt receipt, String sourceReceiptNo) {
+        Instant business = sourceBusinessTime("DHB_RECEIPT_BUSINESS_TIME_MISSING",
+                "订货宝缺少付款日期 ReceiptsDate，无法判断历史补录边界", "sourceReceiptNo", sourceReceiptNo,
+                receipt == null ? null : receipt.transactionAt());
+        return operationBusinessTime(business, receipt.createdAt(), sourceReceiptNo);
+    }
+
+    /** 先按原业务日期识别历史补录；切换后按用户确认的完整操作时间入账，不用修改时间兜底。 */
+    static Instant operationBusinessTime(Instant business, Instant operation, String sourceNo) {
+        if (business.isBefore(HISTORY_CUTOVER)) return business;
+        if (operation == null || operation.isBefore(HISTORY_CUTOVER)) {
+            throw new ProjectionRejected("DHB_OPERATION_TIME_REVIEW",
+                    "订货宝操作时间缺失或早于历史切换点，需核对后同步", "DETAIL",
+                    Map.of("required", "CreateDate >= 2026-09-04 00:00 +08:00"),
+                    Map.of("sourceNo", safeValue(sourceNo)));
+        }
+        return operation;
+    }
+
     private static Instant sourceBusinessTime(String code, String message,
                                               String actualKey, String actualValue,
                                               Instant... values) {
@@ -4305,13 +4470,18 @@ public final class DhbOrderSyncService {
         if (value instanceof Instant instant) return instant;
         String text = text(value);
         if (text == null) return null;
+        if (text.matches("\\d{10}")) return Instant.ofEpochSecond(Long.parseLong(text));
         try {
             return Instant.parse(text);
         } catch (DateTimeParseException ignored) {
             try {
                 return LocalDateTime.parse(text, D_HMS).atZone(SOURCE_ZONE).toInstant();
             } catch (DateTimeParseException ignoredAgain) {
-                return null;
+                try {
+                    return LocalDate.parse(text).atStartOfDay(SOURCE_ZONE).toInstant();
+                } catch (DateTimeParseException ignoredDate) {
+                    return null;
+                }
             }
         }
     }

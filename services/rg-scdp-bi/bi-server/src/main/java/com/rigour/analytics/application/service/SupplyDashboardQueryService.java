@@ -250,7 +250,21 @@ public final class SupplyDashboardQueryService {
                                                 money(item.paidAmount()),
                                                 number(item.paymentCount()),
                                                 number(item.customerCount())))
-                        .toList());
+                        .toList(),
+                data.cityReceipts().stream()
+                        .map(item -> new SupplyDashboardOperatingAnalysisView.CityReceipt(
+                                item.regionCode(), item.regionName(), money(item.receiptAmount()),
+                                number(item.paymentCount()), number(item.customerCount())))
+                        .toList(),
+                data.customerRetention() == null ? null : new SupplyDashboardOperatingAnalysisView.CustomerRetention(
+                        number(data.customerRetention().orderingCustomerCount()),
+                        number(data.customerRetention().returningCustomerCount()),
+                        data.customerRetention().newCustomerCount(),data.customerRetention().annualReturningCustomerCount()),
+                data.cityMonthlyGoals().stream().map(g -> new SupplyDashboardOperatingAnalysisView.CityMonthlyGoal(
+                        g.regionCode(),g.regionName(),g.month(),g.salesTarget(),g.receiptTarget(),
+                        g.newCustomerTarget(),g.repeatCustomerTarget(),g.configuredCount())).toList(),
+                data.salesPeople().stream().map(p -> new SupplyDashboardOperatingAnalysisView.SalesPerson(
+                        p.ownerStaffCode(), p.ownerStaffName(), p.employmentStatus())).toList());
     }
 
     /** 旧仓储包含未分区的附属聚合，受限响应使用白名单，避免新增字段意外穿透。 */

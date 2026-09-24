@@ -83,6 +83,7 @@ import java.util.regex.Pattern;
 @SpringBootTest(
         properties = {
             "spring.flyway.enabled=true",
+            "rigour.iam.authentication.password.default-tenant-code=browser-scdp",
             "spring.cloud.nacos.config.enabled=false",
             "spring.cloud.nacos.discovery.enabled=false"
         })
@@ -360,12 +361,21 @@ class IamAuthorizationServerSecurityTests {
     }
 
     @Test
+    void loginPageDisplaysDatabaseTenantNameWithoutCodeInput() throws Exception {
+        mockMvc.perform(get("/login").secure(true))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("浏览器测试企业")))
+                .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("name=\"tenantCode\""))));
+    }
+
+    @Test
     void frontendLoginRequiresCsrfAndReturnsUniformCredentialFailure() throws Exception {
         MockHttpSession session = new MockHttpSession();
         MvcResult result = mockMvc.perform(get("/scdp/session").secure(true).session(session))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Cache-Control", "no-store"))
-                .andExpect(jsonPath("$.authenticated").value(false)).andReturn();
+                .andExpect(jsonPath("$.authenticated").value(false))
+                .andExpect(jsonPath("$.tenantName").value("浏览器测试企业")).andReturn();
         String csrf = tools.jackson.databind.json.JsonMapper.builder().build()
                 .readTree(result.getResponse().getContentAsByteArray()).get("csrfToken").asString();
         mockMvc.perform(post("/scdp/login").secure(true).session(session)
@@ -391,7 +401,7 @@ class IamAuthorizationServerSecurityTests {
         var json = tools.jackson.databind.json.JsonMapper.builder().build();
         String csrf = json.readTree(result.getResponse().getContentAsByteArray()).get("csrfToken").asString();
         mockMvc.perform(post("/scdp/login").secure(true).session(session).param("_csrf", csrf)
-                        .param("tenantCode", "browser-scdp").param("username", USERNAME).param("password", PASSWORD))
+                        .param("username", USERNAME).param("password", PASSWORD))
                 .andExpect(status().isNoContent()).andExpect(header().doesNotExist("Location"));
         assertThat(session.getId()).isNotEqualTo(oldSessionId);
         mockMvc.perform(get("/scdp/session").secure(true).session(session))

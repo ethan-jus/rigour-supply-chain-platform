@@ -11,13 +11,17 @@ import org.springframework.stereotype.Component;
 
 import java.util.*;
 
-/** 当前 CRM 客户以主责和经营归属地区过滤，城市负责人不再叠加员工部门。 */
+/** CRM 按主责员工及其当前部门过滤，并始终与用户地区上限求交。 */
 @Component
 public final class CrmDataScope {
     private final SupplyAuthorizationClient client;
     private final JdbcTemplate jdbc;
 
-    public CrmDataScope(SupplyAuthorizationClient client, JdbcTemplate jdbc) {
+    private final com.rigour.merchant.application.port.out.CrmEmployeeClient employees;
+
+    public CrmDataScope(SupplyAuthorizationClient client, JdbcTemplate jdbc,
+            com.rigour.merchant.application.port.out.CrmEmployeeClient employees) {
+        this.employees = employees;
         this.client = client;
         this.jdbc = jdbc;
     }
@@ -35,9 +39,9 @@ public final class CrmDataScope {
                 SupplyAuthorizationContext.current().isPresent()
                         ? SupplyAuthorizationContext.requireAction(action)
                         : client.authorization(caller, action);
-        if ("ACTIVE".equals(result.mode()) && !result.functionAllowed())
+        if (!"ACTIVE".equals(result.mode()) || !result.functionAllowed())
             throw new AuthorizationDeniedException(action);
-        return "ACTIVE".equals(result.mode()) ? result : null;
+        return result;
     }
 
     public Predicate predicate(String action, String alias) {
@@ -60,7 +64,6 @@ public final class CrmDataScope {
         List<String> alternatives = new ArrayList<>();
         for (var c : policy.clauses()) {
             if (!"CUSTOMER".equals(c.objectType())
-                    || !Set.of("NONE", "ALL").contains(c.departments().mode())
                     || !Set.of("NONE", "ALL").contains(c.warehouses().mode())) continue;
             List<Object> args = new ArrayList<>();
             List<String> conditions = new ArrayList<>();
@@ -74,9 +77,23 @@ public final class CrmDataScope {
                         args.add(policy.employeeCode());
                     }
                 }
+                case "DEPARTMENT" -> {
+                    if (!"SPECIFIED".equals(c.departments().mode()) || c.departments().references().isEmpty()) continue;
+                }
                 case "REGION", "ALL" -> {}
                 default -> {
                     continue;
+                }
+            }
+            if (!Set.of("NONE", "ALL").contains(c.departments().mode())) {
+                if (!"SPECIFIED".equals(c.departments().mode()) || c.departments().references().isEmpty()) continue;
+                var codes = employees.departmentMembers(policy.tenantId().toString(), c.departments().references(), c.includeDescendants());
+                if (codes.isEmpty()) continue;
+                if (proposed) {
+                    if (!codes.contains(employee)) continue;
+                } else {
+                    conditions.add(alias + "owner_employee_code IN (" + String.join(",", Collections.nCopies(codes.size(), "?")) + ")");
+                    args.addAll(codes);
                 }
             }
             if ("NONE".equals(c.regions().mode())) continue;
@@ -155,36 +172,9 @@ public final class CrmDataScope {
         return query.apply(sql.toString(), p.args().toArray());
     }
 
-    public void compareRecord(String tenant, long id, String action, boolean oldAllowed) {
-        SupplyAuthorizationContext.compare(
-                action,
-                "CRM",
-                Long.toString(id),
-                () ->
-                        oldAllowed
-                                && jdbc.queryForObject(
-                                                "SELECT COUNT(*) FROM crm_customer WHERE"
-                                                        + " tenant_id=? AND id=? AND deleted=0",
-                                                Integer.class,
-                                                tenant,
-                                                id)
-                                        == 1,
-                next -> {
-                    var p = predicate(next, "");
-                    var args = new ArrayList<Object>(List.of(tenant, id));
-                    args.addAll(p.args());
-                    return jdbc.queryForObject(
-                                    "SELECT COUNT(*) FROM crm_customer WHERE tenant_id=? AND id=?"
-                                            + " AND deleted=0 AND "
-                                            + p.sql(),
-                                    Integer.class,
-                                    args.toArray())
-                            == 1;
-                });
-    }
+
 
     public void requireCustomer(String tenant, long id, String action) {
-        compareRecord(tenant, id, action, true);
         Predicate p = predicate(action, "");
         List<Object> args = new ArrayList<>(List.of(tenant, id));
         args.addAll(p.args());

@@ -1,5 +1,7 @@
 package com.rigour.tenant.iam.infrastructure.persistence.settings;
 
+import com.rigour.shared.core.exception.RequestValidationException;
+
 import com.rigour.shared.context.RequestHeaders;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.shared.core.api.ApiResponse;
@@ -68,7 +70,7 @@ public final class HttpAppReferenceClient implements AppReferenceClient {
     @Override
     public List<Reference> references(UUID tenant, String dimension) {
         URI uri = endpoints.get(dimension);
-        if (uri == null) throw new IllegalArgumentException("未知范围维度");
+        if (uri == null) throw new RequestValidationException("未知范围维度");
         Map<String, String> h = new LinkedHashMap<>();
         h.put(RequestHeaders.PRINCIPAL_SCOPE, "SERVICE");
         h.put(

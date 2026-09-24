@@ -107,6 +107,86 @@ class DhbSyncOrchestrationServiceTest {
         });
     }
 
+
+    @Test
+    void scheduledBusinessChainStopsWhenStaffAssociationFails() {
+        when(dhbClient.getStaff(any(),any())).thenThrow(new IllegalStateException("staff unavailable"));
+        var result=service.runScheduledChain(TENANT_ID,CONNECTOR_ID,ignored -> {});
+        assertThat(result.status()).isNotEqualTo("SUCCEEDED");
+        org.mockito.Mockito.verifyNoInteractions(crmClient,orderSyncService);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void scheduledBusinessChainContinuesOnCustomerWarningsAndKeepsRiskVisible(boolean staffWarning) {
+        service=serviceWithIncrementalWindow("2026-08-01T00:00:00+08:00",Instant.parse("2026-09-23T08:00:00Z"));
+        if (staffWarning) {
+            when(dhbClient.getStaff(any(),any())).thenAnswer(call -> {
+                DhbClient.StaffQuery query=call.getArgument(1);
+                return new DhbClient.Page<>(query.page(),1,List.of(new DhbClient.Staff("missing-name","S1", "A1", "salesman", "account", null,
+                        null,null,null,null,null,null,null,null,null,null,null,null,Map.of())));
+            });
+        }
+        var ok=crmResult();
+        when(crmClient.syncLatestCustomersInBackground(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any(),any()))
+                .thenReturn(new SyncResult(UUID.randomUUID(),"SUCCEEDED_WITH_WARNINGS",ok.objects()));
+        when(orderSyncService.runOrderPull(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any())).thenReturn(orderResult());
+        var result=service.runScheduledChain(TENANT_ID,CONNECTOR_ID,ignored -> {});
+        assertThat(result.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
+        assertThat(result.tenants().getFirst().steps()).anyMatch(step -> "SUCCEEDED".equals(step.status()) && "ORDER".equals(step.domain()));
+        org.mockito.Mockito.verify(orderSyncService,org.mockito.Mockito.atLeastOnce()).runOrderPull(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"FAILED", "PARTIAL", "SKIPPED"})
+    void scheduledBusinessChainStillStopsOnIncompleteCustomerBatch(String status) {
+        when(crmClient.syncLatestCustomersInBackground(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any(),any()))
+                .thenReturn(new SyncResult(UUID.randomUUID(),status,crmResult().objects()));
+        var result=service.runScheduledChain(TENANT_ID,CONNECTOR_ID,ignored -> {});
+        assertThat(result.tenants().getFirst().steps()).anyMatch(step -> "SKIPPED".equals(step.status()) && "ORDER".equals(step.domain()));
+        org.mockito.Mockito.verifyNoInteractions(orderSyncService);
+    }
+
+    @Test
+    void completedDependenciesCanContainUnresolvedRowsButCannotBeEmpty() {
+        assertThat(DhbSyncOrchestrationService.dependenciesReady(List.of())).isFalse();
+        assertThat(DhbSyncOrchestrationService.dependenciesReady(List.of(
+                new com.rigour.integration.api.v1.model.DhbSyncOrchestrationStepView("CRM", "CUSTOMER",
+                        "SUCCEEDED_WITH_WARNINGS", UUID.randomUUID(), 10, 8, 2, Map.of(), "待关联", 8L, 0L, 0L, 0L, 2L))))
+                .isTrue();
+    }
+
+    @Test
+    void incompleteStaffPaginationStillStopsTheChain() {
+        when(dhbClient.getStaff(any(), any())).thenAnswer(call -> {
+            DhbClient.StaffQuery query=call.getArgument(1);
+            return new DhbClient.Page<>(query.page(),10001,List.of());
+        });
+        var result=service.runScheduledChain(TENANT_ID,CONNECTOR_ID,ignored -> {});
+        assertThat(result.status()).isEqualTo("PARTIAL");
+        assertThat(result.tenants().getFirst().steps().getFirst().message()).contains("分页上限");
+        org.mockito.Mockito.verifyNoInteractions(crmClient,orderSyncService);
+    }
+
+    @Test
+    void scheduledBusinessChainOrdersDependenciesAndProtectsHistoricalWindow() {
+        service=serviceWithIncrementalWindow("2026-08-01T00:00:00+08:00",Instant.parse("2026-09-23T08:00:00Z"));
+        when(crmClient.syncLatestCustomersInBackground(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any(),any())).thenReturn(crmResult());
+        when(orderSyncService.runOrderPull(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any())).thenAnswer(call -> {
+            CallerIdentity actor=call.getArgument(0);SyncRunCommand command=call.getArgument(2);
+            assertThat(actor.roles()).contains("DHB_PROTECT_HISTORY");
+            assertThat(command.from()).isAfterOrEqualTo(Instant.parse("2026-09-03T16:00:00Z"));
+            return orderResult();
+        });
+        var result=service.runScheduledChain(TENANT_ID,CONNECTOR_ID,ignored -> {});
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        assertThat(result.triggerType()).isEqualTo("SCHEDULED_BUSINESS_CHAIN");
+        var ordered=org.mockito.Mockito.inOrder(dhbClient,crmClient,orderSyncService);
+        ordered.verify(dhbClient).getStaff(any(),any());
+        ordered.verify(crmClient).syncLatestCustomersInBackground(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),isNull(),any());
+        ordered.verify(orderSyncService,org.mockito.Mockito.atLeastOnce()).runOrderPull(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any());
+    }
+
     @Test
     void scheduledRunCallsDomainsInBusinessDependencyOrder() {
         List<String> calls = new ArrayList<>();
@@ -156,6 +236,51 @@ class DhbSyncOrchestrationServiceTest {
                 "ERP:WAREHOUSING_RECEIPT",
                 "ERP:INVENTORY",
                 "ORDER:ORDER_DOMAIN");
+    }
+
+    @Test
+    void salespersonPageOnlyReadsSalespeopleAndNeverStartsOrdersOrCustomers() {
+        var actor = manualCaller();
+        var permitted = new CallerIdentity(actor.principalScope(), actor.principalId(), actor.tenantId(),
+                actor.userId(), null, UUID.randomUUID(), 0, 0, 0, Set.of(),
+                Set.of("integration:dhb:read", "integration:dhb:write", "hr:employee:sync"));
+        when(dhbClient.getStaff(any(), any())).thenAnswer(call -> {
+            DhbClient.StaffQuery query = call.getArgument(1);
+            assertThat(query.staffType()).isEqualTo("salesman");
+            assertThat(query.updatedWindow()).isNull();
+            assertThat(query.createdWindow()).isNull();
+            return new DhbClient.Page<>(query.page(), 2, List.of(
+                    new DhbClient.Staff("wrong-source", "staff-1", "account-1", "salesman", "account", "测试业务员",
+                            "销售", "北京市", null, null, null, null, null, null, null, null, null, null, Map.of()),
+                    new DhbClient.Staff("other", "other", "other", "indoorwork", "other", "内勤",
+                            null, null, null, null, null, null, null, null, null, null, null, null, Map.of())));
+        });
+        when(hrEmployeeClient.sync(any(), any())).thenAnswer(call -> {
+            List<HrDhbStaffSyncClient.DhbStaffRow> rows = call.getArgument(1);
+            assertThat(rows).hasSize(1);
+            assertThat(rows.getFirst().sourceStaffId()).isEqualTo("staff-1");
+            return new HrDhbStaffSyncClient.StaffSyncResult(1, 0, 1, 0, 0, List.of());
+        });
+        var progress = new ArrayList<String>();
+        var result = service.runPage(permitted, new DhbPageSyncCommand(
+                DhbPageSyncCommand.Scope.SALESPERSON, CONNECTOR_ID, null, null, 100, true), progress::add, true);
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        var step = result.tenants().getFirst().steps().getFirst();
+        assertThat(step.domain()).isEqualTo("HR");
+        assertThat(step.fetched()).isEqualTo(1);
+        assertThat(step.updated()).isEqualTo(1);
+        assertThat(progress).anyMatch(s -> s.contains("业务员"));
+        org.mockito.Mockito.verifyNoInteractions(orderSyncService, crmClient, erpClient);
+    }
+
+    @Test
+    void salespersonSubmissionRequiresHrSyncPermissionBeforeAnySourceRead() {
+        var command = new DhbPageSyncCommand(DhbPageSyncCommand.Scope.SALESPERSON, CONNECTOR_ID, null, null, 100, true);
+        assertThatThrownBy(() -> service.validatePageTarget(manualCaller(), command))
+                .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        assertThatThrownBy(() -> service.runPage(manualCaller(), command))
+                .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        org.mockito.Mockito.verifyNoInteractions(dhbClient, hrEmployeeClient);
     }
 
     @Test
@@ -541,14 +666,21 @@ class DhbSyncOrchestrationServiceTest {
     @Test
     void backgroundOrderPackageContinuesEverySliceWithoutAnotherBrowserRequest() {
         service=serviceWithIncrementalWindow("2026-09-04T00:00:00+08:00",Instant.parse("2026-09-22T08:00:00Z"));
-        when(orderSyncService.runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10))).thenReturn(orderResult());
+        when(orderSyncService.runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10),any())).thenReturn(orderResult());
         var stages=new ArrayList<String>();
         var result=service.runPage(manualCaller(),new DhbPageSyncCommand(
                 DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE,CONNECTOR_ID,null,null,10,true),stages::add,true);
         assertThat(result.status()).isEqualTo("SUCCEEDED");
-        verify(orderSyncService,org.mockito.Mockito.times(9)).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10));
-        verify(objectCheckpoints,org.mockito.Mockito.times(9)).completed(any(),any(),any(),any(),any());
-        assertThat(stages).hasSize(9).anyMatch(s->s.contains("订单及明细")).anyMatch(s->s.contains("收款"));
+        verify(orderSyncService,org.mockito.Mockito.times(7)).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10),any());
+        verify(objectCheckpoints,org.mockito.Mockito.times(7)).completed(any(),any(),any(),any(),any());
+        var commands = org.mockito.ArgumentCaptor.forClass(SyncRunCommand.class);
+        verify(orderSyncService,org.mockito.Mockito.times(7)).runOrderPull(any(),any(),commands.capture(),any(),any());
+        assertThat(commands.getAllValues().stream().filter(c -> "RECEIPT".equals(c.syncScope())).toList())
+                .singleElement().satisfies(c -> {
+                    assertThat(c.from()).isEqualTo(Instant.parse("2026-09-03T16:00:00Z"));
+                    assertThat(c.to()).isEqualTo(Instant.parse("2026-09-22T07:58:00Z"));
+                });
+        assertThat(stages).hasSize(7).anyMatch(s->s.contains("订单及明细")).anyMatch(s->s.contains("收款"));
     }
 
     @Test
@@ -560,6 +692,22 @@ class DhbSyncOrchestrationServiceTest {
         assertThat(result.tenants()).hasSize(1);
         verify(crmClient,never()).syncLatestCustomers(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any());
         verifyNoOrderCall();
+    }
+
+    @Test
+    void durablePendingAdvancesReadCursorButNeverReportsFullBusinessSuccess() {
+        service = serviceWithIncrementalWindow(null, Instant.parse("2026-09-05T08:00:00Z"));
+        var pending = new SyncRunView(UUID.randomUUID(), ORDER_TASK_ID, "PARTIAL", null, null,
+                100, 99, 0, 1, 0, 99, 0, "DHB_DURABLE_PROJECTION_PENDING", "一条待处理已持久化");
+        when(orderSyncService.runOrderPull(any(), eq(ORDER_TASK_ID), any(), eq(10), any()))
+                .thenReturn(pending);
+        var result = service.runPage(manualCaller(), new DhbPageSyncCommand(
+                DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE, CONNECTOR_ID, null, null, 10, true), stage -> {}, true);
+        assertThat(result.status()).isEqualTo("PARTIAL");
+        verify(objectCheckpoints, org.mockito.Mockito.times(3)).completed(any(), any(), any(),
+                eq(Instant.parse("2026-09-05T07:58:00Z")), any());
+        assertThat(result.tenants().getFirst().steps()).extracting("message")
+                .allSatisfy(message -> assertThat(String.valueOf(message)).contains("不表示全部入账成功"));
     }
 
     private void verifyNoOrderCall() {

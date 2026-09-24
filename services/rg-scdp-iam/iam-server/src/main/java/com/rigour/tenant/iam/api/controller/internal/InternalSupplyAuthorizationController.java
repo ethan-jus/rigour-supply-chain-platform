@@ -70,34 +70,6 @@ public final class InternalSupplyAuthorizationController implements IamSupplyAut
                 limit(p.warehouseLimit()));
     }
 
-    @Override
-    public SupplyAuthorizationView candidate(String action) {
-        return view(service.candidate(AuthorizationContext.requireCurrent(), action));
-    }
-
-    @Override
-    public void observeData(com.rigour.tenant.iam.api.v1.model.SupplyDataObservation r) {
-        service.observeData(
-                AuthorizationContext.requireCurrent(),
-                new com.rigour.tenant.iam.application.model.settings.AppDataObservation(
-                        r.action(),
-                        r.domain(),
-                        r.recordKey(),
-                        r.applicationVersion(),
-                        r.memberVersion(),
-                        r.employeeRevision(),
-                        r.organizationVersion(),
-                        r.legacyAllowed(),
-                        r.proposedAllowed()));
-    }
-
-    @Override
-    public void observe(
-            com.rigour.tenant.iam.api.v1.IamSupplyAuthorizationApi.Observation request) {
-        service.observe(
-                AuthorizationContext.requireCurrent(), request.action(), request.legacyAction());
-    }
-
     private static SupplyAuthorizationView.Limit limit(
             com.rigour.tenant.iam.application.model.settings.AppAuthorizationSnapshot.Limit v) {
         return new SupplyAuthorizationView.Limit(v.mode(), v.references());

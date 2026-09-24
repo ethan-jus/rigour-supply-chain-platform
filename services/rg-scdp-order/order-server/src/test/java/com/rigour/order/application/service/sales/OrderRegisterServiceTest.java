@@ -42,6 +42,34 @@ class OrderRegisterServiceTest {
     }
 
     @Test
+    void monthlyReportValidatesRangeAndResolvesCityNames() {
+        OrderRegisterStore store = mock(OrderRegisterStore.class);
+        CrmCustomerAreaDisplayClient crm = mock(CrmCustomerAreaDisplayClient.class);
+        HrEmployeeDisplayClient hr = mock(HrEmployeeDisplayClient.class);
+        TestAuthorizationContext.set(caller("order:read"));
+        var row = new com.rigour.order.api.v1.model.OrderRegisterModels.MonthlyPerformanceRow("2026-04","HZ",null,"E1","张三",new java.math.BigDecimal("100"),new java.math.BigDecimal("60"),new java.math.BigDecimal("40"));
+        when(store.monthlyPerformance(eq(TENANT),any(),any())).thenReturn(List.of(row));
+        when(crm.resolve(any(),eq(Set.of("HZ")))).thenReturn(List.of(new CrmCustomerAreaDisplayClient.CustomerAreaDisplay("HZ","杭州")));
+        var service = new OrderRegisterService(store,crm,hr,invoiceStore(),resolverProvider());
+        var result=service.monthlyPerformance("2026-04","2026-05");
+        assertThat(result.rows().getFirst().regionName()).isEqualTo("杭州");
+        verify(store).monthlyPerformance(eq(TENANT),eq(java.time.Instant.parse("2026-03-31T16:00:00Z")),eq(java.time.Instant.parse("2026-05-31T16:00:00Z")));
+        assertThatThrownBy(() -> service.monthlyPerformance("2026-05","2026-04")).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.monthlyPerformance("2020-04","2026-05")).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.monthlyPerformance("2026-13","2026-14")).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.monthlyPerformance("9999-01","9999-02")).isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void variantRequiresProductBeforeReadingAnyLines() {
+        var store = mock(OrderRegisterStore.class);
+        var service = new OrderRegisterService(store,mock(CrmCustomerAreaDisplayClient.class),mock(HrEmployeeDisplayClient.class),invoiceStore(),resolverProvider());
+        TestAuthorizationContext.set(caller("order:read"));
+        assertThatThrownBy(() -> service.lines(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1001L)).isInstanceOf(BusinessException.class);
+        verify(store,never()).lines(any(),anyInt(),anyInt(),any());
+    }
+
+    @Test
     void ordersFillDepartmentFromHrWhenSnapshotMissing() {
         OrderRegisterStore store = mock(OrderRegisterStore.class);
         CrmCustomerAreaDisplayClient crm = mock(CrmCustomerAreaDisplayClient.class);

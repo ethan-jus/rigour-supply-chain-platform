@@ -271,7 +271,7 @@ public final class CrmMasterDataSyncService {
             }
             progress.accept("正在核对客户字典和登记映射");
             Audit dictionaryAudit = dictionaryCoverage.sync(tenantId, collected);
-            int mappingAccepted = registerExternalObjectMappings(
+            MappingRegistration mappings = registerExternalObjectMappings(
                     tenantId, connectorId, runId, objectType);
             leaseGuard.ensureActive();
             // 时间窗口中的未出现对象不等于已被来源删除。
@@ -283,13 +283,13 @@ public final class CrmMasterDataSyncService {
                     : store.completeRun(tenantId, connectorId, runId,
                         objectType, counts.statistics(), from == null && createdBefore == null
                                 && watermark == null && counts.rejected == 0);
-            long unmapped = counts.unmapped + dictionaryAudit.unmapped();
+            long unmapped = Math.max(counts.unmapped, mappings.pending()) + dictionaryAudit.unmapped();
             String status = unmapped == 0 && statistics.rejected() == 0 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";
             log.info("CRM订货宝同步完成 tenantId={} connectorId={} objectType={} runId={} fetched={} created={} changed={} repaired={} duplicates={} absent={} rejected={} pages={} unmapped={} mappingAccepted={} dictionaryRevisions={}",
                     tenantId, connectorId, objectType, runId, statistics.fetched(),
                     statistics.created(), statistics.changed(), statistics.repaired(),
                     statistics.duplicates(), statistics.absent(), statistics.rejected(),
-                    statistics.pages(), unmapped, mappingAccepted,
+                    statistics.pages(), unmapped, mappings.accepted(),
                     dictionaryAudit.revisions());
             return result(runId, objectType, status, statistics, unmapped, dictionaryAudit);
         } catch (RuntimeException error) {
@@ -399,18 +399,23 @@ public final class CrmMasterDataSyncService {
         return cleaned.isEmpty() || "null".equalsIgnoreCase(cleaned) ? null : cleaned;
     }
 
-    private int registerExternalObjectMappings(UUID tenantId, UUID connectorId, UUID runId,
+    private MappingRegistration registerExternalObjectMappings(UUID tenantId, UUID connectorId, UUID runId,
                                                CrmMasterDataObjectType objectType) {
         var mappings = store.externalObjectMappings(tenantId, connectorId, runId, objectType);
-        if (mappings.isEmpty()) return 0;
+        if (mappings.isEmpty()) return new MappingRegistration(0, 0);
         int accepted = 0;
         for (int begin = 0; begin < mappings.size(); begin += MAPPING_BATCH_SIZE) {
             int end = Math.min(begin + MAPPING_BATCH_SIZE, mappings.size());
             var result = mappingClient.upsert(tenantId, mappings.subList(begin, end));
-            accepted += result == null ? 0 : result.accepted();
+            if (result == null || result.accepted() != end - begin)
+                throw new IllegalStateException("客户映射未全部登记，暂停本轮订单同步以避免使用旧关联");
+            accepted += result.accepted();
         }
-        return accepted;
+        return new MappingRegistration(accepted,
+                mappings.stream().filter(mapping -> "CONFLICT".equals(mapping.mappingStatus())).count());
     }
+
+    private record MappingRegistration(int accepted, long pending) {}
 
     SyncResult recordScheduledSkip(CallerIdentity caller, UUID connectorId,
                                    UUID sourceTaskId, int maxPages,

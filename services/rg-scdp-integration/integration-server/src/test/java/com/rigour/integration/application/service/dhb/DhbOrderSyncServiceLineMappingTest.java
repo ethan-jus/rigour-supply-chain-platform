@@ -173,7 +173,7 @@ class DhbOrderSyncServiceLineMappingTest {
     }
 
     @Test
-    void salesPaymentUsesActualTransferDateAndExplicitConfirmationWithoutInventingAuditTime() throws Exception {
+    void salesPaymentUsesOperationTimeAfterCutoverWithoutInventingAuditTime() throws Exception {
         UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID();
         Map<MappingKey, ExternalObjectMapping> mappings = new HashMap<>();
         mappings.put(key(tenant, connector, "SALES_ORDER", "DH-1"),
@@ -191,8 +191,8 @@ class DhbOrderSyncServiceLineMappingTest {
             Method accessor = result.getClass().getDeclaredMethod("command");
             accessor.setAccessible(true);
             var command = (com.rigour.order.api.v1.model.SalesPaymentRecordCommand) accessor.invoke(result);
-            assertThat(command.paymentTime()).isEqualTo(Instant.parse("2026-09-03T16:00:00Z"));
-            assertThat(command.sourcePaymentStatusCode()).isEqualTo(state.equals("pend_receipted") ? "CHECKED" : "PENDING");
+            assertThat(command.paymentTime()).isEqualTo(Instant.parse("2026-09-05T01:00:00Z"));
+            assertThat(command.sourcePaymentStatusCode()).isEqualTo(state.equals("pend_receipted") ? "CHECKED" : "RECEIVED");
             assertThat(command.sourceCheckedAt()).isNull();
             assertThat(command.sourceCheckedBy()).isNull();
         }
@@ -625,6 +625,15 @@ class DhbOrderSyncServiceLineMappingTest {
         assertThat(command.customerId()).isEqualTo(401L);
         assertThat(command.customerCodeSnapshot()).isEqualTo("CRM202608250001");
         assertThat(command.customerNameSnapshot()).isEqualTo("上海客户");
+        // 详情中的下单时间可能是秒级数字；操作/修改时间不能替换下单时间。
+        for (Object orderTime : List.of(1790141612L, "1790141612")) {
+            var timed = prepareSalesOrderCommand(service, tenantId, connectorId,
+                    Map.of("ClientNO", "C-001", "OrderDate", orderTime,
+                            "CreateDate", "2026-09-24 14:15:16",
+                            "OrderProduct", List.of(orderProductRow("LINE-1", "PROD-1", "SKU-1", "2", "10.00"))));
+            assertThat(timed.orderDate()).isEqualTo(Instant.parse("2026-09-23T05:33:32Z"));
+            assertThat(timed.sourceCreatedAt()).isEqualTo(Instant.parse("2026-09-24T06:15:16Z"));
+        }
     }
 
     @Test
@@ -862,24 +871,24 @@ class DhbOrderSyncServiceLineMappingTest {
     }
 
     @Test
-    void doesNotUpdateSubmittedSalesOrderWhenSourcePayloadChanges() {
+    void updatesSubmittedSalesOrderCommercialDataWhenSourcePayloadChanges() {
         AtomicBoolean updateCalled = new AtomicBoolean(false);
+        SalesOrderDetailView current = salesOrderDetail("SUBMITTED");
         OrderSalesOrderProjectionClient projection = proxy(OrderSalesOrderProjectionClient.class,
                 (ignoredProxy, method, ignoredArgs) -> {
                     if ("updateSalesOrder".equals(method.getName())) {
                         updateCalled.set(true);
-                        throw new AssertionError("submitted sales order must not be updated through draft API");
+                        return current;
                     }
                     throw new UnsupportedOperationException("Unexpected projection call: " + method.getName());
                 });
         DhbOrderSyncService service = new DhbOrderSyncService(proxy(DhbSyncStore.class),
                 proxy(DhbClient.class), projection, proxy(HrDhbStaffSyncClient.class));
-        SalesOrderDetailView current = salesOrderDetail("SUBMITTED");
         SalesOrderDetailView result = upsertSalesOrder(service, UUID.randomUUID(), current,
                 salesOrderCommand(false), false);
 
         assertThat(result).isSameAs(current);
-        assertThat(updateCalled).isFalse();
+        assertThat(updateCalled).isTrue();
     }
 
     @Test
@@ -887,6 +896,9 @@ class DhbOrderSyncServiceLineMappingTest {
         AtomicReference<String> advancedSourceStatus = new AtomicReference<>();
         OrderSalesOrderProjectionClient projection = proxy(OrderSalesOrderProjectionClient.class,
                 (ignoredProxy, method, args) -> {
+                    if ("updateSalesOrder".equals(method.getName())) {
+                        return completedSourceDetail("SUBMITTED");
+                    }
                     if ("updateSalesOrderSourceStatus".equals(method.getName())) {
                         advancedSourceStatus.set(
                                 ((SalesOrderSourceStatusCommand) args[2]).sourceStatusCode());

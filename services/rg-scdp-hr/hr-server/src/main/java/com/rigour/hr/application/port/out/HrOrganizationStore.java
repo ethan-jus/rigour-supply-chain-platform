@@ -21,5 +21,7 @@ public interface HrOrganizationStore {
     HrPageView<HrEmployeeIdentityView> identities(
             String tenantId, String keyword, int begin, int step);
 
+    List<String> departmentMembers(String tenantId, List<Long> departmentIds, boolean includeDescendants);
+
     List<HrAssignmentView> assignments(String tenantId, long employeeId);
 }

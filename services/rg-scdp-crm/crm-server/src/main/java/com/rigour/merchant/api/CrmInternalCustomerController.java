@@ -22,9 +22,9 @@ public final class CrmInternalCustomerController implements CrmInternalCustomerA
     public ApiResponse<PageView<InternalCustomerSummaryView>> customers(
             int begin, int step, String customerCode, String customerName,
             String contactPhone, String customerTypeCode, String regionCode, String ownerSalesUserId,
-            String ownerEmployeeCode, String statusCode, String sortBy, String sortDirection, String loginAccount, java.time.LocalDate createdFrom, java.time.LocalDate createdTo, String creatorName, String dhbCustomerCode, String dhbLinkStatus) {
+            String ownerEmployeeCode, String statusCode, String sortBy, String sortDirection, String loginAccount, java.time.LocalDate createdFrom, java.time.LocalDate createdTo, String creatorName, String dhbLinkStatus) {
         return ApiResponse.success(service.customers(begin, step, customerCode, customerName,
-                contactPhone, customerTypeCode, regionCode, ownerSalesUserId, ownerEmployeeCode, statusCode, sortBy, sortDirection, loginAccount, createdFrom, createdTo, creatorName, dhbCustomerCode, dhbLinkStatus));
+                contactPhone, customerTypeCode, regionCode, ownerSalesUserId, ownerEmployeeCode, statusCode, sortBy, sortDirection, loginAccount, createdFrom, createdTo, creatorName, dhbLinkStatus));
     }
 
     @Override

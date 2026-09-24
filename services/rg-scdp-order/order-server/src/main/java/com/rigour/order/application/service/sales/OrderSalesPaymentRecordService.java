@@ -315,7 +315,7 @@ public final class OrderSalesPaymentRecordService {
         String status = command.sourcePaymentStatusCode();
         if (status == null) return null;
         if (!"DINGHUOBAO".equals(command.sourceSystemCode())
-                || !java.util.Set.of("CHECKED", "PENDING", "CANCELLED").contains(status)) {
+                || !java.util.Set.of("RECEIVED", "CHECKED", "PENDING", "CANCELLED").contains(status)) {
             throw badRequest("来源收款状态无效");
         }
         return status;
@@ -614,8 +614,7 @@ public final class OrderSalesPaymentRecordService {
     }
 
     private static CallerIdentity readActor() {
-        com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(
-                "order:payment:read", READ_PERMISSION);
+
         return actor(
                 com.rigour.tenant.iam.client.SupplyAuthorizationContext.current()
                                 .map(
@@ -627,7 +626,7 @@ public final class OrderSalesPaymentRecordService {
     }
 
     private static CallerIdentity actionActor(String action) {
-        com.rigour.tenant.iam.client.SupplyAuthorizationContext.observe(action, WRITE_PERMISSION);
+
         return actor(
                 com.rigour.tenant.iam.client.SupplyAuthorizationContext.current()
                                 .map(

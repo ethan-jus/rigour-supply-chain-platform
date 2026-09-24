@@ -265,16 +265,8 @@ class TenantDictionaryIntegrationTest {
                 .isNull();
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
-    private com.rigour.settings.application.port.out.SupplyReadinessStore supplyReadiness;
 
-    @org.junit.jupiter.api.Test
-    void readinessChecksRunAgainstTheMigratedTenantSchema() {
-        var report = supplyReadiness.inspect(java.util.UUID.randomUUID().toString());
-        org.assertj.core.api.Assertions.assertThat(report.contractVersion()).isEqualTo(1);
-        org.assertj.core.api.Assertions.assertThat(report.version()).isNotBlank();
-        org.assertj.core.api.Assertions.assertThat(report.checks()).allMatch(c -> c.count() == 0);
-    }
+
 
     @Test
     void mergingBuiltinChoicesPreservesOtherTenantsAndFlattensHistoricalAliases() {

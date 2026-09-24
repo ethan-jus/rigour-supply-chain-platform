@@ -42,6 +42,10 @@ public interface HrOrganizationApi {
     @GetMapping("/api/v1/hr/employee-identities/{employeeCode}")
     ApiResponse<HrEmployeeIdentityView> identity(@PathVariable("employeeCode") String employeeCode);
 
+    @PostMapping("/api/v1/hr/employee-identities/department-members")
+    ApiResponse<List<String>> departmentMembers(@RequestBody List<Long> departmentIds,
+            @RequestParam(name = "includeDescendants", defaultValue = "false") boolean includeDescendants);
+
     @PostMapping("/api/v1/hr/employee-identities/resolve")
     ApiResponse<List<HrEmployeeIdentityView>> resolveIdentities(@RequestBody List<String> codes);
 }

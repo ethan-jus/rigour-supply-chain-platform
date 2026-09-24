@@ -538,6 +538,11 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
             com.rigour.order.api.v1.model.HistorySyncModels.Receipt command) {
         return historyIntake(caller,"/receipts",command);
     }
+    @Override
+    public com.rigour.order.api.v1.model.HistorySyncModels.Intake syncHistoricalReceiptStatus(CallerIdentity caller,
+            com.rigour.order.api.v1.model.HistorySyncModels.Receipt command) {
+        return historyIntake(caller,"/receipts/historical-status",command);
+    }
     private com.rigour.order.api.v1.model.HistorySyncModels.Intake historyIntake(CallerIdentity caller,String path,Object command) {
         requireCaller(caller);
         URI uri=UriComponentsBuilder.fromUri(baseUri).path(com.rigour.order.api.v1.OrderHistorySyncApi.BASE+path).build().encode().toUri();

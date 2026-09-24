@@ -231,6 +231,29 @@ class OrderBusinessTimeCodeGenerationTest {
     }
 
     @Test
+    void sourceReceiptAwaitingFinancialCheckIsReceived() {
+        OrderSalesPaymentRecordStore store = mock(OrderSalesPaymentRecordStore.class);
+        OrderSalesPaymentRecordService service =
+                new OrderSalesPaymentRecordService(
+                        store, orderStore(), emptyEmployeeClient(), generator());
+        TestAuthorizationContext.set(serviceCaller());
+        when(store.create(eq(TENANT_ID.toString()), any(), any(), any()))
+                .thenAnswer(invocation -> payment(invocation.getArgument(1), invocation.getArgument(2)));
+
+        service.create(new SalesPaymentRecordCommand(
+                CONNECTOR_ID, "DINGHUOBAO", "FR.20260818.0001", 1L,
+                "RY202608190001", "收款人", BUSINESS_TIME, "CASH",
+                new BigDecimal("100.00"), List.of(), "待财务确认", 0,
+                null, null, null, null, null, null, "RECEIVED", null, null));
+
+        ArgumentCaptor<SalesPaymentWrite> captor =
+                ArgumentCaptor.forClass(SalesPaymentWrite.class);
+        verify(store).create(eq(TENANT_ID.toString()), eq("PAY202608198888"), captor.capture(), any());
+        assertThat(captor.getValue().sourcePaymentStatusCode()).isEqualTo("RECEIVED");
+        assertThat(captor.getValue().paidAmount()).isEqualByComparingTo("100.00");
+    }
+
+    @Test
     void salesRefundNoUsesRefundTime() {
         OrderSalesRefundRecordStore store = mock(OrderSalesRefundRecordStore.class);
         OrderSalesRefundRecordService service =

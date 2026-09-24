@@ -46,7 +46,7 @@ class BiCustomerTargetScopeRepositoryTest {
                 CREATE TABLE bi_sales_payment_fact (
                     tenant_id VARCHAR(64), payment_id BIGINT, customer_id BIGINT, region_code VARCHAR(64),
                     owner_staff_code VARCHAR(50), collector_staff_code VARCHAR(50), source_system_code VARCHAR(32) DEFAULT 'FEISHU',
-                    payment_time DATETIME(6), deleted INT DEFAULT 0, UNIQUE(tenant_id,payment_id))
+                    payment_time DATETIME(6), paid_amount DECIMAL(24,6) DEFAULT 0, deleted INT DEFAULT 0, UNIQUE(tenant_id,payment_id))
                 """);
         jdbc.execute("""
                 CREATE TABLE bi_business_target (
@@ -180,7 +180,8 @@ class BiCustomerTargetScopeRepositoryTest {
         // 仅适配两个 MySQL 日期函数；FROM/JOIN/WHERE/聚合/窗口/排序及所有绑定值保持实际 Mapper SQL。
         String sql = bound.getSql().replace("DATEDIFF(TIMESTAMPADD(HOUR, 8, ?), TIMESTAMPADD(HOUR, 8, ho.lastOrderTime))", "DATEDIFF('DAY', TIMESTAMPADD(HOUR, 8, ho.lastOrderTime), TIMESTAMPADD(HOUR, 8, CAST(? AS TIMESTAMP)))")
                 .replace("DATE_FORMAT(TIMESTAMPADD(HOUR, 8, ?), '%Y-%m-01')", "FORMATDATETIME(TIMESTAMPADD(HOUR, 8, CAST(? AS TIMESTAMP)), 'yyyy-MM-01')")
-                .replace("DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-01')", "FORMATDATETIME(TIMESTAMPADD(HOUR, 8, o.order_date), 'yyyy-MM-01')");
+                .replace("DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-01')", "FORMATDATETIME(TIMESTAMPADD(HOUR, 8, o.order_date), 'yyyy-MM-01')")
+                .replace("DATE_FORMAT(TIMESTAMPADD(HOUR, 8, p.payment_time), '%Y-%m-01')", "FORMATDATETIME(TIMESTAMPADD(HOUR, 8, p.payment_time), 'yyyy-MM-01')");
         Object[] args = bound.getParameterMappings().stream().map(mapping -> parameters.get(mapping.getProperty())).toArray();
         return jdbc.queryForList(sql, args);
     }

@@ -18,6 +18,8 @@ public final class BiSourceDatasets {
 
     public static final List<Dataset> ALL =
             List.of(
+                    new Dataset("HR", "HR_DEPARTMENT", "bi_source_hr_hr_department", false, false,
+                        List.of(new Column("id",false),new Column("tenant_id",false),new Column("department_code",false),new Column("department_name",false),new Column("parent_id",false),new Column("status_code",false),new Column("deleted",false),new Column("department_path",false))),
                     new Dataset(
                             "SALES",
                             "SALES_SUBMITTED_VISIT",

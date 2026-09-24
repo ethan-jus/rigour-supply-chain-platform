@@ -59,11 +59,30 @@ class SupplyDashboardTargetSemanticsRepositoryTest {
                     payable_amount DECIMAL(24,6), paid_amount DECIMAL(24,6),
                     UNIQUE (tenant_id, order_id))
                 """);
+        jdbc.execute("""
+                CREATE TABLE bi_sales_payment_fact (
+                    tenant_id VARCHAR(64), payment_id BIGINT, region_code VARCHAR(64),
+                    owner_staff_code VARCHAR(50), collector_staff_code VARCHAR(50), customer_type_code VARCHAR(64),
+                    source_system_code VARCHAR(32), payment_time DATETIME(6),
+                    paid_amount DECIMAL(24,6), deleted INT DEFAULT 0)
+                """);
         jdbc.update("INSERT INTO bi_customer_dim (tenant_id,customer_id,region_code,owner_staff_code) VALUES ('T',1,'BJ','E1'),('T',2,'BJ','E1'),('OTHER',1,'BJ','E1')");
         order("T", 1, 1, "2026-08-31T16:00:00", "60", "20");
         order("T", 2, 2, "2026-09-10T00:00:00", "40", "10");
         order("T", 3, 1, "2026-09-30T15:59:59.999999", "10", "5");
         order("OTHER", 1, 1, "2026-09-10T00:00:00", "9999", "9999");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"CITY", "SALES_OWNER"})
+    void receiptTargetsCountPaymentsByBusinessMonthIndependentlyOfOrderDate(String dimension) {
+        target(dimension, "2026-09-01", "RECEIPT_AMOUNT", "200");
+        target(dimension, "2026-09-01", "PAID_AMOUNT", "200");
+        jdbc.update("INSERT INTO bi_sales_payment_fact VALUES ('T',1,'BJ','E1','COLLECTOR_OTHER','STORE','FEISHU','2026-08-31 16:00:00',80,0),('T',2,'BJ','E1','COLLECTOR_OTHER','STORE','FEISHU','2026-09-30 15:59:59.999999',40,0),('T',3,'BJ','E1','COLLECTOR_OTHER','STORE','FEISHU','2026-09-30 16:00:00',999,0),('OTHER',4,'BJ','E1','COLLECTOR_OTHER','STORE','FEISHU','2026-09-10',999,0),('T',5,'BJ','E1','COLLECTOR_OTHER','STORE','FEISHU','2026-09-10',999,1)");
+        var rows = query(dimension, FROM, TO, "BJ", null, null, null);
+        assertThat(number(metric(rows, "RECEIPT_AMOUNT"), "actualValue")).isEqualByComparingTo("120");
+        assertThat(number(metric(rows, "RECEIPT_AMOUNT"), "achievementRate")).isEqualByComparingTo("60");
+        assertThat(number(metric(rows, "PAID_AMOUNT"), "actualValue")).isEqualByComparingTo("35");
     }
 
     @AfterEach void close() { source.destroy(); }
@@ -229,7 +248,8 @@ class SupplyDashboardTargetSemanticsRepositoryTest {
         String method = "CITY".equals(dimension) ? "cityTargetCompletions" : "salesTargetCompletions";
         var bound = configuration.getMappedStatement(SupplyDashboardQueryMapper.class.getName() + "." + method).getBoundSql(parameters);
         String sql = bound.getSql().replace("DATE_FORMAT(TIMESTAMPADD(HOUR, 8, ?), '%Y-%m-01')", "FORMATDATETIME(TIMESTAMPADD(HOUR, 8, CAST(? AS TIMESTAMP)), 'yyyy-MM-01')")
-                .replace("DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-01')", "FORMATDATETIME(TIMESTAMPADD(HOUR, 8, o.order_date), 'yyyy-MM-01')");
+                .replace("DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m-01')", "FORMATDATETIME(TIMESTAMPADD(HOUR, 8, o.order_date), 'yyyy-MM-01')")
+                .replace("DATE_FORMAT(TIMESTAMPADD(HOUR, 8, p.payment_time), '%Y-%m-01')", "FORMATDATETIME(TIMESTAMPADD(HOUR, 8, p.payment_time), 'yyyy-MM-01')");
         Object[] args = bound.getParameterMappings().stream().map(mapping -> parameters.get(mapping.getProperty())).toArray();
         return jdbc.queryForList(sql, args);
     }

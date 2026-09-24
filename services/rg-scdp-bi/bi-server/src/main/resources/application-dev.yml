@@ -9,6 +9,8 @@ spring:
     username: "root"
     password: "281f54b19ac9a71025fca65e0654b23c504d3f98"
     hikari:
+      data-source-properties:
+        rewriteBatchedStatements: true
       maximum-pool-size: 5
       minimum-idle: 1
   config:
@@ -51,4 +53,4 @@ rigour:
   analytics:
     supply-dashboard:
       refresh:
-        enabled: false
+        enabled: ${RIGOUR_ANALYTICS_SUPPLY_REFRESH_ENABLED:false}

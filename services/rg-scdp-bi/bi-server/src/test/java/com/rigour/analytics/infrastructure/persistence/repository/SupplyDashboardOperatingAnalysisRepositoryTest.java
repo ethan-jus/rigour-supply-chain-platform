@@ -115,11 +115,15 @@ CREATE TABLE bi_sales_order_line_fact (
 CREATE TABLE bi_sales_payment_fact (
     tenant_id VARCHAR(64), payment_id BIGINT, customer_id BIGINT,
     owner_staff_code VARCHAR(50), owner_staff_name VARCHAR(100), collector_staff_code VARCHAR(50), collector_staff_name VARCHAR(100),
-    region_code VARCHAR(64) DEFAULT 'BJ', customer_type_code VARCHAR(64) DEFAULT 'STORE',
+    region_code VARCHAR(64) DEFAULT 'BJ', region_name VARCHAR(160), customer_type_code VARCHAR(64) DEFAULT 'STORE',
     source_system_code VARCHAR(32) DEFAULT 'DINGHUOBAO',
     payment_time DATETIME(6), paid_amount DECIMAL(24,6), deleted INT DEFAULT 0,
     source_updated_time DATETIME(6), UNIQUE (tenant_id, payment_id))
 """);
+        jdbc.execute("CREATE TABLE bi_dashboard_customer_history(tenant_id VARCHAR(64),customer_id BIGINT,first_order_date DATETIME(6))");
+        jdbc.execute("CREATE TABLE bi_employee_dim(tenant_id VARCHAR(64),employee_code VARCHAR(64),employee_name VARCHAR(100),employment_status VARCHAR(32),department_id BIGINT,department_path VARCHAR(256))");
+        jdbc.execute("CREATE TABLE bi_sales_contact_city_dim(tenant_id VARCHAR(64),region_code VARCHAR(64),city_name VARCHAR(160),department_id BIGINT)");
+        jdbc.execute("CREATE TABLE bi_business_target(id BIGINT,tenant_id VARCHAR(64),target_month DATE,dimension_type VARCHAR(32),dimension_code VARCHAR(64),metric_code VARCHAR(64),target_value DECIMAL(24,6),deleted INT)");
         mapper = session.getMapper(SupplyDashboardQueryMapper.class);
         jdbc.execute(
                 "CREATE TABLE bi_product_category_dim (tenant_id VARCHAR(64), category_id BIGINT,"
@@ -137,13 +141,9 @@ CREATE TABLE bi_sales_payment_fact (
                         new com.rigour.analytics.application.service.BiDataScopeService(
                                 org.mockito.Mockito.mock(
                                         com.rigour.analytics.application.port.out.BiDataScopeStore
-                                                .class),
-                                Clock.fixed(TO, ZoneOffset.UTC),
-                                org.mockito.Mockito.mock(
-                                        com.rigour.analytics.application.service.BiDataScopeRenewer
                                                 .class)));
         UUID user = UUID.randomUUID();
-        TestAuthorizationContext.set(
+        com.rigour.analytics.TestRoleScope.set(
                 new CallerIdentity(
                         "TENANT",
                         user,
@@ -160,7 +160,7 @@ CREATE TABLE bi_sales_payment_fact (
 
     @AfterEach
     void tearDown() {
-        TestAuthorizationContext.clear();
+        com.rigour.analytics.TestRoleScope.clear();
         if (session != null) session.close();
     }
 
@@ -271,7 +271,7 @@ WHERE l.tenant_id=?
     }
 
     @Test
-    void receiptsUsePaymentTimeAndFrozenCollectorInsteadOfOrderOwner() {
+    void receiptsUsePaymentTimeAndResolvedPerformanceOwner() {
         order(1, 10L, "BJ", "S1", PREVIOUS_FROM, "9000");
         jdbc.update(
                 "UPDATE bi_sales_order_fact SET paid_amount = 8888, order_status_code ="
@@ -288,13 +288,11 @@ WHERE l.tenant_id=?
         var result = query("BJ", "S1", "STORE", "DHB");
         assertThat(result.salesReceipts()).hasSize(1);
         assertThat(result.salesReceipts().getFirst().ownerStaffCode()).isEqualTo("S1");
-        assertThat(result.salesReceipts().getFirst().paidAmount()).isEqualByComparingTo("20");
-        assertThat(result.salesReceipts().getFirst().paymentCount()).isEqualTo(2L);
+        assertThat(result.salesReceipts().getFirst().paidAmount()).isEqualByComparingTo("80");
+        assertThat(result.salesReceipts().getFirst().paymentCount()).isEqualTo(3L);
         assertThat(result.salesReceipts().getFirst().customerCount()).isEqualTo(2L);
         var otherCollector = query("BJ", "S9", "STORE", "DHB");
-        assertThat(otherCollector.salesReceipts()).hasSize(1);
-        assertThat(otherCollector.salesReceipts().getFirst().paidAmount())
-                .isEqualByComparingTo("100");
+        assertThat(otherCollector.salesReceipts()).isEmpty();
         var baseline =
                 mapper.collectionSummary(
                         TENANT.toString(),
@@ -383,7 +381,7 @@ WHERE l.tenant_id=?
             jdbc.update("UPDATE " + table + " SET deleted = 1 WHERE " + idColumn + " IN (7, 107)");
         }
         jdbc.update(
-                "UPDATE bi_sales_payment_fact SET collector_staff_code = 'S2' WHERE payment_id ="
+                "UPDATE bi_sales_payment_fact SET owner_staff_code = 'S2' WHERE payment_id ="
                         + " 3");
         // 109 位于当前期，避免它改变本例当前期预期；前期窗口仍必须排除它。
         jdbc.update(
@@ -420,7 +418,7 @@ WHERE l.tenant_id=?
     void placeholderDimensionsNeverBecomeCitiesOrSalesOwners(String dimension) {
         order(1, 10L, dimension, "S1", FROM, "10");
         line(1, 1, 10L, dimension, 10L, "S1", FROM, "10", "BOX");
-        payment(1, 10L, "S1", dimension, FROM, "10");
+        payment(1, 10L, dimension, "S1", FROM, "10");
         order(2, 10L, "BJ", dimension, PREVIOUS_FROM, "10");
         var result = query(null, null, null, null);
         assertThat(result.cityProducts()).isEmpty();
@@ -540,10 +538,12 @@ WHERE l.tenant_id=?
                         "salesRanking",
                         "cityProducts",
                         "cityCustomers",
-                        "salesReceipts");
+                        "salesReceipts",
+                        "cityReceipts",
+                        "customerRetention", "cityMonthlyGoals", "citySalesPeople");
         assertThat(guard.tables)
                 .containsExactlyInAnyOrder(
-                        "bi_sales_order_fact", "bi_sales_order_line_fact", "bi_sales_payment_fact");
+                        "bi_sales_order_fact", "bi_sales_order_line_fact", "bi_sales_payment_fact", "bi_dashboard_customer_history", "bi_sales_contact_city_dim", "bi_business_target", "bi_employee_dim");
         assertThat(
                         MybatisPlusSupplyDashboardRepository.class
                                 .getMethod(
@@ -586,8 +586,78 @@ SELECT * FROM scoped_lines
                 .isInstanceOf(AssertionError.class);
     }
 
+    @Test
+    void cityReceiptsUsePaymentWindowWithoutRequiringCurrentOrdersAndRetainUnknownCity() {
+        order(1, 10L, "BJ", "S1", PREVIOUS_FROM, "999");
+        payment(1, 10L, "S1", "S2", FROM, "120");
+        payment(2, 20L, "S1", "S2", TO, "30");
+        payment(3, 30L, "S1", "S2", FROM.minusNanos(1000), "500");
+        payment(4, 40L, "S1", "S2", FROM, "700");
+        payment(5, 50L, "S1", "S2", FROM, "900");
+        jdbc.update("UPDATE bi_sales_payment_fact SET region_code='SH' WHERE payment_id=2");
+        jdbc.update("UPDATE bi_sales_payment_fact SET deleted=1 WHERE payment_id=4");
+        jdbc.update("UPDATE bi_sales_payment_fact SET tenant_id=? WHERE payment_id=5", OTHER_TENANT);
+        var result = query(null, null, null, null);
+        assertThat(result.cityReceipts()).hasSize(2);
+        assertThat(result.cityReceipts().get(0).receiptAmount()).isEqualByComparingTo("120");
+        assertThat(result.cityReceipts().get(1).receiptAmount()).isEqualByComparingTo("30");
+        assertThat(query("SH", "S1", null, null).cityReceipts()).singleElement()
+                .satisfies(row -> assertThat(row.receiptAmount()).isEqualByComparingTo("30"));
+        jdbc.update("UPDATE bi_sales_payment_fact SET region_code=NULL WHERE payment_id=2");
+        payment(6, 60L, "S1", "S2", FROM, "10");
+        jdbc.update("UPDATE bi_sales_payment_fact SET region_code=' ' WHERE payment_id=6");
+        session.clearCache();
+        assertThat(query(null, null, null, null).cityReceipts()).filteredOn(row -> row.regionCode().equals("UNKNOWN"))
+                .singleElement().satisfies(row -> assertThat(row.receiptAmount()).isEqualByComparingTo("40"));
+    }
+
+    @Test
+    void returningCustomersRequireHistoryBeforePeriodAndAreDeduplicatedAcrossCities() {
+        order(1, 10L, "SH", "S2", PREVIOUS_FROM, "10");
+        order(2, 10L, "BJ", "S1", FROM, "10");
+        order(3, 10L, "SH", "S1", TO, "10");
+        order(4, 20L, "BJ", "S1", FROM, "10");
+        order(5, 20L, "BJ", "S1", TO, "10"); // two in-period orders are not prior history
+        order(6, 30L, "BJ", "S1", PREVIOUS_FROM, "10");
+        order(7, 30L, "BJ", "S1", FROM, "10");
+        jdbc.update("UPDATE bi_sales_order_fact SET order_status_code='CANCELLED' WHERE order_id=6");
+        order(8, 40L, "BJ", "S1", PREVIOUS_FROM, "10");
+        jdbc.update("UPDATE bi_sales_order_fact SET tenant_id=? WHERE order_id=8", OTHER_TENANT);
+        order(9, 40L, "BJ", "S1", FROM, "10");
+        var retention = query(null, null, null, null).customerRetention();
+        assertThat(retention.orderingCustomerCount()).isEqualTo(4L);
+        assertThat(retention.returningCustomerCount()).isEqualTo(1L);
+        assertThat(query("BJ", "S1", null, null).customerRetention().returningCustomerCount()).isEqualTo(1L);
+    }
+
+    @Test
+    void monthlyDefaultsIncludeZeroOrderCitiesAndConfiguredTargetsOverrideOnlyTheirMonth() {
+        jdbc.update("INSERT INTO bi_sales_contact_city_dim(tenant_id,region_code,city_name) VALUES (?,?,?),(?,?,?)",TENANT.toString(),"BJ","北京",TENANT.toString(),"HZ","杭州");
+        jdbc.update("INSERT INTO bi_business_target VALUES (1,?,'2026-02-01','CITY','BJ','SALES_AMOUNT',250000,0)",TENANT.toString());
+        var goals=mapper.cityMonthlyGoals(TENANT.toString(),2026,null);
+        assertThat(goals).hasSize(24);
+        assertThat(goals.stream().map(g -> (BigDecimal)g.get("salestarget")).reduce(BigDecimal.ZERO,BigDecimal::add)).isEqualByComparingTo("2550000");
+        assertThat(mapper.cityMonthlyGoals(TENANT.toString(),2026,"HZ")).hasSize(12).allSatisfy(g -> assertThat((BigDecimal)g.get("receipttarget")).isEqualByComparingTo("100000"));
+        assertThat(mapper.cityMonthlyGoals(TENANT.toString(),2025,"BJ")).allSatisfy(g -> assertThat((BigDecimal)g.get("salestarget")).isEqualByComparingTo("100000"));
+    }
+
+    @Test
+    void annualRepeatDeduplicatesMonthlyReturningCustomersAndNewCustomersUseFirstOrder() {
+        order(1,10L,"BJ","S1",Instant.parse("2026-01-05T00:00:00Z"),"10");
+        order(2,10L,"BJ","S1",Instant.parse("2026-02-05T00:00:00Z"),"20");
+        order(3,10L,"BJ","S1",Instant.parse("2026-03-05T00:00:00Z"),"30");
+        order(4,11L,"BJ","S1",Instant.parse("2026-03-05T00:00:00Z"),"30");
+        jdbc.update("INSERT INTO bi_dashboard_customer_history VALUES (?,10,'2026-01-05'),(?,11,'2026-03-05')",TENANT.toString(),TENANT.toString());
+        var year=mapper.customerRetention(TENANT.toString(),local(Instant.parse("2025-12-31T16:00:00Z")),local(TO),null,null,null,null);
+        assertThat(((Number)year.get("newcustomercount")).longValue()).isEqualTo(2);
+        assertThat(((Number)year.get("annualreturningcustomercount")).longValue()).isEqualTo(1);
+        assertThat(((Number)year.get("returningcustomercount")).longValue()).isZero();
+    }
+
     private SupplyDashboardOperatingAnalysisView query(
             String city, String owner, String type, String source) {
+        jdbc.update("DELETE FROM bi_dashboard_customer_history");
+        jdbc.update("INSERT INTO bi_dashboard_customer_history SELECT tenant_id,customer_id,MIN(order_date) FROM bi_sales_order_fact WHERE deleted=0 AND order_status_code<>'CANCELLED' AND customer_id IS NOT NULL GROUP BY tenant_id,customer_id");
         return service.operatingAnalysis(FROM, TO, city, owner, type, null, source);
     }
 
@@ -703,7 +773,7 @@ INSERT INTO bi_sales_payment_fact (tenant_id, payment_id, customer_id, owner_sta
                         "bi_sales_payment_fact",
                         "bi_product_category_dim",
                         "bi_product_category_closure",
-                        "bi_product_dim");
+                        "bi_product_dim", "bi_dashboard_customer_history", "bi_sales_contact_city_dim", "bi_business_target", "bi_employee_dim");
         private static final Pattern TABLE_REFERENCE =
                 Pattern.compile("(?i)\\b(?:FROM|JOIN)\\s+([a-zA-Z_][a-zA-Z0-9_.]*)");
         private static final Pattern CTE_DECLARATION =

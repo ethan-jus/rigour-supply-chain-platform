@@ -18,6 +18,7 @@ public final class SupplyAuthorizationContext implements AutoCloseable {
             SupplyAuthorizationClient client,
             CallerIdentity caller,
             SupplyAuthorizationView initial) {
+        if (!"ACTIVE".equals(initial.mode())) throw new IllegalStateException("供应链授权协议已更新，请重启授权服务");
         this.client = client;
         this.caller = caller;
         this.initial = initial;
@@ -36,80 +37,6 @@ public final class SupplyAuthorizationContext implements AutoCloseable {
         return Optional.ofNullable(CURRENT.get());
     }
 
-    private final java.util.Set<String> observed = new java.util.HashSet<>();
-
-    /** 仅旁路记录；观察失败只记日志，绝不把新授权用于准备阶段的业务放行。 */
-    public static void observe(String action, String legacyAction) {
-        var state = CURRENT.get();
-        if (state == null || state.active() || state.initial.applicationVersion() == 0) return;
-        if (!state.observed.add(action + "|" + legacyAction)) return;
-        try {
-            state.client.observe(state.caller, action, legacyAction);
-        } catch (RuntimeException e) {
-            org.slf4j.LoggerFactory.getLogger(SupplyAuthorizationContext.class)
-                    .warn(
-                            "供应链授权对比记录失败 action={} legacy={} reason={}",
-                            action,
-                            legacyAction,
-                            e.getClass().getSimpleName());
-        }
-    }
-
-    private final Map<String, SupplyAuthorizationView> candidates = new HashMap<>();
-    private final Set<String> dataSamples = new HashSet<>();
-
-    /** 当前实际记录的旧决定与候选 SQL 对比。最多20个记录，错误仅可观测，不改变业务返回。 */
-    public static void compare(
-            String action,
-            String domain,
-            String recordKey,
-            boolean legacyAllowed,
-            java.util.function.Predicate<SupplyAuthorizationView> evaluate) {
-        compare(action, domain, recordKey, () -> legacyAllowed, evaluate);
-    }
-
-    public static void compare(
-            String action,
-            String domain,
-            String recordKey,
-            java.util.function.BooleanSupplier legacyAllowed,
-            java.util.function.Predicate<SupplyAuthorizationView> evaluate) {
-        var state = CURRENT.get();
-        if (state == null
-                || state.active()
-                || state.initial.applicationVersion() == 0
-                || state.dataSamples.size() >= 20
-                || !state.dataSamples.add(action + "|" + domain + "|" + recordKey)) return;
-        try {
-            var next =
-                    state.candidates.computeIfAbsent(
-                            action, a -> state.client.candidate(state.caller, a));
-            if (!"PREPARING".equals(next.mode())
-                    || next.applicationVersion() != state.initial.applicationVersion())
-                throw new IllegalStateException("候选授权版本变化");
-            boolean allowed = next.functionAllowed() && evaluate.test(next);
-            state.client.observeData(
-                    state.caller,
-                    new com.rigour.tenant.iam.api.v1.model.SupplyDataObservation(
-                            action,
-                            domain,
-                            recordKey,
-                            next.applicationVersion(),
-                            next.memberVersion(),
-                            next.employeeRevision(),
-                            next.organizationVersion(),
-                            legacyAllowed.getAsBoolean(),
-                            allowed));
-        } catch (RuntimeException e) {
-            org.slf4j.LoggerFactory.getLogger(SupplyAuthorizationContext.class)
-                    .warn(
-                            "供应链数据对比失败 domain={} action={} reason={}",
-                            domain,
-                            action,
-                            e.getClass().getSimpleName());
-        }
-    }
-
     public static SupplyAuthorizationView requireAction(String action) {
         SupplyAuthorizationContext state =
                 current()
@@ -117,7 +44,6 @@ public final class SupplyAuthorizationContext implements AutoCloseable {
                                 () ->
                                         new AuthorizationDeniedException(
                                                 "supply-authorization-context"));
-        if (!"ACTIVE".equals(state.initial.mode())) return state.initial;
         return state.actions.computeIfAbsent(
                 action,
                 key -> {

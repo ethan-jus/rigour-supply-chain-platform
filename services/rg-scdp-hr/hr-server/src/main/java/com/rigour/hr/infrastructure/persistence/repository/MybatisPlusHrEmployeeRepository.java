@@ -81,16 +81,16 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                                 scopes.apply(
                                         employeeQuery(tenantId, criteria), "hr:employee:read"));
         Map<Long,HrDepartmentView> departments = organization.departments(tenantId).stream().collect(Collectors.toMap(HrDepartmentView::id, d -> d));
-        List<HrEmployeeView> items =
+        List<HrEmployeeEntity> rows =
                 getBaseMapper()
                         .selectList(
-                                scopes.apply(employeeQuery(tenantId, criteria), "hr:employee:read")
-                                        .orderByDesc("updated_time")
-                                        .orderByDesc("id")
-                                        .last("LIMIT " + step + " OFFSET " + begin))
-                        .stream()
-                        .map(row -> view(row, departments.get(row.departmentId), null))
-                        .toList();
+                                ordered(scopes.apply(employeeQuery(tenantId, criteria), "hr:employee:read"), criteria)
+                                        .last("LIMIT " + step + " OFFSET " + begin));
+        Map<String, List<HrEmployeeSourceBindingEntity>> bindings = dhbBindings(tenantId, rows);
+        List<HrEmployeeView> items = rows.stream()
+                .map(row -> view(row, departments.get(row.departmentId), null,
+                        bindings.getOrDefault(row.employeeCode, List.of())))
+                .toList();
         return new HrPageView<>(total, begin, step, items);
     }
 
@@ -106,9 +106,10 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                                                         .eq("deleted", 0),
                                                 "hr:employee:read")
                                         .last("LIMIT 1"));
-        scopes.compareRecord(tenantId, id, "hr:employee:read", row != null);
+
         return Optional.ofNullable(row).map(e -> view(e,
-                organization.departments(tenantId).stream().filter(d -> d.id().equals(e.departmentId)).findFirst().orElse(null), profile(tenantId,id)));
+                organization.departments(tenantId).stream().filter(d -> d.id().equals(e.departmentId)).findFirst().orElse(null), profile(tenantId,id),
+                dhbBindings(tenantId, List.of(e)).getOrDefault(e.employeeCode, List.of())));
     }
 
     @Override
@@ -167,7 +168,13 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                 }
             } catch (RuntimeException exception) {
                 failed++;
-                String message = "员工同步失败: " + clean(exception.getMessage(), 240);
+                String sourceLabel = row == null ? "-" : row.sourceEmployeeId();
+                if (row != null && "DINGHUOBAO".equals(sourceSystem)) {
+                    sourceLabel = "订货宝登录账号 " + Objects.toString(clean(row.accountName(), 128), "未提供")
+                            + "（" + row.employeeName() + "，来源ID " + row.sourceEmployeeId() + "）";
+                }
+                String message = "来源员工 " + sourceLabel
+                        + " 同步失败: " + clean(exception.getMessage(), 240);
                 failureMessages.add(message);
                 rowResults.add(
                         new ExternalEmployeeSyncRowResult(
@@ -177,7 +184,7 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                                 message));
             }
         }
-        if (!rowResults.isEmpty()) {
+        if (!rowResults.isEmpty() && !"DINGHUOBAO".equals(sourceSystem)) {
             transaction.executeWithoutResult(
                     status -> backfillLeaderCodes(tenantId, sourceSystem, actorId));
         }
@@ -268,6 +275,9 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                 new QueryWrapper<HrEmployeeEntity>().eq("tenant_id", tenantId).eq("employee_code", binding.employeeCode).eq("deleted", 1)) > 0) {
             // 删除的员工保留来源映射和历史引用，定时同步不能重新创建同一员工。
             return new SyncOutcome(row.sourceEmployeeId(), binding.employeeCode, "UNCHANGED", "已删除员工不再回写主档");
+        }
+        if ("DINGHUOBAO".equals(sourceSystem)) {
+            return syncDhbSalesperson(tenantId, sourceTenantKey, row, actorId, now, binding, employee);
         }
         // 新来源只能创建待补任职的员工，不能按同名/手机号覆盖已关联账号的真实员工。
         HrPositionEntity position = resolvePosition(tenantId,
@@ -421,6 +431,102 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
         employee.remark = remark(row);
     }
 
+    /** 订货宝只补来源关系，HR 已维护的任职、离职、手机号等资料永不被来源覆盖。 */
+    private SyncOutcome syncDhbSalesperson(String tenant, String sourceTenant,
+            ExternalEmployeeRowCommand row, String actor, LocalDateTime now,
+            HrEmployeeSourceBindingEntity binding, HrEmployeeEntity employee) {
+        if (binding != null && (Integer.valueOf(1).equals(binding.deleted) || employee == null)) {
+            throw new IllegalArgumentException("原关联已删除或失效，请人工核对，不自动改绑");
+        }
+        if (employee == null) {
+            // 同名或同手机号的候选包含已删除员工，防止删除后被重新建档。
+            String mobile = clean(row.mobile(), 32);
+            List<HrEmployeeEntity> candidates = getBaseMapper().selectList(
+                    new QueryWrapper<HrEmployeeEntity>().eq("tenant_id", tenant)
+                            .and(q -> {
+                                q.eq("employee_name", row.employeeName());
+                                if (mobile != null) q.or().eq("mobile", mobile);
+                            }));
+            if (!candidates.isEmpty()) {
+                List<HrEmployeeEntity> matches = candidates.stream()
+                        .filter(e -> row.employeeName().equals(e.employeeName))
+                        .filter(e -> mobile == null || clean(e.mobile, 32) == null || mobile.equals(e.mobile))
+                        .toList();
+                // 精确姓名+手机号消除同名歧义；唯一手机号候选允许带风险关联，多个候选仍需人工核对。
+                if (mobile != null && matches.size() > 1) {
+                    matches = matches.stream().filter(e -> mobile.equals(e.mobile)).toList();
+                }
+                boolean phoneConflict = mobile != null && candidates.stream()
+                        .anyMatch(e -> mobile.equals(e.mobile) && !row.employeeName().equals(e.employeeName));
+                if (phoneConflict && candidates.size() == 1
+                        && !Integer.valueOf(1).equals(candidates.getFirst().deleted)) {
+                    employee = candidates.getFirst();
+                } else {
+                    if (matches.size() != 1 || phoneConflict || Integer.valueOf(1).equals(matches.getFirst().deleted)) {
+                        throw new IllegalArgumentException("姓名/手机号冲突或员工已删除，请人工确认关联");
+                    }
+                    employee = matches.getFirst();
+                }
+            }
+        }
+        boolean created = employee == null;
+        if (created) {
+            if (!"salesman".equalsIgnoreCase(row.jobCategory())) {
+                throw new IllegalArgumentException("非订货宝业务员，不自动新增员工");
+            }
+            List<HrDepartmentView> departments = organization.departments(tenant);
+            List<HrDepartmentView> roots = departments.stream()
+                    .filter(d -> "销售部".equals(d.departmentName()) && "ACTIVE".equals(d.statusCode())).toList();
+            if (roots.size() != 1) throw new IllegalArgumentException("销售部未唯一配置");
+            List<HrDepartmentView> matches = departments.stream()
+                    .filter(d -> roots.getFirst().id().equals(d.parentId()) && "ACTIVE".equals(d.statusCode()))
+                    .filter(d -> departmentKey(d.departmentName()).equals(departmentKey(row.departmentName())))
+                    .toList();
+            if (matches.size() != 1) throw new IllegalArgumentException("来源部门未唯一匹配销售部下级部门: " + row.departmentName());
+            var positions = positionMapper.selectList(new QueryWrapper<HrPositionEntity>()
+                    .eq("tenant_id", tenant).eq("position_name", "业务员")
+                    .eq("status_code", "ACTIVE").eq("deleted", 0));
+            if (positions.size() != 1) throw new IllegalArgumentException("业务员岗位未唯一配置");
+            long id = organization.saveEmployee(tenant, null, new com.rigour.hr.api.v1.model.HrEmployeeCommand(
+                    row.employeeName(), matches.getFirst().id(), positions.getFirst().positionCode,
+                    employmentStatus(row.employmentStatus()), clean(row.mobile(), 32), null,
+                    null, null, null, 0, null, null), actor);
+            employee = getBaseMapper().selectOne(new QueryWrapper<HrEmployeeEntity>()
+                    .eq("tenant_id", tenant).eq("id", id).eq("deleted", 0));
+            // 新档案仍使用 HR 正常建档/任职审计，只标明来源，不伪造入职日期。
+            jdbc.update("UPDATE hr_employee SET source_system='DINGHUOBAO',source_document_no=?,"
+                    + "local_profile_authoritative=1 WHERE tenant_id=? AND id=?", row.sourceEmployeeId(), tenant, id);
+        }
+        boolean evidenceChanged = binding == null || !Objects.equals(binding.sourceEmployeeName, row.employeeName())
+                || !Objects.equals(binding.sourceMobile, clean(row.mobile(), 32));
+        boolean mismatch = !Objects.equals(employee.employeeName, row.employeeName())
+                || (clean(row.mobile(), 32) != null && clean(employee.mobile, 32) != null
+                    && !Objects.equals(clean(row.mobile(), 32), clean(employee.mobile, 32)));
+        boolean needsReview = (binding != null && Boolean.TRUE.equals(binding.reviewRequired))
+                || (evidenceChanged && mismatch);
+        upsertBinding(tenant, "DINGHUOBAO", sourceTenant, row, employee.employeeCode, actor, now, binding);
+        jdbc.update("UPDATE hr_employee_source_binding SET review_required=?,review_reason=? "
+                        + "WHERE tenant_id=? AND source_system='DINGHUOBAO' AND source_tenant_key=? AND source_employee_id=?",
+                needsReview, needsReview ? "来源姓名或手机号与系统档案不一致" : null, tenant, sourceTenant, row.sourceEmployeeId());
+        return new SyncOutcome(row.sourceEmployeeId(), employee.employeeCode,
+                created ? "CREATED" : binding == null ? "UPDATED" : "UNCHANGED",
+                created ? "已新增业务员基础档案" : "仅关联订货宝员工编号，保留全部HR资料");
+    }
+
+    private static String departmentKey(String value) {
+        String name = value == null ? "" : value.strip();
+        return name.endsWith("市") ? name.substring(0, name.length() - 1) : name;
+    }
+
+    private Map<String, List<HrEmployeeSourceBindingEntity>> dhbBindings(String tenant, List<HrEmployeeEntity> employees) {
+        if (employees.isEmpty()) return Map.of();
+        return bindingMapper.selectList(new QueryWrapper<HrEmployeeSourceBindingEntity>()
+                        .eq("tenant_id", tenant).eq("source_system", "DINGHUOBAO").eq("deleted", 0)
+                        .in("employee_code", employees.stream().map(e -> e.employeeCode).toList())
+                        .orderByAsc("source_employee_id"))
+                .stream().collect(Collectors.groupingBy(b -> b.employeeCode));
+    }
+
     private HrPositionEntity resolvePosition(String tenantId, String sourceName) {
         String positionName = clean(sourceName, 120);
         if ("销售".equals(positionName) || "销售员".equals(positionName) || "大客户经理".equals(positionName)) positionName = "业务员";
@@ -460,6 +566,10 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
             created.sourceTenantKey = sourceTenantKey;
             created.sourceEmployeeId = clean(row.sourceEmployeeId(), 128);
             created.sourceAccountName = clean(row.accountName(), 128);
+            created.sourceEmployeeName = clean(row.employeeName(), 128);
+            created.sourceMobile = clean(row.mobile(), 32);
+            created.reviewRequired = false;
+            created.reviewVersion = 1L;
             created.sourcePayloadHash = clean(row.sourcePayloadHash(), 64);
             created.sourcePayloadJson = emptyToNull(row.sourcePayloadJson());
             created.sourceCreatedAt = dateTime(row.sourceCreatedAt());
@@ -482,6 +592,9 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                         .set("employee_code", employeeCode)
                         .set("connector_id", bin(row.connectorId()))
                         .set("source_account_name", clean(row.accountName(), 128))
+                        .set("source_employee_name", clean(row.employeeName(), 128))
+                        .set("source_mobile", clean(row.mobile(), 32))
+                        .setSql("review_version = review_version + 1")
                         .set("source_payload_hash", clean(row.sourcePayloadHash(), 64))
                         .set("source_payload_json", emptyToNull(row.sourcePayloadJson()))
                         .set("source_created_at", dateTime(row.sourceCreatedAt()))
@@ -526,7 +639,7 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                         .eq("source_system", sourceSystem)
                         .eq("source_tenant_key", sourceTenantKey)
                         .eq("source_employee_id", sourceEmployeeId)
-                        .last("LIMIT 1"));
+                        .last("LIMIT 1 FOR UPDATE"));
     }
 
     private HrEmployeeEntity employeeByCode(String tenantId, String employeeCode) {
@@ -569,6 +682,21 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                 .toList();
     }
 
+    private QueryWrapper<HrEmployeeEntity> ordered(QueryWrapper<HrEmployeeEntity> query, EmployeeSearchCriteria c) {
+        String field = c == null || c.sortBy() == null ? "createdTime" : c.sortBy();
+        String column = switch (field) {
+            case "employeeCode" -> "employee_code";
+            case "employeeName" -> "employee_name";
+            case "createdTime" -> "created_time";
+            case "entryDate" -> "entry_date";
+            default -> throw new IllegalArgumentException("不支持的员工排序字段");
+        };
+        String direction = c == null || c.sortDirection() == null ? "desc" : c.sortDirection();
+        if (!Set.of("asc", "desc").contains(direction)) throw new IllegalArgumentException("排序方向无效");
+        // Missing dates stay last; the ID tie-breaker makes pagination deterministic.
+        return query.orderByAsc(column + " IS NULL").orderBy(true, "asc".equals(direction), column).orderByDesc("id");
+    }
+
     private QueryWrapper<HrEmployeeEntity> employeeQuery(
             String tenantId, EmployeeSearchCriteria criteria) {
         EmployeeSearchCriteria c =
@@ -601,7 +729,11 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                                     .or()
                                     .like("region_name", c.keyword())
                                     .or()
-                                    .like("city_name", c.keyword()));
+                                    .like("city_name", c.keyword())
+                                    .or()
+                                    .apply("employee_code IN (SELECT employee_code FROM hr_employee_source_binding "
+                                            + "WHERE tenant_id={0} AND source_system='DINGHUOBAO' AND deleted=0 "
+                                            + "AND source_account_name LIKE {1})", tenantId, "%" + c.keyword() + "%"));
         }
         eq(query, "employee_code", c.employeeCode());
         like(query, "employee_name", c.employeeName());
@@ -638,7 +770,7 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                 tenant,id).stream().findFirst().orElse(null);
     }
 
-    private static HrEmployeeView view(HrEmployeeEntity row, HrDepartmentView department, HrEmployeeProfile profile) {
+    private static HrEmployeeView view(HrEmployeeEntity row, HrDepartmentView department, HrEmployeeProfile profile, List<HrEmployeeSourceBindingEntity> bindings) {
         return new HrEmployeeView(
                 row.id,
                 row.employeeCode,
@@ -666,7 +798,11 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                 instant(row.createdTime),
                 row.updatedBy,
                 instant(row.updatedTime), row.departmentId, department == null ? null : department.leaderName(),
-                row.createdByName, row.updatedByName, profile, row.jobGrade);
+                row.createdByName, row.updatedByName, profile, row.jobGrade,
+                bindings.stream().map(b -> b.sourceEmployeeId).distinct().toList(),
+                bindings.stream().map(b -> clean(b.sourceAccountName, 128))
+                        .filter(Objects::nonNull).distinct().toList(),
+                (int) bindings.stream().filter(b -> Boolean.TRUE.equals(b.reviewRequired)).count());
     }
 
     private static ExternalEmployeeResolvedView resolved(

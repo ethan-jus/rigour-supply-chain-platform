@@ -50,6 +50,26 @@ class ServiceAddressResolverTest {
     }
 
     @Test
+    void serviceResolutionPreservesEncodedPathAndQuery() throws IOException {
+        RecordingDiscovery discovery =
+                new RecordingDiscovery(List.of(instance("http://10.0.0.5:26889")));
+        ServiceAddressResolver resolver = new ServiceAddressResolver(provider(discovery), provider(null));
+        URI original = URI.create("http://rigour-hr-payroll-service/api/v1/hr/employee-identities"
+                + "?keyword=%E8%B5%B5&begin=0&step=20");
+
+        URI resolved = execute(resolver, original.toString());
+
+        assertThat(resolved.getHost()).isEqualTo("10.0.0.5");
+        assertThat(resolved.getRawQuery()).isEqualTo(original.getRawQuery());
+        URI escaped = URI.create("http://rigour-hr-payroll-service/api/a%2Fb"
+                + "?keyword=A%2BB%20C%26D&tag=x&tag=y#part%20one");
+        URI escapedResolved = execute(resolver, escaped.toString());
+        assertThat(escapedResolved.getRawPath()).isEqualTo(escaped.getRawPath());
+        assertThat(escapedResolved.getRawQuery()).isEqualTo(escaped.getRawQuery());
+        assertThat(escapedResolved.getRawFragment()).isEqualTo(escaped.getRawFragment());
+    }
+
+    @Test
     void discoveryFailureFallsBackToOriginalAddress() throws IOException {
         RecordingDiscovery discovery = new RecordingDiscovery(List.of());
         discovery.failure = new IllegalStateException("nacos down");

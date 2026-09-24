@@ -12,7 +12,7 @@ import java.util.*;
 @Component
 public class BiSourceSnapshotProjector {
     private static final Set<String> PEOPLE_DATASETS =
-            Set.of("HR_EMPLOYEE", "SALES_SUBMITTED_VISIT", "CRM_CUSTOMER_AREA");
+            Set.of("HR_DEPARTMENT", "HR_EMPLOYEE", "SALES_SUBMITTED_VISIT", "CRM_CUSTOMER_AREA");
     private final JdbcTemplate jdbc;
     private final BiSourceSnapshotClient client;
 
@@ -23,11 +23,14 @@ public class BiSourceSnapshotProjector {
 
     @Transactional
     public void refresh(UUID tenantId) {
-        // 人员来源只能与下游投影同时发布，局部业务刷新不得提前消耗人员版本。
+        // 销售组织与员工部门也是财务维度；人员刷新使用独立检查点，避免业务同步消耗人员版本。
         refresh(
                 tenantId,
                 BiSourceDatasets.ALL.stream()
-                        .filter(d -> !PEOPLE_DATASETS.contains(d.code()))
+                        .filter(
+                                d ->
+                                        !PEOPLE_DATASETS.contains(d.code())
+                                                || Set.of("CRM_CUSTOMER_AREA", "HR_DEPARTMENT", "HR_EMPLOYEE").contains(d.code()))
                         .toList());
     }
 
@@ -37,26 +40,33 @@ public class BiSourceSnapshotProjector {
                 tenantId,
                 BiSourceDatasets.ALL.stream()
                         .filter(d -> PEOPLE_DATASETS.contains(d.code()))
-                        .toList());
+                        .toList(),
+                "PEOPLE_");
     }
 
     private boolean refresh(UUID tenantId, List<BiSourceDatasets.Dataset> datasets) {
+        return refresh(tenantId, datasets, "");
+    }
+
+    private boolean refresh(
+            UUID tenantId, List<BiSourceDatasets.Dataset> datasets, String checkpointPrefix) {
         boolean changed = false;
         String tenant = tenantId.toString();
         for (var d : datasets) {
+            String checkpoint = checkpointPrefix + d.code();
             jdbc.update(
                     "INSERT IGNORE INTO"
                         + " bi_source_snapshot_checkpoint(tenant_id,dataset,source_version,projected_at)"
                         + " VALUES(?,?,'UNINITIALIZED',UTC_TIMESTAMP(6))",
                     tenant,
-                    d.code());
+                    checkpoint);
             String previous =
                     jdbc.queryForObject(
                             "SELECT source_version FROM bi_source_snapshot_checkpoint WHERE"
                                     + " tenant_id=? AND dataset=? FOR UPDATE",
                             String.class,
                             tenant,
-                            d.code());
+                            checkpoint);
             String version = client.version(tenantId, d.source(), d.code());
             if (version.equals(previous)) continue;
             changed = true;
@@ -127,7 +137,7 @@ public class BiSourceSnapshotProjector {
                         + " dataset=?",
                     version,
                     tenant,
-                    d.code());
+                    checkpoint);
         }
         return changed;
     }

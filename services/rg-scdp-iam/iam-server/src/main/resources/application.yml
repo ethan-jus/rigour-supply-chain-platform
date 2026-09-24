@@ -69,6 +69,7 @@ rigour:
         client-id: rigour-scdp-browser
     authentication:
       password:
+        default-tenant-code: ${IAM_DEFAULT_TENANT_CODE:rigour_media}
         maximum-failed-attempts: 5
         lock-duration: 15m
         session-time-to-live: 8h
