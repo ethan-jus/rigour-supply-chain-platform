@@ -1,0 +1,26 @@
+[Unit]
+Description=Rigour SCM production %i
+After=network.target rg-scdp-mysql.service rg-scdp-redis.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/rg_scdp
+EnvironmentFile=/etc/rg-scdp/common.env
+EnvironmentFile=/etc/rg-scdp/nacos.env
+EnvironmentFile=/etc/rg-scdp/%i.env
+ExecStart=/root/rg_scdp/bin/run-service.sh %i
+Restart=on-failure
+RestartSec=20
+TimeoutStopSec=60
+KillSignal=SIGTERM
+LimitNOFILE=65536
+UMask=0077
+MemoryAccounting=true
+MemoryLimit=512M
+CPUAccounting=true
+CPUQuota=150%
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

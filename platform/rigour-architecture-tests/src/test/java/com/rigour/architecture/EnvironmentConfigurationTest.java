@@ -103,6 +103,17 @@ class EnvironmentConfigurationTest {
                 assertEquals("true", env.getProperty("server.servlet.session.cookie.secure"));
                 assertEquals("false", env.getProperty("rigour.iam.oidc.server.allow-insecure-lan"));
             }
+            env.getPropertySources().addFirst(new MapPropertySource("deployment", Map.of(
+                    "NACOS_SERVER_ADDR", "127.0.0.1:8848",
+                    "NACOS_USERNAME", "test-user",
+                    "NACOS_PASSWORD", "test-only-password",
+                    "NACOS_NAMESPACE", "scm-prod-test-id")));
+            assertEquals("127.0.0.1:8848", env.getProperty("spring.cloud.nacos.server-addr"));
+            assertEquals("test-user", env.getProperty("spring.cloud.nacos.username"));
+            assertEquals("test-only-password", env.getProperty("spring.cloud.nacos.password"));
+            assertEquals("scm-prod-test-id", env.getProperty("spring.cloud.nacos.discovery.namespace"));
+            assertEquals("scm-prod-test-id", env.getProperty("spring.cloud.nacos.config.namespace"));
+            assertEquals("false", env.getProperty("spring.flyway.enabled"));
         }
     }
 

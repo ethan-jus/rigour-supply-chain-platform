@@ -1,31 +1,61 @@
-# 生产独立配置：部署时提供生产参数，缺失则启动失败；绝不回退到DEV数据库。
-# 生产地址和账号尚未指定，此文件是生产配置入口，不代表生产环境已部署。
+# 生产环境只从部署进程读取凭据；Nacos 仅保存非敏感动态参数。
+# NACOS_NAMESPACE 填 scm-prod 的实际命名空间 ID，不能误填显示名称或复用其他环境。
 spring:
   application:
-    name: "rigour-hr-payroll-service"
+    name: rigour-hr-payroll-service
   config:
-    import:
-      - "nacos:rigour-hr-prod.yaml?group=DEFAULT_GROUP"
+    import: "optional:nacos:rigour-common.yml,optional:nacos:${spring.application.name}.yml"
   cloud:
     nacos:
-      server-addr: "127.0.0.1:8848"
+      server-addr: "${NACOS_SERVER_ADDR}"
       username: "${NACOS_USERNAME}"
       password: "${NACOS_PASSWORD}"
       discovery:
-        namespace: "516560f3-8b30-4975-84cb-c55f89b912ae"
+        namespace: "${NACOS_NAMESPACE}"
+        ip: "${SERVICE_BIND_ADDRESS:127.0.0.1}"
         register-enabled: true
       config:
-        enabled: true # 开启配置中心
-        namespace: "516560f3-8b30-4975-84cb-c55f89b912ae" # 截图里的命名空间ID
-        group: "DEFAULT_GROUP"
-        file-extension: "yaml"
+        enabled: true
+        namespace: "${NACOS_NAMESPACE}"
+        group: DEFAULT_GROUP
+        file-extension: yml
   flyway:
+    # 从 DEV 全量 SQL 导入，生产启动不执行迁移或自动基线。
     enabled: false
+    clean-disabled: true
+  datasource:
+    url: "${DB_URL}"
+    username: "${DB_USERNAME}"
+    password: "${DB_PASSWORD}"
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX:5}
+      minimum-idle: 1
+      data-source-properties:
+        rewriteBatchedStatements: true
+  data:
+    redis:
+      host: "${REDIS_HOST}"
+      port: ${REDIS_PORT}
+      password: "${REDIS_PASSWORD}"
+      database: 0
 
 server:
+  address: "${SERVICE_BIND_ADDRESS:127.0.0.1}"
   port: 26889
+  tomcat:
+    threads:
+      max: 32
+      min-spare: 2
+    max-connections: 128
+    accept-count: 64
   servlet:
     session:
       cookie:
-        secure: false # 前端是 http 时必须改 false
+        secure: ${SESSION_COOKIE_SECURE:true}
 
+rigour:
+  context:
+    trust:
+      active-key-id: v1
+      keys-base64:
+        v1: "${RIGOUR_CONTEXT_TRUST_KEY_V1}"
