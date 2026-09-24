@@ -28,11 +28,25 @@ class GatewaySecurityPropertiesTest {
     }
 
     @Test
+    void acceptsSixtySecondReadTimeoutWithoutExtendingConnectionSetupLimit() {
+        GatewaySecurityProperties properties = new GatewaySecurityProperties();
+        properties.setCurrentTokenValidationEnabled(true);
+        properties.setIamCurrentTokenUri("https://iam.example/api/v1/token/current");
+        properties.setCurrentTokenReadTimeout(Duration.ofSeconds(60));
+        org.assertj.core.api.Assertions.assertThatCode(properties::requireCurrentTokenValidation)
+                .doesNotThrowAnyException();
+        properties.setCurrentTokenConnectTimeout(Duration.ofSeconds(31));
+        assertThatThrownBy(properties::requireCurrentTokenValidation)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("current-token-connect-timeout");
+    }
+
+    @Test
     void rejectsUnboundedCurrentTokenTimeouts() {
         GatewaySecurityProperties properties = new GatewaySecurityProperties();
         properties.setCurrentTokenValidationEnabled(true);
         properties.setIamCurrentTokenUri("https://iam.example/api/v1/token/current");
-        properties.setCurrentTokenReadTimeout(Duration.ofMinutes(1));
+        properties.setCurrentTokenReadTimeout(Duration.ofSeconds(61));
         assertThatThrownBy(properties::requireCurrentTokenValidation)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("current-token-read-timeout");

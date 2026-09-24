@@ -82,8 +82,8 @@ public final class GatewaySecurityProperties {
             throw new IllegalStateException("Gateway security requires IAM current-token validation");
         }
         requireIamCurrentTokenUri();
-        requirePositiveTimeout(currentTokenConnectTimeout, "current-token-connect-timeout");
-        requirePositiveTimeout(currentTokenReadTimeout, "current-token-read-timeout");
+        requirePositiveTimeout(currentTokenConnectTimeout, "current-token-connect-timeout", 30);
+        requirePositiveTimeout(currentTokenReadTimeout, "current-token-read-timeout", 60);
     }
 
     public List<String> requireAudience() {
@@ -116,9 +116,9 @@ public final class GatewaySecurityProperties {
         return value;
     }
 
-    private static void requirePositiveTimeout(Duration value, String field) {
-        if (value == null || value.isZero() || value.isNegative() || value.compareTo(Duration.ofSeconds(30)) > 0) {
-            throw new IllegalStateException("Gateway " + field + " must be between 1ms and 30s");
+    private static void requirePositiveTimeout(Duration value, String field, long maxSeconds) {
+        if (value == null || value.isZero() || value.isNegative() || value.compareTo(Duration.ofSeconds(maxSeconds)) > 0) {
+            throw new IllegalStateException("Gateway " + field + " must be between 1ms and " + maxSeconds + "s");
         }
     }
 }
