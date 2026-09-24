@@ -92,7 +92,7 @@ openssl rand -hex 32   # 复制为 INTEGRATION_DB_MIGRATOR_PASSWORD
 
 ```sql
 CREATE DATABASE IF NOT EXISTS rigour_integration
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
 
 CREATE USER IF NOT EXISTS 'rigour_integration_app'@'%'
   IDENTIFIED BY '<INTEGRATION_DB_APP_PASSWORD>';
