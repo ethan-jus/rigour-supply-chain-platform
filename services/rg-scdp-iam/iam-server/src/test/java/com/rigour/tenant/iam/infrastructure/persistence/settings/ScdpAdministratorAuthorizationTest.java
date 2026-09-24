@@ -63,6 +63,37 @@ class ScdpAdministratorAuthorizationTest {
                 bin(tenant), bin(app), bin(button), bin(page), bin(button));
     }
 
+    @Test
+    void fullIdentityValidationCompletesConcurrentlyWithOneConnection() throws Exception {
+        try (var pool = new com.zaxxer.hikari.HikariDataSource()) {
+            pool.setJdbcUrl(MYSQL.getJdbcUrl());
+            pool.setUsername(MYSQL.getUsername());
+            pool.setPassword(MYSQL.getPassword());
+            pool.setMaximumPoolSize(1);
+            pool.setMinimumIdle(1);
+            pool.setConnectionTimeout(500);
+            var pooledJdbc = new JdbcTemplate(pool);
+            var pooledSettings = new JdbcAppSettingsStore(pooledJdbc,
+                    new DataSourceTransactionManager(pool), mock(AppEmployeeClient.class));
+            var reader = new com.rigour.tenant.iam.infrastructure.persistence.auth.JdbcIdentityAccessReader(
+                    pooledJdbc, pooledSettings);
+            var service = new com.rigour.tenant.iam.application.service.identity.IdentityAccessService(
+                    reader, pooledSettings);
+            var query = new com.rigour.tenant.iam.application.service.identity.IdentityAccessQuery(
+                    "TENANT", admin.principalId(), admin.tenantId());
+            try (var executor = java.util.concurrent.Executors.newFixedThreadPool(5)) {
+                var tasks = java.util.stream.IntStream.range(0, 20)
+                        .<java.util.concurrent.Callable<java.util.Set<String>>>mapToObj(i ->
+                                () -> service.currentUser(query).permissions()).toList();
+                for (var result : executor.invokeAll(tasks, 15, java.util.concurrent.TimeUnit.SECONDS)) {
+                    assertThat(result.get()).contains(action);
+                }
+            }
+            assertThat(pool.getHikariPoolMXBean().getActiveConnections()).isZero();
+            assertThat(pool.getHikariPoolMXBean().getThreadsAwaitingConnection()).isZero();
+        }
+    }
+
     UUID tenant() {
         UUID id = UUID.randomUUID();
         jdbc.update("INSERT INTO iam_tenant(id,tenant_code,company_name,status,created_at,updated_at) VALUES(?,?,?,'ACTIVE',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))", bin(id), id.toString().substring(0, 12), "测试企业");

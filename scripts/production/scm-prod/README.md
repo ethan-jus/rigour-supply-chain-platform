@@ -35,4 +35,4 @@ HTTP 部署显式注入 `SESSION_COOKIE_SECURE=false`、`OIDC_ALLOW_HTTP_LOOPBAC
 
 导入后的 IAM 视图 `iam_effective_tenant_role_resource` 原定义引用 DEV 的 `rigour_iam_migrator@%`，新实例不存在该账号。已先保存原 CREATE VIEW，再将同一查询改为 SQL SECURITY INVOKER，由当前 IAM 应用账号依其自身权限读取；业务表、数据与历史迁移均未改写。不能只用 SELECT 1 或健康检查代替实际授权查询。
 
-IAM 原身份查询在 RowMapper 内再次借连接读取角色/权限，小连接池在并发请求下可能耗尽。已改为用户查询释放连接后再读取角色/权限，并用单连接池并发测试验证。生产 Hikari connection-timeout、Gateway current-token-read-timeout、业务服务 supply-authorization.read-timeout 与前端默认请求等待均为 300 秒；MySQL 驱动连接/读取和网关业务转发读取同为 300 秒；HTTP 网络连接建立超时仍保留原值。scm-prod 的 Nacos 同名配置需同步修改，重启本次服务以重建 HTTP 客户端和连接池。延长等待不替代连接占用问题修复。
+IAM 原身份查询和应用权限上下文查询在 RowMapper 内再次借连接读取角色/权限，小连接池在并发请求下可能耗尽。已改为用户查询释放连接后再读取角色/权限，并用单连接池并发测试以及真实 MySQL 的完整身份校验并发测试验证。生产 Hikari connection-timeout、Gateway current-token-read-timeout、业务服务 supply-authorization.read-timeout 与前端默认请求等待均为 300 秒；MySQL 驱动连接/读取和网关业务转发读取同为 300 秒；HTTP 网络连接建立超时仍保留原值。scm-prod 的 Nacos 同名配置需同步修改，重启本次服务以重建 HTTP 客户端和连接池。延长等待不替代连接占用问题修复。

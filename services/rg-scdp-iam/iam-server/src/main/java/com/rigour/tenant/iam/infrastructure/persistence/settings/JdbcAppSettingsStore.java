@@ -92,13 +92,13 @@ SELECT COUNT(*) FROM iam_user u JOIN iam_tenant t ON t.id=u.tenant_id
         requireIdentity(actor);
         if (!initialized(actor))
             return new Context(false, canBootstrap(actor), "ACTIVE", 0, Set.of());
-        return jdbc.queryForObject(
-                """
-SELECT authorization_mode,version FROM iam_app_settings WHERE tenant_id=? AND application_id=?
-""",
-                (rs, row) -> new Context(true, false, "ACTIVE", rs.getLong(2), permissions(actor)),
+        long version = jdbc.queryForObject(
+                "SELECT version FROM iam_app_settings WHERE tenant_id=? AND application_id=?",
+                Long.class,
                 bin(actor.tenantId()),
                 bin(applicationId()));
+        // 版本查询释放连接后再读取权限，避免并发请求持有连接并等待第二个连接。
+        return new Context(true, false, "ACTIVE", version, permissions(actor));
     }
 
     private boolean canBootstrap(Actor actor) {
