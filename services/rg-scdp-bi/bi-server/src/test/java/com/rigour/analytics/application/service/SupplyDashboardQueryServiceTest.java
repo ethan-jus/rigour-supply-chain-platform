@@ -786,6 +786,8 @@ class SupplyDashboardQueryServiceTest {
     private static com.rigour.analytics.application.port.out.CityContactAnalyticsStore
             contactStore() {
         return new com.rigour.analytics.application.port.out.CityContactAnalyticsStore() {
+            public void refreshCities(String tenantId) { }
+
             public List<String> tenantIds() {
                 return List.of();
             }

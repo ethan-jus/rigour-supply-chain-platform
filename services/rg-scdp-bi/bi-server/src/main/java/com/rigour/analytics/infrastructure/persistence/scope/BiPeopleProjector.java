@@ -28,6 +28,14 @@ public class BiPeopleProjector {
     }
 
     @Transactional
+    public void refreshOrganization(UUID tenant) {
+        if (sources.refreshOrganization(tenant)) {
+            employees.refresh(tenant.toString(), clock.instant());
+            contacts.refreshCities(tenant.toString());
+        }
+    }
+
+    @Transactional
     public void refresh(UUID tenant) {
         if (sources.refreshPeople(tenant)) {
             employees.refresh(tenant.toString(), clock.instant());

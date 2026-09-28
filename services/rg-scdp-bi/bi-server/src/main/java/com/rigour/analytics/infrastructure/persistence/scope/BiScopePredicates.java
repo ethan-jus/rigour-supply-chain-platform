@@ -90,7 +90,20 @@ public final class BiScopePredicates {
                     continue;
                 }
             }
-            if ((order || people) && !"NONE".equals(c.departments().mode()))
+            boolean departmentOrder = order && "DEPARTMENT".equals(c.scopeMode());
+            if (departmentOrder) {
+                String frozenDepartment = path(c.departments(), c.includeDescendants(),
+                        "a.department_id", "a.department_path", true, values);
+                values.add(p.tenantId().toString());
+                String operatingDepartment = path(c.departments(), c.includeDescendants(),
+                        "scope_city.department_id", "scope_city.department_path", true, values);
+                // 历史导入订单没有冻结快照时，沿用报表已发布的经营城市部门；未知城市不放行。
+                and.add("((a.attribution_state='FROZEN' AND " + frozenDepartment + ") OR "
+                        + "(a.attribution_state='REVIEW' AND EXISTS(SELECT 1 FROM bi_sales_contact_city_dim scope_city"
+                        + " WHERE scope_city.tenant_id=? AND scope_city.region_code=f.region_code AND "
+                        + operatingDepartment + ")))");
+            }
+            if (((order && !departmentOrder) || people) && !"NONE".equals(c.departments().mode()))
                 and.add(
                         path(
                                 c.departments(),
@@ -132,6 +145,8 @@ public final class BiScopePredicates {
                                 c.warehouses(),
                                 inventory ? "f.warehouse_id" : "a.warehouse_id",
                                 values));
+            if (order && !departmentOrder && !unrestricted(p))
+                and.add("a.attribution_state='FROZEN'");
             if (and.isEmpty()) and.add("1=1");
             or.add("(" + String.join(" AND ", and) + ")");
             args.addAll(values);
@@ -163,10 +178,8 @@ public final class BiScopePredicates {
                                 "INVENTORY".equals(kind) ? "f.warehouse_id" : "a.warehouse_id",
                                 args)
                         : "1=1";
-        String attribution =
-                "ORDER".equals(kind) && !unrestricted(p) ? " AND a.attribution_state='FROZEN'" : "";
         return new Sql(
-                "(" + roles + " AND " + region + " AND " + warehouses + attribution + ")", args);
+                "(" + roles + " AND " + region + " AND " + warehouses + ")", args);
     }
 
     private static String path(

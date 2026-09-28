@@ -37,7 +37,13 @@ public final class BiAuthorityFilter extends OncePerRequestFilter {
                                                 "analytics:dashboard:read"));
                 if (!allDataRead) {
                     projector.refresh(AuthorizationContext.requireCurrent().tenantId());
-                    people.refresh(AuthorizationContext.requireCurrent().tenantId());
+                    boolean visitRequest = java.util.Set.of(
+                                    "/api/v1/analytics/supply/dashboard/visits",
+                                    "/api/v1/analytics/supply/dashboard/city-contacts")
+                            .contains(request.getRequestURI());
+                    if (!visitRequest)
+                        people.refreshOrganization(AuthorizationContext.requireCurrent().tenantId());
+                    else people.refresh(AuthorizationContext.requireCurrent().tenantId());
                 }
             } catch (AuthorizationDeniedException e) {
                 response.sendError(403, "没有看板访问权限");

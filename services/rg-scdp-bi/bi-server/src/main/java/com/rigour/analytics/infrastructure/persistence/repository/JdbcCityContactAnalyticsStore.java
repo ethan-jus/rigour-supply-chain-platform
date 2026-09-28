@@ -36,14 +36,21 @@ public class JdbcCityContactAnalyticsStore implements CityContactAnalyticsStore 
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public SourceRefreshResult refresh(String tenantId, Instant syncedAt) {
-        var args =
-                new MapSqlParameterSource("tenant", tenantId).addValue("synced", local(syncedAt));
-        jdbc.update("DELETE FROM bi_sales_contact_fact WHERE tenant_id = :tenant", args);
+    public void refreshCities(String tenantId) {
+        var args = new MapSqlParameterSource("tenant", tenantId);
         jdbc.update("DELETE FROM bi_sales_contact_city_dim WHERE tenant_id = :tenant", args);
         jdbc.update(
                 com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.INSERT.replace("#{tenantId}", ":tenant"),
                 args);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public SourceRefreshResult refresh(String tenantId, Instant syncedAt) {
+        var args =
+                new MapSqlParameterSource("tenant", tenantId).addValue("synced", local(syncedAt));
+        jdbc.update("DELETE FROM bi_sales_contact_fact WHERE tenant_id = :tenant", args);
+        refreshCities(tenantId);
         int count =
                 jdbc.update(
                         """

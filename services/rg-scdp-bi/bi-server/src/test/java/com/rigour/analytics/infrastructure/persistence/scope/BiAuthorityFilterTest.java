@@ -65,7 +65,7 @@ class BiAuthorityFilterTest {
     @ValueSource(strings = {"DEPARTMENT", "SELF"})
     void restrictedReadsStillDenyWhenOwnershipCannotBeVerified(String mode) throws Exception {
         role(mode, Set.of("analytics:dashboard:read"));
-        doThrow(new IllegalStateException("ownership unavailable")).when(people).refresh(TENANT);
+        doThrow(new IllegalStateException("ownership unavailable")).when(people).refreshOrganization(TENANT);
         var response = new MockHttpServletResponse();
         filter.doFilter(
                 new MockHttpServletRequest("GET", "/api/v1/analytics/supply-dashboard/overview"),
@@ -85,19 +85,46 @@ class BiAuthorityFilterTest {
         filter.doFilter(request, response, chain);
         var order = inOrder(authority, people, chain);
         order.verify(authority).refresh(TENANT);
-        order.verify(people).refresh(TENANT);
+        order.verify(people).refreshOrganization(TENANT);
         order.verify(chain).doFilter(request, response);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"DEPARTMENT", "SELF"})
+    void restrictedFinancialReadDoesNotRequireSalesVisits(String mode) throws Exception {
+        role(mode, Set.of("analytics:dashboard:read"));
+        doThrow(new IllegalStateException("sales unavailable")).when(people).refresh(TENANT);
+        var request = new MockHttpServletRequest("GET", "/api/v1/analytics/supply-dashboard/effective-scope");
+        var response = new MockHttpServletResponse();
+        filter.doFilter(request, response, chain);
+        assertThat(response.getStatus()).isEqualTo(200);
+        verify(authority).refresh(TENANT);
+        verify(people).refreshOrganization(TENANT);
+        verify(people, never()).refresh(TENANT);
+        verify(chain).doFilter(request, response);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"visits", "city-contacts"})
+    void visitReadsStillRejectUnavailableSalesSource(String endpoint) throws Exception {
+        role("DEPARTMENT", Set.of("analytics:dashboard:read"));
+        doThrow(new IllegalStateException("sales unavailable")).when(people).refresh(TENANT);
+        var response = new MockHttpServletResponse();
+        filter.doFilter(new MockHttpServletRequest("GET", "/api/v1/analytics/supply/dashboard/" + endpoint), response, chain);
+        assertThat(response.getStatus()).isEqualTo(503);
+        verifyNoInteractions(chain);
     }
 
     @Test
     void allReadScopeCannotSkipOwnershipForWritesWithDifferentActionScope() throws Exception {
         role("ALL", Set.of("analytics:dashboard:read"));
+        doThrow(new IllegalStateException("sales unavailable")).when(people).refresh(TENANT);
         var request =
                 new MockHttpServletRequest("POST", "/api/v1/analytics/operating-workspace/actions");
         var response = new MockHttpServletResponse();
         filter.doFilter(request, response, chain);
         verify(authority).refresh(TENANT);
-        verify(people).refresh(TENANT);
+        verify(people).refreshOrganization(TENANT);
         verify(chain).doFilter(request, response);
     }
 

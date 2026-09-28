@@ -99,6 +99,38 @@ class BiSupplyScopeIntegrationTest {
     }
 
     @Test
+    void importedOrdersUseRecognizedOperatingCityForEachDepartmentWithoutOpeningUnknownOrSelf() {
+        department(1, null, "SALES", "销售部");
+        department(10, 1L, "CITY-BJ", "北京市");
+        department(20, 1L, "CITY-HZ", "杭州市");
+        productionMapper.refreshCityDimension(tenant);
+        fact(1, "A", "CITY-BJ", 10, 11, 100);
+        fact(2, "B", "CITY-HZ", 20, 11, 200);
+        fact(3, "A", "UNKNOWN", 10, 11, 900);
+        jdbc.update("UPDATE bi_order_authority SET attribution_state='REVIEW',employee_code=NULL,department_id=NULL,department_path=JSON_ARRAY() WHERE tenant_id=?", tenant);
+        for (String department : List.of("10", "20")) {
+            var policy = policy(List.of(clause("DEPARTMENT", specified(department), all(), all())), all(), all());
+            when(iam.authorization(any(), any())).thenReturn(policy);
+            try (var context = SupplyAuthorizationContext.open(iam, actor, policy);
+                    var session = sessions.openSession()) {
+                assertThat(session.getMapper(Queries.class).total(tenant)).isEqualTo(department.equals("10") ? 100 : 200);
+                var mapper = session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.BiDataScopeMapper.class);
+                var regions = mapper.filterOptions(tenant, null, null).stream()
+                        .filter(row -> "REGION".equals(row.get("optionType")))
+                        .map(row -> row.get("optionValue")).toList();
+                assertThat(regions).containsExactly(department.equals("10") ? "CITY-BJ" : "CITY-HZ");
+                assertThat(mapper.filterOptions(tenant, List.of(department.equals("10") ? "CITY-HZ" : "CITY-BJ"), null)).isEmpty();
+            }
+        }
+        var self = policy(List.of(clause("SELF", none(), all(), none())), all(), all());
+        when(iam.authorization(any(), any())).thenReturn(self);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, self);
+                var session = sessions.openSession()) {
+            assertThat(session.getMapper(Queries.class).count(tenant)).isZero();
+        }
+    }
+
+    @Test
     void departmentAndSelfUseOwnersAndDoNotGrantUnattributedInventory() {
         jdbc.update("INSERT INTO bi_source_hr_hr_employee(id,tenant_id,employee_code,employee_name,employment_status,department_id,department_path) VALUES(1,?,'A','员工甲','ACTIVE',10,JSON_ARRAY(10)),(2,?,'B','员工乙','ACTIVE',20,JSON_ARRAY(20))", tenant, tenant);
         jdbc.update("INSERT INTO bi_customer_authority(tenant_id,customer_id,employee_code,region_code,region_path,source_revision) VALUES(?,1,'A','HZ',JSON_ARRAY('HZ'),1),(?,2,'B','HZ',JSON_ARRAY('HZ'),1),(?,3,'A','NB',JSON_ARRAY('NB'),1)", tenant, tenant, tenant);
@@ -280,13 +312,17 @@ class BiSupplyScopeIntegrationTest {
                 .isEqualTo("v1");
     }
 
-    @Test
-    void partialRefreshCannotConsumeDepartmentChangeWithoutPublishingPeopleProjection() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void partialRefreshCannotConsumeDepartmentChangeWithoutPublishingPeopleProjection(boolean organizationOnly) {
         when(sourceSnapshots.version(any(), any(), any())).thenReturn("v1");
         when(sourceSnapshots.page(any(), any(), any(), any()))
                 .thenReturn(
                         new com.rigour.analytics.application.port.out.BiSourceSnapshotClient.Page(
                                 "v1", List.of()));
+        if (organizationOnly)
+            when(sourceSnapshots.version(any(), eq("SALES"), any()))
+                    .thenThrow(new IllegalStateException("Sales service not deployed"));
         when(authority.version(any(), any())).thenReturn("v1");
         when(authority.page(any(), any(), anyLong()))
                 .thenReturn(
@@ -320,7 +356,8 @@ class BiSupplyScopeIntegrationTest {
                         new com.rigour.analytics.application.port.out.BiSourceSnapshotClient.Page(
                                 "v1", List.of(row)));
         dashboardStore.synchronizeSourceSnapshots(tenant);
-        dashboardStore.synchronizePeopleSnapshots(tenant);
+        if (organizationOnly) peopleProjector.refreshOrganization(actor.tenantId());
+        else dashboardStore.synchronizePeopleSnapshots(tenant);
         assertThat(
                         jdbc.queryForObject(
                                 "SELECT department_id FROM bi_employee_dim WHERE tenant_id=? AND"
@@ -338,7 +375,8 @@ class BiSupplyScopeIntegrationTest {
                         new com.rigour.analytics.application.port.out.BiSourceSnapshotClient.Page(
                                 "v2", List.of(moved)));
         sourceProjector.refresh(actor.tenantId());
-        peopleProjector.refresh(actor.tenantId());
+        if (organizationOnly) peopleProjector.refreshOrganization(actor.tenantId());
+        else peopleProjector.refresh(actor.tenantId());
         assertThat(
                         jdbc.queryForObject(
                                 "SELECT department_id FROM bi_employee_dim WHERE tenant_id=? AND"
@@ -349,10 +387,19 @@ class BiSupplyScopeIntegrationTest {
         assertThat(
                         jdbc.queryForObject(
                                 "SELECT source_version FROM bi_source_snapshot_checkpoint WHERE"
-                                    + " tenant_id=? AND dataset='PEOPLE_HR_EMPLOYEE'",
+                                    + " tenant_id=? AND dataset=?",
                                 String.class,
-                                tenant))
+                                tenant,
+                                (organizationOnly ? "ORGANIZATION_" : "PEOPLE_") + "HR_EMPLOYEE"))
                 .isEqualTo("v2");
+        if (organizationOnly) {
+            verify(sourceSnapshots, never()).version(any(), eq("SALES"), any());
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_sales_contact_snapshot WHERE tenant_id=?", Integer.class, tenant)).isZero();
+            when(sourceSnapshots.version(actor.tenantId(), "HR", "HR_EMPLOYEE"))
+                    .thenThrow(new IllegalStateException("HR unavailable"));
+            assertThatThrownBy(() -> peopleProjector.refreshOrganization(actor.tenantId()))
+                    .isInstanceOf(IllegalStateException.class);
+        }
     }
 
     @Test

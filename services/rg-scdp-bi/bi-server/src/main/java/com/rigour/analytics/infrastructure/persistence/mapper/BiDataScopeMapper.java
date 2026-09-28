@@ -34,16 +34,23 @@ WITH visible AS (
     UNION ALL
     SELECT region_code, city_name, employee_code, employee_name, NULL, NULL, NULL
       FROM bi_employee_dim WHERE tenant_id = #{tenantId}
+    <if test="regions != null">
        AND region_code IN <foreach collection="regions" item="region" open="(" close=")" separator=",">#{region}</foreach>
+    </if>
     <if test="ownerStaffCode != null">AND employee_code = #{ownerStaffCode}</if>
     UNION ALL
     SELECT region_code, city_name, owner_staff_code, NULL, NULL, NULL, NULL
       FROM bi_sales_contact_fact WHERE tenant_id = #{tenantId}
+    <if test="regions != null">
        AND region_code IN <foreach collection="regions" item="region" open="(" close=")" separator=",">#{region}</foreach>
+    </if>
     <if test="ownerStaffCode != null">AND owner_staff_code = #{ownerStaffCode}</if>
 )
-SELECT 'REGION' AS optionType, region_code AS optionValue, COALESCE(MAX(region_name), region_code) AS optionLabel
-  FROM visible WHERE region_code IS NOT NULL GROUP BY region_code
+SELECT 'REGION' AS optionType, region_code AS optionValue, city_name AS optionLabel
+  FROM bi_sales_contact_city_dim WHERE tenant_id=#{tenantId}
+    <if test="regions != null">
+       AND region_code IN <foreach collection="regions" item="region" open="(" close=")" separator=",">#{region}</foreach>
+    </if>
 UNION ALL
 SELECT 'SALES_OWNER', owner_staff_code, COALESCE(MAX(owner_staff_name), owner_staff_code)
   FROM visible WHERE owner_staff_code IS NOT NULL GROUP BY owner_staff_code

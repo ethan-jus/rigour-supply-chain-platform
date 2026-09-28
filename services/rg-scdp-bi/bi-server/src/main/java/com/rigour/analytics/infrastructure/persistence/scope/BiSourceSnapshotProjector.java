@@ -35,6 +35,17 @@ public class BiSourceSnapshotProjector {
     }
 
     @Transactional
+    public boolean refreshOrganization(UUID tenantId) {
+        // 部门校验只依赖当前组织和地区；独立检查点确保业务同步不会消耗维度重建信号。
+        return refresh(
+                tenantId,
+                BiSourceDatasets.ALL.stream()
+                        .filter(d -> Set.of("HR_DEPARTMENT", "HR_EMPLOYEE", "CRM_CUSTOMER_AREA").contains(d.code()))
+                        .toList(),
+                "ORGANIZATION_");
+    }
+
+    @Transactional
     public boolean refreshPeople(UUID tenantId) {
         return refresh(
                 tenantId,

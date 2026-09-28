@@ -7,6 +7,7 @@ import java.util.List;
 /** Sales 建联记录本地投影端口；不存微信截图内容、联系方式或身份凭据。 */
 public interface CityContactAnalyticsStore {
     List<String> tenantIds();
+    void refreshCities(String tenantId);
     SupplyDashboardStore.SourceRefreshResult refresh(String tenantId, Instant syncedAt);
     Snapshot read(String tenantId, Instant from, Instant to, String regionCode, String ownerStaffCode);
     record Snapshot(Instant syncedAt, boolean businessLinksReady, List<City> cities) { }
