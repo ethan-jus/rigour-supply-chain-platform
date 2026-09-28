@@ -119,6 +119,59 @@ class ScdpAdministratorAuthorizationTest {
         assertThat(settings.permissionsExcludingRole(admin, role)).isEmpty();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"supply.bi.sales", "supply.bi.city-operating"})
+    void dashboardPageGrantProvidesReadOnlyAccessWithSavedScope(String route) {
+        var employee = mock(AppEmployeeClient.class);
+        when(employee.employee(ordinary.tenantId(), "CITY-EMPLOYEE")).thenReturn(
+                new AppEmployeeClient.Employee(1, "CITY-EMPLOYEE", "城市负责人", "ACTIVE",
+                        6L, "测试城市", "CITY", "城市负责人", java.util.List.of(1L, 6L),
+                        0, 0, 0, true, null));
+        var manager = new DataSourceTransactionManager(ds);
+        settings = new JdbcAppSettingsStore(jdbc, manager, employee);
+        var roleStore = new JdbcAppRoleStore(jdbc, settings, manager,
+                mock(AppReferenceValidator.class), employee);
+        var memberStore = new JdbcAppMemberStore(jdbc, settings, roleStore, employee,
+                mock(com.rigour.tenant.iam.application.port.out.PasswordHasher.class), manager);
+        authorization = new JdbcAppAuthorizationStore(jdbc, settings, roleStore, memberStore, employee);
+        byte[] tenant = bin(ordinary.tenantId()), user = bin(ordinary.principalId());
+        jdbc.update("UPDATE iam_app_member SET member_kind='BUSINESS' WHERE tenant_id=? AND user_id=?", tenant, user);
+        jdbc.update("INSERT INTO iam_app_employee_binding(tenant_id,application_id,user_id,employee_code,hr_revision,hr_access_version) VALUES(?,?,?,'CITY-EMPLOYEE',0,0)", tenant, bin(app), user);
+        byte[] assignedRole = jdbc.queryForObject("SELECT role_id FROM iam_app_member_role WHERE tenant_id=? AND user_id=?", byte[].class, tenant, user);
+        jdbc.update("UPDATE iam_app_role SET data_scope_mode='DEPARTMENT' WHERE tenant_id=? AND id=?", tenant, assignedRole);
+        jdbc.update("""
+                INSERT INTO iam_app_menu_node(tenant_id,application_id,id,parent_id,resource_id,node_type,display_name)
+                SELECT ?,r.application_id,r.id,NULL,r.id,r.resource_type,r.display_name
+                FROM iam_resource r WHERE r.id IN (
+                    UUID_TO_BIN('019facf2-0000-7000-8000-000000000050'),
+                    UUID_TO_BIN('019facf2-0000-7000-8000-000000000065'),
+                    UUID_TO_BIN('019facf2-0000-7000-8000-000000000240'),
+                    UUID_TO_BIN('019facf2-0000-7000-8000-000000000379'))
+                """, tenant);
+        jdbc.update("UPDATE iam_app_menu_node SET parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000065') WHERE tenant_id=? AND id IN (UUID_TO_BIN('019facf2-0000-7000-8000-000000000240'),UUID_TO_BIN('019facf2-0000-7000-8000-000000000379'))", tenant);
+        byte[] selectedPage = jdbc.queryForObject("SELECT resource_id FROM iam_resource_ui WHERE route_key=?", byte[].class, route);
+        jdbc.update("INSERT INTO iam_app_role_grant(tenant_id,application_id,role_id,menu_node_id) VALUES(?,?,?,?)", tenant, bin(app), assignedRole, selectedPage);
+        assertThat(settings.context(ordinary).permissions()).containsExactly("analytics:dashboard:read");
+        assertThat(settings.navigation(ordinary)).singleElement().satisfies(group ->
+                assertThat(group.children()).singleElement().satisfies(node ->
+                        assertThat(node.routeKey()).isEqualTo(route)));
+        var snapshot = authorization.proposed(ordinary, "analytics:dashboard:read");
+        assertThat(snapshot.functionAllowed()).isTrue();
+        assertThat(snapshot.clauses()).singleElement().satisfies(clause -> {
+            assertThat(clause.scopeMode()).isEqualTo("DEPARTMENT");
+            assertThat(clause.departments().references()).containsExactly("6");
+        });
+        assertThat(authorization.proposed(ordinary, "analytics:refresh:write").functionAllowed()).isFalse();
+        assertThat(authorization.proposed(ordinary, "analytics:city-cost:write").functionAllowed()).isFalse();
+        assertThat(authorization.proposed(ordinary, "supply:user:read").functionAllowed()).isFalse();
+        jdbc.update("UPDATE iam_app_member SET status='DISABLED' WHERE tenant_id=? AND user_id=?", tenant, user);
+        assertThat(settings.permissions(ordinary)).isEmpty();
+        jdbc.update("UPDATE iam_app_member SET status='ACTIVE' WHERE tenant_id=? AND user_id=?", tenant, user);
+        jdbc.update("DELETE FROM iam_app_role_grant WHERE tenant_id=? AND role_id=?", tenant, assignedRole);
+        assertThat(settings.permissions(ordinary)).isEmpty();
+        assertThat(settings.navigation(ordinary)).isEmpty();
+    }
+
     @Test void navigationReadsSavedNamesHierarchyOrderAndVisibility() {
         UUID group = UUID.randomUUID();
         jdbc.update("INSERT INTO iam_app_menu_node(tenant_id,application_id,id,node_type,display_name,sort_order) VALUES(?,?,?,'MENU','华东业务',7)", bin(admin.tenantId()), bin(app), bin(group));
