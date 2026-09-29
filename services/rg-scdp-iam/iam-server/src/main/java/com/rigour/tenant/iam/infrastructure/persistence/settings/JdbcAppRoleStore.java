@@ -7,6 +7,7 @@ import com.rigour.shared.core.exception.StateConflictException;
 import com.rigour.tenant.iam.application.port.out.AppRoleStore;
 import com.rigour.tenant.iam.application.service.management.ManagementModels.Actor;
 import com.rigour.tenant.iam.application.service.settings.AppAccessModels.*;
+import com.rigour.tenant.iam.application.service.settings.AppGrantDeniedException;
 import com.rigour.tenant.iam.application.service.settings.RoleDataScopes;
 import com.rigour.tenant.iam.domain.model.settings.AppMenuTree;
 import com.rigour.tenant.iam.domain.model.settings.AppMenuTree.Node;
@@ -408,11 +409,16 @@ public class JdbcAppRoleStore implements AppRoleStore {
         Set<String> owned = settings.permissions(a);
         Map<UUID, Node> menus =
                 settings.rows(a).stream().collect(Collectors.toMap(Node::id, Function.identity()));
+        List<String> missingPermissions = new ArrayList<>();
         for (UUID id : nodes) {
             Node n = menus.get(id);
-            if (n == null || (n.permissionCode() != null && !owned.contains(n.permissionCode())))
+            if (n == null)
                 throw new AccessDeniedException("只能授予管理边界内的功能");
+            if (n.permissionCode() != null && !owned.contains(n.permissionCode()))
+                missingPermissions.add(n.permissionCode());
         }
+        if (!missingPermissions.isEmpty())
+            throw AppGrantDeniedException.functions(missingPermissions);
         Set<UUID> roleIds =
                 new HashSet<>(
                         jdbc.query(
@@ -432,7 +438,7 @@ public class JdbcAppRoleStore implements AppRoleStore {
                         .toList();
         for (ScopeRule r : rules)
             if (ownedRules.stream().noneMatch(o -> covers(o, r)))
-                throw new AccessDeniedException("数据规则超出当前可授予边界");
+                throw AppGrantDeniedException.dataScope();
     }
 
     public void requireCurrentDepartmentDelegable(

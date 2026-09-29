@@ -2075,15 +2075,18 @@ INSERT INTO iam_user_credential (
             Set<String> permissions,
             List<com.rigour.tenant.iam.application.service.settings.AppAccessModels.ScopeRule>
                     rules) {
+        var menus = appSettingsStore.menus(actor);
         Set<UUID> nodes =
-                appSettingsStore.menus(actor).stream()
+                menus.stream()
                         .filter(
                                 n ->
                                         n.permissionCode() != null
                                                 && permissions.contains(n.permissionCode()))
                         .map(com.rigour.tenant.iam.domain.model.settings.AppMenuTree.Node::id)
                         .collect(java.util.stream.Collectors.toSet());
-        assertThat(nodes).hasSize(permissions.size());
+        assertThat(menus.stream().filter(n -> nodes.contains(n.id()))
+                .map(com.rigour.tenant.iam.domain.model.settings.AppMenuTree.Node::permissionCode)
+                .collect(java.util.stream.Collectors.toSet())).isEqualTo(permissions);
         return appRoles.saveRole(
                 actor,
                 null,
