@@ -1,6 +1,6 @@
 package com.rigour.analytics.infrastructure.persistence.scope;
 
-/** 城市名单只取启用的销售部直属部门；地区关联不决定名单或业绩归属。 */
+/** 城市名单只取启用的销售部直属部门；地区关联用于映射原始订单的历史城市。 */
 public final class OperatingCitySql {
     private OperatingCitySql() {}
     public static final String INSERT = """

@@ -195,29 +195,36 @@ class BiSupplyScopeIntegrationTest {
     }
 
     @Test
-    void operatingCitiesUseOrderSalesDepartmentAndConserveLateReceiptsWithoutChangingAuthority() {
+    void historicalOperatingCitiesSurviveEmployeeTransfersAndConserveLateReceiptsWithoutChangingAuthority() {
         department(1,null,"SALES","销售部");
         department(10,1L,"CITY-HZ","杭州市");
         department(20,1L,"CITY-BJ","北京市");
-        department(30,null,"KA","KA销售部");
+        department(30,1L,"CITY-JH","金华市");
+        department(40,null,"KA","KA销售部");
+        jdbc.update("INSERT INTO bi_source_crm_crm_customer_area(id,tenant_id,area_code,area_name,status,deleted) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),'HZ','杭州市','ACTIVE',0)",UUID.randomUUID().toString(),tenant);
         productionMapper.refreshCityDimension(tenant);
         fact(1,"A","GZ",10,11,100); // frozen Hangzhou department, Guangzhou customer region
         fact(2,"B","GZ",20,11,200);
         fact(3,"C","GZ",30,11,300);
-        fact(4,"MISSING","GZ",20,11,400);
+        fact(4,"B","CITY-BJ",20,11,400); // current fact/HR city cannot fill an unknown source city
+        jdbc.update("INSERT INTO bi_source_order_order_sales_order(id,tenant_id,region_code,owner_employee_code) VALUES(1,?,'CITY-BJ','A'),(2,?,'HZ','B'),(3,?,'CITY-BJ','C'),(4,?,'UNMAPPED','B')",tenant,tenant,tenant,tenant);
         jdbc.update("UPDATE bi_order_authority SET attribution_state='REVIEW',department_id=NULL,department_path=JSON_ARRAY() WHERE tenant_id=? AND order_id IN(2,3,4)",tenant);
-        jdbc.update("INSERT INTO bi_source_hr_hr_employee(id,tenant_id,employee_code,employee_name,employment_status,department_id,department_path) VALUES (1,?,'A','A','ACTIVE',20,JSON_ARRAY(1,20)),(2,?,'B','B','ACTIVE',20,JSON_ARRAY(1,20)),(3,?,'C','C','ACTIVE',30,JSON_ARRAY(30))",tenant,tenant,tenant);
-        jdbc.update("INSERT INTO bi_sales_payment_fact(tenant_id,payment_id,order_id,payment_time,paid_amount,synced_time) VALUES(?,1,1,'2026-09-15',50,UTC_TIMESTAMP(6))",tenant);
-        jdbc.update("INSERT INTO bi_sales_order_line_fact(tenant_id,order_id,order_line_id,order_date,synced_time) VALUES(?,1,1,'2026-08-01',UTC_TIMESTAMP(6))",tenant);
-        for (int repeat=0;repeat<2;repeat++) {
+        jdbc.update("INSERT INTO bi_source_hr_hr_employee(id,tenant_id,employee_code,employee_name,employment_status,department_id,department_path) VALUES (1,?,'A','A','ACTIVE',20,JSON_ARRAY(1,20)),(2,?,'B','B','ACTIVE',30,JSON_ARRAY(1,30)),(3,?,'C','C','ACTIVE',40,JSON_ARRAY(40))",tenant,tenant,tenant);
+        jdbc.update("INSERT INTO bi_sales_payment_fact(tenant_id,payment_id,order_id,payment_time,paid_amount,synced_time) VALUES(?,1,2,'2026-09-15',50,UTC_TIMESTAMP(6))",tenant);
+        jdbc.update("INSERT INTO bi_sales_order_line_fact(tenant_id,order_id,order_line_id,order_date,synced_time) VALUES(?,2,1,'2026-08-01',UTC_TIMESTAMP(6))",tenant);
+        for (int repeat=0;repeat<3;repeat++) {
+            jdbc.update("UPDATE bi_source_hr_hr_employee SET department_id=?,department_path=JSON_ARRAY(1,?) WHERE tenant_id=?",repeat==0 ? 30 : 20,repeat==0 ? 30 : 20,tenant);
+            productionMapper.clearCityDimension(tenant);
+            productionMapper.refreshCityDimension(tenant);
             productionMapper.alignOperatingOrderCities(tenant);
             productionMapper.alignOperatingOrderLineCities(tenant);
             productionMapper.alignOperatingPaymentCities(tenant);
+            assertThat(jdbc.queryForList("SELECT region_code FROM bi_sales_order_fact WHERE tenant_id=? ORDER BY order_id",String.class,tenant)).containsExactly("CITY-HZ","CITY-HZ","CITY-BJ","UNKNOWN");
+            assertThat(jdbc.queryForObject("SELECT region_code FROM bi_sales_payment_fact WHERE tenant_id=?",String.class,tenant)).isEqualTo("CITY-HZ");
+            assertThat(jdbc.queryForObject("SELECT region_code FROM bi_sales_order_line_fact WHERE tenant_id=?",String.class,tenant)).isEqualTo("CITY-HZ");
         }
-        assertThat(jdbc.queryForList("SELECT region_code FROM bi_sales_order_fact WHERE tenant_id=? ORDER BY order_id",String.class,tenant)).containsExactly("CITY-HZ","CITY-BJ","OUTSIDE_CITY","UNKNOWN");
+        assertThat(jdbc.queryForList("SELECT region_code FROM bi_source_order_order_sales_order WHERE tenant_id=? ORDER BY id",String.class,tenant)).containsExactly("CITY-BJ","HZ","CITY-BJ","UNMAPPED");
         assertThat(jdbc.queryForObject("SELECT SUM(payable_amount) FROM bi_sales_order_fact WHERE tenant_id=?",java.math.BigDecimal.class,tenant)).isEqualByComparingTo("1000");
-        assertThat(jdbc.queryForObject("SELECT region_code FROM bi_sales_payment_fact WHERE tenant_id=?",String.class,tenant)).isEqualTo("CITY-HZ");
-        assertThat(jdbc.queryForObject("SELECT region_code FROM bi_sales_order_line_fact WHERE tenant_id=?",String.class,tenant)).isEqualTo("CITY-HZ");
         assertThat(jdbc.queryForObject("SELECT region_code FROM bi_order_authority WHERE tenant_id=? AND order_id=1",String.class,tenant)).isEqualTo("GZ");
         var geographical=policy(List.of(clause("REGION",none(),specified("GZ"),none())),all(),all());
         when(iam.authorization(any(),any())).thenReturn(geographical);
@@ -229,6 +236,26 @@ class BiSupplyScopeIntegrationTest {
         try(var ctx=SupplyAuthorizationContext.open(iam,actor,p)) {
             assertThat(productionMapper.cityMonthlyGoals(tenant,2026,null)).hasSize(12).allSatisfy(row->assertThat(row.get("regionCode")).isEqualTo("CITY-HZ"));
         }
+    }
+
+    @Test
+    void frozenCitiesUseFrozenRegionsOnlyWhenDepartmentIsMissingAndAmbiguousCitiesRemainUnknown() {
+        department(1,null,"SALES","销售部");
+        department(10,1L,"CITY-HZ","杭州市");
+        department(20,1L,"CITY-BJ","北京市");
+        productionMapper.refreshCityDimension(tenant);
+        jdbc.update("UPDATE bi_sales_contact_city_dim SET source_region_code='AMBIGUOUS' WHERE tenant_id=?",tenant);
+        fact(1,"A","CITY-HZ",10,11,100);
+        fact(2,"A","CITY-HZ",30,11,200);
+        fact(3,"A","CITY-HZ",10,11,300);
+        fact(4,"A","CITY-HZ",10,11,400);
+        jdbc.update("UPDATE bi_order_authority SET department_id=NULL,department_path=JSON_ARRAY() WHERE tenant_id=? AND order_id=1",tenant);
+        jdbc.update("UPDATE bi_order_authority SET department_path=JSON_ARRAY(30) WHERE tenant_id=? AND order_id=2",tenant);
+        jdbc.update("UPDATE bi_order_authority SET attribution_state='REVIEW' WHERE tenant_id=? AND order_id IN(3,4)",tenant);
+        jdbc.update("INSERT INTO bi_source_order_order_sales_order(id,tenant_id,region_code) VALUES(1,?,'CITY-BJ'),(2,?,'CITY-BJ'),(3,?,'AMBIGUOUS')",tenant,tenant,tenant);
+        productionMapper.alignOperatingOrderCities(tenant);
+        assertThat(jdbc.queryForList("SELECT region_code FROM bi_sales_order_fact WHERE tenant_id=? ORDER BY order_id",String.class,tenant))
+                .containsExactly("CITY-HZ","OUTSIDE_CITY","UNKNOWN","UNKNOWN");
     }
 
     @Test

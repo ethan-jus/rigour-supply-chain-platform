@@ -5518,20 +5518,32 @@ INNER JOIN bi_order_authority snapshot
     int alignPaymentOrderAttribution(
             @Param("tenantId") String tenantId, @Param("syncedAt") LocalDateTime syncedAt);
 
-    /** 历史订单未冻结部门时使用订单销售的当前HR部门，不回退到客户地区。 */
+    /** 经营城市取订单冻结归属或原始订单地区，人员调动不重写历史城市。 */
     @Update("""
 UPDATE bi_sales_order_fact o
 LEFT JOIN bi_order_authority a ON a.tenant_id=o.tenant_id AND a.order_id=o.order_id
-LEFT JOIN bi_source_hr_hr_employee e ON e.tenant_id=o.tenant_id AND e.employee_code=o.owner_staff_code
-LEFT JOIN bi_sales_contact_city_dim c ON c.tenant_id=o.tenant_id
- AND (c.department_id=CASE WHEN a.attribution_state='FROZEN' THEN a.department_id ELSE e.department_id END
-      OR JSON_CONTAINS(CASE WHEN a.attribution_state='FROZEN' THEN a.department_path ELSE e.department_path END,CAST(c.department_id AS JSON)))
-SET o.region_code=COALESCE(c.region_code,CASE WHEN
-       (CASE WHEN a.attribution_state='FROZEN' THEN a.department_id ELSE e.department_id END) IS NOT NULL
-       THEN 'OUTSIDE_CITY' ELSE 'UNKNOWN' END),
-    o.region_name=COALESCE(c.city_name,CASE WHEN
-       (CASE WHEN a.attribution_state='FROZEN' THEN a.department_id ELSE e.department_id END) IS NOT NULL
-       THEN '非城市销售部门' ELSE '销售归属待核对' END)
+LEFT JOIN bi_source_order_order_sales_order source_order
+ ON source_order.tenant_id=o.tenant_id AND source_order.id=o.order_id
+LEFT JOIN bi_sales_contact_city_dim frozen_city ON frozen_city.tenant_id=o.tenant_id
+ AND a.attribution_state='FROZEN'
+ AND (frozen_city.department_id=a.department_id
+      OR JSON_CONTAINS(a.department_path,CAST(frozen_city.department_id AS JSON)))
+LEFT JOIN (
+ SELECT tenant_id,source_code,MIN(region_code) AS region_code,MIN(city_name) AS city_name
+ FROM (
+  SELECT tenant_id,region_code AS source_code,region_code,city_name FROM bi_sales_contact_city_dim
+  UNION
+  SELECT tenant_id,source_region_code AS source_code,region_code,city_name
+  FROM bi_sales_contact_city_dim WHERE source_region_code IS NOT NULL
+ ) city_codes
+ GROUP BY tenant_id,source_code HAVING COUNT(*)=1
+) historical_city ON historical_city.tenant_id=o.tenant_id
+ AND historical_city.source_code=CASE WHEN a.attribution_state='FROZEN' THEN a.region_code ELSE source_order.region_code END
+ AND (COALESCE(a.attribution_state,'')<>'FROZEN' OR a.department_id IS NULL)
+SET o.region_code=COALESCE(frozen_city.region_code,historical_city.region_code,
+      CASE WHEN a.attribution_state='FROZEN' AND a.department_id IS NOT NULL THEN 'OUTSIDE_CITY' ELSE 'UNKNOWN' END),
+    o.region_name=COALESCE(frozen_city.city_name,historical_city.city_name,
+      CASE WHEN a.attribution_state='FROZEN' AND a.department_id IS NOT NULL THEN '非城市销售部门' ELSE '销售归属待核对' END)
 WHERE o.tenant_id=#{tenantId}
 """)
     int alignOperatingOrderCities(@Param("tenantId") String tenantId);
