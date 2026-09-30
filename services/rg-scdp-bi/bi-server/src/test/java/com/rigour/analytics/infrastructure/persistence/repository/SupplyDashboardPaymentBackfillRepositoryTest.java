@@ -120,11 +120,15 @@ CREATE TABLE bi_source_crm_crm_customer (
     @ParameterizedTest
     @CsvSource(
             value = {
-                "ORDER_OWNER,CUSTOMER_OWNER,COLLECTOR,CUSTOMER_OWNER",
-                "'',CUSTOMER_OWNER,COLLECTOR,CUSTOMER_OWNER",
+                "ORDER_OWNER,CUSTOMER_OWNER,COLLECTOR,COLLECTOR",
+                "'',CUSTOMER_OWNER,COLLECTOR,COLLECTOR",
                 "NULL,'',COLLECTOR,COLLECTOR",
-                "ORDER_OWNER,NULL,NULL,ORDER_OWNER",
-                "ORDER_OWNER,UNKNOWN,MULTI,ORDER_OWNER",
+                "ORDER_OWNER,NULL,NULL,NULL",
+                "ORDER_OWNER,UNKNOWN,MULTI,NULL",
+                "ORDER_OWNER,CUSTOMER_OWNER,'',CUSTOMER_OWNER",
+                "ORDER_OWNER,CUSTOMER_OWNER,'  ',CUSTOMER_OWNER",
+                "ORDER_OWNER,CUSTOMER_OWNER,unknown,CUSTOMER_OWNER",
+                "ORDER_OWNER,CUSTOMER_OWNER,multi,CUSTOMER_OWNER",
                 "ORDER_OWNER,'   ',COLLECTOR,COLLECTOR",
                 "NULL,NULL,NULL,NULL"
             },

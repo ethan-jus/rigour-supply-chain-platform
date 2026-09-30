@@ -1,6 +1,6 @@
 package com.rigour.analytics.infrastructure.persistence.scope;
 
-/** 到账业绩归属与原始经办人分开保存；客户当前销售优先，其次经办人，最后订单销售。 */
+/** 到账业绩优先归属原始回款经办人；经办人缺失时归属客户当前业务员。 */
 public final class PaymentPerformanceSql {
     private PaymentPerformanceSql() {}
 
@@ -10,22 +10,19 @@ public final class PaymentPerformanceSql {
     public static final String COLLECTOR =
             "CASE WHEN UPPER(TRIM(p.collector_staff_code)) NOT IN ('UNKNOWN','MULTI') THEN"
                 + " NULLIF(TRIM(p.collector_staff_code),'') END";
-    public static final String ORDER =
-            "CASE WHEN UPPER(TRIM(o.owner_employee_code)) NOT IN ('UNKNOWN','MULTI') THEN"
-                + " NULLIF(TRIM(o.owner_employee_code),'') END";
-    public static final String OWNER = "COALESCE(" + CUSTOMER + "," + COLLECTOR + "," + ORDER + ")";
+    public static final String OWNER = "COALESCE(" + COLLECTOR + "," + CUSTOMER + ")";
     public static final String NAME =
             "COALESCE((SELECT MAX(NULLIF(TRIM(e.employee_name),'')) FROM bi_source_hr_hr_employee e"
                 + " WHERE e.tenant_id=p.tenant_id AND e.employee_code="
                     + OWNER
                     + "),CASE WHEN "
+                    + COLLECTOR
+                    + " IS NOT NULL THEN"
+                    + " NULLIF(TRIM(p.collector_name_snapshot),'')"
+                    + " WHEN "
                     + CUSTOMER
                     + " IS NOT NULL THEN"
                     + " COALESCE(NULLIF(TRIM(c.owner_employee_name_snapshot),''),NULLIF(TRIM(c.owner_sales_name),''))"
-                    + " WHEN "
-                    + COLLECTOR
-                    + " IS NOT NULL THEN NULLIF(TRIM(p.collector_name_snapshot),'') ELSE"
-                    + " COALESCE(NULLIF(TRIM(o.owner_employee_name_snapshot),''),NULLIF(TRIM(o.owner_sales_name),''))"
                     + " END,"
                     + OWNER
                     + ")";

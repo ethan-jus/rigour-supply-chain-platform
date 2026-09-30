@@ -1153,7 +1153,7 @@ SELECT l.region_code AS regionCode,
             @Param("customerTypeCode") String customerTypeCode,
             @Param("sourceSystemCode") String sourceSystemCode);
 
-    /** 按到账日期和已解析的业绩销售汇总，不使用原始回款经办人分组。 */
+    /** 按到账日期和统一回款归属汇总：经办人优先，缺失时回退客户当前业务员。 */
     @Select(
             """
 <script>

@@ -122,12 +122,13 @@ class EmployeeAnalyticsRepositoryTest {
                 "INSERT INTO bi_sales_order_fact VALUES"
                     + " ('T','E1','BJ',0,'COMPLETED','2026-09-01',100,40),('T','E1','BJ',0,'COMPLETED','2026-09-02',200,60),('T','E1','BJ',0,'CANCELLED','2026-09-02',500,0),('OTHER','E1','BJ',0,'COMPLETED','2026-09-02',999,999),('T','E1','SH',0,'COMPLETED','2026-09-02',700,0)");
         jdbc.execute(
-                "CREATE TABLE bi_sales_payment_fact(tenant_id VARCHAR,collector_staff_code"
+                "CREATE TABLE bi_sales_payment_fact(tenant_id VARCHAR,owner_staff_code VARCHAR,collector_staff_code"
                     + " VARCHAR,region_code VARCHAR,deleted INT,payment_time TIMESTAMP,paid_amount"
                     + " DECIMAL(24,6))");
         jdbc.update(
                 "INSERT INTO bi_sales_payment_fact VALUES"
-                    + " ('T','E2','BJ',0,'2026-09-02',100),('OTHER','E1','BJ',0,'2026-09-02',999),('T','E1','BJ',1,'2026-09-02',500),('T','E1','BJ',0,'2026-08-31',600)");
+                    + " ('T','E2','E2','BJ',0,'2026-09-02',100),('OTHER','E1','E1','BJ',0,'2026-09-02',999),('T','E1','E1','BJ',1,'2026-09-02',500),('T','E1','E1','BJ',0,'2026-08-31',600),"
+                    + " ('T','E1',NULL,'BJ',0,'2026-09-02',40),('T','E2','UNKNOWN','BJ',0,'2026-09-02',20),('T','E1',NULL,'SH',0,'2026-09-02',700),('T',NULL,NULL,'BJ',0,'2026-09-02',80)");
         var repository = new JdbcEmployeeAnalyticsStore(ds);
         var result =
                 repository.read(
@@ -141,9 +142,19 @@ class EmployeeAnalyticsRepositoryTest {
         assertThat(first.customerCount()).isEqualTo(2);
         assertThat(first.orderCount()).isEqualTo(2);
         assertThat(first.salesAmount()).isEqualByComparingTo("300");
-        assertThat(first.paidAmount()).isZero();
-        assertThat(result.rows().get(1).employee().paidAmount()).isEqualByComparingTo("100");
+        assertThat(first.paidAmount()).isEqualByComparingTo("40");
+        assertThat(result.rows().get(1).employee().paidAmount()).isEqualByComparingTo("120");
         assertThat(result.rows().get(1).employee().orderCount()).isZero();
+        var employeeReceipts =
+                repository.read(
+                        "T",
+                        Instant.parse("2026-09-01T00:00:00Z"),
+                        Instant.parse("2026-09-03T00:00:00Z"),
+                        "BJ",
+                        "E2");
+        assertThat(employeeReceipts.rows()).hasSize(1);
+        assertThat(employeeReceipts.rows().getFirst().employee().paidAmount())
+                .isEqualByComparingTo("120");
         assertThat(repository.read("T", Instant.EPOCH, Instant.now(), "BJ", "E2").rows())
                 .hasSize(1);
         assertThat(repository.read("UNSYNCED", Instant.EPOCH, Instant.now(), null, null).syncedAt())

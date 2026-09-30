@@ -127,14 +127,14 @@ SELECT e.*, COALESCE(c.customer_count, 0) AS customer_count,
         GROUP BY owner_staff_code
   ) o ON o.owner_staff_code = e.employee_code
   LEFT JOIN (
-       SELECT collector_staff_code, SUM(paid_amount) AS paid_amount
+       SELECT owner_staff_code, SUM(paid_amount) AS paid_amount
          FROM bi_sales_payment_fact
         WHERE tenant_id = :tenant AND deleted = 0
           AND payment_time >= :from AND payment_time <= :to
           AND (:region IS NULL OR region_code = :region)
-          AND (:employee IS NULL OR collector_staff_code = :employee)
-        GROUP BY collector_staff_code
-  ) p ON p.collector_staff_code = e.employee_code
+          AND (:employee IS NULL OR owner_staff_code = :employee)
+        GROUP BY owner_staff_code
+  ) p ON p.owner_staff_code = e.employee_code
  WHERE e.tenant_id = :tenant AND (:region IS NULL OR e.region_code = :region)
    AND (:employee IS NULL OR e.employee_code = :employee)
  ORDER BY sales_amount DESC, e.employee_code

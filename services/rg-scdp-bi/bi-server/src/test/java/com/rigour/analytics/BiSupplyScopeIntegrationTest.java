@@ -258,6 +258,85 @@ class BiSupplyScopeIntegrationTest {
                 .containsExactly("CITY-HZ","OUTSIDE_CITY","UNKNOWN","UNKNOWN");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(
+            value = {
+                "COLLECTOR,CUSTOMER,0,经办人快照,经办人现名,COLLECTOR,经办人现名",
+                "NO_HR,CUSTOMER,0,经办人快照,NULL,NO_HR,经办人快照",
+                "NO_HR,CUSTOMER,0,NULL,NULL,NO_HR,NO_HR",
+                "NULL,CUSTOMER,0,NULL,NULL,CUSTOMER,客户业务员快照",
+                "'',CUSTOMER,0,无效经办人快照,NULL,CUSTOMER,客户业务员快照",
+                "'   ',CUSTOMER,0,无效经办人快照,NULL,CUSTOMER,客户业务员快照",
+                "unknown,CUSTOMER,0,无效经办人快照,NULL,CUSTOMER,客户业务员快照",
+                "multi,CUSTOMER,0,无效经办人快照,NULL,CUSTOMER,客户业务员快照",
+                "NULL,NULL,0,NULL,NULL,NULL,NULL",
+                "NULL,UNKNOWN,0,NULL,NULL,NULL,NULL",
+                "NULL,MULTI,0,NULL,NULL,NULL,NULL",
+                "NULL,'',0,NULL,NULL,NULL,NULL",
+                "NULL,'   ',0,NULL,NULL,NULL,NULL",
+                "NULL,CUSTOMER,1,NULL,NULL,NULL,NULL"
+            },
+            nullValues = "NULL")
+    void paymentPerformanceUsesCollectorThenCurrentCustomerWithoutChangingSourceOrCity(
+            String collector, String customerOwner, int customerDeleted, String collectorSnapshot,
+            String collectorHrName, String expectedOwner, String expectedName) {
+        // 与后台 ETL 一致，不带浏览器租户请求的授权上下文。
+        TestAuthorizationContext.clear();
+        jdbc.update("""
+                INSERT INTO bi_source_order_order_sales_order
+                    (tenant_id,id,customer_id,region_code,owner_employee_code,owner_employee_name_snapshot,updated_time)
+                VALUES(?,10,20,'HZ','ORDER_OWNER','订单业务员','2026-09-02')
+                """, tenant);
+        jdbc.update("""
+                INSERT INTO bi_source_crm_crm_customer
+                    (tenant_id,id,region_code,owner_employee_code,owner_employee_name_snapshot,deleted,updated_time)
+                VALUES(?,20,'BJ',?,'客户业务员快照',?,'2026-09-02')
+                """, tenant,customerOwner,customerDeleted);
+        // customer_id 为空时沿用订单关联客户；不能因此使用订单业务员作业绩兜底。
+        jdbc.update("""
+                INSERT INTO bi_source_order_order_payment_record
+                    (tenant_id,id,order_id,collector_staff_code,collector_name_snapshot,payment_time,paid_amount,updated_time,deleted)
+                VALUES(?,101,10,?,?,'2026-09-01 08:30:00',125.375,'2026-09-02',0)
+                """, tenant,collector,collectorSnapshot);
+        if (collectorHrName != null) {
+            jdbc.update("INSERT INTO bi_source_hr_hr_employee(tenant_id,id,employee_code,employee_name,employment_status) VALUES(?,1,?,?,'ACTIVE')",
+                    tenant,collector,collectorHrName);
+        }
+        jdbc.update("INSERT INTO bi_source_hr_hr_employee(tenant_id,id,employee_code,employee_name,employment_status) VALUES(?,1,'NO_HR','其他租户员工','ACTIVE')",
+                UUID.randomUUID().toString());
+        var from=java.time.LocalDateTime.parse("2026-09-01T00:00:00");
+        var to=java.time.LocalDateTime.parse("2026-09-03T00:00:00");
+        productionMapper.upsertSalesPaymentFactFromSource(tenant,from,to,to);
+        var original=jdbc.queryForMap("""
+                SELECT owner_staff_code,owner_staff_name,collector_staff_code,collector_staff_name,
+                       region_code,payment_time,paid_amount
+                  FROM bi_sales_payment_fact WHERE tenant_id=? AND payment_id=101
+                """,tenant);
+        assertThat(original.get("owner_staff_code")).isEqualTo(expectedOwner);
+        assertThat(original.get("owner_staff_name")).isEqualTo(expectedName);
+        assertThat(original.get("collector_staff_code")).isEqualTo(collector);
+        assertThat(original.get("collector_staff_name")).isEqualTo(collectorSnapshot);
+        assertThat(original.get("region_code")).isEqualTo("HZ");
+        assertThat(original.get("payment_time")).isEqualTo(java.time.LocalDateTime.parse("2026-09-01T08:30:00"));
+        assertThat((java.math.BigDecimal)original.get("paid_amount")).isEqualByComparingTo("125.375");
+        var repository=new com.rigour.analytics.infrastructure.persistence.repository.MybatisPlusSupplyDashboardRepository(productionMapper);
+        assertThat(repository.refreshTargetNeedsBackfill(tenant,"ORDER_PAYMENT_RECORD")).isFalse();
+
+        jdbc.update("UPDATE bi_sales_payment_fact SET owner_staff_code='ORDER_OWNER',owner_staff_name='错误姓名' WHERE tenant_id=?",tenant);
+        assertThat(repository.refreshTargetNeedsBackfill(tenant,"ORDER_PAYMENT_RECORD")).isTrue();
+        assertThat(productionMapper.alignPaymentOrderAttribution(tenant,to.plusHours(1))).isEqualTo(1);
+        assertThat(productionMapper.alignPaymentOrderAttribution(tenant,to.plusHours(2))).isZero();
+        assertThat(jdbc.queryForMap("""
+                SELECT owner_staff_code,owner_staff_name,collector_staff_code,collector_staff_name,
+                       region_code,payment_time,paid_amount
+                  FROM bi_sales_payment_fact WHERE tenant_id=? AND payment_id=101
+                """,tenant)).isEqualTo(original);
+        assertThat(repository.refreshTargetNeedsBackfill(tenant,"ORDER_PAYMENT_RECORD")).isFalse();
+        assertThat(jdbc.queryForMap("SELECT collector_staff_code,collector_name_snapshot FROM bi_source_order_order_payment_record WHERE tenant_id=?",tenant))
+                .containsEntry("collector_staff_code",collector).containsEntry("collector_name_snapshot",collectorSnapshot);
+        assertThat(jdbc.queryForObject("SELECT region_code FROM bi_source_order_order_sales_order WHERE tenant_id=?",String.class,tenant)).isEqualTo("HZ");
+    }
+
     @Test
     void dashboardAllocationsPublishOnMysqlAndConserveLatePaymentAndDiscountedOrderAmounts() {
         jdbc.update("""

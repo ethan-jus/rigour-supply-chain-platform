@@ -4,8 +4,8 @@ import java.math.BigDecimal;
 
 /**
  * 按 BI 归属销售快照聚合 payment_time 期间回款事实，不是订单累计已收。
- * 既有 ETL 的归属编码依次取订单销售、客户销售、回款人，不保证是原始订单销售。
- * 人员过滤与 collectionTrend 一致，匹配归属销售或回款人，但归属维度不改为回款人。
+ * 归属优先采用回款记录经办人；经办人缺失时采用客户当前归属业务员，两者均缺失时待核对。
+ * 人员过滤与 collectionTrend 一致，仅匹配解析后的归属编码，不重复计入其他人员。
  */
 public record SupplyDashboardSalesReceiptItemView(
         String ownerStaffCode,
