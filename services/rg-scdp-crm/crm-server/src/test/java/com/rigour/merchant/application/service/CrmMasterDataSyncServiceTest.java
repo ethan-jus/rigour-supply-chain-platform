@@ -55,7 +55,7 @@ class CrmMasterDataSyncServiceTest {
         UUID actor = UUID.randomUUID();
         CallerIdentity caller = new CallerIdentity("TENANT", actor, TENANT_ID, actor, null,
                 UUID.randomUUID(), 0, 0, 0, Set.of(),
-                Set.of("crm:customer:sync", "crm:customer:create"));
+                Set.of("integration:dhb:write", "crm:customer:create"));
 
         service.confirmIndependentCustomer(caller, CONNECTOR_ID, "SOURCE-1", 7, true, "confirmed");
 
@@ -71,12 +71,18 @@ class CrmMasterDataSyncServiceTest {
                 mock(CrmDictionaryCoverageService.class), passthroughLease());
         UUID actor = UUID.randomUUID();
         CallerIdentity missingPermission = new CallerIdentity("TENANT", actor, TENANT_ID, actor, null,
-                UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("crm:customer:sync"));
-        CallerIdentity serviceCaller = new CallerIdentity("SERVICE", actor, TENANT_ID, null, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("integration:dhb:write"));
+        CallerIdentity missingSyncPermission = new CallerIdentity("TENANT", actor, TENANT_ID, actor, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("crm:customer:create"));
+        CallerIdentity obsoleteSyncPermission = new CallerIdentity("TENANT", actor, TENANT_ID, actor, null,
                 UUID.randomUUID(), 0, 0, 0, Set.of(),
                 Set.of("crm:customer:sync", "crm:customer:create"));
+        CallerIdentity serviceCaller = new CallerIdentity("SERVICE", actor, TENANT_ID, null, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of(),
+                Set.of("integration:dhb:write", "crm:customer:create"));
 
-        for (CallerIdentity caller : List.of(missingPermission, serviceCaller)) {
+        for (CallerIdentity caller : List.of(missingPermission, missingSyncPermission,
+                obsoleteSyncPermission, serviceCaller)) {
             assertThatThrownBy(() -> service.confirmIndependentCustomer(caller, CONNECTOR_ID,
                     "SOURCE-1", 7, true, "confirmed"))
                     .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);

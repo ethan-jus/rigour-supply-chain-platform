@@ -82,8 +82,12 @@ public final class CrmMasterDataSyncService {
 
     public void confirmIndependentCustomer(CallerIdentity caller, UUID connectorId, String sourceId,
             long revision, boolean allowUnmappedOwner, String evidence) {
-        if (caller == null || caller.tenantId() == null || caller.userId() == null
-                || !caller.permissions().containsAll(Set.of("crm:customer:sync", "crm:customer:create")))
+        if (caller == null || !"TENANT".equals(caller.principalScope())
+                || caller.tenantId() == null || caller.userId() == null)
+            throw new AuthorizationDeniedException("tenant-user-caller");
+        if (!caller.permissions().contains("integration:dhb:write"))
+            throw new AuthorizationDeniedException("integration:dhb:write");
+        if (!caller.permissions().contains("crm:customer:create"))
             throw new AuthorizationDeniedException("crm:customer:create");
         store.confirmIndependentCustomer(caller.tenantId(), connectorId, sourceId, revision,
                 allowUnmappedOwner, evidence, caller.userId());

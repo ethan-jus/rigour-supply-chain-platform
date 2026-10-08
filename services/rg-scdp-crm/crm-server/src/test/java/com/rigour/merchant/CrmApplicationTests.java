@@ -1575,6 +1575,59 @@ SELECT COUNT(*) FROM crm_contact c
         assertThat(jdbcTemplate.queryForObject("SELECT owner_employee_code FROM crm_customer WHERE tenant_id=?",String.class,tenant.toString())).isEqualTo("EMP-KNOWN");
     }
 
+    @Test
+    void missingSourceStaffKeepsExplicitLocalAssignmentAcrossRepeatedSyncOnly() {
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID(), actor = UUID.randomUUID();
+        var type = CrmMasterDataObjectType.CUSTOMER;
+        var run = start(tenant, connector, actor, type);
+        var original = customerRecord("已人工指定归属的门店");
+        var fields = new LinkedHashMap<String, Object>(original.sourceFields());
+        fields.put("staffID", "0");
+        fields.put("staffName", "");
+        fields.put("_employeeBySourceId", Map.of());
+        var source = new SourceRecord(original.sourceId(), original.sourceCode(), original.sourceName(), "T",
+                original.sourceCreatedAt(), original.sourceUpdatedAt(), fields);
+        assertThat(store.importRecord(tenant, connector, run, type, source).unmapped()).isEqualTo(1);
+        store.confirmIndependentCustomer(tenant, connector, source.sourceId(), sourceRevision(tenant, source.sourceId()),
+                true, "用户确认独立建档，随后人工指定归属", actor);
+        assertThat(store.importRecord(tenant, connector, run, type, source).created()).isEqualTo(1);
+        long id = jdbcTemplate.queryForObject("SELECT id FROM crm_customer WHERE tenant_id=?", Long.class, tenant.toString());
+        var before = internalCustomerStore.customer(tenant.toString(), id).orElseThrow();
+        org.mockito.Mockito.when(employeeClient.owner(tenant.toString(), "EMP-LOCAL"))
+                .thenReturn(new com.rigour.merchant.application.port.out.CrmEmployeeClient.Owner(
+                        "EMP-LOCAL", "人工确认员工", true, null, 1));
+        org.mockito.Mockito.when(assignmentTargets.byEmployee(tenant.toString(), "EMP-LOCAL"))
+                .thenReturn(new com.rigour.tenant.iam.api.v1.model.CustomerAssignmentTargetView(
+                        tenant, null, "EMP-LOCAL", "人工确认员工", null, true, null, 0,
+                        new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Limit("ALL", List.of())));
+        responsibilityStore.transfer(tenant.toString(), id,
+                new com.rigour.merchant.api.v1.CustomerResponsibilityApi.Change(
+                        "EMP-LOCAL", before.regionCode(), before.revision(), "用户授权临时归属"), actor.toString());
+
+        for (int repeat = 0; repeat < 2; repeat++) {
+            assertThat(store.importRecord(tenant, connector, run, type, source).unmapped()).isZero();
+            var current = internalCustomerStore.customer(tenant.toString(), id).orElseThrow();
+            assertThat(current.ownerEmployeeCode()).isEqualTo("EMP-LOCAL");
+            assertThat(current.regionCode()).isEqualTo(before.regionCode());
+            assertThat(current.businessCreatedAt()).isEqualTo(before.businessCreatedAt());
+            assertThat(store.externalObjectMappings(tenant, connector, run, type)).singleElement()
+                    .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("ACTIVE"));
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT JSON_UNQUOTE(JSON_EXTRACT(source_fields_json,'$.staffID'))"
+                + " FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND source_object_type='CUSTOMER'",
+                String.class, tenant.toString())).isEqualTo("0");
+
+        // 来源已填另一业务员但尚未映射时，不能借人工归属跳过来源核验。
+        fields.put("staffID", "UNMAPPED-STAFF");
+        var changedSource = new SourceRecord(source.sourceId(), source.sourceCode(), source.sourceName(), "T",
+                source.sourceCreatedAt(), source.sourceUpdatedAt(), fields);
+        assertThat(store.importRecord(tenant, connector, run, type, changedSource).unmapped()).isEqualTo(1);
+        assertThat(internalCustomerStore.customer(tenant.toString(), id).orElseThrow().ownerEmployeeCode())
+                .isEqualTo("EMP-LOCAL");
+        assertThat(store.externalObjectMappings(tenant, connector, run, type)).singleElement()
+                .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("CONFLICT"));
+    }
+
     private long sourceRevision(UUID tenant,String sourceId) {
         return jdbcTemplate.queryForObject("SELECT revision FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND source_object_type='CUSTOMER' AND source_object_id=?",Long.class,tenant.toString(),sourceId);
     }

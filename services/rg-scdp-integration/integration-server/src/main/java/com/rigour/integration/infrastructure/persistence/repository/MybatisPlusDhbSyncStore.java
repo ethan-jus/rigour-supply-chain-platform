@@ -359,7 +359,13 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
         existing.deletedAt = null;
         existing.deletedBy = null;
         existing.deleteReason = null;
-        externalObjectMappingMapper.updateById(existing);
+        // 实体的 null 默认不参与更新；正常同步恢复映射时必须显式清除软删除标记。
+        externalObjectMappingMapper.update(existing, Wrappers.<ExternalObjectMappingEntity>update()
+                .set("deleted_at", null)
+                .set("deleted_by", null)
+                .set("delete_reason", null)
+                .eq("tenant_id", bin(tenantId))
+                .eq("id", existing.id));
     }
 
     @Override
@@ -480,54 +486,12 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
         LocalDateTime current = now();
         byte[] tenant = bin(require(tenantId, "tenantId"));
         byte[] actor = bin(actorId);
-        deadLetterMapper.update(null, Wrappers.<IntegrationDeadLetterEntity>update()
-                .set("status", "RESOLVED")
-                .set("resolved_at", current)
-                .set("resolved_by", actor)
-                .set("updated_at", current)
-                .set("updated_by", actor)
-                .setSql("version=version+1")
-                .eq("tenant_id", tenant)
-                .eq("source_system", SOURCE_SYSTEM)
-                .in("status", "OPEN", "REPLAYING")
-                .exists("""
-                        select 1
-                        from integration_external_object_mapping m
-                        where m.tenant_id = integration_dead_letter.tenant_id
-                          and m.source_system = integration_dead_letter.source_system
-                          and m.source_object_type = integration_dead_letter.source_object_type
-                          and (m.source_object_id = integration_dead_letter.source_id
-                               or m.source_object_no = integration_dead_letter.source_id)
-                          and m.mapping_status = 'ACTIVE'
-                          and m.deleted_at is null
-                          and m.internal_object_id is not null
-                          and m.last_seen_at is not null
-                          and m.last_seen_at > integration_dead_letter.updated_at
-                        """));
-        reconciliationCaseMapper.update(null, Wrappers.<IntegrationReconciliationCaseEntity>update()
-                .set("status", "RESOLVED")
-                .set("resolved_at", current)
-                .set("resolved_by", actor)
-                .set("updated_at", current)
-                .set("updated_by", actor)
-                .setSql("version=version+1")
-                .eq("tenant_id", tenant)
-                .eq("source_system", SOURCE_SYSTEM)
-                .in("status", "OPEN", "ACKNOWLEDGED")
-                .exists("""
-                        select 1
-                        from integration_external_object_mapping m
-                        where m.tenant_id = integration_reconciliation_case.tenant_id
-                          and m.source_system = integration_reconciliation_case.source_system
-                          and m.source_object_type = integration_reconciliation_case.source_object_type
-                          and (m.source_object_id = integration_reconciliation_case.business_key
-                               or m.source_object_no = integration_reconciliation_case.business_key)
-                          and m.mapping_status = 'ACTIVE'
-                          and m.deleted_at is null
-                          and m.internal_object_id is not null
-                          and m.last_seen_at is not null
-                          and m.last_seen_at > integration_reconciliation_case.updated_at
-                        """));
+        // ID/单号拆开等值关联，让映射驱动问题表的来源索引；OR 会退化为逐映射全表扫描。
+        // 已关闭项不再满足状态条件，因此双键命中也只更新一次版本与审计时间。
+        deadLetterMapper.resolveRecovered(tenant, actor, current, SOURCE_SYSTEM, false);
+        deadLetterMapper.resolveRecovered(tenant, actor, current, SOURCE_SYSTEM, true);
+        reconciliationCaseMapper.resolveRecovered(tenant, actor, current, SOURCE_SYSTEM, false);
+        reconciliationCaseMapper.resolveRecovered(tenant, actor, current, SOURCE_SYSTEM, true);
     }
 
     private void resolveOpenDeadLetters(byte[] tenant, byte[] actor,
