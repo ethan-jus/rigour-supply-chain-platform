@@ -42,6 +42,41 @@ class HrApplicationTests {
     @Autowired private com.rigour.hr.application.port.out.HrPositionStore positionStore;
 
     @Test
+    void employeeIdentityDoesNotBorrowNestedConnectionsWithOneConnectionPool() throws Exception {
+        String tenant = java.util.UUID.randomUUID().toString();
+        jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','销售','ACTIVE')", tenant);
+        var root = organizations.saveDepartment(tenant, null, new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "总部", 0, "ACTIVE", 0, null, null, null), "admin");
+        var child = organizations.saveDepartment(tenant, null, new com.rigour.hr.api.v1.model.HrDepartmentCommand(root.id(), "业务部", 0, "ACTIVE", 0, null, null, null), "admin");
+        long id = organizations.saveEmployee(tenant, null, employee("连接池回归员工", child.id(), "ACTIVE", 0), "admin");
+        String code = jdbcTemplate.queryForObject("SELECT employee_code FROM hr_employee WHERE tenant_id=? AND id=?", String.class, tenant, id);
+        var expected = organizations.identity(tenant, code).orElseThrow();
+        try (var pool = new com.zaxxer.hikari.HikariDataSource()) {
+            pool.setJdbcUrl(MYSQL.getJdbcUrl());
+            pool.setUsername(MYSQL.getUsername());
+            pool.setPassword(MYSQL.getPassword());
+            pool.setMaximumPoolSize(1);
+            pool.setMinimumIdle(1);
+            pool.setConnectionTimeout(500);
+            var scopes = org.mockito.Mockito.mock(com.rigour.hr.infrastructure.persistence.repository.HrDataScope.class);
+            org.mockito.Mockito.when(scopes.canReadCode(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
+            var store = new com.rigour.hr.infrastructure.persistence.repository.JdbcHrOrganizationStore(new JdbcTemplate(pool), new org.springframework.jdbc.datasource.DataSourceTransactionManager(pool), scopes, org.mockito.Mockito.mock(com.rigour.hr.application.port.out.HrAuditActorNameResolver.class));
+            var workers = java.util.concurrent.Executors.newFixedThreadPool(5);
+            try {
+                var results = new java.util.ArrayList<java.util.concurrent.Future<com.rigour.hr.api.v1.model.HrEmployeeIdentityView>>();
+                for (int i = 0; i < 20; i++) results.add(workers.submit(() -> store.identity(tenant, code).orElseThrow()));
+                for (var result : results) assertThat(result.get(5, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo(expected);
+                assertThat(expected.departmentAncestorIds()).containsExactly(root.id(), child.id());
+                assertThat(store.identity("other-tenant", code)).isEmpty();
+                assertThat(store.identity(tenant, "MISSING")).isEmpty();
+                assertThat(pool.getHikariPoolMXBean().getActiveConnections()).isZero();
+            } finally {
+                workers.shutdownNow();
+                workers.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
     void departmentMembersExcludeOtherDepartmentsAndTenantsWithoutImplicitDescendants() {
         String tenant = java.util.UUID.randomUUID().toString();
         jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','销售','ACTIVE')", tenant);

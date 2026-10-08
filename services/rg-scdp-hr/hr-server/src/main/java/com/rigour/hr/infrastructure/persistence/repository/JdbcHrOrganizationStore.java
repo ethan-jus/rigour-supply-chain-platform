@@ -515,24 +515,18 @@ INSERT INTO hr_employee_assignment(tenant_id,employee_code,department_id,departm
 SELECT e.id,e.employee_code,e.employee_name,e.employment_status,e.department_id,e.primary_position_code,
        e.revision,e.access_version,e.entry_date,e.leave_date,d.department_name,d.status_code department_status,d.deleted department_deleted,
        p.position_name,p.status_code position_status,p.deleted position_deleted,
-       COALESCE(s.version,0) organization_version
+       COALESCE(s.version,0) organization_version,c.ancestor_id
   FROM hr_employee e LEFT JOIN hr_department d ON d.tenant_id=e.tenant_id AND d.id=e.department_id
   LEFT JOIN hr_position p ON p.tenant_id=e.tenant_id AND p.position_code=e.primary_position_code
   LEFT JOIN hr_organization_state s ON s.tenant_id=e.tenant_id
+  LEFT JOIN hr_department_closure c ON c.tenant_id=e.tenant_id AND c.descendant_id=e.department_id
  WHERE e.tenant_id=? AND e.employee_code=? AND e.deleted=0
+ ORDER BY c.depth DESC
 """,
                         (rs, n) -> {
                             Long departmentId = rs.getObject("department_id", Long.class);
-                            List<Long> ancestors =
-                                    departmentId == null
-                                            ? List.of()
-                                            : jdbc.query(
-                                                    """
-SELECT ancestor_id FROM hr_department_closure WHERE tenant_id=? AND descendant_id=? ORDER BY depth DESC
-""",
-                                                    (r, i) -> r.getLong(1),
-                                                    tenant,
-                                                    departmentId);
+                            Long ancestorId = rs.getObject("ancestor_id", Long.class);
+                            List<Long> ancestors = ancestorId == null ? List.of() : List.of(ancestorId);
                             String reason = null;
                             Instant now = Instant.now();
                             if (!"ACTIVE".equals(rs.getString("employment_status")))
@@ -567,7 +561,13 @@ SELECT ancestor_id FROM hr_department_closure WHERE tenant_id=? AND descendant_i
                         },
                         tenant,
                         code);
-        return rows.stream().findFirst();
+        // 员工与部门路径在一次查询内读取；RowMapper 中再次借连接会耗尽小连接池。
+        return rows.stream().findFirst().map(first -> new HrEmployeeIdentityView(
+                first.id(), first.employeeCode(), first.employeeName(), first.employmentStatus(),
+                first.departmentId(), first.departmentName(), first.positionCode(), first.positionName(),
+                rows.stream().flatMap(row -> row.departmentAncestorIds().stream()).toList(),
+                first.employeeRevision(), first.organizationVersion(), first.accessVersion(),
+                first.usable(), first.unavailableReason()));
     }
 
     @Override
