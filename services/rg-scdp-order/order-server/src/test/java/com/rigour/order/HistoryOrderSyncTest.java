@@ -706,6 +706,28 @@ class HistoryOrderSyncTest {
         verify(salesOrders, times(1)).update(eq(1L), any());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void replacementReceiptReleasesDeletedOpeningBalanceWithoutChangingOtherDates(boolean historical) {
+        order(1, 1, "1000", "300", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "300")));
+        db.update("UPDATE order_sales_order SET paid_amount=0,unpaid_amount=1000,payment_status_code='UNPAID'");
+        db.update("INSERT INTO order_payment_record(id,tenant_id,order_id,paid_amount,payment_time,payment_status_code,deleted)"
+                + " VALUES(99,?,1,300,?,'RECEIVED',1)", tenant, java.sql.Timestamp.from(date));
+        Instant replacementDate = historical ? date : paidAt;
+        var replacement = new Receipt(connector, "R2", "D1", 1L, new BigDecimal("1000"),
+                replacementDate, "CONFIRMED", paidAt, "new-receipt");
+        assertThat(pay(replacement).state()).isEqualTo("ALLOCATED");
+        assertThat(paid(1)).isEqualByComparingTo("1000");
+        assertThat(db.queryForObject("SELECT opening_paid FROM order_history_member", BigDecimal.class)).isZero();
+        var dates = db.queryForList("SELECT id,payment_time FROM order_payment_record ORDER BY id");
+        pay(replacement);
+        assertThat(db.queryForList("SELECT id,payment_time FROM order_payment_record ORDER BY id")).isEqualTo(dates);
+        assertThat(db.queryForObject("SELECT payment_time FROM order_payment_record WHERE id=99", java.sql.Timestamp.class).toInstant()).isEqualTo(date);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record WHERE deleted=0", Integer.class)).isEqualTo(1);
+    }
+
     @Test
     void boundCommercialUpdateDoesNotResurrectReconciledOpeningPayment() {
         order(1, 1, "1000", "296.40", "10");
@@ -996,6 +1018,27 @@ class HistoryOrderSyncTest {
         assertThat(paid(1)).isEqualByComparingTo("500");
         pay(receipt("R1", "D1", "500", "CONFIRMED", "h3"));
         assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"2026-09-05T10:12:05Z", "2026-09-28T10:33:45Z"})
+    void voucherCorrectedDateAfterCutoverSurvivesReceiptReplayAndConfirmation(String correctedDate) {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        pay(receipt("R1", "D1", "300", "RECEIVED", "h1"));
+        var corrected = java.sql.Timestamp.from(Instant.parse(correctedDate));
+        db.update("UPDATE order_payment_record SET payment_time=?", corrected);
+        pay(receipt("R1", "D1", "300", "RECEIVED", "replayed"));
+        var confirmed = new Receipt(connector, "R1", "D1", 1L, new BigDecimal("300"),
+                paidAt.plusSeconds(86400), "CONFIRMED", paidAt.plusSeconds(86400), "confirmed");
+        pay(confirmed);
+        pay(confirmed);
+        assertThat(db.queryForObject("SELECT payment_time FROM order_payment_record", java.sql.Timestamp.class))
+                .isEqualTo(corrected);
+        assertThat(db.queryForObject("SELECT payment_status_code FROM order_payment_record", String.class)).isEqualTo("CHECKED");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+        assertThat(paid(1)).isEqualByComparingTo("300");
     }
 
     @Test

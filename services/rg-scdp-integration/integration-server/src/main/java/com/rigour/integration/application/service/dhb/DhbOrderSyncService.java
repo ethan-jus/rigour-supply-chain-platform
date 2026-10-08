@@ -666,7 +666,12 @@ public final class DhbOrderSyncService {
                 Instant business = firstInstant(Map.of(), map(summary.attributes()), null, "OrderDate", "order_date");
                 if (business == null) throw new ProjectionRejected("DHB_ORDER_BUSINESS_TIME_MISSING",
                         "定时同步缺少原下单日期，需核对后处理", "DETAIL", Map.of(), Map.of("sourceOrderNo", sourceOrderNo));
-                if (business.isBefore(HISTORY_CUTOVER)) return ProjectionOutcome.DUPLICATE;
+                if (business.isBefore(HISTORY_CUTOVER)) {
+                    var mapped = store.findActiveMapping(caller.tenantId(), task.connectorId(),
+                            SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
+                    // 已关联历史单仍接收金额和状态变化；Order 保留原业务日期和回款凭证。
+                    if (mapped == null || mapped.internalObjectId() == null) return ProjectionOutcome.DUPLICATE;
+                }
             }
             if (isCancelled(dhbOrderStatusCode(firstNonBlank(summary.status(),
                     first(map(summary.attributes()), "OrderStatus", "orderStatus", "StatusName", "status"))))) {
@@ -685,7 +690,7 @@ public final class DhbOrderSyncService {
                     first(map(detail.attributes()), "OrderStatus", "orderStatus", "StatusName", "status"))))) {
                 return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw);
             }
-            // 订货宝明确清零的订单属于无效订单；缺失金额不能按零金额删除。
+            // 订货宝已完成订单无法取消；用户以结算金额清零表示取消，缺失金额不能视为零。
             if (zeroSettlementOrder(detail.attributes())) {
                 store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
                         "订货宝零金额无效订单已排除 sourceOrderNo=" + sourceOrderNo, "DHB_ZERO_AMOUNT_ORDER");

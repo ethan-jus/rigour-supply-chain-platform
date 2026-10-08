@@ -1301,7 +1301,11 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
             BigDecimal part = i == rows.size() - 1 ? remaining : beforeTotal.signum() == 0 ? BigDecimal.ZERO
                     : target.multiply(money(row, "paid_amount")).divide(beforeTotal, 2, RoundingMode.DOWN);
             remaining = remaining.subtract(part);
-            Object paymentTime = old.get("occurred_at") != null && instant(old.get("occurred_at")).isBefore(HistorySyncRules.CUTOVER)
+            // 凭证校准后的日期已不同于上次来源日期，确认状态或来源重录不能覆盖该业务日期。
+            boolean correctedDate = old.get("occurred_at") != null && row.get("payment_time") != null
+                    && !Objects.equals(instant(row.get("payment_time")), instant(old.get("occurred_at")));
+            Object paymentTime = correctedDate || (old.get("occurred_at") != null
+                    && instant(old.get("occurred_at")).isBefore(HistorySyncRules.CUTOVER))
                     ? row.get("payment_time") : ts(HistorySyncRules.businessDate(
                             "DINGHUOBAO", c.occurredAt(), instant(row.get("payment_time"))));
             jdbc.update("UPDATE order_payment_record SET paid_amount=?,payment_time=?,payment_status_code=?,deleted=?,"
@@ -1384,11 +1388,25 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             t,
                             a.orderId(),
                             receipt.get("group_id"));
+            boolean managedBaseline = hasManagedReceiptBaseline(t, a.orderId());
             require(
-                    instant(receipt.get("occurred_at")).isAfter(instant(m.get("baseline_at"))),
+                    instant(receipt.get("occurred_at")).isAfter(instant(m.get("baseline_at"))) || managedBaseline,
                     "该款已在历史期初覆盖范围，不能再次核销");
             var o = order(t, a.orderId());
             var amount = HistorySyncRules.money(a.amount());
+            BigDecimal opening = money(m, "opening_paid");
+            if (managedBaseline) {
+                // 旧款退出后，期初也必须以当前有效回款为准；不能把已删除旧款再次占用应收。
+                BigDecimal currentOpening = money(o, "paid_amount").subtract(confirmedAllocatedAmount(t, a.orderId()));
+                require(currentOpening.signum() >= 0, "有效核销超过当前已收，需先核对回款");
+                if (currentOpening.compareTo(opening) != 0) {
+                    auditChange(t, c.connectorId(), "RECEIPT_BASELINE", c.receiptNo(),
+                            Map.of("member", m, "order", o), c);
+                    jdbc.update("UPDATE order_history_member SET opening_paid=? WHERE tenant_id=? AND order_id=?",
+                            currentOpening, t, a.orderId());
+                    opening = currentOpening;
+                }
+            }
             BigDecimal other =
                     jdbc.queryForObject(
                             "SELECT COALESCE(SUM(a.amount),0) FROM order_sync_allocation a JOIN"
@@ -1402,7 +1420,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             a.orderId(),
                             c.connectorId().toString(),
                             c.receiptNo());
-            if (money(m, "opening_paid").add(other).add(amount)
+            if (opening.add(other).add(amount)
                     .compareTo(money(o, "payable_amount")) > 0)
                 throw new BusinessException(ErrorCode.CONFLICT,
                         "核销超过订单剩余应收，需核对重复款或期初", List.of());

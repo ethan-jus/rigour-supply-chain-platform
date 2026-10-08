@@ -83,6 +83,35 @@ class DhbOrderSyncServiceLineMappingTest {
         assertThat(DhbOrderSyncService.zeroSettlementOrder(Map.of())).isFalse();
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void protectedHistoryStillReadsChangesForMappedOrders(boolean mapped) throws Exception {
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID();
+        var store = mock(DhbSyncStore.class);
+        var client = mock(DhbClient.class);
+        var projection = mock(OrderSalesOrderProjectionClient.class);
+        var service = new DhbOrderSyncService(store, client, projection, proxy(HrDhbStaffSyncClient.class));
+        var caller = new com.rigour.shared.context.CallerIdentity("SERVICE", UUID.randomUUID(), tenant,
+                null, null, UUID.randomUUID(), 0, 0, 0, java.util.Set.of("DHB_PROTECT_HISTORY"), java.util.Set.of());
+        var task = new DhbSyncStore.SyncTaskContext(tenant, UUID.randomUUID(), connector,
+                "orders", "ORDER", "ACTIVE", "https://example.test", "secret", "ACTIVE", 100, 1, 0, true);
+        var summary = new DhbClient.OrderSummary("D1", "D1", "finished", BigDecimal.ONE,
+                Instant.now(), Instant.now(), null, null, Map.of("OrderDate", "2026-08-20 12:00:00"));
+        if (mapped) when(store.findActiveMapping(tenant, connector, "SALES_ORDER", "D1"))
+                .thenReturn(mapping("SALES_ORDER", "D1", "D1", "ORDER", "SALES_ORDER", 1L, "O1"));
+        when(client.getOrderContent(any(), eq("D1"))).thenReturn(new DhbClient.OrderDetail("D1", "cancelled", BigDecimal.ONE, Map.of()));
+        when(store.persistRawObject(any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new DhbSyncStore.RawObjectPersistResult(UUID.randomUUID(), "hash", true));
+        when(projection.cancelSourceOrder(any(), any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("CANCELLED", null, null));
+        var method = DhbOrderSyncService.class.getDeclaredMethod("projectOrder",
+                com.rigour.shared.context.CallerIdentity.class, DhbSyncStore.SyncTaskContext.class,
+                UUID.class, DhbClient.OrderSummary.class, Map.class, Map.class);
+        method.setAccessible(true);
+        assertThat(method.invoke(service, caller, task, UUID.randomUUID(), summary, new HashMap<>(), new HashMap<>()))
+                .isEqualTo(mapped ? DhbOrderSyncService.ProjectionOutcome.CHANGED : DhbOrderSyncService.ProjectionOutcome.DUPLICATE);
+        verify(client, org.mockito.Mockito.times(mapped ? 1 : 0)).getOrderContent(any(), eq("D1"));
+    }
+
     @Test
     void historyReviewRemainsVisibleWithoutBlockingCheckpointStatus() {
         DhbOrderSyncService.Counts counts = new DhbOrderSyncService.Counts();
