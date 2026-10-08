@@ -7,6 +7,8 @@ import com.rigour.order.api.v1.model.HistorySyncModels.*;
 import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.application.port.out.OrderAttributionClient;
 import com.rigour.order.infrastructure.persistence.repository.JdbcOrderHistorySyncStore;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.*;
@@ -571,6 +573,8 @@ class HistoryOrderSyncTest {
         intake("D1", 1, "1000", "10");
         bind(List.of("D1"), List.of(base(1, "900")));
         assertThatThrownBy(() -> pay(receipt("R1", "D1", "300", "CONFIRMED", "h1")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.CONFLICT))
                 .hasMessageContaining("超过");
         assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sync_receipt", Integer.class))
                 .isZero();
@@ -1064,6 +1068,48 @@ class HistoryOrderSyncTest {
         assertThat(pay(receipt("R1", "D1", "300", "CONFIRMED", "h1")).state()).isEqualTo("BASELINE_COVERED");
         assertThat(pay(receipt("R1", "D1", "300", "CONFIRMED", "h2")).state()).isEqualTo("BASELINE_COVERED");
         assertThat(pay(receipt("R1", "D1", "350", "CONFIRMED", "h3")).state()).isEqualTo("SOURCE_CHANGED_REVIEW");
+    }
+
+    @Test
+    void coveredReceiptReplayPreservesReconciledFactsWhenRawGrossTotalExceedsOrderAmount() {
+        intake("D1", 1, "1176", "10");
+        db.update("UPDATE order_sync_source SET state='NEW'");
+        pay(receipt("R1", "D1", "1176", "CONFIRMED", "h1"));
+        db.update("UPDATE order_sync_receipt SET state='BASELINE_COVERED'");
+        db.update("INSERT INTO order_sync_receipt(tenant_id,connector_id,receipt_no,source_order_no,customer_id,amount,occurred_at,source_status,checksum,state)"
+                + " VALUES(?,?,'R2','D1',1,583.20,?,'CONFIRMED','h2','BASELINE_COVERED')",
+                tenant, connector.toString(), java.sql.Timestamp.from(paidAt));
+
+        assertThat(pay(receipt("R1", "D1", "1176", "CONFIRMED", "h1")).state()).isEqualTo("BASELINE_COVERED");
+        assertThat(pay(receipt("R1", "D1", "1176", "CONFIRMED", "metadata-new")).state()).isEqualTo("BASELINE_COVERED");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isZero();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sync_allocation", Integer.class)).isZero();
+        assertThat(db.queryForObject("SELECT occurred_at FROM order_sync_receipt WHERE receipt_no='R1'", java.sql.Timestamp.class))
+                .isEqualTo(java.sql.Timestamp.valueOf(java.time.LocalDateTime.ofInstant(paidAt, java.time.ZoneOffset.UTC)));
+
+        assertThatThrownBy(() -> pay(receipt("R1", "D1", "1200", "CONFIRMED", "changed")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.CONFLICT));
+        intake("D2", 1, "100", "1");
+        assertThatThrownBy(() -> pay(receipt("R1", "D2", "1176", "CONFIRMED", "moved")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.CONFLICT));
+        assertThat(db.queryForObject("SELECT amount FROM order_sync_receipt WHERE receipt_no='R1'", BigDecimal.class))
+                .isEqualByComparingTo("1176");
+        assertThat(db.queryForObject("SELECT checksum FROM order_sync_receipt WHERE receipt_no='R1'", String.class))
+                .isEqualTo("metadata-new");
+        assertThat(db.queryForObject("SELECT source_order_no FROM order_sync_receipt WHERE receipt_no='R1'", String.class))
+                .isEqualTo("D1");
+    }
+
+    @Test
+    void newReceiptOverSourceAmountReturnsConflictWithoutWritingCash() {
+        intake("D1", 1, "1000", "10");
+        assertThatThrownBy(() -> pay(receipt("R1", "D1", "1001", "CONFIRMED", "h1")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.CONFLICT));
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sync_receipt", Integer.class)).isZero();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isZero();
     }
 
     @Test

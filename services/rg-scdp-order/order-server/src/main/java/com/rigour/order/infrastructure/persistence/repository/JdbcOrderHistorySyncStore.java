@@ -4,6 +4,8 @@ import com.rigour.order.api.v1.model.HistorySyncModels.*;
 import com.rigour.order.api.v1.model.SalesOrderCommand;
 import com.rigour.order.application.port.out.OrderHistorySyncStore;
 import com.rigour.order.domain.sync.HistorySyncRules;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -993,7 +995,23 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
             require(customer != null && customer == owner, "收款客户与来源订单门店不一致或缺少客户映射");
         }
         boolean newSource = !sources.isEmpty() && "NEW".equals(text(sources.getFirst(), "state"));
-        if (!sources.isEmpty() && receivedReceipt(c.status())) {
+        var old =
+                jdbc.queryForList(
+                        "SELECT * FROM order_sync_receipt WHERE tenant_id=? AND connector_id=? AND"
+                            + " receipt_no=? FOR UPDATE",
+                        t,
+                        c.connectorId().toString(),
+                        c.receiptNo());
+        // 已人工对账覆盖的来源款重放只更新元数据，不把原始毛额再次视为新增回款。
+        boolean coveredReplay = !old.isEmpty()
+                && "BASELINE_COVERED".equals(text(old.getFirst(), "state"))
+                && money(old.getFirst(), "amount").compareTo(c.amount()) == 0
+                && Objects.equals(instant(old.getFirst().get("occurred_at")), c.occurredAt())
+                && Objects.equals(text(old.getFirst(), "source_order_no"), c.sourceOrderNo())
+                && Objects.equals(text(old.getFirst(), "group_id"), group)
+                && Objects.equals(old.getFirst().get("customer_id"), customer)
+                && Objects.equals(text(old.getFirst(), "source_status"), c.status());
+        if (!sources.isEmpty() && receivedReceipt(c.status()) && !coveredReplay) {
             var received =
                     jdbc.queryForObject(
                             "SELECT COALESCE(SUM(amount),0) FROM order_sync_receipt WHERE"
@@ -1004,9 +1022,9 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             c.connectorId().toString(),
                             c.sourceOrderNo(),
                             c.receiptNo());
-            require(
-                    received.add(c.amount()).compareTo(money(sources.getFirst(), "amount")) <= 0,
-                    "该来源订单累计回款超过来源订单额，请核实重复款或预收款用途");
+            if (received.add(c.amount()).compareTo(money(sources.getFirst(), "amount")) > 0)
+                throw new BusinessException(ErrorCode.CONFLICT,
+                        "该来源订单累计回款超过来源订单额，请核实重复款或预收款用途", List.of());
         }
         String state =
                 group == null ? (newSource ? "NEW" : "MAPPING_PENDING") : "ALLOCATION_PENDING";
@@ -1016,13 +1034,6 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         else if (!receivedReceipt(c.status()) && !"CANCELLED".equals(c.status())
                 && !(newSource && "PENDING".equals(c.status())))
             state = "STATUS_REVIEW";
-        var old =
-                jdbc.queryForList(
-                        "SELECT * FROM order_sync_receipt WHERE tenant_id=? AND connector_id=? AND"
-                            + " receipt_no=? FOR UPDATE",
-                        t,
-                        c.connectorId().toString(),
-                        c.receiptNo());
         int revision = 0;
         if (!old.isEmpty()) {
             var v = old.getFirst();
@@ -1381,13 +1392,10 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             a.orderId(),
                             c.connectorId().toString(),
                             c.receiptNo());
-            require(
-                    money(m, "opening_paid")
-                                    .add(other)
-                                    .add(amount)
-                                    .compareTo(money(o, "payable_amount"))
-                            <= 0,
-                    "核销超过订单剩余应收，需核对重复款或期初");
+            if (money(m, "opening_paid").add(other).add(amount)
+                    .compareTo(money(o, "payable_amount")) > 0)
+                throw new BusinessException(ErrorCode.CONFLICT,
+                        "核销超过订单剩余应收，需核对重复款或期初", List.of());
             sum = sum.add(amount);
         }
         HistorySyncRules.equal(sum, money(receipt, "amount"), "回款分配");
