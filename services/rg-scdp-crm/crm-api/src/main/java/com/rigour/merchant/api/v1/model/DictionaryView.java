@@ -10,12 +10,12 @@ public record DictionaryView(UUID id, String code, String name, String status,
                              /** 首次完整快照未见的时间。 */ Instant sourceAbsentAt,
                              Long revision, Integer sortOrder, String sourceCode,
                              String createdBy, Instant createdTime,
-                             String updatedBy, Instant updatedTime) {
+                             String updatedBy, Instant updatedTime, Boolean sourceLinked) {
     public DictionaryView(UUID id, String code, String name, String status,
                           Instant syncedAt, UUID parentId, String parentCode,
                           String sourcePresence, Instant sourceAbsentAt, Long revision) {
         this(id, code, name, status, syncedAt, parentId, parentCode, sourcePresence,
-                sourceAbsentAt, revision, null, null, null, null, null, null);
+                sourceAbsentAt, revision, null, null, null, null, null, null, null);
     }
     public DictionaryView(UUID id, String code, String name, String status,
                           Instant syncedAt, UUID parentId, String parentCode) {

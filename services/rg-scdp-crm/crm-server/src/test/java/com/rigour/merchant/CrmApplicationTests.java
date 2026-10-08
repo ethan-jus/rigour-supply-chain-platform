@@ -88,9 +88,11 @@ class CrmApplicationTests {
                 store.importRecord(tenant, connector, run, CrmMasterDataObjectType.CUSTOMER_AREA, source));
         var city = queryStore.customerAreas(tenant, 0, 200, "唐山").items().getFirst();
         assertThat(city.revision()).isZero();
+        assertThat(city.sourceLinked()).isTrue();
+        var bindingBefore = jdbcTemplate.queryForMap("SELECT source_object_id,HEX(connector_id),HEX(target_id),binding_status FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND target_id=UUID_TO_BIN(?)", tenant.toString(), city.id().toString());
         jdbcTemplate.update("INSERT INTO crm_customer(tenant_id,customer_code,customer_name,region_code,status_code,revision,created_time,updated_time,deleted) VALUES(?, 'KEEP', '已有客户', ?, 'ACTIVE', 0, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6), 0)", tenant.toString(), city.code());
         var customerBefore = jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=? AND customer_code='KEEP'", tenant.toString());
-        var command = new CrmCustomerAreaCommand("唐山", "HEBEI", "ACTIVE", 0, 0);
+        var command = new CrmCustomerAreaCommand("唐山", "HEBEI", "ACTIVE", 0, 0, " 1031 ");
         TestAuthorizationContext.set(new CallerIdentity("TENANT", actor, tenant, actor, null,
                 UUID.randomUUID(), 0, 0, 0, java.util.Set.of(), java.util.Set.of("crm:customer:write")));
         try {
@@ -99,6 +101,8 @@ class CrmApplicationTests {
             assertThat(edited.code()).isEqualTo(city.code());
             assertThat(edited.parentCode()).isEqualTo("HEBEI");
             assertThat(edited.revision()).isEqualTo(1L);
+            assertThat(edited.sourceCode()).isEqualTo("1031");
+            assertThat(edited.sourceLinked()).isTrue();
             assertThatThrownBy(() -> queryService.updateCustomerArea(city.id(), command))
                     .isInstanceOfSatisfying(BusinessException.class,
                             error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.CONFLICT));
@@ -112,6 +116,9 @@ class CrmApplicationTests {
         assertThat(afterSync.id()).isEqualTo(city.id());
         assertThat(afterSync.parentCode()).isEqualTo("HEBEI");
         assertThat(afterSync.revision()).isEqualTo(1L);
+        assertThat(afterSync.sourceCode()).isEqualTo("1031");
+        assertThat(afterSync.sourceLinked()).isTrue();
+        assertThat(jdbcTemplate.queryForMap("SELECT source_object_id,HEX(connector_id),HEX(target_id),binding_status FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND target_id=UUID_TO_BIN(?)", tenant.toString(), city.id().toString())).isEqualTo(bindingBefore);
         assertThat(jdbcTemplate.queryForObject("SELECT ownership_state FROM crm_customer_area WHERE id=UUID_TO_BIN(?)", String.class, city.id().toString())).isEqualTo("INTERNAL_PRIMARY");
         assertThat(jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=? AND customer_code='KEEP'", tenant.toString())).isEqualTo(customerBefore);
     }
@@ -131,6 +138,34 @@ class CrmApplicationTests {
         } finally {
             TestAuthorizationContext.clear();
         }
+    }
+
+    @Test
+    void areaSourceCodeMaintenancePreservesOmittedValueAndChecksTenantDuplicates() {
+        UUID tenant = UUID.randomUUID(), actor = UUID.randomUUID();
+        var first = queryStore.createCustomerArea(tenant, "CITY_A", new CrmCustomerAreaCommand("城市甲", null, "ACTIVE", 0, 0, "1031"), actor);
+        var second = queryStore.createCustomerArea(tenant, "CITY_B", new CrmCustomerAreaCommand("城市乙", null, "ACTIVE", 0, 0), actor);
+        assertThat(first.sourceCode()).isEqualTo("1031");
+        assertThat(first.sourceLinked()).isFalse();
+        queryStore.createCustomerArea(UUID.randomUUID(), "OTHER_TENANT", new CrmCustomerAreaCommand("其他租户", null, "ACTIVE", 0, 0, "1031"), actor);
+        TestAuthorizationContext.set(new CallerIdentity("TENANT", actor, tenant, actor, null,
+                UUID.randomUUID(), 0, 0, 0, java.util.Set.of(), java.util.Set.of("crm:customer:write")));
+        try {
+            assertThatThrownBy(() -> queryService.updateCustomerArea(second.id(), new CrmCustomerAreaCommand("城市乙", null, "ACTIVE", 1, 0, "1031")))
+                    .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.CONFLICT));
+            assertThatThrownBy(() -> queryService.createCustomerArea(new CrmCustomerAreaCommand("城市丙", null, "ACTIVE", 0, 0, "1031")))
+                    .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.CONFLICT));
+            var legacyUpdate = queryService.updateCustomerArea(first.id(), new CrmCustomerAreaCommand("城市甲", null, "ACTIVE", 1, 2));
+            assertThat(legacyUpdate.sourceCode()).isEqualTo("1031");
+            var cleared = queryService.updateCustomerArea(first.id(), new CrmCustomerAreaCommand("城市甲", null, "ACTIVE", 2, 2, " "));
+            assertThat(cleared.sourceCode()).isNull();
+            assertThat(cleared.sourceLinked()).isFalse();
+            assertThatThrownBy(() -> queryService.updateCustomerArea(first.id(), new CrmCustomerAreaCommand("城市甲", null, "ACTIVE", 3, 2, "1".repeat(129))))
+                    .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.BAD_REQUEST));
+        } finally {
+            TestAuthorizationContext.clear();
+        }
+        assertThat(queryStore.customerAreas(tenant, 0, 200, null).items()).hasSize(2);
     }
 
     @Test

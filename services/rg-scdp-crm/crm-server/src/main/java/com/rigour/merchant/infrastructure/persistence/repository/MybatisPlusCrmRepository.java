@@ -3007,6 +3007,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             UUID tenantId, String areaCode, CrmCustomerAreaCommand command, UUID actorId) {
         responsibilities.lockAuthority(tenantId.toString());
         ensureAreaNameAvailable(tenantId, command.areaName(), command.parentAreaCode(), null);
+        ensureAreaSourceCodeAvailable(tenantId, command.sourceCode(), null);
         CustomerAreaEntity parent = areaByCode(tenantId, command.parentAreaCode());
         if (command.parentAreaCode() != null && parent == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "上级地区不存在", List.of());
@@ -3017,6 +3018,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         row.tenantId = bytes(tenantId);
         row.areaCode = areaCode;
         row.areaName = command.areaName();
+        row.sourceAreaCode = clean(command.sourceCode());
         row.sortOrder = command.sortOrder() == null ? 0 : command.sortOrder();
         row.parentAreaCode = parent == null ? null : parent.areaCode;
         row.status = command.status();
@@ -3056,6 +3058,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             ancestor = node == null ? null : node.parentAreaCode;
         }
         ensureAreaNameAvailable(tenantId, command.areaName(), command.parentAreaCode(), id);
+        ensureAreaSourceCodeAvailable(tenantId, command.sourceCode(), id);
         CustomerAreaEntity parent = areaByCode(tenantId, command.parentAreaCode());
         if (command.parentAreaCode() != null && parent == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "上级地区不存在", List.of());
@@ -3069,6 +3072,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                                 .eq("revision", command.revision().longValue())
                                 .eq("deleted", 0)
                                 .set("area_name", command.areaName())
+                                .set(command.sourceCode() != null, "source_area_code", clean(command.sourceCode()))
                                 .set(command.sortOrder() != null, "sort_order", command.sortOrder())
                                 .set("parent_area_code", parent == null ? null : parent.areaCode)
                                 .set("status", command.status())
@@ -3210,7 +3214,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                                                 row.get("sort_order") == null ? null : ((Number) row.get("sort_order")).intValue(),
                                                 text(row, "source_area_code"),
                                                 text(row, "created_by"), instant(row, "created_time"),
-                                                text(row, "updated_by"), instant(row, "updated_time")))
+                                                text(row, "updated_by"), instant(row, "updated_time"),
+                                                bool(row.get("source_linked"))))
                         .toList());
     }
 
@@ -3248,7 +3253,21 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         }
     }
 
+    private void ensureAreaSourceCodeAvailable(UUID tenantId, String sourceCode, UUID excludedId) {
+        String code = clean(sourceCode);
+        if (code == null) return;
+        var query = Wrappers.<CustomerAreaEntity>query()
+                .eq("tenant_id", bytes(tenantId)).eq("source_area_code", code).eq("deleted", 0);
+        if (excludedId != null) query.ne("id", bytes(excludedId));
+        if (customerAreaMapper.selectCount(query) > 0)
+            throw new BusinessException(ErrorCode.CONFLICT, "该订货宝编号已被其他地区使用", List.of());
+    }
+
     private DictionaryView areaView(CustomerAreaEntity row, CustomerAreaEntity parent) {
+        boolean linked = bindingMapper.selectCount(Wrappers.<SourceBindingEntity>query()
+                .eq("tenant_id", row.tenantId).eq("target_id", row.id)
+                .eq("source_system", SOURCE_SYSTEM).eq("source_object_type", "CUSTOMER_AREA")
+                .eq("binding_status", "RESOLVED").eq("deleted", 0)) > 0;
         return new DictionaryView(
                 uuid(row.id),
                 row.areaCode,
@@ -3261,7 +3280,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 null,
                 row.revision, row.sortOrder, row.sourceAreaCode,
                 row.createdBy, row.createdTime == null ? null : row.createdTime.toInstant(java.time.ZoneOffset.UTC),
-                row.updatedBy, row.updatedTime == null ? null : row.updatedTime.toInstant(java.time.ZoneOffset.UTC));
+                row.updatedBy, row.updatedTime == null ? null : row.updatedTime.toInstant(java.time.ZoneOffset.UTC), linked);
     }
 
     private AreaSyncOutcome syncExternalAreaRow(

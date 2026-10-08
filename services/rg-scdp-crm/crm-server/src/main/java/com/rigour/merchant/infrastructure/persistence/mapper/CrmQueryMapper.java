@@ -240,6 +240,7 @@ SELECT p.id,p.party_code,p.display_name,p.internal_status,cp.login_account,
             """
             <script>
             SELECT d.id,d.area_code AS code,d.area_name AS name,d.status,b.synced_at,d.revision,
+                   COALESCE(b.binding_status='RESOLVED',FALSE) AS source_linked,
                    b.source_presence,b.source_absent_at,
                    d.parent_area_code AS parent_code,p.id AS parent_id,
                    d.sort_order,d.source_area_code,d.created_by,d.created_time,d.updated_by,d.updated_time
@@ -247,7 +248,7 @@ SELECT p.id,p.party_code,p.display_name,p.internal_status,cp.login_account,
               LEFT JOIN crm_customer_area p ON p.tenant_id=d.tenant_id
                    AND p.area_code=d.parent_area_code AND p.deleted=0
               LEFT JOIN crm_source_binding b ON b.tenant_id=d.tenant_id AND b.target_id=d.id
-                   AND b.source_object_type='CUSTOMER_AREA'
+                   AND b.source_object_type='CUSTOMER_AREA' AND b.source_system='DINGHUOBAO' AND b.deleted=0
              WHERE d.tenant_id=#{tenantId} AND d.deleted=0
             <if test="query != null and query != ''">
               AND (d.area_code LIKE #{query} OR d.area_name LIKE #{query})

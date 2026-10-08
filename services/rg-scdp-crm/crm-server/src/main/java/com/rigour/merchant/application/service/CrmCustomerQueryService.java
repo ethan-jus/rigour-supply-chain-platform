@@ -146,12 +146,16 @@ public final class CrmCustomerQueryService {
         }
         if (command.sortOrder() != null && (command.sortOrder() < 0 || command.sortOrder() > 999999))
             throw new IllegalArgumentException("排序必须在0到999999之间");
+        String sourceCode = command.sourceCode() == null ? null : command.sourceCode().strip();
+        if (sourceCode != null && sourceCode.length() > 128)
+            throw badRequest("订货宝编号不能超过128个字符");
         return new CrmCustomerAreaCommand(
                 required(command.areaName(), "地区名称不能为空", 160),
                 code(command.parentAreaCode(), "parentAreaCode"),
                 status(command.status()),
                 update ? revision : 0,
-                command.sortOrder() == null && !update ? 0 : command.sortOrder());
+                command.sortOrder() == null && !update ? 0 : command.sortOrder(),
+                sourceCode);
     }
 
     private static String required(String value, String message, int max) {
