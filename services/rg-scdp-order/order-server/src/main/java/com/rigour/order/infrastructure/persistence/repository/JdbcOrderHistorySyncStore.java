@@ -1046,14 +1046,24 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                     && Objects.equals(group, text(v, "group_id"))
                     && Objects.equals(instant(v.get("occurred_at")), c.occurredAt())
                     && Objects.equals(text(v, "source_status"), c.status())) {
+                // 同一来源数据未变，客户或订单映射补齐后仍需落下真实状态，不能只返回 NEW。
+                boolean mappingRecovered = "MAPPING_PENDING".equals(text(v, "state"))
+                        && "NEW".equals(state)
+                        && Objects.equals(text(v, "source_order_no"), c.sourceOrderNo())
+                        && money(v, "amount").compareTo(c.amount()) == 0
+                        && (v.get("customer_id") == null || Objects.equals(v.get("customer_id"), customer))
+                        && v.get("pending_payload") == null && v.get("pending_checksum") == null;
+                if (mappingRecovered) {
+                    jdbc.update("INSERT INTO order_sync_receipt_revision"
+                            + "(tenant_id,connector_id,receipt_no,revision,payload,created_at) VALUES(?,?,?,?,?,?)",
+                            t, c.connectorId().toString(), c.receiptNo(), revision,
+                            JSON.writeValueAsString(v), ts(Instant.now()));
+                    jdbc.update("UPDATE order_sync_receipt SET customer_id=?,state='NEW',revision=?"
+                            + " WHERE tenant_id=? AND connector_id=? AND receipt_no=?",
+                            customer, revision, t, c.connectorId().toString(), c.receiptNo());
+                }
                 resolveOwner(t, c, customer);
-                if (group == null
-                        && !sources.isEmpty()
-                        && "NEW".equals(text(sources.getFirst(), "state"))
-                        && !"BASELINE_COVERED".equals(text(v, "state"))
-                        && Set.of("RECEIVED", "CONFIRMED", "PENDING").contains(c.status())
-                        && c.occurredAt() != null) return receiptResult(t, c, "NEW", null);
-                return receiptResult(t, c, text(v, "state"), group);
+                return receiptResult(t, c, mappingRecovered ? "NEW" : text(v, "state"), group);
             }
             // 金额、付款日或关联门店变更不能静默挪动既有归属和核销。
             boolean changed =

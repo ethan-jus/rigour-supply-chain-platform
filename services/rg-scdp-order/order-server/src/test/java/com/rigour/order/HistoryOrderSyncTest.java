@@ -1113,6 +1113,54 @@ class HistoryOrderSyncTest {
     }
 
     @Test
+    void unchangedReceiptPersistsRecoveredMappingOnceWithoutRewritingPaymentFacts() {
+        var unmatched = new Receipt(connector, "R1", "D1", null, new BigDecimal("156"),
+                paidAt, "CONFIRMED", paidAt, "h1");
+        assertThat(pay(unmatched).state()).isEqualTo("MAPPING_PENDING");
+        intake("D1", 1, "156", "1");
+        db.update("UPDATE order_sync_source SET state='NEW'");
+        order(1, 1, "156", "156", "1");
+        db.update("INSERT INTO order_payment_record(id,tenant_id,connector_id,source_system_code,source_document_no,"
+                + "order_id,customer_id,paid_amount,payment_time,payment_status_code,revision,deleted)"
+                + " VALUES(100,?,?,'DINGHUOBAO','R1',1,1,156,?,'CHECKED',1,0)",
+                tenant, connector.toString(), java.time.LocalDateTime.ofInstant(paidAt, java.time.ZoneOffset.UTC));
+        var beforePayment = db.queryForMap("SELECT * FROM order_payment_record WHERE id=100");
+        var beforeReceipt = db.queryForMap("SELECT * FROM order_sync_receipt WHERE receipt_no='R1'");
+        var replay = receipt("R1", "D1", "156", "CONFIRMED", "h1");
+
+        assertThat(pay(replay).state()).isEqualTo("NEW");
+        assertThat(pay(replay).state()).isEqualTo("NEW");
+        var saved = db.queryForMap("SELECT * FROM order_sync_receipt WHERE receipt_no='R1'");
+        assertThat(saved.get("state")).isEqualTo("NEW");
+        assertThat(((Number) saved.get("customer_id")).longValue()).isEqualTo(1);
+        assertThat(((Number) saved.get("revision")).intValue()).isEqualTo(1);
+        assertThat((BigDecimal) saved.get("amount")).isEqualByComparingTo("156");
+        assertThat(saved.get("occurred_at")).isEqualTo(beforeReceipt.get("occurred_at"));
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sync_receipt_revision", Integer.class)).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+        assertThat(db.queryForMap("SELECT * FROM order_payment_record WHERE id=100")).isEqualTo(beforePayment);
+        db.update("UPDATE order_sync_receipt SET state='SYNCED' WHERE receipt_no='R1'");
+        assertThat(pay(replay).state()).isEqualTo("SYNCED");
+        assertThat(db.queryForObject("SELECT state FROM order_sync_receipt WHERE receipt_no='R1'", String.class)).isEqualTo("SYNCED");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+        assertThat(db.queryForMap("SELECT * FROM order_payment_record WHERE id=100")).isEqualTo(beforePayment);
+    }
+
+    @Test
+    void unchangedReceiptDoesNotActivateMappingWithPendingSourceChange() {
+        pay(new Receipt(connector, "R1", "D1", null, new BigDecimal("156"),
+                paidAt, "CONFIRMED", paidAt, "h1"));
+        intake("D1", 1, "156", "1");
+        db.update("UPDATE order_sync_source SET state='NEW'");
+        db.update("UPDATE order_sync_receipt SET pending_payload='{}',pending_checksum='review'");
+
+        assertThat(pay(receipt("R1", "D1", "156", "CONFIRMED", "h1")).state()).isEqualTo("MAPPING_PENDING");
+        assertThat(db.queryForObject("SELECT state FROM order_sync_receipt", String.class)).isEqualTo("MAPPING_PENDING");
+        assertThat(db.queryForObject("SELECT customer_id FROM order_sync_receipt", Long.class)).isNull();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isZero();
+    }
+
+    @Test
     void performanceExcludesPendingCancelledAndRetiredOrderPayments() {
         order(1, 1, "1000", "0", "10");
         order(2, 1, "1000", "0", "10");
