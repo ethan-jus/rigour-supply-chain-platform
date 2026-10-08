@@ -40,7 +40,8 @@ public record SalesDashboardData(
             BigDecimal sales,
             BigDecimal received,
             BigDecimal receipts,
-            boolean allocated) {}
+            boolean allocated,
+            String imageUrl) {}
 
     public record Customer(String code, String name, BigDecimal sales, BigDecimal received) {}
 

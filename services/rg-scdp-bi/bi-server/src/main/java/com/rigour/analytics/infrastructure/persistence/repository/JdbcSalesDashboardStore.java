@@ -248,7 +248,8 @@ SELECT COALESCE(CAST(product_category_id AS CHAR),'UNKNOWN') categoryId,
                                                 r.getBigDecimal("sales"),
                                                 r.getBigDecimal("received"),
                                                 r.getBigDecimal("receipts"),
-                                                r.getBoolean("allocated")));
+                                                r.getBoolean("allocated"),
+                                                null));
         return new SalesDashboardData(
                 people,
                 goals,

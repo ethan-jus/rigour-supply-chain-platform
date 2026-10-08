@@ -2,6 +2,7 @@ package com.rigour.analytics.application.service;
 
 import com.rigour.analytics.application.model.*;
 import com.rigour.analytics.application.port.out.SalesDashboardStore;
+import com.rigour.analytics.application.port.out.BiProductImages;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.core.api.ErrorCode;
@@ -15,10 +16,12 @@ import java.time.Instant;
 public class SalesDashboardService {
     private final SalesDashboardStore store;
     private final BiDataScopeService scopes;
+    private final BiProductImages images;
 
-    public SalesDashboardService(SalesDashboardStore store, BiDataScopeService scopes) {
+    public SalesDashboardService(SalesDashboardStore store, BiDataScopeService scopes, BiProductImages images) {
         this.store = store;
         this.scopes = scopes;
+        this.images = images;
     }
 
     public SalesDashboardData query(
@@ -38,7 +41,7 @@ public class SalesDashboardService {
             throw new BusinessException(
                     ErrorCode.BAD_REQUEST, "商品分类请在个人商品分析区域筛选", java.util.List.of());
         var scope = scopes.resolve(region, owner);
-        return store.query(
+        var data = store.query(
                 actor.tenantId().toString(),
                 new SupplyDashboardFilter(
                         from,
@@ -48,5 +51,13 @@ public class SalesDashboardService {
                         customerType,
                         null,
                         source));
+        if (data.products().isEmpty()) return data;
+        var urls = images.urls(actor.tenantId().toString(), data.products().stream()
+                .map(SalesDashboardData.Product::productId).distinct().toList());
+        var products = data.products().stream().map(p -> new SalesDashboardData.Product(
+                p.categoryId(), p.category(), p.productId(), p.product(), p.sku(), p.quantity(),
+                p.sales(), p.received(), p.receipts(), p.allocated(), urls.get(p.productId()))).toList();
+        return new SalesDashboardData(data.people(), data.goals(), data.history(), products,
+                data.customers(), data.months(), data.receiptSplit(), data.productSyncedAt(), data.dailyReceipts());
     }
 }
