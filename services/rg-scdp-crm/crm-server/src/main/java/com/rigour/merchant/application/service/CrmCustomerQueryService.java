@@ -139,8 +139,8 @@ public final class CrmCustomerQueryService {
             CrmCustomerAreaCommand command, boolean update) {
         if (command == null) throw new IllegalArgumentException("地区参数不能为空");
         Integer revision = command.revision();
-        if (update && (revision == null || revision < 1))
-            throw new IllegalArgumentException("revision必须大于0");
+        if (update && (revision == null || revision < 0))
+            throw badRequest("revision不能为空且必须大于等于0");
         if (!update && revision != null && revision != 0) {
             throw new IllegalArgumentException("新增地区时revision必须为空或0");
         }

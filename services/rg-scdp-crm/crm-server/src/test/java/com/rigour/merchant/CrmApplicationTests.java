@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.rigour.merchant.api.v1.model.ExternalCrmCustomerRowCommand;
+import com.rigour.merchant.api.v1.model.CrmCustomerAreaCommand;
+import com.rigour.merchant.application.service.CrmCustomerQueryService;
 import com.rigour.merchant.application.port.out.CrmCustomerQueryStore;
 import com.rigour.merchant.application.port.out.CrmInternalCustomerStore;
 import com.rigour.merchant.application.port.out.CrmMasterDataStore;
@@ -13,6 +15,10 @@ import com.rigour.merchant.application.port.out.DhbCrmMasterDataClient.SourceRec
 import com.rigour.merchant.domain.model.CrmMasterDataObjectType;
 import com.rigour.merchant.infrastructure.persistence.CrmUuidCodec;
 import com.rigour.shared.core.code.BusinessCodeGenerator;
+import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.context.TestAuthorizationContext;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -60,6 +66,8 @@ class CrmApplicationTests {
 
     @Autowired private CrmCustomerQueryStore queryStore;
 
+    @Autowired private CrmCustomerQueryService queryService;
+
     @Autowired private CrmInternalCustomerStore internalCustomerStore;
 
     @Autowired
@@ -68,6 +76,62 @@ class CrmApplicationTests {
 
     @Autowired
     private com.rigour.merchant.application.port.out.AnalyticsSourceSnapshotStore sourceSnapshot;
+
+    @Test
+    void importedAreaAtRevisionZeroCanMoveWithoutChangingCustomerReferences() {
+        UUID tenant = UUID.randomUUID(), actor = UUID.randomUUID(), connector = UUID.randomUUID();
+        queryStore.createCustomerArea(tenant, "HEBEI", new CrmCustomerAreaCommand("河北省", null, "ACTIVE", 0, 1), actor);
+        UUID run = start(tenant, connector, actor, CrmMasterDataObjectType.CUSTOMER_AREA);
+        var source = new SourceRecord("44099", null, "唐山", null, null, null,
+                Map.of("AreaID", "44099", "AreaName", "唐山"));
+        finish(tenant, connector, run, CrmMasterDataObjectType.CUSTOMER_AREA,
+                store.importRecord(tenant, connector, run, CrmMasterDataObjectType.CUSTOMER_AREA, source));
+        var city = queryStore.customerAreas(tenant, 0, 200, "唐山").items().getFirst();
+        assertThat(city.revision()).isZero();
+        jdbcTemplate.update("INSERT INTO crm_customer(tenant_id,customer_code,customer_name,region_code,status_code,revision,created_time,updated_time,deleted) VALUES(?, 'KEEP', '已有客户', ?, 'ACTIVE', 0, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6), 0)", tenant.toString(), city.code());
+        var customerBefore = jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=? AND customer_code='KEEP'", tenant.toString());
+        var command = new CrmCustomerAreaCommand("唐山", "HEBEI", "ACTIVE", 0, 0);
+        TestAuthorizationContext.set(new CallerIdentity("TENANT", actor, tenant, actor, null,
+                UUID.randomUUID(), 0, 0, 0, java.util.Set.of(), java.util.Set.of("crm:customer:write")));
+        try {
+            var edited = queryService.updateCustomerArea(city.id(), command);
+            assertThat(edited.id()).isEqualTo(city.id());
+            assertThat(edited.code()).isEqualTo(city.code());
+            assertThat(edited.parentCode()).isEqualTo("HEBEI");
+            assertThat(edited.revision()).isEqualTo(1L);
+            assertThatThrownBy(() -> queryService.updateCustomerArea(city.id(), command))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.CONFLICT));
+        } finally {
+            TestAuthorizationContext.clear();
+        }
+        UUID nextRun = start(tenant, connector, actor, CrmMasterDataObjectType.CUSTOMER_AREA);
+        finish(tenant, connector, nextRun, CrmMasterDataObjectType.CUSTOMER_AREA,
+                store.importRecord(tenant, connector, nextRun, CrmMasterDataObjectType.CUSTOMER_AREA, source));
+        var afterSync = queryStore.customerAreas(tenant, 0, 200, "唐山").items().getFirst();
+        assertThat(afterSync.id()).isEqualTo(city.id());
+        assertThat(afterSync.parentCode()).isEqualTo("HEBEI");
+        assertThat(afterSync.revision()).isEqualTo(1L);
+        assertThat(jdbcTemplate.queryForObject("SELECT ownership_state FROM crm_customer_area WHERE id=UUID_TO_BIN(?)", String.class, city.id().toString())).isEqualTo("INTERNAL_PRIMARY");
+        assertThat(jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=? AND customer_code='KEEP'", tenant.toString())).isEqualTo(customerBefore);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullSource
+    @org.junit.jupiter.params.provider.ValueSource(ints = {-1})
+    void areaUpdateRejectsMissingOrNegativeRevisionAsBadRequest(Integer revision) {
+        UUID tenant = UUID.randomUUID(), actor = UUID.randomUUID();
+        TestAuthorizationContext.set(new CallerIdentity("TENANT", actor, tenant, actor, null,
+                UUID.randomUUID(), 0, 0, 0, java.util.Set.of(), java.util.Set.of("crm:customer:write")));
+        try {
+            assertThatThrownBy(() -> queryService.updateCustomerArea(UUID.randomUUID(),
+                    new CrmCustomerAreaCommand("唐山", null, "ACTIVE", revision, 0)))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.BAD_REQUEST));
+        } finally {
+            TestAuthorizationContext.clear();
+        }
+    }
 
     @Test
     void areaMaintenancePreservesCustomerReferencesAndExposesSortAndAudit() {
