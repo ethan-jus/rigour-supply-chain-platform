@@ -157,13 +157,27 @@ public final class CrmMasterDataSyncService {
                     guard -> {
                         leaseAcquired.set(true);
                         if (incremental || createdBefore != null) {
+                            List<SyncObjectResult> results = new ArrayList<>();
+                            if (incremental) {
+                                // 客户增量可能引用新地区；在同一租约内先更新地区，不推断来源删除。
+                                SyncObjectResult areas = runObject(caller.tenantId(), connectorId, initiatedBy,
+                                        sourceTaskId, CrmMasterDataObjectType.CUSTOMER_AREA, pages,
+                                        initiatedBy == null ? "SCHEDULED" : "MANUAL", guard,
+                                        null, null, null, null, progress, false);
+                                results.add(areas);
+                                if ("SKIPPED".equals(areas.status()))
+                                    return new SyncResult(UUID.randomUUID(), "SKIPPED", List.copyOf(results));
+                            }
                             Instant watermark = incremental ? Instant.now() : createdBefore;
                             Instant cursor = incremental ? store.customerSyncCursor(caller.tenantId(), connectorId) : null;
                             Instant lower = cursor == null ? null : cursor.minusSeconds(300);
                             SyncObjectResult result = runObject(caller.tenantId(), connectorId, initiatedBy,
                                     sourceTaskId, selected, pages, initiatedBy == null ? "SCHEDULED" : "MANUAL", guard,
                                     lower, lower == null ? null : watermark, createdBefore, watermark, progress);
-                            return new SyncResult(UUID.randomUUID(), result.status(), List.of(result));
+                            results.add(result);
+                            String status = results.stream().anyMatch(item -> !"SUCCEEDED".equals(item.status()))
+                                    ? results.size() == 1 ? result.status() : "SUCCEEDED_WITH_WARNINGS" : "SUCCEEDED";
+                            return new SyncResult(UUID.randomUUID(), status, List.copyOf(results));
                         }
                         return runBatchUnderLease(caller.tenantId(), connectorId, initiatedBy,
                                 sourceTaskId, selected == null ? CrmMasterDataObjectType.SYNC_ORDER : List.of(selected),
@@ -226,6 +240,15 @@ public final class CrmMasterDataSyncService {
             UUID sourceTaskId, CrmMasterDataObjectType objectType, int maxPages,
             String triggerType, LeaseGuard leaseGuard, Instant from, Instant to,
             Instant createdBefore, Instant watermark, java.util.function.Consumer<String> progress) {
+        return runObject(tenantId, connectorId, actorId, sourceTaskId, objectType, maxPages,
+                triggerType, leaseGuard, from, to, createdBefore, watermark, progress, true);
+    }
+
+    private SyncObjectResult runObject(UUID tenantId, UUID connectorId, UUID actorId,
+            UUID sourceTaskId, CrmMasterDataObjectType objectType, int maxPages,
+            String triggerType, LeaseGuard leaseGuard, Instant from, Instant to,
+            Instant createdBefore, Instant watermark, java.util.function.Consumer<String> progress,
+            boolean reconcileSourcePresence) {
         UUID runId;
         try {
             runId = store.startRun(tenantId, connectorId, actorId, sourceTaskId,
@@ -238,7 +261,8 @@ public final class CrmMasterDataSyncService {
         }
         Accumulator counts = new Accumulator();
         try {
-            progress.accept("正在读取订货宝客户增量资料");
+            String objectName = objectType == CrmMasterDataObjectType.CUSTOMER_AREA ? "客户地区" : "客户";
+            progress.accept("正在读取订货宝" + objectName + "资料");
             Collected collected = from == null
                     ? client.collect(tenantServiceCaller(tenantId), connectorId, objectType, maxPages)
                     : client.collect(tenantServiceCaller(tenantId), connectorId, objectType, maxPages, from, to);
@@ -267,7 +291,7 @@ public final class CrmMasterDataSyncService {
                 }
                 store.importRecords(tenantId, connectorId, runId, objectType,
                         batch).forEach(counts::add);
-                progress.accept("客户已核对 " + end + " / " + collected.items().size() + " 条");
+                progress.accept(objectName + "已核对 " + end + " / " + collected.items().size() + " 条");
             }
             progress.accept("正在核对客户字典和登记映射");
             Audit dictionaryAudit = dictionaryCoverage.sync(tenantId, collected);
@@ -281,7 +305,7 @@ public final class CrmMasterDataSyncService {
                     && dictionaryAudit.unmapped() == 0
                     ? store.completeCustomerWindow(tenantId, connectorId, runId, counts.statistics(), watermark)
                     : store.completeRun(tenantId, connectorId, runId,
-                        objectType, counts.statistics(), from == null && createdBefore == null
+                        objectType, counts.statistics(), reconcileSourcePresence && from == null && createdBefore == null
                                 && watermark == null && counts.rejected == 0);
             long unmapped = Math.max(counts.unmapped, mappings.pending()) + dictionaryAudit.unmapped();
             String status = unmapped == 0 && statistics.rejected() == 0 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS";

@@ -213,6 +213,7 @@ class CrmMasterDataSyncServiceTest {
         var dictionaries=mock(CrmDictionaryCoverageService.class);
         var mappingClient=mock(ExternalObjectMappingClient.class);
         var service=syncService(client,mock(DhbCrmSyncTargetDiscoveryClient.class),store,dictionaries,passthroughLease(),mappingClient);
+        emptyAreaRefresh(client, store);
         when(mappingClient.upsert(any(),any())).thenReturn(new ExternalObjectMappingBatchResult(1,published ? 1 : 0));
         when(store.startRun(any(),any(),any(),any(),any(),eq(10),any())).thenReturn(UUID.randomUUID());
         when(client.collect(any(),any(),eq(CrmMasterDataObjectType.CUSTOMER),eq(10)))
@@ -231,7 +232,8 @@ class CrmMasterDataSyncServiceTest {
         when(store.completeCustomerWindow(any(),any(),any(),any(),any())).thenAnswer(call -> call.getArgument(3));
         var result=service.runSelected(scheduledCaller(),CONNECTOR_ID,TASK_ID,10,null,null,"CUSTOMER",true,null);
         assertThat(result.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
-        assertThat(result.objects()).singleElement().satisfies(object -> assertThat(object.unmapped()).isEqualTo(1));
+        assertThat(result.objects()).filteredOn(object -> "CUSTOMER".equals(object.objectType()))
+                .singleElement().satisfies(object -> assertThat(object.unmapped()).isEqualTo(1));
     }
 
     @Test
@@ -428,11 +430,20 @@ class CrmMasterDataSyncServiceTest {
     }
 
     @Test
-    void customerIncrementalUsesOverlapAndCommitsCursorOnlyAfterSuccess() {
+    void customerIncrementalRefreshesAreasUnderSameLeaseBeforeUsingOverlapAndCommittingCursor() {
         var client = mock(DhbCrmMasterDataClient.class);
         var store = mock(CrmMasterDataStore.class);
         var dictionaries = mock(CrmDictionaryCoverageService.class);
-        var service = syncService(client, mock(DhbCrmSyncTargetDiscoveryClient.class), store, dictionaries, passthroughLease());
+        var guard = mock(LeaseGuard.class);
+        var lease = passthroughLease(guard);
+        var service = syncService(client, mock(DhbCrmSyncTargetDiscoveryClient.class), store, dictionaries, lease);
+        emptyAreaRefresh(client, store);
+        var area = new SourceRecord("NEW-AREA", null, "新地区", null, null, null,
+                Map.of("AreaName", "新地区"));
+        when(client.collect(any(), eq(CONNECTOR_ID), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(10)))
+                .thenReturn(new Collected(CrmMasterDataObjectType.CUSTOMER_AREA, 1, 1, List.of(area)));
+        when(store.importRecords(any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(List.of(area))))
+                .thenReturn(List.of(ImportResult.createdOne()));
         Instant cursor = Instant.parse("2026-09-15T16:00:00Z");
         when(store.customerSyncCursor(TENANT_ID, CONNECTOR_ID)).thenReturn(cursor);
         when(store.startRun(any(), any(), any(), any(), any(), eq(10), any())).thenReturn(UUID.randomUUID());
@@ -442,8 +453,61 @@ class CrmMasterDataSyncServiceTest {
         when(store.completeCustomerWindow(any(), any(), any(), any(), any())).thenAnswer(v -> v.getArgument(3));
         var result = service.runSelected(scheduledCaller(), CONNECTOR_ID, TASK_ID, 10, null, null, "CUSTOMER", true, null);
         assertThat(result.status()).isEqualTo("SUCCEEDED");
+        assertThat(result.objects()).extracting(object -> object.objectType())
+                .containsExactly("CUSTOMER_AREA", "CUSTOMER");
+        assertThat(result.objects().getFirst().created()).isEqualTo(1);
+        var order = inOrder(client, store, guard);
+        order.verify(client).collect(any(), eq(CONNECTOR_ID), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(10));
+        order.verify(store).importRecords(any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(List.of(area)));
+        order.verify(guard).ensureActive();
+        order.verify(store).completeRun(any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER_AREA), any(), eq(false));
+        order.verify(client).collect(any(), any(), eq(CrmMasterDataObjectType.CUSTOMER), eq(10), eq(cursor.minusSeconds(300)), any());
+        order.verify(guard).ensureActive();
+        order.verify(store).completeCustomerWindow(any(), any(), any(), any(), any());
+        verify(lease).executeWithLeaseGuard(eq(TENANT_ID), eq(CONNECTOR_ID), any());
         verify(store).completeCustomerWindow(any(), any(), any(), any(), any());
-        verify(store, never()).completeRun(any(), any(), any(), any(), any(), anyBoolean());
+        verify(store, never()).completeRun(any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER), any(), anyBoolean());
+    }
+
+    @Test
+    void failedAreaRefreshDoesNotCollectCustomersOrAdvanceCustomerCursor() {
+        var client = mock(DhbCrmMasterDataClient.class);
+        var store = mock(CrmMasterDataStore.class);
+        var service = syncService(client, mock(DhbCrmSyncTargetDiscoveryClient.class), store,
+                mock(CrmDictionaryCoverageService.class), passthroughLease());
+        UUID areaRun = UUID.randomUUID();
+        when(store.startRun(any(), any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(10), any()))
+                .thenReturn(areaRun);
+        when(client.collect(any(), any(), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(10)))
+                .thenThrow(new IllegalStateException("area provider failed"));
+
+        assertThatThrownBy(() -> service.runSelected(scheduledCaller(), CONNECTOR_ID, TASK_ID,
+                10, null, null, "CUSTOMER", true, null)).hasMessage("area provider failed");
+
+        verify(store).failRun(eq(TENANT_ID), eq(CONNECTOR_ID), eq(areaRun), any(), any());
+        verify(store, never()).startRun(any(), any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER), org.mockito.ArgumentMatchers.anyInt(), any());
+        verify(store, never()).customerSyncCursor(any(), any());
+        verify(store, never()).completeCustomerWindow(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void skippedAreaRefreshSkipsCustomerIncrementalWithoutAdvancingCursor() {
+        var client = mock(DhbCrmMasterDataClient.class);
+        var store = mock(CrmMasterDataStore.class);
+        var service = syncService(client, mock(DhbCrmSyncTargetDiscoveryClient.class), store,
+                mock(CrmDictionaryCoverageService.class), passthroughLease());
+        when(store.startRun(any(), any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(10), any()))
+                .thenThrow(new BusinessException(ErrorCode.SYNC_ALREADY_RUNNING, "area busy", List.of()));
+
+        var result = service.runSelected(scheduledCaller(), CONNECTOR_ID, TASK_ID,
+                10, null, null, "CUSTOMER", true, null);
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.objects()).singleElement().satisfies(object ->
+                assertThat(object.objectType()).isEqualTo("CUSTOMER_AREA"));
+        verify(store, never()).startRun(any(), any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER), org.mockito.ArgumentMatchers.anyInt(), any());
+        verify(store, never()).completeCustomerWindow(any(), any(), any(), any(), any());
+        org.mockito.Mockito.verifyNoInteractions(client);
     }
 
     @Test
@@ -479,6 +543,7 @@ class CrmMasterDataSyncServiceTest {
         var employees = mock(HrEmployeeDirectoryClient.class);
         var service = new CrmMasterDataSyncService(client, mock(DhbCrmSyncTargetDiscoveryClient.class), store,
                 dictionaries, passthroughLease(), mock(ExternalObjectMappingClient.class), employees);
+        emptyAreaRefresh(client, store);
         when(employees.resolveDinghuobaoEmployees(any(), any(), eq(List.of("STALE"))))
                 .thenReturn(List.of(), List.of(new HrEmployeeDirectoryClient.ResolvedEmployee(CONNECTOR_ID.toString(), "STALE", "EMP-REPAIRED", "已修复员工", "ACTIVE")));
         Instant cursor = Instant.parse("2026-09-15T16:00:00Z");
@@ -514,6 +579,7 @@ class CrmMasterDataSyncServiceTest {
         var employees=mock(HrEmployeeDirectoryClient.class);
         var service=new CrmMasterDataSyncService(client,mock(DhbCrmSyncTargetDiscoveryClient.class),store,
                 dictionaries,passthroughLease(),mock(ExternalObjectMappingClient.class),employees);
+        emptyAreaRefresh(client, store);
         var records=IntStream.range(0,401).mapToObj(i->new SourceRecord("C"+i,null,"fixture",null,null,null,
                 Map.<String,Object>of("staffID","S1"))).toList();
         when(store.startRun(any(),any(),any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any())).thenReturn(UUID.randomUUID());
@@ -529,6 +595,13 @@ class CrmMasterDataSyncServiceTest {
         verify(employees,org.mockito.Mockito.times(1)).resolveDinghuobaoEmployees(any(),eq(CONNECTOR_ID.toString()),eq(List.of("S1")));
         verify(store,org.mockito.Mockito.times(3)).importRecords(any(),any(),any(),any(),any());
         assertThat(stages).contains("客户已核对 200 / 401 条","客户已核对 400 / 401 条","客户已核对 401 / 401 条");
+    }
+
+    private static void emptyAreaRefresh(DhbCrmMasterDataClient client, CrmMasterDataStore store) {
+        when(client.collect(any(), any(), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(10)))
+                .thenReturn(new Collected(CrmMasterDataObjectType.CUSTOMER_AREA, 0, 1, List.of()));
+        when(store.completeRun(any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER_AREA), any(), eq(false)))
+                .thenAnswer(call -> call.getArgument(4));
     }
 
     private static CallerIdentity scheduledCaller() {

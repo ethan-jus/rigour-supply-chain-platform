@@ -356,32 +356,33 @@ public final class DhbOrderSyncService {
         int pageLimit = replayTarget == null ? resolveMaxPages(maxPages) : 1;
         Instant windowFrom = windowFrom(window);
         Instant windowTo = windowTo(window);
+        Counts counts = new Counts();
+        ExecutorService detailExecutor = null;
         SyncRunStarted started = store.beginRun(caller.tenantId(), caller.userId(), taskId,
                 windowFrom, windowTo);
-        if (replayTarget == null) {
-            // 单对象重放成功后会精确关闭该来源问题，无需扫描整个租户的历史死信。
-            store.resolveRecoveredProjectionIssues(caller.tenantId(), caller.userId());
-            store.recordSyncLog(caller.tenantId(), taskId, started.runId(), "INFO",
-                    "订货宝订单同步开始：Raw落库、映射校验、投影到Order销售订单 detailConcurrency="
-                            + detailConcurrency, null);
-            if (selectedScope == null || Set.of("SALES_ORDER", "SHIPMENT", "TRANSFER").contains(selectedScope))
-                ensureProductUnitDictionary(caller.tenantId(), taskId, started.runId());
-            if (selectedScope == null || "SALES_ORDER".equals(selectedScope))
-                ensureOrderStatusDictionary(caller.tenantId(), taskId, started.runId());
-        } else {
-            store.recordSyncLog(caller.tenantId(), taskId, started.runId(), "INFO",
-                    "订货宝单对象重放开始 sourceObjectType=" + replayTarget.sourceObjectType()
-                            + " sourceId=" + replayTarget.sourceId(), null);
-        }
-
-        Counts counts = new Counts();
-        Map<String, EmployeeProjection> employeeCache = new ConcurrentHashMap<>();
-        Map<Long, Optional<String>> customerRegionCache = new ConcurrentHashMap<>();
-        Map<String, Object> sourceOrderLocks = new ConcurrentHashMap<>();
-        MAPPING_LOOKUP_CACHE.set(new ConcurrentHashMap<>());
-        UNIT_DICTIONARY_SYNC_CACHE.set(ConcurrentHashMap.newKeySet());
-        ExecutorService detailExecutor = newDetailExecutor();
         try {
+            if (replayTarget == null) {
+                // 单对象重放成功后会精确关闭该来源问题，无需扫描整个租户的历史死信。
+                store.resolveRecoveredProjectionIssues(caller.tenantId(), caller.userId());
+                store.recordSyncLog(caller.tenantId(), taskId, started.runId(), "INFO",
+                        "订货宝订单同步开始：Raw落库、映射校验、投影到Order销售订单 detailConcurrency="
+                                + detailConcurrency, null);
+                if (selectedScope == null || Set.of("SALES_ORDER", "SHIPMENT", "TRANSFER").contains(selectedScope))
+                    ensureProductUnitDictionary(caller.tenantId(), taskId, started.runId());
+                if (selectedScope == null || "SALES_ORDER".equals(selectedScope))
+                    ensureOrderStatusDictionary(caller.tenantId(), taskId, started.runId());
+            } else {
+                store.recordSyncLog(caller.tenantId(), taskId, started.runId(), "INFO",
+                        "订货宝单对象重放开始 sourceObjectType=" + replayTarget.sourceObjectType()
+                                + " sourceId=" + replayTarget.sourceId(), null);
+            }
+
+            Map<String, EmployeeProjection> employeeCache = new ConcurrentHashMap<>();
+            Map<Long, Optional<String>> customerRegionCache = new ConcurrentHashMap<>();
+            Map<String, Object> sourceOrderLocks = new ConcurrentHashMap<>();
+            MAPPING_LOOKUP_CACHE.set(new ConcurrentHashMap<>());
+            UNIT_DICTIONARY_SYNC_CACHE.set(ConcurrentHashMap.newKeySet());
+            detailExecutor = newDetailExecutor();
             if (replayTarget == null) {
                 if (incrementalWork != null && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT").contains(selectedScope == null ? "" : selectedScope))
                     retryPending(caller, task, started.runId(), selectedScope, windowTo, counts, progress, employeeCache, customerRegionCache);
@@ -469,6 +470,12 @@ public final class DhbOrderSyncService {
             try {
                 store.recordSyncLog(caller.tenantId(), taskId, started.runId(), "ERROR",
                         "订货宝订单同步失败：" + errorMessage, errorCode);
+            } catch (RuntimeException logError) {
+                log.error("订货宝同步失败后无法写入失败日志 tenantId={} taskId={} runId={}",
+                        caller.tenantId(), taskId, started.runId(), logError);
+            }
+            // 失败日志可能使用了断开的连接；仍须独立尝试结束批次，释放任务运行占位。
+            try {
                 store.finishRun(caller.tenantId(), caller.userId(), taskId, started.runId(),
                         windowFrom, windowTo, "FAILED", counts.fetched, counts.accepted,
                         counts.duplicate, counts.rejected, null, errorCode, errorMessage);

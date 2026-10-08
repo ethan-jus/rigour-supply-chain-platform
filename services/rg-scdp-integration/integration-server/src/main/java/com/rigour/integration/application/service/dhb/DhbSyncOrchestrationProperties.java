@@ -18,7 +18,7 @@ public class DhbSyncOrchestrationProperties {
      * 订单页「同步订单」按钮首次增量同步的默认起点，与 Order 领域
      * {@code HistorySyncRules.CUTOVER}（{@code 2026-09-04T00:00:00+08:00}）保持一致：
      * 9/4 之后订货宝订单才允许新建，9/4 之前以飞书历史订单为主体、订货宝只回款。
-     * 需要提前回补时用 {@code incremental-window-from} 覆盖。
+     * 增量入口不会早于该边界；历史回补使用显式时间窗口的修复入口。
      */
     public static final String DEFAULT_ORDER_INCREMENTAL_WINDOW_FROM = "2026-09-04T00:00:00+08:00";
     /** 单次来源拉取的最大时间跨度；积压更长时由调用方按片推进。 */

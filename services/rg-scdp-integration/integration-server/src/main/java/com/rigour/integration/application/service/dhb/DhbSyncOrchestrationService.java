@@ -261,10 +261,7 @@ public final class DhbSyncOrchestrationService {
                                 steps.add(skipped("ORDER", "ORDER_SALES_PACKAGE", "客户同步未完成，暂停订单同步"));
                                 break;
                             }
-                            var protectedCaller = new CallerIdentity(caller.principalScope(), caller.principalId(),
-                                    caller.tenantId(), null, null, caller.sessionId(), 0, 0, 0,
-                                    Set.of("DHB_SYNC_ORCHESTRATOR", "DHB_PROTECT_HISTORY"), caller.permissions());
-                            runIncrementalOrderPackageSteps(protectedCaller, bucket, pages, steps, progress, true);
+                            runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, true);
                         }
                         case SALESPERSON -> runStaffStep(bucket, caller, pages, null, steps, true, progress);
                         case SALES_ORDER, RECEIPT, PAYMENT, SHIPMENT, TRANSFER -> {
@@ -775,8 +772,12 @@ public final class DhbSyncOrchestrationService {
     private void runIncrementalOrderPackageSteps(CallerIdentity caller, TargetBucket bucket,
                                                  int pages, List<DhbSyncOrchestrationStepView> steps,
                                                  java.util.function.Consumer<String> progress, boolean background) {
+        // 页面与定时增量都可能读取近期修改的历史单据，统一保留切换日前的历史校准。
+        var protectedCaller = new CallerIdentity(caller.principalScope(), caller.principalId(),
+                caller.tenantId(), null, null, caller.sessionId(), 0, 0, 0,
+                Set.of("DHB_SYNC_ORCHESTRATOR", "DHB_PROTECT_HISTORY"), caller.permissions());
         Instant bootstrap = properties.incrementalWindowFromInstant();
-        if (caller.roles().contains("DHB_PROTECT_HISTORY") && bootstrap.isBefore(Instant.parse("2026-09-03T16:00:00Z")))
+        if (bootstrap.isBefore(Instant.parse("2026-09-03T16:00:00Z")))
             bootstrap = Instant.parse("2026-09-03T16:00:00Z");
         Instant end = clock.instant().minus(SCHEDULED_WINDOW_SAFETY_LAG);
         for (String type : List.of("SALES_ORDER", "RECEIPT", "PAYMENT")) {
@@ -788,7 +789,7 @@ public final class DhbSyncOrchestrationService {
                 steps.add(skipped("ORDER", type, "该对象游标已覆盖增量窗口，无需再次拉取"));
                 continue;
             }
-            steps.add(runIncrementalOrderScope(caller, bucket, type, from, end, pages, progress, background));
+            steps.add(runIncrementalOrderScope(protectedCaller, bucket, type, from, end, pages, progress, background));
         }
     }
 

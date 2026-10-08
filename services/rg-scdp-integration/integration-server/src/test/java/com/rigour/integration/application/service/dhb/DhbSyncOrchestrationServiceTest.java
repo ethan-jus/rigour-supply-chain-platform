@@ -187,6 +187,50 @@ class DhbSyncOrchestrationServiceTest {
         ordered.verify(orderSyncService,org.mockito.Mockito.atLeastOnce()).runOrderPull(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void manualIncrementalOrderPackageProtectsHistoricalRecords(boolean background) {
+        service = serviceWithIncrementalWindow("2026-08-01T00:00:00+08:00",
+                Instant.parse("2026-09-05T08:00:00Z"));
+        org.mockito.stubbing.Answer<SyncRunView> checked = call -> {
+            CallerIdentity actor = call.getArgument(0);
+            SyncRunCommand command = call.getArgument(2);
+            assertThat(actor.roles()).contains("DHB_PROTECT_HISTORY");
+            assertThat(command.from()).isEqualTo(Instant.parse("2026-09-03T16:00:00Z"));
+            return orderResult();
+        };
+        if (background)
+            when(orderSyncService.runOrderPull(any(), any(), any(), eq(10), any())).thenAnswer(checked);
+        else
+            when(orderSyncService.runOrderPull(any(), any(), any(), eq(10))).thenAnswer(checked);
+
+        var result = service.runPage(manualCaller(), new DhbPageSyncCommand(
+                DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE, CONNECTOR_ID, null, null, 10, true),
+                stage -> {}, background);
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        verify(objectCheckpoints, org.mockito.Mockito.times(3)).completed(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void explicitHistoricalRepairWindowRemainsAvailable() {
+        Instant from = Instant.parse("2026-08-01T00:00:00Z"), to = from.plusSeconds(3600);
+        when(orderSyncService.runOrderPull(any(), any(), any(), eq(10))).thenAnswer(call -> {
+            CallerIdentity actor = call.getArgument(0);
+            SyncRunCommand command = call.getArgument(2);
+            assertThat(actor.roles()).doesNotContain("DHB_PROTECT_HISTORY");
+            assertThat(command.from()).isEqualTo(from);
+            assertThat(command.to()).isEqualTo(to);
+            return orderResult();
+        });
+
+        var result = service.runPage(manualCaller(), new DhbPageSyncCommand(
+                DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE, CONNECTOR_ID, from, to, 10, false));
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        org.mockito.Mockito.verifyNoInteractions(objectCheckpoints);
+    }
+
     @Test
     void scheduledRunCallsDomainsInBusinessDependencyOrder() {
         List<String> calls = new ArrayList<>();
@@ -633,11 +677,11 @@ class DhbSyncOrchestrationServiceTest {
 
     @Test
     void incrementalOrderPackageUsesPerScopeCheckpointWindowsAndAdvancesSuccessfulSteps() {
-        service = serviceWithIncrementalWindow("2026-08-01T00:00:00+08:00",
-                Instant.parse("2026-08-05T08:00:00Z"));
-        Instant bootstrap = Instant.parse("2026-07-31T16:00:00Z");
-        Instant end = Instant.parse("2026-08-05T07:58:00Z");
-        Instant receiptCursor = Instant.parse("2026-08-04T08:00:00Z");
+        service = serviceWithIncrementalWindow("2026-09-04T00:00:00+08:00",
+                Instant.parse("2026-09-08T08:00:00Z"));
+        Instant bootstrap = Instant.parse("2026-09-03T16:00:00Z");
+        Instant end = Instant.parse("2026-09-08T07:58:00Z");
+        Instant receiptCursor = Instant.parse("2026-09-07T08:00:00Z");
         when(objectCheckpoints.successfulTo(TENANT_ID, CONNECTOR_ID, "SALES_ORDER")).thenReturn(null);
         when(objectCheckpoints.successfulTo(TENANT_ID, CONNECTOR_ID, "RECEIPT")).thenReturn(receiptCursor);
         when(objectCheckpoints.successfulTo(TENANT_ID, CONNECTOR_ID, "PAYMENT")).thenReturn(null);
