@@ -709,7 +709,13 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
             applyExternalObjectMapping(row, command, mappingStatus, internalDomain,
                     internalObjectType, now, actorId);
             row.version = zero(row.version) + 1;
-            externalObjectMappingMapper.updateById(row);
+            // 领域批量同步恢复旧映射时，实体 null 不会自动清除数据库里的软删除字段。
+            externalObjectMappingMapper.update(row, Wrappers.<ExternalObjectMappingEntity>update()
+                    .set("deleted_at", null)
+                    .set("deleted_by", null)
+                    .set("delete_reason", null)
+                    .eq("tenant_id", bin(tenantId))
+                    .eq("id", row.id));
         }
     }
 

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand;
 import com.rigour.integration.application.port.out.DhbSyncStore.ExternalObjectMappingWrite;
 import com.rigour.integration.infrastructure.persistence.IntegrationUuidCodec;
 import com.rigour.integration.infrastructure.persistence.entity.ExternalObjectMappingEntity;
@@ -54,8 +55,9 @@ class RecoveredProjectionIssuesMapperTest {
         sessions = factory.getObject();
     }
 
-    @Test
-    void upsertRestoresOnlyTheMatchingSoftDeletedMapping() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void upsertRestoresOnlyTheMatchingSoftDeletedMapping(boolean domainBatchApi) {
         UUID tenantId = UUID.randomUUID(), connector = UUID.randomUUID(), otherConnector = UUID.randomUUID();
         try (var session = sessions.openSession(true)) {
             var mapper = session.getMapper(ExternalObjectMappingMapper.class);
@@ -73,9 +75,18 @@ class RecoveredProjectionIssuesMapperTest {
                 rows.add(row);
             }
 
-            store.upsertExternalObjectMapping(tenantId, IntegrationUuidCodec.decode(actor),
-                    new ExternalObjectMappingWrite(connector, "CUSTOMER", "source-1", "new-customer", "CRM", "CUSTOMER",
-                            22L, "CUS-22", "ACTIVE", null, Instant.now(), null, null, "正常同步重建关联"));
+            if (domainBatchApi) {
+                var domainStore = new MybatisPlusDhbIntegrationStore(null, null, null, null, null,
+                        mapper, null, null, null, null, null, new DataSourceTransactionManager(ds), JsonMapper.builder().build());
+                assertThat(domainStore.saveExternalObjectMappings(tenantId, IntegrationUuidCodec.decode(actor),
+                        List.of(new ExternalObjectMappingCommand(connector, "DHB", "CUSTOMER", "source-1", "new-customer",
+                                "CRM", "CUSTOMER", 22L, "CUS-22", "ACTIVE", null, Instant.now(), null, null, null,
+                                "CRM正常同步重建关联")))).isEqualTo(1);
+            } else {
+                store.upsertExternalObjectMapping(tenantId, IntegrationUuidCodec.decode(actor),
+                        new ExternalObjectMappingWrite(connector, "CUSTOMER", "source-1", "new-customer", "CRM", "CUSTOMER",
+                                22L, "CUS-22", "ACTIVE", null, Instant.now(), null, null, "正常同步重建关联"));
+            }
 
             var restored = mapper.selectById(rows.getFirst().id);
             assertThat(restored.deletedAt).isNull();
