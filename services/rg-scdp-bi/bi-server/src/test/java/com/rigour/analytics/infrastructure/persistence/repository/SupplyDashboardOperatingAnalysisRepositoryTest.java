@@ -137,7 +137,7 @@ CREATE TABLE bi_sales_payment_fact (
                         + " product_category_id BIGINT, deleted INT)");
         service =
                 new SupplyDashboardQueryService(
-                        new MybatisPlusSupplyDashboardRepository(mapper),
+                        new MybatisPlusSupplyDashboardRepository(mapper, org.mockito.Mockito.mock(HrDashboardTargets.class)),
                         Clock.fixed(TO.plusSeconds(1), ZoneOffset.UTC),
                         new com.rigour.analytics.application.service.BiDataScopeService(
                                 org.mockito.Mockito.mock(
@@ -541,10 +541,10 @@ WHERE l.tenant_id=?
                         "cityCustomers",
                         "salesReceipts",
                         "cityReceipts",
-                        "customerRetention", "cityMonthlyGoals", "citySalesPeople");
+                        "customerRetention", "citySalesPeople");
         assertThat(guard.tables)
                 .containsExactlyInAnyOrder(
-                        "bi_target_default", "bi_sales_order_fact", "bi_sales_order_line_fact", "bi_sales_payment_fact", "bi_dashboard_customer_history", "bi_sales_contact_city_dim", "bi_business_target", "bi_employee_dim");
+                        "bi_sales_order_fact", "bi_sales_order_line_fact", "bi_sales_payment_fact", "bi_dashboard_customer_history", "bi_sales_contact_city_dim", "bi_employee_dim");
         assertThat(
                         MybatisPlusSupplyDashboardRepository.class
                                 .getMethod(
@@ -631,16 +631,7 @@ SELECT * FROM scoped_lines
         assertThat(query("BJ", "S1", null, null).customerRetention().returningCustomerCount()).isEqualTo(1L);
     }
 
-    @Test
-    void monthlyDefaultsIncludeZeroOrderCitiesAndConfiguredTargetsOverrideOnlyTheirMonth() {
-        jdbc.update("INSERT INTO bi_sales_contact_city_dim(tenant_id,region_code,city_name) VALUES (?,?,?),(?,?,?)",TENANT.toString(),"BJ","北京",TENANT.toString(),"HZ","杭州");
-        jdbc.update("INSERT INTO bi_business_target VALUES (1,?,'2026-02-01','CITY','BJ','SALES_AMOUNT',250000,0)",TENANT.toString());
-        var goals=mapper.cityMonthlyGoals(TENANT.toString(),2026,null);
-        assertThat(goals).hasSize(24);
-        assertThat(goals.stream().map(g -> (BigDecimal)g.get("salestarget")).reduce(BigDecimal.ZERO,BigDecimal::add)).isEqualByComparingTo("2550000");
-        assertThat(mapper.cityMonthlyGoals(TENANT.toString(),2026,"HZ")).hasSize(12).allSatisfy(g -> assertThat((BigDecimal)g.get("receipttarget")).isEqualByComparingTo("100000"));
-        assertThat(mapper.cityMonthlyGoals(TENANT.toString(),2025,"BJ")).allSatisfy(g -> assertThat((BigDecimal)g.get("salestarget")).isEqualByComparingTo("100000"));
-    }
+
 
     @Test
     void annualRepeatDeduplicatesMonthlyReturningCustomersAndNewCustomersUseFirstOrder() {
@@ -774,7 +765,7 @@ INSERT INTO bi_sales_payment_fact (tenant_id, payment_id, customer_id, owner_sta
                         "bi_sales_payment_fact",
                         "bi_product_category_dim",
                         "bi_product_category_closure",
-                        "bi_target_default", "bi_product_dim", "bi_dashboard_customer_history", "bi_sales_contact_city_dim", "bi_business_target", "bi_employee_dim");
+                        "bi_target_default", "bi_product_dim", "bi_dashboard_customer_history", "bi_sales_contact_city_dim", "bi_employee_dim");
         private static final Pattern TABLE_REFERENCE =
                 Pattern.compile("(?i)\\b(?:FROM|JOIN)\\s+([a-zA-Z_][a-zA-Z0-9_.]*)");
         private static final Pattern CTE_DECLARATION =

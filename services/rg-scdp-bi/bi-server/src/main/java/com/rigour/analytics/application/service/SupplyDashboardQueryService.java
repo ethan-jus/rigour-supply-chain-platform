@@ -1098,9 +1098,9 @@ public final class SupplyDashboardQueryService {
                 definition(
                         "target_achievement_rate",
                         "目标达成率",
-                        "实际值 / BI 目标值；订单实际值限同指标已配置月份与查询期间交集，建联存量仅支持单月比较",
-                        "Analytics BI / bi_business_target + BI 事实表",
-                        "目标值为0、未配置或期间月份配置不完整时不参与平均完成率",
+                        "实际值 / HR 接口返回的月度目标累计值；实际值按查询期间统计",
+                        "HR 指标接口 + BI 事实表",
+                        "目标值为0时不考核；人事指标读取失败时不补造目标",
                         updatedAt,
                         cutoff),
                 definition(

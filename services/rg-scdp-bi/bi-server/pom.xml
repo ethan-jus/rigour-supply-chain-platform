@@ -13,6 +13,7 @@
         <dependency><groupId>org.testcontainers</groupId><artifactId>testcontainers-junit-jupiter</artifactId><version>${testcontainers.version}</version><scope>test</scope></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>bi-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>order-api</artifactId></dependency>
+        <dependency><groupId>com.rigour</groupId><artifactId>hr-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>rigour-platform-starter</artifactId></dependency>
         <dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId></dependency>
         <dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId></dependency>

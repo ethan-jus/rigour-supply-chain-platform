@@ -239,7 +239,9 @@ class IamApplicationTests {
         assertThat(
                         jdbcTemplate.queryForList(
                                 "SELECT permission_code FROM iam_resource "
-                                        + "WHERE permission_code IS NOT NULL",
+                                        // V123 deliberately reuses the BI read action on these two pages.
+                                        + "WHERE permission_code IS NOT NULL AND NOT (permission_code='analytics:dashboard:read'"
+                                        + " AND resource_code IN ('SUPPLY_CHAIN.PAGE.BI_SALES','SUPPLY_CHAIN.PAGE.BI_CITY_OPERATING'))",
                                 String.class))
                 .isNotEmpty()
                 .doesNotHaveDuplicates();

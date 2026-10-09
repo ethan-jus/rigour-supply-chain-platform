@@ -1,6 +1,8 @@
 package com.rigour.analytics.infrastructure.persistence.repository;
 
 import static org.assertj.core.api.Assertions.*;
+import java.math.BigDecimal;
+import java.util.List;
 
 import com.rigour.analytics.application.model.SupplyDashboardFilter;
 
@@ -33,7 +35,12 @@ public class SalesDashboardRepositoryTest {
                         "sa",
                         "");
         jdbc = new JdbcTemplate(ds);
-        store = new JdbcSalesDashboardStore(ds);
+        var targets = org.mockito.Mockito.mock(HrDashboardTargets.class);
+        org.mockito.Mockito.when(targets.values("T","2026-01","2026-12")).thenReturn(List.of(
+            new com.rigour.hr.api.v1.model.TargetSettingsModels.Target("2026-08","SALES_OWNER","S1","Sales1","SALES_AMOUNT",new BigDecimal("123"),1),
+            new com.rigour.hr.api.v1.model.TargetSettingsModels.Target("2026-08","SALES_OWNER","S1","Sales1","RECEIPT_AMOUNT",BigDecimal.ZERO,1),
+            new com.rigour.hr.api.v1.model.TargetSettingsModels.Target("2026-08","SALES_OWNER","OUTSIDE","Private","SALES_AMOUNT",new BigDecimal("999"),1)));
+        store = new JdbcSalesDashboardStore(ds, targets);
         jdbc.execute("CREATE TABLE bi_target_default(tenant_id VARCHAR(64),dimension_type VARCHAR(32),effective_month DATE,metric_code VARCHAR(64),target_value DECIMAL(24,6))");
         jdbc.execute(
                 "CREATE ALIAS DATE_FORMAT FOR"

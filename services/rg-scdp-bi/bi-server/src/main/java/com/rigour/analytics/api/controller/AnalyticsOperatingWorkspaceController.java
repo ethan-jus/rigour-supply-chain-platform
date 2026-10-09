@@ -12,13 +12,6 @@ import org.springframework.web.bind.annotation.RestController;
 public final class AnalyticsOperatingWorkspaceController implements AnalyticsOperatingWorkspaceApi {
     private final OperatingWorkspaceService service;
     public AnalyticsOperatingWorkspaceController(OperatingWorkspaceService service) { this.service = service; }
-    @Override public ApiResponse<List<TargetView>> targets(String month, String type, String code) {
-        return ApiResponse.success(service.targets(month, type, code));
-    }
-    @Override public ApiResponse<TargetView> saveTarget(TargetCommand command) { return ApiResponse.success(service.saveTarget(command)); }
-    @Override public ApiResponse<Void> deleteTarget(String id, int revision) {
-        service.deleteTarget(id, revision); return ApiResponse.success(null);
-    }
     @Override public ApiResponse<ActionPage> actions(String kind, String businessRef, String cityCode,
             String employeeCode, String assignee, String status, int page, int pageSize) {
         return ApiResponse.success(service.actions(kind, businessRef, cityCode, employeeCode, assignee, status, page, pageSize));

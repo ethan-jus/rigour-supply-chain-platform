@@ -5,13 +5,10 @@ import com.rigour.analytics.application.port.out.OperatingWorkspaceStore;
 import com.rigour.analytics.application.service.OperatingWorkspaceService;
 import com.rigour.analytics.infrastructure.persistence.mapper.OperatingWorkspaceMapper;
 
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.YearMonth;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -26,17 +23,6 @@ public class MybatisOperatingWorkspaceRepository implements OperatingWorkspaceSt
 
     public MybatisOperatingWorkspaceRepository(OperatingWorkspaceMapper mapper) {
         this.mapper = mapper;
-    }
-
-    @Override
-    public List<TargetView> targets(
-            String tenant, LocalDate month, String type, String code, String region, String owner) {
-        return mapper.targets(tenant, month, type, code, region, owner);
-    }
-
-    @Override
-    public Optional<TargetView> target(String tenant, String id) {
-        return Optional.ofNullable(mapper.target(tenant, id));
     }
 
     @Override
@@ -77,33 +63,6 @@ public class MybatisOperatingWorkspaceRepository implements OperatingWorkspaceSt
                         ? ref.substring(12)
                         : ref.startsWith("customer-code:") ? ref.substring(14) : ref,
                 byId);
-    }
-
-    @Override
-    @Transactional
-    public TargetView saveTarget(String tenant, String actor, TargetCommand command, Instant now) {
-        LocalDate month = YearMonth.parse(command.month()).atDay(1);
-        if (command.expectedRevision() == 0) {
-            try {
-                mapper.insertTarget(tenant, actor, month, command, now);
-            } catch (DuplicateKeyException exception) {
-                if (mapper.restoreTarget(tenant, actor, month, command, now) != 1)
-                    throw OperatingWorkspaceService.conflict();
-            }
-        } else if (mapper.updateTarget(tenant, actor, month, command, now) != 1) {
-            throw OperatingWorkspaceService.conflict();
-        }
-        var row = mapper.targetKey(tenant, month, command);
-        mapper.targetEvent(tenant, actor, row.id(), UUID.randomUUID().toString(), now);
-        return row;
-    }
-
-    @Override
-    @Transactional
-    public boolean deleteTarget(String tenant, String actor, String id, int revision, Instant now) {
-        if (mapper.deleteTarget(tenant, actor, id, revision, now) != 1) return false;
-        mapper.targetEvent(tenant, actor, id, UUID.randomUUID().toString(), now);
-        return true;
     }
 
     @Override

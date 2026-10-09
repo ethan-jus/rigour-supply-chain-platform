@@ -81,7 +81,7 @@ CREATE TABLE bi_source_crm_crm_customer (
     tenant_id VARCHAR(64), id BIGINT, region_code VARCHAR(64), owner_employee_code VARCHAR(50),deleted INT DEFAULT 0)
 """);
         mapper = session.getMapper(SupplyDashboardQueryMapper.class);
-        repository = new MybatisPlusSupplyDashboardRepository(mapper);
+        repository = new MybatisPlusSupplyDashboardRepository(mapper, org.mockito.Mockito.mock(com.rigour.analytics.infrastructure.persistence.repository.HrDashboardTargets.class));
     }
 
     @AfterEach

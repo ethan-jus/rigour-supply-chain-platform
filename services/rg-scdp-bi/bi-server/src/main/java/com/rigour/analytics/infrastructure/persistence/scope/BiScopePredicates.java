@@ -390,7 +390,9 @@ public final class BiScopePredicates {
         args.add(tenant);
         args.add(tenant);
         args.add(tenant);
-        add(ctes, args, tenant, "bi_business_target", "", targetPredicate(p));
+        var targets=targetPredicate(p);
+        ctes.add("bi_target_subject AS (SELECT f.* FROM (SELECT tenant_id,'CITY' dimension_type,region_code dimension_code FROM bi_sales_contact_city_dim UNION ALL SELECT tenant_id,'SALES_OWNER',employee_code FROM bi_employee_dim) f WHERE f.tenant_id=? AND " + targets.text() + ")");
+        args.add(tenant); args.addAll(targets.args());
         for (String table :
                 List.of(
                         "bi_reconciliation_review",

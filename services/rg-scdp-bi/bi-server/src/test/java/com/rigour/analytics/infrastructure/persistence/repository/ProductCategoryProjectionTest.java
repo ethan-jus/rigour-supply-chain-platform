@@ -52,7 +52,7 @@ class ProductCategoryProjectionTest {
         session = new SqlSessionFactoryBuilder().build(config).openSession();
         jdbc = new JdbcTemplate(new SingleConnectionDataSource(session.getConnection(), true));
         mapper = session.getMapper(SupplyDashboardQueryMapper.class);
-        repository = new MybatisPlusSupplyDashboardRepository(mapper);
+        repository = new MybatisPlusSupplyDashboardRepository(mapper, org.mockito.Mockito.mock(com.rigour.analytics.infrastructure.persistence.repository.HrDashboardTargets.class));
 
         jdbc.execute(
                 "CREATE TABLE bi_source_erp_erp_product_category (tenant_id VARCHAR(64), id BIGINT,"

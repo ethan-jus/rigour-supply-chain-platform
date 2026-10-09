@@ -59,23 +59,7 @@ class OperatingWorkspaceRepositoryTest {
         // Same migration columns/constraints; only MySQL engine/collation storage clauses are removed for H2.
         jdbc.execute(sql.replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci", ""));
     }
-    @Test void targetCrudUsesSameV9TableAndNeverOverwritesActiveRevision() {
-        var saved = repository.saveTarget("T", "actor", target("123.45", 0), NOW);
-        assertThat(saved.revision()).isEqualTo(1);
-        assertThat(saved.month()).isEqualTo("2026-09");
-        assertThat(repository.targets("T", LocalDate.of(2026,9,1), "CITY", null, null, null)).hasSize(1);
-        assertThatThrownBy(() -> repository.saveTarget("T", "actor", target("50", 0), NOW)).isInstanceOf(BusinessException.class);
-        var edited = repository.saveTarget("T", "actor", target("100", 1), NOW);
-        assertThat(edited.revision()).isEqualTo(2);
-        assertThatThrownBy(() -> repository.saveTarget("T", "actor", target("9", 1), NOW)).isInstanceOf(BusinessException.class);
-        assertThat(repository.deleteTarget("OTHER", "actor", saved.id(), 2, NOW)).isFalse();
-        assertThat(repository.deleteTarget("T", "actor", saved.id(), 2, NOW)).isTrue();
-        assertThat(repository.targets("T", LocalDate.of(2026,9,1), null, null, null, null)).isEmpty();
-        var restored = repository.saveTarget("T", "actor", target("80", 0), NOW);
-        assertThat(restored.revision()).isEqualTo(4);
-        assertThat(jdbc.queryForObject("SELECT SUM(target_value) FROM bi_business_target WHERE tenant_id='T' AND deleted=0", BigDecimal.class)).isEqualByComparingTo("80");
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_business_target_event WHERE tenant_id='T'", Integer.class)).isEqualTo(4);
-    }
+
     @Test void actionVersionAndAuditRemainTenantScoped() {
         var saved = repository.createAction("T", "actor", command("客户"), NOW);
         var result = repository.updateAction("T", "actor2", saved, new ActionUpdateCommand("E2", NOW.plusSeconds(3600), "IN_PROGRESS", "已联系", 1), NOW);
@@ -96,19 +80,8 @@ class OperatingWorkspaceRepositoryTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_operating_action", Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_operating_action_event", Integer.class)).isZero();
     }
-    @Test void targetAndAuditRollbackTogether() {
-        jdbc.execute("ALTER TABLE bi_business_target_event ADD CONSTRAINT reject_target_actor CHECK(actor <> 'fail')");
-        assertThatThrownBy(() -> repository.saveTarget("T", "fail", target("25", 0), NOW)).isInstanceOf(RuntimeException.class);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_business_target", Integer.class)).isZero();
-    }
+
     @Test void scopedTargetListsExcludeOtherCityTotalsAndStockActions() {
-        repository.saveTarget("T", "actor", target("50", 0), NOW);
-        repository.saveTarget("T", "actor", new TargetCommand("2026-09", "SALES_OWNER", "E1", "销售", "SALES_AMOUNT", new BigDecimal("10"), null, 0), NOW);
-        assertThat(repository.targets("T", LocalDate.of(2026,9,1), null, null, "BJ", null)).hasSize(2);
-        assertThat(repository.targets("T", LocalDate.of(2026,9,1), null, null, "BJ", "E1")).hasSize(1);
-        jdbc.update("INSERT INTO bi_customer_dim VALUES ('T',19,'C19','其他城市','SH','E1',0)");
-        assertThat(repository.targets("T", LocalDate.of(2026,9,1), null, null, "BJ", null)).singleElement()
-                .extracting(TargetView::dimensionType).isEqualTo("CITY");
         repository.createAction("T", "actor", new ActionCommand("STOCK", "product-code:P1", "库存", "BJ", null, "E1", NOW, "确认采购"), NOW);
         assertThat(repository.actions("T", new ActionFilter(null, null, "BJ", null, null, null, 1, 20, false)).total()).isZero();
     }
@@ -131,9 +104,7 @@ class OperatingWorkspaceRepositoryTest {
         assertThat(repository.subjects("T", "CUSTOMER", "customer-id:18")).isEmpty();
         assertThat(repository.targetRegions("T", "SALES_OWNER", "E1")).containsExactly("BJ");
     }
-    private TargetCommand target(String amount, int revision) {
-        return new TargetCommand("2026-09", "CITY", "BJ", "北京", "SALES_AMOUNT", new BigDecimal(amount), "计划", revision);
-    }
+
     private ActionCommand command(String label) {
         return new ActionCommand("CUSTOMER", "customer-id:17", label, "BJ", "E1", "E1", NOW, "拜访确认");
     }

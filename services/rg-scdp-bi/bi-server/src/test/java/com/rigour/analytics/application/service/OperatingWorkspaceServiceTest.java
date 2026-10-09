@@ -24,7 +24,7 @@ class OperatingWorkspaceServiceTest {
     private final OperatingWorkspaceService service = new OperatingWorkspaceService(store, Clock.fixed(NOW, ZoneOffset.UTC), scope);
 
     @BeforeEach void setup() {
-        authorize(Set.of(OperatingWorkspaceService.READ, OperatingWorkspaceService.TARGET_WRITE, OperatingWorkspaceService.ACTION_WRITE));
+        authorize(Set.of(OperatingWorkspaceService.READ, OperatingWorkspaceService.ACTION_WRITE));
         when(scope.effective()).thenReturn(new BiEffectiveScopeView("TENANT", "AUTHORIZED", null, List.of(), null, null, null, null, true, List.of()));
         when(scope.resolve(any(), any())).thenReturn(new BiDataScopeService.ScopedSelection(TENANT.toString(), "BJ", "E1", false));
         when(store.targetRegions(any(), any(), any())).thenReturn(List.of("BJ"));
@@ -33,7 +33,6 @@ class OperatingWorkspaceServiceTest {
     @AfterEach void clear() { TestAuthorizationContext.clear(); }
     @Test void readonlyPermissionCannotWriteEitherSurface() {
         authorize(Set.of(OperatingWorkspaceService.READ));
-        assertThatThrownBy(() -> service.saveTarget(target("1", 0))).isInstanceOf(AuthorizationDeniedException.class);
         assertThatThrownBy(() -> service.createAction(create())).isInstanceOf(AuthorizationDeniedException.class);
         verifyNoInteractions(store);
     }
@@ -42,35 +41,11 @@ class OperatingWorkspaceServiceTest {
         verify(scope).resolve("SH", "OTHER");
         verify(store).actions(eq(TENANT.toString()), argThat(f -> f.cityCode().equals("BJ") && f.employeeCode().equals("E1")));
     }
-    @ParameterizedTest @ValueSource(strings={"-1", "1000000000000", "1.001"})
-    void rejectsInvalidBoundedDecimals(String value) {
-        assertThatThrownBy(() -> service.saveTarget(target(value, 0))).isInstanceOf(BusinessException.class);
-        verify(store, never()).saveTarget(any(), any(), any(), any());
-    }
-    @Test void acceptsSeparateReceiptTargetWithoutRewritingCohortPaymentTargets() {
-        var command = new TargetCommand("2026-09", "CITY", "BJ", "北京", "RECEIPT_AMOUNT", new BigDecimal("100.00"), null, 0);
-        service.saveTarget(command);
-        verify(store).saveTarget(eq(TENANT.toString()), eq(USER.toString()),
-                argThat(c -> c.metricCode().equals("RECEIPT_AMOUNT") && c.targetValue().compareTo(new BigDecimal("100")) == 0), eq(NOW));
-    }
-    @Test void acceptsZeroAndPassesRevisionWithoutRounding() {
-        service.saveTarget(target("0.00", 7));
-        verify(store).saveTarget(eq(TENANT.toString()), eq(USER.toString()),
-                argThat(c -> c.targetValue().scale() == 2 && c.expectedRevision() == 7), eq(NOW));
-        verify(scope).requireObjectScope("BJ", null);
-    }
-    @Test void rejectsFractionalCustomerCountsAndInvalidMonth() {
-        var command = new TargetCommand("2026-09", "CITY", "BJ", "北京", "CONTACTED_CUSTOMER", new BigDecimal("1.2"), null, 0);
-        assertThatThrownBy(() -> service.saveTarget(command)).isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> service.targets("2026-13", null, null)).isInstanceOf(BusinessException.class);
-    }
-    @Test void selfCannotChangeCityTargetOrDeleteOthersTarget() {
-        when(scope.effective()).thenReturn(new BiEffectiveScopeView("SELF", "AUTHORIZED", null, List.of("BJ"), "E1", "E1", "BJ", "E1", false, List.of()));
-        assertThatThrownBy(() -> service.saveTarget(target("1", 0))).isInstanceOf(AuthorizationDeniedException.class);
-        when(store.target(TENANT.toString(), "x")).thenReturn(Optional.empty());
-        assertThatThrownBy(() -> service.deleteTarget("x", 1)).isInstanceOf(BusinessException.class);
-        verify(store, never()).deleteTarget(any(), any(), any(), anyInt(), any());
-    }
+
+
+
+
+
     @Test void createsFromActualSubjectNotClientSpoofedCityOwnerOrLabel() {
         service.createAction(create());
         verify(store).createAction(eq(TENANT.toString()), eq(USER.toString()),
@@ -103,10 +78,7 @@ class OperatingWorkspaceServiceTest {
         assertThatThrownBy(() -> service.updateAction("id", update("IN_PROGRESS", 1))).isInstanceOf(AuthorizationDeniedException.class);
         verify(store, never()).events(any(), any());
     }
-    @Test void selectedCityIsResolvedRatherThanSilentlyUsingDefaultCity() {
-        service.targets("2026-09", "CITY", "SH");
-        verify(scope).resolve("SH", null);
-    }
+
     @Test void explicitlyAssignedSelfCanFollowUpWithoutGainingBusinessReadAccess() {
         when(scope.effective()).thenReturn(new BiEffectiveScopeView("SELF", "AUTHORIZED", null, List.of("BJ"), "E2", "E2", "BJ", "E2", false, List.of()));
         var assigned = new ActionView("id", "COLLECTION", "customer-id:17", "客户", "BJ", "E1", "E2", NOW,
@@ -117,9 +89,7 @@ class OperatingWorkspaceServiceTest {
         verify(store).events(TENANT.toString(), "id");
         verify(scope, never()).requireGlobalGovernance();
     }
-    private TargetCommand target(String value, int revision) {
-        return new TargetCommand("2026-09", "CITY", "BJ", "北京", "SALES_AMOUNT", new BigDecimal(value), null, revision);
-    }
+
     private ActionCommand create() { return new ActionCommand("COLLECTION", "customer-code:C17", "伪造名称", "SH", "OTHER", "E1", NOW, "联系客户"); }
     private ActionUpdateCommand update(String status, int revision) { return new ActionUpdateCommand("E1", NOW, status, "已与客户确认下一步", revision); }
     private ActionView action(String status, int revision) {

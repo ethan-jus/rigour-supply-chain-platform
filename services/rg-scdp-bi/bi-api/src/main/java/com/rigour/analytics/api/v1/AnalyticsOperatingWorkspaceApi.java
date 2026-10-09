@@ -9,17 +9,6 @@ import org.springframework.web.bind.annotation.*;
 public interface AnalyticsOperatingWorkspaceApi {
     String ROOT = "/api/v1/analytics/supply/dashboard";
 
-    @GetMapping(ROOT + "/targets")
-    ApiResponse<List<TargetView>> targets(@RequestParam String month,
-            @RequestParam(required = false) String dimensionType,
-            @RequestParam(required = false) String dimensionCode);
-
-    @PutMapping(ROOT + "/targets")
-    ApiResponse<TargetView> saveTarget(@RequestBody TargetCommand command);
-
-    @DeleteMapping(ROOT + "/targets/{id}")
-    ApiResponse<Void> deleteTarget(@PathVariable String id, @RequestParam int revision);
-
     @GetMapping(ROOT + "/actions")
     ApiResponse<ActionPage> actions(@RequestParam(required = false) String kind,
             @RequestParam(required = false) String businessRef,

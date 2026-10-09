@@ -8,12 +8,6 @@ import java.util.List;
 public final class OperatingWorkspaceModels {
     private OperatingWorkspaceModels() {}
 
-    public record TargetCommand(String month, String dimensionType, String dimensionCode,
-            String dimensionName, String metricCode, BigDecimal targetValue, String remark,
-            Integer expectedRevision) {}
-    public record TargetView(String id, String month, String dimensionType, String dimensionCode,
-            String dimensionName, String metricCode, BigDecimal targetValue, String remark,
-            int revision, Instant updatedAt) {}
     public record ActionCommand(String kind, String businessRef, String businessLabel,
             String cityCode, String employeeCode, String assignee, Instant dueAt, String note) {}
     public record ActionUpdateCommand(String assignee, Instant dueAt, String status,

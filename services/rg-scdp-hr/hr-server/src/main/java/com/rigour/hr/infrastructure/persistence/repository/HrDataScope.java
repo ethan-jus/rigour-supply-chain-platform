@@ -145,14 +145,16 @@ public final class HrDataScope {
                 == 1;
     }
 
-    public void requireDepartment(String tenant, long department, String action) {
+    public Predicate departmentPredicate(String action) {
         var policy = policy(action);
-        if (policy == null) return;
+        if (policy == null) return new Predicate("1=1", List.of());
         List<Object> args = new ArrayList<>();
         List<String> clauses = new ArrayList<>();
         for (var c : policy.clauses())
             if ("EMPLOYEE".equals(c.objectType())
-                    && Set.of("ALL", "DEPARTMENT").contains(c.scopeMode())) {
+                    && Set.of("ALL", "DEPARTMENT").contains(c.scopeMode())
+                    && Set.of("NONE", "ALL").contains(c.regions().mode())
+                    && Set.of("NONE", "ALL").contains(c.warehouses().mode())) {
                 if ("ALL".equals(c.scopeMode()) && "NONE".equals(c.departments().mode()))
                     clauses.add("1=1");
                 else
@@ -160,13 +162,18 @@ public final class HrDataScope {
                             departmentCondition(
                                     policy, c.departments(), c.includeDescendants(), "id", args));
             }
+        return new Predicate(
+                clauses.isEmpty() ? "1=0" : "(" + String.join(" OR ", clauses) + ")", args);
+    }
+
+    public void requireDepartment(String tenant, long department, String action) {
+        var predicate = departmentPredicate(action);
         List<Object> values = new ArrayList<>(List.of(tenant, department));
-        values.addAll(args);
-        String condition = clauses.isEmpty() ? "1=0" : "(" + String.join(" OR ", clauses) + ")";
+        values.addAll(predicate.args());
         if (jdbc.queryForObject(
                         "SELECT COUNT(*) FROM hr_department WHERE tenant_id=? AND id=? AND"
                                 + " status_code='ACTIVE' AND deleted=0 AND "
-                                + condition,
+                                + predicate.sql(),
                         Integer.class,
                         values.toArray())
                 != 1) throw new AuthorizationDeniedException(action);

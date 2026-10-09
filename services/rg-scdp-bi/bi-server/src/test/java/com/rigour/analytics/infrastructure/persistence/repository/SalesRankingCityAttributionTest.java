@@ -72,7 +72,7 @@ class SalesRankingCityAttributionTest {
                 .thenReturn(query("salesRanking", args));
         when(mapper.salesRankingCityAttributions("T", from, to, null, null, null, null))
                 .thenReturn(query("salesRankingCityAttributions", args));
-        var data = new MybatisPlusSupplyDashboardRepository(mapper).overview("T",
+        var data = new MybatisPlusSupplyDashboardRepository(mapper, org.mockito.Mockito.mock(com.rigour.analytics.infrastructure.persistence.repository.HrDashboardTargets.class)).overview("T",
                 new SupplyDashboardFilter(from.toInstant(ZoneOffset.UTC), to.toInstant(ZoneOffset.UTC),
                         null, null, null, null, null));
         assertThat(data.salesRanking()).singleElement().satisfies(rank -> {

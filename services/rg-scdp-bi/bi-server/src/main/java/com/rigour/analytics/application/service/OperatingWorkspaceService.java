@@ -11,24 +11,17 @@ import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
-import java.time.YearMonth;
-import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** 目标修订与运营跟进用例；只记录人工判断，不替代财务确认或销售拜访执行。 */
+/** 运营跟进用例；只记录人工判断，不替代财务确认或销售拜访执行。 */
 @Service
 public class OperatingWorkspaceService {
     public static final String READ = "analytics:dashboard:read";
-    public static final String TARGET_WRITE = "analytics:targets:write";
     public static final String ACTION_WRITE = "analytics:operations:write";
-    private static final Set<String> DIMENSIONS = Set.of("CITY", "SALES_OWNER");
-    private static final Set<String> METRICS =
-            Set.of("SALES_AMOUNT", "PAID_AMOUNT", "RECEIPT_AMOUNT", "CONTACTED_CUSTOMER", "COOPERATED_CUSTOMER", "NEW_CUSTOMER", "REPEAT_CUSTOMER");
     private static final Set<String> KINDS = Set.of("COLLECTION", "CUSTOMER", "STOCK");
     private static final Set<String> STATUSES =
             Set.of("OPEN", "IN_PROGRESS", "RESOLVED", "DISMISSED");
@@ -42,7 +35,6 @@ public class OperatingWorkspaceService {
                     Set.of("OPEN"),
                     "DISMISSED",
                     Set.of("OPEN"));
-    private static final BigDecimal MAX_TARGET = new BigDecimal("999999999999.99");
     private final OperatingWorkspaceStore store;
     private final Clock clock;
     private final BiDataScopeService scope;
@@ -52,85 +44,6 @@ public class OperatingWorkspaceService {
         this.store = store;
         this.clock = analyticsClock;
         this.scope = scope;
-    }
-
-    public List<TargetView> targets(String month, String type, String code) {
-        var actor = actor(READ);
-        String dimension = optionalChoice(type, DIMENSIONS, "目标维度");
-        String object = text(code, 64, false, "目标对象");
-        if (object != null && "SALES_OWNER".equals(dimension)) {
-            requireTargetScope(actor.tenantId().toString(), dimension, object);
-            return store.targets(
-                    actor.tenantId().toString(),
-                    month(month).atDay(1),
-                    dimension,
-                    object,
-                    null,
-                    object);
-        }
-        var selected = scope.resolve("CITY".equals(dimension) ? object : null, null);
-        return store.targets(
-                actor.tenantId().toString(),
-                month(month).atDay(1),
-                dimension,
-                object,
-                selected.regionCode(),
-                selected.ownerStaffCode());
-    }
-
-    public TargetView saveTarget(TargetCommand input) {
-        var actor = actor(TARGET_WRITE);
-        if (input == null) throw invalid("目标不能为空");
-        String type = choice(input.dimensionType(), DIMENSIONS, "目标维度");
-        String metric = choice(input.metricCode(), METRICS, "目标指标");
-        BigDecimal value = input.targetValue();
-        if (value == null
-                || value.signum() < 0
-                || value.compareTo(MAX_TARGET) > 0
-                || value.stripTrailingZeros().scale() > 2) {
-            throw invalid("目标必须为0至999999999999.99之间、最多两位小数");
-        }
-        if (metric.endsWith("_CUSTOMER") && value.stripTrailingZeros().scale() > 0) {
-            throw invalid("客户数目标必须为整数");
-        }
-        if (input.expectedRevision() == null || input.expectedRevision() < 0)
-            throw invalid("缺少有效目标版本");
-        var command =
-                new TargetCommand(
-                        month(input.month()).toString(),
-                        type,
-                        text(input.dimensionCode(), 64, true, "目标对象"),
-                        text(input.dimensionName(), 160, true, "目标名称"),
-                        metric,
-                        value,
-                        text(input.remark(), 1000, false, "备注"),
-                        input.expectedRevision());
-        requireTargetScope(
-                actor.tenantId().toString(), type, command.dimensionCode(), TARGET_WRITE);
-        return store.saveTarget(
-                actor.tenantId().toString(),
-                actor.userId().toString(),
-                command,
-                Instant.now(clock));
-    }
-
-    public void deleteTarget(String id, int revision) {
-        var actor = actor(TARGET_WRITE);
-        if (revision < 1) throw invalid("缺少有效目标版本");
-        var target =
-                store.target(actor.tenantId().toString(), text(id, 64, true, "目标"))
-                        .orElseThrow(OperatingWorkspaceService::notFound);
-        requireTargetScope(
-                actor.tenantId().toString(),
-                target.dimensionType(),
-                target.dimensionCode(),
-                TARGET_WRITE);
-        if (!store.deleteTarget(
-                actor.tenantId().toString(),
-                actor.userId().toString(),
-                text(id, 64, true, "目标"),
-                revision,
-                Instant.now(clock))) throw conflict();
     }
 
     public ActionPage actions(
@@ -260,10 +173,6 @@ public class OperatingWorkspaceService {
                         : actual.getFirst().employeeCode());
     }
 
-    private void requireTargetScope(String tenant, String type, String code) {
-        requireTargetScope(tenant, type, code, READ);
-    }
-
     private void requireTargetScope(String tenant, String type, String code, String action) {
         var access = scope.effective();
         if ("CITY".equals(type) && "SELF".equals(access.accessLevel())) {
@@ -286,18 +195,6 @@ public class OperatingWorkspaceService {
         AuthorizationContext.requirePermission(READ);
         AuthorizationContext.requirePermission(permission);
         return actor;
-    }
-
-    private static YearMonth month(String value) {
-        if (value == null || !value.matches("[0-9]{4}-[0-9]{2}")) throw invalid("月份格式应为YYYY-MM");
-        try {
-            var month = YearMonth.parse(value);
-            if (month.getYear() < 2000 || month.getYear() > 2100)
-                throw invalid("目标年份必须在2000至2100之间");
-            return month;
-        } catch (DateTimeParseException exception) {
-            throw invalid("月份无效");
-        }
     }
 
     private static Instant due(Instant value) {

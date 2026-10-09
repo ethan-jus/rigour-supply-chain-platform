@@ -130,44 +130,6 @@ class BiCustomerTargetScopeRepositoryTest {
         assertThat(sum(rows, "salesAmount")).isEqualByComparingTo("70");
         assertThat(number(byCode(rows, "customerCode", "C1"), "paymentCount")).isEqualByComparingTo("2");
     }
-    @Test void targetListRequiresCompleteSingleCityAssociationFromCustomersOrOrders() {
-        targetFixtures();
-        var targets = query("salesTargetCompletions", "BJ", null);
-        assertThat(targets.stream().map(row -> value(row, "dimensionCode"))).containsExactlyInAnyOrder("LOCAL", "ORDER_ONLY");
-        assertThat(number(byCode(targets, "dimensionCode", "LOCAL"), "actualValue")).isZero();
-        assertThat(query("salesTargetCompletions", "SH", null).stream().map(row -> value(row, "dimensionCode")))
-                .containsExactly("SH_ONLY");
-    }
-    @Test void explicitOwnerCannotRevealCrossCityOrUnknownCityTargetAndNoPartialAllocation() {
-        targetFixtures();
-        for (String owner : List.of("E1", "MULTI_CUSTOMER", "UNKNOWN_CITY", "SH_ONLY", "UNBOUND")) {
-            assertThat(query("salesTargetCompletions", "BJ", owner)).as(owner).isEmpty();
-        }
-        assertThat(query("salesTargetCompletions", "BJ", "LOCAL")).singleElement().satisfies(row -> {
-            assertThat(value(row, "dimensionCode")).isEqualTo("LOCAL");
-            assertThat(number(row, "targetValue")).isEqualByComparingTo("100");
-        });
-    }
-    @Test void tenantWideTargetHistoryAndOwnerFilterRemainUnchanged() {
-        targetFixtures();
-        assertThat(query("salesTargetCompletions", null, null)).hasSize(7);
-        assertThat(query("salesTargetCompletions", null, "E1")).singleElement()
-                .satisfies(row -> assertThat(number(row, "targetValue")).isEqualByComparingTo("100"));
-    }
-    private void targetFixtures() {
-        customer("T", 10, "BJ", "LOCAL");
-        customer("OTHER", 10, "SH", "LOCAL");
-        customer("T", 11, "SH", "SH_ONLY");
-        customer("T", 12, "BJ", "MULTI_CUSTOMER");
-        customer("T", 13, "SH", "MULTI_CUSTOMER");
-        customer("T", 14, "BJ", "UNKNOWN_CITY");
-        customer("T", 15, null, "UNKNOWN_CITY");
-        order("T", 10, 99, "BJ", "ORDER_ONLY", "2026-09-01T00:00:00", "10", "5");
-        for (String owner : List.of("LOCAL", "SH_ONLY", "MULTI_CUSTOMER", "UNKNOWN_CITY", "ORDER_ONLY", "E1", "UNBOUND")) {
-            jdbc.update("INSERT INTO bi_business_target VALUES ('T','SALES_OWNER',?,?,'2026-09-01','SALES_AMOUNT',100,0)", owner, owner);
-        }
-        jdbc.update("INSERT INTO bi_business_target VALUES ('OTHER','SALES_OWNER','LOCAL','其他租户','2026-09-01','SALES_AMOUNT',9999,0)");
-    }
     private List<Map<String, Object>> query(String method, String city, String owner) {
         return query(method, city, owner, TO);
     }

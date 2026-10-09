@@ -32,7 +32,7 @@ class CitySalesPeopleRepositoryTest {
         } finally { ds.destroy(); }
     }
     @Test void businessSyncProjectsEmploymentStatusWithoutVisitService() {
-        var repository = new MybatisPlusSupplyDashboardRepository(org.mockito.Mockito.mock(SupplyDashboardQueryMapper.class));
+        var repository = new MybatisPlusSupplyDashboardRepository(org.mockito.Mockito.mock(SupplyDashboardQueryMapper.class), org.mockito.Mockito.mock(HrDashboardTargets.class));
         var sources = org.mockito.Mockito.mock(com.rigour.analytics.infrastructure.persistence.scope.BiSourceSnapshotProjector.class);
         var employees = org.mockito.Mockito.mock(com.rigour.analytics.application.port.out.EmployeeAnalyticsStore.class);
         var authority = org.mockito.Mockito.mock(com.rigour.analytics.infrastructure.persistence.scope.BiAuthorityProjector.class);

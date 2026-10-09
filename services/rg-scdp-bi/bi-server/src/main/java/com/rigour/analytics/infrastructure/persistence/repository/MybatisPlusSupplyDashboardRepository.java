@@ -73,7 +73,10 @@ public class MybatisPlusSupplyDashboardRepository
 
     private static final BigDecimal BACKFILL_AMOUNT_TOLERANCE = new BigDecimal("0.01");
 
-    public MybatisPlusSupplyDashboardRepository(SupplyDashboardQueryMapper mapper) {
+    private final HrDashboardTargets targets;
+
+    public MybatisPlusSupplyDashboardRepository(SupplyDashboardQueryMapper mapper, HrDashboardTargets targets) {
+        this.targets=targets;
         this.baseMapper = mapper;
     }
 
@@ -87,6 +90,7 @@ public class MybatisPlusSupplyDashboardRepository
                 filter.productCategoryId() == null
                         && filter.customerTypeCode() == null
                         && filter.sourceSystemCode() == null;
+        var targetValues = comparableTargets ? targets.values(tenantId,java.time.YearMonth.from(from.plusHours(8)).toString(),java.time.YearMonth.from(to.plusHours(8)).toString()) : List.<com.rigour.hr.api.v1.model.TargetSettingsModels.Target>of();
         SalesSummary sales =
                 sales(
                         mapper.salesSummary(
@@ -310,34 +314,8 @@ public class MybatisPlusSupplyDashboardRepository
                         .stream()
                         .map(MybatisPlusSupplyDashboardRepository::paymentAgingBucket)
                         .toList(),
-                comparableTargets && filter.ownerStaffCode() == null
-                        ? mapper
-                                .cityTargetCompletions(
-                                        tenantId,
-                                        from,
-                                        to,
-                                        filter.regionCode(),
-                                        filter.ownerStaffCode(),
-                                        filter.customerTypeCode(),
-                                        filter.sourceSystemCode())
-                                .stream()
-                                .map(MybatisPlusSupplyDashboardRepository::targetCompletion)
-                                .toList()
-                        : List.of(),
-                comparableTargets
-                        ? mapper
-                                .salesTargetCompletions(
-                                        tenantId,
-                                        from,
-                                        to,
-                                        filter.regionCode(),
-                                        filter.ownerStaffCode(),
-                                        filter.customerTypeCode(),
-                                        filter.sourceSystemCode())
-                                .stream()
-                                .map(MybatisPlusSupplyDashboardRepository::targetCompletion)
-                                .toList()
-                        : List.of(),
+                comparableTargets && filter.ownerStaffCode()==null ? targets.completions(tenantId,filter,"CITY",targetValues) : List.of(),
+                comparableTargets ? targets.completions(tenantId,filter,"SALES_OWNER",targetValues) : List.of(),
                 mapper
                         .customerSegmentSummary(
                                 tenantId,
@@ -496,11 +474,7 @@ public class MybatisPlusSupplyDashboardRepository
                         .toList(),
                 retention(mapper.customerRetention(tenantId, from, to, filter.regionCode(),
                         filter.ownerStaffCode(), filter.customerTypeCode(), filter.sourceSystemCode())),
-                mapper.cityMonthlyGoals(tenantId, from.plusHours(8).getYear(), filter.regionCode()).stream()
-                        .map(row -> new CityMonthlyGoal(text(row,"regionCode"),text(row,"regionName"),
-                                number(row,"goalMonth").intValue(),decimal(row,"salesTarget"),decimal(row,"receiptTarget"),
-                                decimal(row,"newCustomerTarget"),decimal(row,"repeatCustomerTarget"),number(row,"configuredCount").intValue()))
-                        .toList(),
+                targets.cityGoals(tenantId,from.plusHours(8).getYear(),filter.regionCode()),
                 mapper.citySalesPeople(tenantId, from, to, filter.regionCode(), filter.ownerStaffCode()).stream()
                         .map(row -> new SalesPerson(text(row, "ownerStaffCode"), text(row, "ownerStaffName"),
                                 text(row, "employmentStatus"))).toList());
@@ -600,7 +574,6 @@ public class MybatisPlusSupplyDashboardRepository
                                 tenantId, filter.regionCode(), filter.productCategoryId()),
                         mapper.inventoryOperationReconciliation(
                                 tenantId, from, to, filter.productCategoryId()),
-                        mapper.businessTargetReconciliation(tenantId, from, to),
                         mapper.cityCostReconciliation(tenantId, from, to, filter.regionCode()));
         return new ReconciliationData(
                 filter.from(),
@@ -961,8 +934,6 @@ public class MybatisPlusSupplyDashboardRepository
                                 mapper.inventoryOperationReconciliation(
                                         tenantId, localFrom, localTo, null)),
                         reconciliation(
-                                mapper.businessTargetReconciliation(tenantId, localFrom, localTo)),
-                        reconciliation(
                                 mapper.cityCostReconciliation(tenantId, localFrom, localTo, null)));
         int affected = 0;
         for (ReconciliationItem item : items) {
@@ -1258,19 +1229,6 @@ public class MybatisPlusSupplyDashboardRepository
                 instant(row, "latestCostTime"));
     }
 
-    private static TargetCompletionItem targetCompletion(Map<String, Object> row) {
-        return new TargetCompletionItem(
-                text(row, "dimensionType"),
-                text(row, "dimensionCode"),
-                text(row, "dimensionName"),
-                text(row, "metricCode"),
-                text(row, "metricName"),
-                decimal(row, "targetValue"),
-                decimal(row, "actualValue"),
-                decimal(row, "achievementRate"),
-                nullableNumber(row, "configuredMonthCount"),
-                nullableNumber(row, "periodMonthCount"));
-    }
 
     private static CustomerSegmentItem customerSegment(Map<String, Object> row) {
         return new CustomerSegmentItem(
