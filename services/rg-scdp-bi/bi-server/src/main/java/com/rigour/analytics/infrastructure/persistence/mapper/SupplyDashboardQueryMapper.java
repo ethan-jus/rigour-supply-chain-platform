@@ -1238,10 +1238,22 @@ SELECT COALESCE(NULLIF(TRIM(p.region_code), ''), 'UNKNOWN') AS regionCode,
     @Select("""
 <script>
 SELECT c.region_code AS regionCode,c.city_name AS regionName,m.n AS goalMonth,
-       COALESCE(MAX(CASE WHEN t.metric_code='SALES_AMOUNT' THEN t.target_value END),100000) AS salesTarget,
-       COALESCE(MAX(CASE WHEN t.metric_code='RECEIPT_AMOUNT' THEN t.target_value END),100000) AS receiptTarget,
-       COALESCE(MAX(CASE WHEN t.metric_code='NEW_CUSTOMER' THEN t.target_value END),200) AS newCustomerTarget,
-       COALESCE(MAX(CASE WHEN t.metric_code='REPEAT_CUSTOMER' THEN t.target_value END),100) AS repeatCustomerTarget,
+       COALESCE(MAX(CASE WHEN t.metric_code='SALES_AMOUNT' THEN t.target_value END),
+         (SELECT d.target_value FROM bi_target_default d WHERE d.tenant_id=#{tenantId} AND d.dimension_type='CITY'
+           AND d.metric_code='SALES_AMOUNT' AND d.effective_month &lt;= CAST(CONCAT(#{year},'-',LPAD(m.n,2,'0'),'-01') AS DATE)
+           ORDER BY d.effective_month DESC LIMIT 1),100000) AS salesTarget,
+       COALESCE(MAX(CASE WHEN t.metric_code='RECEIPT_AMOUNT' THEN t.target_value END),
+         (SELECT d.target_value FROM bi_target_default d WHERE d.tenant_id=#{tenantId} AND d.dimension_type='CITY'
+           AND d.metric_code='RECEIPT_AMOUNT' AND d.effective_month &lt;= CAST(CONCAT(#{year},'-',LPAD(m.n,2,'0'),'-01') AS DATE)
+           ORDER BY d.effective_month DESC LIMIT 1),100000) AS receiptTarget,
+       COALESCE(MAX(CASE WHEN t.metric_code='NEW_CUSTOMER' THEN t.target_value END),
+         (SELECT d.target_value FROM bi_target_default d WHERE d.tenant_id=#{tenantId} AND d.dimension_type='CITY'
+           AND d.metric_code='NEW_CUSTOMER' AND d.effective_month &lt;= CAST(CONCAT(#{year},'-',LPAD(m.n,2,'0'),'-01') AS DATE)
+           ORDER BY d.effective_month DESC LIMIT 1),200) AS newCustomerTarget,
+       COALESCE(MAX(CASE WHEN t.metric_code='REPEAT_CUSTOMER' THEN t.target_value END),
+         (SELECT d.target_value FROM bi_target_default d WHERE d.tenant_id=#{tenantId} AND d.dimension_type='CITY'
+           AND d.metric_code='REPEAT_CUSTOMER' AND d.effective_month &lt;= CAST(CONCAT(#{year},'-',LPAD(m.n,2,'0'),'-01') AS DATE)
+           ORDER BY d.effective_month DESC LIMIT 1),100) AS repeatCustomerTarget,
        COUNT(t.id) AS configuredCount
   FROM bi_sales_contact_city_dim c
  CROSS JOIN (SELECT 1 n UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
@@ -1253,7 +1265,7 @@ SELECT c.region_code AS regionCode,c.city_name AS regionName,m.n AS goalMonth,
    AND t.metric_code IN ('SALES_AMOUNT','RECEIPT_AMOUNT','NEW_CUSTOMER','REPEAT_CUSTOMER')
  WHERE c.tenant_id=#{tenantId} AND TRIM(c.region_code) &lt;&gt; ''
 <if test="regionCode != null"> AND c.region_code=#{regionCode} </if>
- GROUP BY c.region_code,c.city_name,m.n ORDER BY c.region_code,m.n
+ GROUP BY c.tenant_id,c.region_code,c.city_name,m.n ORDER BY c.region_code,m.n
 </script>
 """)
     List<Map<String,Object>> cityMonthlyGoals(@Param("tenantId") String tenantId,

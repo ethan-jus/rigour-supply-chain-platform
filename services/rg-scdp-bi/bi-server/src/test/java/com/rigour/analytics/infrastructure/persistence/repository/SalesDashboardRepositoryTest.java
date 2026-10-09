@@ -34,6 +34,7 @@ public class SalesDashboardRepositoryTest {
                         "");
         jdbc = new JdbcTemplate(ds);
         store = new JdbcSalesDashboardStore(ds);
+        jdbc.execute("CREATE TABLE bi_target_default(tenant_id VARCHAR(64),dimension_type VARCHAR(32),effective_month DATE,metric_code VARCHAR(64),target_value DECIMAL(24,6))");
         jdbc.execute(
                 "CREATE ALIAS DATE_FORMAT FOR"
                     + " 'com.rigour.analytics.infrastructure.persistence.repository.SalesDashboardRepositoryTest.dateFormat'");
@@ -137,7 +138,7 @@ public class SalesDashboardRepositoryTest {
         assertThat(data.products().get(0).sales()).isEqualByComparingTo("100");
         assertThat(data.products().get(0).receipts()).isEqualByComparingTo("50");
         assertThat(data.customers()).hasSize(1);
-        assertThat(data.goals()).hasSize(2);
+        assertThat(data.goals().stream().filter(g -> !g.code().equals("*"))).hasSize(2);
         assertThat(data.months()).hasSize(3);
         assertThat(data.dailyReceipts()).hasSize(2);
     }

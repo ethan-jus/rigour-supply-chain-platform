@@ -82,6 +82,7 @@ class SupplyDashboardOperatingAnalysisRepositoryTest {
         session = new SqlSessionFactoryBuilder().build(configuration).openSession();
         jdbc = new JdbcTemplate(new SingleConnectionDataSource(session.getConnection(), true));
         // 仅建立查询使用的事实列，精度和唯一键与已存在迁移一致。
+        jdbc.execute("CREATE TABLE bi_target_default(tenant_id VARCHAR(64),dimension_type VARCHAR(32),effective_month DATE,metric_code VARCHAR(64),target_value DECIMAL(24,6))");
         jdbc.execute(
                 """
                 CREATE TABLE bi_sales_order_fact (
@@ -543,7 +544,7 @@ WHERE l.tenant_id=?
                         "customerRetention", "cityMonthlyGoals", "citySalesPeople");
         assertThat(guard.tables)
                 .containsExactlyInAnyOrder(
-                        "bi_sales_order_fact", "bi_sales_order_line_fact", "bi_sales_payment_fact", "bi_dashboard_customer_history", "bi_sales_contact_city_dim", "bi_business_target", "bi_employee_dim");
+                        "bi_target_default", "bi_sales_order_fact", "bi_sales_order_line_fact", "bi_sales_payment_fact", "bi_dashboard_customer_history", "bi_sales_contact_city_dim", "bi_business_target", "bi_employee_dim");
         assertThat(
                         MybatisPlusSupplyDashboardRepository.class
                                 .getMethod(
@@ -773,7 +774,7 @@ INSERT INTO bi_sales_payment_fact (tenant_id, payment_id, customer_id, owner_sta
                         "bi_sales_payment_fact",
                         "bi_product_category_dim",
                         "bi_product_category_closure",
-                        "bi_product_dim", "bi_dashboard_customer_history", "bi_sales_contact_city_dim", "bi_business_target", "bi_employee_dim");
+                        "bi_target_default", "bi_product_dim", "bi_dashboard_customer_history", "bi_sales_contact_city_dim", "bi_business_target", "bi_employee_dim");
         private static final Pattern TABLE_REFERENCE =
                 Pattern.compile("(?i)\\b(?:FROM|JOIN)\\s+([a-zA-Z_][a-zA-Z0-9_.]*)");
         private static final Pattern CTE_DECLARATION =

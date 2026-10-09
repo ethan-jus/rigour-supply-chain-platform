@@ -382,7 +382,12 @@ public final class BiScopePredicates {
                     + " tenant_id,employee_code,region_code,region_path FROM bi_customer_authority"
                     + " WHERE tenant_id=? UNION SELECT"
                     + " tenant_id,employee_code,region_code,region_path FROM bi_order_authority"
-                    + " WHERE tenant_id=?)");
+                    + " WHERE tenant_id=? UNION SELECT e.tenant_id,e.employee_code,c.region_code,a.region_path"
+                    + " FROM bi_source_hr_hr_employee e JOIN bi_sales_contact_city_dim c ON c.tenant_id=e.tenant_id"
+                    + " AND (e.department_id=c.department_id OR REPLACE(REPLACE(REPLACE(e.department_path,'[',','),']',','),' ','') LIKE CONCAT('%,',c.department_id,',%'))"
+                    + " LEFT JOIN bi_region_authority a ON a.tenant_id=c.tenant_id AND a.region_code=c.source_region_code"
+                    + " WHERE e.tenant_id=?)");
+        args.add(tenant);
         args.add(tenant);
         args.add(tenant);
         add(ctes, args, tenant, "bi_business_target", "", targetPredicate(p));

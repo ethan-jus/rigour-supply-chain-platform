@@ -99,6 +99,44 @@ class BiSupplyScopeIntegrationTest {
     }
 
     @Test
+    void targetSettingsIncludeNewSalesAndUseDepartmentScopeWithoutAnyOrders() {
+        department(1,null,"SALES","销售部");
+        department(10,1L,"CITY-BJ","北京市");
+        department(20,1L,"CITY-HZ","杭州市");
+        productionMapper.refreshCityDimension(tenant);
+        jdbc.update("INSERT INTO bi_employee_dim(tenant_id,employee_code,employee_name,employment_status,department_id,department_path,synced_time) VALUES(?,'NEW','新销售','ACTIVE',10,JSON_ARRAY(1,10),UTC_TIMESTAMP(6)),(?,'OTHER','异地销售','ACTIVE',20,JSON_ARRAY(1,20),UTC_TIMESTAMP(6))",tenant,tenant);
+        var store=new com.rigour.analytics.infrastructure.persistence.repository.JdbcTargetSettingsStore(jdbc);
+        assertThat(store.subjects(tenant)).filteredOn(s -> "SALES_OWNER".equals(s.dimensionType())).hasSize(2);
+        var p=policy(List.of(clause("DEPARTMENT",specified("10"),all(),all())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(p);
+        try(var ctx=SupplyAuthorizationContext.open(iam,actor,p)) {
+            assertThat(store.permitted(tenant,"CITY","CITY-BJ","analytics:dashboard:read")).isTrue();
+            assertThat(store.permitted(tenant,"CITY","CITY-HZ","analytics:dashboard:read")).isFalse();
+            assertThat(store.permitted(tenant,"SALES_OWNER","NEW","analytics:dashboard:read")).isTrue();
+            assertThat(store.permitted(tenant,"SALES_OWNER","OTHER","analytics:dashboard:read")).isFalse();
+        }
+    }
+
+    @Test
+    void cityDefaultsRespectEffectiveMonthAndExplicitZeroOnRealMysql() {
+        department(1,null,"SALES","销售部");
+        department(10,1L,"CITY-BJ","北京市");
+        productionMapper.refreshCityDimension(tenant);
+        jdbc.update("INSERT INTO bi_target_default(tenant_id,dimension_type,metric_code,effective_month,target_value,revision,updated_by,updated_at) VALUES(?,'CITY','SALES_AMOUNT','2026-11-01',125000,1,'test',UTC_TIMESTAMP(6))",tenant);
+        jdbc.update("INSERT INTO bi_business_target(tenant_id,target_month,dimension_type,dimension_code,dimension_name,metric_code,target_value,source_system_code,synced_time) VALUES(?,'2026-12-01','CITY','CITY-BJ','北京市','SALES_AMOUNT',0,'BI_MANUAL',UTC_TIMESTAMP(6))",tenant);
+        var p=policy(List.of(clause("ALL",all(),all(),all())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(p);
+        try(var ctx=SupplyAuthorizationContext.open(iam,actor,p)) {
+            var goals=productionMapper.cityMonthlyGoals(tenant,2026,null);
+            assertThat(goals).hasSize(12);
+            var values=goals.stream().map(r -> new java.math.BigDecimal(r.get("salesTarget").toString())).toList();
+            assertThat(values.get(9)).isEqualByComparingTo("100000");
+            assertThat(values.get(10)).isEqualByComparingTo("125000");
+            assertThat(values.get(11)).isZero();
+        }
+    }
+
+    @Test
     void importedOrdersUseRecognizedOperatingCityForEachDepartmentWithoutOpeningUnknownOrSelf() {
         department(1, null, "SALES", "销售部");
         department(10, 1L, "CITY-BJ", "北京市");

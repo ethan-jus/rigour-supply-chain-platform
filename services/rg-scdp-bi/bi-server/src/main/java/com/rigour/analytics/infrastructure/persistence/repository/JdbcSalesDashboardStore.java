@@ -104,7 +104,7 @@ SELECT c.code,COALESCE(e.employee_name,s.name,p.name,c.code) name,
                                         r.getBigDecimal("sales"),
                                         r.getBigDecimal("paid"),
                                         r.getBigDecimal("receipts")));
-        var goals =
+        var goals = new java.util.ArrayList<>(
                 BiScopedQueries.query(
                                 jdbc,
                                 """
@@ -123,7 +123,19 @@ SELECT dimension_code,MONTH(target_month) AS goalMonth,metric_code,target_value
                                                 r.getBigDecimal("target_value")))
                         .stream()
                         .filter(g -> people.stream().anyMatch(p -> p.code().equals(g.code())))
-                        .toList();
+                        .toList());
+        // Tenant default standards are shared values, separate from scoped personal overrides.
+        goals.addAll(jdbc.query("""
+                SELECT m.n,metric.code,COALESCE((SELECT d.target_value FROM bi_target_default d
+                  WHERE d.tenant_id=:tenant AND d.dimension_type='SALES_OWNER' AND d.metric_code=metric.code
+                    AND d.effective_month<=CAST(CONCAT(:year,'-',LPAD(m.n,2,'0'),'-01') AS DATE)
+                  ORDER BY d.effective_month DESC LIMIT 1),metric.fallback) target
+                FROM (SELECT 1 n UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                  UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8
+                  UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11 UNION ALL SELECT 12) m
+                CROSS JOIN (SELECT 'SALES_AMOUNT' code,40000 fallback UNION ALL SELECT 'RECEIPT_AMOUNT',20000
+                  UNION ALL SELECT 'NEW_CUSTOMER',200 UNION ALL SELECT 'REPEAT_CUSTOMER',100) metric
+                """,args,(r,n)->new Goal("*",r.getInt(1),r.getString(2),r.getBigDecimal(3))));
         var daily =
                 BiScopedQueries.query(
                         jdbc,
