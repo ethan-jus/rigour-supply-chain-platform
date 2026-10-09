@@ -11,8 +11,8 @@ public final class HistorySyncRules {
     public static final Instant HISTORICAL_FALLBACK =
             OffsetDateTime.parse("2026-08-31T00:00:00+08:00").toInstant();
 
-    /** 来源补录日期不代表业务日期；已校准的历史日期不能被后续来源变更覆盖。 */
-    public static Instant businessDate(String sourceSystem, Instant incoming, Instant existing) {
+    /** 仅用于订单下单日期：历史补录订单兜底，已有订单业务日期保持不变。回款使用自身实际日期。 */
+    public static Instant orderDate(String sourceSystem, Instant incoming, Instant existing) {
         if (!"DINGHUOBAO".equalsIgnoreCase(sourceSystem)) return incoming;
         if (existing != null && existing.isBefore(CUTOVER)) return existing;
         if (incoming != null && incoming.isBefore(CUTOVER)) {

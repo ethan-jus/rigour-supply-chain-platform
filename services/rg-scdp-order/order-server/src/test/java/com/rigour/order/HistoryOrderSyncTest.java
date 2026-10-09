@@ -984,7 +984,7 @@ class HistoryOrderSyncTest {
     }
 
     @Test
-    void newlyAllocatedHistoricalReceiptUsesFallbackButKeepsRawOccurredAt() {
+    void newlyAllocatedHistoricalReceiptUsesSourceDateBeforeCutover() {
         order(1, 1, "1000", "0", "10");
         intake("D1", 1, "1000", "10");
         bind(List.of("D1"), List.of(base(1, "0")));
@@ -993,7 +993,7 @@ class HistoryOrderSyncTest {
         var receipt = new Receipt(connector, "R1", "D1", 1L, new BigDecimal("300"), sourceDate, "CONFIRMED", paidAt, "h1");
         assertThat(pay(receipt).state()).isEqualTo("ALLOCATED");
         assertThat(db.queryForObject("SELECT payment_time FROM order_payment_record", java.time.LocalDateTime.class))
-                .isEqualTo(java.time.LocalDateTime.ofInstant(com.rigour.order.domain.sync.HistorySyncRules.HISTORICAL_FALLBACK, java.time.ZoneOffset.UTC));
+                .isEqualTo(java.time.LocalDateTime.ofInstant(sourceDate, java.time.ZoneOffset.UTC));
         assertThat(db.queryForObject("SELECT occurred_at FROM order_sync_receipt", java.time.LocalDateTime.class))
                 .isEqualTo(java.time.LocalDateTime.ofInstant(sourceDate, java.time.ZoneOffset.UTC));
         pay(receipt);
@@ -1002,12 +1002,33 @@ class HistoryOrderSyncTest {
     }
 
     @Test
-    void historicalReceiptDateSurvivesMultipleSourceDateChanges() {
+    void uncorrectedReceiptBeforeCutoverFollowsSourceDateChanges() {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        db.update("UPDATE order_history_member SET baseline_at=?", java.sql.Timestamp.from(date));
+        var orderDate = db.queryForObject("SELECT order_date FROM order_sales_order", java.sql.Timestamp.class);
+        for (String sourceDate : List.of("2026-09-01T06:00:00Z", "2026-09-03T06:45:37Z", "2026-09-04T12:38:00Z")) {
+            Instant occurredAt = Instant.parse(sourceDate);
+            var receipt = new Receipt(connector, "R1", "D1", 1L, new BigDecimal("300"),
+                    occurredAt, "CONFIRMED", occurredAt, sourceDate);
+            pay(receipt);
+            pay(receipt);
+            assertThat(db.queryForObject("SELECT payment_time FROM order_payment_record", java.time.LocalDateTime.class))
+                    .isEqualTo(java.time.LocalDateTime.ofInstant(occurredAt, java.time.ZoneOffset.UTC));
+            assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
+            assertThat(paid(1)).isEqualByComparingTo("300");
+        }
+        assertThat(db.queryForObject("SELECT order_date FROM order_sales_order", java.sql.Timestamp.class)).isEqualTo(orderDate);
+    }
+
+    @Test
+    void matchedHistoricalReceiptDateSurvivesMultipleSourceDateChanges() {
         order(1, 1, "1000", "0", "10");
         intake("D1", 1, "1000", "10");
         bind(List.of("D1"), List.of(base(1, "0")));
         pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
-        var historical = java.sql.Timestamp.from(com.rigour.order.domain.sync.HistorySyncRules.HISTORICAL_FALLBACK);
+        var historical = java.sql.Timestamp.valueOf("2026-08-20 06:12:34");
         db.update("UPDATE order_payment_record SET payment_time=?", historical);
         db.update("UPDATE order_sync_receipt SET occurred_at=?", java.sql.Timestamp.from(date));
         pay(receipt("R1", "D1", "400", "CONFIRMED", "h2"));

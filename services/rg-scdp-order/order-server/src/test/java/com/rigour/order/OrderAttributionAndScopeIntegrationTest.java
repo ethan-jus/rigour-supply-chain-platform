@@ -491,6 +491,7 @@ class OrderAttributionAndScopeIntegrationTest {
                                 .toInstant(java.time.ZoneOffset.UTC))
                 .isEqualTo(projectedAt);
 
+        Instant sourceReceiptAt = Instant.parse("2026-09-02T06:45:37Z");
         var payment =
                 payments.create(
                         tenant,
@@ -507,7 +508,7 @@ class OrderAttributionAndScopeIntegrationTest {
                                 "杭州客户",
                                 "RY0009",
                                 "刘鹏昆",
-                                sourceUpdatedAt,
+                                sourceReceiptAt,
                                 "CASH",
                                 java.math.BigDecimal.TEN,
                                 List.of(),
@@ -520,6 +521,7 @@ class OrderAttributionAndScopeIntegrationTest {
                                 "系统自动同步",
                                 syncedAt),
                         "SYSTEM");
+        assertThat(payment.paymentTime()).isEqualTo(sourceReceiptAt);
         var paymentRow =
                 jdbc.queryForMap(
                         "SELECT synced_by,synced_at FROM order_payment_record"
@@ -545,7 +547,8 @@ class OrderAttributionAndScopeIntegrationTest {
 
         // 回款更新同样刷新同步审计。
         Instant paymentSyncedAt = syncedAt.plusSeconds(900);
-        payments.update(
+        Instant correctedReceiptAt = Instant.parse("2026-09-03T06:45:37Z");
+        var updatedPayment = payments.update(
                 tenant,
                 payment.id(),
                 new com.rigour.order.application.port.out.OrderSalesPaymentRecordStore
@@ -560,7 +563,7 @@ class OrderAttributionAndScopeIntegrationTest {
                         "杭州客户",
                         "RY0009",
                         "刘鹏昆",
-                        sourceUpdatedAt,
+                        correctedReceiptAt,
                         "CASH",
                         java.math.BigDecimal.TEN,
                         List.of(),
@@ -573,6 +576,7 @@ class OrderAttributionAndScopeIntegrationTest {
                         "系统自动同步",
                         paymentSyncedAt),
                 "SYSTEM");
+        assertThat(updatedPayment.paymentTime()).isEqualTo(correctedReceiptAt);
         assertThat(
                         ((java.time.LocalDateTime)
                                         jdbc.queryForMap(

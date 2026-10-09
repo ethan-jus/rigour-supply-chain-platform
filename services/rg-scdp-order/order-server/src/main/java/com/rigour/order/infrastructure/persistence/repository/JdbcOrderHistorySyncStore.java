@@ -1304,10 +1304,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
             // 凭证校准后的日期已不同于上次来源日期，确认状态或来源重录不能覆盖该业务日期。
             boolean correctedDate = old.get("occurred_at") != null && row.get("payment_time") != null
                     && !Objects.equals(instant(row.get("payment_time")), instant(old.get("occurred_at")));
-            Object paymentTime = correctedDate || (old.get("occurred_at") != null
-                    && instant(old.get("occurred_at")).isBefore(HistorySyncRules.CUTOVER))
-                    ? row.get("payment_time") : ts(HistorySyncRules.businessDate(
-                            "DINGHUOBAO", c.occurredAt(), instant(row.get("payment_time"))));
+            Object paymentTime = correctedDate ? row.get("payment_time") : ts(c.occurredAt());
             jdbc.update("UPDATE order_payment_record SET paid_amount=?,payment_time=?,payment_status_code=?,deleted=?,"
                     + "revision=revision+1,updated_by='SYSTEM',updated_time=? WHERE tenant_id=? AND id=?",
                     cancelled ? money(row, "paid_amount") : part, paymentTime,
@@ -1528,7 +1525,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 o.get("customer_name_snapshot"),
                 receipt.get("employee_code"),
                 receipt.get("employee_name"),
-                ts(HistorySyncRules.businessDate("DINGHUOBAO", instant(receipt.get("occurred_at")), null)),
+                ts(instant(receipt.get("occurred_at"))),
                 a.amount(),
                 "历史关联组核销：" + c.evidence(),
                 "SYSTEM",

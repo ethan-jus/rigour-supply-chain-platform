@@ -12,7 +12,6 @@ import com.rigour.order.application.port.out.OrderSalesPaymentRecordStore.SalesP
 import com.rigour.order.domain.enums.SalesOrderPaymentStatus;
 import com.rigour.order.domain.enums.SalesOrderStatus;
 import com.rigour.order.domain.enums.SalesRefundStatus;
-import com.rigour.order.domain.sync.HistorySyncRules;
 import com.rigour.order.infrastructure.persistence.entity.InternalSalesOrderEntity;
 import com.rigour.order.infrastructure.persistence.entity.InternalSalesPaymentRecordEntity;
 import com.rigour.order.infrastructure.persistence.entity.InternalSalesRefundRecordEntity;
@@ -205,8 +204,7 @@ public class MybatisPlusSalesPaymentRecordRepository
                                                 command.collectorNameSnapshot())
                                         .set(
                                                 InternalSalesPaymentRecordEntity::getPaymentTime,
-                                                local(HistorySyncRules.businessDate(command.sourceSystemCode(),
-                                                        command.paymentTime(), instant(existing.getPaymentTime()))))
+                                                local(command.paymentTime()))
                                         .set(
                                                 InternalSalesPaymentRecordEntity
                                                         ::getPaymentMethodCode,
@@ -392,7 +390,7 @@ public class MybatisPlusSalesPaymentRecordRepository
         entity.setCustomerNameSnapshot(command.customerNameSnapshot());
         entity.setCollectorStaffCode(command.collectorStaffCode());
         entity.setCollectorNameSnapshot(command.collectorNameSnapshot());
-        entity.setPaymentTime(local(HistorySyncRules.businessDate(command.sourceSystemCode(), command.paymentTime(), null)));
+        entity.setPaymentTime(local(command.paymentTime()));
         entity.setPaymentMethodCode(command.paymentMethodCode());
         entity.setPaidAmount(command.paidAmount());
         entity.setVoucherKeysJson(json(command.voucherKeys()));

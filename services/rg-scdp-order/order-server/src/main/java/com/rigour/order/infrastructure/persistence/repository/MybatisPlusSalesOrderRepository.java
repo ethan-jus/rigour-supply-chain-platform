@@ -250,7 +250,7 @@ public class MybatisPlusSalesOrderRepository
                                                 command.ownerEmployeeNameSnapshot())
                                         .set(
                                                 InternalSalesOrderEntity::getOrderDate,
-                                                local(HistorySyncRules.businessDate(command.sourceSystemCode(),
+                                                local(HistorySyncRules.orderDate(command.sourceSystemCode(),
                                                         command.orderDate(), instant(existing.getOrderDate()))))
                                         .set(
                                                 InternalSalesOrderEntity::getOrderStatusCode,
@@ -973,7 +973,7 @@ public class MybatisPlusSalesOrderRepository
         entity.setOwnerSalesName(command.ownerSalesName());
         entity.setOwnerEmployeeCode(command.ownerEmployeeCode());
         entity.setOwnerEmployeeNameSnapshot(command.ownerEmployeeNameSnapshot());
-        entity.setOrderDate(local(HistorySyncRules.businessDate(command.sourceSystemCode(), command.orderDate(), null)));
+        entity.setOrderDate(local(HistorySyncRules.orderDate(command.sourceSystemCode(), command.orderDate(), null)));
         entity.setOrderStatusCode(command.orderStatusCode());
         entity.setOrderTypeCode(command.orderTypeCode());
         entity.setPaymentMethodCode(command.paymentMethodCode());
