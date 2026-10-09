@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -103,7 +104,10 @@ public class OrderRegisterController implements OrderRegisterApi {
             Boolean hasDiscount,
             String sortBy,
             String sortDirection,
-            Long productVariantId) {
+            Long productVariantId,
+            List<Long> productVariantIds,
+            Instant paymentTimeFrom,
+            Instant paymentTimeTo) {
         return ApiResponse.success(
                 service.lines(
                         begin,
@@ -121,7 +125,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         orderStatusCode,
                         productKeyword,
                         productCode,
-                        productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId));
+                        productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId, productVariantIds, paymentTimeFrom, paymentTimeTo));
     }
 
     @Override
@@ -147,7 +151,8 @@ public class OrderRegisterController implements OrderRegisterApi {
             String sortBy,
             String sortDirection, String createdBy,
             List<Long> productIds,
-            Long productVariantId) {
+            Long productVariantId,
+            List<Long> productVariantIds) {
         return ApiResponse.success(
                 service.payments(
                         begin,
@@ -169,7 +174,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         paymentTimeFrom,
                         paymentTimeTo,
                         sortBy,
-                        sortDirection, createdBy, productIds, productVariantId));
+                        sortDirection, createdBy, productIds, productVariantId, productVariantIds));
     }
 
     @Override
@@ -369,7 +374,10 @@ public class OrderRegisterController implements OrderRegisterApi {
             Boolean hasDiscount,
             String sortBy,
             String sortDirection,
-            Long productVariantId) {
+            Long productVariantId,
+            List<Long> productVariantIds,
+            Instant paymentTimeFrom,
+            Instant paymentTimeTo) {
         List<OrderRegisterLineView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -389,7 +397,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                             orderStatusCode,
                             productKeyword,
                             productCode,
-                            productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId);
+                            productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId, productVariantIds, paymentTimeFrom, paymentTimeTo);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
@@ -397,7 +405,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                 "lines.csv",
                 new String[] {
                     "订单号", "来源明细号", "客户名称", "归属地区", "所属业务员", "商品编码", "商品名称",
-                    "规格", "单位", "数量", "单价", "订货金额", "订单金额（分摊后）", "优惠额（分摊后）", "优惠率", "收款状态", "下单时间"
+                    "规格", "单位", "数量", "单价", "订货金额", "订单金额（分摊后）", "优惠额（分摊后）", "优惠率", "收款状态", "收款日期", "下单时间"
                 },
                 rows.stream()
                         .map(
@@ -421,6 +429,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                                                 dec(r.discountAmount()),
                                                 r.discountRate() == null ? "" : r.discountRate().multiply(BigDecimal.valueOf(100)).setScale(2, java.math.RoundingMode.HALF_UP).toPlainString() + "%",
                                                 str(r.paymentStatusCode()),
+                                                r.paymentTime() == null ? "" : r.paymentTime().atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().toString(),
                                                 time(r.orderDate())))
                         .toList());
     }
@@ -446,7 +455,8 @@ public class OrderRegisterController implements OrderRegisterApi {
             List<Long> productIds,
             String sortBy,
             String sortDirection,
-            Long productVariantId) {
+            Long productVariantId,
+            List<Long> productVariantIds) {
         List<OrderRegisterPaymentView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -470,7 +480,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                             paymentTimeFrom,
                             paymentTimeTo,
                             sortBy,
-                            sortDirection, createdBy, productIds, productVariantId);
+                            sortDirection, createdBy, productIds, productVariantId, productVariantIds);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }

@@ -122,11 +122,19 @@ public class OrderRegisterService {
                 actor, withDepartmentNames(actor, withRegionNames(actor, result)));
     }
 
-    /** 规格必须与一个已选商品组合使用；仓储在同一明细上匹配两个条件。 */
-    private static void validateVariantFilter(List<Long> productIds, Long variantId) {
-        if (variantId != null && (variantId <= 0 || productIds == null || productIds.size() != 1 || productIds.get(0) == null || productIds.get(0) <= 0)) {
-            throw badRequest("请选择一个商品后再选择商品规格");
+    /** 同字段多值取并集，商品和规格必须命中同一明细；兼容旧版单规格参数。 */
+    private static List<Long> filterVariantIds(List<Long> productIds, Long variantId, List<Long> values) {
+        LinkedHashSet<Long> ids = new LinkedHashSet<>();
+        if (variantId != null) ids.add(variantId);
+        if (values != null) ids.addAll(values);
+        if (ids.isEmpty()) return null;
+        if (ids.size() > 500 || ids.stream().anyMatch(id -> id == null || id <= 0)) {
+            throw badRequest("productVariantIds包含无效规格ID或超过500个规格");
         }
+        if (productIds == null || productIds.isEmpty()) {
+            throw badRequest("请选择商品后再选择商品规格");
+        }
+        return List.copyOf(ids);
     }
 
     private static List<Long> filterProductIds(List<Long> values) {
@@ -193,10 +201,14 @@ public class OrderRegisterService {
             Boolean hasDiscount,
             String sortBy,
             String sortDirection,
-            Long productVariantId) {
+            Long productVariantId,
+            List<Long> productVariantIds,
+            Instant paymentTimeFrom,
+            Instant paymentTimeTo) {
         CallerIdentity actor = actor(READ_PERMISSION);
-        validateVariantFilter(productIds, productVariantId);
+        productVariantIds = filterVariantIds(productIds, productVariantId, productVariantIds);
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
+        requireRange(paymentTimeFrom, paymentTimeTo, "paymentTimeFrom不能晚于paymentTimeTo");
         var criteria =
                 new LineCriteria(
                         text(orderNo, 80, "orderNo"),
@@ -212,7 +224,7 @@ public class OrderRegisterService {
                         text(productKeyword, 200, "productKeyword"),
                         text(productCode, 128, "productCode"),
                         filterProductIds(productIds),
-                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection, productVariantId);
+                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection, null, productVariantIds, paymentTimeFrom, paymentTimeTo);
         var result = store.lines(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withDepartmentNames(actor, withRegionNames(actor, result));
     }
@@ -239,9 +251,10 @@ public class OrderRegisterService {
             String sortBy,
             String sortDirection, String createdBy,
             List<Long> productIds,
-            Long productVariantId) {
+            Long productVariantId,
+            List<Long> productVariantIds) {
         CallerIdentity actor = actor(READ_PERMISSION);
-        validateVariantFilter(productIds, productVariantId);
+        productVariantIds = filterVariantIds(productIds, productVariantId, productVariantIds);
         if (productIds != null && (productIds.size() > 10000 || productIds.stream().anyMatch(id -> id == null || id < 0))) {
             throw badRequest("productIds无效或超过10000个");
         }
@@ -265,7 +278,7 @@ public class OrderRegisterService {
                         paymentTimeFrom,
                         paymentTimeTo,
                         text(sortBy, 32, "sortBy"),
-                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, productVariantId);
+                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, null, productVariantIds);
         var result = store.payments(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
     }
@@ -527,7 +540,7 @@ public class OrderRegisterService {
                             v.ownerEmployeeName(), v.departmentId(), v.departmentName(),
                             v.orderStatusCode(), v.paymentStatusCode(), v.orderDate(), v.revision(),
                             v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
-                            v.syncedBy(), v.syncedAt());
+                            v.syncedBy(), v.syncedAt(), v.paymentTime());
         }
         if (item instanceof OrderRegisterPaymentView v) {
             return (T)
@@ -616,7 +629,7 @@ public class OrderRegisterService {
                             v.ownerEmployeeName(), v.departmentId(), department, v.orderStatusCode(),
                             v.paymentStatusCode(), v.orderDate(), v.revision(),
                             v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
-                            v.syncedBy(), v.syncedAt());
+                            v.syncedBy(), v.syncedAt(), v.paymentTime());
         }
         if (item instanceof OrderRegisterPaymentView v) {
             return (T)

@@ -35,14 +35,31 @@ class OrderRegisterControllerTest {
         when(row.paidAmount()).thenReturn(new BigDecimal("50.00"));
         when(row.allocatedPaymentAmount()).thenReturn(new BigDecimal("10.00"));
         when(service.payments(eq(0), eq(200), any(), any(), any(), any(), any(), any(), any(), any(),
-                any(), any(), any(), any(), any(), any(), any(), any(), eq("paymentTime"), eq("asc"), any(), eq(List.of(101L)), any()))
+                any(), any(), any(), any(), any(), any(), any(), any(), eq("paymentTime"), eq("asc"), any(), eq(List.of(101L)), any(), any()))
                 .thenReturn(new com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage<>(1,0,200,List.of(row),java.util.Map.of(),null));
         var response = controller.exportPayments(null,null,null,null,null,null,null,null,null,null,null,null,null,null,
-                null,null,null,List.of(101L),"paymentTime","asc",null);
+                null,null,null,List.of(101L),"paymentTime","asc",null, null);
         String csv = new String(response.getBody(), StandardCharsets.UTF_8);
         assertThat(csv).contains("审核人,审核时间,筛选商品分摊金额");
         assertThat(csv).contains("50.00");
         assertThat(csv).contains("10.00");
+    }
+
+    @Test
+    void lineExportIncludesLatestReceiptDateAndForwardsTheSameFilters() {
+        var row = mock(com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterLineView.class);
+        when(row.paymentStatusCode()).thenReturn("PARTIAL_PAID");
+        when(row.paymentTime()).thenReturn(java.time.Instant.parse("2026-09-01T16:00:00Z"));
+        var from = java.time.Instant.parse("2026-09-01T16:00:00Z");
+        var to = java.time.Instant.parse("2026-09-02T16:00:00Z");
+        when(service.lines(eq(0),eq(200),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),
+                eq(List.of(101L,102L)),eq("PARTIAL_PAID"),any(),any(),any(),any(),eq(List.of(1001L,1003L)),eq(from),eq(to)))
+                .thenReturn(new com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage<>(1,0,200,List.of(row),java.util.Map.of(),null));
+        var response = controller.exportLines(null,null,null,null,null,null,null,null,null,null,null,null,null,
+                List.of(101L,102L),"PARTIAL_PAID",null,null,null,null,List.of(1001L,1003L),from,to);
+        String csv = new String(response.getBody(), StandardCharsets.UTF_8);
+        assertThat(csv).contains("收款状态,收款日期,下单时间");
+        assertThat(csv).contains("PARTIAL_PAID,2026-09-02,");
     }
 
     @Test

@@ -100,7 +100,7 @@ public interface OrderRegisterStore {
             String paymentStatusCode,
             Boolean hasDiscount,
             String sortBy,
-            String sortDirection, Long productVariantId) {
+            String sortDirection, Long productVariantId, List<Long> productVariantIds, Instant paymentTimeFrom, Instant paymentTimeTo) {
     }
 
     record PaymentCriteria(
@@ -123,7 +123,7 @@ public interface OrderRegisterStore {
             /** 排序字段：paymentTime / createdTime / syncedAt；空按收款时间倒序。 */
             String sortBy,
             String sortDirection,
-            String createdBy, List<Long> productIds, Long productVariantId) {
+            String createdBy, List<Long> productIds, Long productVariantId, List<Long> productVariantIds) {
     }
 
     record PeriodCriteria(

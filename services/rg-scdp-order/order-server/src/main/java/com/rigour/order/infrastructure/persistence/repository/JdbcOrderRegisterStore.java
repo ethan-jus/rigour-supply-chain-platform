@@ -171,6 +171,12 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         return new OrderRegisterPage<>(total, begin, step, items, totals, historyCoverage(tenantId));
     }
 
+    // 使用实际有效收款日期，不能用订单头的同步时间或已作废收款推断到账日期。
+    private static final String LATEST_PAYMENT_TIME =
+            "CASE WHEN o.paid_amount>0 THEN (SELECT MAX(r.payment_time) FROM order_payment_record r"
+                    + " WHERE r.tenant_id=o.tenant_id AND r.order_id=o.id AND r.deleted=0"
+                    + " AND r.payment_status_code IN ('RECEIVED','CHECKED') AND r.paid_amount>0) END";
+
     @Override
     public OrderRegisterPage<OrderRegisterLineView> lines(
             String tenantId, int begin, int step, LineCriteria criteria) {
@@ -205,7 +211,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + " " + allocatedAmount("paid_amount") + " AS received_amount,"
                                 + " o.created_by,o.created_time,o.updated_by,o.updated_time,"
                                 + " o.source_creator_name,o.source_created_at,o.source_modifier_name,o.source_updated_at,"
-                                + " o.synced_by,o.synced_at "
+                                + " o.synced_by,o.synced_at, " + LATEST_PAYMENT_TIME + " AS payment_time "
                                 + " FROM order_sales_order_line l "
                                 + " JOIN order_sales_order o ON o.tenant_id=l.tenant_id AND o.id=l.order_id AND o.deleted=0 "
                                 + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
@@ -254,7 +260,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                         first(rs.getString("source_modifier_name"), rs.getString("updated_by")),
                                         firstInstant(rs, "source_updated_at", "updated_time"),
                                         rs.getString("synced_by"),
-                                        instant(rs, "synced_at")),
+                                        instant(rs, "synced_at"), instant(rs, "payment_time")),
                         append(where.args(), step, begin).toArray());
         var totals = jdbc.queryForMap(
                 "SELECT COALESCE(SUM(l.unit_price*l.quantity),0) line_amount,"
@@ -275,6 +281,8 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 criteria.regionCode(), criteria.ownerEmployeeCode(), criteria.departmentIds(),
                 criteria.orderDateFrom(), criteria.orderDateTo(), criteria.orderStatusCode(),
                 criteria.paymentStatusCode(), null, null, null, null, null, null, null, null));
+        ge(orderWhere, LATEST_PAYMENT_TIME, criteria.paymentTimeFrom());
+        lt(orderWhere, LATEST_PAYMENT_TIME, criteria.paymentTimeTo());
         boolean lineFiltered = criteria.hasDiscount() != null || (criteria.productKeyword() != null && !criteria.productKeyword().isBlank())
                 || (criteria.productCode() != null && !criteria.productCode().isBlank())
                 || (criteria.productIds() != null && !criteria.productIds().isEmpty());
@@ -772,12 +780,21 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         return rows;
     }
 
+    private static java.util.Set<Long> variantIds(Long legacyId, List<Long> ids) {
+        var result = new java.util.LinkedHashSet<Long>();
+        if (legacyId != null) result.add(legacyId);
+        if (ids != null) result.addAll(ids);
+        return result.isEmpty() ? null : result;
+    }
+
     private static String paymentProductPredicate(PaymentCriteria criteria) {
         if (criteria.productIds() == null) return "1=1";
         if (criteria.productIds().isEmpty()) return "1=0";
+        var variants = variantIds(criteria.productVariantId(), criteria.productVariantIds());
         return "l.product_id IN (" + criteria.productIds().stream().map(String::valueOf)
                 .collect(java.util.stream.Collectors.joining(",")) + ")"
-                + (criteria.productVariantId() == null ? "" : " AND l.product_variant_id=" + criteria.productVariantId());
+                + (variants == null ? "" : " AND l.product_variant_id IN (" + variants.stream()
+                        .map(String::valueOf).collect(java.util.stream.Collectors.joining(",")) + ")");
     }
 
     // Cumulative rounded amounts keep every line stable across filters and absorb the final cent.
@@ -1064,7 +1081,9 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                     "%" + c.productKeyword() + "%");
         }
         like(where, "l.product_code_snapshot", c.productCode());
-        eq(where, "l.product_variant_id", c.productVariantId());
+        inIds(where, "l.product_variant_id", variantIds(c.productVariantId(), c.productVariantIds()));
+        ge(where, LATEST_PAYMENT_TIME, c.paymentTimeFrom());
+        lt(where, LATEST_PAYMENT_TIME, c.paymentTimeTo());
         if (c.productIds() != null && !c.productIds().isEmpty()) {
             where.and(
                     "l.product_id IN ("

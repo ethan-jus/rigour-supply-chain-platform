@@ -65,8 +65,24 @@ class OrderRegisterServiceTest {
         var store = mock(OrderRegisterStore.class);
         var service = new OrderRegisterService(store,mock(CrmCustomerAreaDisplayClient.class),mock(HrEmployeeDisplayClient.class),invoiceStore(),resolverProvider());
         TestAuthorizationContext.set(caller("order:read"));
-        assertThatThrownBy(() -> service.lines(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1001L)).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.lines(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1001L, null, null, null)).isInstanceOf(BusinessException.class);
         verify(store,never()).lines(any(),anyInt(),anyInt(),any());
+    }
+
+    @Test
+    void multipleProductsAndVariantsAreAcceptedAndLegacyVariantIsMerged() {
+        var store = mock(OrderRegisterStore.class);
+        var service = new OrderRegisterService(store,mock(CrmCustomerAreaDisplayClient.class),mock(HrEmployeeDisplayClient.class),invoiceStore(),resolverProvider());
+        TestAuthorizationContext.set(caller("order:read"));
+        when(store.lines(any(),anyInt(),anyInt(),any())).thenReturn(new OrderRegisterPage<>(0,0,20,List.of(),Map.of(),null));
+        service.lines(0,20,null,null,null,null,null,null,null,null,null,null,null,null,null,List.of(101L,102L),null,null,null,null,1001L,List.of(1003L),null,null);
+        var criteria = ArgumentCaptor.forClass(OrderRegisterStore.LineCriteria.class);
+        verify(store).lines(eq(TENANT),eq(0),eq(20),criteria.capture());
+        assertThat(criteria.getValue().productIds()).containsExactly(101L,102L);
+        assertThat(criteria.getValue().productVariantId()).isNull();
+        assertThat(criteria.getValue().productVariantIds()).containsExactly(1001L,1003L);
+        assertThatThrownBy(() -> service.lines(0,20,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,
+                java.time.Instant.parse("2026-09-03T00:00:00Z"),java.time.Instant.parse("2026-09-02T00:00:00Z"))).isInstanceOf(BusinessException.class);
     }
 
     @Test

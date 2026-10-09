@@ -139,7 +139,9 @@ public final class OrderRegisterModels {
             String updatedBy,
             Instant updatedTime,
             String syncedBy,
-            Instant syncedAt) {
+            Instant syncedAt,
+            /** 最近一次有效收款时间，未收款或无有效记录时为空。 */
+            Instant paymentTime) {
     }
 
     /** 收款列表行；一行是一笔关联订单的收款记录，订单金额只做关联参考。 */
