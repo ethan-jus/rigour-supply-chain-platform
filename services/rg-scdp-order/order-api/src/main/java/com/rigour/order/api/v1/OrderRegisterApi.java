@@ -50,7 +50,9 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) Boolean hasDiscount,
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDirection,
-            @RequestParam(required = false) String createdBy);
+            @RequestParam(required = false) String createdBy,
+            @RequestParam(required = false) Instant paymentTimeFrom,
+            @RequestParam(required = false) Instant paymentTimeTo);
 
     @GetMapping(BASE_PATH + "/lines")
     ApiResponse<OrderRegisterPage<OrderRegisterLineView>> lines(
@@ -177,7 +179,9 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) Boolean hasDiscount,
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDirection,
-            @RequestParam(required = false) String createdBy);
+            @RequestParam(required = false) String createdBy,
+            @RequestParam(required = false) Instant paymentTimeFrom,
+            @RequestParam(required = false) Instant paymentTimeTo);
 
     @GetMapping(value = BASE_PATH + "/lines/export", produces = "text/csv;charset=UTF-8")
     ResponseEntity<byte[]> exportLines(

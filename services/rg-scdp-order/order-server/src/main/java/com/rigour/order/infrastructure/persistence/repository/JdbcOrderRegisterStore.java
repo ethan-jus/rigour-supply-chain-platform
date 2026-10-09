@@ -78,7 +78,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                         1,
                         new OrderCriteria(
                                 orderNo, null, null, null, null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null))
+                                null, null, null, null, null, null, null, null, null, null))
                 .items()
                 .stream()
                 .findFirst();
@@ -115,7 +115,8 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + " COALESCE(pc.checked_amount,0) AS checked_amount,"
                                 + " o.order_date,o.shipment_time,o.created_by,o.created_time,"
                                 + " o.updated_by,o.updated_time,o.synced_by,o.synced_at,o.revision,"
-                                + " o.source_creator_name,o.source_created_at,o.source_modifier_name,o.source_updated_at "
+                                + " o.source_creator_name,o.source_created_at,o.source_modifier_name,o.source_updated_at, "
+                                + LATEST_PAYMENT_TIME + " AS payment_time "
                                 + " FROM order_sales_order o "
                                 + ORDER_ORIGINAL_JOIN
                                 + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
@@ -165,7 +166,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                         firstInstant(rs, "source_updated_at", "updated_time"),
                                         rs.getString("synced_by"),
                                         instant(rs, "synced_at"),
-                                        rs.getInt("revision")),
+                                        rs.getInt("revision"), instant(rs, "payment_time")),
                         append(where.args(), step, begin).toArray());
         Map<String, BigDecimal> totals = orderTotals(tenantId, criteria);
         return new OrderRegisterPage<>(total, begin, step, items, totals, historyCoverage(tenantId));
@@ -280,9 +281,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 criteria.orderNo(), criteria.customerId(), criteria.customerName(), criteria.customerCode(),
                 criteria.regionCode(), criteria.ownerEmployeeCode(), criteria.departmentIds(),
                 criteria.orderDateFrom(), criteria.orderDateTo(), criteria.orderStatusCode(),
-                criteria.paymentStatusCode(), null, null, null, null, null, null, null, null));
-        ge(orderWhere, LATEST_PAYMENT_TIME, criteria.paymentTimeFrom());
-        lt(orderWhere, LATEST_PAYMENT_TIME, criteria.paymentTimeTo());
+                criteria.paymentStatusCode(), null, null, null, null, null, null, null, null, criteria.paymentTimeFrom(), criteria.paymentTimeTo(), criteria.departmentEmployeeCodes()));
         boolean lineFiltered = criteria.hasDiscount() != null || (criteria.productKeyword() != null && !criteria.productKeyword().isBlank())
                 || (criteria.productCode() != null && !criteria.productCode().isBlank())
                 || (criteria.productIds() != null && !criteria.productIds().isEmpty());
@@ -739,7 +738,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
             Instant monthTo = month.plusMonths(1).atDay(1).atStartOfDay(BUSINESS_ZONE).toInstant();
             if (monthTo.isAfter(to)) monthTo = to;
             var criteria = new OrderCriteria(null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null, null, null, null, null);
             var where = orderWhere(tenantId, criteria);
             where.and("o.payable_amount>0");
             where.and("o.order_status_code<>'CANCELLED'");
@@ -993,9 +992,24 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
             case "orderNo" -> "o.order_no";
             case "createdTime" -> "COALESCE(o.source_created_at,o.created_time)";
             case "syncedAt" -> "o.synced_at";
+            case "paymentTime" -> LATEST_PAYMENT_TIME;
             default -> "o.order_date";
         };
         return " ORDER BY " + column + ("asc".equalsIgnoreCase(c.sortDirection()) ? " ASC" : " DESC") + ",o.id DESC";
+    }
+
+    private static void departmentFilter(Sql where, java.util.Set<Long> ids, java.util.Set<String> employees) {
+        if (ids == null) return;
+        if (ids.isEmpty()) { where.and("1=0"); return; }
+        String sql = "snap.department_id IN (" + String.join(",", java.util.Collections.nCopies(ids.size(), "?")) + ")";
+        List<Object> args = new ArrayList<>(ids);
+        if (employees != null && !employees.isEmpty()) {
+            sql += " OR (snap.department_id IS NULL AND NULLIF(TRIM(snap.department_name),'') IS NULL"
+                    + " AND COALESCE(snap.employee_code,o.owner_employee_code) IN ("
+                    + String.join(",", java.util.Collections.nCopies(employees.size(), "?")) + "))";
+            args.addAll(employees);
+        }
+        where.and("(" + sql + ")", args.toArray());
     }
 
     private Sql orderWhere(String tenantId, OrderCriteria c) {
@@ -1009,9 +1023,11 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
-        inIds(where, "snap.department_id", c.departmentIds());
+        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
+        ge(where, LATEST_PAYMENT_TIME, c.paymentTimeFrom());
+        lt(where, LATEST_PAYMENT_TIME, c.paymentTimeTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
         eq(where, "o.payment_status_code", c.paymentStatusCode());
         if (c.hasDiscount() != null) {
@@ -1068,7 +1084,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
-        inIds(where, "snap.department_id", c.departmentIds());
+        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
@@ -1121,7 +1137,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
-        inIds(where, "snap.department_id", c.departmentIds());
+        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());

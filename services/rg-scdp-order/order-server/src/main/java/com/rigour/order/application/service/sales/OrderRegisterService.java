@@ -98,8 +98,9 @@ public class OrderRegisterService {
             String invoiceStatusCode,
             Boolean dhbLinked,
             String dhbOrderNo,
-            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy) {
+            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo) {
         CallerIdentity actor = actor(READ_PERMISSION);
+        requireRange(paymentTimeFrom, paymentTimeTo, "paymentTimeFrom不能晚于paymentTimeTo");
         var criteria =
                 new OrderCriteria(
                         text(orderNo, 80, "orderNo"),
@@ -115,7 +116,7 @@ public class OrderRegisterService {
                         text(paymentStatusCode, 64, "paymentStatusCode"),
                         hasUnpaid,
                         invoiceStatusCode(invoiceStatusCode),
-                        dhbLinked, text(dhbOrderNo, 80, "dhbOrderNo"), hasDiscount, sortBy, sortDirection, text(createdBy, 200, "createdBy"));
+                        dhbLinked, text(dhbOrderNo, 80, "dhbOrderNo"), hasDiscount, sortBy, sortDirection, text(createdBy, 200, "createdBy"), paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments));
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         var result = store.orders(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withInvoiceStatuses(
@@ -224,7 +225,7 @@ public class OrderRegisterService {
                         text(productKeyword, 200, "productKeyword"),
                         text(productCode, 128, "productCode"),
                         filterProductIds(productIds),
-                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection, null, productVariantIds, paymentTimeFrom, paymentTimeTo);
+                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection, null, productVariantIds, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments));
         var result = store.lines(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withDepartmentNames(actor, withRegionNames(actor, result));
     }
@@ -278,7 +279,7 @@ public class OrderRegisterService {
                         paymentTimeFrom,
                         paymentTimeTo,
                         text(sortBy, 32, "sortBy"),
-                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, null, productVariantIds);
+                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, null, productVariantIds, departmentEmployeeCodes(actor, departmentId, includeSubDepartments));
         var result = store.payments(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
     }
@@ -525,7 +526,7 @@ public class OrderRegisterService {
                             v.invoiceStatusCode(), v.invoiceStatusName(), v.originalAmount(),
                             v.payableAmount(), v.paidAmount(), v.unpaidAmount(), v.checkedAmount(),
                             v.orderDate(), v.shipmentTime(), v.createdBy(), v.createdTime(),
-                            v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.revision());
+                            v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.revision(), v.paymentTime());
         }
         if (item instanceof OrderRegisterLineView v) {
             return (T)
@@ -599,6 +600,7 @@ public class OrderRegisterService {
 
     @SuppressWarnings("unchecked")
     private static <T> T withDepartmentName(T item, Map<String, String> departments) {
+        if (departmentNameOf(item) != null) return item;
         String code = employeeCodeOf(item);
         String department = code == null ? null : departments.get(code.strip());
         if (department == null || department.isBlank()) return item;
@@ -614,7 +616,7 @@ public class OrderRegisterService {
                             v.originalAmount(), v.payableAmount(), v.paidAmount(),
                             v.unpaidAmount(), v.checkedAmount(), v.orderDate(), v.shipmentTime(),
                             v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
-                            v.syncedBy(), v.syncedAt(), v.revision());
+                            v.syncedBy(), v.syncedAt(), v.revision(), v.paymentTime());
         }
         if (item instanceof OrderRegisterLineView v) {
             return (T)
@@ -685,7 +687,7 @@ public class OrderRegisterService {
                         OrderInvoiceStatus.displayNameOf(status), v.originalAmount(),
                         v.payableAmount(), v.paidAmount(), v.unpaidAmount(), v.checkedAmount(),
                         v.orderDate(), v.shipmentTime(), v.createdBy(), v.createdTime(),
-                        v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.revision());
+                        v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.revision(), v.paymentTime());
     }
 
     private static String employeeCodeOf(Object item) {
@@ -719,7 +721,7 @@ public class OrderRegisterService {
     }
 
     /**
-     * 部门筛选按订单归属快照的部门口径匹配；HR 只用来展开子部门，不参与历史归属判断。
+     * 部门快照优先；缺少快照时才按页面展示所用的当前员工部门匹配。
      * HR 不可用时抛依赖错误，避免把“查不到”当成“没有数据”。
      */
     private Set<Long> departmentScopeIds(
@@ -744,6 +746,17 @@ public class OrderRegisterService {
                     exception.getClass().getSimpleName());
             throw new BusinessException(
                     ErrorCode.SERVICE_UNAVAILABLE, "部门范围暂时无法解析，请稍后重试", List.of());
+        }
+    }
+
+    /** 快照缺少部门时，沿用列表显示所用的业务员当前部门；HR 失败不能当成空数据。 */
+    private Set<String> departmentEmployeeCodes(CallerIdentity actor, Long departmentId, Boolean includeSubDepartments) {
+        if (departmentId == null) return null;
+        try {
+            return hrEmployeeDisplayClient.departmentEmployeeCodes(
+                    hrServiceCaller(actor.tenantId()), departmentId, includeSubDepartments);
+        } catch (RuntimeException exception) {
+            throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "部门人员暂时无法解析，请稍后重试", List.of());
         }
     }
 

@@ -90,6 +90,29 @@ public final class HttpHrEmployeeDisplayClient implements HrEmployeeDisplayClien
         return Set.copyOf(scope);
     }
 
+    @Override
+    public Set<String> departmentEmployeeCodes(CallerIdentity caller, Long departmentId, Boolean includeSubDepartments) {
+        if (caller == null || caller.tenantId() == null) throw new IllegalArgumentException("HR查询必须携带租户上下文");
+        if (departmentId == null) return Set.of();
+        Set<String> codes = new LinkedHashSet<>();
+        for (int begin = 0; ; begin += 200) {
+            URI uri = UriComponentsBuilder.fromUri(baseUri).path("/api/v1/hr/employees")
+                    .queryParam("begin", begin).queryParam("step", 200)
+                    .queryParam("departmentId", departmentId)
+                    .queryParam("includeSubDepartments", Boolean.TRUE.equals(includeSubDepartments))
+                    .build().encode().toUri();
+            EmployeePage page = fetchEmployees(caller, uri);
+            if (page.items() == null || (page.items().isEmpty() && begin < page.total())) {
+                throw new IllegalStateException("HR部门人员分页不完整");
+            }
+            for (Map<String, Object> row : page.items()) {
+                String code = text(row.get("employeeCode"));
+                if (code != null) codes.add(code);
+            }
+            if (begin + 200 >= page.total()) return Set.copyOf(codes);
+        }
+    }
+
     private List<Map<String, Object>> fetchDepartments(CallerIdentity caller, URI uri) {
         ApiResponse<List<Map<String, Object>>> response =
                 restClient

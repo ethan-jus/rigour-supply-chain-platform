@@ -263,7 +263,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                                 null, null, null, null, null, null, null,
                                 Instant.parse("2026-08-31T16:00:00Z"),
                                 Instant.parse("2026-09-01T16:00:00Z"),
-                                null, null, null, null, null, null, null, null, null, null));
+                                null, null, null, null, null, null, null, null, null, null, null, null, null));
 
         assertThat(page.items()).singleElement()
                 .satisfies(view -> assertThat(view.orderDate()).isEqualTo(Instant.parse("2026-08-31T16:00:00Z")));
@@ -285,7 +285,7 @@ class JdbcOrderRegisterStoreMySqlTest {
 
         assertThat(orderNumbers(tenant, true)).containsExactly("SO-DHB-LINK-1");
         var matched = store.orders(tenant, 0, 20, new OrderCriteria(
-                null, null, null, null, null, null, null, null, null, null, null, null, null, null, "0911.0001", null, null, null, null));
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, "0911.0001", null, null, null, null, null, null, null));
         assertThat(matched.items()).extracting(v -> v.orderNo()).containsExactly("SO-DHB-LINK-1");
         assertThat(matched.total()).isEqualTo(1);
         assertThat(matched.totals().get("payableAmount")).isEqualByComparingTo("10");
@@ -322,7 +322,7 @@ class JdbcOrderRegisterStoreMySqlTest {
 
         assertThat(orderNumbers(tenant, true)).containsExactly("SO-DHB-HIST-1");
         assertThat(store.orders(tenant, 0, 20, new OrderCriteria(
-                null, null, null, null, null, null, null, null, null, null, null, null, null, null, "0912.0002", null, null, null, null)).items())
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, "0912.0002", null, null, null, null, null, null, null)).items())
                 .extracting(v -> v.orderNo()).containsExactly("SO-DHB-HIST-1");
 
         assertThat(orderNumbers(tenant, false)).containsExactly("SO-DHB-HIST-2");
@@ -337,7 +337,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new OrderCriteria(
                                 null, null, null, null, null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null))
+                                null, null, null, null, null, null, null, null, null, null))
                 .items()
                 .stream()
                 .collect(java.util.stream.Collectors.toMap(
@@ -391,11 +391,11 @@ class JdbcOrderRegisterStoreMySqlTest {
         for (java.util.Set<Long> departments : java.util.List.of(java.util.Set.of(11L), java.util.Set.of(12L))) {
             long expected = departments.contains(11L) ? 1 : 0;
             var orders = store.orders(tenant, 0, 20, new OrderCriteria(null,null,null,null,"NEW","E1",departments,
-                    null,null,null,null,null,null,null,null,null,null,null,"来源创建人"));
+                    null,null,null,null,null,null,null,null,null,null,null,"来源创建人", null, null, java.util.Set.of("E1")));
             var lines = store.lines(tenant, 0, 20, new LineCriteria(null,null,null,null,"NEW","E1",departments,
-                    null,null,null,null,null,null,null,null,null,null, null, null, null, null));
+                    null,null,null,null,null,null,null,null,null,null, null, null, null, null, java.util.Set.of("E1")));
             var payments = store.payments(tenant, 0, 20, new PaymentCriteria(null,null,null,null,"NEW","E1",departments,
-                    null,null,null,null,null,null,null,null,null,null,"来源创建人", null, null, null));
+                    null,null,null,null,null,null,null,null,null,null,"来源创建人", null, null, null, java.util.Set.of("E1")));
             assertThat(orders.total()).isEqualTo(expected);
             assertThat(lines.total()).isEqualTo(expected);
             assertThat(payments.total()).isEqualTo(expected);
@@ -406,7 +406,7 @@ class JdbcOrderRegisterStoreMySqlTest {
             }
         }
         assertThat(store.orders(tenant,0,20,new OrderCriteria(null,null,null,null,null,null,null,null,null,null,
-                null,null,null,null,null,null,null,null,"不存在的创建人")).total()).isZero();
+                null,null,null,null,null,null,null,null,"不存在的创建人", null, null, null)).total()).isZero();
     }
 
     @Test
@@ -437,7 +437,7 @@ class JdbcOrderRegisterStoreMySqlTest {
 
     private OrderCriteria orderDiscountCriteria(Boolean hasDiscount, String sort, String direction) {
         return new OrderCriteria(null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, hasDiscount, sort, direction, null);
+                null, null, null, null, null, null, hasDiscount, sort, direction, null, null, null, null);
     }
 
     @Test
@@ -455,7 +455,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         insertPayment(tenant, "METRIC-P1", first, "2026-09-12T05:00:00Z", 12, "CHECKED", null);
         insertPayment(tenant, "METRIC-P2", first, "2026-09-12T05:00:00Z", 8, "CHECKED", null);
         insertPayment(tenant, "METRIC-P3", first, "2026-09-12T05:00:00Z", 99, "CANCELLED", null);
-        var criteria = new OrderCriteria(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        var criteria = new OrderCriteria(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
         var page = store.orders(tenant, 0, 1, criteria);
         assertThat(page.total()).isEqualTo(2);
         assertThat(page.items()).hasSize(1);
@@ -466,7 +466,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(page.totals().get("paidAmount")).isEqualByComparingTo("40");
         assertThat(page.totals().get("unpaidAmount")).isEqualByComparingTo("290");
         assertThat(page.totals().get("checkedAmount")).isEqualByComparingTo("20");
-        var filtered = store.orders(tenant, 0, 20, new OrderCriteria("METRIC-1", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null));
+        var filtered = store.orders(tenant, 0, 20, new OrderCriteria("METRIC-1", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null));
         assertThat(filtered.totals().get("originalAmount")).isEqualByComparingTo("100");
         assertThat(filtered.totals().get("discountRate")).isEqualByComparingTo("0.1");
         var item = filtered.items().getFirst();
@@ -480,7 +480,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(missing.totals()).doesNotContainKeys("originalAmount", "discountAmount", "discountRate");
         assertThat(missing.items().stream().filter(row -> row.id().equals(first)).findFirst().orElseThrow().originalAmount()).isNull();
         jdbc.update("UPDATE order_sales_order_line SET unit_price=0 WHERE tenant_id=? AND order_id=?", tenant, second);
-        var zero = store.orders(tenant, 0, 20, new OrderCriteria("METRIC-2", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null));
+        var zero = store.orders(tenant, 0, 20, new OrderCriteria("METRIC-2", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null));
         assertThat(zero.totals().get("originalAmount")).isEqualByComparingTo("0");
         assertThat(zero.totals()).doesNotContainKey("discountRate");
         assertThat(zero.items().getFirst().discountRate()).isNull();
@@ -490,7 +490,7 @@ class JdbcOrderRegisterStoreMySqlTest {
     @Test
     void orderAndLineStatisticsAgreeAndDeduplicateEntitiesInsteadOfAmountsOrNames() {
         String tenant = UUID.randomUUID().toString();
-        var criteria = new OrderCriteria(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        var criteria = new OrderCriteria(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
         for (int i = 0; i < 3; i++) {
             long id = order(tenant, "SAME-" + i, i == 2 ? 2L : 1L, "C" + i, "同名客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 80, 0);
             insertLine(tenant, id, 1, "商品A", "60");
@@ -615,7 +615,7 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     private static LineCriteria discountCriteria(String product, Boolean discounted, String sort, String direction) {
-        return new LineCriteria(null, null, null, null, null, null, null, null, null, null, product, null, null, null, discounted, sort, direction, null, null, null, null);
+        return new LineCriteria(null, null, null, null, null, null, null, null, null, null, product, null, null, null, discounted, sort, direction, null, null, null, null, null);
     }
 
     @Test
@@ -630,7 +630,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         }
         for (String status : List.of("UNPAID", "PARTIAL_PAID", "PAID")) {
             var page = store.lines(tenant, 0, 50, new LineCriteria(
-                    null, null, null, null, null, null, null, null, null, null, null, null, null, status, null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null, null, null, null, null, null, status, null, null, null, null, null, null, null, null));
             assertThat(page.total()).isEqualTo(2);
             assertThat(page.items()).extracting(OrderRegisterLineView::paymentStatusCode).containsOnly(status);
             assertThat(page.items()).extracting(OrderRegisterLineView::orderNo).containsOnly("SO-STATUS-" + status);
@@ -648,7 +648,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                 50,
                 new LineCriteria(
                         null, null, null, null, null, null, null, null, null, null,
-                        productKeyword, null, null, null, null, null, null, null, null, null, null));
+                        productKeyword, null, null, null, null, null, null, null, null, null, null, null));
     }
 
     private static Map<String, BigDecimal> lineTotals(String tenant, String productKeyword) {
@@ -658,7 +658,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new LineCriteria(
                                 null, null, null, null, null, null, null, null, null, null,
-                                productKeyword, null, null, null, null, null, null, null, null, null, null))
+                                productKeyword, null, null, null, null, null, null, null, null, null, null, null))
                 .totals();
     }
 
@@ -734,17 +734,17 @@ class JdbcOrderRegisterStoreMySqlTest {
         allocationLine(tenant,id,3,102,"50");
         jdbc.update("UPDATE order_sales_order_line SET product_variant_id=1000+line_no,sku_code_snapshot=CONCAT('SKU',line_no),specification_snapshot=CONCAT('规格',line_no) WHERE tenant_id=?",tenant);
         insertPayment(tenant,"SKU-PAY",id,"2026-09-02T00:00:00Z",50,"CHECKED",null);
-        var lines=store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,List.of(101L),null,null,null,null,1001L, null, null, null));
+        var lines=store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,List.of(101L),null,null,null,null,1001L, null, null, null, null));
         assertThat(lines.total()).isEqualTo(1);
         assertThat(lines.totals().get("lineAmount")).isEqualByComparingTo("20");
         assertThat(lines.items().getFirst().orderAmount()).isEqualByComparingTo("16");
-        var payments=store.payments(tenant,0,20,new PaymentCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,List.of(101L),1001L, null));
+        var payments=store.payments(tenant,0,20,new PaymentCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,List.of(101L),1001L, null, null));
         assertThat(payments.total()).isEqualTo(1);
         assertThat(payments.totals().get("receivedAmount")).isEqualByComparingTo("10");
         assertThat(payments.totals().get("quantitySum")).isEqualByComparingTo("1");
         assertThat(payments.items().getFirst().productAllocations()).filteredOn(v -> v.matched()).hasSize(1);
         assertThat(payments.items().getFirst().productAllocations().getFirst().specification()).isEqualTo("规格1");
-        assertThat(store.payments(tenant,0,20,new PaymentCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,List.of(102L),1001L, null)).total()).isZero();
+        assertThat(store.payments(tenant,0,20,new PaymentCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,List.of(102L),1001L, null, null)).total()).isZero();
     }
 
     @Test
@@ -758,21 +758,21 @@ class JdbcOrderRegisterStoreMySqlTest {
         jdbc.update("UPDATE order_sales_order_line SET product_variant_id=1000+line_no WHERE order_id=?", id);
         insertPayment(tenant, "MULTI-PAY", id, "2026-09-02T00:00:00Z", 50, "CHECKED", null);
         var lines = store.lines(tenant, 0, 20, new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,
-                List.of(101L,102L),null,null,null,null,null,List.of(1001L,1003L),null,null));
+                List.of(101L,102L),null,null,null,null,null,List.of(1001L,1003L),null,null, null));
         assertThat(lines.total()).isEqualTo(2);
         assertThat(lines.totals().get("lineAmount")).isEqualByComparingTo("70");
         assertThat(lines.totals().get("orderAmount")).isEqualByComparingTo("56");
         assertThat(lines.totals().get("receivedAmount")).isEqualByComparingTo("35");
         var payments = store.payments(tenant,0,20,new PaymentCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,
-                List.of(101L,102L),null,List.of(1001L,1003L)));
+                List.of(101L,102L),null,List.of(1001L,1003L), null));
         assertThat(payments.total()).isEqualTo(1);
         assertThat(payments.totals().get("receivedAmount")).isEqualByComparingTo("35");
         assertThat(payments.totals().get("quantitySum")).isEqualByComparingTo("2");
         assertThat(payments.items().getFirst().productAllocations()).filteredOn(v -> v.matched()).hasSize(2);
         assertThat(store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,
-                List.of(102L),null,null,null,null,null,List.of(1001L,1002L),null,null)).total()).isZero();
+                List.of(102L),null,null,null,null,null,List.of(1001L,1002L),null,null, null)).total()).isZero();
         assertThat(store.payments(tenant,0,20,new PaymentCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,
-                List.of(102L),null,List.of(1001L,1002L))).total()).isZero();
+                List.of(102L),null,List.of(1001L,1002L), null)).total()).isZero();
     }
 
     @Test
@@ -797,6 +797,14 @@ class JdbcOrderRegisterStoreMySqlTest {
         jdbc.update("UPDATE order_payment_record SET deleted=1 WHERE tenant_id=? AND payment_no='DATE-DELETED'",tenant);
         // The same order ID in another tenant must not influence the date.
         insertPayment(UUID.randomUUID().toString(),"DATE-OTHER-TENANT",partial,"2026-09-14T00:00:00Z",99,"RECEIVED",null);
+        var orderPage = store.orders(tenant,0,20,new OrderCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"paymentTime","asc",null,null,null,null));
+        assertThat(orderPage.items()).filteredOn(v -> v.id().equals(partial)).allSatisfy(v -> assertThat(v.paymentTime()).isEqualTo(Instant.parse("2026-09-01T16:00:00Z")));
+        assertThat(orderPage.items()).filteredOn(v -> v.id().equals(unpaid)).allSatisfy(v -> assertThat(v.paymentTime()).isNull());
+        var orderDay = store.orders(tenant,0,20,new OrderCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,
+                Instant.parse("2026-09-01T16:00:00Z"),Instant.parse("2026-09-02T16:00:00Z"),null));
+        assertThat(orderDay.items()).extracting(v -> v.id()).containsExactly(partial);
+        assertThat(orderDay.totals().get("paidAmount")).isEqualByComparingTo("40");
+        assertThat(orderDay.totals().get("payableAmount")).isEqualByComparingTo("100");
         var all = store.lines(tenant,0,20,linesWithReceiptRange(null,null));
         assertThat(all.items()).filteredOn(v -> v.orderId().equals(partial)).extracting(OrderRegisterLineView::paymentTime)
                 .containsExactly(Instant.parse("2026-09-01T16:00:00Z"));
@@ -813,8 +821,35 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(old.totals().get("orderAmount")).isZero();
     }
 
+    @Test
+    void missingDepartmentSnapshotUsesEmployeeFallbackForAllListsAndTotalsWithoutWideningScope() {
+        String tenant = UUID.randomUUID().toString();
+        long a = order(tenant,"DEPT-A",1L,"C1","部门甲","HZ","E1","张三","2026-09-01T00:00:00Z",100,0);
+        long b = order(tenant,"DEPT-B",2L,"C2","部门乙","HZ","E2","李四","2026-09-01T00:00:00Z",200,0);
+        insertLine(tenant,a,1,"商品甲","100"); insertLine(tenant,b,1,"商品乙","200");
+        insertPayment(tenant,"DEPT-P-A",a,"2026-09-02T00:00:00Z",40,"RECEIVED",null);
+        insertPayment(tenant,"DEPT-P-B",b,"2026-09-02T00:00:00Z",60,"RECEIVED",null);
+        var ids = java.util.Set.of(7L);
+        var codes = java.util.Set.of("E1");
+        var oc = new OrderCriteria(null,null,null,null,null,null,ids,null,null,null,null,null,null,null,null,null,null,null,null,null,null,codes);
+        var lc = new LineCriteria(null,null,null,null,null,null,ids,null,null,null,null,null,null,null,null,null,null,null,null,null,null,codes);
+        var pc = new PaymentCriteria(null,null,null,null,null,null,ids,null,null,null,null,null,null,null,null,null,null,null,null,null,null,codes);
+        var orders=store.orders(tenant,0,20,oc); var lines=store.lines(tenant,0,20,lc); var payments=store.payments(tenant,0,20,pc);
+        assertThat(orders.total()).isEqualTo(1); assertThat(lines.total()).isEqualTo(1); assertThat(payments.total()).isEqualTo(1);
+        assertThat(orders.totals().get("payableAmount")).isEqualByComparingTo("100");
+        assertThat(lines.totals().get("orderAmount")).isEqualByComparingTo("100");
+        assertThat(payments.totals().get("receivedAmount")).isEqualByComparingTo("40");
+        var restricted = org.mockito.Mockito.mock(OrderDataScope.class);
+        org.mockito.Mockito.when(restricted.predicate("order:read","o.",null)).thenReturn(new OrderDataScope.Predicate("o.owner_employee_code=?",List.of("E2")));
+        var scoped = new JdbcOrderRegisterStore(jdbc,restricted);
+        assertThat(scoped.orders(tenant,0,20,oc).total()).isZero();
+        assertThat(scoped.lines(tenant,0,20,lc).total()).isZero();
+        assertThat(scoped.payments(tenant,0,20,pc).total()).isZero();
+        assertThat(store.orders(tenant,0,20,new OrderCriteria(null,null,null,null,null,null,ids,null,null,null,null,null,null,null,null,null,null,null,null,null,null,java.util.Set.of())).total()).isZero();
+    }
+
     private static LineCriteria linesWithReceiptRange(Instant from, Instant to) {
-        return new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,from,to);
+        return new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,from,to, null);
     }
 
     @Test
@@ -833,7 +868,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         insertPayment(tenant,"STILL-PARTIAL",partial,"2026-09-20T00:00:00Z",4000,"RECEIVED",null);
         var from=Instant.parse("2026-08-31T16:00:00Z");
         var to=Instant.parse("2026-09-30T16:00:00Z");
-        var all=store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,"PAID",null,null,null,null,null,from,to));
+        var all=store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,"PAID",null,null,null,null,null,from,to, null));
         assertThat(all.total()).isEqualTo(2);
         assertThat(all.items()).allSatisfy(line -> {
             assertThat(line.orderId()).isEqualTo(settled);
@@ -842,7 +877,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         });
         assertThat(all.totals().get("orderAmount")).isEqualByComparingTo("5000");
         assertThat(all.totals().get("receivedAmount")).isEqualByComparingTo("5000");
-        var cloth=store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,List.of(101L),"PAID",null,null,null,null,List.of(1001L),from,to));
+        var cloth=store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,List.of(101L),"PAID",null,null,null,null,List.of(1001L),from,to, null));
         assertThat(cloth.total()).isEqualTo(1);
         assertThat(cloth.totals().get("quantitySum")).isEqualByComparingTo("10");
         assertThat(cloth.totals().get("orderAmount")).isEqualByComparingTo("3000");
@@ -897,7 +932,7 @@ class JdbcOrderRegisterStoreMySqlTest {
 
     private static PaymentCriteria allocationCriteria(List<Long> products, Instant before) {
         return new PaymentCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,
-                null,before,null,null,null,products, null, null);
+                null,before,null,null,null,products, null, null, null);
     }
 
     private static void allocationLine(String tenant,long orderId,int line,long product,String amount) {
@@ -941,7 +976,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new OrderCriteria(
                                 "83087", null, "台球", null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null));
+                                null, null, null, null, null, null, null, null, null, null, null));
         assertThat(orderPage.items()).extracting(view -> view.orderNo())
                 .containsExactly("SO-FUZZY-830871");
 
@@ -963,7 +998,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new LineCriteria(
                                 "83087", null, "台球", null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null));
+                                null, null, null, null, null, null, null, null, null, null, null));
         assertThat(linePage.items()).hasSize(1);
         assertThat(linePage.items().getFirst().sourceLineId()).isEqualTo("DHB-LINE-123");
         assertThat(linePage.items().getFirst().orderNo()).isEqualTo("SO-FUZZY-830871");
@@ -976,7 +1011,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new PaymentCriteria(
                                 "83087", null, "台球", null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null));
+                                null, null, null, null, null, null, null, null, null, null, null));
         assertThat(paymentPage.items()).hasSize(1);
         assertThat(paymentPage.items().getFirst().sourceRecordId()).isEqualTo("FR.20260912.001");
         assertThat(paymentPage.items().getFirst().orderNo()).isEqualTo("SO-FUZZY-830871");
@@ -994,7 +1029,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         jdbc.update("UPDATE order_sales_order SET paid_amount=60,unpaid_amount=40 WHERE tenant_id=? AND id=?", tenant, first);
         var page = store.payments(tenant, 0, 1, new PaymentCriteria(
                 null, null, null, null, null, null, null, null, null, null,
-                null, null, null, Instant.parse("2026-09-12T00:00:00Z"), Instant.parse("2026-09-13T00:00:00Z"), null, null, null, null, null, null));
+                null, null, null, Instant.parse("2026-09-12T00:00:00Z"), Instant.parse("2026-09-13T00:00:00Z"), null, null, null, null, null, null, null));
         assertThat(page.items()).hasSize(1);
         assertThat(page.totals().get("relatedOrderAmount")).isEqualByComparingTo("100");
         assertThat(page.totals().get("receivedAmount")).isEqualByComparingTo("50");
@@ -1021,7 +1056,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new OrderCriteria(
                                 null, null, null, null, null, null, null, null, null, null, null, null,
-                                null, dhbLinked, null, null, null, null, null))
+                                null, dhbLinked, null, null, null, null, null, null, null, null))
                 .items()
                 .stream()
                 .map(view -> view.orderNo())
@@ -1035,7 +1070,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         50,
                         new OrderCriteria(
                                 null, null, null, null, null, null, null, null, null, null, null, null,
-                                invoiceStatusCode, null, null, null, null, null, null))
+                                invoiceStatusCode, null, null, null, null, null, null, null, null, null))
                 .items()
                 .stream()
                 .map(view -> view.orderNo())
@@ -1281,7 +1316,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                 store.orders(
                         tenant, 0, 10,
                         new OrderCriteria(null, null, "审计客户", null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null, null, null));
+                                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null));
 
         assertThat(page.items()).hasSize(2);
         var withSource =
@@ -1324,7 +1359,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                         tenant, 0, 10,
                         new com.rigour.order.application.port.out.OrderRegisterStore.LineCriteria(
                                 null, null, null, null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null));
+                                null, null, null, null, null, null, null, null, null, null, null));
 
         assertThat(page.items()).hasSize(2);
         var source =

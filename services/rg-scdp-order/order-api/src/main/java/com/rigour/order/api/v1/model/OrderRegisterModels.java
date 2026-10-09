@@ -81,7 +81,8 @@ public final class OrderRegisterModels {
             Instant updatedTime,
             String syncedBy,
             Instant syncedAt,
-            Integer revision) {
+            Integer revision,
+            Instant paymentTime) {
         @com.fasterxml.jackson.annotation.JsonProperty("discountAmount")
         public BigDecimal discountAmount() {
             return originalAmount == null || payableAmount == null ? null : originalAmount.subtract(payableAmount);

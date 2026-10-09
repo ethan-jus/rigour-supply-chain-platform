@@ -29,6 +29,11 @@ public interface HrEmployeeDisplayClient {
     Set<Long> departmentIdsInScope(
             CallerIdentity caller, Long departmentId, Boolean includeSubDepartments);
 
+    /** 当前部门员工仅用于缺少历史部门快照的订单。 */
+    default Set<String> departmentEmployeeCodes(CallerIdentity caller, Long departmentId, Boolean includeSubDepartments) {
+        throw new UnsupportedOperationException("HR部门人员查询未配置");
+    }
+
     record EmployeeDisplay(
             String employeeCode, String employeeName, String employmentStatus, String departmentName) {
     }

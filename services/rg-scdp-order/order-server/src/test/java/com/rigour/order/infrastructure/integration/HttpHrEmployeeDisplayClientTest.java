@@ -34,4 +34,24 @@ class HttpHrEmployeeDisplayClientTest {
         assertThat(client.departmentIdsInScope(caller, 1L, false)).containsExactly(1L);
         server.verify();
     }
+    @Test
+    void readsAllDepartmentMembersWithExistingEmployeePermission() {
+        var builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        var tenant = UUID.randomUUID();
+        for (int begin : List.of(0, 200)) {
+            server.expect(requestTo("https://hr.test/api/v1/hr/employees?begin=" + begin + "&step=200&departmentId=7&includeSubDepartments=true"))
+                    .andExpect(header(RequestHeaders.TENANT_ID, tenant.toString()))
+                    .andExpect(header(RequestHeaders.PERMISSIONS, "hr:employee:read"))
+                    .andRespond(withSuccess("{\"code\":\"OK\",\"data\":{\"total\":201,\"begin\":" + begin + ",\"step\":200,\"items\":[{\"employeeCode\":\"E" + begin + "\"}]}}", MediaType.APPLICATION_JSON));
+        }
+        var properties = new ContextTrustProperties();
+        properties.setActiveKeyId("v1");
+        properties.setKeysBase64(Map.of("v1", Base64.getEncoder().encodeToString(new byte[32])));
+        var client = new HttpHrEmployeeDisplayClient(builder, new TrustedContextSigner(properties), "https://hr.test");
+        var caller = new CallerIdentity("SERVICE", UUID.randomUUID(), tenant, null, null, UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("hr:employee:read"));
+        assertThat(client.departmentEmployeeCodes(caller, 7L, true)).containsExactlyInAnyOrder("E0", "E200");
+        server.verify();
+    }
+
 }

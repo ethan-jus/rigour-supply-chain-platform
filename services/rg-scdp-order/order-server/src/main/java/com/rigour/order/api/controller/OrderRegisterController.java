@@ -60,7 +60,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             String invoiceStatusCode,
             Boolean dhbLinked,
             String dhbOrderNo,
-            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy) {
+            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo) {
         return ApiResponse.success(
                 service.orders(
                         begin,
@@ -79,7 +79,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         paymentStatusCode,
                         hasUnpaid,
                         invoiceStatusCode,
-                        dhbLinked, dhbOrderNo, hasDiscount, sortBy, sortDirection, createdBy));
+                        dhbLinked, dhbOrderNo, hasDiscount, sortBy, sortDirection, createdBy, paymentTimeFrom, paymentTimeTo));
     }
 
     @Override
@@ -287,7 +287,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             Boolean hasUnpaid,
             String invoiceStatusCode,
             String dhbOrderNo,
-            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy) {
+            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo) {
         List<OrderRegisterOrderView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -308,7 +308,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                             paymentStatusCode,
                             hasUnpaid,
                             invoiceStatusCode,
-                            null, dhbOrderNo, hasDiscount, sortBy, sortDirection, createdBy);
+                            null, dhbOrderNo, hasDiscount, sortBy, sortDirection, createdBy, paymentTimeFrom, paymentTimeTo);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
@@ -317,7 +317,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                 new String[] {
                     "订单号", "旧内部订单号", "来源系统", "来源单号", "客户编码", "客户名称",
                     "归属地区", "所属业务员", "部门", "订单状态", "收款状态", "订货金额",
-                    "订单金额", "优惠额", "优惠率", "收款金额", "待收金额", "已核金额", "下单时间", "创建人",
+                    "订单金额", "优惠额", "优惠率", "收款金额", "收款日期", "待收金额", "已核金额", "下单时间", "创建人",
                     "创建时间", "修改人", "修改时间", "同步人", "同步时间"
                 },
                 rows.stream()
@@ -342,6 +342,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                                                 r.discountAmount() == null ? "" : r.discountAmount().toPlainString(),
                                                 r.discountRate() == null ? "" : r.discountRate().movePointRight(2).setScale(2, java.math.RoundingMode.HALF_UP) + "%",
                                                 dec(r.paidAmount()),
+                                                r.paymentTime() == null ? "" : r.paymentTime().atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().toString(),
                                                 dec(r.unpaidAmount()),
                                                 dec(r.checkedAmount()),
                                                 time(r.orderDate()),
