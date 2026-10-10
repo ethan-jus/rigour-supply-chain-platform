@@ -281,7 +281,11 @@ public class OrderRegisterService {
                         text(sortBy, 32, "sortBy"),
                         text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, null, productVariantIds, departmentEmployeeCodes(actor, departmentId, includeSubDepartments));
         var result = store.payments(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
-        return withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
+        var page = withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
+        var numbers = store.voucherTransactionNos(actor.tenantId().toString(), page.items().stream().map(OrderRegisterPaymentView::id).toList());
+        return new OrderRegisterPage<>(page.total(), page.begin(), page.step(),
+                page.items().stream().map(item -> item.withVoucherTransactionNos(numbers.getOrDefault(item.id(), List.of()))).toList(),
+                page.totals(), page.coverage());
     }
 
     public com.rigour.order.api.v1.model.OrderRegisterModels.MonthlyPerformanceReport monthlyPerformance(

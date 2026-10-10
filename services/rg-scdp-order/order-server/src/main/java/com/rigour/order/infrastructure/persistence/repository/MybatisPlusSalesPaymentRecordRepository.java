@@ -55,18 +55,21 @@ public class MybatisPlusSalesPaymentRecordRepository
     private final InternalSalesRefundRecordMapper refundMapper;
     private final Clock clock;
     private final OrderDataScope scopes;
+    private final PaymentVoucherWriteGuard voucherGuard;
 
     public MybatisPlusSalesPaymentRecordRepository(
             InternalSalesPaymentRecordMapper mapper,
             InternalSalesOrderMapper orderMapper,
             InternalSalesRefundRecordMapper refundMapper,
             Clock orderClock,
-            OrderDataScope scopes) {
+            OrderDataScope scopes,
+            PaymentVoucherWriteGuard voucherGuard) {
         this.baseMapper = mapper;
         this.orderMapper = Objects.requireNonNull(orderMapper, "orderMapper");
         this.refundMapper = Objects.requireNonNull(refundMapper, "refundMapper");
         this.clock = orderClock;
         this.scopes = scopes;
+        this.voucherGuard = voucherGuard;
     }
 
     @Override
@@ -217,7 +220,7 @@ public class MybatisPlusSalesPaymentRecordRepository
                                         .set(
                                                 InternalSalesPaymentRecordEntity
                                                         ::getVoucherKeysJson,
-                                                json(command.voucherKeys()))
+                                                json(voucherGuard.retainedKeys(tenantId, id, command.voucherKeys())))
                                         .set(
                                                 InternalSalesPaymentRecordEntity::getRemark,
                                                 command.remark())

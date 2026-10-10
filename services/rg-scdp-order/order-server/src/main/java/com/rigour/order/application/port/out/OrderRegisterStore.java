@@ -31,6 +31,8 @@ public interface OrderRegisterStore {
     OrderRegisterPage<OrderRegisterPaymentView> payments(
             String tenantId, int begin, int step, PaymentCriteria criteria);
 
+    Map<Long, List<String>> voucherTransactionNos(String tenantId, List<Long> paymentIds);
+
     List<com.rigour.order.api.v1.model.OrderRegisterModels.MonthlyPerformanceRow> monthlyPerformance(
             String tenantId, Instant from, Instant to);
 

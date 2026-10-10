@@ -201,6 +201,15 @@ class OrderRegisterContractJsonTest {
         assertThat(row.get("overpaidAmount").decimalValue()).isEqualByComparingTo("20.000000");
     }
 
+    @Test
+    void paymentIdKeepsAllDigitsInBrowserJson() {
+        var payment = JSON.readValue("{\"id\":2108016692525498370}",
+                com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPaymentView.class);
+        var node = JSON.readTree(JSON.writeValueAsString(payment));
+        assertThat(node.get("id").isString()).isTrue();
+        assertThat(node.get("id").asString()).isEqualTo("2108016692525498370");
+    }
+
     private static List<String> names(JsonNode node) {
         return new ArrayList<>(node.propertyNames());
     }

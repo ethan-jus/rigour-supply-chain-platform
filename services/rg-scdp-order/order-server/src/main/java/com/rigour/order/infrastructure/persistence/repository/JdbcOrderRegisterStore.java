@@ -1142,7 +1142,12 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
         like(where, "p.payment_no", c.paymentNo());
-        like(where, "p.transaction_no", c.transactionNo());
+        if (c.transactionNo() != null && !c.transactionNo().isBlank()) {
+            String pattern = "%" + c.transactionNo().strip() + "%";
+            where.and("(p.transaction_no LIKE ? OR EXISTS (SELECT 1 FROM order_payment_voucher_transaction vt"
+                    + " WHERE vt.tenant_id=? AND vt.payment_id=p.id AND vt.transaction_no LIKE ?))",
+                    pattern, tenantId, pattern);
+        }
         eq(where, "p.payment_status_code", c.paymentStatusCode());
         ge(where, "p.payment_time", c.paymentTimeFrom());
         lt(where, "p.payment_time", c.paymentTimeTo());
@@ -1376,6 +1381,21 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                     + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' ";
 
     @Override
+    public Map<Long, List<String>> voucherTransactionNos(String tenantId, List<Long> paymentIds) {
+        if (paymentIds.isEmpty()) return Map.of();
+        var args = new ArrayList<Object>(); args.add(tenantId); args.addAll(paymentIds);
+        var result = new LinkedHashMap<Long, List<String>>();
+        jdbc.query("SELECT payment_id,transaction_no FROM order_payment_voucher_transaction"
+                + " WHERE tenant_id=? AND payment_id IN (" + String.join(",", Collections.nCopies(paymentIds.size(), "?"))
+                + ") AND transaction_no IS NOT NULL ORDER BY payment_id,voucher_key", rs -> {
+            long id = rs.getLong(1); String value = rs.getString(2);
+            var values = result.computeIfAbsent(id, k -> new ArrayList<>());
+            if (!values.contains(value)) values.add(value);
+        }, args.toArray());
+        return result;
+    }
+
+    @Override
     public OrderRegisterPaymentView checkPayment(
             String tenantId,
             long id,
@@ -1396,11 +1416,15 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         Long duplicate =
                 jdbc.queryForObject(
                         "SELECT COUNT(*) FROM order_payment_record"
-                                + " WHERE tenant_id=? AND transaction_no=? AND deleted=0 AND id<>?",
+                                + " WHERE tenant_id=? AND id<>? AND (transaction_no=? OR EXISTS"
+                                + " (SELECT 1 FROM order_payment_voucher_transaction vt WHERE vt.tenant_id=?"
+                                + " AND vt.payment_id=order_payment_record.id AND vt.transaction_no=?))",
                         Long.class,
                         tenantId,
+                        id,
                         transactionNo,
-                        id);
+                        tenantId,
+                        transactionNo);
         if (duplicate != null && duplicate > 0) {
             throw conflict("交易单号已被其他回款单使用，请核对后重试");
         }
