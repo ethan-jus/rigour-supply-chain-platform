@@ -150,8 +150,8 @@ public interface SupplyDashboardStore {
         }
     }
     record CityMonthlyGoal(String regionCode, String regionName, Integer month,
-            BigDecimal salesTarget, BigDecimal receiptTarget, BigDecimal newCustomerTarget,
-            BigDecimal repeatCustomerTarget, Integer configuredCount) {}
+            BigDecimal salesTarget, BigDecimal receiptTarget, BigDecimal contactedStoreTarget,
+            BigDecimal orderedStoreTarget, BigDecimal yangzhangguiSalesTarget, Integer configuredCount) {}
 
     /** 城市分类金额及去重订单、客户数，不含数量单位。 */
     record CityProductItem(

@@ -35,8 +35,10 @@ class SupplyDashboardTargetContractTest {
         when(scope.resolve(any(), any())).thenReturn(new BiDataScopeService.ScopedSelection(tenant.toString(), null, null, true));
         var targets = List.of(
                 target("A", "100", "50", "50", 2L, 2L),
-                target("B", "0", "80", "0", 2L, 2L),
-                target("C", "100", "100", "100", 1L, 2L));
+                target("B", "0", "80", null, 2L, 2L),
+                target("C", "100", "100", "100", 1L, 2L),
+                new TargetCompletionItem("CITY", "A", "A", "CONTACTED_STORE_COUNT", "建联门店数",
+                        new BigDecimal("100"), null, null, 2L, 2L));
         var fields = SupplyDashboardData.class.getRecordComponents();
         var constructor = SupplyDashboardData.class.getDeclaredConstructor(
                 Arrays.stream(fields).map(java.lang.reflect.RecordComponent::getType).toArray(Class<?>[]::new));
@@ -49,7 +51,10 @@ class SupplyDashboardTargetContractTest {
             assertThat(metric.metricCode()).isEqualTo("target_achievement_rate");
             assertThat(metric.value()).isEqualByComparingTo("50");
         });
-        assertThat(result.cityTargetCompletions()).hasSize(3);
+        assertThat(result.cityTargetCompletions()).hasSize(4);
+        assertThat(result.cityTargetCompletions().get(1).achievementRate()).isNull();
+        assertThat(result.cityTargetCompletions().get(3).actualValue()).isNull();
+        assertThat(result.cityTargetCompletions().get(3).achievementRate()).isNull();
         var partial = result.cityTargetCompletions().get(2);
         assertThat(partial.configuredMonthCount()).isEqualTo(1L);
         assertThat(partial.periodMonthCount()).isEqualTo(2L);
@@ -60,6 +65,6 @@ class SupplyDashboardTargetContractTest {
     private static TargetCompletionItem target(String code, String target, String actual, String rate,
             Long configured, Long period) {
         return new TargetCompletionItem("CITY", code, code, "SALES_AMOUNT", "销售额",
-                new BigDecimal(target), new BigDecimal(actual), new BigDecimal(rate), configured, period);
+                new BigDecimal(target), new BigDecimal(actual), rate == null ? null : new BigDecimal(rate), configured, period);
     }
 }

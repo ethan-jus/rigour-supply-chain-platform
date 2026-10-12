@@ -59,6 +59,47 @@ class TargetSettingsServiceTest {
     }
 
     @Test
+    void newMetricsStartAtZeroWithoutReinterpretingSavedCustomerMetrics() {
+        when(store.targets(any(), any(), any()))
+                .thenReturn(
+                        List.of(
+                                new Target(
+                                        "2026-10",
+                                        "SALES_OWNER",
+                                        "E1",
+                                        "销售",
+                                        "NEW_CUSTOMER",
+                                        new BigDecimal("200"),
+                                        1),
+                                new Target(
+                                        "2026-10",
+                                        "SALES_OWNER",
+                                        "E1",
+                                        "销售",
+                                        "REPEAT_CUSTOMER",
+                                        new BigDecimal("100"),
+                                        1)));
+        var targets = service.settings("2026-10").targets();
+        assertThat(targets).hasSize(10);
+        assertThat(targets)
+                .filteredOn(
+                        t ->
+                                Set.of(
+                                                "CONTACTED_STORE_COUNT",
+                                                "ORDERED_STORE_COUNT",
+                                                "YANGZHANGGUI_SALES_AMOUNT")
+                                        .contains(t.metric()))
+                .hasSize(6)
+                .allSatisfy(
+                        t -> {
+                            assertThat(t.value()).isZero();
+                            assertThat(t.revision()).isZero();
+                        });
+        assertThat(targets)
+                .noneMatch(t -> Set.of("NEW_CUSTOMER", "REPEAT_CUSTOMER").contains(t.metric()));
+    }
+
+    @Test
     void readDoesNotImplyWriteAndScopedSubjectsHideOverrides() {
         authorize(Set.of(TargetSettingsService.READ));
         when(store.permittedSubjects(tenant.toString(), TargetSettingsService.READ))
@@ -127,7 +168,7 @@ class TargetSettingsServiceTest {
     void rejectsFractionsNegativeMissingReasonAndDuplicateKeys() {
         for (var c :
                 List.of(
-                        change("CITY", "BJ", "NEW_CUSTOMER", "1.5"),
+                        change("CITY", "BJ", "CONTACTED_STORE_COUNT", "1.5"),
                         change("CITY", "BJ", "SALES_AMOUNT", "-1"),
                         change("CITY", "BJ", "SALES_AMOUNT", "1.001"),
                         change("CITY", "BJ", "SALES_AMOUNT", null)))
@@ -154,7 +195,7 @@ class TargetSettingsServiceTest {
     @Test
     void newRosterMembersReceiveInitialValuesWithoutDatabaseWrites() {
         var settings = service.settings("2026-10");
-        assertThat(settings.targets()).hasSize(8);
+        assertThat(settings.targets()).hasSize(10);
         assertThat(settings.targets())
                 .filteredOn(
                         t -> t.dimensionType().equals("CITY") && t.metric().equals("SALES_AMOUNT"))
@@ -185,7 +226,7 @@ class TargetSettingsServiceTest {
                                         "北京",
                                         "ACTIVE",
                                         false)));
-        assertThat(service.settings("2026-10").targets()).hasSize(12);
+        assertThat(service.settings("2026-10").targets()).hasSize(15);
         verify(store, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 
@@ -225,7 +266,7 @@ class TargetSettingsServiceTest {
                         0,
                         Set.of(),
                         Set.of("hr:targets:service-read")));
-        assertThat(service.values("2026-10", "2026-11")).hasSize(16);
+        assertThat(service.values("2026-10", "2026-11")).hasSize(20);
         assertThatThrownBy(() -> service.values("2026-11", "2026-10"))
                 .isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.values("2026-01", "2028-01"))
