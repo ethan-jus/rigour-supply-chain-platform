@@ -127,6 +127,26 @@ class AppMenuTreeTest {
     }
 
     @Test
+    void registeredDirectoryPermissionsDoNotBlockUnrelatedPageEdits() {
+        UUID group = UUID.randomUUID(), read = UUID.randomUUID(), write = UUID.randomUUID();
+        UUID page = UUID.randomUUID();
+        var registered = new Node(group, null, "MENU", UUID.randomUUID(), "薪酬配置", null,
+                10, true, "ACTIVE", false, 0, "PAYROLL.MENU", null,
+                "supply.hr.payroll-settings.menu", null, null);
+        var readButton = node(read, group, "BUTTON", false, "ACTIVE", false);
+        var writeButton = node(write, group, "BUTTON", false, "ACTIVE", false);
+        var targets = node(page, null, "PAGE", true, "ACTIVE", false);
+        assertThatCode(() -> AppMenuTree.validate(List.of(registered, readButton, writeButton, targets)))
+                .doesNotThrowAnyException();
+        assertThat(AppMenuTree.enabled(readButton, Map.of(group, registered, read, readButton))).isTrue();
+        assertThatThrownBy(() -> AppMenuTree.validate(List.of(node(read, null, "BUTTON", false, "ACTIVE", false))))
+                .hasMessageContaining("按钮必须");
+        assertThatThrownBy(() -> AppMenuTree.validate(List.of(registered, readButton,
+                node(write, read, "BUTTON", false, "ACTIVE", false))))
+                .hasMessageContaining("按钮必须");
+    }
+
+    @Test
     void preventsMovingProtectedEntryUnderHiddenAncestor() {
         UUID folder = UUID.randomUUID(), page = UUID.randomUUID();
         assertThatThrownBy(
