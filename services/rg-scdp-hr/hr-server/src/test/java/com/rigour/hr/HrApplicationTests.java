@@ -59,7 +59,7 @@ class HrApplicationTests {
             pool.setConnectionTimeout(500);
             var scopes = org.mockito.Mockito.mock(com.rigour.hr.infrastructure.persistence.repository.HrDataScope.class);
             org.mockito.Mockito.when(scopes.canReadCode(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
-            var store = new com.rigour.hr.infrastructure.persistence.repository.JdbcHrOrganizationStore(new JdbcTemplate(pool), new org.springframework.jdbc.datasource.DataSourceTransactionManager(pool), scopes, org.mockito.Mockito.mock(com.rigour.hr.application.port.out.HrAuditActorNameResolver.class));
+            var store = new com.rigour.hr.infrastructure.persistence.repository.JdbcHrOrganizationStore(new JdbcTemplate(pool), new org.springframework.jdbc.datasource.DataSourceTransactionManager(pool), scopes, org.mockito.Mockito.mock(com.rigour.hr.application.port.out.HrAuditActorNameResolver.class), org.mockito.Mockito.mock(com.rigour.hr.infrastructure.persistence.mapper.HrEmployeeMapper.class));
             var workers = java.util.concurrent.Executors.newFixedThreadPool(5);
             try {
                 var results = new java.util.ArrayList<java.util.concurrent.Future<com.rigour.hr.api.v1.model.HrEmployeeIdentityView>>();

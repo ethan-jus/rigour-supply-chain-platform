@@ -20,6 +20,10 @@ public class HrEmployeeEntity {
     public String employmentStatus;
     public String jobCategory;
     public String jobGrade;
+    public Boolean regularized;
+    public java.time.LocalDate regularizationDate;
+    public String payrollCategory;
+    public java.time.LocalDate salaryEffectiveFrom;
     public Boolean localProfileAuthoritative;
     public String primaryPositionCode;
     public String primaryPositionNameSnapshot;

@@ -746,6 +746,15 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
         eq(query, "source_system", c.sourceSystem());
         eq(query, "primary_position_code", c.positionCode());
         eq(query, "job_grade", c.jobGrade());
+        query.eq(c.regularized() != null, "regularized", c.regularized());
+        eq(query, "payroll_category", c.payrollCategory());
+        if (Boolean.TRUE.equals(c.payrollMissing())) query.and(w -> w.isNull("payroll_category").or().eq("payroll_category", "")
+                .or(sales -> sales.eq("payroll_category", "SALES").and(gap -> gap.isNull("regularized")
+                        .or().isNull("salary_effective_from").or().isNull("department_id").or().isNull("entry_date")
+                        .or(r -> r.eq("regularized", true).isNull("regularization_date"))
+                        .or().apply("NOT EXISTS (SELECT 1 FROM hr_employee_profile pp WHERE pp.tenant_id={0} "
+                                + "AND pp.employee_id=hr_employee.id AND (CASE WHEN hr_employee.regularized=1 "
+                                + "THEN TRIM(pp.regular_salary) ELSE TRIM(pp.probation_salary) END) REGEXP '^[0-9]{1,14}([.][0-9]{1,2})?$')", tenantId))));
         return query;
     }
 
@@ -802,7 +811,8 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                 bindings.stream().map(b -> b.sourceEmployeeId).distinct().toList(),
                 bindings.stream().map(b -> clean(b.sourceAccountName, 128))
                         .filter(Objects::nonNull).distinct().toList(),
-                (int) bindings.stream().filter(b -> Boolean.TRUE.equals(b.reviewRequired)).count());
+                (int) bindings.stream().filter(b -> Boolean.TRUE.equals(b.reviewRequired)).count(),
+                row.regularized, row.regularizationDate, row.payrollCategory, row.salaryEffectiveFrom);
     }
 
     private static ExternalEmployeeResolvedView resolved(

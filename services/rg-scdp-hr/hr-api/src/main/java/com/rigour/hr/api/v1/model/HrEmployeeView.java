@@ -31,5 +31,7 @@ public record HrEmployeeView(
         String updatedBy,
         Instant updatedTime, Long departmentId, String departmentLeaderName,
         String createdByName, String updatedByName, HrEmployeeProfile profile, String jobGrade,
-        java.util.List<String> dhbStaffIds, java.util.List<String> dhbAccountNames, int dhbReviewCount) {
+        java.util.List<String> dhbStaffIds, java.util.List<String> dhbAccountNames, int dhbReviewCount,
+        Boolean regularized, java.time.LocalDate regularizationDate, String payrollCategory,
+        java.time.LocalDate salaryEffectiveFrom) {
 }

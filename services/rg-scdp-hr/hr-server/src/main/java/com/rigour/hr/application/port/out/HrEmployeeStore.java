@@ -39,14 +39,22 @@ public interface HrEmployeeStore {
                                   String regionName,
                                   String cityName,
                                   String sourceSystem, Long departmentId, String positionCode, String jobGrade,
-                                  Boolean includeSubDepartments, String sortBy, String sortDirection) {
+                                  Boolean includeSubDepartments, String sortBy, String sortDirection, Boolean regularized, String payrollCategory, Boolean payrollMissing) {
+        public EmployeeSearchCriteria(String keyword, String employeeCode, String employeeName,
+                String mobile, String employmentStatus, String jobCategory, String positionName,
+                String regionName, String cityName, String sourceSystem, Long departmentId,
+                String positionCode, String jobGrade, Boolean includeSubDepartments, String sortBy, String sortDirection) {
+            this(keyword, employeeCode, employeeName, mobile, employmentStatus, jobCategory, positionName,
+                    regionName, cityName, sourceSystem, departmentId, positionCode, jobGrade,
+                    includeSubDepartments, sortBy, sortDirection, null, null, null);
+        }
         public EmployeeSearchCriteria(String keyword, String employeeCode, String employeeName,
                 String mobile, String employmentStatus, String jobCategory, String positionName,
                 String regionName, String cityName, String sourceSystem, Long departmentId,
                 String positionCode, String jobGrade, Boolean includeSubDepartments) {
             this(keyword, employeeCode, employeeName, mobile, employmentStatus, jobCategory,
                     positionName, regionName, cityName, sourceSystem, departmentId, positionCode,
-                    jobGrade, includeSubDepartments, null, null);
+                    jobGrade, includeSubDepartments, null, null, null, null, null);
         }
     }
 }

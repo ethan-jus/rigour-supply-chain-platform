@@ -72,6 +72,21 @@ public final class HrOrganizationService {
         if (!"LEFT".equals(c.employmentStatus()) && c.leaveDate() != null) throw bad("仅离职员工可填写离职日期");
         if (c.entryDate() != null && c.leaveDate() != null && c.leaveDate().isBefore(c.entryDate()))
             throw bad("离职时间不能早于入职时间");
+        if (c.payrollCategory() != null && !List.of("SALES", "HEADQUARTERS").contains(c.payrollCategory()))
+            throw bad("薪酬类别无效");
+        if (c.regularizationDate() != null) {
+            if (!Boolean.TRUE.equals(c.regularized())) throw bad("仅已转正员工可填写转正日期");
+            if (c.entryDate() != null && c.regularizationDate().isBefore(c.entryDate().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate()))
+                throw bad("转正日期不能早于入职日期");
+            if (c.regularizationDate().isAfter(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))))
+                throw bad("实际转正日期不能晚于今天");
+        }
+        if (Boolean.TRUE.equals(c.regularized()) && c.regularizationDate() == null)
+            throw bad("请填写实际转正日期");
+        if ("SALES".equals(c.payrollCategory()) && c.profile() != null) {
+            validateSalesSalary(c.profile().regularSalary());
+            validateSalesSalary(c.profile().probationSalary());
+        }
         if (id != null) {
             var old =
                     employees
@@ -91,7 +106,8 @@ public final class HrOrganizationService {
                         c.entryDate(),
                         c.leaveDate(),
                         text(c.remark(), 500),
-                        c.revision(), normalizeProfile(c.profile()), text(c.jobGrade(), 32));
+                        c.revision(), normalizeProfile(c.profile()), text(c.jobGrade(), 32),
+                        c.regularized(), c.regularizationDate(), c.payrollCategory(), c.salaryEffectiveFrom());
         long result =
                 store.saveEmployee(
                         actor.tenantId().toString(),
@@ -142,6 +158,11 @@ public final class HrOrganizationService {
                                         actor.tenantId().toString(), required(code, 50, "员工编码")))
                 .flatMap(java.util.Optional::stream)
                 .toList();
+    }
+
+    private static void validateSalesSalary(String value) {
+        if (value != null && !value.isBlank() && !value.trim().matches("\\d{1,14}(\\.\\d{1,2})?"))
+            throw bad("销售薪资档案仅填写底薪金额，最多两位小数；绩效、提成和补贴在薪酬配置维护");
     }
 
     private static HrEmployeeProfile normalizeProfile(HrEmployeeProfile p) {

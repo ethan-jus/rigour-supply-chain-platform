@@ -12,6 +12,8 @@ public final class AppScopeRules {
 
     public static String objectType(String action) {
         if (action == null) return null;
+        if (action.startsWith("order:logistics-cost:")) return "INVENTORY";
+        if (action.startsWith("erp:cost:marketing:")) return "EMPLOYEE";
         return action.startsWith("crm:")
                 ? "CUSTOMER"
                 : action.startsWith("hr:")

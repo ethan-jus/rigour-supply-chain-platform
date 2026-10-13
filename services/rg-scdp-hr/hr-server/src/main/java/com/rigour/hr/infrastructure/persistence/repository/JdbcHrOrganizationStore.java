@@ -21,6 +21,7 @@ import java.util.*;
 @Repository
 public class JdbcHrOrganizationStore implements HrOrganizationStore {
     private final JdbcTemplate jdbc;
+    private final com.rigour.hr.infrastructure.persistence.mapper.HrEmployeeMapper employeeMapper;
     private final TransactionTemplate tx;
     private final HrDataScope scopes;
     private final com.rigour.hr.application.port.out.HrAuditActorNameResolver actorNames;
@@ -28,7 +29,9 @@ public class JdbcHrOrganizationStore implements HrOrganizationStore {
 
     public JdbcHrOrganizationStore(
             JdbcTemplate jdbc, PlatformTransactionManager manager, HrDataScope scopes,
-            com.rigour.hr.application.port.out.HrAuditActorNameResolver actorNames) {
+            com.rigour.hr.application.port.out.HrAuditActorNameResolver actorNames,
+            com.rigour.hr.infrastructure.persistence.mapper.HrEmployeeMapper employeeMapper) {
+        this.employeeMapper = employeeMapper;
         this.actorNames = actorNames;
         this.scopes = scopes;
         this.jdbc = jdbc;
@@ -438,6 +441,13 @@ UPDATE hr_employee SET access_version=access_version+CASE WHEN employment_status
                                                 c.revision());
                                 if (changed != 1) throw new IllegalStateException("员工已修改，请刷新");
                             }
+                            employeeMapper.update(null,
+                                    new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<com.rigour.hr.infrastructure.persistence.entity.HrEmployeeEntity>()
+                                            .eq("tenant_id", tenant).eq("id", target).eq("deleted", 0)
+                                            .set("regularized", c.regularized())
+                                            .set("regularization_date", c.regularizationDate())
+                                            .set("payroll_category", c.payrollCategory())
+                                            .set("salary_effective_from", c.salaryEffectiveFrom()));
                             String jobGrade = c.jobGrade();
                             if ((jobGrade == null || jobGrade.isBlank()) && "业务员".equals(positionNames.getFirst())) jobGrade = "S1";
                             jdbc.update("UPDATE hr_employee SET job_grade=?, updated_by_name=?, created_by_name=CASE WHEN ? THEN ? ELSE created_by_name END WHERE tenant_id=? AND id=?",

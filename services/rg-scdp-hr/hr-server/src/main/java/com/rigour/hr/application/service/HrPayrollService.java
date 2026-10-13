@@ -1,0 +1,865 @@
+package com.rigour.hr.application.service;
+
+import com.rigour.hr.api.v1.model.HrPageView;
+import com.rigour.hr.api.v1.model.PayrollActionCommand;
+import com.rigour.hr.api.v1.model.PayrollAuditView;
+import com.rigour.hr.api.v1.model.PayrollCalculateCommand;
+import com.rigour.hr.api.v1.model.PayrollCalculationView;
+import com.rigour.hr.api.v1.model.PayrollCollectionEvidenceView;
+import com.rigour.hr.api.v1.model.PayrollCommissionDetailView;
+import com.rigour.hr.api.v1.model.PayrollCommissionPolicyView;
+import com.rigour.hr.api.v1.model.PayrollDepartmentView;
+import com.rigour.hr.api.v1.model.PayrollDetailView;
+import com.rigour.hr.api.v1.model.PayrollEmployeeView;
+import com.rigour.hr.api.v1.model.PayrollInputCommand;
+import com.rigour.hr.api.v1.model.PayrollPerformanceDayView;
+import com.rigour.hr.api.v1.model.PayrollPerformanceResultView;
+import com.rigour.hr.api.v1.model.PayrollProductView;
+import com.rigour.hr.api.v1.model.PayrollQuery;
+import com.rigour.hr.api.v1.model.PayrollRuleCommand;
+import com.rigour.hr.api.v1.model.PayrollRuleView;
+import com.rigour.hr.application.port.out.HrPayrollSource;
+import com.rigour.hr.application.port.out.HrPayrollStore;
+import com.rigour.hr.domain.payroll.PayrollCalculator;
+import com.rigour.hr.domain.payroll.SalesPerformanceCalculator;
+import com.rigour.order.api.v1.model.OrderCollectionSourceView;
+import com.rigour.order.api.v1.model.OrderCommissionSourceLineView;
+import com.rigour.sales.api.v1.model.SalesPayrollEvidenceView;
+import com.rigour.shared.context.AuthorizationContext;
+import com.rigour.shared.context.AuthorizationDeniedException;
+import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import tools.jackson.databind.ObjectMapper;
+
+import java.math.BigDecimal;
+import java.security.MessageDigest;
+import java.time.LocalDate;
+import java.time.YearMonth;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
+
+@Service
+public class HrPayrollService {
+    private final HrPayrollStore store;
+    private final HrPayrollSource source;
+    private final ObjectMapper json;
+
+    public HrPayrollService(HrPayrollStore store, HrPayrollSource source, ObjectMapper json) {
+        this.store = store;
+        this.source = source;
+        this.json = json;
+    }
+
+    static CallerIdentity actor(String permission) {
+        var a = AuthorizationContext.requireCurrent();
+        if (a.tenantId() == null) throw new AuthorizationDeniedException(permission);
+        AuthorizationContext.requirePermission(permission);
+        return a;
+    }
+
+    public List<PayrollCommissionPolicyView> policies() {
+        actor("hr:payroll-rule:read");
+        return store.policies();
+    }
+
+    public List<PayrollProductView> products(String keyword) {
+        var a = actor("hr:payroll-rule:read");
+        return source.products(a.tenantId().toString(), keyword, null).stream()
+                .map(
+                        p ->
+                                new PayrollProductView(
+                                        p.productId(),
+                                        p.productVariantId(),
+                                        p.productCode(),
+                                        p.variantCode(),
+                                        p.productName(),
+                                        p.specification(),
+                                        p.unitCode()))
+                .toList();
+    }
+
+    public List<PayrollDepartmentView> departments() {
+        var a = actor("hr:payroll-rule:read");
+        return store.departments(a.tenantId().toString(), "hr:payroll-rule:read");
+    }
+
+    public List<PayrollDepartmentView> payrollDepartments() {
+        var a = actor("hr:payroll:read");
+        return store.departments(a.tenantId().toString(), "hr:payroll:read");
+    }
+
+    public List<PayrollEmployeeView> ruleEmployees() {
+        var a = actor("hr:payroll-rule:read");
+        return store.employees(a.tenantId().toString(), "hr:payroll-rule:read");
+    }
+
+    public List<PayrollEmployeeView> employees() {
+        var a = actor("hr:payroll:read");
+        return store.employees(a.tenantId().toString(), "hr:payroll:read");
+    }
+
+    public HrPageView<PayrollRuleView> rules(int begin, int step, String kind, String keyword) {
+        var a = actor("hr:payroll-rule:read");
+        String t = a.tenantId().toString();
+        kind(kind);
+        var rows =
+                store.rules(t).stream()
+                        .filter(
+                                r ->
+                                        r.data().kindCode().equals(kind)
+                                                && r.data()
+                                                        .name()
+                                                        .contains(keyword == null ? "" : keyword))
+                        .filter(
+                                r -> {
+                                    try {
+                                        store.requireRuleScope(t, r.data(), "hr:payroll-rule:read");
+                                        return true;
+                                    } catch (AuthorizationDeniedException | BusinessException e) {
+                                        return false;
+                                    }
+                                })
+                        .toList();
+        int offset = Math.min(Math.max(0, begin), rows.size()),
+                size = step <= 0 ? 20 : Math.min(200, step);
+        return new HrPageView<>(
+                rows.size(),
+                offset,
+                size,
+                rows.subList(offset, Math.min(offset + size, rows.size())));
+    }
+
+    @Transactional
+    public PayrollRuleView saveRule(String id, PayrollRuleCommand c) {
+        var a = actor("hr:payroll-rule:write");
+        String t = a.tenantId().toString();
+        if (c == null) throw bad("请填写薪酬规则");
+        kind(c.kindCode());
+        if ("BASE".equals(c.kindCode())) throw bad("底薪统一在员工档案维护，不再单独设置薪资标准");
+        required(c.name(), 120, "规则名称");
+        text(c.remark(), 500, "备注");
+        if (c.effectiveFrom() == null
+                || c.effectiveTo() == null
+                || c.effectiveTo().isBefore(c.effectiveFrom())) throw bad("生效日期范围无效");
+        if (id == null) request(c.requestId());
+        else revision(c.revision());
+        if (c.departmentIds() == null
+                || c.departmentIds().size() > 100
+                || c.departmentIds().stream().anyMatch(Objects::isNull)
+                || c.departmentIds().stream().distinct().count() != c.departmentIds().size())
+            throw bad("适用部门无效");
+        if ("BASE".equals(c.kindCode())) {
+            required(c.employeeCode(), 50, "员工");
+            if (!c.departmentIds().isEmpty()) throw bad("底薪标准按员工配置");
+        } else if (!"CITY_MANAGER".equals(c.kindCode()) && c.departmentIds().isEmpty())
+            throw bad("请选择适用部门");
+        if ("CITY_MANAGER".equals(c.kindCode())) {
+            required(c.employeeCode(), 50, "城市总员工");
+            required(c.cityCode(), 64, "所辖城市编码");
+            required(c.cityName(), 120, "所辖城市");
+            if (c.includeOwnSalesCommission() == null) throw bad("请明确本人销售是否同时计销售提成");
+            if (!c.departmentIds().isEmpty()) throw bad("城市总按整座城市管辖，不按部门限定");
+        }
+        if ("COMMISSION".equals(c.kindCode())) {
+            if (!Set.of("SALES", "CITY_MANAGER")
+                    .contains(c.recipientRoleCode() == null ? "" : c.recipientRoleCode()))
+                throw bad("请选择提成受益角色");
+            required(c.groupCode(), 50, "提成商品组");
+            if (!source.dictionary(t, "COMMISSION_PRODUCT_GROUP").contains(c.groupCode()))
+                throw bad("请选择启用的提成商品组");
+            if (c.productId() == null || c.productVariantId() == null) throw bad("请选择商品规格");
+            required(c.unitCode(), 64, "计奖单位");
+            if (!Set.of("QUANTITY", "PERCENT")
+                    .contains(c.methodCode() == null ? "" : c.methodCode())) throw bad("未知提成方式");
+            money(c.rate(), true);
+            if ("PERCENT".equals(c.methodCode()) && c.rate().compareTo(new BigDecimal("100")) > 0)
+                throw bad("比例不能超过100%");
+            source.requireProduct(t, c.productId(), c.productVariantId(), c.unitCode());
+        } else if (!"CITY_MANAGER".equals(c.kindCode()))
+            money(
+                    c.amount(),
+                    !("PERFORMANCE".equals(c.kindCode())
+                            && c.performancePolicy() != null
+                            && "SALES_KPI".equals(c.performancePolicy().mode())));
+        if ("PERFORMANCE".equals(c.kindCode()) && c.performancePolicy() != null) {
+            var policy = c.performancePolicy();
+            if (java.util.stream.Stream.of(
+                            policy.vehicleAllowance(),
+                            policy.phoneAllowance(),
+                            policy.computerAllowance())
+                    .anyMatch(value -> value != null && value.signum() != 0))
+                throw bad("固定补贴请在其他薪资设置维护，不能保存在绩效规则中");
+            if (!Set.of("FIXED", "SALES_KPI").contains(policy.mode() == null ? "" : policy.mode()))
+                throw bad("未知绩效模式");
+            if ("SALES_KPI".equals(policy.mode())) {
+                money(policy.bronzeBase(), false);
+                if (!Set.of("EXEMPT_ALL", "EXEMPT_COLLECTION")
+                        .contains(policy.firstMonthMode() == null ? "" : policy.firstMonthMode()))
+                    throw bad("请配置首月免考核口径");
+                if (policy.processPercent() == null
+                        || policy.processPercent() < 0
+                        || policy.processPercent() > 100
+                        || policy.dailyCheckins() == null
+                        || policy.dailyCheckins() < 0
+                        || policy.dailyCheckins() > 100
+                        || policy.dailyVisits() == null
+                        || policy.dailyVisits() < 0
+                        || policy.dailyVisits() > 100
+                        || policy.minimumSeconds() == null
+                        || policy.minimumSeconds() < 1
+                        || policy.minimumSeconds() > 86400) throw bad("过程考核指标无效");
+                money(policy.checkinPenalty(), true);
+                money(policy.visitPenalty(), true);
+                money(policy.secondMonthTarget(), true);
+                money(policy.laterMonthTarget(), true);
+                if (policy.secondMonthTarget().signum() == 0
+                        || policy.laterMonthTarget().signum() == 0) throw bad("回款指标必须大于0");
+            }
+        }
+        if ("ALLOWANCE".equals(c.kindCode())) {
+            required(c.allowanceTypeCode(), 64, "薪资类型");
+            if (!source.dictionary(t, "PAYROLL_ALLOWANCE_TYPE").contains(c.allowanceTypeCode()))
+                throw bad("请选择启用的薪资类型");
+            if ("FIXED_ALLOWANCE".equals(c.allowanceTypeCode())) {
+                var fixed = c.fixedAllowance();
+                if (fixed == null) throw bad("请填写销售固定补贴明细");
+                money(fixed.vehicleAllowance(), true);
+                money(fixed.phoneAllowance(), true);
+                money(fixed.computerAllowance(), true);
+                var total =
+                        fixed.vehicleAllowance()
+                                .add(fixed.phoneAllowance())
+                                .add(fixed.computerAllowance());
+                if (total.compareTo(c.amount()) != 0) throw bad("固定补贴合计应等于交通、话费、电脑补贴之和");
+            } else if (c.fixedAllowance() != null) throw bad("仅固定补贴类型可填写固定补贴明细");
+        }
+        store.requireRuleScope(t, c, "hr:payroll-rule:write");
+        if ("CITY_MANAGER".equals(c.kindCode())
+                && !"SALES"
+                        .equals(
+                                store.employee(t, c.employeeCode(), "hr:payroll-rule:write")
+                                        .payrollCategory())) throw bad("城市总员工应在员工档案中设置为销售薪酬类别");
+        store.lock(t);
+        for (var old : store.rules(t)) {
+            var r = old.data();
+            if (id == null && Objects.equals(c.requestId(), r.requestId()))
+                return store.saveRule(t, null, c, a.principalId().toString());
+            if (old.id().equals(id)
+                    || !r.enabled()
+                    || !c.enabled()
+                    || !r.kindCode().equals(c.kindCode())
+                    || r.effectiveTo().isBefore(c.effectiveFrom())
+                    || r.effectiveFrom().isAfter(c.effectiveTo())) continue;
+            boolean same =
+                    "BASE".equals(c.kindCode())
+                            ? Objects.equals(c.employeeCode(), r.employeeCode())
+                            : c.departmentIds().stream().anyMatch(r.departmentIds()::contains);
+            if ("CITY_MANAGER".equals(c.kindCode()))
+                same = Objects.equals(c.cityCode(), r.cityCode());
+            if ("COMMISSION".equals(c.kindCode()))
+                same &=
+                        Objects.equals(c.recipientRoleCode(), r.recipientRoleCode())
+                                && Objects.equals(c.productId(), r.productId())
+                                && Objects.equals(c.productVariantId(), r.productVariantId());
+            if ("ALLOWANCE".equals(c.kindCode()))
+                same &=
+                        "FIXED_ALLOWANCE".equals(c.allowanceTypeCode())
+                                ? "FIXED_ALLOWANCE".equals(r.allowanceTypeCode())
+                                : Objects.equals(c.allowanceTypeCode(), r.allowanceTypeCode())
+                                        && c.name().equals(r.name());
+            if (same) throw bad("同一适用对象的启用规则存在重叠，请调整生效期间或停用旧规则");
+        }
+        return store.saveRule(t, id, c, a.principalId().toString());
+    }
+
+    public HrPageView<PayrollDetailView> payroll(PayrollQuery q) {
+        var a = actor("hr:payroll:read");
+        if (q.month() != null && !q.month().isBlank()) month(q.month());
+        return store.payroll(a.tenantId().toString(), q, "hr:payroll:read");
+    }
+
+    public PayrollDetailView detail(String id) {
+        var a = actor("hr:payroll:read");
+        return store.detail(a.tenantId().toString(), id, "hr:payroll:read");
+    }
+
+    public List<PayrollAuditView> history(String id) {
+        var p = detail(id);
+        return store.history(AuthorizationContext.requireCurrent().tenantId().toString(), p.id());
+    }
+
+    public PayrollInputCommand input(String month, String employee) {
+        var a = actor("hr:payroll:read");
+        month(month);
+        String t = a.tenantId().toString();
+        store.employee(t, employee, "hr:payroll:read");
+        return store.input(t, employee, month);
+    }
+
+    @Transactional
+    public PayrollInputCommand saveInput(String month, String employee, PayrollInputCommand c) {
+        var a = actor("hr:payroll:calculate");
+        month(month);
+        if (c == null || c.revision() == null || c.revision() < 0) throw bad("缺少月度输入版本");
+        money(c.baseOverride(), false);
+        money(c.performanceOverride(), false);
+        money(c.allowanceOverride(), false);
+        money(c.deduction(), true);
+        required(c.reason(), 500, "调整原因");
+        String t = a.tenantId().toString();
+        store.employee(t, employee, "hr:payroll:calculate");
+        if (c.departmentOverrideId() != null
+                && store.departments(t, "hr:payroll:calculate").stream()
+                        .noneMatch(d -> d.id().equals(c.departmentOverrideId())))
+            throw bad("核定部门不存在、已停用或无权限");
+        return store.saveInput(t, employee, month, c, a.principalId().toString());
+    }
+
+    @Transactional
+    public List<PayrollDetailView> calculate(PayrollCalculateCommand c) {
+        var a = actor("hr:payroll:calculate");
+        if (c == null) throw bad("缺少核算参数");
+        var m = month(c.month());
+        if (c.employeeCodes() == null
+                || c.employeeCodes().isEmpty()
+                || c.employeeCodes().size() > 100
+                || c.employeeCodes().stream().anyMatch(Objects::isNull))
+            throw bad("每次请选择1至100名员工核算");
+        String t = a.tenantId().toString();
+        store.lock(t);
+        List<PayrollDetailView> result = new ArrayList<>();
+        for (var code : new LinkedHashSet<>(c.employeeCodes())) {
+            var e = store.employee(t, code, "hr:payroll:calculate");
+            if (store.byMonth(t, code, c.month())
+                    .map(p -> Set.of("CONFIRMED", "PAID").contains(p.statusCode()))
+                    .orElse(false)) continue;
+            var value = calculation(t, e, m);
+            result.add(
+                    store.saveCalculation(
+                            t, code, c.month(), e, value, a.principalId().toString()));
+        }
+        return List.copyOf(result);
+    }
+
+    PayrollCalculationView calculation(String t, PayrollEmployeeView e, YearMonth m) {
+        if (!"SALES".equals(e.payrollCategory()))
+            throw bad(e.employeeName() + "：当前核算仅适用于销售，请先在员工档案明确薪酬类别；总部薪资暂不自动核算");
+        var salarySource = store.salarySource(t, e.employeeCode());
+        var salaryIssues = new ArrayList<String>();
+        var input = store.input(t, e.employeeCode(), m.toString());
+        Long payrollDepartment =
+                input.departmentOverrideId() == null
+                        ? e.departmentId()
+                        : input.departmentOverrideId();
+        var corrections = store.corrections(t, e.employeeCode(), m.toString());
+        boolean correctionOutsideEmployment =
+                !corrections.isEmpty()
+                        && (e.entryDate() != null && e.entryDate().isAfter(m.atEndOfMonth())
+                                || e.leaveDate() != null && e.leaveDate().isBefore(m.atDay(1)));
+        if (correctionOutsideEmployment
+                && (input.baseOverride() == null
+                        || input.performanceOverride() == null
+                        || input.allowanceOverride() == null))
+            salaryIssues.add("非在职月份有补差，请人工核定当月底薪、绩效、补贴；无收入项填写0");
+        BigDecimal baseSalary = input.baseOverride();
+        if (baseSalary == null) {
+            if (salarySource == null) salaryIssues.add("员工薪资档案缺失，请完善后重新核算");
+            else
+                baseSalary =
+                        com.rigour.hr.domain.payroll.EmployeeSalaryResolver.resolve(
+                                m,
+                                salarySource.regularized(),
+                                salarySource.regularizationDate(),
+                                salarySource.effectiveFrom(),
+                                salarySource.regularSalary(),
+                                salarySource.probationSalary(),
+                                salaryIssues);
+            if (e.entryDate() == null
+                    || e.entryDate().isAfter(m.atDay(1))
+                    || e.leaveDate() != null && e.leaveDate().isBefore(m.atEndOfMonth())) {
+                salaryIssues.add("入离职期间需核对当月底薪，请填写月度调整及原因");
+                baseSalary = null;
+            }
+        }
+        var allRules =
+                store.rules(t).stream().filter(r -> !"BASE".equals(r.data().kindCode())).toList();
+        var managerAssignments =
+                allRules.stream()
+                        .filter(
+                                r ->
+                                        r.data().enabled()
+                                                && "CITY_MANAGER".equals(r.data().kindCode())
+                                                && e.employeeCode().equals(r.data().employeeCode()))
+                        .toList();
+        var orderFacts = new LinkedHashMap<String, OrderCommissionSourceLineView>();
+        source.commissions(t, e.employeeCode(), null, m.atEndOfMonth())
+                .forEach(f -> orderFacts.put(f.lineId(), f));
+        for (String city :
+                managerAssignments.stream().map(r -> r.data().cityCode()).distinct().toList())
+            source.commissions(t, null, city, m.atEndOfMonth())
+                    .forEach(f -> orderFacts.put(f.lineId(), f));
+        List<PayrollCalculator.Fact> domainFacts = new ArrayList<>();
+        var sourceIssues = new ArrayList<String>(salaryIssues);
+        var departmentCache = new HashMap<String, Long>();
+        var monthlyInputs = new HashMap<String, PayrollInputCommand>();
+        monthlyInputs.put(e.employeeCode() + "|" + m, input);
+        for (var f : orderFacts.values()) {
+            var managers =
+                    managerAssignments.stream()
+                            .filter(
+                                    r ->
+                                            Objects.equals(r.data().cityCode(), f.cityCode())
+                                                    && !f.orderDate()
+                                                            .isBefore(r.data().effectiveFrom())
+                                                    && !f.orderDate()
+                                                            .isAfter(r.data().effectiveTo()))
+                            .toList();
+            boolean own = e.employeeCode().equals(f.employeeCode());
+            if (!own && managers.isEmpty()) continue;
+            Long department =
+                    f.employeeCode() == null
+                            ? null
+                            : departmentCache.computeIfAbsent(
+                                    f.employeeCode() + "|" + f.orderDate(),
+                                    key -> {
+                                        // 城市总沿用订单所属销售、订单发生月份的核定，不能套用城市总本人的部门。
+                                        var orderMonth = YearMonth.from(f.orderDate()).toString();
+                                        var monthlyInput =
+                                                monthlyInputs.computeIfAbsent(
+                                                        f.employeeCode() + "|" + orderMonth,
+                                                        ignored ->
+                                                                store.input(
+                                                                        t,
+                                                                        f.employeeCode(),
+                                                                        orderMonth));
+                                        return monthlyInput != null
+                                                        && monthlyInput.departmentOverrideId()
+                                                                != null
+                                                ? monthlyInput.departmentOverrideId()
+                                                : store.departmentAt(
+                                                        t, f.employeeCode(), f.orderDate());
+                                    });
+            if (!managers.isEmpty() && f.employeeCode() == null)
+                sourceIssues.add(f.orderNo() + "：城市销售订单尚未关联员工，请先完成销售归属关联");
+            List<String> roles = new ArrayList<>();
+            if (own
+                    && (managers.isEmpty()
+                            || managers.stream()
+                                    .allMatch(
+                                            r ->
+                                                    Boolean.TRUE.equals(
+                                                            r.data().includeOwnSalesCommission()))))
+                roles.add("SALES");
+            if (!managers.isEmpty()) roles.add("CITY_MANAGER");
+            for (String role : roles)
+                domainFacts.add(
+                        new PayrollCalculator.Fact(
+                                f.lineId(),
+                                role,
+                                f.orderNo(),
+                                f.productName(),
+                                f.productId(),
+                                f.productVariantId(),
+                                f.unitCode(),
+                                f.orderDate(),
+                                department,
+                                f.quantity(),
+                                f.lineAmount(),
+                                f.orderLineTotal(),
+                                f.orderAmount(),
+                                f.paidAmount(),
+                                f.paymentDate(),
+                                f.refundExists(),
+                                f.qualityStatus()));
+        }
+        domainFacts.sort(
+                Comparator.comparing(PayrollCalculator.Fact::id)
+                        .thenComparing(PayrollCalculator.Fact::recipientRole));
+        var eligibleDepartments = new HashSet<Long>();
+        domainFacts.forEach(f -> eligibleDepartments.add(f.departmentId()));
+        eligibleDepartments.add(payrollDepartment);
+        var rules =
+                allRules.stream()
+                        .filter(
+                                r ->
+                                        Set.of("BASE", "CITY_MANAGER").contains(r.data().kindCode())
+                                                ? e.employeeCode().equals(r.data().employeeCode())
+                                                : ("COMMISSION".equals(r.data().kindCode())
+                                                        || r.data().departmentIds().stream()
+                                                                .anyMatch(
+                                                                        eligibleDepartments
+                                                                                ::contains)))
+                        .toList();
+        var domainRules =
+                rules.stream()
+                        .map(
+                                r -> {
+                                    var d = r.data();
+                                    return new PayrollCalculator.Rule(
+                                            r.id(),
+                                            r.revision(),
+                                            d.name(),
+                                            d.kindCode(),
+                                            d.employeeCode(),
+                                            d.departmentIds(),
+                                            d.productId(),
+                                            d.productVariantId(),
+                                            d.unitCode(),
+                                            d.recipientRoleCode(),
+                                            d.methodCode(),
+                                            d.rate(),
+                                            d.amount(),
+                                            d.effectiveFrom(),
+                                            d.effectiveTo(),
+                                            d.enabled());
+                                })
+                        .toList();
+        PayrollPerformanceResultView performanceDetail = null;
+        BigDecimal performanceOverride = input.performanceOverride();
+        var performanceRules =
+                rules.stream()
+                        .filter(
+                                x ->
+                                        x.data().enabled()
+                                                && "PERFORMANCE".equals(x.data().kindCode())
+                                                && x.data()
+                                                        .departmentIds()
+                                                        .contains(payrollDepartment)
+                                                && !x.data().effectiveFrom().isAfter(m.atDay(1))
+                                                && !x.data()
+                                                        .effectiveTo()
+                                                        .isBefore(m.atEndOfMonth()))
+                        .toList();
+        List<Object> performanceSources = new ArrayList<>();
+        if (performanceRules.size() == 1) {
+            var pr = performanceRules.getFirst().data();
+            var p = pr.performancePolicy();
+            if (p != null && "SALES_KPI".equals(p.mode())) {
+                if (performanceOverride == null) {
+                    if (!m.atEndOfMonth().isBefore(LocalDate.now(ZoneId.of("Asia/Shanghai"))))
+                        sourceIssues.add("自然月尚未结束，当前绩效仅供核对，月末结束后可确认");
+                    boolean exempt =
+                            e.entryDate() != null
+                                    && YearMonth.from(e.entryDate()).equals(m)
+                                    && "EXEMPT_ALL".equals(p.firstMonthMode());
+                    var evidence =
+                            exempt
+                                    ? new SalesPayrollEvidenceView(false, List.of())
+                                    : source.performanceEvidence(
+                                            t, e.employeeCode(), m.atDay(1), m.atEndOfMonth());
+                    var collections =
+                            exempt
+                                    ? List.<OrderCollectionSourceView>of()
+                                    : source.collections(
+                                            t, e.employeeCode(), m.atDay(1), m.atEndOfMonth());
+                    performanceSources.add(evidence);
+                    performanceSources.add(collections);
+                    var policy =
+                            new SalesPerformanceCalculator.Policy(
+                                    pr.amount(),
+                                    p.bronzeBase(),
+                                    p.firstMonthMode(),
+                                    p.processPercent(),
+                                    p.dailyCheckins(),
+                                    p.checkinPenalty(),
+                                    p.dailyVisits(),
+                                    p.minimumSeconds(),
+                                    p.visitPenalty(),
+                                    p.secondMonthTarget(),
+                                    p.laterMonthTarget());
+                    var perf =
+                            SalesPerformanceCalculator.calculate(
+                                    policy,
+                                    m,
+                                    e.entryDate(),
+                                    e.leaveDate(),
+                                    evidence.employeeLinked(),
+                                    evidence.visits().stream()
+                                            .map(
+                                                    v ->
+                                                            new SalesPerformanceCalculator.Visit(
+                                                                    v.sourceId(),
+                                                                    v.date(),
+                                                                    v.customerKey(),
+                                                                    v.reviewStatus(),
+                                                                    v.verifiedCommunicationMillis(),
+                                                                    v.durationComplete()))
+                                            .toList(),
+                                    collections.stream()
+                                            .map(OrderCollectionSourceView::amount)
+                                            .reduce(BigDecimal.ZERO, BigDecimal::add));
+                    performanceOverride = perf.total();
+                    sourceIssues.addAll(perf.issues());
+                    performanceDetail =
+                            new PayrollPerformanceResultView(
+                                    perf.processBudget(),
+                                    perf.processDeduction(),
+                                    perf.processPay(),
+                                    perf.collectionBudget(),
+                                    perf.collectionTarget(),
+                                    perf.collections(),
+                                    perf.collectionPay(),
+                                    perf.total(),
+                                    perf.days().stream()
+                                            .map(
+                                                    d ->
+                                                            new PayrollPerformanceDayView(
+                                                                    d.date(),
+                                                                    d.checkins(),
+                                                                    d.effectiveVisits(),
+                                                                    d.missingCheckins(),
+                                                                    d.missingVisits(),
+                                                                    d.deduction(),
+                                                                    d.evidenceComplete()))
+                                            .toList(),
+                                    collections.stream()
+                                            .map(
+                                                    c ->
+                                                            new PayrollCollectionEvidenceView(
+                                                                    c.sourceId(),
+                                                                    c.orderNo(),
+                                                                    c.date(),
+                                                                    c.amount(),
+                                                                    c.kind()))
+                                            .toList(),
+                                    perf.issues());
+                }
+            }
+        }
+        var claimed = store.released(t);
+        var r =
+                PayrollCalculator.calculate(
+                        e.employeeCode(),
+                        payrollDepartment,
+                        m,
+                        e.entryDate(),
+                        e.leaveDate(),
+                        domainRules,
+                        new PayrollCalculator.Input(
+                                baseSalary,
+                                performanceOverride,
+                                input.deduction(),
+                                input.allowanceOverride()),
+                        domainFacts,
+                        claimed);
+        var issues = new ArrayList<>(r.issues());
+        issues.remove("扣款超过应发金额，请核对");
+        issues.addAll(sourceIssues);
+        Long
+                firstDepartment =
+                        store.departmentAt(
+                                t,
+                                e.employeeCode(),
+                                e.entryDate() != null && e.entryDate().isAfter(m.atDay(1))
+                                        ? e.entryDate()
+                                        : m.atDay(1)),
+                lastDepartment =
+                        store.departmentAt(
+                                t,
+                                e.employeeCode(),
+                                e.leaveDate() != null && e.leaveDate().isBefore(m.atEndOfMonth())
+                                        ? e.leaveDate()
+                                        : m.atEndOfMonth());
+        if (!correctionOutsideEmployment
+                && input.departmentOverrideId() == null
+                && (e.departmentId() == null
+                        || firstDepartment == null
+                        || !Objects.equals(firstDepartment, lastDepartment)
+                        || !Objects.equals(lastDepartment, e.departmentId())))
+            issues.add("当月任职部门资料缺失或发生调动，请核对期间归属");
+        var details =
+                r.details().stream()
+                        .map(
+                                d ->
+                                        new PayrollCommissionDetailView(
+                                                d.lineId(),
+                                                d.recipientRole(),
+                                                d.orderNo(),
+                                                d.productName(),
+                                                d.unit(),
+                                                d.quantity(),
+                                                d.ruleId(),
+                                                d.ruleName(),
+                                                d.ruleRevision(),
+                                                d.accrued(),
+                                                d.released(),
+                                                d.message()))
+                        .toList();
+        BigDecimal correctionAmount =
+                corrections.stream()
+                        .map(com.rigour.hr.api.v1.model.PayrollCorrectionView::amount)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+        String fingerprint =
+                hash(
+                        List.of(
+                                e,
+                                salarySource == null ? "NO_SALARY_PROFILE" : salarySource,
+                                rules,
+                                input,
+                                domainFacts,
+                                performanceSources,
+                                corrections,
+                                claimed.stream()
+                                        .filter(
+                                                id ->
+                                                        domainFacts.stream()
+                                                                .anyMatch(
+                                                                        f ->
+                                                                                (f.id()
+                                                                                                + "|"
+                                                                                                + f
+                                                                                                        .recipientRole())
+                                                                                        .equals(
+                                                                                                id)))
+                                        .sorted()
+                                        .toList()));
+        BigDecimal performance =
+                performanceDetail != null && performanceDetail.total() == null
+                        ? null
+                        : r.performance();
+        BigDecimal allowance = PayrollCalculator.money(r.allowance());
+        BigDecimal gross =
+                r.base() == null || performance == null
+                        ? null
+                        : PayrollCalculator.money(
+                                r.base()
+                                        .add(performance)
+                                        .add(r.commission())
+                                        .add(allowance)
+                                        .add(correctionAmount));
+        BigDecimal net =
+                gross == null ? null : PayrollCalculator.money(gross.subtract(r.deduction()));
+        if (net != null && net.signum() < 0) issues.add("扣款或跨月冲回后金额为负，请核对");
+        return new PayrollCalculationView(
+                r.base(),
+                performance,
+                r.commission(),
+                r.held(),
+                allowance,
+                r.deduction(),
+                gross,
+                net,
+                List.copyOf(issues),
+                details,
+                rules.stream()
+                        .filter(
+                                rule ->
+                                        !"COMMISSION".equals(rule.data().kindCode())
+                                                || details.stream()
+                                                        .anyMatch(
+                                                                detail ->
+                                                                        rule.id()
+                                                                                .equals(
+                                                                                        detail
+                                                                                                .ruleId())))
+                        .toList(),
+                input,
+                fingerprint,
+                performanceDetail,
+                salarySource,
+                correctionAmount,
+                corrections);
+    }
+
+    @Transactional
+    public PayrollDetailView confirm(String id, PayrollActionCommand command) {
+        var a = actor("hr:payroll:confirm");
+        checkAction(command);
+        String t = a.tenantId().toString();
+        store.lock(t);
+        var old = store.detail(t, id, "hr:payroll:confirm");
+        if (!"READY".equals(old.statusCode()) || old.revision() != command.revision())
+            throw bad("请先完成核算并处理待核对事项");
+        if (!month(old.month())
+                .atEndOfMonth()
+                .isBefore(LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))))
+            throw bad("月份尚未结束，当前结果仅供预核算");
+        var employee = store.employee(t, old.employeeCode(), "hr:payroll:confirm");
+        var fresh = calculation(t, employee, month(old.month()));
+        if (!fresh.issues().isEmpty()
+                || !fresh.sourceFingerprint().equals(old.calculation().sourceFingerprint()))
+            throw new BusinessException(ErrorCode.CONFLICT, "规则、员工或订单回款已变化，请重新核算", List.of());
+        return store.transition(t, id, command, "CONFIRMED", a.principalId().toString());
+    }
+
+    private String hash(Object value) {
+        try {
+            return HexFormat.of()
+                    .formatHex(
+                            MessageDigest.getInstance("SHA-256")
+                                    .digest(json.writeValueAsBytes(value)));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    static YearMonth month(String value) {
+        try {
+            if (value == null || !value.matches("[0-9]{4}-[0-9]{2}"))
+                throw new IllegalArgumentException();
+            return YearMonth.parse(value);
+        } catch (RuntimeException e) {
+            throw bad("月份格式应为YYYY-MM");
+        }
+    }
+
+    static void checkAction(PayrollActionCommand c) {
+        if (c == null) throw bad("缺少操作参数");
+        revision(c.revision());
+        text(c.reason(), 500, "操作原因");
+    }
+
+    private static void kind(String value) {
+        if (!Set.of("BASE", "COMMISSION", "PERFORMANCE", "ALLOWANCE", "CITY_MANAGER")
+                .contains(value == null ? "" : value)) throw bad("未知薪酬规则类型");
+    }
+
+    static void money(BigDecimal value, boolean required) {
+        if (value == null) {
+            if (required) throw bad("请填写金额");
+            return;
+        }
+        if (value.signum() < 0 || value.scale() > 2 || value.precision() - value.scale() > 14)
+            throw bad("金额须非负且最多两位小数");
+    }
+
+    static void revision(Integer n) {
+        if (n == null || n < 1) throw bad("缺少当前版本，请刷新");
+    }
+
+    static void request(String value) {
+        try {
+            UUID.fromString(value);
+        } catch (Exception e) {
+            throw bad("requestId无效");
+        }
+    }
+
+    static void required(String value, int max, String name) {
+        if (value == null || value.isBlank()) throw bad("请填写" + name);
+        text(value, max, name);
+    }
+
+    static void text(String value, int max, String name) {
+        if (value != null && value.length() > max) throw bad(name + "长度不能超过" + max);
+    }
+
+    static BusinessException bad(String message) {
+        return new BusinessException(ErrorCode.BAD_REQUEST, message, List.of());
+    }
+}

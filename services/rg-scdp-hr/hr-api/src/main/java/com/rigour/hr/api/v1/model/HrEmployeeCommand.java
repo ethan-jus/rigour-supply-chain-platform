@@ -13,4 +13,12 @@ public record HrEmployeeCommand(
         Instant entryDate,
         Instant leaveDate,
         String remark,
-        int revision, HrEmployeeProfile profile, String jobGrade) {}
+        int revision, HrEmployeeProfile profile, String jobGrade, Boolean regularized, java.time.LocalDate regularizationDate,
+        String payrollCategory, java.time.LocalDate salaryEffectiveFrom) {
+    public HrEmployeeCommand(String employeeName, Long departmentId, String positionCode,
+            String employmentStatus, String mobile, String email, Instant entryDate, Instant leaveDate,
+            String remark, int revision, HrEmployeeProfile profile, String jobGrade) {
+        this(employeeName, departmentId, positionCode, employmentStatus, mobile, email, entryDate,
+                leaveDate, remark, revision, profile, jobGrade, null, null, null, null);
+    }
+}
