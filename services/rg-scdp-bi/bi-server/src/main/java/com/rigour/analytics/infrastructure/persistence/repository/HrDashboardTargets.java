@@ -121,7 +121,7 @@ public class HrDashboardTargets {
                                     jdbc,
                                     """
 SELECT e.employee_code FROM bi_employee_dim e
-WHERE e.tenant_id=:tenant AND e.city_code=:region
+WHERE e.tenant_id=:tenant AND e.region_code=:region
   AND NOT EXISTS(SELECT 1 FROM bi_customer_authority a WHERE a.tenant_id=e.tenant_id
     AND a.employee_code=e.employee_code AND (a.region_code IS NULL OR a.region_code<>:region))
   AND NOT EXISTS(SELECT 1 FROM bi_order_authority a WHERE a.tenant_id=e.tenant_id
