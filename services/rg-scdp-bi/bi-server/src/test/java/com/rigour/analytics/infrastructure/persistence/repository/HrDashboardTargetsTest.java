@@ -9,12 +9,45 @@ import com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQue
 import com.rigour.hr.api.v1.model.TargetSettingsModels.Target;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.*;
 
 class HrDashboardTargetsTest {
+    @Test
+    void cityFilteredSalesTargetsUseEmployeeRegionAndRetainAttributionBoundaries() {
+        var ds = new SingleConnectionDataSource(
+                "jdbc:h2:mem:hr_targets_" + UUID.randomUUID() + ";MODE=MySQL", "sa", "", true);
+        try {
+            var jdbc = new JdbcTemplate(ds);
+            jdbc.execute("CREATE TABLE bi_employee_dim(tenant_id VARCHAR,employee_code VARCHAR,region_code VARCHAR)");
+            jdbc.execute("CREATE TABLE bi_customer_authority(tenant_id VARCHAR,employee_code VARCHAR,region_code VARCHAR)");
+            jdbc.execute("CREATE TABLE bi_order_authority(tenant_id VARCHAR,employee_code VARCHAR,region_code VARCHAR)");
+            jdbc.update("INSERT INTO bi_employee_dim VALUES('T','A','HZ'),('T','B','BJ'),('OTHER','C','HZ'),('T','D','HZ'),('T','E','HZ'),('T','F','HZ')");
+            jdbc.update("INSERT INTO bi_customer_authority VALUES('T','A','HZ'),('T','D','BJ')");
+            jdbc.update("INSERT INTO bi_order_authority VALUES('T','E','BJ'),('T','F',NULL)");
+            var mapper = mock(SupplyDashboardQueryMapper.class);
+            var targets = new HrDashboardTargets(mock(HrTargetClient.class), ds, mapper);
+            var goals = List.of("A", "B", "C", "D", "E", "F").stream()
+                    .map(code -> new Target("2026-10", "SALES_OWNER", code, code,
+                            "SALES_AMOUNT", BigDecimal.TEN, 1)).toList();
+            var filter = new SupplyDashboardFilter(
+                    Instant.parse("2026-09-30T16:00:00Z"), Instant.parse("2026-10-31T15:59:59Z"),
+                    "HZ", null, null, null, null);
+
+            assertThat(targets.completions("T", filter, "SALES_OWNER", goals))
+                    .singleElement().satisfies(item -> {
+                        assertThat(item.dimensionCode()).isEqualTo("A");
+                        assertThat(item.targetValue()).isEqualByComparingTo("10");
+                    });
+        } finally {
+            ds.destroy();
+        }
+    }
+
     @Test
     void apiValuesDriveMonthlyGoalsAndPeriodAttainmentWithoutAnyTargetTable() {
         var client = mock(HrTargetClient.class);
@@ -23,7 +56,12 @@ class HrDashboardTargetsTest {
         var values = new ArrayList<Target>();
         for (var month : List.of("2026-01", "2026-02"))
             for (var metric :
-                    List.of("SALES_AMOUNT", "RECEIPT_AMOUNT", "NEW_CUSTOMER", "REPEAT_CUSTOMER"))
+                    List.of(
+                            "CONTACTED_STORE_COUNT",
+                            "ORDERED_STORE_COUNT",
+                            "YANGZHANGGUI_SALES_AMOUNT",
+                            "SALES_AMOUNT",
+                            "RECEIPT_AMOUNT"))
                 values.add(
                         new Target(
                                 month,
@@ -50,7 +88,9 @@ class HrDashboardTargetsTest {
                 .thenReturn(
                         List.of(Map.of("regionCode", "BJ", "receiptAmount", new BigDecimal("50"))));
         when(mapper.customerRetention(any(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(Map.of("newCustomerCount", 7, "annualReturningCustomerCount", 3));
+                .thenReturn(Map.of("orderingCustomerCount", 10));
+        when(mapper.yangzhangguiTargetSales(any(), any(), any(), any(), any()))
+                .thenReturn(new BigDecimal("64.25"));
         var filter =
                 new SupplyDashboardFilter(
                         Instant.parse("2025-12-31T16:00:00Z"),
@@ -61,7 +101,7 @@ class HrDashboardTargetsTest {
                         null,
                         null);
         var actual = targets.completions("T", filter, "CITY", values);
-        assertThat(actual).hasSize(4);
+        assertThat(actual).hasSize(5);
         assertThat(actual)
                 .filteredOn(t -> t.metricCode().equals("SALES_AMOUNT"))
                 .singleElement()
@@ -73,9 +113,25 @@ class HrDashboardTargetsTest {
                             assertThat(t.periodMonthCount()).isEqualTo(2);
                         });
         assertThat(actual)
-                .filteredOn(t -> t.metricCode().equals("REPEAT_CUSTOMER"))
+                .filteredOn(t -> t.metricCode().equals("ORDERED_STORE_COUNT"))
                 .singleElement()
-                .satisfies(t -> assertThat(t.actualValue()).isEqualByComparingTo("3"));
+                .satisfies(t -> assertThat(t.actualValue()).isEqualByComparingTo("10"));
+        assertThat(actual)
+                .filteredOn(t -> t.metricCode().equals("CONTACTED_STORE_COUNT"))
+                .singleElement()
+                .satisfies(
+                        t -> {
+                            assertThat(t.actualValue()).isNull();
+                            assertThat(t.achievementRate()).isNull();
+                        });
+        assertThat(actual)
+                .filteredOn(t -> t.metricCode().equals("YANGZHANGGUI_SALES_AMOUNT"))
+                .singleElement()
+                .satisfies(
+                        t -> {
+                            assertThat(t.actualValue()).isEqualByComparingTo("64.25");
+                            assertThat(t.achievementRate()).isEqualByComparingTo("20");
+                        });
         verify(client, times(1)).values(any(), any(), any());
     }
 

@@ -262,7 +262,7 @@ public final class SupplyDashboardQueryService {
                         data.customerRetention().newCustomerCount(),data.customerRetention().annualReturningCustomerCount()),
                 data.cityMonthlyGoals().stream().map(g -> new SupplyDashboardOperatingAnalysisView.CityMonthlyGoal(
                         g.regionCode(),g.regionName(),g.month(),g.salesTarget(),g.receiptTarget(),
-                        g.newCustomerTarget(),g.repeatCustomerTarget(),g.configuredCount())).toList(),
+                        g.contactedStoreTarget(),g.orderedStoreTarget(),g.yangzhangguiSalesTarget(),g.configuredCount())).toList(),
                 data.salesPeople().stream().map(p -> new SupplyDashboardOperatingAnalysisView.SalesPerson(
                         p.ownerStaffCode(), p.ownerStaffName(), p.employmentStatus())).toList());
     }
@@ -787,8 +787,8 @@ public final class SupplyDashboardQueryService {
                 item.metricCode(),
                 item.metricName(),
                 money(item.targetValue()),
-                money(item.actualValue()),
-                ratioValue(item.achievementRate()),
+                item.actualValue() == null ? null : money(item.actualValue()),
+                item.achievementRate(),
                 item.configuredMonthCount(),
                 item.periodMonthCount());
     }

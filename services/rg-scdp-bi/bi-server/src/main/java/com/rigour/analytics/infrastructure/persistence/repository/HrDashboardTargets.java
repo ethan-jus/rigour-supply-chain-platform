@@ -43,7 +43,7 @@ public class HrDashboardTargets {
                         BiScopedQueries.query(
                                 jdbc,
                                 "SELECT dimension_type,dimension_code FROM bi_target_subject WHERE"
-                                    + " tenant_id=:tenant",
+                                        + " tenant_id=:tenant",
                                 new MapSqlParameterSource("tenant", tenant),
                                 (r, n) -> r.getString(1) + ":" + r.getString(2)));
         return values.stream()
@@ -76,9 +76,10 @@ public class HrDashboardTargets {
                                     YearMonth.parse(first.month()).getMonthValue(),
                                     metrics.get("SALES_AMOUNT"),
                                     metrics.get("RECEIPT_AMOUNT"),
-                                    metrics.get("NEW_CUSTOMER"),
-                                    metrics.get("REPEAT_CUSTOMER"),
-                                    4);
+                                    metrics.get("CONTACTED_STORE_COUNT"),
+                                    metrics.get("ORDERED_STORE_COUNT"),
+                                    metrics.get("YANGZHANGGUI_SALES_AMOUNT"),
+                                    5);
                         })
                 .toList();
     }
@@ -120,7 +121,7 @@ public class HrDashboardTargets {
                                     jdbc,
                                     """
 SELECT e.employee_code FROM bi_employee_dim e
-WHERE e.tenant_id=:tenant AND e.city_code=:region
+WHERE e.tenant_id=:tenant AND e.region_code=:region
   AND NOT EXISTS(SELECT 1 FROM bi_customer_authority a WHERE a.tenant_id=e.tenant_id
     AND a.employee_code=e.employee_code AND (a.region_code IS NULL OR a.region_code<>:region))
   AND NOT EXISTS(SELECT 1 FROM bi_order_authority a WHERE a.tenant_id=e.tenant_id
@@ -170,11 +171,11 @@ WHERE e.tenant_id=:tenant AND e.city_code=:region
                 BigDecimal actual;
                 switch (metric.getKey()) {
                     case "SALES_AMOUNT" -> {
-                        label = "销售额";
+                        label = "销售总额";
                         actual = amount(sales, "dimensionCode", code, "salesAmount");
                     }
                     case "RECEIPT_AMOUNT" -> {
-                        label = "到账回款额";
+                        label = "回款额";
                         actual =
                                 amount(
                                         receipts,
@@ -182,13 +183,24 @@ WHERE e.tenant_id=:tenant AND e.city_code=:region
                                         code,
                                         city ? "receiptAmount" : "paidAmount");
                     }
-                    case "NEW_CUSTOMER" -> {
-                        label = "新客户数";
-                        actual = number(retention, "newCustomerCount");
+                    case "CONTACTED_STORE_COUNT" -> {
+                        label = "建联门店数";
+                        // Submitted visits do not establish when a store was first added to WeCom.
+                        actual = null;
                     }
-                    case "REPEAT_CUSTOMER" -> {
-                        label = "老客户数";
-                        actual = number(retention, "annualReturningCustomerCount");
+                    case "ORDERED_STORE_COUNT" -> {
+                        label = "有效门店数";
+                        actual = number(retention, "orderingCustomerCount");
+                    }
+                    case "YANGZHANGGUI_SALES_AMOUNT" -> {
+                        label = "杨掌柜品牌销售额";
+                        actual =
+                                mapper.yangzhangguiTargetSales(
+                                        tenant,
+                                        from,
+                                        to,
+                                        city ? code : filter.regionCode(),
+                                        city ? null : code);
                     }
                     default -> throw new IllegalStateException("未知 HR 指标");
                 }
@@ -201,7 +213,7 @@ WHERE e.tenant_id=:tenant AND e.city_code=:region
                                 label,
                                 value,
                                 actual,
-                                value.signum() == 0
+                                value.signum() == 0 || actual == null
                                         ? null
                                         : actual.multiply(BigDecimal.valueOf(100))
                                                 .divide(value, 4, RoundingMode.HALF_UP),

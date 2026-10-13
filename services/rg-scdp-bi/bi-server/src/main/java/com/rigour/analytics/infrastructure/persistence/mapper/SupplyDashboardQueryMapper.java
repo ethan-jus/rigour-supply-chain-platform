@@ -72,6 +72,23 @@ ON DUPLICATE KEY UPDATE category_code=VALUES(category_code), category_name=VALUE
             @Param("tenantId") String tenantId, @Param("syncedAt") LocalDateTime syncedAt);
 
     /** 保留城市在职零业绩人员；历史业绩人员即使调离城市，也按事实查询其真实状态。 */
+    /** The named brand goal must not be derived from a top-N brand ranking. */
+    @Select("""
+<script>
+SELECT COALESCE(SUM(l.line_amount), 0)
+  FROM bi_sales_order_line_fact l
+ WHERE l.tenant_id = #{tenantId} AND l.deleted = 0
+   AND l.order_status_code &lt;&gt; 'CANCELLED'
+   AND l.order_date &gt;= #{from} AND l.order_date &lt;= #{to}
+   AND TRIM(l.brand_name) = '杨掌柜 X CBSA世界斯诺克学院'
+<if test="regionCode != null"> AND l.region_code = #{regionCode} </if>
+<if test="ownerStaffCode != null"> AND l.owner_staff_code = #{ownerStaffCode} </if>
+</script>
+""")
+    BigDecimal yangzhangguiTargetSales(@Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from, @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode, @Param("ownerStaffCode") String ownerStaffCode);
+
     @Select("""
 <script>
 SELECT e.employee_code AS ownerStaffCode, e.employee_name AS ownerStaffName,

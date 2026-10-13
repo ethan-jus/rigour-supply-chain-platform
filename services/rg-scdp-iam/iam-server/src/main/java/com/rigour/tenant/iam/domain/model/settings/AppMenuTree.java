@@ -58,8 +58,13 @@ public final class AppMenuTree {
             Node parent = node.parentId() == null ? null : index.get(node.parentId());
             if (node.parentId() != null && parent == null)
                 throw new RequestValidationException("上级菜单不存在或不属于当前应用");
-            if ("BUTTON".equals(node.type()) && (parent == null || !"PAGE".equals(parent.type())))
-                throw new RequestValidationException("按钮必须添加到页面下");
+            // 已注册功能目录可承载多页面共用的权限；自定义目录仍不能挂按钮。
+            // 保存时另由功能目录校验按钮所属资源，不能任意挂到其他目录。
+            boolean registeredGroup = parent != null && "MENU".equals(parent.type())
+                    && parent.resourceId() != null;
+            if ("BUTTON".equals(node.type())
+                    && (parent == null || (!"PAGE".equals(parent.type()) && !registeredGroup)))
+                throw new RequestValidationException("按钮必须添加到页面下或已注册功能目录下");
             if (!"BUTTON".equals(node.type()) && parent != null && !"MENU".equals(parent.type()))
                 throw new RequestValidationException("目录和页面的上级只能是目录");
             var seen = new HashSet<UUID>();

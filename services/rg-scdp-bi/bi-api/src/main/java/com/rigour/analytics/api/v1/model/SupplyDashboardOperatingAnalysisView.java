@@ -28,8 +28,8 @@ public record SupplyDashboardOperatingAnalysisView(
     public record CustomerRetention(Long orderingCustomerCount, Long returningCustomerCount,
             Long newCustomerCount, Long annualReturningCustomerCount) {}
     public record CityMonthlyGoal(String regionCode, String regionName, Integer month,
-            BigDecimal salesTarget, BigDecimal receiptTarget, BigDecimal newCustomerTarget,
-            BigDecimal repeatCustomerTarget, Integer configuredCount) {}
+            BigDecimal salesTarget, BigDecimal receiptTarget, BigDecimal contactedStoreTarget,
+            BigDecimal orderedStoreTarget, BigDecimal yangzhangguiSalesTarget, Integer configuredCount) {}
     public SupplyDashboardOperatingAnalysisView {
         previousSalesRanking = List.copyOf(previousSalesRanking == null ? List.of() : previousSalesRanking);
         cityProducts = List.copyOf(cityProducts == null ? List.of() : cityProducts);

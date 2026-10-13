@@ -18,7 +18,12 @@ public class TargetSettingsService {
     public static final String READ = "hr:targets:read";
     public static final String WRITE = "hr:targets:write";
     public static final Set<String> METRICS =
-            Set.of("SALES_AMOUNT", "RECEIPT_AMOUNT", "NEW_CUSTOMER", "REPEAT_CUSTOMER");
+            Set.of(
+                    "CONTACTED_STORE_COUNT",
+                    "ORDERED_STORE_COUNT",
+                    "YANGZHANGGUI_SALES_AMOUNT",
+                    "SALES_AMOUNT",
+                    "RECEIPT_AMOUNT");
     private final TargetSettingsStore store;
     private final Clock clock;
 
@@ -95,8 +100,10 @@ public class TargetSettingsService {
                 switch (metric) {
                     case "SALES_AMOUNT" -> "CITY".equals(type) ? 100000 : 40000;
                     case "RECEIPT_AMOUNT" -> "CITY".equals(type) ? 100000 : 20000;
-                    case "NEW_CUSTOMER" -> 200;
-                    case "REPEAT_CUSTOMER" -> 100;
+                    case "CONTACTED_STORE_COUNT",
+                            "ORDERED_STORE_COUNT",
+                            "YANGZHANGGUI_SALES_AMOUNT" ->
+                            0;
                     default -> throw invalid("未知指标");
                 });
     }
@@ -209,8 +216,8 @@ public class TargetSettingsService {
         if (value == null) throw invalid("指标不能为空");
         if (value.signum() < 0
                 || value.compareTo(new BigDecimal("999999999999.99")) > 0
-                || value.stripTrailingZeros().scale() > (metric.endsWith("CUSTOMER") ? 0 : 2))
-            throw invalid("金额须为非负数且最多两位小数，客户数须为非负整数");
+                || value.stripTrailingZeros().scale() > (metric.endsWith("_COUNT") ? 0 : 2))
+            throw invalid("金额须为非负数且最多两位小数，门店数须为非负整数");
     }
 
     private static BusinessException invalid(String message) {
