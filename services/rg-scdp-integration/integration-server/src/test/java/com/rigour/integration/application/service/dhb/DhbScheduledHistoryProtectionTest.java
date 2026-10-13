@@ -120,7 +120,12 @@ class DhbScheduledHistoryProtectionTest {
             outcome = method.invoke(service, actor, task, UUID.randomUUID(), data);
         }
         assertThat(outcome).isEqualTo(DhbOrderSyncService.ProjectionOutcome.DUPLICATE);
-        verifyNoInteractions(store, client, projection, hr);
+        // 历史订单先只读检查关联；未关联订单和历史收款仍不得发生任何写入。
+        if (object.equals("order")) {
+            verify(store).findActiveMapping(tenant, task.connectorId(), "SALES_ORDER", "D1");
+        }
+        verifyNoMoreInteractions(store);
+        verifyNoInteractions(client, projection, hr);
     }
     @ParameterizedTest
     @ValueSource(strings = {"SYNCED", "HISTORY_REVIEW", "SOURCE_CHANGED_REVIEW", "STALE"})
