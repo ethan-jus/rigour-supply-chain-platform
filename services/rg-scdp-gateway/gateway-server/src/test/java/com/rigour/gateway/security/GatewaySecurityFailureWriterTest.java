@@ -10,6 +10,7 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.AuthenticationServiceException;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,6 +31,27 @@ class GatewaySecurityFailureWriterTest {
         assertFailure(response, HttpStatus.UNAUTHORIZED, AuthenticationFailureCodes.IAM_TOKEN_INVALID);
         assertThat(response.getHeader(HttpHeaders.WWW_AUTHENTICATE)).isEqualTo("Bearer");
         assertThat(response.getHeader(RequestHeaders.REQUEST_ID)).isEqualTo("request-123");
+    }
+
+    @Test
+    void authenticationServiceFailureReturnsUnavailableWithoutLeakingTheCause() throws Exception {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        writer.tokenInvalidEntryPoint().commence(new MockHttpServletRequest(), response,
+                new AuthenticationServiceException("private JWKS endpoint and diagnostics"));
+
+        assertFailure(response, HttpStatus.SERVICE_UNAVAILABLE,
+                AuthenticationFailureCodes.IAM_SESSION_CHECK_UNAVAILABLE);
+        assertThat(response.getHeader(HttpHeaders.WWW_AUTHENTICATE)).isNull();
+        assertThat(response.getContentAsString()).doesNotContain("private", "JWKS", "diagnostics");
+    }
+
+    @Test
+    void credentialFailureIsNotClassifiedByUntrustedExceptionText() throws Exception {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        writer.tokenInvalidEntryPoint().commence(new MockHttpServletRequest(), response,
+                new BadCredentialsException("JWKS unavailable: connection timed out"));
+
+        assertFailure(response, HttpStatus.UNAUTHORIZED, AuthenticationFailureCodes.IAM_TOKEN_INVALID);
     }
 
     @Test

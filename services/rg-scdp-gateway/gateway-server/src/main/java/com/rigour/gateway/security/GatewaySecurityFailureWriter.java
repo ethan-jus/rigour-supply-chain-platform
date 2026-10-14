@@ -10,6 +10,7 @@ import java.util.List;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import tools.jackson.databind.ObjectMapper;
@@ -24,7 +25,14 @@ public final class GatewaySecurityFailureWriter {
     }
 
     public AuthenticationEntryPoint tokenInvalidEntryPoint() {
-        return (request, response, exception) -> tokenInvalid(response);
+        return (request, response, exception) -> {
+            // JwtAuthenticationProvider keeps decoder/JWKS failures separate from BadJwtException.
+            if (exception instanceof AuthenticationServiceException) {
+                sessionCheckUnavailable(response);
+            } else {
+                tokenInvalid(response);
+            }
+        };
     }
 
     public AccessDeniedHandler forbiddenHandler() {
