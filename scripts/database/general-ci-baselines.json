@@ -56,6 +56,15 @@
     }
   },
   {
+    "migration_directory": "services/rg-scdp-iam/iam-server/src/main/resources/db/migration",
+    "through_version": "120",
+    "migration_count": 124,
+    "source_sha256": "a5c303775fef69bc760489ad75e7325a49d6ff121e4077a647d417e000362c7c",
+    "baseline": "services/rg-scdp-iam/iam-server/src/main/resources/db/bootstrap/B120__general_ci_bootstrap.sql",
+    "baseline_sha256": "4e80f305ee1fa29ce7af6ae809a0a61425921d2950e1b781d2f02deda9f7104e",
+    "explicit_charset_collation": true
+  },
+  {
     "migration_directory": "services/rg-scdp-integration/integration-server/src/main/resources/db/migration",
     "through_version": "24",
     "migration_count": 24,

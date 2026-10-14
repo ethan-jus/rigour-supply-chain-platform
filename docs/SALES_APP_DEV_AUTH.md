@@ -49,15 +49,15 @@ Gateway 的 issuer、JWKS、current-token 校验和 `/me` 路由均指向隔离 
 
 ## 迁移与验收状态
 
-本轮原生表单改动的验证结果以实际测试和手机回执为准。此前已验证 Android 浏览器登录、管理员客户列表/详情和订单列表，不能直接作为本次原生登录、续期或重新启动恢复的验收。
+2026-10-14 已合并同事推送的 dev `b7d0f96d`（合并提交 `87a3c819`）。V132 原始文件与 DEV 校验值 `-176225895` 一致。保留全部已发布 B/V 文件；通过独立的新 B120 修复空库 general-ci 与 V120 临时表、隐式表默认值、权限视图常量的排序规则冲突。
 
-2026-10-14 16:05 已将同事推送的远程 dev `b7d0f96d` 合并到 App 接入分支，合并提交 `87a3c819`，无冲突。V132 原始文件已补齐，Flyway 校验值 `-176225895` 与共享 DEV 历史匹配；只读校验不再报告缺失或校验值冲突，仅报告 V133 尚未执行。本次拉取合并未重启服务、未执行共享 DEV 迁移，也未改写任何历史 SQL。
+本次验证：
 
-合并验证：
+- 冻结基线校验通过：10 个基线记录覆盖 9 个服务，原文件的字节与校验值未变。
+- 默认 Flyway 双目录配置下 IAM 49 项、排序规则策略 3 项，共 52 项通过，0 跳过；未使用迁移目录覆盖。日志 `/tmp/iam-app-baseline-fixed-tests.log`。覆盖空库 B120→V133、已有 V132 库仅升级 V133、数据及历史校验保留、重复启动无待执行迁移，以及密码、PKCE、refresh、退出和 Web 回归。
+- 16:28 本机隔离 IAM `127.0.0.1:27681` 启动新版，仅执行 V133；共享 DEV 的 V132/V133 均成功，原 V132 校验不变，SQL_BASELINE 记录数为 0。V133 校验值 `-1799016397`；会话约束包含 WEB、FEISHU_H5、NATIVE_APP。升级后只读 Flyway validate 成功，日志 `/tmp/iam-native-dev-flyway-after-enable.log`。
+- 原生入口仅在该隔离进程显式启用，允许 `rigour-sales-app-android-dev`；已有客户端 bootstrap 已关闭。关闭 Nacos 注册，保留 IDEA 和其他服务。
+- 真实 DEV 管理员接口验收：原生密码登录 200、PKCE 换取令牌 200、Gateway `/me` 200、客户/订单只读列表 200、refresh 200 且旧新凭据不同、续期后 `/me` 200、原生退出 204、退出后 refresh 400 invalid_grant。验收创建的独立会话已撤销，未改账号密码、权限或业务数据；未记录 Token/密码。
+- Android 16:24:20 编译成功、16:24:26 文件同步成功、16:24:28 真机启动并进入 `pages/login/login`，日志 `/tmp/sales-app-native-login-android-sync-20261014.log`。用户在后端启用前尝试登录收到旧服务的 401；启用后 16:30:11 手机原生登录 200、16:30:12 令牌交换及 `/me` 200，用户明确确认“登录成功，重开也能恢复”。安卓原生登录与重开恢复通过真机验收；不扩大为其他平台或普通销售权限验收。
 
-- `prepare-general-ci-baselines.py --check` 通过：9 个冻结基线、340 个历史迁移保持原样。
-- IAM 原生密码、PKCE、refresh 轮换/重放、账号停用、锁定、退出及 OIDC 配置共 47 项定向测试通过，0 跳过；在一次性 Testcontainers 中显式采用 `-Dspring.flyway.locations=classpath:db/migration`，验证与现有 DEV 相同的历史升级链路，日志 `/tmp/iam-native-after-dev-merge-existing-schema-tests.log`。此参数仅用于该次测试，没有改动服务配置或关闭 Flyway。
-- 默认空库路径另有已复现的问题：新增 B118 的 `utf8mb4_general_ci` 字符列，与既有 V120 临时表明确指定的 `utf8mb4_0900_ai_ci` 在 JOIN 比较时冲突，导致测试上下文不能启动。日志 `/tmp/iam-native-after-dev-merge-tests.log`。不能将上述 47 项通过解释为默认空库初始化已通过，也不能改写已发布的 B118/V120 来消除校验。该问题需独立修复。
-- 共享 DEV 的只读校验日志：`/tmp/iam-native-dev-flyway-after-merge.log`。原生入口启用、V133 实际升级及手机登录验收仍待执行。
-
-普通销售验收仍需真实员工身份、Sales 画像、门店分配及有效规则；不能以管理员或临时打卡身份代替。
+范围：开发环境和本机安卓调试包；未部署生产、未切换或停用临时打卡系统。普通销售验收仍需真实员工身份、Sales 画像、门店分配及有效规则，不能以管理员或临时打卡身份代替。

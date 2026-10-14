@@ -28,7 +28,7 @@ class DatabaseCollationMySqlTest {
     static Stream<String> directories() throws Exception {
         List<Map<String, Object>> entries = new Yaml().load(Files.readString(
                 ROOT.resolve("scripts/database/general-ci-baselines.json")));
-        return entries.stream().map(entry -> (String) entry.get("migration_directory"));
+        return entries.stream().map(entry -> (String) entry.get("migration_directory")).distinct();
     }
 
     @ParameterizedTest(name = "{0}")

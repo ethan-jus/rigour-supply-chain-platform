@@ -30,7 +30,8 @@ class DatabaseCollationPolicyTest {
     void frozenHistoryAndBaselinesRemainUnchangedAndNewSqlUsesGeneralCi() throws Exception {
         List<Map<String, Object>> entries = new Yaml().load(Files.readString(
                 ROOT.resolve("scripts/database/general-ci-baselines.json")));
-        assertEquals(9, entries.size());
+        assertEquals(10, entries.size());
+        assertEquals(9, entries.stream().map(entry -> entry.get("migration_directory")).distinct().count());
         for (var entry : entries) {
             Path directory = ROOT.resolve((String) entry.get("migration_directory"));
             MigrationVersion ceiling = MigrationVersion.fromVersion((String) entry.get("through_version"));
