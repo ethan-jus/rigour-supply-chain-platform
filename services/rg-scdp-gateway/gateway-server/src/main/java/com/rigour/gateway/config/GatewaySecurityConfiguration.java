@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
@@ -23,6 +24,7 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.AuthenticationEntryPointFailureHandler;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestOperations;
 import org.springframework.web.client.RestTemplate;
@@ -78,7 +80,18 @@ public class GatewaySecurityConfiguration {
                 .oauth2ResourceServer(resourceServer -> resourceServer
                         .jwt(jwt -> jwt.decoder(jwtDecoder))
                         .authenticationEntryPoint(failureWriter.tokenInvalidEntryPoint())
-                        .accessDeniedHandler(failureWriter.forbiddenHandler()))
+                        .accessDeniedHandler(failureWriter.forbiddenHandler())
+                        .withObjectPostProcessor(new ObjectPostProcessor<BearerTokenAuthenticationFilter>() {
+                            @Override
+                            public <O extends BearerTokenAuthenticationFilter> O postProcess(O filter) {
+                                // The default handler rethrows service failures before the entry point can classify them.
+                                var handler = new AuthenticationEntryPointFailureHandler(
+                                        failureWriter.tokenInvalidEntryPoint());
+                                handler.setRethrowAuthenticationServiceException(false);
+                                filter.setAuthenticationFailureHandler(handler);
+                                return filter;
+                            }
+                        }))
                 .csrf(csrf -> csrf.ignoringRequestMatchers("/api/**"))
                 .addFilterAfter(currentTokenValidationFilter, BearerTokenAuthenticationFilter.class)
                 .addFilterAfter(trustedContextFilter, CurrentTokenValidationFilter.class);
