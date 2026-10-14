@@ -14,4 +14,34 @@ public record PayrollCommissionDetailView(
         int ruleRevision,
         BigDecimal accrued,
         BigDecimal released,
-        String message) {}
+        String message,
+        String sourceEmployeeCode) {
+    public PayrollCommissionDetailView(
+            String sourceLineId,
+            String recipientRoleCode,
+            String orderNo,
+            String productName,
+            String unitCode,
+            BigDecimal quantity,
+            String ruleId,
+            String ruleName,
+            int ruleRevision,
+            BigDecimal accrued,
+            BigDecimal released,
+            String message) {
+        this(
+                sourceLineId,
+                recipientRoleCode,
+                orderNo,
+                productName,
+                unitCode,
+                quantity,
+                ruleId,
+                ruleName,
+                ruleRevision,
+                accrued,
+                released,
+                message,
+                null);
+    }
+}

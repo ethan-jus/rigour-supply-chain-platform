@@ -5,6 +5,9 @@ import com.rigour.hr.api.v1.model.PayrollActionCommand;
 import com.rigour.hr.api.v1.model.PayrollAuditView;
 import com.rigour.hr.api.v1.model.PayrollCalculateCommand;
 import com.rigour.hr.api.v1.model.PayrollCalculationView;
+import com.rigour.hr.api.v1.model.PayrollCategoryView;
+import com.rigour.hr.api.v1.model.PayrollCityCommissionPolicy;
+import com.rigour.hr.api.v1.model.PayrollCityProductRule;
 import com.rigour.hr.api.v1.model.PayrollCollectionEvidenceView;
 import com.rigour.hr.api.v1.model.PayrollCommissionDetailView;
 import com.rigour.hr.api.v1.model.PayrollCommissionPolicyView;
@@ -49,9 +52,12 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class HrPayrollService {
@@ -77,9 +83,12 @@ public class HrPayrollService {
         return store.policies();
     }
 
-    public List<PayrollProductView> products(String keyword) {
+    public List<PayrollProductView> products(
+            String keyword, Long categoryId, Long productVariantId) {
         var a = actor("hr:payroll-rule:read");
-        return source.products(a.tenantId().toString(), keyword, null).stream()
+        return source
+                .products(a.tenantId().toString(), keyword, productVariantId, categoryId)
+                .stream()
                 .map(
                         p ->
                                 new PayrollProductView(
@@ -89,7 +98,16 @@ public class HrPayrollService {
                                         p.variantCode(),
                                         p.productName(),
                                         p.specification(),
-                                        p.unitCode()))
+                                        p.unitCode(),
+                                        p.categoryId(),
+                                        p.categoryName()))
+                .toList();
+    }
+
+    public List<PayrollCategoryView> productCategories() {
+        var a = actor("hr:payroll-rule:read");
+        return source.productCategories(a.tenantId().toString()).stream()
+                .map(c -> new PayrollCategoryView(c.id(), c.parentId(), c.name(), c.sortOrder()))
                 .toList();
     }
 
@@ -137,18 +155,71 @@ public class HrPayrollService {
                         .toList();
         int offset = Math.min(Math.max(0, begin), rows.size()),
                 size = step <= 0 ? 20 : Math.min(200, step);
-        return new HrPageView<>(
-                rows.size(),
-                offset,
-                size,
-                rows.subList(offset, Math.min(offset + size, rows.size())));
+        var items = rows.subList(offset, Math.min(offset + size, rows.size()));
+        var missing =
+                items.stream()
+                        .map(PayrollRuleView::data)
+                        .filter(
+                                c ->
+                                        "COMMISSION".equals(c.kindCode())
+                                                && c.categoryId() == null
+                                                && c.productVariantId() != null)
+                        .map(PayrollRuleCommand::productVariantId)
+                        .distinct()
+                        .toList();
+        if (!missing.isEmpty()) {
+            // 旧规则只保存 SKU；批量从 ERP 补充列表分类展示，不改写规则和历史快照。
+            var products =
+                    source.productsByVariants(t, missing).stream()
+                            .collect(Collectors.toMap(p -> p.productVariantId(), p -> p));
+            items =
+                    items.stream()
+                            .map(
+                                    row -> {
+                                        var c = row.data();
+                                        var product = products.get(c.productVariantId());
+                                        if (product == null
+                                                || !Objects.equals(
+                                                        c.productId(), product.productId()))
+                                            return row;
+                                        return new PayrollRuleView(
+                                                row.id(),
+                                                row.revision(),
+                                                c.withProduct(
+                                                        c.productName(),
+                                                        product.categoryId(),
+                                                        product.categoryName()),
+                                                row.updatedTime());
+                                    })
+                            .toList();
+        }
+        return new HrPageView<>(rows.size(), offset, size, items);
     }
 
     @Transactional
-    public PayrollRuleView saveRule(String id, PayrollRuleCommand c) {
+    public List<PayrollRuleView> createCityManagers(List<PayrollRuleCommand> commands) {
+        actor("hr:payroll-rule:write");
+        if (commands == null || commands.isEmpty() || commands.size() > 100)
+            throw bad("请选择 1 至 100 个管辖城市");
+        var cities = new HashSet<String>();
+        var requests = new HashSet<String>();
+        for (var c : commands) {
+            if (c == null || !"CITY_MANAGER".equals(c.kindCode()) || c.revision() != null)
+                throw bad("仅支持新增城市总配置");
+            if (!Objects.equals(c.employeeCode(), commands.getFirst().employeeCode())
+                    || !cities.add(c.cityCode())
+                    || !requests.add(c.requestId())) throw bad("请选择同一负责人，城市及请求编号不可重复");
+        }
+        // 所有城市共用事务和租户规则锁，失败连同审计回滚；沿用每条规则的幂等键。
+        return commands.stream().map(c -> saveRule(null, c)).toList();
+    }
+
+    @Transactional
+    public PayrollRuleView saveRule(String id, PayrollRuleCommand command) {
         var a = actor("hr:payroll-rule:write");
         String t = a.tenantId().toString();
-        if (c == null) throw bad("请填写薪酬规则");
+        if (command == null) throw bad("请填写薪酬规则");
+        final var c = normalizeCityCommission(t, normalizeCommission(t, command));
         kind(c.kindCode());
         if ("BASE".equals(c.kindCode())) throw bad("底薪统一在员工档案维护，不再单独设置薪资标准");
         required(c.name(), 120, "规则名称");
@@ -179,8 +250,9 @@ public class HrPayrollService {
             if (!Set.of("SALES", "CITY_MANAGER")
                     .contains(c.recipientRoleCode() == null ? "" : c.recipientRoleCode()))
                 throw bad("请选择提成受益角色");
-            required(c.groupCode(), 50, "提成商品组");
-            if (!source.dictionary(t, "COMMISSION_PRODUCT_GROUP").contains(c.groupCode()))
+            if (c.groupCode() != null
+                    && !c.groupCode().isBlank()
+                    && !source.dictionary(t, "COMMISSION_PRODUCT_GROUP").contains(c.groupCode()))
                 throw bad("请选择启用的提成商品组");
             if (c.productId() == null || c.productVariantId() == null) throw bad("请选择商品规格");
             required(c.unitCode(), 64, "计奖单位");
@@ -189,7 +261,7 @@ public class HrPayrollService {
             money(c.rate(), true);
             if ("PERCENT".equals(c.methodCode()) && c.rate().compareTo(new BigDecimal("100")) > 0)
                 throw bad("比例不能超过100%");
-            source.requireProduct(t, c.productId(), c.productVariantId(), c.unitCode());
+
         } else if (!"CITY_MANAGER".equals(c.kindCode()))
             money(
                     c.amount(),
@@ -282,9 +354,75 @@ public class HrPayrollService {
                                 ? "FIXED_ALLOWANCE".equals(r.allowanceTypeCode())
                                 : Objects.equals(c.allowanceTypeCode(), r.allowanceTypeCode())
                                         && c.name().equals(r.name());
-            if (same) throw bad("同一适用对象的启用规则存在重叠，请调整生效期间或停用旧规则");
+            if (same)
+                throw bad(
+                        ("CITY_MANAGER".equals(c.kindCode()) ? c.cityName() + "：" : "")
+                                + "同一适用对象的启用规则存在重叠，请调整生效期间");
         }
         return store.saveRule(t, id, c, a.principalId().toString());
+    }
+
+    private PayrollRuleCommand normalizeCityCommission(String tenant, PayrollRuleCommand c) {
+        var policy = c.cityCommission();
+        if (policy == null) return c;
+        if (!"CITY_MANAGER".equals(c.kindCode())) throw bad("仅城市总可设置团队提成和独立商品标准");
+        money(policy.teamPercent(), true);
+        if (policy.teamPercent().compareTo(new BigDecimal("100")) > 0)
+            throw bad("团队计入比例应在 0 至 100% 之间");
+        if (policy.products() == null) return c;
+        if (policy.products().size() > 100) throw bad("独立商品标准最多 100 条");
+        var variants = new HashSet<Long>();
+        var products = new ArrayList<PayrollCityProductRule>();
+        for (var item : policy.products()) {
+            if (item == null
+                    || item.productId() == null
+                    || item.productVariantId() == null
+                    || !variants.add(item.productVariantId())) throw bad("请选择商品型号，同一型号不可重复");
+            if (!Set.of("PERCENT", "QUANTITY")
+                    .contains(item.methodCode() == null ? "" : item.methodCode()))
+                throw bad("请选择商品提成计算方式");
+            money(item.rate(), true);
+            if ("PERCENT".equals(item.methodCode())
+                    && item.rate().compareTo(new BigDecimal("100")) > 0)
+                throw bad("商品提成比例不能超过 100%");
+            required(item.unitCode(), 64, "商品计量单位");
+            var p =
+                    source.requireProduct(
+                            tenant, item.productId(), item.productVariantId(), item.unitCode());
+            if (p.categoryId() == null || !Objects.equals(p.categoryId(), item.categoryId()))
+                throw bad("商品分类已变化，请重新选择型号");
+            products.add(
+                    new PayrollCityProductRule(
+                            p.productId(),
+                            p.productVariantId(),
+                            p.productName()
+                                    + (p.specification() == null || p.specification().isBlank()
+                                            ? ""
+                                            : " · " + p.specification()),
+                            p.unitCode(),
+                            p.categoryId(),
+                            p.categoryName(),
+                            item.methodCode(),
+                            item.rate()));
+        }
+        return c.withCityCommission(
+                new PayrollCityCommissionPolicy(policy.teamPercent(), products));
+    }
+
+    private PayrollRuleCommand normalizeCommission(String tenant, PayrollRuleCommand c) {
+        if (!"COMMISSION".equals(c.kindCode())) return c;
+        if (c.productId() == null || c.productVariantId() == null) throw bad("请选择商品规格型号");
+        var p = source.requireProduct(tenant, c.productId(), c.productVariantId(), c.unitCode());
+        if (p.categoryId() == null || p.categoryName() == null) throw bad("商品未关联有效分类，请先完善商品资料");
+        if (c.categoryId() != null && !c.categoryId().equals(p.categoryId()))
+            throw bad("商品分类已变化，请重新选择规格型号");
+        return c.withProduct(
+                p.productName()
+                        + (p.specification() == null || p.specification().isBlank()
+                                ? ""
+                                : " · " + p.specification()),
+                p.categoryId(),
+                p.categoryName());
     }
 
     public HrPageView<PayrollDetailView> payroll(PayrollQuery q) {
@@ -456,6 +594,53 @@ public class HrPayrollService {
                                     });
             if (!managers.isEmpty() && f.employeeCode() == null)
                 sourceIssues.add(f.orderNo() + "：城市销售订单尚未关联员工，请先完成销售归属关联");
+            PayrollCalculator.ManagerPolicy managerPolicy = null;
+            if (managers.size() > 1) {
+                sourceIssues.add(f.orderNo() + "：城市总管辖规则重叠，请核对配置");
+                continue;
+            }
+            if (!managers.isEmpty()) {
+                var assignment = managers.getFirst();
+                var config = assignment.data().cityCommission();
+                managerPolicy =
+                        new PayrollCalculator.ManagerPolicy(
+                                assignment.id(),
+                                assignment.revision(),
+                                assignment.data().cityName(),
+                                config == null ? new BigDecimal("100") : config.teamPercent(),
+                                config == null || config.products() == null
+                                        ? null
+                                        : config.products().stream()
+                                                .map(
+                                                        p ->
+                                                                new PayrollCalculator.Rule(
+                                                                        assignment.id()
+                                                                                + ":"
+                                                                                + p
+                                                                                        .productVariantId(),
+                                                                        assignment.revision(),
+                                                                        assignment.data().cityName()
+                                                                                + " · "
+                                                                                + p.productName(),
+                                                                        "COMMISSION",
+                                                                        e.employeeCode(),
+                                                                        List.of(),
+                                                                        p.productId(),
+                                                                        p.productVariantId(),
+                                                                        p.unitCode(),
+                                                                        "CITY_MANAGER",
+                                                                        p.methodCode(),
+                                                                        p.rate(),
+                                                                        null,
+                                                                        assignment
+                                                                                .data()
+                                                                                .effectiveFrom(),
+                                                                        assignment
+                                                                                .data()
+                                                                                .effectiveTo(),
+                                                                        true))
+                                                .toList());
+            }
             List<String> roles = new ArrayList<>();
             if (own
                     && (managers.isEmpty()
@@ -465,7 +650,12 @@ public class HrPayrollService {
                                                     Boolean.TRUE.equals(
                                                             r.data().includeOwnSalesCommission()))))
                 roles.add("SALES");
-            if (!managers.isEmpty()) roles.add("CITY_MANAGER");
+            if (!managers.isEmpty()) {
+                if (managerPolicy.products() == null || !managerPolicy.products().isEmpty())
+                    roles.add("CITY_MANAGER");
+                if (!own && f.employeeCode() != null && managerPolicy.teamPercent().signum() > 0)
+                    roles.add("CITY_TEAM");
+            }
             for (String role : roles)
                 domainFacts.add(
                         new PayrollCalculator.Fact(
@@ -485,7 +675,8 @@ public class HrPayrollService {
                                 f.paidAmount(),
                                 f.paymentDate(),
                                 f.refundExists(),
-                                f.qualityStatus()));
+                                f.qualityStatus(),
+                                "SALES".equals(role) ? null : managerPolicy));
         }
         domainFacts.sort(
                 Comparator.comparing(PayrollCalculator.Fact::id)
@@ -642,6 +833,38 @@ public class HrPayrollService {
             }
         }
         var claimed = store.released(t);
+        var teamLineIds =
+                domainFacts.stream()
+                        .filter(f -> "CITY_TEAM".equals(f.recipientRole()))
+                        .map(PayrollCalculator.Fact::id)
+                        .collect(Collectors.toSet());
+        var teamEmployees =
+                teamLineIds.stream()
+                        .map(id -> orderFacts.get(id).employeeCode())
+                        .collect(Collectors.toSet());
+        var confirmedSales =
+                teamLineIds.isEmpty()
+                        ? Map.<String, PayrollCommissionDetailView>of()
+                        : store.confirmedSalesCommissions(
+                                t, teamEmployees, teamLineIds, m.toString());
+        var frozenTeam = new HashMap<String, PayrollCalculator.Detail>();
+        confirmedSales.forEach(
+                (id, d) ->
+                        frozenTeam.put(
+                                id,
+                                new PayrollCalculator.Detail(
+                                        d.sourceLineId(),
+                                        "SALES",
+                                        d.orderNo(),
+                                        d.productName(),
+                                        d.unitCode(),
+                                        d.quantity(),
+                                        d.ruleId(),
+                                        d.ruleName(),
+                                        d.ruleRevision(),
+                                        d.accrued(),
+                                        d.released(),
+                                        d.message())));
         var r =
                 PayrollCalculator.calculate(
                         e.employeeCode(),
@@ -656,7 +879,8 @@ public class HrPayrollService {
                                 input.deduction(),
                                 input.allowanceOverride()),
                         domainFacts,
-                        claimed);
+                        claimed,
+                        frozenTeam);
         var issues = new ArrayList<>(r.issues());
         issues.remove("扣款超过应发金额，请核对");
         issues.addAll(sourceIssues);
@@ -698,7 +922,8 @@ public class HrPayrollService {
                                                 d.ruleRevision(),
                                                 d.accrued(),
                                                 d.released(),
-                                                d.message()))
+                                                d.message(),
+                                                orderFacts.get(d.lineId()).employeeCode()))
                         .toList();
         BigDecimal correctionAmount =
                 corrections.stream()
@@ -712,6 +937,7 @@ public class HrPayrollService {
                                 rules,
                                 input,
                                 domainFacts,
+                                new TreeMap<>(confirmedSales),
                                 performanceSources,
                                 corrections,
                                 claimed.stream()

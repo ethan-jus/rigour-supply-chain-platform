@@ -4,6 +4,7 @@ import com.rigour.hr.api.v1.model.*;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -54,6 +55,9 @@ public interface HrPayrollStore {
             String tenant, String employee, String month, PayrollInputCommand input, String actor);
 
     Set<String> released(String tenant);
+
+    Map<String, PayrollCommissionDetailView> confirmedSalesCommissions(
+            String tenant, Set<String> employees, Set<String> lineIds, String throughMonth);
 
     Optional<PayrollDetailView> byMonth(String tenant, String employee, String month);
 

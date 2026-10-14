@@ -13,7 +13,7 @@
 | rigour-sales-work-service | 26886 | `rigour_sales_work` | 销售画像、团队、外勤规则、H5签到/签退、销售工作日、定位、拜访、录音证据、复核和销售日结候选；不主写CRM门店或HR正式考勤 |
 | rigour-ai-agent-service | 26887 | `rigour_ai` | ASR、业务初审、查重、知识问答、战报 Agent 和模型治理 |
 | rigour-analytics-bi-service | 26888 | `rigour_bi` | 指标、分析分层、驾驶舱、排名、战报和锁定快照 |
-| rigour-hr-payroll-service | 26889 | `rigour_hr` | 任职、工资、绩效、提成、月结和冲回 |
+| rigour-hr-payroll-service | 26889 | `rigour_hr` | 员工任职、月度考勤规则与缺卡说明、工资、绩效、提成、月结和冲回；原始销售打卡只读 Sales API |
 | rigour-business-settings-service | 26892 | `rigour_settings` | 系统级、模块级和租户级业务字典及层级条目；不持有ERP、CRM、订单业务事实 |
 
 每个领域服务是自身 Schema 的唯一业务写入方。DEV 按 2026-09-16 的开发约定使用配置文件中的 root，并在启动时运行 Flyway；生产仍须按独立配置控制账号和写权限。数据库实际迁移版本以目标环境核验为准。

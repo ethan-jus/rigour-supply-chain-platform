@@ -1,0 +1,74 @@
+[
+  {
+    "migration_directory": "services/rg-scdp-bi/bi-server/src/main/resources/db/migration",
+    "through_version": "21",
+    "migration_count": 21,
+    "source_sha256": "3e8e2f64f223081b1d3b9cac4082239a74ce07d242aee6901684e28787119db1",
+    "baseline": "services/rg-scdp-bi/bi-server/src/main/resources/db/bootstrap/B21__general_ci_bootstrap.sql",
+    "baseline_sha256": "a108adc6d37b6ebfb20ea02c1e78914487c4ffd9842ded43fda0b816df0744ef"
+  },
+  {
+    "migration_directory": "services/rg-scdp-crm/crm-server/src/main/resources/db/migration",
+    "through_version": "24",
+    "migration_count": 24,
+    "source_sha256": "93fa67b78b474d05e5b8f3f9069ee3cb93b11ef87b807c17d481156eff4694d8",
+    "baseline": "services/rg-scdp-crm/crm-server/src/main/resources/db/bootstrap/B24__general_ci_bootstrap.sql",
+    "baseline_sha256": "74180d2d72c7cac00c3920d212fc915653418ba5869aa7d4e4d3410e02bb2904"
+  },
+  {
+    "migration_directory": "services/rg-scdp-erp/erp-server/src/main/resources/db/migration",
+    "through_version": "36",
+    "migration_count": 36,
+    "source_sha256": "53837ee60444c4cf44f84f501e2072ffeec08741be9a4fb3ab7f2d3314792b68",
+    "baseline": "services/rg-scdp-erp/erp-server/src/main/resources/db/bootstrap/B36__general_ci_bootstrap.sql",
+    "baseline_sha256": "bf3737eec7b6c2fbc350a86053d40e4068a8f355d68da370b6ff78b5c936f03f"
+  },
+  {
+    "migration_directory": "services/rg-scdp-foundation/foundation-server/src/main/resources/db/migration",
+    "through_version": "34",
+    "migration_count": 34,
+    "source_sha256": "073198fe6357cccce9aad0adbf04b76e7e57cc0fc16602ac40d19c3ab8fc42bd",
+    "baseline": "services/rg-scdp-foundation/foundation-server/src/main/resources/db/bootstrap/B34__general_ci_bootstrap.sql",
+    "baseline_sha256": "0e1d86df8618467ee662522481c1d8a254f5a4b5220b6480a92ea38d1d131edf"
+  },
+  {
+    "migration_directory": "services/rg-scdp-hr/hr-server/src/main/resources/db/migration",
+    "through_version": "7",
+    "migration_count": 7,
+    "source_sha256": "cb923a2a40354e2781beae96810625e124bbc7dbad5145da017153cc92214985",
+    "baseline": "services/rg-scdp-hr/hr-server/src/main/resources/db/bootstrap/B7__general_ci_bootstrap.sql",
+    "baseline_sha256": "16bea03094b49606df1046c30197e43f015e8d7ca24b421bade53dff376b8ab2"
+  },
+  {
+    "migration_directory": "services/rg-scdp-iam/iam-server/src/main/resources/db/migration",
+    "through_version": "118",
+    "migration_count": 122,
+    "source_sha256": "d2a9f387027e285ce71f30512777d3392a3c3072c36de7112a9eaa5fa86ed995",
+    "baseline": "services/rg-scdp-iam/iam-server/src/main/resources/db/bootstrap/B118__general_ci_bootstrap.sql",
+    "baseline_sha256": "d90349ec3d25739d3a8a3ed4a3a4b259f60edffeee0536719409885d6de9c29a"
+  },
+  {
+    "migration_directory": "services/rg-scdp-integration/integration-server/src/main/resources/db/migration",
+    "through_version": "24",
+    "migration_count": 24,
+    "source_sha256": "ae6d1bbe0c54a9b1e6c37a130e5912662a67a3f4676f038378dccfae49b6e0d6",
+    "baseline": "services/rg-scdp-integration/integration-server/src/main/resources/db/bootstrap/B24__general_ci_bootstrap.sql",
+    "baseline_sha256": "7d48c51aaa342bc7cad05e66894f2c5c882e29968ff119d7e545949078d7df76"
+  },
+  {
+    "migration_directory": "services/rg-scdp-order/order-server/src/main/resources/db/migration",
+    "through_version": "45",
+    "migration_count": 45,
+    "source_sha256": "6f9de0b709ca28184db2b153a9d12ee2d2775839c866041b1ab39665cfe7e439",
+    "baseline": "services/rg-scdp-order/order-server/src/main/resources/db/bootstrap/B45__general_ci_bootstrap.sql",
+    "baseline_sha256": "1e5bb8f16ec864b908aefd4e87b60b3bbaf8a27fb261c8e579a67889635b7940"
+  },
+  {
+    "migration_directory": "services/rg-scdp-sales/sales-server/src/main/resources/db/migration",
+    "through_version": "27",
+    "migration_count": 27,
+    "source_sha256": "3cb3adf619a19e3a07079adc583e400525a2b05271ecb5f78a39c9bbb8179583",
+    "baseline": "services/rg-scdp-sales/sales-server/src/main/resources/db/bootstrap/B27__general_ci_bootstrap.sql",
+    "baseline_sha256": "920d35054e81ad663166a77f2895a1c72f1147c08d557bcf0b2efe5b9cdb9d83"
+  }
+]

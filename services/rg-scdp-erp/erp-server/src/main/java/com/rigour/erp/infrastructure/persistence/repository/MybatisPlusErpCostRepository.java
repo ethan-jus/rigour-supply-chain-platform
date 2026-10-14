@@ -87,26 +87,17 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
     private QueryWrapper<ErpCostEntity> query(
             String tenant, String category, ErpCostQuery filter, String action) {
         var q = where(tenant, category, action);
-        if (text(filter.keyword()))
-            q.and(
-                    w ->
-                            w.apply(
-                                            "JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.rental.contractNo'))"
-                                                + " LIKE {0}",
-                                            "%" + filter.keyword() + "%")
-                                    .or()
-                                    .like("document_no", filter.keyword())
-                                    .or()
-                                    .like("title", filter.keyword())
-                                    .or()
-                                    .apply(
-                                            "JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.remark')) LIKE"
-                                                    + " {0}",
-                                            "%" + filter.keyword() + "%")
-                                    .or()
-                                    .apply(
-                                            "CAST(sources_json AS CHAR) LIKE {0}",
-                                            "%" + filter.keyword() + "%"));
+        if (text(filter.documentNo()))
+            q.apply("LOCATE({0},document_no)>0", filter.documentNo().trim());
+        if (text(filter.title())) q.apply("LOCATE({0},title)>0", filter.title().trim());
+        if (text(filter.remark()))
+            q.apply(
+                    "LOCATE({0},JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.remark')))>0",
+                    filter.remark().trim());
+        if (text(filter.contractNo()))
+            q.apply(
+                    "LOCATE({0},JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.rental.contractNo')))>0",
+                    filter.contractNo().trim());
         q.eq(text(filter.typeCode()), "type_code", filter.typeCode())
                 .eq(text(filter.cityCode()), "city_code", filter.cityCode())
                 .eq(text(filter.statusCode()), "status_code", filter.statusCode())

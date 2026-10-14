@@ -7,4 +7,6 @@ public record PayrollProductView(
         String variantCode,
         String productName,
         String specification,
-        String unitCode) {}
+        String unitCode,
+        Long categoryId,
+        String categoryName) {}

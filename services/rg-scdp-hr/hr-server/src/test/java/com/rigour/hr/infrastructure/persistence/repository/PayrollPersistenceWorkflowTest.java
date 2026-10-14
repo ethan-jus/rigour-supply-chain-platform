@@ -36,6 +36,7 @@ class PayrollPersistenceWorkflowTest {
     static final String DATABASE = "payroll_" + UUID.randomUUID();
     java.sql.Connection schemaConnection;
     JdbcTemplate jdbc;
+    DriverManagerDataSource dataSource;
     MybatisPlusHrPayrollRepository payroll;
     MybatisPlusHrExpenseRepository expenses;
     HrPayrollPersistenceSupport support;
@@ -51,6 +52,7 @@ class PayrollPersistenceWorkflowTest {
                                 + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000",
                         "sa",
                         "");
+        dataSource = ds;
         jdbc = new JdbcTemplate(ds);
         jdbc.execute("DROP ALL OBJECTS");
         String ddl =
@@ -611,6 +613,7 @@ class PayrollPersistenceWorkflowTest {
     @AfterEach
     void closeSchemaConnection() throws Exception {
         schemaConnection.close();
+        com.rigour.shared.context.TestAuthorizationContext.clear();
     }
 
     @AfterAll
@@ -843,5 +846,129 @@ class PayrollPersistenceWorkflowTest {
         assertThat(payroll.detail("T1", second.id(), "hr:payroll:read").statusCode())
                 .isEqualTo("READY");
         assertThat(payroll.released("T2")).isEmpty();
+    }
+
+    @Test
+    void teamReadsOnlySettledSalesSnapshotsForRequestedTenantEmployeeLinesAndMonth() {
+        var row =
+                payroll.saveCalculation(
+                        "T1", "E1", "2026-09", employee(), calculation("old"), "HR");
+        assertThat(
+                        payroll.confirmedSalesCommissions(
+                                "T1", java.util.Set.of("E1"), java.util.Set.of("LINE1"), "2026-09"))
+                .isEmpty();
+        payroll.transition(
+                "T1", row.id(), new PayrollActionCommand(row.revision(), "确认"), "CONFIRMED", "HR");
+        var result =
+                payroll.confirmedSalesCommissions(
+                        "T1", java.util.Set.of("E1"), java.util.Set.of("LINE1"), "2026-09");
+        assertThat(result).containsOnlyKeys("LINE1");
+        assertThat(result.get("LINE1").released()).isEqualByComparingTo("40");
+        assertThat(
+                        payroll.confirmedSalesCommissions(
+                                "T2", java.util.Set.of("E1"), java.util.Set.of("LINE1"), "2026-09"))
+                .isEmpty();
+        assertThat(
+                        payroll.confirmedSalesCommissions(
+                                "T1", java.util.Set.of("E2"), java.util.Set.of("LINE1"), "2026-09"))
+                .isEmpty();
+        assertThat(
+                        payroll.confirmedSalesCommissions(
+                                "T1", java.util.Set.of("E1"), java.util.Set.of("LINE2"), "2026-09"))
+                .isEmpty();
+        assertThat(
+                        payroll.confirmedSalesCommissions(
+                                "T1", java.util.Set.of("E1"), java.util.Set.of("LINE1"), "2026-08"))
+                .isEmpty();
+    }
+
+    PayrollRuleCommand cityCommand(String city) {
+        return new PayrollRuleCommand(
+                UUID.randomUUID().toString(),
+                null,
+                city + "提成",
+                "CITY_MANAGER",
+                "E1",
+                List.of(),
+                city,
+                city,
+                false,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                LocalDate.of(2026, 1, 1),
+                LocalDate.of(9999, 12, 31),
+                true,
+                "",
+                null,
+                null,
+                null,
+                null,
+                null,
+                new PayrollCityCommissionPolicy(new BigDecimal("50"), List.of()));
+    }
+
+    @Test
+    void cityBatchPersistsPoliciesIdempotentlyAndRollsBackEarlierCityAndAuditOnConflict() {
+        var tenant = UUID.randomUUID();
+        var user = UUID.randomUUID();
+        com.rigour.shared.context.TestAuthorizationContext.set(
+                new com.rigour.shared.context.CallerIdentity(
+                        "TENANT",
+                        user,
+                        tenant,
+                        user,
+                        null,
+                        UUID.randomUUID(),
+                        0,
+                        0,
+                        0,
+                        java.util.Set.of(),
+                        java.util.Set.of("hr:payroll-rule:write")));
+        doReturn(List.of(employee())).when(references).employees(any());
+        var service =
+                proxy(
+                        new com.rigour.hr.application.service.HrPayrollService(
+                                payroll,
+                                mock(com.rigour.hr.application.port.out.HrPayrollSource.class),
+                                JsonMapper.builder().build()),
+                        dataSource);
+        var commands = List.of(cityCommand("石家庄"), cityCommand("唐山"));
+        var saved = service.createCityManagers(commands);
+        assertThat(saved)
+                .hasSize(2)
+                .allSatisfy(
+                        r ->
+                                assertThat(r.data().cityCommission().teamPercent())
+                                        .isEqualByComparingTo("50"));
+        assertThat(service.createCityManagers(commands))
+                .extracting(PayrollRuleView::id)
+                .containsExactlyElementsOf(saved.stream().map(PayrollRuleView::id).toList());
+        assertThat(payroll.rules(tenant.toString())).hasSize(2);
+        var auditCount =
+                jdbc.queryForObject("SELECT COUNT(*) FROM hr_payroll_audit", Integer.class);
+        assertThatThrownBy(
+                        () ->
+                                service.createCityManagers(
+                                        List.of(cityCommand("北京"), cityCommand("唐山"))))
+                .hasMessageContaining("唐山")
+                .hasMessageContaining("重叠");
+        assertThat(payroll.rules(tenant.toString()))
+                .hasSize(2)
+                .noneSatisfy(r -> assertThat(r.data().cityCode()).isEqualTo("北京"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_payroll_audit", Integer.class))
+                .isEqualTo(auditCount);
+        assertThatThrownBy(
+                        () ->
+                                service.createCityManagers(
+                                        List.of(cityCommand("北京"), cityCommand("北京"))))
+                .hasMessageContaining("不可重复");
+        assertThat(payroll.rules(tenant.toString())).hasSize(2);
     }
 }

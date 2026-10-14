@@ -71,6 +71,10 @@ public final class ErpCostService {
     public ErpCostPageView entries(String value, ErpCostQuery q) {
         String category = category(value), p = permission(category, "read");
         var a = actor(p);
+        text(q.documentNo(), 100, "费用单号");
+        text(q.title(), 200, "费用事项");
+        text(q.remark(), 1000, "备注");
+        text(q.contractNo(), 100, "租赁合同号");
         if (q.dateFrom() != null && q.dateTo() != null && q.dateTo().isBefore(q.dateFrom()))
             throw bad("截止日期不能早于开始日期");
         return store.entries(
@@ -79,7 +83,10 @@ public final class ErpCostService {
                 new ErpCostQuery(
                         Math.max(0, q.begin()),
                         q.step() <= 0 ? 20 : Math.min(200, q.step()),
-                        q.keyword(),
+                        q.documentNo(),
+                        q.title(),
+                        q.remark(),
+                        q.contractNo(),
                         q.typeCode(),
                         q.cityCode(),
                         q.statusCode(),

@@ -74,26 +74,29 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
     private QueryWrapper<OrderLogisticsCostEntity> query(
             String tenant, String category, LogisticsCostQuery filter, String action) {
         var q = where(tenant, category, action);
-        if (text(filter.keyword()))
-            q.and(
-                    w ->
-                            w.apply(
-                                            "JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.logistics.trackingNo'))"
-                                                + " LIKE {0}",
-                                            "%" + filter.keyword() + "%")
-                                    .or()
-                                    .like("document_no", filter.keyword())
-                                    .or()
-                                    .like("title", filter.keyword())
-                                    .or()
-                                    .apply(
-                                            "JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.remark')) LIKE"
-                                                    + " {0}",
-                                            "%" + filter.keyword() + "%")
-                                    .or()
-                                    .apply(
-                                            "CAST(sources_json AS CHAR) LIKE {0}",
-                                            "%" + filter.keyword() + "%"));
+        if (text(filter.documentNo()))
+            q.apply("LOCATE({0},document_no)>0", filter.documentNo().trim());
+        if (text(filter.title())) q.apply("LOCATE({0},title)>0", filter.title().trim());
+        if (text(filter.remark()))
+            q.apply(
+                    "LOCATE({0},JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.remark')))>0",
+                    filter.remark().trim());
+        if (text(filter.trackingNo()))
+            q.apply(
+                    "LOCATE({0},JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.logistics.trackingNo')))>0",
+                    filter.trackingNo().trim());
+        if (text(filter.sourceDocumentNo())) {
+            // 只匹配来源单号，避免命中来源快照中的城市、仓库等其他字段。
+            String value =
+                    filter.sourceDocumentNo()
+                            .trim()
+                            .replace("\\", "\\\\")
+                            .replace("%", "\\%")
+                            .replace("_", "\\_");
+            q.apply(
+                    "JSON_SEARCH(sources_json,'one',{0},NULL,'$[*].documentNo') IS NOT NULL",
+                    "%" + value + "%");
+        }
         q.eq(text(filter.typeCode()), "type_code", filter.typeCode())
                 .eq(text(filter.cityCode()), "city_code", filter.cityCode())
                 .eq(text(filter.statusCode()), "status_code", filter.statusCode())

@@ -1,0 +1,16 @@
+{
+  "gateway": {"xms_mib": null, "xmx_mib": null},
+  "iam": {"xms_mib": null, "xmx_mib": null},
+  "foundation": {"xms_mib": 64, "xmx_mib": 384},
+  "hr": {"xms_mib": 64, "xmx_mib": 256},
+  "crm": {"xms_mib": 64, "xmx_mib": 384},
+  "erp": {"xms_mib": 128, "xmx_mib": 512},
+  "order": {"xms_mib": 64, "xmx_mib": 384},
+  "integration": {
+    "xms_mib": 128,
+    "xmx_mib": 512,
+    "product_media_worker_enabled": false,
+    "dhb_orchestration_enabled": false
+  },
+  "bi": {"xms_mib": 64, "xmx_mib": 256, "refresh_enabled": false}
+}
