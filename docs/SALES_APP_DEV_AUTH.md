@@ -1,12 +1,26 @@
-# 销售工作台 App DEV 公司登录
+# 销售工作台 App 原生登录与 IAM 接入
 
-本方案新增独立 PUBLIC OAuth 客户端，复用供应链 IAM 的员工账号、权限和 Gateway，不修改临时打卡，也不覆盖浏览器客户端、用户或角色授权。注册默认关闭，不需要修改 Flyway 历史或手工写数据库。
+更新：2026-10-14。App 使用自己的原生账号密码表单；IAM 统一负责密码校验、失败锁定、登录会话、Token 签发与轮换、权限和会话撤销。不是新建账号库，也不使用 OAuth password grant。Web 登录和生产临时打卡保持原有路径。
 
-## Android 标准基座
+## 调用合同
 
-本机 HBuilderX 5.26 Android 标准基座 Manifest 的包名为 `io.dcloud.uniappx`，浏览器回调 scheme 为 `uniappx`。DEV 配置使用精确回调 `uniappx://rigour-sales/auth/callback`；共享 scheme 仅用于受控开发手机，正式发布不能沿用。
+1. App 使用安全随机数生成独立 verifier/state 和 S256 challenge。
+2. `POST /api/v1/auth/native-app/login`（IAM origin，JSON）提交 `clientId, redirectUri, codeChallenge, codeChallengeMethod: S256, state, username, password`，可附 `tenantCode, deviceName`。省略 tenantCode 时使用 IAM 已有默认租户。
+3. IAM 只允许明确配置的独立 Sales App PUBLIC 客户端，复用密码认证提供器和标准授权码提供器；响应 `ApiResponse.data` 包含 `authorizationCode, expiresIn, state`。密码错误、账号不可用统一返回认证失败，不创建浏览器 Cookie 会话。
+4. App 校验 state 后，通过现有 `/oauth2/token` 以 `authorization_code + code_verifier + client_id + redirect_uri` 交换令牌，随后请求可信 Gateway `/api/v1/me` 验证身份与平台权限。
+5. 过期续期仍调用 `/oauth2/token` 的 `refresh_token` 授权。IAM 轮换旧凭据、检测重放；App 必须单飞刷新、避免旧响应覆盖新账号或重复消费旧 refresh。
+6. `POST /api/v1/auth/native-app/logout` 使用 Bearer Access Token，只撤销该 Token 对应的原生 App 会话、授权及 refresh 链，成功返回 204；不接受调用方传入其他 sessionId，不退出其他 Web/App 会话。
 
-本机 IAM 使用 `dev` 或 `local` profile（同时含 `prod` 时拒绝调试回调），启动时显式启用：
+`redirectUri` 继续作为标准授权码交换的精确客户端绑定值，但新流程不通过浏览器或系统 scheme 返回 App。原有浏览器 scheme 回调验收不能当作原生表单验收。
+
+原生入口默认关闭。启用时配置：
+
+```properties
+rigour.iam.authentication.native-app.enabled=true
+rigour.iam.authentication.native-app.allowed-client-ids=rigour-sales-app-android-dev
+```
+
+PUBLIC 客户端仍需先注册。开发环境首次注册使用：
 
 ```properties
 rigour.iam.bootstrap.sales-app-client.enabled=true
@@ -16,44 +30,27 @@ rigour.iam.bootstrap.sales-app-client.redirect-uri=uniappx://rigour-sales/auth/c
 rigour.iam.bootstrap.sales-app-client.allow-debug-base=true
 ```
 
-使用 IAM 已有 `RegisteredClientRepository` 创建客户端。再次启动仅核对现有安全配置，发现差异时拒绝覆盖。完成后可关闭 bootstrap 开关。源码没有现成 OAuth 客户端注册管理 API，供应链“应用设置”不是 OAuth 客户端管理；本轮没有新增管理 API。
+注册仅允许 dev/local 的显式调试配置，含 prod profile 时拒绝；已有配置漂移会报错而非覆盖。注册后关闭 bootstrap 开关，原生登录开关独立保留。正式环境使用各平台独立正式客户端及 HTTPS，不沿用 DEV 客户端。
 
-本轮独立进程使用 IAM `27681`、Gateway `27680`，保留已运行的 IDEA 服务。手机通过 `adb reverse tcp:27681 tcp:27681`、`adb reverse tcp:27680 tcp:27680` 使用本机服务，issuer 为 `http://localhost:27681`。App 中仅明确标为 DEV 的 loopback 地址允许 HTTP；不能把这项例外扩大为局域网地址、任意域名或正式环境 HTTP。还须现场核对 IAM discovery 的 issuer 与 App 配置精确一致，以及 Gateway 的 issuer 校验配置一致。
+## 会话与令牌
 
-独立进程不注册共享 Nacos，使用隔离配置将 Gateway 的 `/me`/IAM 路由、`jwk-set-uri`、`iam-current-token-uri` 显式指向本机 `27681`，不能让新 issuer 的令牌绕到旧 IAM 再验签。Gateway 启用 `allow-insecure-loopback`，保留 `allow-insecure-http=false` 和 `current-token-validation-enabled=true`；原有共享配置、签名校验与业务数据权限不关闭。
+- 客户端认证 `none`，没有客户端 Secret；授权 `authorization_code`、`refresh_token`；强制 S256 PKCE、固定 `profile` scope、不签发或使用 ID Token。
+- 授权码 5 分钟、Access Token 15 分钟、轮换 Refresh Token 7 天；refresh 仍受 IAM 登录会话绝对期限约束。当前密码会话默认 8 小时，7 天 refresh TTL 不等于承诺 7 天免登录。本轮不修改平台会话期限。
+- 新原生会话使用 `NATIVE_APP`，V133 仅扩展已有客户端类型约束；保留 WEB、FEISHU_H5 和现有会话。不改写已执行的迁移。
+- Android 使用 Keystore 加密保存 refresh 和最小账号/环境绑定信息；Access Token 仅在内存，密码不落盘。iOS/HarmonyOS 安全存储及真实认证需各自接入验证。
+- 刷新发送前作废旧的持久凭据，成功收到并安全保存新凭据后才发布新登录态。超时或响应丢失时不盲目重放旧 refresh；重新登录并保留业务草稿。
+- App 清本机凭据和 IAM 撤销是两个动作。断网时不能声称服务端已撤销，不能删除未上传的拜访草稿来代替退出。
 
-系统浏览器直接访问 IAM `/oauth2/authorize`，由 IAM `/login` 表单处理密码及 CSRF，并恢复原授权请求。不要走供应链 `/auth` 中转到 Web `/#/login` 或 `/scdp/login`；该流程服务于 Web 会话，并清除保存的授权请求。
+## 本机隔离 DEV
 
-## OAuth 合同
+App Gateway `http://localhost:27680`、IAM `http://localhost:27681`；Android 经 ADB reverse 访问。只有明确标为 development 的精确 loopback 配置允许 HTTP，正式环境必须 HTTPS。独立进程关闭 Nacos 注册，保留已运行 IDEA 服务。
 
-- 独立客户端 ID 只接受 `rigour-sales-app-android`、`rigour-sales-app-ios`、`rigour-sales-app-harmony`，以及各自 `-dev` 形式。
-- 客户端认证方式 `none`，不保存 Secret；授权类型 `authorization_code` 与 `refresh_token`；强制 PKCE。App 使用独立安全随机 verifier/state 和 `S256`。
-- 仅注册 `profile` scope，App 不申请、不解码、不使用 ID Token。Access Token 通过可信 Gateway `/api/v1/me` 再次验证员工身份，功能权限和数据范围仍由服务端判定。
-- 授权码 5 分钟、Access Token 15 分钟、轮换 Refresh Token 7 天。刷新有效性仍受 IAM 登录会话期限限制，7 天不等于承诺 7 天免登录。客户端未实现安全存储和串行轮换前，不得持久化 Refresh Token。
-- 回调要求精确匹配 scheme/host/path，无可变 query/fragment/端口/用户信息；逐次 state 校验，超时与重复回调拒绝。客户端注册本身不授予业务权限。
+Gateway 的 issuer、JWKS、current-token 校验和 `/me` 路由均指向隔离 IAM，保持签名和当前会话校验；业务接口继续使用 DEV 的真实数据与权限。App 自有登录页不改变客户、订单或 Sales 的数据范围。
 
-现有 PUBLIC refresh 实现要求 PKCE、code+refresh 和禁止复用；数据库仅留 refresh 摘要，轮换旧值并检测重放，重放会撤销关联会话。App 刷新需单飞，不能在网络失败后盲目重复使用旧 refresh。平台已有会话退出和当前会话验证，App 清内存退出不等同于全局退出。
+## 迁移与验收状态
 
-## 正式包与其他端
+本轮原生表单改动的验证结果以实际测试和手机回执为准。此前已验证 Android 浏览器登录、管理员客户列表/详情和订单列表，不能直接作为本次原生登录、续期或重新启动恢复的验收。
 
-正式客户端使用 `com.rigour.workbench://auth/callback`，`allow-debug-base=false`，各平台单独客户端 ID。Android 配置公司包的 `AndroidManifest.xml`，iOS 配置 URL Schemes，HarmonyOS 配置 `module.json5`/HBuilderX 对应 scheme 项，并分别验证冷启动和前台回调。配置必须进入重打包的基座或签名包，热更新源码不会更改已安装基座的系统回调注册。
+2026-10-14 只读发现共享 DEV 已执行 `V132__iam_hr_attendance_navigation.sql`，本机和远程 dev 尚无该原始文件；在补齐匹配原始迁移之前，不能把含 V133 的版本迁入共享 DEV，不能关闭校验、repair 或改造历史规避。隔离 Testcontainers 可继续验证原生密码、PKCE、refresh 轮换、重放、停用账号、锁定和当前会话退出。
 
-- [DCloud Android scheme 配置](https://doc.dcloud.net.cn/uni-app-x/collocation/app-nativeresource-android.html)
-- [DCloud iOS URL Schemes](https://doc.dcloud.net.cn/uni-app-x/collocation/manifest-ios.html)
-- [DCloud App 生命周期与鸿蒙 scheme](https://doc.dcloud.net.cn/uni-app-x/collocation/app.html)
-
-生产 TLS/issuer 配置属于单独发布步骤，不应为接通本轮 DEV 修改现有生产 issuer。2026-10-14 只读观察到现有供应链公开入口仍为 HTTP，代理 discovery 的 issuer 是回环 HTTP；该观察不是移动端生产可用证明。
-
-## 必要验收
-
-本机编译与定向测试后，需要真实 DEV 员工执行浏览器登录→回调→`/me`，确认同一用户 ID、tenantId 和实时权限。验证错误 PKCE、未注册回调、缺权限 403、过期 401、禁用账号/角色变更生效、账号切换不残留上一账号数据。Sales 还要求员工身份投影、有效销售画像、拜访目标分配及生效规则；不能通过增授管理员权限绕过这些前置。
-
-定向验证命令：
-
-```shell
-./mvnw -pl services/rg-scdp-iam/iam-server -am \
-  -Dtest=SalesAppClientBootstrapTest,PublicRefreshClientAuthenticationTest,IamAuthorizationServerSecurityTests#nativeProfileOnlyClientCompletesLoginPkceAndVerifiedIdentity \
-  -Dsurefire.failIfNoSpecifiedTests=false test
-```
-
-其中原生登录集成用例通过独立 Testcontainers MySQL 注册客户端、使用 IAM 登录表单及 CSRF 完成 PKCE 授权、交换 profile-only 令牌并调用 `/me`，验证无 ID Token 且非法回调被拒绝；不接触 DEV 数据库。测试不证明真实 DEV 数据库已经有客户端或手机登录已验收。
+普通销售验收仍需真实员工身份、Sales 画像、门店分配及有效规则；不能以管理员或临时打卡身份代替。

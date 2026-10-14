@@ -84,6 +84,8 @@ import java.util.regex.Pattern;
         properties = {
             "spring.flyway.enabled=true",
             "rigour.iam.authentication.password.default-tenant-code=browser-scdp",
+            "rigour.iam.authentication.native-app.enabled=true",
+            "rigour.iam.authentication.native-app.allowed-client-ids[0]=rigour-sales-app-android",
             "spring.cloud.nacos.config.enabled=false",
             "spring.cloud.nacos.discovery.enabled=false"
         })
@@ -97,6 +99,9 @@ class IamAuthorizationServerSecurityTests {
             "https://scdp.dev.rigour.local/login/oauth2/code/rigour-iam";
     private static final String USERNAME = "browser-scdp-admin";
     private static final String PASSWORD = "Browser-Test-Password-42!";
+    private static final String NATIVE_CLIENT_ID = "rigour-sales-app-android";
+    private static final String NATIVE_REDIRECT = "com.rigour.workbench://auth/callback";
+    private static final String NATIVE_VERIFIER = "native-login-verifier-0123456789abcdefghijklmnopqrstuvwxyz";
     private static final Pattern CSRF_VALUE = Pattern.compile("name=\"_csrf\" value=\"([^\"]+)\"");
 
     @Container
@@ -638,6 +643,232 @@ class IamAuthorizationServerSecurityTests {
                 .contains(AuthorizationGrantType.REFRESH_TOKEN);
         assertThat(registeredClientRepository.findByClientId("unrelated-code-only").getAuthorizationGrantTypes())
                 .doesNotContain(AuthorizationGrantType.REFRESH_TOKEN);
+    }
+
+    @Test
+    void nativePasswordLoginUsesIamCodeTokensAndNoBrowserSession() throws Exception {
+        var login = nativeLogin(nativeRequest(PASSWORD)).andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(header().doesNotExist("Location"))
+                .andExpect(header().doesNotExist("Set-Cookie"))
+                .andExpect(jsonPath("$.data.expiresIn").value(300)).andReturn();
+        assertThat(login.getRequest().getSession(false)).isNull();
+        var data = json(login).get("data");
+        assertThat(data.get("state").asString()).isEqualTo(nativeRequest(PASSWORD).get("state"));
+        String code = data.get("authorizationCode").asString();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_oauth_authorization WHERE authorization_code_hash=UNHEX(SHA2(?,256))", Integer.class, code)).isEqualTo(1);
+        var tokens = nativeExchange(code, NATIVE_VERIFIER, NATIVE_CLIENT_ID, NATIVE_REDIRECT)
+                .andExpect(status().isOk()).andExpect(jsonPath("$.id_token").doesNotExist()).andReturn();
+        var body = json(tokens);
+        var jwt = jwtDecoder.decode(body.get("access_token").asString());
+        assertThat(jwt.getClaimAsString("principalScope")).isEqualTo("TENANT");
+        assertThat(jdbcTemplate.queryForObject("SELECT client_type FROM iam_auth_session WHERE id=?", String.class, uuid(UUID.fromString(jwt.getClaimAsString("sessionId"))))).isEqualTo("NATIVE_APP");
+        assertThat(jdbcTemplate.queryForObject("SELECT TIMESTAMPDIFF(SECOND,issued_at,expires_at) FROM iam_auth_session WHERE id=?", Long.class, uuid(UUID.fromString(jwt.getClaimAsString("sessionId"))))).isEqualTo(28800L);
+        mockMvc.perform(get("/api/v1/me").secure(true).header("Authorization", "Bearer " + body.get("access_token").asString()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.username").value(USERNAME));
+    }
+
+    @Test
+    void nativeLoginKeepsPasswordFailureCountsAndLockout() throws Exception {
+        long before = nativeSessions();
+        try {
+            for (int attempt = 0; attempt < 5; attempt++) nativeLogin(nativeRequest("incorrect-password"))
+                    .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value("IAM_LOGIN_FAILED"));
+            assertThat(jdbcTemplate.queryForObject("SELECT c.failed_attempts FROM iam_user_credential c JOIN iam_user u ON u.id=c.user_id WHERE u.username=?", Integer.class, USERNAME)).isEqualTo(5);
+            nativeLogin(nativeRequest(PASSWORD)).andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.code").value("IAM_LOGIN_FAILED"));
+            assertThat(nativeSessions()).isEqualTo(before);
+        } finally { resetNativeCredential(); }
+    }
+
+    @Test
+    void nativeLoginRejectsUnavailableUserTenantAndCredential() throws Exception {
+        long before = nativeSessions();
+        try {
+            jdbcTemplate.update("UPDATE iam_user SET status='DISABLED' WHERE username=?", USERNAME);
+            nativeLogin(nativeRequest(PASSWORD)).andExpect(status().isUnauthorized());
+            jdbcTemplate.update("UPDATE iam_user SET status='ACTIVE' WHERE username=?", USERNAME);
+            jdbcTemplate.update("UPDATE iam_tenant SET status='SUSPENDED' WHERE tenant_code='browser-scdp'");
+            nativeLogin(nativeRequest(PASSWORD)).andExpect(status().isUnauthorized());
+            jdbcTemplate.update("UPDATE iam_tenant SET status='ACTIVE' WHERE tenant_code='browser-scdp'");
+            jdbcTemplate.update("UPDATE iam_user_credential c JOIN iam_user u ON u.id=c.user_id SET c.status='DISABLED' WHERE u.username=?", USERNAME);
+            nativeLogin(nativeRequest(PASSWORD)).andExpect(status().isUnauthorized());
+            assertThat(nativeSessions()).isEqualTo(before);
+        } finally {
+            jdbcTemplate.update("UPDATE iam_user SET status='ACTIVE' WHERE username=?", USERNAME);
+            jdbcTemplate.update("UPDATE iam_tenant SET status='ACTIVE' WHERE tenant_code='browser-scdp'");
+            jdbcTemplate.update("UPDATE iam_user_credential c JOIN iam_user u ON u.id=c.user_id SET c.status='ACTIVE' WHERE u.username=?", USERNAME);
+        }
+    }
+
+    @Test
+    void nativeLoginRejectsUnapprovedClientRedirectAndPkceBeforePassword() throws Exception {
+        long before = nativeSessions();
+        var bad = nativeRequest(PASSWORD);
+        bad.put("clientId", CLIENT_ID);
+        nativeLogin(bad).andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("IAM_NATIVE_CLIENT_INVALID"));
+        bad = nativeRequest(PASSWORD); bad.put("redirectUri", NATIVE_REDIRECT + "?foreign=true");
+        nativeLogin(bad).andExpect(status().isBadRequest());
+        bad = nativeRequest(PASSWORD); bad.put("codeChallengeMethod", "plain");
+        nativeLogin(bad).andExpect(status().isBadRequest());
+        bad = nativeRequest(PASSWORD); bad.put("codeChallenge", "short");
+        nativeLogin(bad).andExpect(status().isBadRequest());
+        bad = nativeRequest(PASSWORD); bad.put("state", "short");
+        nativeLogin(bad).andExpect(status().isBadRequest());
+        try {
+            jdbcTemplate.update("UPDATE iam_oauth_client SET status='DISABLED' WHERE client_id=?", NATIVE_CLIENT_ID);
+            nativeLogin(nativeRequest(PASSWORD)).andExpect(status().isBadRequest());
+        } finally { jdbcTemplate.update("UPDATE iam_oauth_client SET status='ACTIVE' WHERE client_id=?", NATIVE_CLIENT_ID); }
+        assertThat(nativeSessions()).isEqualTo(before);
+    }
+
+    @Test
+    void nativeLoginRequiresJsonAndDoesNotReuseOrChangeBrowserSession() throws Exception {
+        mockMvc.perform(post("/api/v1/auth/native-app/login").secure(true)
+                        .contentType("application/x-www-form-urlencoded").param("username", USERNAME).param("password", PASSWORD))
+                .andExpect(status().isUnsupportedMediaType());
+        var session = new MockHttpSession();
+        var initial = mockMvc.perform(get("/scdp/session").secure(true).session(session)).andReturn();
+        String csrf = json(initial).get("csrfToken").asString();
+        mockMvc.perform(post("/scdp/login").secure(true).session(session).param("_csrf", csrf)
+                        .param("username", USERNAME).param("password", PASSWORD)).andExpect(status().isNoContent());
+        Object context = session.getAttribute("SPRING_SECURITY_CONTEXT");
+        try {
+            mockMvc.perform(post("/api/v1/auth/native-app/login").secure(true).session(session)
+                            .contentType("application/json").content(toJson(nativeRequest("wrong"))))
+                    .andExpect(status().isUnauthorized()).andExpect(header().doesNotExist("Set-Cookie"));
+            assertThat(session.getAttribute("SPRING_SECURITY_CONTEXT")).isSameAs(context);
+            mockMvc.perform(post("/api/v1/auth/native-app/login").secure(true).session(session)
+                            .contentType("application/json").content(toJson(nativeRequest(PASSWORD))))
+                    .andExpect(status().isOk()).andExpect(header().doesNotExist("Set-Cookie"));
+            assertThat(session.getAttribute("SPRING_SECURITY_CONTEXT")).isSameAs(context);
+            mockMvc.perform(post("/scdp/logout").secure(true).session(session)).andExpect(status().isForbidden());
+        } finally { resetNativeCredential(); }
+    }
+
+    @Test
+    void nativeCodeIsBoundToVerifierClientRedirectAndExpires() throws Exception {
+        String code = nativeCode();
+        nativeExchange(code, "wrong-verifier-that-is-long-enough-0123456789abc", NATIVE_CLIENT_ID, NATIVE_REDIRECT)
+                .andExpect(status().isBadRequest());
+        nativeExchange(code, NATIVE_VERIFIER, CLIENT_ID, NATIVE_REDIRECT).andExpect(status().isBadRequest());
+        nativeExchange(code, NATIVE_VERIFIER, NATIVE_CLIENT_ID, NATIVE_REDIRECT + "/other").andExpect(status().isBadRequest());
+        String expired = nativeCode();
+        jdbcTemplate.update("""
+                UPDATE iam_oauth_authorization SET code_issued_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 10 MINUTE),
+                    code_expires_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 5 MINUTE)
+                WHERE authorization_code_hash=UNHEX(SHA2(?,256))
+                """, expired);
+        nativeExchange(expired, NATIVE_VERIFIER, NATIVE_CLIENT_ID, NATIVE_REDIRECT).andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void nativeCodeAndRefreshReplayAreRejected() throws Exception {
+        String code = nativeCode();
+        nativeExchange(code, NATIVE_VERIFIER, NATIVE_CLIENT_ID, NATIVE_REDIRECT).andExpect(status().isOk());
+        nativeExchange(code, NATIVE_VERIFIER, NATIVE_CLIENT_ID, NATIVE_REDIRECT)
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_grant"));
+        var tokens = nativeTokens();
+        var rotated = nativeRefresh(tokens.get("refresh_token").asString()).andExpect(status().isOk()).andReturn();
+        assertThat(json(rotated).get("refresh_token").asString()).isNotEqualTo(tokens.get("refresh_token").asString());
+        nativeRefresh(tokens.get("refresh_token").asString()).andExpect(status().isBadRequest());
+        nativeRefresh(json(rotated).get("refresh_token").asString()).andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/v1/me").secure(true).header("Authorization", "Bearer " + json(rotated).get("access_token").asString()))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void nativeLogoutRevokesOnlyCurrentSessionAndCannotUseCookie() throws Exception {
+        var first = nativeTokens();
+        var other = nativeTokens();
+        String webRefresh = issueRefreshToken();
+        mockMvc.perform(post("/api/v1/auth/native-app/logout").secure(true)).andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/api/v1/auth/native-app/logout").secure(true)
+                        .header("Authorization", "Bearer " + first.get("access_token").asString())
+                        .contentType("application/json").content("{\"sessionId\":\"" + jwtDecoder.decode(other.get("access_token").asString()).getClaimAsString("sessionId") + "\"}"))
+                .andExpect(status().isNoContent()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(header().doesNotExist("Set-Cookie"));
+        nativeRefresh(first.get("refresh_token").asString()).andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/v1/me").secure(true).header("Authorization", "Bearer " + first.get("access_token").asString()))
+                .andExpect(status().isUnauthorized());
+        nativeRefresh(other.get("refresh_token").asString()).andExpect(status().isOk());
+        mockMvc.perform(post("/oauth2/token").secure(true).param("grant_type", "refresh_token")
+                        .param("client_id", CLIENT_ID).param("refresh_token", webRefresh)).andExpect(status().isOk());
+    }
+
+    @Test
+    void nativeRefreshRejectsDisabledUserTenantAndExpiredSessionAsInvalidGrant() throws Exception {
+        var userTokens = nativeTokens();
+        try {
+            jdbcTemplate.update("UPDATE iam_user SET status='DISABLED' WHERE username=?", USERNAME);
+            mockMvc.perform(get("/api/v1/me").secure(true).header("Authorization", "Bearer " + userTokens.get("access_token").asString()))
+                    .andExpect(status().isUnauthorized());
+            nativeRefresh(userTokens.get("refresh_token").asString()).andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("invalid_grant"));
+        } finally { jdbcTemplate.update("UPDATE iam_user SET status='ACTIVE' WHERE username=?", USERNAME); }
+        var tenantTokens = nativeTokens();
+        try {
+            jdbcTemplate.update("UPDATE iam_tenant SET status='SUSPENDED' WHERE tenant_code='browser-scdp'");
+            mockMvc.perform(get("/api/v1/me").secure(true).header("Authorization", "Bearer " + tenantTokens.get("access_token").asString()))
+                    .andExpect(status().isUnauthorized());
+            nativeRefresh(tenantTokens.get("refresh_token").asString()).andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("invalid_grant"));
+        } finally { jdbcTemplate.update("UPDATE iam_tenant SET status='ACTIVE' WHERE tenant_code='browser-scdp'"); }
+        var expired = nativeTokens();
+        var sid = uuid(UUID.fromString(jwtDecoder.decode(expired.get("access_token").asString()).getClaimAsString("sessionId")));
+        jdbcTemplate.update("""
+                UPDATE iam_auth_session SET issued_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 2 HOUR),
+                    last_seen_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 2 HOUR),expires_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 HOUR)
+                WHERE id=?
+                """, sid);
+        nativeRefresh(expired.get("refresh_token").asString()).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("invalid_grant"));
+    }
+
+    private java.util.Map<String, Object> nativeRequest(String password) throws Exception {
+        if (registeredClientRepository.findByClientId(NATIVE_CLIENT_ID) == null
+                && jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_oauth_client WHERE client_id=?", Integer.class, NATIVE_CLIENT_ID) == 0) {
+            var properties = new com.rigour.tenant.iam.infrastructure.bootstrap.SalesAppClientBootstrapProperties();
+            new com.rigour.tenant.iam.infrastructure.bootstrap.SalesAppClientBootstrapCommand(
+                    registeredClientRepository, UUID::randomUUID, properties, false).run(new org.springframework.boot.DefaultApplicationArguments());
+        }
+        var request = new java.util.LinkedHashMap<String, Object>();
+        request.put("clientId", NATIVE_CLIENT_ID); request.put("redirectUri", NATIVE_REDIRECT);
+        request.put("codeChallenge", Base64.getUrlEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(NATIVE_VERIFIER.getBytes(StandardCharsets.US_ASCII))));
+        request.put("codeChallengeMethod", "S256"); request.put("state", "native-state-0123456789abcdefghijklmnop");
+        request.put("username", USERNAME); request.put("password", password); request.put("deviceName", "Native test phone");
+        return request;
+    }
+
+    private org.springframework.test.web.servlet.ResultActions nativeLogin(java.util.Map<String, Object> request) throws Exception {
+        return mockMvc.perform(post("/api/v1/auth/native-app/login").secure(true).contentType("application/json").content(toJson(request)));
+    }
+
+    private String nativeCode() throws Exception {
+        return json(nativeLogin(nativeRequest(PASSWORD)).andExpect(status().isOk()).andReturn()).get("data").get("authorizationCode").asString();
+    }
+
+    private tools.jackson.databind.JsonNode nativeTokens() throws Exception {
+        return json(nativeExchange(nativeCode(), NATIVE_VERIFIER, NATIVE_CLIENT_ID, NATIVE_REDIRECT).andExpect(status().isOk()).andReturn());
+    }
+
+    private org.springframework.test.web.servlet.ResultActions nativeExchange(String code, String verifier, String clientId, String redirect) throws Exception {
+        return mockMvc.perform(post("/oauth2/token").secure(true).param("grant_type", "authorization_code")
+                .param("client_id", clientId).param("redirect_uri", redirect).param("code", code).param("code_verifier", verifier));
+    }
+
+    private org.springframework.test.web.servlet.ResultActions nativeRefresh(String refresh) throws Exception {
+        return mockMvc.perform(post("/oauth2/token").secure(true).param("grant_type", "refresh_token")
+                .param("client_id", NATIVE_CLIENT_ID).param("refresh_token", refresh));
+    }
+
+    private static String toJson(Object value) { return tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(value); }
+    private static tools.jackson.databind.JsonNode json(MvcResult result) throws Exception {
+        return tools.jackson.databind.json.JsonMapper.builder().build().readTree(result.getResponse().getContentAsByteArray());
+    }
+    private long nativeSessions() { return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_auth_session WHERE client_type='NATIVE_APP'", Long.class); }
+    private void resetNativeCredential() {
+        jdbcTemplate.update("UPDATE iam_user_credential c JOIN iam_user u ON u.id=c.user_id SET c.failed_attempts=0,c.locked_until=NULL,c.last_failed_at=NULL WHERE u.username=?", USERNAME);
     }
 
     private String issueRefreshToken() throws Exception {

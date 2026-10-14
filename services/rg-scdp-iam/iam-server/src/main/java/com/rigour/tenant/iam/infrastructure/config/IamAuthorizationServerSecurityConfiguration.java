@@ -174,6 +174,7 @@ public class IamAuthorizationServerSecurityConfiguration {
         http.securityMatcher("/api/**")
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/feishu/exchange").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/native-app/login").permitAll()
                         .anyRequest().authenticated())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .csrf(csrf -> csrf.disable())

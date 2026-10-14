@@ -92,6 +92,7 @@ import java.time.Clock;
     OidcTokenProperties.class,
     FeishuAuthenticationProperties.class,
     PasswordAuthenticationProperties.class,
+    com.rigour.tenant.iam.infrastructure.security.session.NativeAppAuthenticationProperties.class,
 
     ScdpClientBootstrapProperties.class,
     SalesAppClientBootstrapProperties.class,
@@ -210,6 +211,21 @@ public final class IamInfrastructureConfiguration {
                 new HttpSessionSecurityContextRepository();
         repository.setDisableUrlRewriting(true);
         return repository;
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = {"rigour.iam.authentication.native-app.enabled", "rigour.iam.oidc.server.enabled"}, havingValue = "true")
+    com.rigour.tenant.iam.application.service.auth.NativeAppAuthentication nativeAppAuthentication(
+            AuthenticationManager authenticationManager, RegisteredClientRepository clients,
+            org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService authorizations,
+            org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationConsentService consents,
+            com.rigour.tenant.iam.infrastructure.security.session.NativeAppAuthenticationProperties properties,
+            PasswordAuthenticationProperties passwordProperties,
+            org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings serverSettings,
+            IamSessionLogoutHandler logoutHandler, JdbcTemplate jdbcTemplate) {
+        return new com.rigour.tenant.iam.infrastructure.security.session.NativeAppAuthenticationAdapter(
+                authenticationManager, clients, authorizations, consents, properties,
+                passwordProperties, serverSettings, logoutHandler, jdbcTemplate);
     }
 
     @Bean
