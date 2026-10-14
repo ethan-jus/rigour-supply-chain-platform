@@ -4,6 +4,7 @@
 --create is a one-time repository operation, not a database operation.
 --check also checks newly added V migrations for the collation policy.
 Once published, neither a baseline nor its historical sources may be regenerated.
+Already published post-baseline exceptions are pinned by checksum in the manifest.
 """
 import argparse
 import hashlib
@@ -85,8 +86,16 @@ def main():
         content = (ROOT / entry["baseline"]).read_bytes()
         assert hashlib.sha256(content).hexdigest() == entry["baseline_sha256"], entry["baseline"]
         assert content == baseline(frozen), "Baseline does not match its frozen sources"
-        for path in paths:
-            if version(path) > ceiling:
+        # These files were already on dev when the policy gate was introduced.
+        # Pin their exact contents instead of rewriting applied Flyway migrations.
+        legacy = entry.get("legacy_migrations", {})
+        later = {path.name: path for path in paths if version(path) > ceiling}
+        assert legacy.keys() <= later.keys(), "Missing historical migration: " + str(directory)
+        for name, path in later.items():
+            if name in legacy:
+                assert hashlib.sha256(path.read_bytes()).hexdigest() == legacy[name], \
+                    "Historical migration changed: " + str(path)
+            else:
                 assert all(c.lower() == COLLATION for c in COLLATIONS.findall(path.read_text())), path
     print("Verified %d frozen baselines and %d unchanged historical migrations; new migrations use %s."
           % (len(entries), sum(entry["migration_count"] for entry in entries), COLLATION))

@@ -34,13 +34,20 @@ class DatabaseCollationPolicyTest {
         for (var entry : entries) {
             Path directory = ROOT.resolve((String) entry.get("migration_directory"));
             MigrationVersion ceiling = MigrationVersion.fromVersion((String) entry.get("through_version"));
+            Map<?, ?> legacy = (Map<?, ?>) entry.getOrDefault("legacy_migrations", Map.of());
+            List<String> verifiedLegacy = new ArrayList<>();
             List<Path> historical = new ArrayList<>();
             try (var files = Files.list(directory)) {
                 for (Path file : files.filter(p -> p.getFileName().toString().matches("V.*__.*\\.sql")).toList()) {
                     if (version(file).compareTo(ceiling) <= 0) historical.add(file);
-                    else assertGeneralCi(file);
+                    else if (legacy.containsKey(file.getFileName().toString())) {
+                        assertEquals(legacy.get(file.getFileName().toString()), HexFormat.of().formatHex(
+                                MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(file))), file.toString());
+                        verifiedLegacy.add(file.getFileName().toString());
+                    } else assertGeneralCi(file);
                 }
             }
+            assertEquals(legacy.keySet(), new java.util.HashSet<>(verifiedLegacy), directory.toString());
             historical.sort(Comparator.comparing(DatabaseCollationPolicyTest::version));
             assertEquals(((Number) entry.get("migration_count")).intValue(), historical.size(), directory.toString());
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
