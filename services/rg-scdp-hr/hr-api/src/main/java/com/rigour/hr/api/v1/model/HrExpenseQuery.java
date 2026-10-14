@@ -5,7 +5,9 @@ import java.time.LocalDate;
 public record HrExpenseQuery(
         int begin,
         int step,
-        String keyword,
+        String documentNo,
+        String title,
+        String remark,
         String typeCode,
         String employeeCode,
         String cityCode,

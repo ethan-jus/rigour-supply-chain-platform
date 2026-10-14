@@ -12,35 +12,68 @@ public interface SalesWorkAttendanceRepository {
 
     Optional<WorkDaySnapshot> findWorkDay(UUID tenantId, UUID salesProfileId, UUID workDayId);
 
-    Optional<WorkDaySnapshot> findWorkDay(UUID tenantId, UUID salesProfileId, LocalDate businessDate);
+    Optional<WorkDaySnapshot> findWorkDay(
+            UUID tenantId, UUID salesProfileId, LocalDate businessDate);
 
-    List<WorkDaySnapshot> findWorkDays(UUID tenantId, UUID salesProfileId, LocalDate from, LocalDate to);
+    List<WorkDaySnapshot> findWorkDays(
+            UUID tenantId, UUID salesProfileId, LocalDate from, LocalDate to);
 
-    void insertWorkDay(UUID id, UUID tenantId, UUID employeeId, UUID salesProfileId,
-                       LocalDate businessDate, String timezoneId, UUID fieldPolicyVersionId,
-                       Instant checkedInAt);
+    void insertWorkDay(
+            UUID id,
+            UUID tenantId,
+            UUID employeeId,
+            UUID salesProfileId,
+            LocalDate businessDate,
+            String timezoneId,
+            UUID fieldPolicyVersionId,
+            Instant checkedInAt);
 
-    void insertPunchEvent(UUID id, UUID tenantId, UUID workDayId, String eventType,
-                          String deviceEventId, Instant clientOccurredAt, Instant serverReceivedAt,
-                          BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-                          String deviceIdHash, String networkType, UUID policyVersionId);
+    void insertPunchEvent(
+            UUID id,
+            UUID tenantId,
+            UUID workDayId,
+            String eventType,
+            String deviceEventId,
+            Instant clientOccurredAt,
+            Instant serverReceivedAt,
+            BigDecimal longitude,
+            BigDecimal latitude,
+            BigDecimal accuracyMeters,
+            String deviceIdHash,
+            String networkType,
+            UUID policyVersionId);
 
-    void insertLocationSession(UUID id, UUID tenantId, UUID workDayId, Instant startedAt,
-                               int expectedIntervalMinutes);
+    void insertLocationSession(
+            UUID id, UUID tenantId, UUID workDayId, Instant startedAt, int expectedIntervalMinutes);
 
     List<String> findExistingLocationEventIds(UUID tenantId, List<String> deviceEventIds);
 
-    void insertLocationPoint(UUID id, UUID tenantId, UUID locationSessionId, UUID workDayId,
-                             String deviceEventId, BigDecimal longitude, BigDecimal latitude,
-                             BigDecimal accuracyMeters, Instant clientOccurredAt,
-                             Instant serverReceivedAt, String source, String qualityStatus);
+    void insertLocationPoint(
+            UUID id,
+            UUID tenantId,
+            UUID locationSessionId,
+            UUID workDayId,
+            String deviceEventId,
+            BigDecimal longitude,
+            BigDecimal latitude,
+            BigDecimal accuracyMeters,
+            Instant clientOccurredAt,
+            Instant serverReceivedAt,
+            String source,
+            String qualityStatus);
 
-    int incrementLocationPointCount(UUID tenantId, UUID workDayId, UUID locationSessionId,
-                                    int amount);
+    int incrementLocationPointCount(
+            UUID tenantId, UUID workDayId, UUID locationSessionId, int amount);
 
-    void insertInterruption(UUID id, UUID tenantId, UUID workDayId, String interruptionType,
-                            Instant startedAt, Instant endedAt, Integer durationSeconds,
-                            String clientDetail);
+    void insertInterruption(
+            UUID id,
+            UUID tenantId,
+            UUID workDayId,
+            String interruptionType,
+            Instant startedAt,
+            Instant endedAt,
+            Integer durationSeconds,
+            String clientDetail);
 
     int incrementInterruptionCount(UUID tenantId, UUID workDayId, UUID locationSessionId);
 
@@ -55,12 +88,21 @@ public interface SalesWorkAttendanceRepository {
     /** 下一个日结版本号；重新签退时版本递增，不改写已发出的日结事实。 */
     int nextSummaryVersion(UUID tenantId, UUID workDayId);
 
-    int closeLocationSession(UUID tenantId, UUID workDayId, UUID locationSessionId, Instant endedAt);
+    int closeLocationSession(
+            UUID tenantId, UUID workDayId, UUID locationSessionId, Instant endedAt);
 
-    void insertWorkDaySummary(UUID id, UUID tenantId, UUID workDayId, Instant checkInAt,
-                              Instant checkOutAt, int verifiedWorkMinutes, int locationPointCount,
-                              int interruptionCount, String evidenceQuality, Instant finalizedAt,
-                              int summaryVersion);
+    void insertWorkDaySummary(
+            UUID id,
+            UUID tenantId,
+            UUID workDayId,
+            Instant checkInAt,
+            Instant checkOutAt,
+            int verifiedWorkMinutes,
+            int locationPointCount,
+            int interruptionCount,
+            String evidenceQuality,
+            Instant finalizedAt,
+            int summaryVersion);
 
     List<LocationPointRow> findLocationPoints(UUID tenantId, UUID workDayId);
 
@@ -69,21 +111,36 @@ public interface SalesWorkAttendanceRepository {
     int incrementWorkDayVersion(UUID tenantId, UUID workDayId);
 
     record WorkDaySnapshot(
-            UUID id, UUID employeeId, UUID salesProfileId, LocalDate businessDate,
-            String timezoneId, UUID fieldPolicyVersionId, String status,
-            Instant checkedInAt, Instant checkedOutAt, UUID locationSessionId,
-            int locationPointCount, int interruptionCount, int verifiedWorkMinutes,
-            String evidenceQuality) {
-    }
+            UUID id,
+            UUID employeeId,
+            UUID salesProfileId,
+            LocalDate businessDate,
+            String timezoneId,
+            UUID fieldPolicyVersionId,
+            String status,
+            Instant checkedInAt,
+            Instant checkedOutAt,
+            UUID locationSessionId,
+            int locationPointCount,
+            int interruptionCount,
+            int verifiedWorkMinutes,
+            String evidenceQuality) {}
 
     record LocationPointRow(
-            BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            Instant clientOccurredAt, Instant serverReceivedAt, String source, String qualityStatus) {
-    }
+            BigDecimal longitude,
+            BigDecimal latitude,
+            BigDecimal accuracyMeters,
+            Instant clientOccurredAt,
+            Instant serverReceivedAt,
+            String source,
+            String qualityStatus) {}
 
     record PunchEventRow(
-            String eventType, Instant clientOccurredAt, Instant serverReceivedAt,
-            BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
-            String evidenceStatus) {
-    }
+            String eventType,
+            Instant clientOccurredAt,
+            Instant serverReceivedAt,
+            BigDecimal longitude,
+            BigDecimal latitude,
+            BigDecimal accuracyMeters,
+            String evidenceStatus) {}
 }

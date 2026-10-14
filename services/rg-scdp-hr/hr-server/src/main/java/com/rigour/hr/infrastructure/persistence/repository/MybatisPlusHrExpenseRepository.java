@@ -64,14 +64,12 @@ public class MybatisPlusHrExpenseRepository implements HrExpenseStore {
                                 c.paymentStatusCode())
                         .ge(c.dateFrom() != null, "cost_date", c.dateFrom())
                         .le(c.dateTo() != null, "cost_date", c.dateTo());
-        if (text(c.keyword()))
-            q.and(
-                    w ->
-                            w.like("document_no", c.keyword())
-                                    .or()
-                                    .like("title", c.keyword())
-                                    .or()
-                                    .like("employee_name", c.keyword()));
+        if (text(c.documentNo())) q.apply("LOCATE({0},document_no)>0", c.documentNo().trim());
+        if (text(c.title())) q.apply("LOCATE({0},title)>0", c.title().trim());
+        if (text(c.remark()))
+            q.apply(
+                    "LOCATE({0},JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.remark')))>0",
+                    c.remark().trim());
         long total = mapper.selectCount(q);
         int begin = Math.max(0, c.begin()), step = pageSize(c.step());
         return new HrPageView<>(

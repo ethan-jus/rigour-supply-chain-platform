@@ -5,7 +5,10 @@ import java.time.LocalDate;
 public record ErpCostQuery(
         int begin,
         int step,
-        String keyword,
+        String documentNo,
+        String title,
+        String remark,
+        String contractNo,
         String typeCode,
         String cityCode,
         String statusCode,

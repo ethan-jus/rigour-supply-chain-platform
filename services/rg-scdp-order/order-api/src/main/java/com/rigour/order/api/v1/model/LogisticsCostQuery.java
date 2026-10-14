@@ -5,7 +5,11 @@ import java.time.LocalDate;
 public record LogisticsCostQuery(
         int begin,
         int step,
-        String keyword,
+        String documentNo,
+        String title,
+        String remark,
+        String trackingNo,
+        String sourceDocumentNo,
         String typeCode,
         String cityCode,
         String statusCode,

@@ -268,6 +268,36 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
     }
 
     @Override
+    public java.util.Map<String, PayrollCommissionDetailView> confirmedSalesCommissions(
+            String tenant, Set<String> employees, Set<String> lineIds, String throughMonth) {
+        if (employees.isEmpty() || lineIds.isEmpty()) return java.util.Map.of();
+        var result = new java.util.LinkedHashMap<String, PayrollCommissionDetailView>();
+        // 已确认销售提成使用其工资快照；未全额回款的挂账明细尚未结算，不作为已结算金额。
+        var snapshots =
+                mapper.selectList(
+                        new QueryWrapper<HrPayrollEntity>()
+                                .eq("tenant_id", tenant)
+                                .in("employee_code", employees)
+                                .in("status_code", List.of("CONFIRMED", "PAID"))
+                                .le("payroll_month", throughMonth)
+                                .select("employee_code", "calculation_json")
+                                .orderByAsc("payroll_month", "id"));
+        for (var snapshot : snapshots) {
+            var calculation =
+                    json.readValue(snapshot.getCalculationJson(), PayrollCalculationView.class);
+            for (var detail : calculation.details()) {
+                if ("SALES".equals(detail.recipientRoleCode())
+                        && lineIds.contains(detail.sourceLineId())
+                        && detail.accrued() != null
+                        && detail.released() != null
+                        && detail.accrued().compareTo(detail.released()) == 0)
+                    result.put(detail.sourceLineId(), detail);
+            }
+        }
+        return java.util.Map.copyOf(result);
+    }
+
+    @Override
     public Set<String> released(String tenant) {
         return new HashSet<>(mapper.released(tenant));
     }

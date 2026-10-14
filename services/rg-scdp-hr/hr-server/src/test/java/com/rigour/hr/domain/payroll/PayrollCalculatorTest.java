@@ -125,20 +125,37 @@ class PayrollCalculatorTest {
     @Test
     void percentageCommissionUsesMoneyWhenHistoricalOrderUnitDiffersFromCatalog() {
         var original = fact("SALES", "900", LocalDate.of(2026, 9, 1), false);
-        var historical = new PayrollCalculator.Fact(
-                original.id(), original.recipientRole(), original.orderNo(), original.productName(),
-                original.productId(), original.variantId(), "BOX", original.date(),
-                original.departmentId(), original.quantity(), original.lineAmount(),
-                original.orderLineTotal(), original.orderAmount(), original.paidAmount(),
-                original.paymentDate(), original.refund(), original.quality());
-        var result = calculate(
-                List.of(rule("S", "SALES", "PERCENT", "4")), List.of(historical), Set.of());
+        var historical =
+                new PayrollCalculator.Fact(
+                        original.id(),
+                        original.recipientRole(),
+                        original.orderNo(),
+                        original.productName(),
+                        original.productId(),
+                        original.variantId(),
+                        "BOX",
+                        original.date(),
+                        original.departmentId(),
+                        original.quantity(),
+                        original.lineAmount(),
+                        original.orderLineTotal(),
+                        original.orderAmount(),
+                        original.paidAmount(),
+                        original.paymentDate(),
+                        original.refund(),
+                        original.quality());
+        var result =
+                calculate(
+                        List.of(rule("S", "SALES", "PERCENT", "4")), List.of(historical), Set.of());
 
         assertThat(result.commission()).isEqualByComparingTo("21.60");
         assertThat(result.issues()).isEmpty();
 
-        var quantityResult = calculate(
-                List.of(rule("S", "SALES", "QUANTITY", "15")), List.of(historical), Set.of());
+        var quantityResult =
+                calculate(
+                        List.of(rule("S", "SALES", "QUANTITY", "15")),
+                        List.of(historical),
+                        Set.of());
         assertThat(quantityResult.commission()).isEqualByComparingTo("0");
         assertThat(quantityResult.issues()).anyMatch(issue -> issue.contains("商品计奖单位不一致"));
     }
@@ -255,5 +272,163 @@ class PayrollCalculatorTest {
         assertThat(r.base()).isNull();
         assertThat(r.net()).isNull();
         assertThat(r.issues()).isNotEmpty();
+    }
+
+    @Test
+    void managerAddsTeamSalesAndIndependentRateAndClaimsThemSeparately() {
+        var rules =
+                List.of(
+                        rule("SALES", "SALES", "QUANTITY", "25"),
+                        rule("MANAGER", "CITY_MANAGER", "QUANTITY", "10"));
+        var facts =
+                List.of(
+                        fact("CITY_TEAM", "900", LocalDate.of(2026, 9, 1), false),
+                        fact("CITY_MANAGER", "900", LocalDate.of(2026, 9, 1), false));
+        var result = calculate(rules, facts, Set.of("LINE1|SALES"));
+        assertThat(result.commission()).isEqualByComparingTo("70");
+        assertThat(result.details())
+                .extracting(PayrollCalculator.Detail::recipientRole)
+                .containsExactly("CITY_TEAM", "CITY_MANAGER");
+        assertThat(calculate(rules, facts, Set.of("LINE1|CITY_TEAM")).commission())
+                .isEqualByComparingTo("20");
+        assertThat(
+                        calculate(rules, facts, Set.of("LINE1|CITY_TEAM", "LINE1|CITY_MANAGER"))
+                                .commission())
+                .isZero();
+        assertThat(
+                        calculate(
+                                        rules,
+                                        List.of(
+                                                fact(
+                                                        "CITY_TEAM",
+                                                        "800",
+                                                        LocalDate.of(2026, 9, 1),
+                                                        false)),
+                                        Set.of())
+                                .held())
+                .isEqualByComparingTo("50");
+    }
+
+    @Test
+    void confirmedSalesAmountSurvivesChangedOrRemovedSalesRule() {
+        var saved =
+                new PayrollCalculator.Detail(
+                        "LINE1", "SALES", "ORD1", "A600", "SET", n("2"), "OLD", "原规则", 3, n("50"),
+                        n("50"), "已确认");
+        var result =
+                PayrollCalculator.calculate(
+                        "M1",
+                        10L,
+                        MONTH,
+                        null,
+                        null,
+                        List.of(rule("NEW", "SALES", "QUANTITY", "99")),
+                        new PayrollCalculator.Input(n("0"), n("0"), n("0")),
+                        List.of(fact("CITY_TEAM", "900", LocalDate.of(2026, 9, 1), false)),
+                        Set.of(),
+                        java.util.Map.of("LINE1", saved));
+        assertThat(result.commission()).isEqualByComparingTo("50");
+        assertThat(result.details())
+                .singleElement()
+                .satisfies(
+                        d -> {
+                            assertThat(d.ruleRevision()).isEqualTo(3);
+                            assertThat(d.ruleId()).isEqualTo("OLD");
+                        });
+        var noRules =
+                PayrollCalculator.calculate(
+                        "M1",
+                        10L,
+                        MONTH,
+                        null,
+                        null,
+                        List.of(),
+                        new PayrollCalculator.Input(n("0"), n("0"), n("0")),
+                        List.of(fact("CITY_TEAM", "900", LocalDate.of(2026, 9, 1), false)),
+                        Set.of(),
+                        java.util.Map.of("LINE1", saved));
+        assertThat(noRules.commission()).isEqualByComparingTo("50");
+        var refund =
+                PayrollCalculator.calculate(
+                        "M1",
+                        10L,
+                        MONTH,
+                        null,
+                        null,
+                        List.of(),
+                        new PayrollCalculator.Input(n("0"), n("0"), n("0")),
+                        List.of(fact("CITY_TEAM", "900", LocalDate.of(2026, 9, 1), true)),
+                        Set.of(),
+                        java.util.Map.of("LINE1", saved));
+        assertThat(refund.commission()).isZero();
+        assertThat(refund.issues()).anyMatch(v -> v.contains("退款"));
+    }
+
+    @Test
+    void variantsAndEffectiveDatesAreMatchedExactly() {
+        var old = rule("A600", "SALES", "QUANTITY", "25");
+        var other =
+                new PayrollCalculator.Rule(
+                        "A300",
+                        1,
+                        "A300",
+                        "COMMISSION",
+                        null,
+                        List.of(10L),
+                        1L,
+                        3L,
+                        "SET",
+                        "SALES",
+                        "QUANTITY",
+                        n("15"),
+                        null,
+                        old.from(),
+                        old.to(),
+                        true);
+        var future =
+                new PayrollCalculator.Rule(
+                        "NEW",
+                        1,
+                        "NEW",
+                        "COMMISSION",
+                        null,
+                        List.of(10L),
+                        1L,
+                        2L,
+                        "SET",
+                        "SALES",
+                        "QUANTITY",
+                        n("35"),
+                        null,
+                        LocalDate.of(2026, 9, 1),
+                        old.to(),
+                        true);
+        var before =
+                new PayrollCalculator.Rule(
+                        "OLD",
+                        1,
+                        "OLD",
+                        "COMMISSION",
+                        null,
+                        List.of(10L),
+                        1L,
+                        2L,
+                        "SET",
+                        "SALES",
+                        "QUANTITY",
+                        n("25"),
+                        null,
+                        old.from(),
+                        LocalDate.of(2026, 8, 31),
+                        true);
+        var result =
+                calculate(
+                        List.of(other, future, before),
+                        List.of(fact("SALES", "900", LocalDate.of(2026, 9, 1), false)),
+                        Set.of());
+        assertThat(result.commission()).isEqualByComparingTo("50");
+        assertThat(result.details())
+                .singleElement()
+                .satisfies(d -> assertThat(d.ruleId()).isEqualTo("OLD"));
     }
 }
