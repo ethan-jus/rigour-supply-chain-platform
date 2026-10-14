@@ -51,6 +51,13 @@ Gateway 的 issuer、JWKS、current-token 校验和 `/me` 路由均指向隔离 
 
 本轮原生表单改动的验证结果以实际测试和手机回执为准。此前已验证 Android 浏览器登录、管理员客户列表/详情和订单列表，不能直接作为本次原生登录、续期或重新启动恢复的验收。
 
-2026-10-14 只读发现共享 DEV 已执行 `V132__iam_hr_attendance_navigation.sql`，本机和远程 dev 尚无该原始文件；在补齐匹配原始迁移之前，不能把含 V133 的版本迁入共享 DEV，不能关闭校验、repair 或改造历史规避。隔离 Testcontainers 可继续验证原生密码、PKCE、refresh 轮换、重放、停用账号、锁定和当前会话退出。
+2026-10-14 16:05 已将同事推送的远程 dev `b7d0f96d` 合并到 App 接入分支，合并提交 `87a3c819`，无冲突。V132 原始文件已补齐，Flyway 校验值 `-176225895` 与共享 DEV 历史匹配；只读校验不再报告缺失或校验值冲突，仅报告 V133 尚未执行。本次拉取合并未重启服务、未执行共享 DEV 迁移，也未改写任何历史 SQL。
+
+合并验证：
+
+- `prepare-general-ci-baselines.py --check` 通过：9 个冻结基线、340 个历史迁移保持原样。
+- IAM 原生密码、PKCE、refresh 轮换/重放、账号停用、锁定、退出及 OIDC 配置共 47 项定向测试通过，0 跳过；在一次性 Testcontainers 中显式采用 `-Dspring.flyway.locations=classpath:db/migration`，验证与现有 DEV 相同的历史升级链路，日志 `/tmp/iam-native-after-dev-merge-existing-schema-tests.log`。此参数仅用于该次测试，没有改动服务配置或关闭 Flyway。
+- 默认空库路径另有已复现的问题：新增 B118 的 `utf8mb4_general_ci` 字符列，与既有 V120 临时表明确指定的 `utf8mb4_0900_ai_ci` 在 JOIN 比较时冲突，导致测试上下文不能启动。日志 `/tmp/iam-native-after-dev-merge-tests.log`。不能将上述 47 项通过解释为默认空库初始化已通过，也不能改写已发布的 B118/V120 来消除校验。该问题需独立修复。
+- 共享 DEV 的只读校验日志：`/tmp/iam-native-dev-flyway-after-merge.log`。原生入口启用、V133 实际升级及手机登录验收仍待执行。
 
 普通销售验收仍需真实员工身份、Sales 画像、门店分配及有效规则；不能以管理员或临时打卡身份代替。
