@@ -198,6 +198,54 @@ class IamAuthorizationServerSecurityTests {
     }
 
     @Test
+    void nativeProfileOnlyClientCompletesLoginPkceAndVerifiedIdentity() throws Exception {
+        var properties = new com.rigour.tenant.iam.infrastructure.bootstrap.SalesAppClientBootstrapProperties();
+        properties.setClientId("rigour-sales-app-android-dev");
+        properties.setRedirectUri("uniappx://rigour-sales/auth/callback");
+        properties.setAllowDebugBase(true);
+        var bootstrap = new com.rigour.tenant.iam.infrastructure.bootstrap.SalesAppClientBootstrapCommand(
+                registeredClientRepository, UUID::randomUUID, properties, true);
+        bootstrap.run(new org.springframework.boot.DefaultApplicationArguments());
+        bootstrap.run(new org.springframework.boot.DefaultApplicationArguments());
+        String verifier = "native-mobile-pkce-verifier-long-enough-0123456789abcdef";
+        String challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                MessageDigest.getInstance("SHA-256").digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+        String authorize = "/oauth2/authorize?response_type=code&client_id=" + properties.getClientId()
+                + "&redirect_uri=" + properties.getRedirectUri() + "&scope=profile&state=native-state"
+                + "&code_challenge_method=S256&code_challenge=" + challenge;
+        var start = mockMvc.perform(get(URI.create(authorize)).secure(true))
+                .andExpect(redirectedUrl("/login")).andReturn();
+        var session = (MockHttpSession) start.getRequest().getSession(false);
+        var page = mockMvc.perform(get("/login").secure(true).session(session))
+                .andExpect(status().isOk()).andReturn();
+        var csrf = CSRF_VALUE.matcher(page.getResponse().getContentAsString());
+        assertThat(csrf.find()).isTrue();
+        mockMvc.perform(post("/login").secure(true).session(session).param("_csrf", csrf.group(1))
+                        .param("tenantCode", "browser-scdp").param("username", USERNAME).param("password", PASSWORD))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(header().string("Location", org.hamcrest.Matchers.containsString("/oauth2/authorize")));
+        var finish = mockMvc.perform(get(URI.create(authorize)).secure(true).session(session))
+                .andExpect(status().is3xxRedirection()).andReturn();
+        var callback = URI.create(finish.getResponse().getHeader("Location"));
+        assertThat(callback.toString()).startsWith(properties.getRedirectUri() + "?");
+        assertThat(queryParameter(callback.getRawQuery(), "state")).isEqualTo("native-state");
+        var token = mockMvc.perform(post("/oauth2/token").secure(true)
+                        .param("grant_type", "authorization_code").param("client_id", properties.getClientId())
+                        .param("redirect_uri", properties.getRedirectUri())
+                        .param("code", queryParameter(callback.getRawQuery(), "code")).param("code_verifier", verifier))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.access_token").isString())
+                .andExpect(jsonPath("$.refresh_token").isString())
+                .andExpect(jsonPath("$.id_token").doesNotExist()).andReturn();
+        var json = tools.jackson.databind.json.JsonMapper.builder().build()
+                .readTree(token.getResponse().getContentAsByteArray());
+        mockMvc.perform(get("/api/v1/me").secure(true).header("Authorization", "Bearer " + json.get("access_token").asString()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.principalScope").value("TENANT"))
+                .andExpect(jsonPath("$.username").value(USERNAME));
+        mockMvc.perform(get(URI.create(authorize.replace("/auth/callback", "/auth/other"))).secure(true).session(session))
+                .andExpect(status().is4xxClientError());
+    }
+
+    @Test
     void completesBrowserLoginPkceCodeAndTokenFlow() throws Exception {
         String verifier = "browser-pkce-verifier-that-is-long-enough-0123456789";
         String challenge =

@@ -17,6 +17,8 @@ import com.rigour.tenant.iam.infrastructure.bootstrap.LocalSigningKeyBootstrapCo
 import com.rigour.tenant.iam.infrastructure.bootstrap.LocalSigningKeyBootstrapProperties;
 import com.rigour.tenant.iam.infrastructure.bootstrap.ScdpClientBootstrapCommand;
 import com.rigour.tenant.iam.infrastructure.bootstrap.ScdpClientBootstrapProperties;
+import com.rigour.tenant.iam.infrastructure.bootstrap.SalesAppClientBootstrapCommand;
+import com.rigour.tenant.iam.infrastructure.bootstrap.SalesAppClientBootstrapProperties;
 import com.rigour.tenant.iam.infrastructure.bootstrap.TenantAdminBootstrapCommand;
 import com.rigour.tenant.iam.infrastructure.bootstrap.TenantAdminBootstrapProperties;
 import com.rigour.tenant.iam.infrastructure.feishu.FeishuIdentityProviderClient;
@@ -92,6 +94,7 @@ import java.time.Clock;
     PasswordAuthenticationProperties.class,
 
     ScdpClientBootstrapProperties.class,
+    SalesAppClientBootstrapProperties.class,
     TenantAdminBootstrapProperties.class,
     LocalSigningKeyBootstrapProperties.class
 })
@@ -226,6 +229,16 @@ public final class IamInfrastructureConfiguration {
             IdentifierGenerator identifierGenerator,
             ScdpClientBootstrapProperties properties) {
         return new ScdpClientBootstrapCommand(repository, identifierGenerator, properties);
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "rigour.iam.bootstrap.sales-app-client", name = "enabled", havingValue = "true")
+    SalesAppClientBootstrapCommand salesAppClientBootstrapCommand(
+            RegisteredClientRepository repository, IdentifierGenerator identifierGenerator,
+            SalesAppClientBootstrapProperties properties, org.springframework.core.env.Environment environment) {
+        boolean development = environment.acceptsProfiles(org.springframework.core.env.Profiles.of("dev", "local"))
+                && !environment.acceptsProfiles(org.springframework.core.env.Profiles.of("prod"));
+        return new SalesAppClientBootstrapCommand(repository, identifierGenerator, properties, development);
     }
 
     @Bean
