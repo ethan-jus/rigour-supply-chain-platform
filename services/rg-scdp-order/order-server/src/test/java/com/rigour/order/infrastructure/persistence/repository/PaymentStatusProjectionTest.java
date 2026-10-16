@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.*;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.rigour.order.infrastructure.persistence.mapper.OrderAnalyticsSourceMapper;
+import com.rigour.order.infrastructure.persistence.mapper.OrderAnalyticsSourceSql;
 
 import org.junit.jupiter.api.Test;
 import org.mybatis.spring.SqlSessionTemplate;
@@ -56,6 +57,26 @@ public class PaymentStatusProjectionTest {
                     new MybatisPlusAnalyticsSourceSnapshotStore(
                             session.getMapper(OrderAnalyticsSourceMapper.class));
             var page = store.page("T", "ORDER_PAYMENT_STATUS", "");
+            assertThat(OrderAnalyticsSourceSql.dataset("ORDER_PAYMENT_RECORD").columns())
+                    .containsExactly(
+                            "id",
+                            "tenant_id",
+                            "payment_no",
+                            "source_system_code",
+                            "source_document_no",
+                            "order_id",
+                            "sales_order_no_snapshot",
+                            "customer_id",
+                            "customer_code_snapshot",
+                            "customer_name_snapshot",
+                            "collector_staff_code",
+                            "collector_name_snapshot",
+                            "payment_time",
+                            "payment_method_code",
+                            "paid_amount",
+                            "created_time",
+                            "updated_time",
+                            "deleted");
             assertThat(page.items())
                     .containsExactly(
                             Map.of("id", "1", "tenant_id", "T", "payment_status_code", "RECEIVED"),

@@ -22,6 +22,47 @@ import java.util.Map;
  * 时区表；不得将转换结果写回事实时间或同步水位。
  */
 public interface SupplyDashboardQueryMapper extends BaseMapper<SupplyDashboardSourceMarkerEntity> {
+    /** 按订单首次收齐日计入应收金额；部分回款、重复补款和超收均不重复增加绩效。 */
+    @Select("""
+<script>
+WITH effective_payments AS (
+    SELECT p.tenant_id, p.order_id, p.payment_time,
+           SUM(p.paid_amount) OVER (
+               PARTITION BY p.tenant_id, p.order_id ORDER BY p.payment_time, p.payment_id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative_amount,
+           SUM(p.paid_amount) OVER (PARTITION BY p.tenant_id, p.order_id) AS total_amount
+      FROM bi_sales_payment_fact p
+      JOIN bi_payment_status s ON s.tenant_id=p.tenant_id AND s.id=p.payment_id
+     WHERE p.tenant_id=#{tenantId} AND p.deleted=0
+       AND s.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time &lt;= #{to}
+), settled_orders AS (
+    SELECT o.tenant_id, o.order_id, o.region_code, o.owner_staff_code, o.payable_amount,
+           MIN(p.payment_time) AS first_fully_paid_at
+      FROM bi_sales_order_fact o
+      JOIN effective_payments p ON p.tenant_id=o.tenant_id AND p.order_id=o.order_id
+     WHERE o.tenant_id=#{tenantId} AND o.deleted=0
+       AND o.order_status_code NOT IN ('DRAFT','CANCELLED')
+       AND o.payable_amount &gt; 0 AND o.paid_amount &gt;= o.payable_amount
+       AND p.cumulative_amount &gt;= o.payable_amount AND p.total_amount &gt;= o.payable_amount
+<if test="regionCode != null"> AND o.region_code=#{regionCode} </if>
+<if test="ownerStaffCode != null"> AND o.owner_staff_code=#{ownerStaffCode} </if>
+     GROUP BY o.tenant_id, o.order_id, o.region_code, o.owner_staff_code, o.payable_amount
+)
+SELECT <choose><when test="city">region_code</when><otherwise>owner_staff_code</otherwise></choose>
+           AS dimensionCode, SUM(payable_amount) AS performanceAmount
+  FROM settled_orders
+ WHERE first_fully_paid_at &gt;= #{from} AND first_fully_paid_at &lt;= #{to}
+ GROUP BY <choose><when test="city">region_code</when><otherwise>owner_staff_code</otherwise></choose>
+</script>
+""")
+    List<Map<String, Object>> fullyPaidPerformance(
+            @Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to,
+            @Param("city") boolean city,
+            @Param("regionCode") String regionCode,
+            @Param("ownerStaffCode") String ownerStaffCode);
+
     @Delete("DELETE FROM bi_sales_contact_city_dim WHERE tenant_id = #{tenantId}")
     int clearCityDimension(@Param("tenantId") String tenantId);
 
