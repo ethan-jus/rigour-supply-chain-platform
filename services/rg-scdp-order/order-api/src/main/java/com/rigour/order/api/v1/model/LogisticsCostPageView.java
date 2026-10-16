@@ -10,4 +10,17 @@ public record LogisticsCostPageView(
         BigDecimal confirmedAmount,
         BigDecimal paidAmount,
         long pendingCount,
-        List<LogisticsCostDetailView> items) {}
+        List<LogisticsCostDetailView> items,
+        BigDecimal registeredAmount,
+        Long missingAmountCount) {
+    public LogisticsCostPageView(
+            long total,
+            int begin,
+            int step,
+            BigDecimal confirmedAmount,
+            BigDecimal paidAmount,
+            long pendingCount,
+            List<LogisticsCostDetailView> items) {
+        this(total, begin, step, confirmedAmount, paidAmount, pendingCount, items, null, null);
+    }
+}

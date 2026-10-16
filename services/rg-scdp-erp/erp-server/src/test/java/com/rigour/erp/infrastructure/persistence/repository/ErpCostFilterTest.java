@@ -48,6 +48,8 @@ public class ErpCostFilterTest {
                                 "")
                         .replace(" JSON ", " LONGTEXT ");
         jdbc.execute(ddl);
+        jdbc.execute("ALTER TABLE erp_cost_entry ADD COLUMN cost_month VARCHAR(7)");
+
         for (String name : List.of("extract", "unquote", "search")) {
             String function =
                     name.equals("extract")
@@ -60,6 +62,8 @@ public class ErpCostFilterTest {
                             + name
                             + "'");
         }
+        jdbc.execute("ALTER TABLE erp_cost_entry ADD COLUMN source_system VARCHAR(20)");
+        jdbc.execute("ALTER TABLE erp_cost_entry ADD COLUMN premises_type VARCHAR(20)");
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(ErpCostMapper.class);
@@ -70,6 +74,8 @@ public class ErpCostFilterTest {
         var scope = mock(ErpWarehouseDataScope.class);
         when(scope.predicate(anyString(), any(String[].class)))
                 .thenReturn(new ErpWarehouseDataScope.Predicate("warehouse_id=?", List.of(7L)));
+        when(scope.manualPredicate(anyString(), anyString()))
+                .thenReturn(new ErpWarehouseDataScope.Predicate("created_by=?", List.of("U")));
         store =
                 new MybatisPlusErpCostRepository(
                         session.getMapper(ErpCostMapper.class),
@@ -81,6 +87,7 @@ public class ErpCostFilterTest {
         insert("good", "T1", "DOC-A", 7L);
         insert("other", "T2", "DOC-A", 7L);
         insert("hidden", "T1", "DOC-H", 8L);
+        jdbc.update("UPDATE erp_cost_entry SET source_warehouse_id=warehouse_id");
     }
 
     @AfterEach
@@ -158,6 +165,103 @@ public class ErpCostFilterTest {
         assertThat(count(null, "不匹配", null, "LEASE-")).isZero();
     }
 
+    @Test
+    void manualRowsStayCreatorScopedAndMissingAmountsAreCounted() {
+        insert("manual", "T1", "MANUAL", null);
+        insert("notmine", "T1", "NOTMINE", null);
+        jdbc.update("UPDATE erp_cost_entry SET created_by='ANOTHER' WHERE id='notmine'");
+        jdbc.update("UPDATE erp_cost_entry SET amount=NULL,status_code='DRAFT' WHERE id='manual'");
+        var result =
+                store.entries(
+                        "T1",
+                        "RENTAL",
+                        new ErpCostQuery(
+                                0, 20, null, null, null, null, null, null, null, null, null, null,
+                                null, null),
+                        "cost:read");
+        assertThat(result.total()).isEqualTo(2);
+        assertThat(result.missingAmountCount()).isEqualTo(1);
+        assertThat(result.registeredAmount()).isEqualByComparingTo("100");
+    }
+
+    @Test
+    void sourceNumberSearchIncludesLinkedOriginalNumberAndManualEvidence() {
+        jdbc.update(
+                "UPDATE erp_cost_entry SET sources_json=? WHERE id='good'",
+                "[{\"documentNo\":\"LOCAL-1\",\"originalNo\":\"0000123\"}]");
+        var query =
+                JSON.readValue(
+                        "{\"begin\":0,\"step\":20,\"sourceDocumentNo\":\"0000123\"}",
+                        ErpCostQuery.class);
+        assertThat(store.entries("T1", "RENTAL", query, "cost:read").total()).isEqualTo(1);
+        jdbc.update(
+                "UPDATE erp_cost_entry SET sources_json='[]',data_json=? WHERE id='good'",
+                "{\"externalDocuments\":[{\"documentNo\":\"0000123\",\"sourceSystem\":\"DHB\"}]}");
+        assertThat(store.entries("T1", "RENTAL", query, "cost:read").total()).isEqualTo(1);
+    }
+
+    @Test
+    void businessPartyAndLossFiltersStayIndependentAndIntersect() {
+        jdbc.update(
+                "UPDATE erp_cost_entry SET data_json=? WHERE id='good'",
+                "{\"goods\":{\"supplierName\":\"供货甲\",\"lossReason\":\"卸货破损\"},\"ownerName\":\"经办乙\",\"payeeName\":\"合作丙100%\",\"rental\":{\"landlordName\":\"出租丁\"}}");
+        for (var filter :
+                Map.of(
+                                "supplierName",
+                                "供货甲",
+                                "lossReason",
+                                "卸货破损",
+                                "ownerName",
+                                "经办乙",
+                                "payeeName",
+                                "100%",
+                                "landlordName",
+                                "出租丁")
+                        .entrySet()) {
+            var query =
+                    JSON.readValue(
+                            JSON.writeValueAsString(
+                                    Map.of(
+                                            "begin",
+                                            0,
+                                            "step",
+                                            20,
+                                            filter.getKey(),
+                                            filter.getValue())),
+                            ErpCostQuery.class);
+            assertThat(store.entries("T1", "RENTAL", query, "cost:read").total()).isEqualTo(1);
+        }
+        var wrongField =
+                JSON.readValue(
+                        "{\"begin\":0,\"step\":20,\"payeeName\":\"供货甲\"}", ErpCostQuery.class);
+        assertThat(store.entries("T1", "RENTAL", wrongField, "cost:read").total()).isZero();
+        var intersection =
+                JSON.readValue(
+                        "{\"begin\":0,\"step\":20,\"supplierName\":\"供货甲\",\"ownerName\":\"不匹配\"}",
+                        ErpCostQuery.class);
+        assertThat(store.entries("T1", "RENTAL", intersection, "cost:read").total()).isZero();
+    }
+
+    @Test
+    void premisesNameFilterDoesNotMatchTheLandlordAndKeepsLegacyWarehouseNames() {
+        jdbc.update(
+                "UPDATE erp_cost_entry SET data_json=?, warehouse_name=? WHERE id='good'",
+                "{\"rental\":{\"premisesName\":\"中心仓甲\",\"landlordName\":\"出租方乙\"}}",
+                "历史仓甲");
+        for (String name : List.of("中心仓甲", "历史仓甲")) {
+            var query =
+                    JSON.readValue(
+                            JSON.writeValueAsString(
+                                    Map.of("begin", 0, "step", 20, "objectName", name)),
+                            ErpCostQuery.class);
+            assertThat(store.entries("T1", "RENTAL", query, "cost:read").total()).isEqualTo(1);
+        }
+        var query =
+                JSON.readValue(
+                        "{\"begin\":0,\"step\":20,\"objectName\":\"出租方乙\"}", ErpCostQuery.class);
+        assertThat(store.entries("T1", "RENTAL", query, "cost:read").total()).isZero();
+    }
+
     public static String extract(String text, String path) {
         Object value = JSON.readValue(text, Object.class);
         for (String key : path.substring(2).split("\\.")) {
@@ -171,7 +275,9 @@ public class ErpCostFilterTest {
         return value == null ? null : JSON.readValue(value, String.class);
     }
 
-    public static String search(String text, String mode, String like, String escape, String path) {
+    /** H2 仅补足 MySQL JSON_SEARCH 使用的路径子集；不是生产查询实现。 */
+    public static String search(
+            String text, String mode, String like, String escape, String... paths) {
         StringBuilder regex = new StringBuilder();
         for (int i = 0; i < like.length(); i++) {
             char c = like.charAt(i);
@@ -179,9 +285,26 @@ public class ErpCostFilterTest {
                 regex.append(Pattern.quote(String.valueOf(like.charAt(++i))));
             else regex.append(c == '%' ? ".*" : c == '_' ? "." : Pattern.quote(String.valueOf(c)));
         }
-        for (Object item : JSON.readValue(text, List.class)) {
-            if (item instanceof Map<?, ?> map
-                    && String.valueOf(map.get("documentNo")).matches(regex.toString()))
+        if (text == null) return null;
+        Object root = JSON.readValue(text, Object.class);
+        for (String path : paths) {
+            List<Object> values = new ArrayList<>();
+            values.add(root);
+            for (String part : path.substring(1).replaceFirst("^\\.", "").split("\\.")) {
+                List<Object> next = new ArrayList<>();
+                String key = part.replace("[*]", "");
+                for (Object value : values) {
+                    Object field =
+                            key.isEmpty()
+                                    ? value
+                                    : value instanceof Map<?, ?> map ? map.get(key) : null;
+                    if (part.endsWith("[*]") && field instanceof List<?> list) next.addAll(list);
+                    else if (field != null) next.add(field);
+                }
+                values = next;
+            }
+            if (values.stream()
+                    .anyMatch(v -> v instanceof String && v.toString().matches(regex.toString())))
                 return "match";
         }
         return null;

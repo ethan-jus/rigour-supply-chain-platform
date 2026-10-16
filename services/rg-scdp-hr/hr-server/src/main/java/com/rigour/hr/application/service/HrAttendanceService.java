@@ -28,10 +28,25 @@ public class HrAttendanceService {
     private final HrAttendanceSource source;
     private final Clock clock;
 
+    private final PayrollAttendanceEvidenceService payrollAttendance;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public HrAttendanceService(
+            HrAttendanceStore store,
+            HrAttendanceSource source,
+            Clock clock,
+            PayrollAttendanceEvidenceService payrollAttendance) {
+        this.store = store;
+        this.source = source;
+        this.clock = clock;
+        this.payrollAttendance = payrollAttendance;
+    }
+
     public HrAttendanceService(HrAttendanceStore store, HrAttendanceSource source, Clock clock) {
         this.store = store;
         this.source = source;
         this.clock = clock;
+        this.payrollAttendance = null;
     }
 
     public Rule rule(String month, Long departmentId) {
@@ -207,6 +222,8 @@ public class HrAttendanceService {
                 sourceError = "销售打卡暂不可用，请稍后刷新";
             }
         }
+        if (!future && payrollAttendance != null)
+            evidence = payrollAttendance.apply(tenant, month, through, pending, evidence);
         var facts = evidence;
         var rows =
                 page.items().stream()

@@ -30,6 +30,11 @@ public final class ErpCostController implements ErpCostApi {
     }
 
     @Override
+    public ApiResponse<ErpCostPageView> export(String category, ErpCostQuery query) {
+        return ApiResponse.success(service.export(category, query));
+    }
+
+    @Override
     public ApiResponse<ErpCostDetailView> entry(String category, String id) {
         return ApiResponse.success(service.entry(category, id));
     }
@@ -65,6 +70,18 @@ public final class ErpCostController implements ErpCostApi {
     @Override
     public ApiResponse<List<ErpCostOptionView>> warehouses(String category, String keyword) {
         return ApiResponse.success(service.warehouses(category, keyword));
+    }
+
+    @Override
+    public ApiResponse<List<com.rigour.erp.api.v1.model.ErpCostReferenceView>> references(
+            String category, String kind, String keyword, Long parentId, int begin) {
+        return ApiResponse.success(service.references(category, kind, keyword, parentId, begin));
+    }
+
+    @Override
+    public ApiResponse<List<com.rigour.erp.api.v1.model.ErpCostSourceView>> purchaseOrders(
+            String category, String keyword, String cityCode, int begin) {
+        return ApiResponse.success(service.purchaseOrders(category, keyword, cityCode, begin));
     }
 
     @Override

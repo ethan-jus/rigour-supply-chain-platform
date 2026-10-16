@@ -10,4 +10,17 @@ public record ErpCostPageView(
         BigDecimal confirmedAmount,
         BigDecimal paidAmount,
         long pendingCount,
-        List<ErpCostDetailView> items) {}
+        List<ErpCostDetailView> items,
+        BigDecimal registeredAmount,
+        Long missingAmountCount) {
+    public ErpCostPageView(
+            long total,
+            int begin,
+            int step,
+            BigDecimal confirmedAmount,
+            BigDecimal paidAmount,
+            long pendingCount,
+            List<ErpCostDetailView> items) {
+        this(total, begin, step, confirmedAmount, paidAmount, pendingCount, items, null, null);
+    }
+}

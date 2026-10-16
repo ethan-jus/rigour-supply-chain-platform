@@ -28,13 +28,19 @@ public final class OrderCostSourceController implements OrderCostSourceApi {
 
     @Override
     public ApiResponse<List<OrderDeliveryCostSourceView>> deliveries(
-            String keyword, List<Long> ids) {
-        return ApiResponse.success(service.deliveries(keyword, ids));
+            String keyword, List<Long> ids, String cityCode, int begin, String action) {
+        return ApiResponse.success(service.deliveries(keyword, ids, cityCode, begin, action));
     }
 
     @Override
     public ApiResponse<List<OrderCommissionSourceLineView>> commissions(
             String employeeCode, String cityCode, LocalDate through) {
         return ApiResponse.success(service.commissions(employeeCode, cityCode, through));
+    }
+
+    @Override
+    public ApiResponse<List<com.rigour.order.api.v1.model.OrderPayrollLineView>> payrollLines(
+            String employeeCode, String cityCode, LocalDate through) {
+        return ApiResponse.success(service.payrollLines(employeeCode, cityCode, through));
     }
 }

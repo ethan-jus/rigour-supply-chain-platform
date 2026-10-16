@@ -18,7 +18,7 @@ public final class CostCityReferenceController implements CostCityReferenceApi {
     }
 
     @Override
-    public ApiResponse<List<CostCityView>> cities() {
-        return ApiResponse.success(service.cities());
+    public ApiResponse<List<CostCityView>> cities(String action) {
+        return ApiResponse.success(service.cities(action));
     }
 }

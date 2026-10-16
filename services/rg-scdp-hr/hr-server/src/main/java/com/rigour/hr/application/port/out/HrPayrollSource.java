@@ -30,4 +30,9 @@ public interface HrPayrollSource {
     List<ErpPayrollProductView> productsByVariants(String tenant, List<Long> ids);
 
     ErpPayrollProductView requireProduct(String tenant, Long product, Long variant, String unit);
+
+    default List<com.rigour.order.api.v1.model.OrderPayrollLineView> payrollLines(
+            String tenant, String employee, String city, LocalDate through) {
+        throw new UnsupportedOperationException("整单付清来源尚未接入");
+    }
 }

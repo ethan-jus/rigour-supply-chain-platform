@@ -73,8 +73,15 @@ public interface HrPayrollStore {
 
     HrPageView<PayrollDetailView> payroll(String tenant, PayrollQuery query, String action);
 
+    PayrollSummaryView summary(String tenant, PayrollQuery query, String action);
+
     PayrollDetailView transition(
             String tenant, String id, PayrollActionCommand command, String status, String actor);
 
     List<PayrollAuditView> history(String tenant, String id);
+
+    default List<PayrollDetailView> commissionHistory(
+            String tenant, String employee, String throughMonth) {
+        return List.of();
+    }
 }

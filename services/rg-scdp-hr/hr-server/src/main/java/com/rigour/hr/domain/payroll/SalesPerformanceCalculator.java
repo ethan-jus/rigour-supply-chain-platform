@@ -9,66 +9,87 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** 自然日过程考核与当月实际回款考核；可信证据缺失只能待核对，不能作为零完成扣款。 */
+/** 按日核算合格打卡和有效拜访；记录未达资格按规则扣减，来源未关联不能视为零完成。 */
 public final class SalesPerformanceCalculator {
     private static final BigDecimal ZERO = new BigDecimal("0.00");
 
     private SalesPerformanceCalculator() {}
 
-    public record Policy(
-            BigDecimal monthlyBase,
-            BigDecimal bronzeBase,
-            String firstMonthMode,
-            int processPercent,
-            int dailyCheckins,
-            BigDecimal checkinPenalty,
-            int dailyVisits,
-            int minimumSeconds,
-            BigDecimal visitPenalty,
-            BigDecimal secondMonthTarget,
-            BigDecimal laterMonthTarget) {}
-
-    public record Visit(
-            String id,
-            LocalDate date,
-            String customer,
-            String status,
-            Long durationMillis,
-            boolean durationComplete) {}
-
-    public record Day(
-            LocalDate date,
-            int checkins,
-            int effectiveVisits,
-            int missingCheckins,
-            int missingVisits,
-            BigDecimal deduction,
-            boolean evidenceComplete) {}
-
-    public record Result(
-            BigDecimal processBudget,
-            BigDecimal processDeduction,
-            BigDecimal processPay,
-            BigDecimal collectionBudget,
-            BigDecimal collectionTarget,
-            BigDecimal collections,
-            BigDecimal collectionPay,
-            BigDecimal total,
-            List<Day> days,
-            List<String> issues) {}
-
-    public static Result calculate(
-            Policy p,
+    public static SalesPerformanceResult calculate(
+            SalesPerformancePolicy p,
             YearMonth month,
             LocalDate entry,
             LocalDate leave,
             boolean linked,
-            List<Visit> visits,
+            List<SalesVisitEvidence> visits,
             BigDecimal collections) {
+        return calculate(p, month, entry, leave, linked, visits, collections, null, BigDecimal.ONE);
+    }
+
+    public static SalesPerformanceResult calculate(
+            SalesPerformancePolicy p,
+            YearMonth month,
+            LocalDate entry,
+            LocalDate leave,
+            boolean linked,
+            List<SalesVisitEvidence> visits,
+            BigDecimal collections,
+            Set<LocalDate> assessmentDays,
+            BigDecimal resultCap) {
+        return calculate(
+                p,
+                month,
+                entry,
+                leave,
+                linked,
+                visits,
+                collections,
+                assessmentDays,
+                resultCap,
+                BigDecimal.valueOf(p.processPercent()));
+    }
+
+    public static SalesPerformanceResult calculate(
+            SalesPerformancePolicy p,
+            YearMonth month,
+            LocalDate entry,
+            LocalDate leave,
+            boolean linked,
+            List<SalesVisitEvidence> visits,
+            BigDecimal collections,
+            Set<LocalDate> assessmentDays,
+            BigDecimal resultCap,
+            BigDecimal processPercent) {
+        return calculate(
+                p,
+                month,
+                entry,
+                leave,
+                linked,
+                visits,
+                collections,
+                assessmentDays,
+                resultCap,
+                processPercent,
+                "UNIQUE_CUSTOMER");
+    }
+
+    public static SalesPerformanceResult calculate(
+            SalesPerformancePolicy p,
+            YearMonth month,
+            LocalDate entry,
+            LocalDate leave,
+            boolean linked,
+            List<SalesVisitEvidence> visits,
+            BigDecimal collections,
+            Set<LocalDate> assessmentDays,
+            BigDecimal resultCap,
+            BigDecimal processPercent,
+            String checkinCountMode) {
         List<String> issues = new ArrayList<>();
-        List<Day> days = new ArrayList<>();
+        List<SalesPerformanceDay> days = new ArrayList<>();
         if (entry == null || entry.isAfter(month.atEndOfMonth()))
-            return new Result(
+            return new SalesPerformanceResult(
                     null,
                     null,
                     null,
@@ -84,7 +105,7 @@ public final class SalesPerformanceCalculator {
         if (p.firstMonthMode() == null
                 || first && p.bronzeBase() == null
                 || (!first || !"EXEMPT_ALL".equals(p.firstMonthMode())) && p.monthlyBase() == null)
-            return new Result(
+            return new SalesPerformanceResult(
                     null,
                     null,
                     null,
@@ -95,86 +116,82 @@ public final class SalesPerformanceCalculator {
                     null,
                     List.of(),
                     List.of("请完善绩效基数、铜牌金额及首月免考核口径"));
-        if (first && "EXEMPT_ALL".equals(p.firstMonthMode()))
-            return new Result(
+        if (first && "EXEMPT_ALL".equals(p.firstMonthMode())) {
+            BigDecimal process = money(p.bronzeBase().multiply(processPercent).movePointLeft(2));
+            BigDecimal collection = money(p.bronzeBase().subtract(process));
+            return new SalesPerformanceResult(
+                    process,
                     ZERO,
-                    ZERO,
-                    ZERO,
-                    p.bronzeBase(),
+                    process,
+                    collection,
                     ZERO,
                     collections,
-                    p.bronzeBase(),
+                    collection,
                     p.bronzeBase(),
                     List.of(),
                     List.of());
+        }
         BigDecimal processBudget =
-                money(
-                        p.monthlyBase()
-                                .multiply(BigDecimal.valueOf(p.processPercent()))
-                                .divide(new BigDecimal("100")));
+                money(p.monthlyBase().multiply(processPercent).divide(new BigDecimal("100")));
         BigDecimal collectionBudget =
                 money(
                         (first ? p.bronzeBase() : p.monthlyBase())
-                                .multiply(BigDecimal.valueOf(100 - p.processPercent()))
+                                .multiply(new BigDecimal("100").subtract(processPercent))
                                 .divide(new BigDecimal("100")));
         BigDecimal processDeduction = ZERO;
-        if (!linked) issues.add("销售打卡账号未关联员工，过程考核待核对");
+        if (!linked && processBudget.signum() > 0) issues.add("销售打卡账号未关联员工，过程考核待核对");
         LocalDate from = entry.isAfter(month.atDay(1)) ? entry : month.atDay(1),
                 to =
                         leave != null && leave.isBefore(month.atEndOfMonth())
                                 ? leave
                                 : month.atEndOfMonth();
         for (LocalDate date = from; !date.isAfter(to); date = date.plusDays(1)) {
+            if (processBudget.signum() == 0
+                    || assessmentDays != null && !assessmentDays.contains(date)) continue;
             var current = date;
             var evidence = visits.stream().filter(v -> current.equals(v.date())).toList();
-            // 同一客户同日重复打卡不增加指标，跨次短录音不拼成一次有效拜访。
+            // 打卡可按记录或客户去重；有效拜访始终按当日客户去重，短录音不拼接。
             Set<String> checkins = new HashSet<>(), effective = new HashSet<>();
-            boolean complete = linked;
+            // 未通过审核或无有效时长的记录不计达标；只有来源不可用才阻止计算。
             for (var v : evidence) {
-                if ("FLAGGED".equals(v.status())) continue;
-                if (!"APPROVED".equals(v.status())) {
-                    complete = false;
-                    continue;
-                }
-                if (v.customer() == null) {
-                    complete = false;
-                    continue;
-                }
-                checkins.add(v.customer());
-                if (!v.durationComplete() || v.durationMillis() == null) {
-                    complete = false;
-                    continue;
-                }
+                if (!"APPROVED".equals(v.status()) || v.customer() == null) continue;
+                if ("RECORD".equals(checkinCountMode) && v.id() == null) continue;
+                checkins.add("RECORD".equals(checkinCountMode) ? v.id() : v.customer());
+                if (p.dailyVisits() == 0) continue;
+                if (!v.durationComplete() || v.durationMillis() == null) continue;
                 if (v.durationMillis() >= p.minimumSeconds() * 1000L) effective.add(v.customer());
             }
             int missingCheckins = Math.max(0, p.dailyCheckins() - checkins.size()),
                     missingVisits = Math.max(0, p.dailyVisits() - effective.size());
             BigDecimal deduction =
-                    complete
+                    linked
                             ? p.checkinPenalty()
                                     .multiply(BigDecimal.valueOf(missingCheckins))
                                     .add(
                                             p.visitPenalty()
                                                     .multiply(BigDecimal.valueOf(missingVisits)))
                             : null;
-            if (complete) processDeduction = processDeduction.add(deduction);
-            else issues.add(date + "：打卡审核或可信沟通时长未齐，需核对过程指标");
+            if (linked) processDeduction = processDeduction.add(deduction);
             days.add(
-                    new Day(
+                    new SalesPerformanceDay(
                             date,
                             checkins.size(),
                             effective.size(),
                             missingCheckins,
                             missingVisits,
                             deduction,
-                            complete));
+                            linked));
         }
+        if (assessmentDays != null) processDeduction = processDeduction.min(processBudget);
         BigDecimal processPay =
                 issues.isEmpty() ? money(processBudget.subtract(processDeduction).max(ZERO)) : null;
         BigDecimal target =
-                first ? ZERO : serviceMonth == 2 ? p.secondMonthTarget() : p.laterMonthTarget();
+                first && assessmentDays == null
+                        ? ZERO
+                        : serviceMonth <= 2 ? p.secondMonthTarget() : p.laterMonthTarget();
         BigDecimal collectionPay;
-        if (first) collectionPay = collectionBudget;
+        if (collectionBudget.signum() == 0) collectionPay = ZERO;
+        else if (first && assessmentDays == null) collectionPay = collectionBudget;
         else if (collections == null) {
             issues.add("当月回款依据不完整");
             collectionPay = null;
@@ -184,14 +201,16 @@ public final class SalesPerformanceCalculator {
         } else
             collectionPay =
                     money(
-                            collectionBudget
-                                    .multiply(collections.max(ZERO).min(target))
-                                    .divide(target, 12, RoundingMode.HALF_UP));
+                            collectionBudget.multiply(
+                                    collections
+                                            .max(ZERO)
+                                            .divide(target, 12, RoundingMode.HALF_UP)
+                                            .min(resultCap)));
         BigDecimal total =
                 processPay == null || collectionPay == null
                         ? null
                         : money(processPay.add(collectionPay));
-        return new Result(
+        return new SalesPerformanceResult(
                 processBudget,
                 money(processDeduction),
                 processPay,

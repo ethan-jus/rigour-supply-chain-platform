@@ -11,5 +11,6 @@ public interface CostCityReferenceApi {
     String BASE_PATH = "/api/v1/crm/cost-city-references";
 
     @GetMapping(BASE_PATH)
-    ApiResponse<List<CostCityView>> cities();
+    ApiResponse<List<CostCityView>> cities(
+            @org.springframework.web.bind.annotation.RequestParam(required = false) String action);
 }

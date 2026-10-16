@@ -48,6 +48,7 @@ public class LogisticsCostFilterTest {
                                 "")
                         .replace(" JSON ", " LONGTEXT ");
         jdbc.execute(ddl);
+
         for (String name : List.of("extract", "unquote", "search")) {
             String function =
                     name.equals("extract")
@@ -60,6 +61,7 @@ public class LogisticsCostFilterTest {
                             + name
                             + "'");
         }
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN source_system VARCHAR(20)");
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(OrderLogisticsCostMapper.class);
@@ -71,6 +73,9 @@ public class LogisticsCostFilterTest {
         when(scope.predicate(anyString(), any(String[].class)))
                 .thenReturn(
                         new LogisticsWarehouseDataScope.Predicate("warehouse_id=?", List.of(7L)));
+        when(scope.manualPredicate(anyString(), anyString()))
+                .thenReturn(
+                        new LogisticsWarehouseDataScope.Predicate("created_by=?", List.of("U")));
         store =
                 new MybatisPlusOrderLogisticsCostRepository(
                         session.getMapper(OrderLogisticsCostMapper.class),
@@ -81,6 +86,7 @@ public class LogisticsCostFilterTest {
         insert("good", "T1", "DOC-A", 7L);
         insert("other", "T2", "DOC-A", 7L);
         insert("hidden", "T1", "DOC-H", 8L);
+        jdbc.update("UPDATE order_logistics_cost SET source_warehouse_id=warehouse_id");
     }
 
     @AfterEach
@@ -137,6 +143,54 @@ public class LogisticsCostFilterTest {
         assertThat(count(null, null, null, null, "%")).isZero();
     }
 
+    @Test
+    void manualRowsStayCreatorScopedAndMissingAmountsAreCounted() {
+        insert("manual", "T1", "MANUAL", null);
+        insert("notmine", "T1", "NOTMINE", null);
+        jdbc.update("UPDATE order_logistics_cost SET created_by='ANOTHER' WHERE id='notmine'");
+        jdbc.update(
+                "UPDATE order_logistics_cost SET amount=NULL,status_code='DRAFT' WHERE"
+                        + " id='manual'");
+        var result =
+                store.entries(
+                        "T1",
+                        "LOGISTICS",
+                        new LogisticsCostQuery(
+                                0, 20, null, null, null, null, null, null, null, null, null, null,
+                                null, null, null),
+                        "cost:read");
+        assertThat(result.total()).isEqualTo(2);
+        assertThat(result.missingAmountCount()).isEqualTo(1);
+        assertThat(result.registeredAmount()).isEqualByComparingTo("100");
+    }
+
+    @Test
+    void keywordSearchCoversDocumentsAndPartiesWithinScope() {
+        assertThat(countObject("SENDER-ONLY")).isEqualTo(1);
+        assertThat(countObject("SRC-A")).isEqualTo(1);
+        assertThat(countObject("%")).isZero();
+        jdbc.update(
+                "UPDATE order_logistics_cost SET sources_json=? WHERE id='good'",
+                "[{\"documentNo\":\"SRC-A\",\"receiverName\":\"中心仓100%\"}]");
+        assertThat(countObject("中心仓100%")).isEqualTo(1);
+        jdbc.update(
+                "UPDATE order_logistics_cost SET data_json=? WHERE id='good'",
+                "{\"logistics\":{\"senderName\":\"订货宝供应商\"}}");
+        assertThat(countObject("订货宝供应商")).isEqualTo(1);
+        assertThat(countObject("不存在")).isZero();
+    }
+
+    long countObject(String name) {
+        return store.entries(
+                        "T1",
+                        "LOGISTICS",
+                        new LogisticsCostQuery(
+                                0, 20, null, null, null, null, null, null, null, null, null, null,
+                                null, null, null, name),
+                        "cost:read")
+                .total();
+    }
+
     public static String extract(String text, String path) {
         Object value = JSON.readValue(text, Object.class);
         for (String key : path.substring(2).split("\\.")) {
@@ -150,7 +204,9 @@ public class LogisticsCostFilterTest {
         return value == null ? null : JSON.readValue(value, String.class);
     }
 
-    public static String search(String text, String mode, String like, String escape, String path) {
+    /** H2 仅补足 MySQL JSON_SEARCH 使用的路径子集；不是生产查询实现。 */
+    public static String search(
+            String text, String mode, String like, String escape, String... paths) {
         StringBuilder regex = new StringBuilder();
         for (int i = 0; i < like.length(); i++) {
             char c = like.charAt(i);
@@ -158,9 +214,26 @@ public class LogisticsCostFilterTest {
                 regex.append(Pattern.quote(String.valueOf(like.charAt(++i))));
             else regex.append(c == '%' ? ".*" : c == '_' ? "." : Pattern.quote(String.valueOf(c)));
         }
-        for (Object item : JSON.readValue(text, List.class)) {
-            if (item instanceof Map<?, ?> map
-                    && String.valueOf(map.get("documentNo")).matches(regex.toString()))
+        if (text == null) return null;
+        Object root = JSON.readValue(text, Object.class);
+        for (String path : paths) {
+            List<Object> values = new ArrayList<>();
+            values.add(root);
+            for (String part : path.substring(1).replaceFirst("^\\.", "").split("\\.")) {
+                List<Object> next = new ArrayList<>();
+                String key = part.replace("[*]", "");
+                for (Object value : values) {
+                    Object field =
+                            key.isEmpty()
+                                    ? value
+                                    : value instanceof Map<?, ?> map ? map.get(key) : null;
+                    if (part.endsWith("[*]") && field instanceof List<?> list) next.addAll(list);
+                    else if (field != null) next.add(field);
+                }
+                values = next;
+            }
+            if (values.stream()
+                    .anyMatch(v -> v instanceof String && v.toString().matches(regex.toString())))
                 return "match";
         }
         return null;

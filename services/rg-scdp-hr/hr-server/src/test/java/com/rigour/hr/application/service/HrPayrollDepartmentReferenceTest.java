@@ -14,8 +14,6 @@ import com.rigour.shared.context.TestAuthorizationContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import tools.jackson.databind.json.JsonMapper;
-
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -24,7 +22,8 @@ class HrPayrollDepartmentReferenceTest {
     private final UUID tenant = UUID.randomUUID();
     private final HrPayrollStore store = mock(HrPayrollStore.class);
     private final HrPayrollService service =
-            new HrPayrollService(store, mock(HrPayrollSource.class), JsonMapper.builder().build());
+            new HrPayrollService(
+                    store, mock(HrPayrollSource.class), mock(ConfiguredPayrollService.class));
 
     @AfterEach
     void clear() {
@@ -60,7 +59,16 @@ class HrPayrollDepartmentReferenceTest {
         var user = UUID.randomUUID();
         TestAuthorizationContext.set(
                 new CallerIdentity(
-                        "TENANT", user, tenant, user, null, UUID.randomUUID(),
-                        0, 0, 0, Set.of(), Set.of(permission)));
+                        "TENANT",
+                        user,
+                        tenant,
+                        user,
+                        null,
+                        UUID.randomUUID(),
+                        0,
+                        0,
+                        0,
+                        Set.of(),
+                        Set.of(permission)));
     }
 }

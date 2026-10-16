@@ -20,6 +20,7 @@ public final class HrCostReferenceService {
 
     public List<HrCostEmployeeView> employees(String action) {
         if (!Set.of(
+                        "erp:cost:marketing:export",
                         "erp:cost:marketing:read",
                         "erp:cost:marketing:write",
                         "erp:cost:marketing:confirm",

@@ -25,6 +25,8 @@ import java.util.UUID;
 
 @Service
 public final class OrderLogisticsCostService {
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(OrderLogisticsCostService.class);
     private final OrderLogisticsCostStore store;
     private final OrderLogisticsReferences dictionary;
 
@@ -50,8 +52,27 @@ public final class OrderLogisticsCostService {
     }
 
     public LogisticsCostPageView entries(String value, LogisticsCostQuery q) {
-        String category = category(value), p = permission(category, "read");
+        return entries(value, q, "read");
+    }
+
+    public LogisticsCostPageView export(String value, LogisticsCostQuery q) {
+        var result = entries(value, q, "export");
+        var caller = AuthorizationContext.requireCurrent();
+        log.info(
+                "cost_export tenant={} actor={} category={} begin={} returned={} total={}",
+                caller.tenantId(),
+                caller.principalId(),
+                value,
+                q.begin(),
+                result.items().size(),
+                result.total());
+        return result;
+    }
+
+    private LogisticsCostPageView entries(String value, LogisticsCostQuery q, String action) {
+        String category = category(value), p = permission(category, action);
         var a = actor(p);
+        text(q.objectName(), 200, "业务对象");
         text(q.documentNo(), 100, "费用单号");
         text(q.title(), 200, "费用事项");
         text(q.remark(), 1000, "备注");
@@ -77,7 +98,11 @@ public final class OrderLogisticsCostService {
                         q.dateFrom(),
                         q.dateTo(),
                         q.warehouseId(),
-                        q.ownerEmployeeCode()),
+                        q.ownerEmployeeCode(),
+                        q.objectName(),
+                        q.sourceSystem(),
+                        q.payerCode(),
+                        q.missingAmount()),
                 p);
     }
 
@@ -97,7 +122,12 @@ public final class OrderLogisticsCostService {
         return store.sources(t, leg, keyword, List.of(), p);
     }
 
-    public LogisticsCostDetailView save(String value, String id, LogisticsCostCommand c) {
+    public LogisticsCostDetailView save(String value, String id, LogisticsCostCommand command) {
+        return operation(
+                id == null ? "CREATE" : "UPDATE", id, () -> saveValidated(value, id, command));
+    }
+
+    private LogisticsCostDetailView saveValidated(String value, String id, LogisticsCostCommand c) {
         String category = category(value), p = permission(category, "write");
         var a = actor(p);
         String t = a.tenantId().toString();
@@ -109,7 +139,8 @@ public final class OrderLogisticsCostService {
         text(c.remark(), 1000, "备注");
         text(c.reason(), 500, "变更原因");
         rules(() -> LogisticsCostRules.money(c.amount(), false));
-        valid(t, "COST_PAYMENT_STATUS", c.paymentStatusCode());
+        if (c.paymentStatusCode() != null && !c.paymentStatusCode().isBlank())
+            valid(t, "COST_PAYMENT_STATUS", c.paymentStatusCode());
         if ("PAID".equals(c.paymentStatusCode()) && c.amount() == null) throw bad("已付款费用必须填写金额");
         if (id == null) {
             try {
@@ -118,44 +149,11 @@ public final class OrderLogisticsCostService {
                 throw bad("requestId格式无效");
             }
         } else if (c.revision() == null || c.revision() < 1) throw bad("缺少费用版本，请刷新");
-        List<LogisticsCostSourceView> sources = List.of();
+        if (!Objects.equals(dictionary.city(c.cityCode(), p), c.cityName()))
+            throw bad("城市名称与授权目录不一致，请重新选择");
+        List<LogisticsCostSourceView> sources =
+                new LogisticsCostValidator(store, dictionary).validate(t, c, p, false);
         String warehouseName = null, employeeName = null;
-        if ("LOGISTICS".equals(category)) {
-            if (c.logistics() == null) throw bad("物流参数无效");
-            var l = c.logistics();
-            leg(l.legCode());
-            if (l.sourceIds() == null
-                    || l.sourceIds().isEmpty()
-                    || l.sourceIds().size() > 100
-                    || l.sourceIds().stream().anyMatch(Objects::isNull)) throw bad("请选择1至100张来源单据");
-            if (l.sourceIds().stream().distinct().count() != l.sourceIds().size())
-                throw bad("来源单据不能重复");
-            // 凭证归属随来源接口校验；一期来源单据即运输依据，不接收未核验的凭证编号。
-            if (l.voucherIds() != null && !l.voucherIds().isEmpty()) throw bad("请从来源单据详情查看入出库凭证");
-            valid(t, "COST_PAYER", l.payerCode());
-            valid(t, "COST_TRANSPORT_METHOD", l.transportMethodCode());
-            text(l.carrierName(), 120, "承运方");
-            text(l.trackingNo(), 100, "运单号");
-            sources = store.sources(t, l.legCode(), "", l.sourceIds(), p);
-            if (sources.size() != l.sourceIds().size()) throw bad("来源单据不存在、未生效或无访问权限");
-            var keys =
-                    sources.stream()
-                            .map(
-                                    s ->
-                                            s.cityCode()
-                                                    + "|"
-                                                    + s.warehouseId()
-                                                    + "|"
-                                                    + s.targetWarehouseId()
-                                                    + "|"
-                                                    + ("DELIVERY".equals(l.legCode())
-                                                            ? ""
-                                                            : s.senderCode()))
-                            .toList();
-            rules(() -> LogisticsCostRules.sameTrip(keys));
-            if (sources.stream().anyMatch(s -> !Objects.equals(s.cityCode(), c.cityCode())))
-                throw bad("城市必须与来源单据的归属地区一致");
-        }
         return store.save(
                 t,
                 category,
@@ -169,11 +167,25 @@ public final class OrderLogisticsCostService {
     }
 
     public LogisticsCostDetailView action(
+            String value, String id, LogisticsCostActionCommand command, boolean confirm) {
+        return operation(
+                confirm ? "CONFIRM" : "VOID",
+                id,
+                () -> actionValidated(value, id, command, confirm));
+    }
+
+    private LogisticsCostDetailView actionValidated(
             String value, String id, LogisticsCostActionCommand c, boolean confirm) {
         String category = category(value), p = permission(category, confirm ? "confirm" : "void");
         var a = actor(p);
         if (c == null || c.revision() < 1) throw bad("缺少费用版本");
         text(c.reason(), 500, "操作原因");
+        if (confirm) {
+            var current = store.entry(a.tenantId().toString(), category, id, p);
+            dictionary.city(current.data().cityCode(), p);
+            new LogisticsCostValidator(store, dictionary)
+                    .validate(a.tenantId().toString(), current.data(), p, true);
+        }
         return store.transition(
                 a.tenantId().toString(), category, id, c, a.principalId().toString(), p);
     }
@@ -205,7 +217,60 @@ public final class OrderLogisticsCostService {
         }
     }
 
+    private LogisticsCostDetailView operation(
+            String operation,
+            String id,
+            java.util.function.Supplier<LogisticsCostDetailView> work) {
+        var caller = AuthorizationContext.requireCurrent();
+        long started = System.nanoTime();
+        try {
+            var saved = work.get();
+            log.info(
+                    "cost_operation operation={} tenant={} actor={} entry={} revision={}"
+                            + " elapsedMs={}",
+                    operation,
+                    caller.tenantId(),
+                    caller.principalId(),
+                    saved == null ? id : saved.id(),
+                    saved == null ? null : saved.revision(),
+                    (System.nanoTime() - started) / 1_000_000);
+            return saved;
+        } catch (BusinessException | AuthorizationDeniedException e) {
+            log.warn(
+                    "cost_operation_rejected operation={} tenant={} actor={} entry={} failure={}"
+                            + " reason={}",
+                    operation,
+                    caller.tenantId(),
+                    caller.principalId(),
+                    id,
+                    e.getClass().getSimpleName(),
+                    e.getMessage());
+            throw e;
+        } catch (RuntimeException e) {
+            log.error(
+                    "cost_operation_failed operation={} tenant={} actor={} entry={}",
+                    operation,
+                    caller.tenantId(),
+                    caller.principalId(),
+                    id,
+                    e);
+            throw e;
+        }
+    }
+
     public static BusinessException bad(String message) {
         return new BusinessException(ErrorCode.BAD_REQUEST, message, List.of());
+    }
+
+    public List<LogisticsCostSourceView> sources(
+            String leg, String keyword, String city, int begin) {
+        String action = permission("LOGISTICS", "read");
+        String tenant = actor(action).tenantId().toString();
+        leg(leg);
+        text(keyword, 200, "搜索关键字");
+        text(city, 64, "城市");
+        if (begin < 0 || begin > 100000) throw bad("查询位置无效");
+        if (city != null && !city.isBlank()) dictionary.city(city, action);
+        return store.sources(tenant, leg, keyword, List.of(), action, city, begin);
     }
 }

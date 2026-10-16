@@ -29,6 +29,33 @@ public final class LogisticsWarehouseDataScope {
         }
     }
 
+    public Predicate manualPredicate(String action, String object) {
+        var access = com.rigour.tenant.iam.client.ManualCostScope.access(policy(action), object);
+        if (!access.allowed()) return new Predicate("1=0", List.of());
+        List<String> clauses = new ArrayList<>();
+        List<Object> args = new ArrayList<>();
+        if (!access.allCreators()) {
+            clauses.add("created_by=?");
+            args.add(AuthorizationContext.requireCurrent().principalId().toString());
+        }
+        if (access.cities() != null) {
+            if (access.cities().isEmpty()) clauses.add("1=0");
+            else {
+                clauses.add(
+                        "city_code IN ("
+                                + String.join(",", Collections.nCopies(access.cities().size(), "?"))
+                                + ")");
+                args.addAll(access.cities());
+            }
+        }
+        return new Predicate(
+                clauses.isEmpty() ? "1=1" : "(" + String.join(" AND ", clauses) + ")", args);
+    }
+
+    public void requireManual(String action, String object, String city) {
+        com.rigour.tenant.iam.client.ManualCostScope.require(policy(action), object, city, action);
+    }
+
     private SupplyAuthorizationView policy(String action) {
         var caller = AuthorizationContext.current().orElse(null);
         if (caller == null || !"TENANT".equals(caller.principalScope())) return null;
@@ -102,5 +129,24 @@ public final class LogisticsWarehouseDataScope {
         return "ALL".equals(limit.mode())
                 || "SPECIFIED".equals(limit.mode())
                         && limit.references().contains(Long.toString(warehouse));
+    }
+
+    public void applyCity(
+            com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<?> query,
+            String action,
+            String field) {
+        applyCity(query, action, field, "INVENTORY");
+    }
+
+    public void applyCity(
+            com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<?> query,
+            String action,
+            String field,
+            String object) {
+        if (!field.matches("[a-z_][a-z0-9_.]*")) throw new IllegalArgumentException("无效地区列");
+        var access = com.rigour.tenant.iam.client.ManualCostScope.access(policy(action), object);
+        if (!access.allowed() || access.cities() != null && access.cities().isEmpty())
+            query.apply("1=0");
+        else if (access.cities() != null) query.in(field, access.cities());
     }
 }

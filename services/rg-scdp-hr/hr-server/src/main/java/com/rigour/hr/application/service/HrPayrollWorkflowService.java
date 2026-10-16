@@ -5,8 +5,9 @@ import static com.rigour.hr.application.service.HrPayrollService.*;
 import com.rigour.hr.api.v1.model.*;
 import com.rigour.hr.application.port.out.HrEmployeePayrollProfileStore;
 import com.rigour.hr.application.port.out.HrPayrollStore;
-import com.rigour.hr.domain.payroll.EmployeeSalaryResolver;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,9 +20,24 @@ import java.util.stream.Collectors;
 /** 核算前检查、人员准备与确认后的处理；所有工资变化经仓储事务和审计。 */
 @Service
 public class HrPayrollWorkflowService {
+    private static final Logger log = LoggerFactory.getLogger(HrPayrollWorkflowService.class);
     private final HrPayrollStore store;
     private final HrPayrollService payroll;
     private final HrEmployeePayrollProfileStore profiles;
+
+    private final com.rigour.hr.application.port.out.HrPayrollSchemeStore schemes;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public HrPayrollWorkflowService(
+            HrPayrollStore store,
+            HrPayrollService payroll,
+            HrEmployeePayrollProfileStore profiles,
+            com.rigour.hr.application.port.out.HrPayrollSchemeStore schemes) {
+        this.store = store;
+        this.payroll = payroll;
+        this.profiles = profiles;
+        this.schemes = schemes;
+    }
 
     public HrPayrollWorkflowService(
             HrPayrollStore store,
@@ -30,6 +46,20 @@ public class HrPayrollWorkflowService {
         this.store = store;
         this.payroll = payroll;
         this.profiles = profiles;
+        this.schemes = null;
+    }
+
+    private HrPayrollComponentService components;
+    private PayrollRuleResolver ruleResolver;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setRuleResolver(PayrollRuleResolver rules) {
+        this.ruleResolver = rules;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setComponents(HrPayrollComponentService components) {
+        this.components = components;
     }
 
     public PayrollPreparationView preparation(String value) {
@@ -41,81 +71,31 @@ public class HrPayrollWorkflowService {
                         .collect(
                                 Collectors.toMap(
                                         PayrollDetailView::employeeCode, Function.identity()));
-        var rules = store.rules(tenant);
         var rows = new ArrayList<PayrollPreparationEmployeeView>();
-        for (var e : store.employees(tenant, "hr:payroll:read")) {
-            boolean outsideEmployment =
-                    e.entryDate() != null && e.entryDate().isAfter(m.atEndOfMonth())
-                            || e.leaveDate() != null && e.leaveDate().isBefore(m.atDay(1));
-            boolean pendingCorrection =
-                    outsideEmployment
-                            && !store.corrections(tenant, e.employeeCode(), value).isEmpty();
-            // 已离职员工仍可能有跨月补差，不能从目标月份的操作名单消失。
-            if (!existing.containsKey(e.employeeCode()) && outsideEmployment && !pendingCorrection)
-                continue;
+        var employees = store.employees(tenant, "hr:payroll:read");
+        var salaryRoles =
+                ruleResolver == null
+                        ? Map.<String, String>of()
+                        : ruleResolver.salaryRoles(
+                                tenant,
+                                employees.stream().map(PayrollEmployeeView::employeeCode).toList(),
+                                m.atDay(1));
+        for (var e : employees) {
+            if (e.entryDate() != null && e.entryDate().isAfter(m.atEndOfMonth())) continue;
+            boolean outsideEmployment = e.leaveDate() != null && e.leaveDate().isBefore(m.atDay(1));
+            // 离职人员仍可结算后续付清的订单；生成时只计算提成及更正，不再发固定工资。
             var issues = new ArrayList<String>();
-            if (pendingCorrection) issues.add("非在职月份有补差，请在月度调整核定底薪、绩效、补贴；无收入项填写0");
-            var ruleIssues = new ArrayList<String>();
-            if (e.payrollCategory() == null || e.payrollCategory().isBlank()) issues.add("未设置薪酬类别");
-            var salary = store.salarySource(tenant, e.employeeCode());
-            if ("SALES".equals(e.payrollCategory())) {
-                if (e.entryDate() == null) issues.add("未填写入职日期");
-                if (e.departmentId() == null) issues.add("未关联部门");
-                if (salary == null) issues.add("薪资档案缺失");
-                else
-                    EmployeeSalaryResolver.resolve(
-                            m,
-                            salary.regularized(),
-                            salary.regularizationDate(),
-                            salary.effectiveFrom(),
-                            salary.regularSalary(),
-                            salary.probationSalary(),
-                            issues);
-                var applicable =
-                        rules.stream()
-                                .filter(
-                                        r ->
-                                                r.data().enabled()
-                                                        && r.data()
-                                                                .departmentIds()
-                                                                .contains(e.departmentId())
-                                                        && !r.data()
-                                                                .effectiveFrom()
-                                                                .isAfter(m.atEndOfMonth())
-                                                        && !r.data()
-                                                                .effectiveTo()
-                                                                .isBefore(m.atDay(1)))
-                                .toList();
-                var performance =
-                        applicable.stream()
-                                .filter(r -> "PERFORMANCE".equals(r.data().kindCode()))
-                                .toList();
-                if (performance.size() != 1) ruleIssues.add("绩效规则缺失或冲突，可在月度调整核定");
-                else if (performance.getFirst().data().effectiveFrom().isAfter(m.atDay(1))
-                        || performance.getFirst().data().effectiveTo().isBefore(m.atEndOfMonth()))
-                    ruleIssues.add("绩效规则未覆盖整月");
-                if (applicable.stream().noneMatch(r -> "ALLOWANCE".equals(r.data().kindCode())))
-                    ruleIssues.add("未配置补贴规则，请确认是否不发补贴");
-                if (applicable.stream()
-                        .anyMatch(
-                                r ->
-                                        "ALLOWANCE".equals(r.data().kindCode())
-                                                && (r.data().effectiveFrom().isAfter(m.atDay(1))
-                                                        || r.data()
-                                                                .effectiveTo()
-                                                                .isBefore(m.atEndOfMonth()))))
-                    ruleIssues.add("补贴月内生效或结束，需当月核定");
-                if (applicable.stream().noneMatch(r -> "COMMISSION".equals(r.data().kindCode())))
-                    ruleIssues.add("未配置适用商品提成；未配置商品不计提");
-            }
+            if (outsideEmployment) issues.add("离职后结算：仅提成及历史更正");
+            var ruleIssues = List.<String>of();
             var p = existing.get(e.employeeCode());
+            String salaryRole = salaryRoles.getOrDefault(e.employeeCode(), e.payrollCategory());
             rows.add(
                     new PayrollPreparationEmployeeView(
                             e.employeeCode(),
                             e.employeeName(),
                             e.departmentId(),
                             e.departmentName(),
-                            e.payrollCategory(),
+                            salaryRole,
                             p == null ? null : p.statusCode(),
                             p == null ? null : p.id(),
                             p != null && Set.of("CONFIRMED", "PAID").contains(p.statusCode()),
@@ -123,9 +103,15 @@ public class HrPayrollWorkflowService {
                             List.copyOf(ruleIssues),
                             e.revision(),
                             e.id(),
-                            salary == null ? null : salary.regularized(),
-                            salary == null ? null : salary.regularizationDate(),
-                            salary == null ? null : salary.effectiveFrom()));
+                            null,
+                            null,
+                            null,
+                            true,
+                            true,
+                            null,
+                            salaryRole,
+                            e.entryDate(),
+                            e.leaveDate()));
         }
         return new PayrollPreparationView(value, List.copyOf(rows));
     }
@@ -148,12 +134,23 @@ public class HrPayrollWorkflowService {
                     .orElse(false))
                 result.add(
                         new PayrollPreviewView(code, e.employeeName(), List.of("已确认或已发放，跳过检查与重算")));
-            else
+            else {
+                var calculated = payroll.calculation(tenant, e, m);
+                var previous =
+                        store.byMonth(tenant, code, c.month())
+                                .map(p -> p.calculation().sourceFingerprint())
+                                .orElse(null);
                 result.add(
                         new PayrollPreviewView(
                                 code,
                                 e.employeeName(),
-                                payroll.calculation(tenant, e, m).issues()));
+                                calculated.issues(),
+                                previous != null
+                                        && !Objects.equals(
+                                                previous, calculated.sourceFingerprint()),
+                                previous,
+                                calculated.sourceFingerprint()));
+            }
         }
         return List.copyOf(result);
     }
@@ -211,7 +208,13 @@ public class HrPayrollWorkflowService {
         var a = actor("hr:payroll:confirm");
         checkAction(c);
         required(c.reason(), 500, "撤回原因");
-        return store.reopen(a.tenantId().toString(), id, c, a.principalId().toString());
+        var result = store.reopen(a.tenantId().toString(), id, c, a.principalId().toString());
+        log.info(
+                "Payroll reopened tenant={} actor={} payrollId={}",
+                a.tenantId(),
+                a.principalId(),
+                id);
+        return result;
     }
 
     public PayrollDetailView pay(String id, PayrollPaymentCommand c) {
@@ -224,7 +227,13 @@ public class HrPayrollWorkflowService {
         required(c.reason(), 500, "发放说明");
         if (c.paidDate() == null || c.paidDate().isAfter(LocalDate.now(ZoneId.of("Asia/Shanghai"))))
             throw bad("请填写不晚于今天的实际发放日期");
-        return store.pay(a.tenantId().toString(), id, c, a.principalId().toString());
+        var result = store.pay(a.tenantId().toString(), id, c, a.principalId().toString());
+        log.info(
+                "Payroll payment registered tenant={} actor={} payrollId={}",
+                a.tenantId(),
+                a.principalId(),
+                id);
+        return result;
     }
 
     public PayrollCorrectionView correct(String id, PayrollCorrectionCommand c) {
@@ -236,7 +245,13 @@ public class HrPayrollWorkflowService {
         if (c.amount() == null || c.amount().signum() == 0) throw bad("补差金额不能为0，正数补发、负数冲回");
         money(c.amount().abs(), true);
         required(c.reason(), 500, "补差原因");
-        return store.correct(a.tenantId().toString(), id, c, a.principalId().toString());
+        var result = store.correct(a.tenantId().toString(), id, c, a.principalId().toString());
+        log.info(
+                "Payroll correction created tenant={} actor={} payrollId={}",
+                a.tenantId(),
+                a.principalId(),
+                id);
+        return result;
     }
 
     public void cancelCorrection(String id, String correctionId, PayrollActionCommand c) {

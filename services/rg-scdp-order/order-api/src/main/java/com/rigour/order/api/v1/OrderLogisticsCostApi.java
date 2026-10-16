@@ -25,6 +25,9 @@ public interface OrderLogisticsCostApi {
     @GetMapping(BASE_PATH)
     ApiResponse<LogisticsCostPageView> entries(@ModelAttribute LogisticsCostQuery query);
 
+    @GetMapping(BASE_PATH + "/export")
+    ApiResponse<LogisticsCostPageView> export(@ModelAttribute LogisticsCostQuery query);
+
     @GetMapping(BASE_PATH + "/{id}")
     ApiResponse<LogisticsCostDetailView> entry(@PathVariable String id);
 
@@ -48,5 +51,8 @@ public interface OrderLogisticsCostApi {
 
     @GetMapping(BASE_PATH + "/sources")
     ApiResponse<List<LogisticsCostSourceView>> sources(
-            @RequestParam String legCode, @RequestParam(defaultValue = "") String keyword);
+            @RequestParam String legCode,
+            @RequestParam(defaultValue = "") String keyword,
+            @RequestParam(required = false) String cityCode,
+            @RequestParam(defaultValue = "0") int begin);
 }

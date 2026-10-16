@@ -937,7 +937,9 @@ class PayrollPersistenceWorkflowTest {
                         new com.rigour.hr.application.service.HrPayrollService(
                                 payroll,
                                 mock(com.rigour.hr.application.port.out.HrPayrollSource.class),
-                                JsonMapper.builder().build()),
+                                mock(
+                                        com.rigour.hr.application.service.ConfiguredPayrollService
+                                                .class)),
                         dataSource);
         var commands = List.of(cityCommand("石家庄"), cityCommand("唐山"));
         var saved = service.createCityManagers(commands);

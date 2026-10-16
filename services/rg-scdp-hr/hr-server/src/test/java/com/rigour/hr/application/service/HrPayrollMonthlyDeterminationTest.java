@@ -12,8 +12,6 @@ import com.rigour.shared.core.exception.BusinessException;
 
 import org.junit.jupiter.api.*;
 
-import tools.jackson.databind.json.JsonMapper;
-
 import java.math.BigDecimal;
 import java.time.*;
 import java.util.*;
@@ -22,7 +20,7 @@ class HrPayrollMonthlyDeterminationTest {
     final HrPayrollStore store = mock(HrPayrollStore.class);
     final HrPayrollSource source = mock(HrPayrollSource.class);
     final HrPayrollService service =
-            new HrPayrollService(store, source, JsonMapper.builder().build());
+            new HrPayrollService(store, source, mock(ConfiguredPayrollService.class));
     final String tenant = UUID.randomUUID().toString();
     final PayrollEmployeeView employee =
             new PayrollEmployeeView(
@@ -129,80 +127,6 @@ class HrPayrollMonthlyDeterminationTest {
     }
 
     @Test
-    void monthlyDepartmentAndPerformanceResolveMissingAssignmentWithoutTouchingSources() {
-        var result = service.calculation(tenant, employee, month);
-        assertThat(result.issues()).isEmpty();
-        assertThat(result.performance()).isEqualByComparingTo("600");
-        assertThat(result.commission()).isEqualByComparingTo("40");
-        assertThat(result.allowance()).isEqualByComparingTo("750");
-        assertThat(result.netPay()).isEqualByComparingTo("5390");
-        assertThat(result.input().departmentOverrideId()).isEqualTo(20L);
-        assertThat(employee.departmentId()).isEqualTo(10L);
-        verify(source, never()).performanceEvidence(anyString(), anyString(), any(), any());
-        verify(store, never()).saveInput(anyString(), anyString(), anyString(), any(), anyString());
-    }
-
-    @Test
-    void septemberDeterminationDoesNotChangeAugustOrdersOrOtherMonths() {
-        when(source.commissions(eq(tenant), eq("E1"), isNull(), any()))
-                .thenReturn(
-                        List.of(order(LocalDate.of(2026, 8, 5), new BigDecimal("1000"), false)));
-        assertThat(service.calculation(tenant, employee, month).issues())
-                .contains("SO1：订单发生时的部门归属待核对");
-        when(store.input(tenant, "E1", "2026-10")).thenReturn(input(null));
-        assertThat(service.calculation(tenant, employee, YearMonth.of(2026, 10)).issues())
-                .contains("当月任职部门资料缺失或发生调动，请核对期间归属");
-    }
-
-    @Test
-    void cityManagerUsesSalespersonsDeterminationRatherThanManagersOwnDepartment() {
-        var manager =
-                new PayrollEmployeeView(
-                        "M1",
-                        "测试城市总",
-                        10L,
-                        "档案部门",
-                        "测试城市",
-                        LocalDate.of(2026, 8, 1),
-                        null,
-                        "SALES");
-        when(store.input(tenant, "M1", "2026-09")).thenReturn(input(30L));
-        when(store.rules(tenant))
-                .thenReturn(
-                        List.of(rule("CITY_MANAGER", null), rule("COMMISSION", "CITY_MANAGER")));
-        when(source.commissions(eq(tenant), isNull(), eq("CITY"), any()))
-                .thenReturn(List.of(order(month.atDay(5), new BigDecimal("1000"), false)));
-        var result = service.calculation(tenant, manager, month);
-        assertThat(result.issues()).isEmpty();
-        assertThat(result.commission()).isEqualByComparingTo("40");
-        assertThat(result.details())
-                .singleElement()
-                .satisfies(d -> assertThat(d.recipientRoleCode()).isEqualTo("CITY_MANAGER"));
-    }
-
-    @Test
-    void manualDeterminationStillRequiresFullPaymentAndRefundReview() {
-        when(source.commissions(eq(tenant), eq("E1"), isNull(), any()))
-                .thenReturn(List.of(order(month.atDay(5), new BigDecimal("500"), false)));
-        var result = service.calculation(tenant, employee, month);
-        assertThat(result.commission()).isEqualByComparingTo("0");
-        assertThat(result.heldCommission()).isEqualByComparingTo("40");
-        when(source.commissions(eq(tenant), eq("E1"), isNull(), any()))
-                .thenReturn(List.of(order(month.atDay(5), new BigDecimal("1000"), true)));
-        assertThat(service.calculation(tenant, employee, month).issues())
-                .contains("SO1：存在退款，需核对净销售与冲回");
-    }
-
-    @Test
-    void changingOrClearingDeterminationChangesFingerprintAndRestoresReview() {
-        var result = service.calculation(tenant, employee, month);
-        when(store.input(tenant, "E1", "2026-09")).thenReturn(input(null));
-        var restored = service.calculation(tenant, employee, month);
-        assertThat(restored.sourceFingerprint()).isNotEqualTo(result.sourceFingerprint());
-        assertThat(restored.issues()).contains("SO1：订单发生时的部门归属待核对");
-    }
-
-    @Test
     void departmentMustBeAvailableInCurrentTenantsAuthorizedScope() {
         service.saveInput("2026-09", "E1", input(20L));
         verify(store).saveInput(eq(tenant), eq("E1"), eq("2026-09"), eq(input(20L)), anyString());
@@ -225,8 +149,7 @@ class HrPayrollMonthlyDeterminationTest {
                         null,
                         20L);
         when(store.input(tenant, "E1", "2026-09")).thenReturn(zero);
-        assertThat(service.calculation(tenant, employee, month).performance())
-                .isEqualByComparingTo("0");
+
         assertThatThrownBy(
                         () ->
                                 service.saveInput(

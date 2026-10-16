@@ -21,10 +21,19 @@ public interface OrderCostSourceApi {
     @GetMapping("/api/v1/orders/cost-sources/deliveries")
     ApiResponse<List<OrderDeliveryCostSourceView>> deliveries(
             @RequestParam(defaultValue = "") String keyword,
-            @RequestParam(required = false) List<Long> ids);
+            @RequestParam(required = false) List<Long> ids,
+            @RequestParam(required = false) String cityCode,
+            @RequestParam(defaultValue = "0") int begin,
+            @RequestParam(required = false) String action);
 
     @GetMapping("/api/v1/orders/cost-sources/commissions")
     ApiResponse<List<OrderCommissionSourceLineView>> commissions(
+            @RequestParam(required = false) String employeeCode,
+            @RequestParam(required = false) String cityCode,
+            @RequestParam LocalDate through);
+
+    @GetMapping("/api/v1/orders/cost-sources/payroll-lines")
+    ApiResponse<List<com.rigour.order.api.v1.model.OrderPayrollLineView>> payrollLines(
             @RequestParam(required = false) String employeeCode,
             @RequestParam(required = false) String cityCode,
             @RequestParam LocalDate through);

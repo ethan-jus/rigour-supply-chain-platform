@@ -70,23 +70,121 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                 new QueryWrapper<ErpCostEntity>()
                         .eq("tenant_id", tenant)
                         .eq("category_code", category);
+        var manual =
+                scope.manualPredicate(
+                        action, "MARKETING".equals(category) ? "EMPLOYEE" : "INVENTORY");
         if ("MARKETING".equals(category)) {
             var people = references.employees(action);
-            if (people.isEmpty()) q.apply("1=0");
-            else
-                q.in(
-                        "owner_employee_code",
-                        people.stream().map(ErpCostEmployeeView::employeeCode).toList());
+            q.and(
+                    w -> {
+                        w.and(
+                                m -> {
+                                    m.and(
+                                            owner ->
+                                                    owner.isNull("owner_employee_code")
+                                                            .or()
+                                                            .eq("owner_employee_code", ""));
+                                    bind(m, manual.sql(), manual.args());
+                                });
+                        if (!people.isEmpty())
+                            w.or().in(
+                                            "owner_employee_code",
+                                            people.stream()
+                                                    .map(ErpCostEmployeeView::employeeCode)
+                                                    .toList());
+                    });
         } else {
             var p = scope.predicate(action, "warehouse_id", "source_warehouse_id");
-            bind(q, p.sql(), p.args());
+            q.and(
+                    w ->
+                            w.and(
+                                            m -> {
+                                                m.isNull("warehouse_id")
+                                                        .isNull("source_warehouse_id");
+                                                bind(m, manual.sql(), manual.args());
+                                            })
+                                    .or(
+                                            m -> {
+                                                m.isNotNull("warehouse_id")
+                                                        .isNotNull("source_warehouse_id");
+                                                bind(m, p.sql(), p.args());
+                                            }));
         }
+        scope.applyCity(
+                q, action, "city_code", "MARKETING".equals(category) ? "EMPLOYEE" : "INVENTORY");
         return q;
     }
 
     private QueryWrapper<ErpCostEntity> query(
             String tenant, String category, ErpCostQuery filter, String action) {
         var q = where(tenant, category, action);
+        q.eq(text(filter.sourceSystem()), "source_system", filter.sourceSystem());
+        if (Boolean.TRUE.equals(filter.missingAmount()))
+            q.isNull("amount").ne("status_code", "VOID");
+        if (text(filter.objectName())) {
+            // 字段路径由业务类别固定，用户输入始终作为绑定参数。
+            String[] paths =
+                    switch (category) {
+                        case "PURCHASE", "LOSS" ->
+                                new String[] {"$.goods.productName", "$.goods.specification"};
+                        case "RENTAL" -> new String[] {"$.rental.premisesName"};
+                        default -> new String[] {"$.ownerName", "$.payeeName"};
+                    };
+            q.and(
+                    names -> {
+                        for (int i = 0; i < paths.length; i++) {
+                            if (i > 0) names.or();
+                            names.apply(
+                                    "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'"
+                                            + paths[i]
+                                            + "')),''))>0",
+                                    filter.objectName().trim());
+                        }
+                        if ("RENTAL".equals(category))
+                            names.or()
+                                    .apply(
+                                            "LOCATE({0},COALESCE(warehouse_name,''))>0",
+                                            filter.objectName().trim());
+                    });
+        }
+        if (text(filter.supplierName()))
+            q.apply(
+                    "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.supplierName')),''))>0",
+                    filter.supplierName().trim());
+        if (text(filter.lossReason()))
+            q.apply(
+                    "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.lossReason')),''))>0",
+                    filter.lossReason().trim());
+        if (text(filter.ownerName()))
+            q.apply(
+                    "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ownerName')),''))>0",
+                    filter.ownerName().trim());
+        if (text(filter.payeeName()))
+            q.apply(
+                    "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.payeeName')),''))>0",
+                    filter.payeeName().trim());
+        if (text(filter.landlordName()))
+            q.apply(
+                    "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.rental.landlordName')),''))>0",
+                    filter.landlordName().trim());
+        if (text(filter.sourceDocumentNo())) {
+            String pattern =
+                    "%"
+                            + filter.sourceDocumentNo()
+                                    .trim()
+                                    .replace("\\", "\\\\")
+                                    .replace("%", "\\%")
+                                    .replace("_", "\\_")
+                            + "%";
+            q.apply(
+                    "(JSON_SEARCH(sources_json,'one',{0},NULL,'$[*].documentNo') IS NOT NULL OR"
+                        + " JSON_SEARCH(sources_json,'one',{0},NULL,'$[*].originalNo') IS NOT NULL"
+                        + " OR JSON_SEARCH(data_json,'one',{0},NULL,'$.goods.externalDocument.documentNo','$.externalDocuments[*].documentNo')"
+                        + " IS NOT NULL)",
+                    pattern);
+        }
+        q.eq(text(filter.costMonth()), "cost_month", filter.costMonth())
+                .eq(filter.departmentId() != null, "department_id", filter.departmentId());
         if (text(filter.documentNo()))
             q.apply("LOCATE({0},document_no)>0", filter.documentNo().trim());
         if (text(filter.title())) q.apply("LOCATE({0},title)>0", filter.title().trim());
@@ -98,7 +196,9 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
             q.apply(
                     "LOCATE({0},JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.rental.contractNo')))>0",
                     filter.contractNo().trim());
-        q.eq(text(filter.typeCode()), "type_code", filter.typeCode())
+        if ("RENTAL".equals(category) && text(filter.typeCode()))
+            q.apply("premises_type={0}", filter.typeCode());
+        q.eq(!"RENTAL".equals(category) && text(filter.typeCode()), "type_code", filter.typeCode())
                 .eq(text(filter.cityCode()), "city_code", filter.cityCode())
                 .eq(text(filter.statusCode()), "status_code", filter.statusCode())
                 .eq(
@@ -128,7 +228,11 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                                                 "COALESCE(SUM(CASE WHEN status_code='CONFIRMED' AND"
                                                     + " payment_status_code='PAID' THEN amount ELSE"
                                                     + " 0 END),0) paid",
-                                                "COALESCE(SUM(status_code='DRAFT'),0) pending"))
+                                                "COALESCE(SUM(status_code='DRAFT'),0) pending",
+                                                "COALESCE(SUM(CASE WHEN status_code<>'VOID' THEN"
+                                                        + " amount ELSE 0 END),0) registered",
+                                                "COALESCE(SUM(status_code<>'VOID' AND amount IS"
+                                                        + " NULL),0) missing"))
                         .getFirst();
         var rows =
                 mapper
@@ -150,7 +254,9 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                 new BigDecimal(totals.get("confirmed").toString()),
                 new BigDecimal(totals.get("paid").toString()),
                 ((Number) totals.get("pending")).longValue(),
-                rows);
+                rows,
+                new BigDecimal(totals.get("registered").toString()),
+                ((Number) totals.get("missing")).longValue());
     }
 
     public ErpCostDetailView entry(String tenant, String category, String id, String action) {
@@ -174,17 +280,74 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
         Long warehouse =
                 c.rental() != null
                         ? c.rental().warehouseId()
-                        : sources.isEmpty() ? null : sources.getFirst().targetWarehouseId();
+                        : c.goods() != null && c.goods().warehouseId() != null
+                                ? c.goods().warehouseId()
+                                : sources.isEmpty() ? null : sources.getFirst().targetWarehouseId();
         Long source = sources.isEmpty() ? warehouse : sources.getFirst().warehouseId();
         if (warehouse == null) warehouse = source;
         if (source == null) source = warehouse;
-        if (!"MARKETING".equals(category)) {
-            if (warehouse == null || source == null) throw bad("来源缺少有效仓库");
+        scope.requireManual(
+                action, "MARKETING".equals(category) ? "EMPLOYEE" : "INVENTORY", c.cityCode());
+        if (!"MARKETING".equals(category) && warehouse != null && source != null)
             scope.requirePair(tenant, source, warehouse, action);
+        if (c.rental() != null && c.costMonth() != null) {
+            var duplicates =
+                    where(tenant, category, action)
+                            .eq("city_code", c.cityCode())
+                            .eq("cost_month", c.costMonth())
+                            .eq("premises_type", c.rental().premisesType())
+                            .ne("status_code", "VOID");
+            if (id != null) duplicates.ne("id", id);
+            // 同 requestId 的网络重试由下方幂等逻辑处理，不视为重复登记。
+            duplicates.ne("request_id", c.requestId());
+            if (c.rental().warehouseId() != null)
+                duplicates.eq("warehouse_id", c.rental().warehouseId());
+            else
+                duplicates
+                        .isNull("warehouse_id")
+                        .apply(
+                                "JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.rental.premisesName'))={0}",
+                                c.rental().premisesName());
+            if (mapper.selectCount(duplicates) > 0 && !text(c.reason()))
+                throw bad("同场地同月份已有费用，请填写重复登记或补差说明");
+        }
+        if ("LOSS".equals(category) && c.goods() != null && !text(c.reason())) {
+            var duplicates =
+                    where(tenant, category, action)
+                            .eq("city_code", c.cityCode())
+                            .eq("cost_date", c.costDate())
+                            .ne("status_code", "VOID");
+            if (id != null) duplicates.ne("id", id);
+            duplicates.ne("request_id", c.requestId());
+            if (warehouse == null) duplicates.isNull("warehouse_id");
+            else duplicates.eq("warehouse_id", warehouse);
+            if (c.amount() == null) duplicates.isNull("amount");
+            else duplicates.eq("amount", c.amount());
+            duplicates
+                    .apply(
+                            "JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.productName'))={0}",
+                            c.goods().productName())
+                    .apply(
+                            "JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.unit'))={0}",
+                            c.goods().unit())
+                    .apply(
+                            "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.specification')),'null'),'')={0}",
+                            java.util.Objects.toString(c.goods().specification(), ""))
+                    .apply(
+                            "CAST(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.quantity')) AS"
+                                    + " DECIMAL(20,6))={0}",
+                            c.goods().quantity());
+            if (warehouse == null)
+                duplicates.apply(
+                        "JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.location'))={0}",
+                        c.goods().location());
+            if (mapper.selectCount(duplicates) > 0) throw bad("同商品、日期、地点、数量和金额已有损耗，请填写补充登记说明后保存");
         }
         String body = json.writeValueAsString(c);
         var values =
                 new UpdateWrapper<ErpCostEntity>()
+                        .set("source_system", sourceSystem(c, sources))
+                        .set("premises_type", c.rental() == null ? null : c.rental().premisesType())
                         .set("title", c.title())
                         .set("type_code", c.typeCode())
                         .set("city_code", c.cityCode())
@@ -193,6 +356,7 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                         .set("warehouse_id", warehouse)
                         .set("source_warehouse_id", source)
                         .set("cost_date", c.costDate())
+                        .set("cost_month", c.costMonth())
                         .set("amount", c.amount())
                         .set("payment_status_code", c.paymentStatusCode())
                         .set("payer_code", null)
@@ -221,6 +385,8 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                     new BusinessCodeGenerator().generate(BusinessCodeRule.millisecond("CST", 6)));
             row.setRequestId(c.requestId());
             row.setCategoryCode(category);
+            row.setSourceSystem(sourceSystem(c, sources));
+            row.setPremisesType(c.rental() == null ? null : c.rental().premisesType());
             row.setTitle(c.title());
             row.setTypeCode(c.typeCode());
             row.setCityCode(c.cityCode());
@@ -229,6 +395,7 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
             row.setWarehouseId(warehouse);
             row.setSourceWarehouseId(source);
             row.setCostDate(c.costDate());
+            row.setCostMonth(c.costMonth());
             row.setAmount(c.amount());
             row.setPaymentStatusCode(c.paymentStatusCode());
             row.setPayerCode(null);
@@ -244,6 +411,20 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
             return saved;
         }
         var old = entry(tenant, category, id, action);
+        if (old.data().goods() != null
+                && c.goods() != null
+                && (c.goods().purchaseOrderId() != null
+                        || old.data().goods().externalDocument() != null
+                                && old.data().goods().externalDocument().linkedId() != null)) {
+            var original = old.data().goods().externalDocument();
+            var next = c.goods().externalDocument();
+            if (original != null
+                    && (next == null
+                            || !java.util.Objects.equals(
+                                    original.sourceSystem(), next.sourceSystem())
+                            || !java.util.Objects.equals(original.documentNo(), next.documentNo())))
+                throw bad("补关联必须保留原始来源系统和原始单号");
+        }
         transitionRule(old.statusCode(), "UPDATE", c.amount(), c.reason());
         if (mapper.update(
                         null,
@@ -271,6 +452,17 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
         lock(tenant);
         var old = entry(tenant, category, id, action);
         boolean confirm = action.endsWith(":confirm");
+        if (confirm && old.data().goods() != null && old.data().goods().purchaseOrderId() != null) {
+            var current =
+                    sources(
+                            tenant,
+                            "PURCHASE",
+                            "",
+                            List.of(old.data().goods().purchaseOrderId()),
+                            action);
+            if (!new java.util.HashSet<>(current).equals(new java.util.HashSet<>(old.sources())))
+                throw conflict("采购来源已变化或无权限，请重新编辑后确认");
+        }
         transitionRule(
                 old.statusCode(), confirm ? "CONFIRM" : "VOID", old.data().amount(), c.reason());
         if (mapper.update(
@@ -288,6 +480,21 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
         var saved = entry(tenant, category, id, action);
         audit(tenant, saved, confirm ? "CONFIRM" : "VOID", actor, c.reason());
         return saved;
+    }
+
+    public void attachmentAdded(
+            String tenant,
+            String category,
+            String id,
+            String actor,
+            String attachmentId,
+            String action) {
+        audit(
+                tenant,
+                entry(tenant, category, id, action),
+                "ATTACHMENT_ADDED",
+                actor,
+                "附件 " + attachmentId);
     }
 
     private void audit(
@@ -334,7 +541,47 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                 r.getWarehouseName(),
                 r.getOwnerEmployeeName(),
                 r.getCreatedTime().toInstant(ZoneOffset.UTC),
-                r.getUpdatedTime().toInstant(ZoneOffset.UTC));
+                r.getUpdatedTime().toInstant(ZoneOffset.UTC),
+                r.getCreatedBy(),
+                r.getUpdatedBy());
+    }
+
+    public List<com.rigour.erp.api.v1.model.ErpCostReferenceView> references(
+            String tenant,
+            String kind,
+            String keyword,
+            Long id,
+            Long parentId,
+            int begin,
+            String action) {
+        String alias =
+                switch (kind) {
+                    case "products" -> "p";
+                    case "variants" -> "v";
+                    case "suppliers" -> "s";
+                    default -> throw bad("未知引用类型");
+                };
+        var q =
+                new QueryWrapper<Object>()
+                        .eq(alias + ".tenant_id", tenant)
+                        .eq(alias + ".deleted", 0);
+        if ("suppliers".equals(kind)) q.eq("s.status_code", "ACTIVE");
+        if (id != null) q.eq(alias + ".id", id);
+        if ("variants".equals(kind)) q.eq("v.product_id", parentId);
+        if (text(keyword)) {
+            String name = "suppliers".equals(kind) ? "s.supplier_name" : "p.product_name";
+            String code =
+                    "products".equals(kind)
+                            ? "p.product_code"
+                            : "variants".equals(kind) ? "v.variant_code" : "s.supplier_code";
+            q.and(w -> w.like(name, keyword).or().like(code, keyword));
+        }
+        q.orderByAsc(alias + ".id").last("LIMIT 50 OFFSET " + Math.max(0, begin));
+        return switch (kind) {
+            case "products" -> referenceMapper.products(q);
+            case "variants" -> referenceMapper.variants(q);
+            default -> referenceMapper.suppliers(q);
+        };
     }
 
     public List<ErpCostOptionView> warehouses(String tenant, String keyword, String action) {
@@ -345,7 +592,11 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                         .eq("tenant_id", tenant)
                         .eq("deleted", 0)
                         .eq("status_code", "ACTIVE")
-                        .like("warehouse_name", keyword);
+                        .and(
+                                w ->
+                                        w.like("warehouse_name", keyword)
+                                                .or()
+                                                .like("warehouse_code", keyword));
         var p = scope.predicate(action, "id");
         bind(q, p.sql(), p.args());
         q.orderByAsc("warehouse_name").last("LIMIT 100");
@@ -354,11 +605,19 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                         w ->
                                 new ErpCostOptionView(
                                         w.getId().toString(),
-                                        w.getWarehouseName() + "（" + w.getWarehouseCode() + "）"))
+                                        w.getWarehouseName() + "（" + w.getWarehouseCode() + "）",
+                                        w.getWarehouseName(),
+                                        w.getWarehouseTypeCode(),
+                                        w.getRegionCode(),
+                                        w.getAddress()))
                 .toList();
     }
 
     public String warehouse(String tenant, Long id, String action) {
+        return warehouseOption(tenant, id, action).name();
+    }
+
+    public ErpCostOptionView warehouseOption(String tenant, Long id, String action) {
         scope.requireWarehouse(tenant, id, action);
         var w =
                 referenceMapper.selectOne(
@@ -370,17 +629,34 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                                 .eq("deleted", 0)
                                 .eq("status_code", "ACTIVE"));
         if (w == null) throw bad("仓库不存在或已停用");
-        return w.getWarehouseName();
+        return new ErpCostOptionView(
+                w.getId().toString(),
+                w.getWarehouseName(),
+                w.getWarehouseName(),
+                w.getWarehouseTypeCode(),
+                w.getRegionCode(),
+                w.getAddress());
     }
 
     public List<ErpCostSourceView> sources(
             String tenant, String leg, String keyword, List<Long> ids, String action) {
+        return sources(tenant, leg, keyword, ids, action, null, 0);
+    }
+
+    public List<ErpCostSourceView> sources(
+            String tenant,
+            String leg,
+            String keyword,
+            List<Long> ids,
+            String action,
+            String city,
+            int begin) {
         if ("DELIVERY".equals(leg))
-            return references.deliveries(keyword, ids).stream()
+            return references.deliveries(keyword, ids, city, begin, action).stream()
                     .filter(
                             s ->
-                                    s.warehouseId() != null
-                                            && scope.visibleDocument(
+                                    s.warehouseId() == null
+                                            || scope.visibleDocument(
                                                     tenant,
                                                     s.warehouseId(),
                                                     "erp_inventory_warehouse",
@@ -396,10 +672,27 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                                             s.warehouseId(),
                                             s.warehouseId(),
                                             s.senderCode(),
-                                            warehouse(tenant, s.warehouseId(), action),
+                                            s.warehouseId() == null
+                                                    ? null
+                                                    : warehouse(tenant, s.warehouseId(), action),
                                             s.receiverCode(),
                                             s.receiverName(),
-                                            s.statusCode()))
+                                            s.statusCode(),
+                                            s.sourceSystem(),
+                                            s.originalNo(),
+                                            s.documentDate(),
+                                            s.warehouseId() == null
+                                                    ? null
+                                                    : warehouseOption(
+                                                                    tenant, s.warehouseId(), action)
+                                                            .address(),
+                                            s.destinationAddress(),
+                                            s.warehouseId() == null
+                                                    ? null
+                                                    : warehouseOption(
+                                                                    tenant, s.warehouseId(), action)
+                                                            .warehouseTypeCode(),
+                                            null))
                     .toList();
         boolean purchase = "PURCHASE".equals(leg);
         var q = new QueryWrapper<Object>().eq("d.tenant_id", tenant).eq("d.deleted", 0);
@@ -413,14 +706,21 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                         ? scope.predicate(action, "d.target_warehouse_id")
                         : scope.predicate(action, "d.source_warehouse_id", "d.target_warehouse_id");
         bind(q, p.sql(), p.args());
-        if (!ids.isEmpty()) q.in("d.getId()", ids);
+        scope.applyCity(q, action, "w.region_code");
+        if (!ids.isEmpty()) q.in("d.id", ids);
         else
             q.and(
                     w ->
                             w.like(purchase ? "d.procurement_no" : "d.transfer_no", keyword)
                                     .or()
-                                    .like("w.warehouse_name", keyword));
-        q.orderByDesc("d.getId()").last("LIMIT 100");
+                                    .like("w.warehouse_name", keyword)
+                                    .or(purchase)
+                                    .like(purchase, "s.supplier_name", keyword)
+                                    .or(purchase)
+                                    .like(purchase, "d.source_document_no", keyword));
+        q.eq(text(city), "w.region_code", city)
+                .orderByDesc("d.id")
+                .last(ids.isEmpty() ? "LIMIT 50 OFFSET " + Math.max(0, begin) : "LIMIT 100");
         return purchase ? referenceMapper.purchaseSources(q) : referenceMapper.transferSources(q);
     }
 
@@ -431,6 +731,29 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
             if (c == '?') result.append('{').append(index++).append('}');
             else result.append(c);
         q.apply(result.toString(), args.toArray());
+    }
+
+    private static String sourceSystem(ErpCostCommand c, List<ErpCostSourceView> sources) {
+        java.util.Set<String> values = new java.util.HashSet<>();
+        if (c.goods() != null && c.goods().externalDocument() != null)
+            values.add(c.goods().externalDocument().sourceSystem());
+        if (c.externalDocuments() != null)
+            c.externalDocuments().forEach(d -> values.add(d.sourceSystem()));
+        for (var source : sources) {
+            if (c.goods() != null
+                    && c.goods().externalDocument() != null
+                    && java.util.Objects.equals(
+                            c.goods().externalDocument().linkedId(), source.id())) continue;
+            String origin = source.sourceSystem();
+            values.add(
+                    origin == null || origin.isBlank() || "SYSTEM".equals(origin)
+                            ? "SYSTEM"
+                            : java.util.Set.of("DHB", "DINGHUOBAO").contains(origin)
+                                    ? "DHB"
+                                    : "OTHER");
+        }
+        if (values.isEmpty()) return "NONE";
+        return values.size() == 1 ? values.iterator().next() : "MIXED";
     }
 
     private static boolean text(String v) {

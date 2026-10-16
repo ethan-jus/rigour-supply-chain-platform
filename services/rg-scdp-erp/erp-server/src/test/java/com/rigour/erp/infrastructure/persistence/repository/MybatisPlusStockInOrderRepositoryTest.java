@@ -64,7 +64,9 @@ class MybatisPlusStockInOrderRepositoryTest {
                     Clock.fixed(Instant.parse("2026-08-26T00:00:00Z"), ZoneOffset.UTC),
                     new ErpWarehouseDataScope(
                             mock(com.rigour.tenant.iam.client.SupplyAuthorizationClient.class),
-                            mock(org.springframework.jdbc.core.JdbcTemplate.class)));
+                            mock(
+                                    com.rigour.erp.infrastructure.persistence.mapper
+                                            .ErpWarehouseScopeMapper.class)));
 
     @BeforeAll
     static void initMybatisMetadata() {

@@ -23,7 +23,8 @@ class HrProductCommissionRuleTest {
     final HrPayrollStore store = mock(HrPayrollStore.class);
     final HrPayrollSource source = mock(HrPayrollSource.class);
     final JsonMapper json = JsonMapper.builder().build();
-    final HrPayrollService service = new HrPayrollService(store, source, json);
+    final HrPayrollService service =
+            new HrPayrollService(store, source, mock(ConfiguredPayrollService.class));
 
     @BeforeEach
     void setup() {

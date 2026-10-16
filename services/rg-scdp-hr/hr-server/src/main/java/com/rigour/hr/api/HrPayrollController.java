@@ -64,7 +64,8 @@ public final class HrPayrollController implements HrPayrollApi {
     }
 
     @Override
-    public ApiResponse<List<PayrollRuleView>> createCityManagers(List<PayrollRuleCommand> commands) {
+    public ApiResponse<List<PayrollRuleView>> createCityManagers(
+            List<PayrollRuleCommand> commands) {
         return ApiResponse.success(service.createCityManagers(commands));
     }
 
@@ -86,6 +87,11 @@ public final class HrPayrollController implements HrPayrollApi {
     @Override
     public ApiResponse<List<PayrollDetailView>> calculate(PayrollCalculateCommand command) {
         return ApiResponse.success(service.calculate(command));
+    }
+
+    @Override
+    public ApiResponse<PayrollSummaryView> summary(PayrollQuery query) {
+        return ApiResponse.success(service.summary(query));
     }
 
     @Override

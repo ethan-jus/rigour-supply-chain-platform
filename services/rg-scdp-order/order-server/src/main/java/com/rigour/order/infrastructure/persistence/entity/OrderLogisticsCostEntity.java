@@ -11,6 +11,16 @@ import java.time.LocalDateTime;
 @TableName("order_logistics_cost")
 public class OrderLogisticsCostEntity {
     @TableId(type = IdType.INPUT)
+    private String sourceSystem;
+
+    public String getSourceSystem() {
+        return sourceSystem;
+    }
+
+    public void setSourceSystem(String value) {
+        sourceSystem = value;
+    }
+
     private String id;
 
     private String tenantId;

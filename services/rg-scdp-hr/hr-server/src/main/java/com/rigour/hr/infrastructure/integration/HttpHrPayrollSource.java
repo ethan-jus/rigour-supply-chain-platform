@@ -146,6 +146,41 @@ public final class HttpHrPayrollSource implements HrPayrollSource {
         return response.data();
     }
 
+    public List<com.rigour.order.api.v1.model.OrderPayrollLineView> payrollLines(
+            String tenant, String employee, String city, LocalDate through) {
+        var uri =
+                UriComponentsBuilder.fromUriString(order)
+                        .path("/api/v1/orders/cost-sources/payroll-lines")
+                        .queryParamIfPresent("employeeCode", Optional.ofNullable(employee))
+                        .queryParamIfPresent("cityCode", Optional.ofNullable(city))
+                        .queryParam("through", through)
+                        .build()
+                        .encode()
+                        .toUri();
+        var headers =
+                OutboundContextHeaders.service(
+                        signer,
+                        "GET",
+                        uri,
+                        "rigour-hr-payroll-service",
+                        tenant,
+                        "order:payroll:source-read");
+        var response =
+                client.get()
+                        .uri(uri)
+                        .headers(h -> headers.forEach(h::set))
+                        .retrieve()
+                        .body(
+                                new ParameterizedTypeReference<
+                                        ApiResponse<
+                                                List<
+                                                        com.rigour.order.api.v1.model
+                                                                .OrderPayrollLineView>>>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("提成来源暂不可用");
+        return response.data();
+    }
+
     public Set<String> dictionary(String tenant, String code) {
         return dictionaries.activeCodes(tenant, code);
     }

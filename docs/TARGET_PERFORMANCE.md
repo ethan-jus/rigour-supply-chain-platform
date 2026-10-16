@@ -1,0 +1,46 @@
+# 指标完成与整单回款绩效
+
+## 本轮基线与职责
+
+2026-10-14 从最新 `origin/dev` 创建独立 Platform、Portal `feature/target-performance` 工作区，原 `feature/cost-management` 工作已独立提交推送；指标分支现位于两个仓库的常用目录。
+
+- Platform 基线：`ee66e7c14a85502c78439802d3e27fa81e4eb01e`。
+- Portal 基线：`fe4dbda1b29b848c498926cc83b29d9c335c1494`。
+- Portal 是业务输入/展示入口，Gateway 验证身份并转发；HR 维护月度目标与手工完成值；Order 持有订单、逐笔回款及状态；BI 消费领域快照并汇总。禁止 BI 查询业务库或直接修改订单。
+- 其他功能职责：CRM 管客户/城市/销售归属；ERP 管商品、库存、采购和成本；Sales 管外勤、拜访、打卡；Integration 管外部导入与映射；IAM 管身份和授权；Foundation 管业务字典；HR 另管员工、薪酬与提成。相关边界见 `SERVICE_BOUNDARIES.md`，本轮不改变工资结算。
+- 沿用 `API → application → domain/port → infrastructure`、租户隔离、签名服务调用、HR `hr:targets:read/write` 与数据范围、BI 数据范围、Portal 手写 `src/api/core` 和已有页面样式。
+- 指标相关表访问统一使用 MyBatis-Plus：HR 目标、完成值、审计使用实体与 `BaseMapper`/条件构造器；Order 源快照、BI 汇总与源快照投影通过 Mapper 执行。已移除对应 JDBC 仓储，复杂查询 SQL 留在 Mapper/白名单 SQL Provider。测试中的 JDBC 仅用于隔离库建表、造数和独立断言。
+
+## 已实现
+
+1. 人事“指标设置”增加“目标设置 / 指标完成”切换，城市、销售分别按月单条或批量录入；保留预览、修改原因、修订记录和乐观锁。完成值为 `0` 表示人工确认零，留空表示恢复自动计算。
+2. 新增 `PERFORMANCE_AMOUNT / 整单回款绩效额`，初始目标为 0（不考核），不挪用交易额或到账额目标。
+3. 城市经营和总览五个目标卡片读取 HR 目标、BI 有效完成值，删除硬编码默认目标说明。目标逐月、逐城市加总，完成率为完成值之和 / 目标之和，不平均百分比，也不叠加城市与销售两个层级。
+4. 城市“销售业绩对比”增加“本期绩效完成排名”，显示绩效完成额、目标和完成率。按完成率降序、同率按完成额和人员编码排序；0 目标或数据缺失不显示名次。含手工值有独立提示。
+
+## 计算规则
+
+- 时间使用 Asia/Shanghai 业务月，数据库事实时间保持 UTC。
+- 当月手工完成值覆盖当月自动值，二者不相加；查询须包含月初且截止日不早于录入的“完成截止日期”。更早的历史截止日仍用自动值，避免未来录入反灌到过去的同期比较。
+- 年度/多月指标完成值逐月累计；有效门店月内去重，跨月可以重复。任一需统计月份的完成值未知，整体显示未知，不伪装成 0。年度看板目标采用全年逐月目标，年度实际截至所选期间。
+- 自动绩效仅使用 `RECEIVED / CHECKED` 且未删除的回款，按订单累计找到第一次达到应收额的时刻；该时刻落在本期才计入订单应收金额一次。超额收款不放大订单绩效；同金额不同订单分别统计；部分回款、草稿、取消、删除和零应收订单不计入。
+- 归属订单销售与订单城市，不沿用“本期到账”的回款经办人归属。个人跨城目标不拆分，保留既有完整归属可比边界。
+- 当前订单已收额和截至查询时的有效回款累计均须达到应收额。历史报表基于当前有效事实重算，不是锁定工资账。缺少逐笔回款/收齐日期的历史单据不自动推断，可核对后手工录入。
+- 状态投影尚不完整时自动绩效返回未知；手工完成值仍可展示。交易额、到账额、订单/回款原始数据不受手工指标影响。
+
+## 接口与迁移
+
+- HR：`PUT /api/v1/hr/target-settings/completions`，请求为 month、changes（value 可空）、reason、completedThrough；沿用目标编辑的数据范围与批量事务。
+- HR：`GET /api/v1/hr/target-settings/completions/history`；原 settings/values 返回 completedValue、completionRevision、completedThrough。
+- Order 增加只读 `ORDER_PAYMENT_STATUS` 数据集；保留原回款数据集的精确字段契约。BI 全量源快照刷新时同步至本地 `bi_payment_status`，排名查询只读 BI。
+- HR 新增 `V19__hr_target_completions.sql`；V15–V18 从成本分支提交 `24057998bf11306c83d19a063b5d60db47a05123` 原样补齐，兼容已执行这些历史迁移的 DEV 数据库；BI 新增 `V26__bi_payment_status.sql`。全部新表使用 utf8mb4_general_ci，未改写历史迁移。
+- 上线顺序：先发布 Order 状态投影；再执行 HR/BI 新迁移并发布服务；执行既有 BI 刷新并确认成功；最后发布 Portal。未完成状态投影时不应将未知绩效解释为零。
+
+## 验证与待验收
+
+- 后端 56 项定向测试在 clean 后全部通过，覆盖手工零/恢复自动、金额精度、日期、权限、租户隔离、冲突与审计失败事务回滚、全款跨月判定、取消/删除/部分/超额、同金额多单，以及架构门禁；新增真实 MyBatis-Plus 映射测试覆盖空值恢复、动态权限参数绑定、源版本读取、快照整批回滚和跨租户拒绝。
+- Portal 71 项相关测试、类型检查、定向 lint 和 Vite 构建通过；浏览器隔离示例验证录入/预览/保存及绩效排名。示例保存仅内存生效。
+- 全量 `./mvnw verify` 被既有 IAM Docker 测试阻断：本机没有可用 Docker；没有将跳过或失败的 MySQL 测试称为通过。
+- `prepare-general-ci-baselines.py --check` 因 dev 缺失 `scripts/database/general-ci-baselines.json` 无法执行；本次新迁移已检查排序规则。没有拷入原工作区未提交的基线文件。
+- 2026-10-14 修复 HR 分支切换后的启动校验失败：V1–V18 与成本分支原文件逐字节一致；在现有 DEV `rigour_hr` 上启动验证通过，19 个迁移校验成功并执行 V19，`/actuator/health` 返回 HTTP 200 / UP。验证进程已停止，26889 已释放。
+- BI V26 尚未在共享 DEV 执行，尚未发布整套服务或刷新 BI，也尚未做真实数据/登录联调验收。

@@ -1,0 +1,249 @@
+{
+  "name": "销售测试方案",
+  "role": "SALES",
+  "departmentIds": [
+    1
+  ],
+  "employeeCodes": [],
+  "effectiveFrom": "2026-09-01",
+  "effectiveTo": "9999-12-31",
+  "baseSalary": {
+    "mode": "TIERS",
+    "fixedAmount": null,
+    "firstMonthTier": "BRONZE",
+    "tiers": [
+      {
+        "code": "BRONZE",
+        "name": "铜牌",
+        "lower": 0,
+        "upper": 10000,
+        "lowerInclusive": true,
+        "upperInclusive": false,
+        "amount": 3000,
+        "performanceBase": 1000
+      },
+      {
+        "code": "SILVER",
+        "name": "银牌",
+        "lower": 10000,
+        "upper": 15000,
+        "lowerInclusive": true,
+        "upperInclusive": true,
+        "amount": 4000,
+        "performanceBase": 1500
+      },
+      {
+        "code": "GOLD",
+        "name": "金牌",
+        "lower": 15000,
+        "upper": null,
+        "lowerInclusive": false,
+        "upperInclusive": false,
+        "amount": 5000,
+        "performanceBase": 2000
+      }
+    ]
+  },
+  "performanceBase": 1000,
+  "performanceMode": "SALES",
+  "sales": {
+    "processPercent": 40,
+    "dailyCheckins": 7,
+    "checkinPenalty": 20,
+    "dailyVisits": 3,
+    "minimumSeconds": 600,
+    "visitPenalty": 30,
+    "firstMonthExempt": true,
+    "targets": [
+      {
+        "fromMonth": 2,
+        "toMonth": 2,
+        "target": 5000
+      },
+      {
+        "fromMonth": 3,
+        "toMonth": null,
+        "target": 7000
+      }
+    ],
+    "resultCap": 1,
+    "checkinCountMode": "UNIQUE_CUSTOMER"
+  },
+  "manager": {
+    "metrics": [],
+    "protection": {
+      "unit": "MONTHS",
+      "count": 1,
+      "assessUnprotectedOnly": true
+    },
+    "cap": 3,
+    "steps": [
+      {
+        "lower": 0,
+        "upper": 1,
+        "lowerInclusive": true,
+        "upperInclusive": true,
+        "mode": "LINEAR",
+        "coefficient": 1
+      },
+      {
+        "lower": 1,
+        "upper": null,
+        "lowerInclusive": false,
+        "upperInclusive": false,
+        "mode": "FIXED",
+        "coefficient": 1.2
+      }
+    ]
+  },
+  "calendar": {
+    "weekdays": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "alternateWeekdays": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "alternateAnchor": "2026-09-07",
+    "workDays": [],
+    "restDays": [],
+    "exemptDays": [],
+    "window": {
+      "start": "09:00",
+      "end": "06:00",
+      "nextDay": true,
+      "outside": "IGNORE"
+    }
+  },
+  "proration": {
+    "base": "NONE",
+    "performance": "NONE",
+    "allowance": "NONE"
+  },
+  "allowances": [
+    {
+      "code": "VEHICLE",
+      "name": "交通",
+      "amount": 500
+    },
+    {
+      "code": "PHONE",
+      "name": "话费",
+      "amount": 150
+    },
+    {
+      "code": "COMPUTER",
+      "name": "电脑",
+      "amount": 100
+    }
+  ],
+  "commission": {
+    "managerAttribution": "ORDER_DATE",
+    "standardDate": "ORDER_DATE",
+    "rules": [
+      {
+        "code": "NOODLE_SALES",
+        "name": "方便面销售",
+        "recipientRole": "SALES",
+        "categoryIds": [
+          10
+        ],
+        "excludedCategoryIds": [],
+        "variantIds": [],
+        "excludedVariantIds": [],
+        "method": "PERCENT",
+        "value": 4,
+        "unitCode": "BOX",
+        "excluded": false
+      },
+      {
+        "code": "NOODLE_MANAGER",
+        "name": "方便面城市总",
+        "recipientRole": "CITY_MANAGER",
+        "categoryIds": [
+          10
+        ],
+        "excludedCategoryIds": [],
+        "variantIds": [],
+        "excludedVariantIds": [],
+        "method": "PERCENT",
+        "value": 1,
+        "unitCode": "BOX",
+        "excluded": false
+      },
+      {
+        "code": "ACCESSORY_SALES",
+        "name": "周边销售",
+        "recipientRole": "SALES",
+        "categoryIds": [
+          20
+        ],
+        "excludedCategoryIds": [
+          21
+        ],
+        "variantIds": [],
+        "excludedVariantIds": [],
+        "method": "PERCENT",
+        "value": 10,
+        "unitCode": "BOX",
+        "excluded": false
+      },
+      {
+        "code": "ACCESSORY_MANAGER",
+        "name": "周边城市总",
+        "recipientRole": "CITY_MANAGER",
+        "categoryIds": [
+          20
+        ],
+        "excludedCategoryIds": [
+          21
+        ],
+        "variantIds": [],
+        "excludedVariantIds": [],
+        "method": "PERCENT",
+        "value": 2,
+        "unitCode": "BOX",
+        "excluded": false
+      },
+      {
+        "code": "CLOTH_SALES",
+        "name": "台呢独立",
+        "recipientRole": "SALES",
+        "categoryIds": [
+          21
+        ],
+        "excludedCategoryIds": [],
+        "variantIds": [],
+        "excludedVariantIds": [],
+        "method": "QUANTITY",
+        "value": 5,
+        "unitCode": "BOX",
+        "excluded": false
+      },
+      {
+        "code": "CLOTH_MANAGER",
+        "name": "台呢城市总",
+        "recipientRole": "CITY_MANAGER",
+        "categoryIds": [
+          21
+        ],
+        "excludedCategoryIds": [],
+        "variantIds": [],
+        "excludedVariantIds": [],
+        "method": "PERCENT",
+        "value": null,
+        "unitCode": "",
+        "excluded": true
+      }
+    ]
+  },
+  "remark": "隔离测试样例，非业务金额"
+}
