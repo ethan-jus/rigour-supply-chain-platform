@@ -64,6 +64,36 @@ class ScdpAdministratorAuthorizationTest {
     }
 
     @Test
+    void repairsLegacyTargetIconSoOtherMenusCanBeSaved() {
+        jdbc.update("UPDATE iam_resource SET permission_code='supply:menu:update' WHERE id=?", bin(button));
+        byte[] target = jdbc.queryForObject("SELECT id FROM iam_resource WHERE resource_code='SUPPLY_CHAIN.PAGE.HR_TARGET_SETTINGS'", byte[].class);
+        jdbc.update("UPDATE iam_resource_ui SET icon_key='Aim' WHERE resource_id=?", target);
+        jdbc.update("INSERT INTO iam_app_menu_node(tenant_id,application_id,id,resource_id,node_type,display_name,icon_key) VALUES(?,?,?,?,'PAGE','指标设置','Aim')",
+                bin(admin.tenantId()), bin(app), target, target);
+        UUID otherTenant = tenant();
+        jdbc.update("INSERT INTO iam_app_menu_node(tenant_id,application_id,id,resource_id,node_type,display_name,icon_key) VALUES(?,?,?,?,'PAGE','指标设置','DataAnalysis')",
+                bin(otherTenant), bin(app), target, target);
+        var old = settings.rows(admin).stream().filter(n -> n.id().equals(page)).findFirst().orElseThrow();
+        var command = new com.rigour.tenant.iam.application.service.settings.AppSettingsModels.MenuCommand(
+                old.parentId(), old.type(), old.resourceId(), old.name(), "DataAnalysis",
+                old.sortOrder(), old.visible(), old.status(), old.version(), null, null, null, null);
+        assertThatThrownBy(() -> settings.saveMenu(admin, page, command)).hasMessageContaining("内置图标");
+        var migration = new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                new org.springframework.core.io.ClassPathResource("db/migration/V140__iam_hr_target_settings_supported_icon.sql"));
+        migration.execute(ds);
+        assertThat(settings.saveMenu(admin, page, command).iconKey()).isEqualTo("DataAnalysis");
+        assertThat(jdbc.queryForObject("SELECT icon_key FROM iam_app_menu_node WHERE tenant_id=? AND id=?", String.class,
+                bin(admin.tenantId()), target)).isEqualTo("TrendCharts");
+        assertThat(jdbc.queryForObject("SELECT icon_key FROM iam_resource_ui WHERE resource_id=?", String.class, target)).isEqualTo("TrendCharts");
+        assertThat(jdbc.queryForObject("SELECT icon_key FROM iam_app_menu_node WHERE tenant_id=? AND id=?", String.class,
+                bin(otherTenant), target)).isEqualTo("DataAnalysis");
+        Long version = jdbc.queryForObject("SELECT version FROM iam_app_settings WHERE tenant_id=? AND application_id=?", Long.class, bin(admin.tenantId()), bin(app));
+        migration.execute(ds);
+        assertThat(jdbc.queryForObject("SELECT version FROM iam_app_settings WHERE tenant_id=? AND application_id=?", Long.class,
+                bin(admin.tenantId()), bin(app))).isEqualTo(version);
+    }
+
+    @Test
     void fullIdentityValidationCompletesConcurrentlyWithOneConnection() throws Exception {
         try (var pool = new com.zaxxer.hikari.HikariDataSource()) {
             pool.setJdbcUrl(MYSQL.getJdbcUrl());
