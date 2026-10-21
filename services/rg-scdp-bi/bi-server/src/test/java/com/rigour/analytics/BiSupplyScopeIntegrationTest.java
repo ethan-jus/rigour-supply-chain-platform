@@ -102,6 +102,68 @@ class BiSupplyScopeIntegrationTest {
 
 
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "10,CITY-BJ,400", "20,CITY-HZ,600", "ALL,ALL,1500"
+    })
+    void paymentRiskUsesCurrentDepartmentOrAllScopeBeforeReturningOrders(
+            String departmentId, String expectedCity, int expectedAmount) {
+        department(1, null, "SALES", "销售部");
+        department(10, 1L, "CITY-BJ", "北京市");
+        department(20, 1L, "CITY-HZ", "杭州市");
+        productionMapper.refreshCityDimension(tenant);
+        fact(1, "BJ-OWNER", "CITY-BJ", 10, 11, 100);
+        fact(2, "HZ-OWNER", "CITY-HZ", 20, 11, 200);
+        fact(3, "BJ-OWNER", "CITY-BJ", 10, 11, 300);
+        fact(4, "HZ-OWNER", "CITY-HZ", 20, 11, 400);
+        fact(5, "UNKNOWN", "UNKNOWN", 30, 11, 500);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_date='2026-09-25',paid_amount=10 WHERE tenant_id=?", tenant);
+        jdbc.update("UPDATE bi_order_authority SET attribution_state='REVIEW',department_id=NULL,department_path=JSON_ARRAY() WHERE tenant_id=? AND order_id>=3", tenant);
+        jdbc.update("INSERT INTO bi_product_category_dim(tenant_id,category_id,category_name,synced_time) VALUES(?,1,'台呢',UTC_TIMESTAMP(6))", tenant);
+        jdbc.update("""
+                INSERT INTO bi_sales_order_line_fact
+                    (tenant_id,order_id,order_line_id,product_id,product_name,product_category_id,product_category_name,line_amount,order_date,synced_time)
+                SELECT tenant_id,order_id,order_id,1,'台呢A',1,'台呢',payable_amount,order_date,synced_time
+                FROM bi_sales_order_fact WHERE tenant_id=?
+                """, tenant);
+        // 同一订单ID在其他租户出现，ALL 也不能跨租户读取。
+        jdbc.update("""
+                INSERT INTO bi_sales_order_fact(tenant_id,order_id,owner_staff_code,region_code,order_date,payable_amount,synced_time)
+                VALUES(?,1,'OTHER-OWNER','CITY-BJ','2026-09-25',9999,UTC_TIMESTAMP(6))
+                """, UUID.randomUUID().toString());
+        boolean full = "ALL".equals(departmentId);
+        var p = policy(List.of(new Clause(UUID.randomUUID(), "ANALYTICS",
+                full ? "ALL" : "DEPARTMENT", full ? all() : specified(departmentId), all(), all(), false)), all(), all());
+        when(iam.authorization(any(), any())).thenReturn(p);
+        var service = new com.rigour.analytics.application.service.PaymentRiskService(
+                new com.rigour.analytics.infrastructure.persistence.repository.JdbcPaymentRiskStore(jdbc.getDataSource()),
+                scopeService, java.time.Clock.fixed(java.time.Instant.parse("2026-10-20T00:00:00Z"), java.time.ZoneOffset.UTC));
+        var endpoint = new com.rigour.analytics.api.controller.AnalyticsPaymentRiskController(service);
+        var from = java.time.Instant.parse("2026-09-01T00:00:00Z");
+        var to = java.time.Instant.parse("2026-10-20T00:00:00Z");
+        try (var context = SupplyAuthorizationContext.open(iam, actor, p)) {
+            var orders = endpoint.paymentRisk(from, to, null, null, null, null).data().orders();
+            assertThat(orders).hasSize(full ? 5 : 2);
+            assertThat(orders.stream().map(o -> o.orderAmount()).reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add))
+                    .isEqualByComparingTo(String.valueOf(expectedAmount));
+            assertThat(orders).allSatisfy(order -> {
+                assertThat(order.products()).singleElement().satisfies(product ->
+                        assertThat(product.riskLevel()).isEqualTo("HIGH"));
+                if (!full) assertThat(order.regionCode()).isEqualTo(expectedCity);
+            });
+            if (!full) {
+                String otherCity = "CITY-BJ".equals(expectedCity) ? "CITY-HZ" : "CITY-BJ";
+                String otherOwner = "CITY-BJ".equals(expectedCity) ? "HZ-OWNER" : "BJ-OWNER";
+                assertThat(endpoint.paymentRisk(from, to, otherCity, null, null, null).data().orders()).isEmpty();
+                assertThat(endpoint.paymentRisk(from, to, null, otherOwner, List.of(1L), "HIGH").data().orders()).isEmpty();
+                assertThat(endpoint.paymentRisk(from, to, expectedCity, null, List.of(1L), "HIGH").data().orders())
+                        .containsExactlyElementsOf(orders);
+            } else {
+                assertThat(orders).extracting(o -> o.regionCode()).contains("CITY-BJ", "CITY-HZ", "UNKNOWN");
+            }
+        }
+    }
+
     @Test
     void importedOrdersUseRecognizedOperatingCityForEachDepartmentWithoutOpeningUnknownOrSelf() {
         department(1, null, "SALES", "销售部");

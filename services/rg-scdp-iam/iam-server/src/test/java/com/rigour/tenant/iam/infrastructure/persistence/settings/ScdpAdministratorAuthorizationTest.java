@@ -120,7 +120,7 @@ class ScdpAdministratorAuthorizationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"supply.bi.sales", "supply.bi.city-operating"})
+    @ValueSource(strings = {"supply.bi.sales", "supply.bi.city-operating", "supply.bi.payment-risk"})
     void dashboardPageGrantProvidesReadOnlyAccessWithSavedScope(String route) {
         var employee = mock(AppEmployeeClient.class);
         when(employee.employee(ordinary.tenantId(), "CITY-EMPLOYEE")).thenReturn(
@@ -146,9 +146,10 @@ class ScdpAdministratorAuthorizationTest {
                     UUID_TO_BIN('019facf2-0000-7000-8000-000000000050'),
                     UUID_TO_BIN('019facf2-0000-7000-8000-000000000065'),
                     UUID_TO_BIN('019facf2-0000-7000-8000-000000000240'),
-                    UUID_TO_BIN('019facf2-0000-7000-8000-000000000379'))
+                    UUID_TO_BIN('019facf2-0000-7000-8000-000000000379'),
+                    UUID_TO_BIN('019facf2-0000-7000-8000-000000000375'))
                 """, tenant);
-        jdbc.update("UPDATE iam_app_menu_node SET parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000065') WHERE tenant_id=? AND id IN (UUID_TO_BIN('019facf2-0000-7000-8000-000000000240'),UUID_TO_BIN('019facf2-0000-7000-8000-000000000379'))", tenant);
+        jdbc.update("UPDATE iam_app_menu_node SET parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000065') WHERE tenant_id=? AND id IN (UUID_TO_BIN('019facf2-0000-7000-8000-000000000240'),UUID_TO_BIN('019facf2-0000-7000-8000-000000000379'),UUID_TO_BIN('019facf2-0000-7000-8000-000000000375'))", tenant);
         byte[] selectedPage = jdbc.queryForObject("SELECT resource_id FROM iam_resource_ui WHERE route_key=?", byte[].class, route);
         jdbc.update("INSERT INTO iam_app_role_grant(tenant_id,application_id,role_id,menu_node_id) VALUES(?,?,?,?)", tenant, bin(app), assignedRole, selectedPage);
         assertThat(settings.context(ordinary).permissions()).containsExactly("analytics:dashboard:read");
@@ -161,6 +162,20 @@ class ScdpAdministratorAuthorizationTest {
             assertThat(clause.scopeMode()).isEqualTo("DEPARTMENT");
             assertThat(clause.departments().references()).containsExactly("6");
         });
+        // 本部门来自登录人当前 HR 部门，而不是固定城市或角色名。
+        when(employee.employee(ordinary.tenantId(), "CITY-EMPLOYEE")).thenReturn(
+                new AppEmployeeClient.Employee(1, "CITY-EMPLOYEE", "城市负责人", "ACTIVE",
+                        20L, "杭州市", "CITY", "城市负责人", java.util.List.of(1L, 20L),
+                        0, 0, 0, true, null));
+        assertThat(authorization.proposed(ordinary, "analytics:dashboard:read").clauses())
+                .singleElement().satisfies(clause ->
+                        assertThat(clause.departments().references()).containsExactly("20"));
+        jdbc.update("UPDATE iam_app_role SET data_scope_mode='ALL' WHERE tenant_id=? AND id=?", tenant, assignedRole);
+        assertThat(authorization.proposed(ordinary, "analytics:dashboard:read").clauses())
+                .singleElement().satisfies(clause -> {
+                    assertThat(clause.scopeMode()).isEqualTo("ALL");
+                    assertThat(clause.departments().mode()).isEqualTo("ALL");
+                });
         assertThat(authorization.proposed(ordinary, "analytics:refresh:write").functionAllowed()).isFalse();
         assertThat(authorization.proposed(ordinary, "analytics:city-cost:write").functionAllowed()).isFalse();
         assertThat(authorization.proposed(ordinary, "supply:user:read").functionAllowed()).isFalse();
