@@ -11,10 +11,12 @@ import java.util.Map;
 
 /** 后台同步按租户发布完整源镜像，查询看板仍由 BiScopedLanguageDriver 实施人员范围过滤。 */
 public interface BiSourceSnapshotMapper extends BaseMapper<BiPaymentStatusEntity> {
+    // 与归属检查点一致，初始化时取得写锁，避免共享锁升级死锁；不覆盖已发布版本。
     @Insert(
             """
-INSERT IGNORE INTO bi_source_snapshot_checkpoint(tenant_id,dataset,source_version,projected_at)
+INSERT INTO bi_source_snapshot_checkpoint(tenant_id,dataset,source_version,projected_at)
 VALUES(#{tenant},#{dataset},'UNINITIALIZED',UTC_TIMESTAMP(6))
+ON DUPLICATE KEY UPDATE source_version=source_version
 """)
     int initialize(@Param("tenant") String tenant, @Param("dataset") String dataset);
 

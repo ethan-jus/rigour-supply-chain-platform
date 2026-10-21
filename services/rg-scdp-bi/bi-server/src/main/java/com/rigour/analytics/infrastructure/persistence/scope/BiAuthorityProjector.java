@@ -26,10 +26,12 @@ public class BiAuthorityProjector {
     public void refresh(UUID tenantId) {
         String tenant = tenantId.toString();
         for (String kind : List.of("CRM", "ORDER")) {
+            // 重复键也直接取得写锁，避免并发 INSERT IGNORE 的共享锁在 FOR UPDATE 时互锁。
             jdbc.update(
-                    "INSERT IGNORE INTO"
+                    "INSERT INTO"
                         + " bi_authority_checkpoint(tenant_id,source_code,source_version,projected_at)"
-                        + " VALUES(?,?,'UNINITIALIZED',UTC_TIMESTAMP(6))",
+                        + " VALUES(?,?,'UNINITIALIZED',UTC_TIMESTAMP(6))"
+                        + " ON DUPLICATE KEY UPDATE source_version=source_version",
                     tenant,
                     kind);
             String previous =
