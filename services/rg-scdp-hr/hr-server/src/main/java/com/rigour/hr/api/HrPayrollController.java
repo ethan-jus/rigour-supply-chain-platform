@@ -18,8 +18,14 @@ public final class HrPayrollController implements HrPayrollApi {
     }
 
     @Override
-    public ApiResponse<List<PayrollProductView>> products(String keyword) {
-        return ApiResponse.success(service.products(keyword));
+    public ApiResponse<List<PayrollProductView>> products(
+            String keyword, Long categoryId, Long productVariantId) {
+        return ApiResponse.success(service.products(keyword, categoryId, productVariantId));
+    }
+
+    @Override
+    public ApiResponse<List<PayrollCategoryView>> productCategories() {
+        return ApiResponse.success(service.productCategories());
     }
 
     @Override
@@ -58,6 +64,12 @@ public final class HrPayrollController implements HrPayrollApi {
     }
 
     @Override
+    public ApiResponse<List<PayrollRuleView>> createCityManagers(
+            List<PayrollRuleCommand> commands) {
+        return ApiResponse.success(service.createCityManagers(commands));
+    }
+
+    @Override
     public ApiResponse<PayrollRuleView> updateRule(String id, PayrollRuleCommand command) {
         return ApiResponse.success(service.saveRule(id, command));
     }
@@ -75,6 +87,11 @@ public final class HrPayrollController implements HrPayrollApi {
     @Override
     public ApiResponse<List<PayrollDetailView>> calculate(PayrollCalculateCommand command) {
         return ApiResponse.success(service.calculate(command));
+    }
+
+    @Override
+    public ApiResponse<PayrollSummaryView> summary(PayrollQuery query) {
+        return ApiResponse.success(service.summary(query));
     }
 
     @Override

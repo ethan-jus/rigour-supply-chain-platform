@@ -23,7 +23,13 @@ public interface HrPayrollApi {
     ApiResponse<List<PayrollDepartmentView>> departments();
 
     @GetMapping(BASE_PATH + "/products")
-    ApiResponse<List<PayrollProductView>> products(@RequestParam(defaultValue = "") String keyword);
+    ApiResponse<List<PayrollProductView>> products(
+            @RequestParam(defaultValue = "") String keyword,
+            @RequestParam(required = false) Long categoryId,
+            @RequestParam(required = false) Long productVariantId);
+
+    @GetMapping(BASE_PATH + "/product-categories")
+    ApiResponse<List<PayrollCategoryView>> productCategories();
 
     @GetMapping(BASE_PATH + "/commission-policies")
     ApiResponse<List<PayrollCommissionPolicyView>> policies();
@@ -38,6 +44,10 @@ public interface HrPayrollApi {
     @PostMapping(BASE_PATH + "/rules")
     ApiResponse<PayrollRuleView> createRule(@RequestBody PayrollRuleCommand command);
 
+    @PostMapping(BASE_PATH + "/rules/city-managers")
+    ApiResponse<List<PayrollRuleView>> createCityManagers(
+            @RequestBody List<PayrollRuleCommand> commands);
+
     @PutMapping(BASE_PATH + "/rules/{id}")
     ApiResponse<PayrollRuleView> updateRule(
             @PathVariable String id, @RequestBody PayrollRuleCommand command);
@@ -50,6 +60,9 @@ public interface HrPayrollApi {
 
     @GetMapping(BASE_PATH)
     ApiResponse<HrPageView<PayrollDetailView>> payroll(@ModelAttribute PayrollQuery query);
+
+    @GetMapping(BASE_PATH + "/summary")
+    ApiResponse<PayrollSummaryView> summary(@ModelAttribute PayrollQuery query);
 
     @PostMapping(BASE_PATH + "/calculate")
     ApiResponse<List<PayrollDetailView>> calculate(@RequestBody PayrollCalculateCommand command);

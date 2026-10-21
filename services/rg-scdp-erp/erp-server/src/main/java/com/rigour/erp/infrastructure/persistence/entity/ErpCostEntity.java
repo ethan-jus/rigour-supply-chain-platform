@@ -10,6 +10,36 @@ import java.time.LocalDateTime;
 
 @TableName("erp_cost_entry")
 public class ErpCostEntity {
+    private String sourceSystem;
+
+    public String getSourceSystem() {
+        return sourceSystem;
+    }
+
+    public void setSourceSystem(String value) {
+        sourceSystem = value;
+    }
+
+    private String premisesType;
+
+    public String getPremisesType() {
+        return premisesType;
+    }
+
+    public void setPremisesType(String value) {
+        premisesType = value;
+    }
+
+    private String costMonth;
+
+    public String getCostMonth() {
+        return costMonth;
+    }
+
+    public void setCostMonth(String v) {
+        costMonth = v;
+    }
+
     @TableId(type = IdType.INPUT)
     private String id;
 

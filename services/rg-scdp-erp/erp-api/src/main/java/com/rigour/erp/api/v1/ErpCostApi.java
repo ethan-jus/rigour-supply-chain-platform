@@ -27,6 +27,10 @@ public interface ErpCostApi {
     ApiResponse<ErpCostPageView> entries(
             @PathVariable String category, @ModelAttribute ErpCostQuery query);
 
+    @GetMapping(BASE_PATH + "/{category}/export")
+    ApiResponse<ErpCostPageView> export(
+            @PathVariable String category, @ModelAttribute ErpCostQuery query);
+
     @GetMapping(BASE_PATH + "/{category}/{id}")
     ApiResponse<ErpCostDetailView> entry(@PathVariable String category, @PathVariable String id);
 
@@ -59,6 +63,21 @@ public interface ErpCostApi {
     @GetMapping(BASE_PATH + "/{category}/warehouses")
     ApiResponse<List<ErpCostOptionView>> warehouses(
             @PathVariable String category, @RequestParam(defaultValue = "") String keyword);
+
+    @GetMapping(BASE_PATH + "/{category}/references/{kind}")
+    ApiResponse<List<com.rigour.erp.api.v1.model.ErpCostReferenceView>> references(
+            @PathVariable String category,
+            @PathVariable String kind,
+            @RequestParam(defaultValue = "") String keyword,
+            @RequestParam(required = false) Long parentId,
+            @RequestParam(defaultValue = "0") int begin);
+
+    @GetMapping(BASE_PATH + "/{category}/purchase-orders")
+    ApiResponse<List<com.rigour.erp.api.v1.model.ErpCostSourceView>> purchaseOrders(
+            @PathVariable String category,
+            @RequestParam(defaultValue = "") String keyword,
+            @RequestParam(required = false) String cityCode,
+            @RequestParam(defaultValue = "0") int begin);
 
     @GetMapping(BASE_PATH + "/marketing/employees")
     ApiResponse<List<ErpCostEmployeeView>> employees();

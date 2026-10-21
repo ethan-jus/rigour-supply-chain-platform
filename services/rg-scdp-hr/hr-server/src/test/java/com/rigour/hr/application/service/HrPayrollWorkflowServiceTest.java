@@ -78,7 +78,7 @@ class HrPayrollWorkflowServiceTest {
         var rows = service.preparation("2026-09").employees();
         assertThat(rows).hasSize(1);
         assertThat(rows.getFirst().payrollCategory()).isNull();
-        assertThat(rows.getFirst().profileIssues()).contains("未设置薪酬类别");
+        assertThat(rows.getFirst().profileIssues()).isEmpty();
         verifyNoInteractions(payroll, profiles);
     }
 
@@ -113,7 +113,7 @@ class HrPayrollWorkflowServiceTest {
                                         Instant.EPOCH)));
         var rows = service.preparation("2026-09").employees();
         assertThat(rows).hasSize(1);
-        assertThat(rows.getFirst().profileIssues()).anyMatch(i -> i.contains("非在职月份有补差"));
+        assertThat(rows.getFirst().profileIssues()).anyMatch(i -> i.contains("离职后结算"));
     }
 
     @Test

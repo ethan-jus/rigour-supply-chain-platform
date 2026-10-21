@@ -4,6 +4,7 @@
 --create is a one-time repository operation, not a database operation.
 --check also checks newly added V migrations for the collation policy.
 Once published, neither a baseline nor its historical sources may be regenerated.
+Already published post-baseline exceptions are pinned by checksum in the manifest.
 """
 import argparse
 import hashlib
@@ -28,14 +29,24 @@ def source_hash(paths):
     return digest.hexdigest()
 
 
-def baseline(paths):
+def baseline(paths, explicit_charset_collation=False):
     parts = ["-- Frozen fresh-schema baseline. Do not edit after deployment.\n"
              "-- Historical V migrations remain available for existing databases.\n"
              "-- Contains built-in configuration seeds, not an import of historical business data.\n"
              "ALTER DATABASE CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;\n"]
+    if explicit_charset_collation:
+        # View columns derived from literals retain the connection collation at creation.
+        parts.append("SET NAMES utf8mb4 COLLATE utf8mb4_general_ci;\n")
     for path in paths:
-        parts.append("\n-- Source: " + path.name + "\n"
-                     + COLLATIONS.sub(COLLATION, path.read_text()).rstrip() + "\n")
+        sql = COLLATIONS.sub(COLLATION, path.read_text())
+        if explicit_charset_collation:
+            # MySQL's charset default can override the database default when COLLATE is omitted.
+            sql = re.sub(r"(\b(?:CHARSET|CHARACTER\s+SET)\s*=?\s*utf8mb4\b)(?!\s+COLLATE\b)",
+                         r"\1 COLLATE utf8mb4_general_ci", sql, flags=re.I)
+            # The effective-role view is merged into queries on other connections. Give its
+            # constant explicit precedence over callers' differently collated 'ACTIVE' literals.
+            sql = sql.replace("'ACTIVE' AS status", "'ACTIVE' COLLATE utf8mb4_general_ci AS status")
+        parts.append("\n-- Source: " + path.name + "\n" + sql.rstrip() + "\n")
     # Flyway creates its history before executing this baseline, possibly under an old DB default.
     parts.append("\nALTER TABLE flyway_schema_history CONVERT TO CHARACTER SET utf8mb4 "
                  "COLLATE utf8mb4_general_ci;\n")
@@ -84,9 +95,17 @@ def main():
         assert source_hash(frozen) == entry["source_sha256"], "Historical migration changed: " + str(directory)
         content = (ROOT / entry["baseline"]).read_bytes()
         assert hashlib.sha256(content).hexdigest() == entry["baseline_sha256"], entry["baseline"]
-        assert content == baseline(frozen), "Baseline does not match its frozen sources"
-        for path in paths:
-            if version(path) > ceiling:
+        assert content == baseline(frozen, entry.get("explicit_charset_collation", False)), "Baseline does not match its frozen sources"
+        # These files were already on dev when the policy gate was introduced.
+        # Pin their exact contents instead of rewriting applied Flyway migrations.
+        legacy = entry.get("legacy_migrations", {})
+        later = {path.name: path for path in paths if version(path) > ceiling}
+        assert legacy.keys() <= later.keys(), "Missing historical migration: " + str(directory)
+        for name, path in later.items():
+            if name in legacy:
+                assert hashlib.sha256(path.read_bytes()).hexdigest() == legacy[name], \
+                    "Historical migration changed: " + str(path)
+            else:
                 assert all(c.lower() == COLLATION for c in COLLATIONS.findall(path.read_text())), path
     print("Verified %d frozen baselines and %d unchanged historical migrations; new migrations use %s."
           % (len(entries), sum(entry["migration_count"] for entry in entries), COLLATION))

@@ -1,5 +1,6 @@
 package com.rigour.hr.infrastructure.integration;
 
+import com.rigour.erp.api.v1.model.ErpPayrollCategoryView;
 import com.rigour.erp.api.v1.model.ErpPayrollProductView;
 import com.rigour.hr.application.port.out.HrPayrollSource;
 import com.rigour.order.api.v1.model.OrderCollectionSourceView;
@@ -145,16 +146,53 @@ public final class HttpHrPayrollSource implements HrPayrollSource {
         return response.data();
     }
 
+    public List<com.rigour.order.api.v1.model.OrderPayrollLineView> payrollLines(
+            String tenant, String employee, String city, LocalDate through) {
+        var uri =
+                UriComponentsBuilder.fromUriString(order)
+                        .path("/api/v1/orders/cost-sources/payroll-lines")
+                        .queryParamIfPresent("employeeCode", Optional.ofNullable(employee))
+                        .queryParamIfPresent("cityCode", Optional.ofNullable(city))
+                        .queryParam("through", through)
+                        .build()
+                        .encode()
+                        .toUri();
+        var headers =
+                OutboundContextHeaders.service(
+                        signer,
+                        "GET",
+                        uri,
+                        "rigour-hr-payroll-service",
+                        tenant,
+                        "order:payroll:source-read");
+        var response =
+                client.get()
+                        .uri(uri)
+                        .headers(h -> headers.forEach(h::set))
+                        .retrieve()
+                        .body(
+                                new ParameterizedTypeReference<
+                                        ApiResponse<
+                                                List<
+                                                        com.rigour.order.api.v1.model
+                                                                .OrderPayrollLineView>>>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("提成来源暂不可用");
+        return response.data();
+    }
+
     public Set<String> dictionary(String tenant, String code) {
         return dictionaries.activeCodes(tenant, code);
     }
 
-    public List<ErpPayrollProductView> products(String tenant, String keyword, Long variant) {
+    public List<ErpPayrollProductView> products(
+            String tenant, String keyword, Long variant, Long categoryId) {
         var builder =
                 UriComponentsBuilder.fromUriString(erp)
                         .path("/api/v1/erp/payroll-products")
                         .queryParam("keyword", keyword);
         if (variant != null) builder.queryParam("productVariantId", variant);
+        if (categoryId != null) builder.queryParam("categoryId", categoryId);
         var uri = builder.build().encode().toUri();
         var headers =
                 OutboundContextHeaders.service(
@@ -177,13 +215,75 @@ public final class HttpHrPayrollSource implements HrPayrollSource {
         return response.data();
     }
 
-    public void requireProduct(String tenant, Long product, Long variant, String unit) {
-        if (products(tenant, "", variant).stream()
-                .noneMatch(
+    public List<ErpPayrollProductView> productsByVariants(String tenant, List<Long> ids) {
+        if (ids.isEmpty()) return List.of();
+        var uri =
+                UriComponentsBuilder.fromUriString(erp)
+                        .path("/api/v1/erp/payroll-products/by-variants")
+                        .queryParam("ids", ids.toArray())
+                        .build()
+                        .encode()
+                        .toUri();
+        var headers =
+                OutboundContextHeaders.service(
+                        signer,
+                        "GET",
+                        uri,
+                        "rigour-hr-payroll-service",
+                        tenant,
+                        "erp:payroll:product-read");
+        var response =
+                client.get()
+                        .uri(uri)
+                        .headers(h -> headers.forEach(h::set))
+                        .retrieve()
+                        .body(
+                                new ParameterizedTypeReference<
+                                        ApiResponse<List<ErpPayrollProductView>>>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("商品分类暂不可用");
+        return response.data();
+    }
+
+    public List<ErpPayrollCategoryView> productCategories(String tenant) {
+        var uri =
+                UriComponentsBuilder.fromUriString(erp)
+                        .path("/api/v1/erp/payroll-products/categories")
+                        .build()
+                        .toUri();
+        var headers =
+                OutboundContextHeaders.service(
+                        signer,
+                        "GET",
+                        uri,
+                        "rigour-hr-payroll-service",
+                        tenant,
+                        "erp:payroll:product-read");
+        var response =
+                client.get()
+                        .uri(uri)
+                        .headers(h -> headers.forEach(h::set))
+                        .retrieve()
+                        .body(
+                                new ParameterizedTypeReference<
+                                        ApiResponse<List<ErpPayrollCategoryView>>>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("商品分类暂不可用");
+        return response.data();
+    }
+
+    public ErpPayrollProductView requireProduct(
+            String tenant, Long product, Long variant, String unit) {
+        return products(tenant, "", variant, null).stream()
+                .filter(
                         p ->
                                 Objects.equals(p.productId(), product)
                                         && Objects.equals(p.productVariantId(), variant)
-                                        && Objects.equals(p.unitCode(), unit)))
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "商品规格或计奖单位已变化，请重新选择", List.of());
+                                        && Objects.equals(p.unitCode(), unit))
+                .findFirst()
+                .orElseThrow(
+                        () ->
+                                new BusinessException(
+                                        ErrorCode.BAD_REQUEST, "商品规格或计奖单位已变化，请重新选择", List.of()));
     }
 }

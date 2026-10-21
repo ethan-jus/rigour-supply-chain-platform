@@ -1,34 +1,28 @@
-package com.rigour.order.infrastructure.persistence.repository;
+package com.rigour.order.infrastructure.persistence.mapper;
 
-import com.rigour.order.application.port.out.AnalyticsSourceSnapshotStore;
+import java.util.List;
+import java.util.Map;
 
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.stereotype.Repository;
-import org.springframework.transaction.annotation.Transactional;
+/** 数据集白名单限制 SQL 标识符，租户与游标始终作为绑定参数。 */
+public final class OrderAnalyticsSourceSql {
+    private OrderAnalyticsSourceSql() {}
 
-import java.util.*;
-
-/** 本领域固定投影目录；所有动态标识来自代码常量，外部输入仅作为绑定值。 */
-@Repository
-public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshotStore {
-    private final JdbcTemplate jdbc;
-
-    public JdbcAnalyticsSourceSnapshotStore(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
-    }
-
-    private record Definition(
-            String table,
-            List<String> columns,
-            boolean binaryTenant,
-            boolean binaryKey,
-            String versionExpression) {}
-
-    private static final Map<String, Definition> DATASETS =
+    private static final Map<String, OrderAnalyticsSourceDataset> DATASETS =
             Map.ofEntries(
                     Map.entry(
+                            "ORDER_PAYMENT_STATUS",
+                            new OrderAnalyticsSourceDataset(
+                                    "order_payment_record",
+                                    List.of("id", "tenant_id", "payment_status_code"),
+                                    false,
+                                    false,
+                                    "CONCAT(COUNT(*),':',COALESCE(CAST(MIN(id) AS"
+                                        + " CHAR),''),':',COALESCE(CAST(MAX(id) AS CHAR),''),':',"
+                                        + "COALESCE(SUM(revision),0),':',"
+                                        + "COALESCE(SUM(UNIX_TIMESTAMP(updated_time)*1000000),0))")),
+                    Map.entry(
                             "ORDER_PAYMENT_RECORD",
-                            new Definition(
+                            new OrderAnalyticsSourceDataset(
                                     "order_payment_record",
                                     List.of(
                                             "id",
@@ -56,7 +50,7 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
                                         + " CHAR),''),':',COALESCE(SUM(UNIX_TIMESTAMP(payment_time)*1000000),0),':',COALESCE(SUM(revision),0),':',COALESCE(SUM(UNIX_TIMESTAMP(created_time)*1000000),0),':',COALESCE(SUM(UNIX_TIMESTAMP(updated_time)*1000000),0))")),
                     Map.entry(
                             "ORDER_REFUND_RECORD",
-                            new Definition(
+                            new OrderAnalyticsSourceDataset(
                                     "order_refund_record",
                                     List.of(
                                             "id",
@@ -77,7 +71,7 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
                                         + " CHAR),''),':',COALESCE(SUM(UNIX_TIMESTAMP(refund_time)*1000000),0),':',COALESCE(SUM(revision),0),':',COALESCE(SUM(UNIX_TIMESTAMP(created_time)*1000000),0),':',COALESCE(SUM(UNIX_TIMESTAMP(updated_time)*1000000),0))")),
                     Map.entry(
                             "ORDER_SALES_ORDER",
-                            new Definition(
+                            new OrderAnalyticsSourceDataset(
                                     "order_sales_order",
                                     List.of(
                                             "id",
@@ -116,7 +110,7 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
                                         + " CHAR),''),':',COALESCE(SUM(UNIX_TIMESTAMP(order_date)*1000000),0),':',COALESCE(SUM(revision),0),':',COALESCE(SUM(UNIX_TIMESTAMP(created_time)*1000000),0),':',COALESCE(SUM(UNIX_TIMESTAMP(updated_time)*1000000),0),':',COALESCE(SUM(UNIX_TIMESTAMP(payment_time)*1000000),0),':',COALESCE(SUM(UNIX_TIMESTAMP(shipment_time)*1000000),0),':',COALESCE(SUM(UNIX_TIMESTAMP(warehouse_selected_at)*1000000),0))")),
                     Map.entry(
                             "ORDER_SALES_ORDER_LINE",
-                            new Definition(
+                            new OrderAnalyticsSourceDataset(
                                     "order_sales_order_line",
                                     List.of(
                                             "id",
@@ -143,72 +137,41 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
                                         + " CHAR),''),':',COALESCE(CAST(MAX(id) AS"
                                         + " CHAR),''),':',COALESCE(SUM(revision),0),':',COALESCE(SUM(UNIX_TIMESTAMP(created_time)*1000000),0),':',COALESCE(SUM(UNIX_TIMESTAMP(updated_time)*1000000),0))")));
 
-    private Definition definition(String code) {
-        var d = DATASETS.get(code);
-        if (d == null) throw new IllegalArgumentException("未知 BI 源数据集");
-        return d;
+    public static OrderAnalyticsSourceDataset dataset(String code) {
+        var dataset = DATASETS.get(code);
+        if (dataset == null) throw new IllegalArgumentException("未知 BI 源数据集");
+        return dataset;
     }
 
-    private String tenantPredicate(Definition d) {
-        return "tenant_id=" + (d.binaryTenant() ? "UUID_TO_BIN(?)" : "?");
+    public static String version(Map<String, Object> parameters) {
+        var d = dataset((String) parameters.get("dataset"));
+        return "SELECT "
+                + d.versionExpression()
+                + " FROM "
+                + d.table()
+                + " WHERE "
+                + tenantPredicate(d);
     }
 
-    @Override
-    public String version(String tenant, String dataset) {
-        var d = definition(dataset);
-        return jdbc.queryForObject(
-                "SELECT "
-                        + d.versionExpression()
-                        + " FROM "
-                        + d.table()
-                        + " WHERE "
-                        + tenantPredicate(d),
-                String.class,
-                tenant);
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public Page page(String tenant, String dataset, String after) {
-        var d = definition(dataset);
-        String cursor = after == null ? "" : after;
-        if (!cursor.isEmpty() && !cursor.matches(d.binaryKey() ? "[0-9a-fA-F]{32}" : "[0-9]{1,20}"))
-            throw new IllegalArgumentException("源数据游标无效");
-        String version = version(tenant, dataset);
-        var args = new ArrayList<Object>();
-        args.add(tenant);
+    public static String page(Map<String, Object> parameters) {
+        var d = dataset((String) parameters.get("dataset"));
+        String cursor = (String) parameters.get("after");
         String where = tenantPredicate(d);
-        if (!cursor.isEmpty()) {
-            where += " AND id>" + (d.binaryKey() ? "UNHEX(?)" : "?");
-            args.add(cursor);
+        if (cursor != null && !cursor.isEmpty()) {
+            if (!cursor.matches(d.binaryKey() ? "[0-9a-fA-F]{32}" : "[0-9]{1,20}"))
+                throw new IllegalArgumentException("源数据游标无效");
+            where += " AND id>" + (d.binaryKey() ? "UNHEX(#{after})" : "#{after}");
         }
-        var rows =
-                jdbc.queryForList(
-                        "SELECT "
-                                + String.join(",", d.columns())
-                                + " FROM "
-                                + d.table()
-                                + " WHERE "
-                                + where
-                                + " ORDER BY id LIMIT 1000",
-                        args.toArray());
-        List<Map<String, String>> items = new ArrayList<>();
-        for (var row : rows) {
-            Map<String, String> item = new LinkedHashMap<>();
-            for (String column : d.columns()) item.put(column, exact(row.get(column)));
-            items.add(item);
-        }
-        return new Page(version, items);
+        return "SELECT "
+                + String.join(",", d.columns())
+                + " FROM "
+                + d.table()
+                + " WHERE "
+                + where
+                + " ORDER BY id LIMIT 1000";
     }
 
-    private static String exact(Object value) {
-        if (value == null) return null;
-        if (value instanceof byte[] bytes) return HexFormat.of().withUpperCase().formatHex(bytes);
-        if (value instanceof java.math.BigDecimal decimal) return decimal.toPlainString();
-        if (value instanceof java.sql.Timestamp timestamp)
-            return timestamp.toLocalDateTime().toString().replace('T', ' ');
-        if (value instanceof java.time.LocalDateTime time) return time.toString().replace('T', ' ');
-        if (value instanceof Boolean flag) return flag ? "1" : "0";
-        return value.toString();
+    private static String tenantPredicate(OrderAnalyticsSourceDataset d) {
+        return "tenant_id=" + (d.binaryTenant() ? "UUID_TO_BIN(#{tenant})" : "#{tenant}");
     }
 }

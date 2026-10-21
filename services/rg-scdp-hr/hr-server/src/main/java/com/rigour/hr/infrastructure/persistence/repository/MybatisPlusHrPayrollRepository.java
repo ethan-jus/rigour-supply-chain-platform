@@ -20,7 +20,9 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -268,6 +270,36 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
     }
 
     @Override
+    public java.util.Map<String, PayrollCommissionDetailView> confirmedSalesCommissions(
+            String tenant, Set<String> employees, Set<String> lineIds, String throughMonth) {
+        if (employees.isEmpty() || lineIds.isEmpty()) return java.util.Map.of();
+        var result = new java.util.LinkedHashMap<String, PayrollCommissionDetailView>();
+        // 已确认销售提成使用其工资快照；未全额回款的挂账明细尚未结算，不作为已结算金额。
+        var snapshots =
+                mapper.selectList(
+                        new QueryWrapper<HrPayrollEntity>()
+                                .eq("tenant_id", tenant)
+                                .in("employee_code", employees)
+                                .in("status_code", List.of("CONFIRMED", "PAID"))
+                                .le("payroll_month", throughMonth)
+                                .select("employee_code", "calculation_json")
+                                .orderByAsc("payroll_month", "id"));
+        for (var snapshot : snapshots) {
+            var calculation =
+                    json.readValue(snapshot.getCalculationJson(), PayrollCalculationView.class);
+            for (var detail : calculation.details()) {
+                if ("SALES".equals(detail.recipientRoleCode())
+                        && lineIds.contains(detail.sourceLineId())
+                        && detail.accrued() != null
+                        && detail.released() != null
+                        && detail.accrued().compareTo(detail.released()) == 0)
+                    result.put(detail.sourceLineId(), detail);
+            }
+        }
+        return java.util.Map.copyOf(result);
+    }
+
+    @Override
     public Set<String> released(String tenant) {
         return new HashSet<>(mapper.released(tenant));
     }
@@ -370,6 +402,14 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
                         .eq(text(c.month()), "payroll_month", c.month())
                         .eq(c.departmentId() != null, "department_id", c.departmentId())
                         .eq(text(c.statusCode()), "status_code", c.statusCode());
+        // 按工资核算快照筛选，员工后续转岗不能改变历史工资的归类。参数由 MyBatis 绑定。
+        if (text(c.payrollCategory()))
+            q.apply(
+                    "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(calculation_json,"
+                            + " '$.scheme.scheme.definition.role')), 'null'),"
+                            + " NULLIF(JSON_UNQUOTE(JSON_EXTRACT(calculation_json,"
+                            + " '$.salarySource.payrollCategory')), 'null')) = {0}",
+                    c.payrollCategory());
         if (text(c.keyword()))
             q.and(
                     w ->
@@ -377,6 +417,57 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
                                     .or()
                                     .like("employee_name", c.keyword()));
         return q;
+    }
+
+    @Override
+    public PayrollSummaryView summary(String tenant, PayrollQuery query, String action) {
+        // 与列表复用租户、历史部门、员工搜索和数据权限；数据库聚合，不加载工资明细或逐人查付款。
+        var allStages =
+                new PayrollQuery(
+                        0, 0, query.month(), query.keyword(), query.departmentId(), null,
+                        query.payrollCategory());
+        String complete =
+                "status_code IN ('READY','CONFIRMED','PAID') AND"
+                    + " JSON_TYPE(JSON_EXTRACT(calculation_json, '$.grossPay')) IN"
+                    + " ('INTEGER','DOUBLE','DECIMAL') AND JSON_TYPE(JSON_EXTRACT(calculation_json,"
+                    + " '$.netPay')) IN ('INTEGER','DOUBLE','DECIMAL')";
+        var grouped =
+                mapper.selectMaps(
+                        filteredQuery(tenant, allStages, action)
+                                .select(
+                                        "status_code AS stage",
+                                        "COUNT(*) AS total",
+                                        "SUM(CASE WHEN "
+                                                + complete
+                                                + " THEN 1 ELSE 0 END) AS complete_count",
+                                        "SUM(CASE WHEN "
+                                                + complete
+                                                + " THEN"
+                                                + " CAST(JSON_UNQUOTE(JSON_EXTRACT(calculation_json,"
+                                                + " '$.grossPay')) AS DECIMAL(20,2)) ELSE 0 END) AS"
+                                                + " gross_pay",
+                                        "SUM(CASE WHEN "
+                                                + complete
+                                                + " THEN"
+                                                + " CAST(JSON_UNQUOTE(JSON_EXTRACT(calculation_json,"
+                                                + " '$.netPay')) AS DECIMAL(20,2)) ELSE 0 END) AS"
+                                                + " net_pay")
+                                .groupBy("status_code"));
+        long total = 0, count = 0;
+        BigDecimal gross = BigDecimal.ZERO, net = BigDecimal.ZERO;
+        var statuses = new LinkedHashMap<String, Long>();
+        for (var group : grouped) {
+            String stage = (String) group.get("stage");
+            long stageCount = ((Number) group.get("total")).longValue();
+            statuses.put(stage, stageCount);
+            if (text(query.statusCode()) && !query.statusCode().equals(stage)) continue;
+            total += stageCount;
+            count += ((Number) group.get("complete_count")).longValue();
+            gross = gross.add(new BigDecimal(group.get("gross_pay").toString()));
+            net = net.add(new BigDecimal(group.get("net_pay").toString()));
+        }
+        return new PayrollSummaryView(
+                total, count, total - count, gross, net, Map.copyOf(statuses));
     }
 
     @Override
@@ -729,5 +820,20 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
     private static void unlocked(String status) {
         if (Set.of("CONFIRMED", "PAID").contains(status))
             throw error(ErrorCode.CONFLICT, "已确认工资保持快照，不可覆盖");
+    }
+
+    @Override
+    public List<PayrollDetailView> commissionHistory(
+            String tenant, String employee, String throughMonth) {
+        return mapper
+                .selectList(
+                        new QueryWrapper<HrPayrollEntity>()
+                                .eq("tenant_id", tenant)
+                                .eq("employee_code", employee)
+                                .le("payroll_month", throughMonth)
+                                .in("status_code", List.of("CONFIRMED", "PAID")))
+                .stream()
+                .map(this::payrollView)
+                .toList();
     }
 }

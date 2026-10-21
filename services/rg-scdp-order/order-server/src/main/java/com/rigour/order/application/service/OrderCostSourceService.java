@@ -55,4 +55,40 @@ public final class OrderCostSourceService {
         return store.commissions(
                 tenant("order:payroll:source-read"), employeeCode, cityCode, through);
     }
+
+    public List<com.rigour.order.api.v1.model.OrderPayrollLineView> payrollLines(
+            String employeeCode, String cityCode, LocalDate through) {
+        if (((employeeCode == null || employeeCode.isBlank())
+                        == (cityCode == null || cityCode.isBlank()))
+                || through == null) throw new IllegalArgumentException("请选择员工或城市之一，并提供核算日期");
+        return store.payrollLines(
+                tenant("order:payroll:source-read"), employeeCode, cityCode, through);
+    }
+
+    public List<OrderDeliveryCostSourceView> deliveries(
+            String keyword, List<Long> ids, String city, int begin, String action) {
+        if (action == null) return deliveries(keyword, ids);
+        if (!java.util.Set.of(
+                        "order:logistics-cost:read",
+                        "order:logistics-cost:write",
+                        "order:logistics-cost:confirm",
+                        "order:logistics-cost:void")
+                .contains(action)) throw new AuthorizationDeniedException(action);
+        var caller = AuthorizationContext.requireCurrent();
+        AuthorizationContext.requirePermission(action);
+        if (caller.tenantId() == null) throw new AuthorizationDeniedException(action);
+        if (keyword == null
+                || keyword.length() > 200
+                || city != null && city.length() > 64
+                || begin < 0
+                || begin > 100000
+                || ids != null && ids.size() > 100) throw new IllegalArgumentException("来源查询参数无效");
+        return store.deliveries(
+                caller.tenantId().toString(),
+                keyword,
+                ids == null ? List.of() : ids,
+                city,
+                begin,
+                action);
+    }
 }

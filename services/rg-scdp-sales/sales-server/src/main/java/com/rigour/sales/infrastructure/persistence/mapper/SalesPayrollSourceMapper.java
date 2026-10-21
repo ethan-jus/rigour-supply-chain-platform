@@ -31,7 +31,7 @@ SELECT BIN_TO_UUID(s.id) sourceId,DATE(CONVERT_TZ(s.submitted_at,'+00:00','+08:0
  AND NOT EXISTS(SELECT 1 FROM temp_sales_checkin_risk_audio_source a
    LEFT JOIN temp_sales_checkin_media_derivative d ON d.tenant_id=a.tenant_id AND d.submission_id=a.submission_id
     AND d.media_id=a.segment_id AND LOWER(d.source_sha256)=a.sha256 AND d.kind='AUDIO' AND d.status='READY'
-   WHERE a.tenant_id=s.tenant_id AND a.submission_id=s.id AND (d.duration_ms IS NULL OR d.duration_ms<0)) durationComplete
+   WHERE a.tenant_id=s.tenant_id AND a.submission_id=s.id AND (d.duration_ms IS NULL OR d.duration_ms<0)) durationComplete, s.submitted_at submittedAt
 FROM temp_sales_checkin_submission s
 JOIN temp_sales_checkin_employee_link e ON e.tenant_id=s.tenant_id AND e.salesperson_id=s.salesperson_id
 LEFT JOIN temp_sales_checkin_customer_link c ON c.tenant_id=s.tenant_id AND c.store_id=s.store_id

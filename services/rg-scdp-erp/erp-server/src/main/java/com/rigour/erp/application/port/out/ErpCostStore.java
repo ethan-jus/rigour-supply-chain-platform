@@ -12,6 +12,15 @@ import com.rigour.erp.api.v1.model.ErpCostSourceView;
 import java.util.List;
 
 public interface ErpCostStore {
+    List<com.rigour.erp.api.v1.model.ErpCostReferenceView> references(
+            String tenant,
+            String kind,
+            String keyword,
+            Long id,
+            Long parentId,
+            int begin,
+            String action);
+
     ErpCostPageView entries(String tenant, String category, ErpCostQuery query, String action);
 
     ErpCostDetailView entry(String tenant, String category, String id, String action);
@@ -35,6 +44,14 @@ public interface ErpCostStore {
             String actor,
             String action);
 
+    void attachmentAdded(
+            String tenant,
+            String category,
+            String id,
+            String actor,
+            String attachmentId,
+            String action);
+
     List<ErpCostAuditView> history(String tenant, String id);
 
     List<ErpCostSourceView> sources(
@@ -42,5 +59,18 @@ public interface ErpCostStore {
 
     List<ErpCostOptionView> warehouses(String tenant, String keyword, String action);
 
+    ErpCostOptionView warehouseOption(String tenant, Long id, String action);
+
     String warehouse(String tenant, Long id, String action);
+
+    default List<ErpCostSourceView> sources(
+            String tenant,
+            String leg,
+            String keyword,
+            List<Long> ids,
+            String action,
+            String city,
+            int begin) {
+        return sources(tenant, leg, keyword, ids, action);
+    }
 }

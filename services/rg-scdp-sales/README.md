@@ -10,6 +10,8 @@ Sales Work 是飞书销售 H5 和 Portal 销售管理的业务后端，Schema �
 
 ## 当前落地
 
+- HR 一期考勤通过 `/api/v1/sales/attendance-evidence` 按员工批量读取已提交、未删除的临时拜访打卡日期，上海日期去重；不套用拜访绩效审核和录音门槛。接口只接受签名服务身份及 `sales:attendance:source-read`，不写 HR 考勤或薪资。
+
 - `sales-api` 保留版本化跨服务契约边界；
 - `sales-work-service` 已接入 JDBC、MyBatis-Plus、Flyway、幂等、Outbox 和审计落库；
 - Flyway V1 建立规则、销售组织投影、打卡、位置、拜访、录音、AI 结果快照、复核、幂等、Outbox 和审计表；V2 增加 IAM 到 Sales Work 的身份投影；V3 增加拜访结果字段；V4 增加录音片段客户端幂等标识；V5修复启用录音规则的0秒异常；V6增加不保存音频的短录音审计事实；V7固化接触结果；V8补齐现场门头照的相机来源、时间、位置、媒体和幂等事实；V9固化主管计划到真实拜访的一对一执行状态机；V10并发阻止同一销售同日同店的重复活动计划；
@@ -25,3 +27,5 @@ Sales Work 是飞书销售 H5 和 Portal 销售管理的业务后端，Schema �
 ## 运行边界
 
 开发环境数据源由 Nacos `rigour-sales-work-service.yaml` 与进程 Secret 共同提供。COS 的 `storage-type`、`region`、`bucket`、大小限制、超时和服务端加密开关属于非敏感配置，保存在 application/Nacos；只有 `SecretId`、`SecretKey` 和临时凭据的 `SessionToken` 从部署 Secret 注入。真实密码、COS 凭据和高德 Web Key 不进入 Git、Nacos 或前端。完整配置和腾讯云创建步骤见 [`docs/COS_RECORDING_SETUP.md`](../../docs/COS_RECORDING_SETUP.md)。上下文测试使用轻量测试配置；Sales Work 迁移和纵向闭环使用隔离 MySQL 8.4 Testcontainers 验证，不替代共享 DEV、真实飞书、COS 或跨服务运行时验收。
+
+HR 考勤打卡日期来源由 `MybatisPlusSalesAttendanceSourceStore` / `SalesAttendanceSourceMapper` 查询；只读已提交、未删除打卡并按上海日期去重，与绩效拜访口径独立。

@@ -1,8 +1,10 @@
 package com.rigour.analytics.infrastructure.persistence.scope;
 
 import com.rigour.analytics.application.port.out.BiSourceSnapshotClient;
+import com.rigour.analytics.infrastructure.persistence.mapper.BiSourceSnapshotMapper;
 
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,11 +15,12 @@ import java.util.*;
 public class BiSourceSnapshotProjector {
     private static final Set<String> PEOPLE_DATASETS =
             Set.of("HR_DEPARTMENT", "HR_EMPLOYEE", "SALES_SUBMITTED_VISIT", "CRM_CUSTOMER_AREA");
-    private final JdbcTemplate jdbc;
+    private static final Logger log = LoggerFactory.getLogger(BiSourceSnapshotProjector.class);
+    private final BiSourceSnapshotMapper mapper;
     private final BiSourceSnapshotClient client;
 
-    public BiSourceSnapshotProjector(JdbcTemplate jdbc, BiSourceSnapshotClient client) {
-        this.jdbc = jdbc;
+    public BiSourceSnapshotProjector(BiSourceSnapshotMapper mapper, BiSourceSnapshotClient client) {
+        this.mapper = mapper;
         this.client = client;
     }
 
@@ -30,7 +33,11 @@ public class BiSourceSnapshotProjector {
                         .filter(
                                 d ->
                                         !PEOPLE_DATASETS.contains(d.code())
-                                                || Set.of("CRM_CUSTOMER_AREA", "HR_DEPARTMENT", "HR_EMPLOYEE").contains(d.code()))
+                                                || Set.of(
+                                                                "CRM_CUSTOMER_AREA",
+                                                                "HR_DEPARTMENT",
+                                                                "HR_EMPLOYEE")
+                                                        .contains(d.code()))
                         .toList());
     }
 
@@ -40,7 +47,10 @@ public class BiSourceSnapshotProjector {
         return refresh(
                 tenantId,
                 BiSourceDatasets.ALL.stream()
-                        .filter(d -> Set.of("HR_DEPARTMENT", "HR_EMPLOYEE", "CRM_CUSTOMER_AREA").contains(d.code()))
+                        .filter(
+                                d ->
+                                        Set.of("HR_DEPARTMENT", "HR_EMPLOYEE", "CRM_CUSTOMER_AREA")
+                                                .contains(d.code()))
                         .toList(),
                 "ORGANIZATION_");
     }
@@ -65,52 +75,25 @@ public class BiSourceSnapshotProjector {
         String tenant = tenantId.toString();
         for (var d : datasets) {
             String checkpoint = checkpointPrefix + d.code();
-            jdbc.update(
-                    "INSERT IGNORE INTO"
-                        + " bi_source_snapshot_checkpoint(tenant_id,dataset,source_version,projected_at)"
-                        + " VALUES(?,?,'UNINITIALIZED',UTC_TIMESTAMP(6))",
-                    tenant,
-                    checkpoint);
-            String previous =
-                    jdbc.queryForObject(
-                            "SELECT source_version FROM bi_source_snapshot_checkpoint WHERE"
-                                    + " tenant_id=? AND dataset=? FOR UPDATE",
-                            String.class,
-                            tenant,
-                            checkpoint);
+            mapper.initialize(tenant, checkpoint);
+            String previous = mapper.lockVersion(tenant, checkpoint);
             String version = client.version(tenantId, d.source(), d.code());
             if (version.equals(previous)) continue;
             changed = true;
             String expected =
                     d.binaryTenant() ? tenant.replace("-", "").toUpperCase(Locale.ROOT) : tenant;
-            jdbc.update(
-                    "DELETE FROM "
-                            + d.table()
-                            + " WHERE tenant_id="
-                            + (d.binaryTenant() ? "UUID_TO_BIN(?)" : "?"),
-                    tenant);
-            String insert =
-                    "INSERT INTO "
-                            + d.table()
-                            + " ("
-                            + String.join(
-                                    ",",
-                                    d.columns().stream()
-                                            .map(BiSourceDatasets.Column::name)
-                                            .toList())
-                            + ") VALUES("
-                            + String.join(",", Collections.nCopies(d.columns().size(), "?"))
-                            + ")";
+            mapper.clearDataset(tenant, d.code());
             Set<String> columns =
                     new HashSet<>(d.columns().stream().map(BiSourceDatasets.Column::name).toList());
             String cursor = "";
             int pages = 0;
+            int rowCount = 0;
             while (true) {
                 if (++pages > 10000) throw new IllegalStateException("源投影超出单批容量");
                 var page = client.page(tenantId, d.source(), d.code(), cursor);
                 if (!version.equals(page.version()))
                     throw new IllegalStateException("源数据同步中发生变化，请重试");
-                List<Object[]> batch = new ArrayList<>();
+                List<Map<String, Object>> batch = new ArrayList<>();
                 for (var row : page.items()) {
                     if (!row.keySet().equals(columns)
                             || !expected.equalsIgnoreCase(row.get("tenant_id")))
@@ -126,29 +109,30 @@ public class BiSourceSnapshotProjector {
                                                     .compareTo(new java.math.BigInteger(cursor))
                                             <= 0)) throw new IllegalStateException("源投影游标未前进");
                     cursor = next;
-                    Object[] args = new Object[d.columns().size()];
-                    for (int i = 0; i < args.length; i++) {
-                        var col = d.columns().get(i);
+                    Map<String, Object> values = new LinkedHashMap<>();
+                    for (var col : d.columns()) {
                         String value = row.get(col.name());
-                        args[i] =
+                        values.put(
+                                col.name(),
                                 value == null
                                         ? null
-                                        : col.binary() ? HexFormat.of().parseHex(value) : value;
+                                        : col.binary() ? HexFormat.of().parseHex(value) : value);
                     }
-                    batch.add(args);
+                    batch.add(values);
                 }
-                if (!batch.isEmpty()) jdbc.batchUpdate(insert, batch);
+                if (!batch.isEmpty()) mapper.insertRows(d.code(), batch);
+                rowCount += batch.size();
                 if (page.items().size() < 1000) break;
             }
             if (!version.equals(client.version(tenantId, d.source(), d.code())))
                 throw new IllegalStateException("源数据同步中发生变化，请重试");
-            jdbc.update(
-                    "UPDATE bi_source_snapshot_checkpoint SET"
-                        + " source_version=?,projected_at=UTC_TIMESTAMP(6) WHERE tenant_id=? AND"
-                        + " dataset=?",
-                    version,
+            mapper.publish(tenant, checkpoint, version);
+            log.info(
+                    "BI 源快照已写入当前事务: tenant={}, dataset={}, rows={}, pages={}",
                     tenant,
-                    checkpoint);
+                    d.code(),
+                    rowCount,
+                    pages);
         }
         return changed;
     }

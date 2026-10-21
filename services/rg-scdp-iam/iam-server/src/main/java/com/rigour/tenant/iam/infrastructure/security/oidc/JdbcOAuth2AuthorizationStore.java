@@ -347,7 +347,7 @@ public final class JdbcOAuth2AuthorizationStore implements OAuth2AuthorizationSe
             return null;
         }
         if (!"ACTIVE".equals(refresh.authorizationStatus())
-                || !sessionIsActiveForPrincipal(refresh.sessionId(), refresh.principalName())) {
+                || !refreshSessionIsActiveForPrincipal(refresh.sessionId(), refresh.principalName())) {
             return null;
         }
         AuthorizationRow authorization = loadOne(
@@ -573,6 +573,22 @@ public final class JdbcOAuth2AuthorizationStore implements OAuth2AuthorizationSe
         Integer count = jdbcTemplate.queryForObject("""
                         SELECT COUNT(*) FROM iam_auth_session
                         WHERE id = ? AND principal_id = ? AND status = 'ACTIVE' AND expires_at > ?
+                        """, Integer.class, UuidBinaryCodec.encode(sessionId),
+                UuidBinaryCodec.encode(principalId), utcNow());
+        return count != null && count == 1;
+    }
+
+    private boolean refreshSessionIsActiveForPrincipal(UUID sessionId, String principalName) {
+        // 停用是确定的 invalid_grant；数据库故障仍向上传播，不能伪装成令牌失效。
+        UUID principalId = parseUuid(principalName, "authorization.principalName");
+        Integer count = jdbcTemplate.queryForObject("""
+                        SELECT COUNT(*) FROM iam_auth_session s
+                        JOIN iam_user u ON u.tenant_id=s.tenant_id AND u.id=s.principal_id
+                        JOIN iam_tenant t ON t.id=s.tenant_id
+                        WHERE s.id=? AND s.principal_id=? AND s.principal_scope='TENANT'
+                          AND s.status='ACTIVE' AND s.expires_at>?
+                          AND u.status='ACTIVE' AND u.deleted_at IS NULL
+                          AND t.status='ACTIVE' AND t.deleted_at IS NULL
                         """, Integer.class, UuidBinaryCodec.encode(sessionId),
                 UuidBinaryCodec.encode(principalId), utcNow());
         return count != null && count == 1;

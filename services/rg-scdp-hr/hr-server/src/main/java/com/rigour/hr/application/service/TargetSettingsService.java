@@ -26,6 +26,125 @@ public class TargetSettingsService {
                     "RECEIPT_AMOUNT");
     private final TargetSettingsStore store;
     private final Clock clock;
+    private com.rigour.hr.application.port.out.HrPayrollComponentStore components;
+    private com.rigour.hr.application.port.out.HrPayrollSchemeStore schemes;
+    private com.rigour.hr.application.port.out.HrPayrollStore payroll;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setPayrollRules(
+            com.rigour.hr.application.port.out.HrPayrollComponentStore components,
+            com.rigour.hr.application.port.out.HrPayrollSchemeStore schemes,
+            com.rigour.hr.application.port.out.HrPayrollStore payroll) {
+        this.components = components;
+        this.schemes = schemes;
+        this.payroll = payroll;
+    }
+
+    public List<com.rigour.hr.api.v1.model.PayrollTargetMetricView> payrollMetrics() {
+        var a = actor(READ);
+        return payrollMetrics(a.tenantId().toString());
+    }
+
+    private List<com.rigour.hr.api.v1.model.PayrollTargetMetricView> payrollMetrics(String tenant) {
+        var result =
+                new LinkedHashMap<String, com.rigour.hr.api.v1.model.PayrollTargetMetricView>();
+        result.put(
+                "FULLY_PAID_RECEIPT_BASIS",
+                new com.rigour.hr.api.v1.model.PayrollTargetMetricView(
+                        "FULLY_PAID_RECEIPT_BASIS",
+                        "整单付清回款基数",
+                        "元",
+                        "薪酬绩效专用；销售未单独核定时采用入职阶段目标，首月按规则免考"));
+        if (components != null)
+            for (var rule : components.versions(tenant)) {
+                var p = rule.definition().performance();
+                if (p == null || p.manager() == null || p.manager().metrics() == null) continue;
+                for (var metric : p.manager().metrics())
+                    if (!METRICS.contains(metric.code()))
+                        result.putIfAbsent(
+                                metric.code(),
+                                new com.rigour.hr.api.v1.model.PayrollTargetMetricView(
+                                        metric.code(),
+                                        metric.name(),
+                                        metric.code().endsWith("_COUNT") ? "家" : "指标值",
+                                        "城市总薪酬目标按本人管辖范围合计核定；实际值来源：" + metric.source()));
+            }
+        return List.copyOf(result.values());
+    }
+
+    private Set<String> editableMetrics(String tenant) {
+        var metrics = new LinkedHashSet<>(METRICS);
+        payrollMetrics(tenant).forEach(m -> metrics.add(m.code()));
+        return metrics;
+    }
+
+    private PayrollRuleResolver ruleResolver;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setRuleResolver(PayrollRuleResolver rules) {
+        this.ruleResolver = rules;
+    }
+
+    private BigDecimal salaryDefault(String tenant, String month, Subject subject, String metric) {
+        if (!"FULLY_PAID_RECEIPT_BASIS".equals(metric)
+                || !"SALES_OWNER".equals(subject.dimensionType())
+                || payroll == null
+                || schemes == null) return BigDecimal.ZERO;
+        var e = payroll.employee(tenant, subject.code(), READ);
+        var period = YearMonth.parse(month);
+        if (ruleResolver != null
+                && components != null
+                && components.versions(tenant).stream()
+                        .anyMatch(v -> !v.definition().effectiveFrom().isAfter(period.atDay(1)))) {
+            var configured =
+                    ruleResolver.performance(
+                            tenant,
+                            e.employeeCode(),
+                            payroll.departmentAt(tenant, e.employeeCode(), period.atEndOfMonth()),
+                            period.atDay(1));
+            if (configured.isEmpty()
+                    || e.entryDate() == null
+                    || !"SALES".equals(configured.get().definition().performance().mode()))
+                return BigDecimal.ZERO;
+            var policy = configured.get().definition().performance().sales();
+            long stage =
+                    java.time.temporal.ChronoUnit.MONTHS.between(
+                                    YearMonth.from(e.entryDate()), period)
+                            + 1;
+            if (stage == 1 && policy.firstMonthExempt()) return BigDecimal.ZERO;
+            return policy.targets().stream()
+                    .filter(
+                            v ->
+                                    stage >= v.fromMonth()
+                                            && (v.toMonth() == null || stage <= v.toMonth()))
+                    .map(com.rigour.hr.api.v1.model.PayrollTargetStage::target)
+                    .findFirst()
+                    .orElse(BigDecimal.ZERO);
+        }
+        var scheme =
+                PayrollSchemeSelector.select(
+                        schemes.versions(tenant),
+                        e.employeeCode(),
+                        payroll.departmentAt(tenant, e.employeeCode(), period.atEndOfMonth()),
+                        period.atDay(1));
+        if (scheme.isEmpty()
+                || e.entryDate() == null
+                || !"SALES".equals(scheme.get().definition().performanceMode()))
+            return BigDecimal.ZERO;
+        long stage =
+                java.time.temporal.ChronoUnit.MONTHS.between(YearMonth.from(e.entryDate()), period)
+                        + 1;
+        var policy = scheme.get().definition().sales();
+        if (stage == 1 && policy.firstMonthExempt()) return BigDecimal.ZERO;
+        return policy.targets().stream()
+                .filter(
+                        v ->
+                                stage >= v.fromMonth()
+                                        && (v.toMonth() == null || stage <= v.toMonth()))
+                .map(com.rigour.hr.api.v1.model.PayrollTargetStage::target)
+                .findFirst()
+                .orElse(BigDecimal.ZERO);
+    }
 
     public TargetSettingsService(TargetSettingsStore store, Clock clock) {
         this.store = store;
@@ -38,7 +157,15 @@ public class TargetSettingsService {
         month(month);
         var subjects = visibleSubjects(actor.tenantId().toString());
         return new Settings(
-                month, subjects, effective(actor.tenantId().toString(), month, month, subjects));
+                month,
+                subjects,
+                effective(
+                        actor.tenantId().toString(),
+                        month,
+                        month,
+                        subjects,
+                        editableMetrics(actor.tenantId().toString()),
+                        true));
     }
 
     /**
@@ -56,10 +183,21 @@ public class TargetSettingsService {
         if (end.isBefore(start) || java.time.temporal.ChronoUnit.MONTHS.between(start, end) > 23)
             throw invalid("指标查询范围应为1至24个月");
         return effective(
-                actor.tenantId().toString(), from, to, store.subjects(actor.tenantId().toString()));
+                actor.tenantId().toString(),
+                from,
+                to,
+                store.subjects(actor.tenantId().toString()),
+                METRICS,
+                false);
     }
 
-    private List<Target> effective(String tenant, String from, String to, List<Subject> subjects) {
+    private List<Target> effective(
+            String tenant,
+            String from,
+            String to,
+            List<Subject> subjects,
+            Set<String> metrics,
+            boolean salaryDefaults) {
         var saved = new HashMap<String, Target>();
         store.targets(tenant, from, to)
                 .forEach(
@@ -67,7 +205,7 @@ public class TargetSettingsService {
         var result = new ArrayList<Target>();
         for (var period = month(from); !period.isAfter(month(to)); period = period.plusMonths(1)) {
             for (var subject : subjects)
-                for (var metric : METRICS) {
+                for (var metric : metrics) {
                     var existing =
                             saved.get(
                                     key(
@@ -83,7 +221,15 @@ public class TargetSettingsService {
                                     subject.name(),
                                     metric,
                                     existing == null
-                                            ? initialValue(subject.dimensionType(), metric)
+                                            ? (METRICS.contains(metric)
+                                                    ? initialValue(subject.dimensionType(), metric)
+                                                    : salaryDefaults
+                                                            ? salaryDefault(
+                                                                    tenant,
+                                                                    period.toString(),
+                                                                    subject,
+                                                                    metric)
+                                                            : BigDecimal.ZERO)
                                             : existing.value(),
                                     existing == null ? 0 : existing.revision()));
                 }
@@ -101,8 +247,8 @@ public class TargetSettingsService {
                     case "SALES_AMOUNT" -> "CITY".equals(type) ? 100000 : 40000;
                     case "RECEIPT_AMOUNT" -> "CITY".equals(type) ? 100000 : 20000;
                     case "CONTACTED_STORE_COUNT",
-                            "ORDERED_STORE_COUNT",
-                            "YANGZHANGGUI_SALES_AMOUNT" ->
+                                    "ORDERED_STORE_COUNT",
+                                    "YANGZHANGGUI_SALES_AMOUNT" ->
                             0;
                     default -> throw invalid("未知指标");
                 });
@@ -154,7 +300,16 @@ public class TargetSettingsService {
         var seen = new HashSet<String>();
         for (var c : batch.changes()) {
             if (c == null) throw invalid("指标不能为空");
-            validate(c.metric(), c.value(), c.expectedRevision());
+            validate(
+                    c.metric(),
+                    c.value(),
+                    c.expectedRevision(),
+                    editableMetrics(actor.tenantId().toString()));
+            if (!METRICS.contains(c.metric()) && !"SALES_OWNER".equals(c.dimensionType()))
+                throw invalid("薪酬目标请在人员维度核定，不能将部门编号当成任职城市编号");
+            if (!METRICS.contains(c.metric())
+                    && (batch.reason() == null || batch.reason().isBlank()))
+                throw invalid("调整薪酬目标须填写核定依据");
             if (!seen.add(c.dimensionType() + ":" + c.code() + ":" + c.metric()))
                 throw invalid("重复的目标指标");
             var s = subjects.get(c.dimensionType() + ":" + c.code());
@@ -211,8 +366,9 @@ public class TargetSettingsService {
         return text;
     }
 
-    private static void validate(String metric, BigDecimal value, int revision) {
-        if (metric == null || !METRICS.contains(metric) || revision < 0) throw invalid("指标或版本无效");
+    private static void validate(
+            String metric, BigDecimal value, int revision, Set<String> metrics) {
+        if (metric == null || !metrics.contains(metric) || revision < 0) throw invalid("指标或版本无效");
         if (value == null) throw invalid("指标不能为空");
         if (value.signum() < 0
                 || value.compareTo(new BigDecimal("999999999999.99")) > 0

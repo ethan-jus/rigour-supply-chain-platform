@@ -122,6 +122,10 @@ public class JdbcAppAuthorizationStore implements AppAuthorizationStore {
     @org.springframework.transaction.annotation.Transactional(readOnly = true)
     @Override
     public AppAuthorizationSnapshot authorization(CallerIdentity caller, String action) {
+        return settings.authorizationRead(() -> readAuthorization(caller, action));
+    }
+
+    private AppAuthorizationSnapshot readAuthorization(CallerIdentity caller, String action) {
         if (caller == null
                 || !"TENANT".equals(caller.principalScope())
                 || caller.tenantId() == null) throw new AccessDeniedException("需要受信的原操作人身份");

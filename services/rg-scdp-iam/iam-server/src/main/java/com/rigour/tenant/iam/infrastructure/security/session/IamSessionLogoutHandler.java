@@ -35,6 +35,11 @@ public final class IamSessionLogoutHandler implements LogoutHandler {
             log.warn("IAM退出未解析到会话，未执行数据库撤销");
             return;
         }
+        logoutSession(sessionId);
+    }
+
+    /** 仅供已验证当前 Bearer 会话归属的原生登录适配调用。 */
+    public void logoutSession(UUID sessionId) {
         transactionOperations.executeWithoutResult(ignored -> revoke(sessionId));
         log.info("IAM退出完成，会话已撤销 sessionId={}", sessionId);
     }

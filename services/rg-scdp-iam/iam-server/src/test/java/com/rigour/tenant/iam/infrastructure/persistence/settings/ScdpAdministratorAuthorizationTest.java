@@ -94,6 +94,38 @@ class ScdpAdministratorAuthorizationTest {
         }
     }
 
+    @Test void authorizationReadReusesQueriesButSeesRevocationOnNextCall() {
+        var measured = spy(new JdbcTemplate(ds));
+        var employee = mock(AppEmployeeClient.class);
+        var manager = new DataSourceTransactionManager(ds);
+        var uncached = new JdbcAppSettingsStore(measured, manager, employee) {
+            @Override <T> T authorizationRead(java.util.function.Supplier<T> operation) {
+                return operation.get();
+            }
+        };
+        var cached = new JdbcAppSettingsStore(measured, manager, employee);
+        var baseline = uncached.context(admin);
+        long before = sqlReads(measured);
+        clearInvocations(measured);
+        assertThat(cached.context(admin)).isEqualTo(baseline);
+        long after = sqlReads(measured);
+        assertThat(after).isLessThan(before);
+        System.out.println("IAM context JDBC read calls: " + before + " -> " + after);
+
+        // Same worker thread must see a later menu revocation and a different user immediately.
+        jdbc.update("UPDATE iam_app_menu_node SET status='DISABLED' WHERE tenant_id=? AND id=?",
+                bin(admin.tenantId()), bin(button));
+        assertThat(cached.context(admin).permissions()).doesNotContain(action);
+        assertThat(cached.context(ordinary).permissions()).isEmpty();
+    }
+
+    private static long sqlReads(JdbcTemplate jdbc) {
+        return mockingDetails(jdbc).getInvocations().stream()
+                .filter(i -> i.getMethod().getName().startsWith("query"))
+                .filter(i -> i.getArguments().length > 0 && i.getArguments()[0] instanceof String)
+                .count();
+    }
+
     UUID tenant() {
         UUID id = UUID.randomUUID();
         jdbc.update("INSERT INTO iam_tenant(id,tenant_code,company_name,status,created_at,updated_at) VALUES(?,?,?,'ACTIVE',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))", bin(id), id.toString().substring(0, 12), "测试企业");

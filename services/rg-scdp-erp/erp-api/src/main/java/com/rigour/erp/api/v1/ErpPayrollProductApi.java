@@ -1,5 +1,6 @@
 package com.rigour.erp.api.v1;
 
+import com.rigour.erp.api.v1.model.ErpPayrollCategoryView;
 import com.rigour.erp.api.v1.model.ErpPayrollProductView;
 import com.rigour.shared.core.api.ApiResponse;
 
@@ -12,5 +13,12 @@ public interface ErpPayrollProductApi {
     @GetMapping("/api/v1/erp/payroll-products")
     ApiResponse<List<ErpPayrollProductView>> products(
             @RequestParam(defaultValue = "") String keyword,
-            @RequestParam(required = false) Long productVariantId);
+            @RequestParam(required = false) Long productVariantId,
+            @RequestParam(required = false) Long categoryId);
+
+    @GetMapping("/api/v1/erp/payroll-products/by-variants")
+    ApiResponse<List<ErpPayrollProductView>> productsByVariants(@RequestParam List<Long> ids);
+
+    @GetMapping("/api/v1/erp/payroll-products/categories")
+    ApiResponse<List<ErpPayrollCategoryView>> categories();
 }

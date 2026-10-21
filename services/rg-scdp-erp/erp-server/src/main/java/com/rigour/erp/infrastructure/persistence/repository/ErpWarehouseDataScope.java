@@ -1,12 +1,12 @@
 package com.rigour.erp.infrastructure.persistence.repository;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.rigour.erp.infrastructure.persistence.mapper.ErpWarehouseScopeMapper;
 import com.rigour.shared.context.*;
 import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView;
 import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.*;
 import com.rigour.tenant.iam.client.*;
 
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -15,17 +15,44 @@ import java.util.*;
 @Component
 public final class ErpWarehouseDataScope {
     private final SupplyAuthorizationClient client;
-    private final JdbcTemplate jdbc;
+    private final ErpWarehouseScopeMapper mapper;
 
-    public ErpWarehouseDataScope(SupplyAuthorizationClient client, JdbcTemplate jdbc) {
+    public ErpWarehouseDataScope(SupplyAuthorizationClient client, ErpWarehouseScopeMapper mapper) {
         this.client = client;
-        this.jdbc = jdbc;
+        this.mapper = mapper;
     }
 
     public record Predicate(String sql, List<Object> args) {
         public Predicate {
             args = List.copyOf(args);
         }
+    }
+
+    public Predicate manualPredicate(String action, String object) {
+        var access = com.rigour.tenant.iam.client.ManualCostScope.access(policy(action), object);
+        if (!access.allowed()) return new Predicate("1=0", List.of());
+        List<String> clauses = new ArrayList<>();
+        List<Object> args = new ArrayList<>();
+        if (!access.allCreators()) {
+            clauses.add("created_by=?");
+            args.add(AuthorizationContext.requireCurrent().principalId().toString());
+        }
+        if (access.cities() != null) {
+            if (access.cities().isEmpty()) clauses.add("1=0");
+            else {
+                clauses.add(
+                        "city_code IN ("
+                                + String.join(",", Collections.nCopies(access.cities().size(), "?"))
+                                + ")");
+                args.addAll(access.cities());
+            }
+        }
+        return new Predicate(
+                clauses.isEmpty() ? "1=1" : "(" + String.join(" AND ", clauses) + ")", args);
+    }
+
+    public void requireManual(String action, String object, String city) {
+        com.rigour.tenant.iam.client.ManualCostScope.require(policy(action), object, city, action);
     }
 
     private SupplyAuthorizationView policy(String action) {
@@ -97,29 +124,41 @@ public final class ErpWarehouseDataScope {
                 .contains(table)) throw new IllegalArgumentException("未知业务表");
         var p = predicate(action, fields);
         if ("1=1".equals(p.sql())) return true;
-        List<Object> args = new ArrayList<>(List.of(tenant, id));
-        args.addAll(p.args());
-        return jdbc.queryForObject(
-                        "SELECT COUNT(*) FROM "
-                                + table
-                                + " WHERE tenant_id=? AND id=? AND deleted=0 AND "
-                                + p.sql(),
-                        Integer.class,
-                        args.toArray())
-                == 1;
+        var query =
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Object>()
+                        .eq("tenant_id", tenant)
+                        .eq("id", id)
+                        .eq("deleted", 0);
+        MybatisPlusErpCostRepository.bind(query, p.sql(), p.args());
+        return mapper.countVisible(table, query) == 1;
     }
 
     public void requirePair(String tenant, long source, long target, String action) {
-        var p = predicate(action, "w.source_id", "w.target_id");
-        if ("1=1".equals(p.sql())) return;
-        List<Object> args = new ArrayList<>(List.of(source, target));
-        args.addAll(p.args());
-        if (jdbc.queryForObject(
-                        "SELECT COUNT(*) FROM (SELECT ? AS source_id,? AS target_id) w WHERE "
-                                + p.sql(),
-                        Integer.class,
-                        args.toArray())
-                != 1) throw new AuthorizationDeniedException(action);
+        var policy = policy(action);
+        if (policy == null) return;
+        boolean allowed =
+                policy.clauses().stream()
+                        .anyMatch(
+                                c ->
+                                        "INVENTORY".equals(c.objectType())
+                                                && Set.of("WAREHOUSE", "ALL")
+                                                        .contains(c.scopeMode())
+                                                && Set.of("NONE", "ALL")
+                                                        .contains(c.departments().mode())
+                                                && Set.of("NONE", "ALL")
+                                                        .contains(c.regions().mode())
+                                                && contains(c.warehouses(), source)
+                                                && contains(c.warehouses(), target));
+        if (!allowed
+                || !contains(policy.warehouseLimit(), source)
+                || !contains(policy.warehouseLimit(), target))
+            throw new AuthorizationDeniedException(action);
+    }
+
+    private static boolean contains(Limit limit, long id) {
+        return "ALL".equals(limit.mode())
+                || "SPECIFIED".equals(limit.mode())
+                        && limit.references().contains(Long.toString(id));
     }
 
     public void requireDocument(
@@ -149,5 +188,24 @@ public final class ErpWarehouseDataScope {
                                                         && Set.of("NONE", "ALL")
                                                                 .contains(c.regions().mode()));
         if (!permitted) throw new AuthorizationDeniedException(action);
+    }
+
+    public void applyCity(
+            com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<?> query,
+            String action,
+            String field) {
+        applyCity(query, action, field, "INVENTORY");
+    }
+
+    public void applyCity(
+            com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<?> query,
+            String action,
+            String field,
+            String object) {
+        if (!field.matches("[a-z_][a-z0-9_.]*")) throw new IllegalArgumentException("无效地区列");
+        var access = com.rigour.tenant.iam.client.ManualCostScope.access(policy(action), object);
+        if (!access.allowed() || access.cities() != null && access.cities().isEmpty())
+            query.apply("1=0");
+        else if (access.cities() != null) query.in(field, access.cities());
     }
 }

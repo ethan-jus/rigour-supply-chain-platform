@@ -14,4 +14,34 @@ public record LogisticsCostDetailView(
         String warehouseName,
         String ownerEmployeeName,
         Instant createdTime,
-        Instant updatedTime) {}
+        Instant updatedTime,
+        String createdBy,
+        String updatedBy) {
+    public LogisticsCostDetailView(
+            String id,
+            String documentNo,
+            String categoryCode,
+            String statusCode,
+            int revision,
+            LogisticsCostCommand data,
+            List<LogisticsCostSourceView> sources,
+            String warehouseName,
+            String ownerEmployeeName,
+            Instant createdTime,
+            Instant updatedTime) {
+        this(
+                id,
+                documentNo,
+                categoryCode,
+                statusCode,
+                revision,
+                data,
+                sources,
+                warehouseName,
+                ownerEmployeeName,
+                createdTime,
+                updatedTime,
+                null,
+                null);
+    }
+}

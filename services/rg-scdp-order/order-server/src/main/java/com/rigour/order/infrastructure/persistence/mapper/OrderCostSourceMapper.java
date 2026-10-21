@@ -39,7 +39,9 @@ ORDER BY `date`,sourceId
     @Select(
             """
 SELECT o.id,o.order_no documentNo,o.region_code cityCode,o.selected_warehouse_id warehouseId,
-o.customer_code_snapshot customerCode,o.customer_name_snapshot customerName,o.order_status_code statusCode
+o.customer_code_snapshot customerCode,o.customer_name_snapshot customerName,o.order_status_code statusCode,
+COALESCE(NULLIF(o.source_system_code,''),'SYSTEM') sourceSystem,o.source_order_no originalNo,DATE(CONVERT_TZ(o.order_date,'+00:00','+08:00')) documentDate,
+NULL destinationAddress
 FROM order_sales_order o ${ew.customSqlSegment}
 """)
     List<OrderDeliveryCostSourceView> deliveries(@Param(Constants.WRAPPER) Wrapper<?> query);
@@ -61,6 +63,56 @@ WHERE o.tenant_id=#{tenant} AND <choose><when test="employee != null and employe
  </script>
 """)
     List<OrderCommissionSourceLineView> commissions(
+            @Param("tenant") String tenant,
+            @Param("employee") String employee,
+            @Param("city") String city,
+            @Param("until") LocalDateTime until);
+
+    @Select(
+            """
+<script>
+WITH scoped AS (
+ SELECT o.* FROM order_sales_order o
+ LEFT JOIN order_attribution_snapshot scope_attr ON scope_attr.tenant_id=o.tenant_id AND scope_attr.order_id=o.id AND scope_attr.state='FROZEN'
+ WHERE o.tenant_id=#{tenant} AND o.deleted=0 AND o.order_status_code NOT IN ('DRAFT','CANCELLED')
+ AND o.order_date&lt;#{until}
+ AND <choose><when test="employee != null and employee != ''">COALESCE(scope_attr.employee_code,o.owner_employee_code)=#{employee}</when><otherwise>COALESCE(scope_attr.region_code,o.region_code)=#{city}</otherwise></choose>
+), running AS (
+ SELECT p.order_id,p.payment_time,p.id,
+ SUM(p.paid_amount) OVER(PARTITION BY p.tenant_id,p.order_id ORDER BY p.payment_time,p.id ROWS UNBOUNDED PRECEDING) cumulative
+ FROM order_payment_record p JOIN scoped o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
+ WHERE p.tenant_id=#{tenant} AND p.deleted=0 AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time&lt;#{until}
+), paid AS (
+ SELECT r.order_id,MIN(r.payment_time) fully_paid_time FROM running r JOIN scoped o ON o.id=r.order_id
+ WHERE o.payable_amount&gt;0 AND r.cumulative-COALESCE((SELECT SUM(f.refund_amount) FROM order_refund_record f
+ WHERE f.tenant_id=o.tenant_id AND f.order_id=o.id AND f.deleted=0 AND f.refund_status_code='CONFIRMED'
+ AND f.refund_time&lt;=r.payment_time),0)&gt;=o.payable_amount GROUP BY r.order_id
+), refunds AS (
+ SELECT f.order_id,SUM(f.refund_amount) amount,MAX(f.refund_time) last_time FROM order_refund_record f
+ JOIN scoped o ON o.tenant_id=f.tenant_id AND o.id=f.order_id
+ WHERE f.tenant_id=#{tenant} AND f.deleted=0 AND f.refund_status_code='CONFIRMED' AND f.refund_time&lt;#{until} GROUP BY f.order_id
+)
+SELECT CAST(l.id AS CHAR) lineId,CAST(o.id AS CHAR) orderId,o.order_no orderNo,
+ COALESCE(a.employee_code,o.owner_employee_code) employeeCode,COALESCE(a.region_code,o.region_code) cityCode,a.department_id departmentId,
+ l.product_id productId,l.product_variant_id productVariantId,l.product_name_snapshot productName,l.unit_code unitCode,
+ DATE(CONVERT_TZ(o.order_date,'+00:00','+08:00')) orderDate,l.quantity,l.line_amount lineAmount,
+ SUM(l.line_amount) OVER(PARTITION BY o.id) orderLineTotal,o.payable_amount orderAmount,
+ COALESCE((SELECT SUM(p.paid_amount) FROM order_payment_record p WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.deleted=0 AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time&lt;#{until}),0) paidAmount,
+ DATE(CONVERT_TZ(paid.fully_paid_time,'+00:00','+08:00')) fullyPaidDate,COALESCE(refunds.amount,0) refundedAmount,
+ DATE(CONVERT_TZ(refunds.last_time,'+00:00','+08:00')) lastRefundDate,
+ CASE WHEN a.order_id IS NOT NULL THEN o.data_quality_status_code
+      WHEN NULLIF(o.source_system_code,'') IS NOT NULL
+       AND NULLIF(o.owner_employee_code,'') IS NOT NULL AND NULLIF(o.region_code,'') IS NOT NULL
+       AND NOT EXISTS(SELECT 1 FROM order_attribution_snapshot pending
+           WHERE pending.tenant_id=o.tenant_id AND pending.order_id=o.id)
+      THEN o.data_quality_status_code ELSE 'ATTRIBUTION_PENDING' END qualityStatus
+FROM scoped o JOIN order_sales_order_line l ON l.tenant_id=o.tenant_id AND l.order_id=o.id AND l.deleted=0
+LEFT JOIN order_attribution_snapshot a ON a.tenant_id=o.tenant_id AND a.order_id=o.id AND a.state='FROZEN'
+LEFT JOIN paid ON paid.order_id=o.id LEFT JOIN refunds ON refunds.order_id=o.id
+ORDER BY o.id,l.id LIMIT 20001
+</script>
+""")
+    List<com.rigour.order.api.v1.model.OrderPayrollLineView> payrollLines(
             @Param("tenant") String tenant,
             @Param("employee") String employee,
             @Param("city") String city,

@@ -29,6 +29,11 @@ public final class OrderLogisticsCostController implements OrderLogisticsCostApi
     }
 
     @Override
+    public ApiResponse<LogisticsCostPageView> export(LogisticsCostQuery query) {
+        return ApiResponse.success(service.export("logistics", query));
+    }
+
+    @Override
     public ApiResponse<LogisticsCostDetailView> entry(String id) {
         return ApiResponse.success(service.entry("logistics", id));
     }
@@ -61,7 +66,8 @@ public final class OrderLogisticsCostController implements OrderLogisticsCostApi
     }
 
     @Override
-    public ApiResponse<List<LogisticsCostSourceView>> sources(String legCode, String keyword) {
-        return ApiResponse.success(service.sources(legCode, keyword));
+    public ApiResponse<List<LogisticsCostSourceView>> sources(
+            String legCode, String keyword, String cityCode, int begin) {
+        return ApiResponse.success(service.sources(legCode, keyword, cityCode, begin));
     }
 }

@@ -13,6 +13,9 @@ public interface HrTargetSettingsApi {
     @GetMapping(ROOT)
     ApiResponse<Settings> settings(@RequestParam String month);
 
+    @GetMapping(ROOT + "/payroll-metrics")
+    ApiResponse<List<com.rigour.hr.api.v1.model.PayrollTargetMetricView>> payrollMetrics();
+
     @PutMapping(ROOT)
     ApiResponse<Void> save(@RequestBody Batch command);
 

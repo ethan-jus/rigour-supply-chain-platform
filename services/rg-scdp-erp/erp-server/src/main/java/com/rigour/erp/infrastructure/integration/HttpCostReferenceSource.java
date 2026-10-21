@@ -68,20 +68,22 @@ public final class HttpCostReferenceSource implements CostReferenceSource {
     }
 
     public List<ErpCostSourceView> deliveries(String keyword, List<Long> ids) {
+        return deliveries(keyword, ids, null, 0, "order:logistics-cost:read");
+    }
+
+    public List<ErpCostSourceView> deliveries(
+            String keyword, List<Long> ids, String city, int begin, String action) {
         var builder =
                 UriComponentsBuilder.fromUriString(order)
                         .path("/api/v1/orders/cost-sources/deliveries")
-                        .queryParam("keyword", keyword);
+                        .queryParam("keyword", keyword)
+                        .queryParam("action", action);
+        builder.queryParam("cityCode", city).queryParam("begin", Math.max(0, begin));
         if (!ids.isEmpty()) builder.queryParam("ids", ids);
         var uri = builder.build().encode().toUri();
         var headers =
-                OutboundContextHeaders.service(
-                        signer,
-                        "GET",
-                        uri,
-                        "rigour-erp-core-service",
-                        AuthorizationContext.requireCurrent().tenantId().toString(),
-                        "order:cost:source-read");
+                OutboundContextHeaders.caller(
+                        signer, "GET", uri, AuthorizationContext.requireCurrent());
         var response =
                 client.get()
                         .uri(uri)
@@ -106,7 +108,51 @@ public final class HttpCostReferenceSource implements CostReferenceSource {
                                         null,
                                         d.customerCode(),
                                         d.customerName(),
-                                        d.statusCode()))
+                                        d.statusCode(),
+                                        d.sourceSystem(),
+                                        d.originalNo(),
+                                        d.documentDate(),
+                                        null,
+                                        d.destinationAddress(),
+                                        null,
+                                        null))
                 .toList();
+    }
+
+    private String crm;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void crmAddress(
+            @Value("${rigour.crm.base-url:http://rigour-merchant-crm-service}") String value) {
+        crm = value;
+    }
+
+    private record City(String code, String name) {}
+
+    public String city(String code, String action) {
+        var uri =
+                UriComponentsBuilder.fromUriString(crm)
+                        .path("/api/v1/crm/cost-city-references")
+                        .queryParam("action", action)
+                        .build()
+                        .encode()
+                        .toUri();
+        var headers =
+                OutboundContextHeaders.caller(
+                        signer, "GET", uri, AuthorizationContext.requireCurrent());
+        var response =
+                client.get()
+                        .uri(uri)
+                        .headers(h -> headers.forEach(h::set))
+                        .retrieve()
+                        .body(new ParameterizedTypeReference<ApiResponse<List<City>>>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("授权城市目录暂不可用");
+        return response.data().stream()
+                .filter(c -> c.code().equals(code))
+                .findFirst()
+                .orElseThrow(
+                        () -> new com.rigour.shared.context.AuthorizationDeniedException(action))
+                .name();
     }
 }

@@ -8,4 +8,22 @@ public record SalesPayrollVisitView(
         String customerKey,
         String reviewStatus,
         Long verifiedCommunicationMillis,
-        boolean durationComplete) {}
+        boolean durationComplete,
+        java.time.LocalDateTime submittedAt) {
+    public SalesPayrollVisitView(
+            String sourceId,
+            LocalDate date,
+            String customerKey,
+            String reviewStatus,
+            Long verifiedCommunicationMillis,
+            boolean durationComplete) {
+        this(
+                sourceId,
+                date,
+                customerKey,
+                reviewStatus,
+                verifiedCommunicationMillis,
+                durationComplete,
+                null);
+    }
+}

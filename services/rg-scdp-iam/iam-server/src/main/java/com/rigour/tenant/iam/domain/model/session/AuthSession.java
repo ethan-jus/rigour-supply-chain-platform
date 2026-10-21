@@ -80,6 +80,7 @@ public record AuthSession(
 
     public enum ClientType {
         WEB,
-        FEISHU_H5
+        FEISHU_H5,
+        NATIVE_APP
     }
 }

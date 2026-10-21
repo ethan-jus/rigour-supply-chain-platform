@@ -35,8 +35,27 @@ public interface OrderLogisticsCostStore {
             String actor,
             String action);
 
+    void attachmentAdded(
+            String tenant,
+            String category,
+            String id,
+            String actor,
+            String attachmentId,
+            String action);
+
     List<LogisticsCostAuditView> history(String tenant, String id);
 
     List<LogisticsCostSourceView> sources(
             String tenant, String leg, String keyword, List<Long> ids, String action);
+
+    default List<LogisticsCostSourceView> sources(
+            String tenant,
+            String leg,
+            String keyword,
+            List<Long> ids,
+            String action,
+            String city,
+            int begin) {
+        return sources(tenant, leg, keyword, ids, action);
+    }
 }

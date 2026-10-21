@@ -32,6 +32,9 @@ public final class HrExpenseService {
 
     public HrPageView<HrExpenseDetailView> expenses(HrExpenseQuery q) {
         var a = actor("hr:expense:read");
+        text(q.documentNo(), 100, "费用单号");
+        text(q.title(), 200, "费用事项");
+        text(q.remark(), 1000, "备注");
         if (q.dateFrom() != null && q.dateTo() != null && q.dateTo().isBefore(q.dateFrom()))
             throw bad("截止日期不能早于开始日期");
         return expenses.expenses(a.tenantId().toString(), q, "hr:expense:read");

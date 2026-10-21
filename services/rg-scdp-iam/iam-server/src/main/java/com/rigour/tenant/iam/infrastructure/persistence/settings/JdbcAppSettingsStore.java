@@ -20,6 +20,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -44,6 +45,31 @@ public class JdbcAppSettingsStore implements AppSettingsStore {
         this.tx = new TransactionTemplate(manager);
     }
 
+    // 仅一次只读授权计算内复用；不跨请求缓存，退出（包括异常）即清除。
+    private final ThreadLocal<Map<ReadKey, Object>> authorizationReads = new ThreadLocal<>();
+
+    private record ReadKey(String operation, Actor actor, UUID excludedRole) {}
+
+    <T> T authorizationRead(Supplier<T> operation) {
+        if (authorizationReads.get() != null) return operation.get();
+        authorizationReads.set(new HashMap<>());
+        try {
+            return operation.get();
+        } finally {
+            authorizationReads.remove();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T readOnce(ReadKey key, Supplier<T> read) {
+        var values = authorizationReads.get();
+        if (values == null) return read.get();
+        if (values.containsKey(key)) return (T) values.get(key);
+        T value = read.get();
+        values.put(key, value);
+        return value;
+    }
+
     public static byte[] bin(UUID id) {
         return UuidBinaryCodec.encode(id);
     }
@@ -53,6 +79,10 @@ public class JdbcAppSettingsStore implements AppSettingsStore {
     }
 
     public UUID applicationId() {
+        return readOnce(new ReadKey("application", null, null), () -> loadApplicationId());
+    }
+
+    private UUID loadApplicationId() {
         return UuidBinaryCodec.decode(
                 jdbc.queryForObject(
                         "SELECT id FROM iam_application WHERE app_code='SUPPLY_CHAIN' AND"
@@ -77,6 +107,10 @@ SELECT COUNT(*) FROM iam_user u JOIN iam_tenant t ON t.id=u.tenant_id
 
     @Override
     public boolean initialized(Actor actor) {
+        return readOnce(new ReadKey("initialized", actor, null), () -> loadInitialized(actor));
+    }
+
+    private boolean loadInitialized(Actor actor) {
         return "TENANT".equals(actor.scope())
                 && actor.tenantId() != null
                 && count(
@@ -89,6 +123,10 @@ SELECT COUNT(*) FROM iam_user u JOIN iam_tenant t ON t.id=u.tenant_id
 
     @Override
     public Context context(Actor actor) {
+        return authorizationRead(() -> readContext(actor));
+    }
+
+    private Context readContext(Actor actor) {
         requireIdentity(actor);
         if (!initialized(actor))
             return new Context(false, canBootstrap(actor), "ACTIVE", 0, Set.of());
@@ -376,6 +414,10 @@ SELECT resource_id,display_name_override,icon_key_override,sort_order_override,v
     }
 
     public boolean eligible(Actor actor) {
+        return readOnce(new ReadKey("eligible", actor, null), () -> loadEligible(actor));
+    }
+
+    private boolean loadEligible(Actor actor) {
         record Binding(String kind, String code, long access) {}
         List<Binding> bindings =
                 jdbc.query(
@@ -478,6 +520,10 @@ SELECT m.member_kind,b.employee_code,b.hr_access_version FROM iam_app_member m
 
     /** 内置管理员动态拥有本企业已配置功能，不依赖初始化时的授权快照。 */
     UUID protectedAdministratorRole(Actor actor, UUID excludedRole) {
+        return readOnce(new ReadKey("administrator", actor, excludedRole), () -> loadProtectedAdministratorRole(actor, excludedRole));
+    }
+
+    private UUID loadProtectedAdministratorRole(Actor actor, UUID excludedRole) {
         return jdbc
                 .query(
                         """
@@ -831,6 +877,10 @@ UPDATE iam_app_menu_node SET deleted_at=UTC_TIMESTAMP(6),status='DISABLED',
     }
 
     public List<Node> rows(Actor actor) {
+        return readOnce(new ReadKey("rows", actor, null), () -> loadRows(actor));
+    }
+
+    private List<Node> loadRows(Actor actor) {
         return jdbc.query(
                 """
 SELECT n.id,n.parent_id,n.resource_id,n.node_type,n.display_name,n.icon_key,n.sort_order,n.visible,
@@ -869,6 +919,10 @@ SELECT n.id,n.parent_id,n.resource_id,n.node_type,n.display_name,n.icon_key,n.so
     }
 
     private List<Node> catalogRows(Actor actor) {
+        return readOnce(new ReadKey("catalog", actor, null), () -> loadCatalogRows(actor));
+    }
+
+    private List<Node> loadCatalogRows(Actor actor) {
         if (actor.tenantId() == null) return List.of();
         return jdbc.query(
                 """

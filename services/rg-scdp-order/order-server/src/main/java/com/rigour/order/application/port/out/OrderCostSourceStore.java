@@ -15,4 +15,14 @@ public interface OrderCostSourceStore {
 
     List<OrderCommissionSourceLineView> commissions(
             String tenant, String employeeCode, String cityCode, LocalDate through);
+
+    default List<com.rigour.order.api.v1.model.OrderPayrollLineView> payrollLines(
+            String tenant, String employeeCode, String cityCode, LocalDate through) {
+        throw new UnsupportedOperationException("整单付清来源尚未接入");
+    }
+
+    default List<OrderDeliveryCostSourceView> deliveries(
+            String tenant, String keyword, List<Long> ids, String city, int begin, String action) {
+        return deliveries(tenant, keyword, ids);
+    }
 }

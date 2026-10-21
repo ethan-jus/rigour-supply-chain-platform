@@ -80,7 +80,7 @@ class TargetSettingsServiceTest {
                                         new BigDecimal("100"),
                                         1)));
         var targets = service.settings("2026-10").targets();
-        assertThat(targets).hasSize(10);
+        assertThat(targets).hasSize(12);
         assertThat(targets)
                 .filteredOn(
                         t ->
@@ -195,7 +195,7 @@ class TargetSettingsServiceTest {
     @Test
     void newRosterMembersReceiveInitialValuesWithoutDatabaseWrites() {
         var settings = service.settings("2026-10");
-        assertThat(settings.targets()).hasSize(10);
+        assertThat(settings.targets()).hasSize(12);
         assertThat(settings.targets())
                 .filteredOn(
                         t -> t.dimensionType().equals("CITY") && t.metric().equals("SALES_AMOUNT"))
@@ -226,7 +226,7 @@ class TargetSettingsServiceTest {
                                         "北京",
                                         "ACTIVE",
                                         false)));
-        assertThat(service.settings("2026-10").targets()).hasSize(15);
+        assertThat(service.settings("2026-10").targets()).hasSize(18);
         verify(store, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 

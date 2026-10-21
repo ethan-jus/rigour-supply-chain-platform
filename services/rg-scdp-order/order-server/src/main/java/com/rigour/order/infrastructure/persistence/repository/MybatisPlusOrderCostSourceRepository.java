@@ -17,9 +17,12 @@ import java.util.List;
 @Repository
 public class MybatisPlusOrderCostSourceRepository implements OrderCostSourceStore {
     private final OrderCostSourceMapper mapper;
+    private final LogisticsWarehouseDataScope scope;
 
-    public MybatisPlusOrderCostSourceRepository(OrderCostSourceMapper mapper) {
+    public MybatisPlusOrderCostSourceRepository(
+            OrderCostSourceMapper mapper, LogisticsWarehouseDataScope scope) {
         this.mapper = mapper;
+        this.scope = scope;
     }
 
     @Override
@@ -35,20 +38,36 @@ public class MybatisPlusOrderCostSourceRepository implements OrderCostSourceStor
     @Override
     public List<OrderDeliveryCostSourceView> deliveries(
             String tenant, String keyword, List<Long> ids) {
+        return deliveries(tenant, keyword, ids, null, 0, null);
+    }
+
+    public List<OrderDeliveryCostSourceView> deliveries(
+            String tenant, String keyword, List<Long> ids, String city, int begin, String action) {
         var q =
                 new QueryWrapper<InternalSalesOrderEntity>()
                         .eq("o.tenant_id", tenant)
                         .eq("o.deleted", 0)
-                        .notIn("o.order_status_code", "DRAFT", "CANCELLED")
-                        .isNotNull("o.selected_warehouse_id");
+                        .notIn("o.order_status_code", "DRAFT", "CANCELLED");
+        // 导入订单可能尚未关联仓库。仍执行原仓库范围：指定仓库角色不会匹配 NULL，
+        // 全仓角色可选择后在费用中补录实际仓库，不回写销售订单。
+        q.eq(city != null && !city.isBlank(), "o.region_code", city);
+        if (action != null) {
+            var predicate = scope.predicate(action, "o.selected_warehouse_id");
+            MybatisPlusOrderLogisticsCostRepository.bind(q, predicate.sql(), predicate.args());
+            scope.applyCity(q, action, "o.region_code");
+        }
         if (ids.isEmpty())
             q.and(
                     w ->
                             w.like("o.order_no", keyword)
                                     .or()
-                                    .like("o.customer_name_snapshot", keyword));
+                                    .like("o.customer_name_snapshot", keyword)
+                                    .or()
+                                    .like("o.source_order_no", keyword));
         else q.in("o.id", ids);
-        return mapper.deliveries(q.orderByDesc("o.id").last("LIMIT 100"));
+        return mapper.deliveries(
+                q.orderByDesc("o.id")
+                        .last(ids.isEmpty() ? "LIMIT 50 OFFSET " + begin : "LIMIT 100"));
     }
 
     @Override
@@ -59,6 +78,17 @@ public class MybatisPlusOrderCostSourceRepository implements OrderCostSourceStor
                 mapper.commissions(
                         tenant, employee, city, through.plusDays(1).atStartOfDay().minusHours(8));
         if (rows.size() > 20000) throw new IllegalStateException("提成来源超过上限，请分期核对");
+        return rows;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<com.rigour.order.api.v1.model.OrderPayrollLineView> payrollLines(
+            String tenant, String employee, String city, LocalDate through) {
+        var rows =
+                mapper.payrollLines(
+                        tenant, employee, city, through.plusDays(1).atStartOfDay().minusHours(8));
+        if (rows.size() > 20000) throw new IllegalStateException("付清订单来源超过上限，请分期核对");
         return rows;
     }
 }

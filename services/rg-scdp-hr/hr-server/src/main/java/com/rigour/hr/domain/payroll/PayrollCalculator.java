@@ -6,6 +6,7 @@ import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -33,6 +34,13 @@ public final class PayrollCalculator {
             LocalDate to,
             boolean enabled) {}
 
+    public record ManagerPolicy(
+            String ruleId,
+            int revision,
+            String cityName,
+            BigDecimal teamPercent,
+            List<Rule> products) {}
+
     public record Fact(
             String id,
             String recipientRole,
@@ -50,7 +58,47 @@ public final class PayrollCalculator {
             BigDecimal paidAmount,
             LocalDate paymentDate,
             boolean refund,
-            String quality) {}
+            String quality,
+            ManagerPolicy managerPolicy) {
+        public Fact(
+                String id,
+                String recipientRole,
+                String orderNo,
+                String productName,
+                Long productId,
+                Long variantId,
+                String unit,
+                LocalDate date,
+                Long departmentId,
+                BigDecimal quantity,
+                BigDecimal lineAmount,
+                BigDecimal orderLineTotal,
+                BigDecimal orderAmount,
+                BigDecimal paidAmount,
+                LocalDate paymentDate,
+                boolean refund,
+                String quality) {
+            this(
+                    id,
+                    recipientRole,
+                    orderNo,
+                    productName,
+                    productId,
+                    variantId,
+                    unit,
+                    date,
+                    departmentId,
+                    quantity,
+                    lineAmount,
+                    orderLineTotal,
+                    orderAmount,
+                    paidAmount,
+                    paymentDate,
+                    refund,
+                    quality,
+                    null);
+        }
+    }
 
     public record Input(
             BigDecimal baseOverride,
@@ -89,6 +137,26 @@ public final class PayrollCalculator {
             List<String> issues,
             List<Detail> details) {}
 
+    private static BigDecimal teamAmount(Fact f, BigDecimal amount) {
+        return "CITY_TEAM".equals(f.recipientRole()) && f.managerPolicy() != null
+                ? money(
+                        amount.multiply(f.managerPolicy().teamPercent())
+                                .divide(new BigDecimal("100")))
+                : amount;
+    }
+
+    private static String policyNote(Fact f) {
+        if (f.managerPolicy() == null) return "";
+        var p = f.managerPolicy();
+        return "；"
+                + p.cityName()
+                + "管辖配置 v"
+                + p.revision()
+                + ("CITY_TEAM".equals(f.recipientRole())
+                        ? "，团队计入 " + p.teamPercent().stripTrailingZeros().toPlainString() + "%"
+                        : "");
+    }
+
     public static Result calculate(
             String employee,
             Long department,
@@ -99,6 +167,21 @@ public final class PayrollCalculator {
             Input input,
             List<Fact> facts,
             Set<String> released) {
+        return calculate(
+                employee, department, month, entry, leave, all, input, facts, released, Map.of());
+    }
+
+    public static Result calculate(
+            String employee,
+            Long department,
+            YearMonth month,
+            LocalDate entry,
+            LocalDate leave,
+            List<Rule> all,
+            Input input,
+            List<Fact> facts,
+            Set<String> released,
+            Map<String, Detail> confirmedSales) {
         List<String> issues = new ArrayList<>();
         List<Detail> details = new ArrayList<>();
         var first = month.atDay(1);
@@ -133,20 +216,64 @@ public final class PayrollCalculator {
         var commissionRules = active.stream().filter(r -> "COMMISSION".equals(r.kind())).toList();
         for (var f : facts) {
             if (released.contains(f.id() + "|" + f.recipientRole())) continue;
+            if ("CITY_TEAM".equals(f.recipientRole()) && confirmedSales.containsKey(f.id())) {
+                var saved = confirmedSales.get(f.id());
+                String issue =
+                        f.refund()
+                                ? "存在退款，需核对净销售与冲回"
+                                : !"COMPLETE".equals(f.quality()) ? "订单资料待完善" : null;
+                if (issue != null) issues.add(f.orderNo() + "：" + issue);
+                var amount = issue == null ? teamAmount(f, saved.released()) : ZERO;
+                commission = commission.add(amount);
+                details.add(
+                        new Detail(
+                                f.id(),
+                                "CITY_TEAM",
+                                f.orderNo(),
+                                saved.productName(),
+                                saved.unit(),
+                                saved.quantity(),
+                                saved.ruleId(),
+                                saved.ruleName(),
+                                saved.ruleRevision(),
+                                saved.accrued() == null ? null : teamAmount(f, saved.accrued()),
+                                amount,
+                                issue == null
+                                        ? "下属已确认提成 " + saved.released() + " 元" + policyNote(f)
+                                        : issue));
+                continue;
+            }
+            boolean custom =
+                    "CITY_MANAGER".equals(f.recipientRole())
+                            && f.managerPolicy() != null
+                            && f.managerPolicy().products() != null;
             var candidates =
-                    commissionRules.stream()
-                            .filter(
-                                    r ->
-                                            Objects.equals(r.recipientRole(), f.recipientRole())
-                                                    && Objects.equals(r.productId(), f.productId())
-                                                    && Objects.equals(r.variantId(), f.variantId())
-                                                    && !f.date().isBefore(r.from())
-                                                    && !f.date().isAfter(r.to()))
-                            .toList();
+                    (custom ? f.managerPolicy().products() : commissionRules)
+                            .stream()
+                                    .filter(
+                                            r ->
+                                                    Objects.equals(
+                                                                    r.recipientRole(),
+                                                                    "CITY_TEAM"
+                                                                                    .equals(
+                                                                                            f
+                                                                                                    .recipientRole())
+                                                                            ? "SALES"
+                                                                            : f.recipientRole())
+                                                            && Objects.equals(
+                                                                    r.productId(), f.productId())
+                                                            && Objects.equals(
+                                                                    r.variantId(), f.variantId())
+                                                            && !f.date().isBefore(r.from())
+                                                            && !f.date().isAfter(r.to()))
+                                    .toList();
             if (candidates.isEmpty()) continue; // 未设置提成规则的商品不计提。
             String issue = null;
             Rule rule = null;
-            if (f.departmentId() == null) issue = "订单发生时的部门归属待核对";
+            if (custom) {
+                if (candidates.size() != 1) issue = "城市总商品标准冲突";
+                else rule = candidates.getFirst();
+            } else if (f.departmentId() == null) issue = "订单发生时的部门归属待核对";
             else {
                 var matches =
                         candidates.stream()
@@ -191,6 +318,7 @@ public final class PayrollCalculator {
                                                         RoundingMode.HALF_UP));
                 } else issue = "未支持的提成计算方式";
                 if (issue == null) {
+                    accrued = teamAmount(f, accrued);
                     boolean paid =
                             f.orderAmount() != null
                                     && f.orderAmount().signum() > 0
@@ -220,6 +348,7 @@ public final class PayrollCalculator {
                             releasedAmount,
                             issue == null
                                     ? (releasedAmount.signum() > 0 ? "全额回款，可发放" : "待全额回款")
+                                            + policyNote(f)
                                     : issue));
         }
         BigDecimal deduction = input.deduction() == null ? ZERO : input.deduction();

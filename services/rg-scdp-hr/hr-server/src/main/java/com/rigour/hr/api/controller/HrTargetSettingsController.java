@@ -21,6 +21,10 @@ public class HrTargetSettingsController implements HrTargetSettingsApi {
         return ApiResponse.success(service.settings(month));
     }
 
+    public ApiResponse<List<com.rigour.hr.api.v1.model.PayrollTargetMetricView>> payrollMetrics() {
+        return ApiResponse.success(service.payrollMetrics());
+    }
+
     public ApiResponse<Void> save(Batch command) {
         service.save(command);
         return ApiResponse.success(null);
