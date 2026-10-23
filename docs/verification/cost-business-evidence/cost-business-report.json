@@ -1,0 +1,498 @@
+{
+  "meta" : {
+    "metricVersion" : "cost-v7",
+    "snapshotId" : "snapshot",
+    "generatedAt" : "2026-10-21T06:00:00Z",
+    "effectiveCutoff" : "2026-10-21",
+    "period" : {
+      "from" : "2026-10-01",
+      "to" : "2026-10-21",
+      "previousFrom" : "2026-09-01",
+      "previousTo" : "2026-09-21",
+      "compare" : "previous"
+    },
+    "includedSources" : [ "ERP", "HR", "ORDER" ],
+    "excludedScopes" : [ ],
+    "comparisonAvailable" : false,
+    "comparisonReason" : "无可比期确认记录",
+    "dataState" : "READY",
+    "exportAllowed" : true,
+    "availableCategories" : [ "warehouse", "marketing", "office", "freight", "labor", "expense", "premises_unknown", "purchase", "loss" ]
+  },
+  "scope" : "opex",
+  "category" : null,
+  "dimension" : null,
+  "current" : {
+    "amount" : "20717.30",
+    "count" : 11,
+    "unpaid" : "20717.30",
+    "draftCount" : 1,
+    "draftAmount" : "78.00",
+    "missingCount" : 0,
+    "unassigned" : "0.00",
+    "linkedAmount" : "320.00",
+    "reviewCount" : 1,
+    "reviewAmount" : "4500.00"
+  },
+  "previous" : {
+    "amount" : "0.00",
+    "count" : 0,
+    "unpaid" : "0.00",
+    "draftCount" : 0,
+    "draftAmount" : "0.00",
+    "missingCount" : 0,
+    "unassigned" : "0.00",
+    "linkedAmount" : "0.00",
+    "reviewCount" : 0,
+    "reviewAmount" : "0.00"
+  },
+  "delta" : null,
+  "growth" : null,
+  "purchase" : "7121.85",
+  "loss" : "22.63",
+  "increased" : null,
+  "decreased" : null,
+  "cities" : [ {
+    "key" : "WH",
+    "label" : "武汉测试归属"
+  } ],
+  "categories" : [ {
+    "key" : "labor",
+    "label" : "人力薪酬",
+    "current" : "6800.00",
+    "previous" : null,
+    "delta" : null,
+    "growth" : null,
+    "share" : "32.8",
+    "count" : 1,
+    "missing" : false
+  }, {
+    "key" : "warehouse",
+    "label" : "仓储费用",
+    "current" : "6000.00",
+    "previous" : null,
+    "delta" : null,
+    "growth" : null,
+    "share" : "29.0",
+    "count" : 1,
+    "missing" : false
+  }, {
+    "key" : "office",
+    "label" : "办公费用",
+    "current" : "2646.30",
+    "previous" : null,
+    "delta" : null,
+    "growth" : null,
+    "share" : "12.8",
+    "count" : 2,
+    "missing" : false
+  }, {
+    "key" : "freight",
+    "label" : "运费",
+    "current" : "2120.00",
+    "previous" : null,
+    "delta" : null,
+    "growth" : null,
+    "share" : "10.2",
+    "count" : 3,
+    "missing" : false
+  }, {
+    "key" : "marketing",
+    "label" : "营销费用",
+    "current" : "2000.00",
+    "previous" : null,
+    "delta" : null,
+    "growth" : null,
+    "share" : "9.7",
+    "count" : 1,
+    "missing" : false
+  }, {
+    "key" : "expense",
+    "label" : "员工报销",
+    "current" : "1151.00",
+    "previous" : null,
+    "delta" : null,
+    "growth" : null,
+    "share" : "5.6",
+    "count" : 3,
+    "missing" : false
+  } ],
+  "cityGroups" : [ {
+    "key" : "WH",
+    "label" : "武汉测试归属",
+    "current" : "20717.30",
+    "previous" : null,
+    "delta" : null,
+    "growth" : null,
+    "share" : "100.0",
+    "count" : 11,
+    "missing" : false
+  } ],
+  "matrix" : [ {
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "category" : "labor",
+    "current" : "6800.00",
+    "previous" : null,
+    "delta" : null,
+    "share" : "32.8",
+    "count" : 1
+  }, {
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "category" : "warehouse",
+    "current" : "6000.00",
+    "previous" : null,
+    "delta" : null,
+    "share" : "29.0",
+    "count" : 1
+  }, {
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "category" : "office",
+    "current" : "2646.30",
+    "previous" : null,
+    "delta" : null,
+    "share" : "12.8",
+    "count" : 2
+  }, {
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "category" : "freight",
+    "current" : "2120.00",
+    "previous" : null,
+    "delta" : null,
+    "share" : "10.2",
+    "count" : 3
+  }, {
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "category" : "marketing",
+    "current" : "2000.00",
+    "previous" : null,
+    "delta" : null,
+    "share" : "9.7",
+    "count" : 1
+  }, {
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "category" : "expense",
+    "current" : "1151.00",
+    "previous" : null,
+    "delta" : null,
+    "share" : "5.6",
+    "count" : 3
+  } ],
+  "changes" : [ ],
+  "objects" : [ ],
+  "dimensionCoverage" : "0.0",
+  "dimensions" : [ ],
+  "cumulative" : [ {
+    "key" : "1日",
+    "current" : "0.00",
+    "previous" : null
+  }, {
+    "key" : "2日",
+    "current" : "0.00",
+    "previous" : null
+  }, {
+    "key" : "3日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "4日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "5日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "6日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "7日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "8日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "9日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "10日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "11日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "12日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "13日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "14日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "15日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "16日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "17日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "18日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "19日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "20日",
+    "current" : "5417.30",
+    "previous" : null
+  }, {
+    "key" : "21日",
+    "current" : "5417.30",
+    "previous" : null
+  } ],
+  "months" : [ {
+    "year" : 2026,
+    "month" : 5,
+    "label" : "2026-05",
+    "current" : "0.00",
+    "previous" : null,
+    "cutoff" : "2026-05-31"
+  }, {
+    "year" : 2026,
+    "month" : 6,
+    "label" : "2026-06",
+    "current" : "0.00",
+    "previous" : null,
+    "cutoff" : "2026-06-30"
+  }, {
+    "year" : 2026,
+    "month" : 7,
+    "label" : "2026-07",
+    "current" : "0.00",
+    "previous" : null,
+    "cutoff" : "2026-07-31"
+  }, {
+    "year" : 2026,
+    "month" : 8,
+    "label" : "2026-08",
+    "current" : "0.00",
+    "previous" : null,
+    "cutoff" : "2026-08-31"
+  }, {
+    "year" : 2026,
+    "month" : 9,
+    "label" : "2026-09",
+    "current" : "0.00",
+    "previous" : null,
+    "cutoff" : "2026-09-30"
+  }, {
+    "year" : 2026,
+    "month" : 10,
+    "label" : "2026-10",
+    "current" : "20717.30",
+    "previous" : null,
+    "cutoff" : "2026-10-21"
+  } ],
+  "majorRecords" : [ {
+    "source" : "HR",
+    "sourceId" : "00000000-0000-0000-0000-000000000010",
+    "documentNo" : "TEST-010",
+    "title" : "测试十月已确认薪酬",
+    "category" : "labor",
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "date" : "2026-10-31",
+    "amount" : "6800.00",
+    "status" : "CONFIRMED",
+    "payment" : "UNPAID",
+    "sourceSystem" : null,
+    "employeeName" : "测试员工甲",
+    "costMonth" : "2026-10",
+    "periodBasis" : "MONTH",
+    "costTreatment" : "DIRECT"
+  }, {
+    "source" : "ERP",
+    "sourceId" : "00000000-0000-0000-0000-000000000007",
+    "documentNo" : "TEST-007",
+    "title" : "测试仓储十月租金",
+    "category" : "warehouse",
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "date" : "2026-09-30",
+    "amount" : "6000.00",
+    "status" : "CONFIRMED",
+    "payment" : "UNPAID",
+    "sourceSystem" : null,
+    "employeeName" : null,
+    "costMonth" : "2026-10",
+    "periodBasis" : "MONTH",
+    "costTreatment" : "DIRECT"
+  }, {
+    "source" : "ERP",
+    "sourceId" : "00000000-0000-0000-0000-000000000008",
+    "documentNo" : "TEST-008",
+    "title" : "测试办公室十月租金",
+    "category" : "office",
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "date" : "2026-09-30",
+    "amount" : "2500.00",
+    "status" : "CONFIRMED",
+    "payment" : "UNPAID",
+    "sourceSystem" : null,
+    "employeeName" : null,
+    "costMonth" : "2026-10",
+    "periodBasis" : "MONTH",
+    "costTreatment" : "DIRECT"
+  }, {
+    "source" : "ERP",
+    "sourceId" : "00000000-0000-0000-0000-000000000009",
+    "documentNo" : "TEST-009",
+    "title" : "测试本地推广",
+    "category" : "marketing",
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "date" : "2026-10-03",
+    "amount" : "2000.00",
+    "status" : "CONFIRMED",
+    "payment" : "UNPAID",
+    "sourceSystem" : null,
+    "employeeName" : null,
+    "costMonth" : "2026-10",
+    "periodBasis" : "DAY",
+    "costTreatment" : "DIRECT"
+  }, {
+    "source" : "ORDER",
+    "sourceId" : "00000000-0000-0000-0000-000000000004",
+    "documentNo" : "TEST-004",
+    "title" : "测试三段运输 PURCHASE",
+    "category" : "freight",
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "date" : "2026-10-03",
+    "amount" : "1200.00",
+    "status" : "CONFIRMED",
+    "payment" : "UNPAID",
+    "sourceSystem" : null,
+    "employeeName" : null,
+    "costMonth" : "2026-10",
+    "periodBasis" : "DAY",
+    "costTreatment" : "DIRECT"
+  }, {
+    "source" : "HR",
+    "sourceId" : "00000000-0000-0000-0000-000000000012",
+    "documentNo" : "TEST-012",
+    "title" : "测试住宿两晚",
+    "category" : "expense",
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "date" : "2026-10-03",
+    "amount" : "796.00",
+    "status" : "CONFIRMED",
+    "payment" : "UNPAID",
+    "sourceSystem" : null,
+    "employeeName" : "测试员工甲",
+    "costMonth" : "2026-10",
+    "periodBasis" : "DAY",
+    "costTreatment" : "DIRECT"
+  }, {
+    "source" : "ORDER",
+    "sourceId" : "00000000-0000-0000-0000-000000000005",
+    "documentNo" : "TEST-005",
+    "title" : "测试三段运输 TRANSFER",
+    "category" : "freight",
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "date" : "2026-10-03",
+    "amount" : "600.00",
+    "status" : "CONFIRMED",
+    "payment" : "UNPAID",
+    "sourceSystem" : null,
+    "employeeName" : null,
+    "costMonth" : "2026-10",
+    "periodBasis" : "DAY",
+    "costTreatment" : "DIRECT"
+  }, {
+    "source" : "ORDER",
+    "sourceId" : "00000000-0000-0000-0000-000000000006",
+    "documentNo" : "TEST-006",
+    "title" : "测试三段运输 DELIVERY",
+    "category" : "freight",
+    "city" : "WH",
+    "cityName" : "武汉测试归属",
+    "date" : "2026-10-03",
+    "amount" : "320.00",
+    "status" : "CONFIRMED",
+    "payment" : "UNPAID",
+    "sourceSystem" : null,
+    "employeeName" : null,
+    "costMonth" : "2026-10",
+    "periodBasis" : "DAY",
+    "costTreatment" : "DIRECT"
+  } ],
+  "payrollComponents" : [ {
+    "key" : "baseSalary",
+    "label" : "底薪",
+    "amount" : "5000.00",
+    "previous" : null,
+    "delta" : null,
+    "records" : 1,
+    "missingCount" : 0
+  }, {
+    "key" : "performance",
+    "label" : "绩效",
+    "amount" : "800.00",
+    "previous" : null,
+    "delta" : null,
+    "records" : 1,
+    "missingCount" : 0
+  }, {
+    "key" : "commission",
+    "label" : "提成（含激励）",
+    "amount" : "1000.00",
+    "previous" : null,
+    "delta" : null,
+    "records" : 1,
+    "missingCount" : 0
+  }, {
+    "key" : "allowance",
+    "label" : "津补贴",
+    "amount" : "0.00",
+    "previous" : null,
+    "delta" : null,
+    "records" : 1,
+    "missingCount" : 0
+  }, {
+    "key" : "correctionAmount",
+    "label" : "跨月补差",
+    "amount" : "0.00",
+    "previous" : null,
+    "delta" : null,
+    "records" : 1,
+    "missingCount" : 0
+  } ],
+  "monthlyAmount" : "15300.00",
+  "previousMonthlyAmount" : "0.00"
+}

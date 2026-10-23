@@ -54,7 +54,64 @@ public class PayrollRuleResolver {
 
     public PayrollRuleMatch resolve(
             String tenant, PayrollEmployeeView employee, Long department, YearMonth month) {
+        return resolve(store.versions(tenant), employee, department, month);
+    }
+
+    /** 转岗前的订单仍可能本月付清，不能仅凭现行空提成规则跳过订单依据。 */
+    public boolean hasHistoricalOrderDependency(
+            String tenant, PayrollEmployeeView employee, Set<Long> departments, YearMonth month) {
+        for (var version : store.versions(tenant)) {
+            var d = version.definition();
+            if (d.effectiveFrom().isAfter(month.atEndOfMonth())
+                    || employee.entryDate() != null
+                            && d.effectiveTo().isBefore(employee.entryDate())) continue;
+            if ("SALARY".equals(d.kind())
+                    && d.employeeCodes().contains(employee.employeeCode())
+                    && !"HEADQUARTERS".equals(d.role())) return true;
+            if ("COMMISSION".equals(d.kind())
+                    && d.commission() != null
+                    && !d.commission().rules().isEmpty()
+                    && d.departmentIds().stream().anyMatch(departments::contains)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * One tenant-scoped rule snapshot per preparation request, rather than one query per person.
+     */
+    public Map<String, PayrollRuleMatch> prepare(
+            String tenant,
+            List<PayrollEmployeeView> employees,
+            YearMonth month,
+            java.util.function.Function<PayrollEmployeeView, Long> department) {
         var all = store.versions(tenant);
+        Map<String, PayrollRuleMatch> result = new LinkedHashMap<>();
+        for (var employee : employees) {
+            var issues = new ArrayList<String>();
+            var salary =
+                    one(
+                            all,
+                            "SALARY",
+                            null,
+                            null,
+                            employee.employeeCode(),
+                            month.atDay(1),
+                            issues,
+                            "员工薪资标准");
+            result.put(
+                    employee.employeeCode(),
+                    salary == null
+                            ? new PayrollRuleMatch(null, List.copyOf(issues))
+                            : resolve(all, employee, department.apply(employee), month));
+        }
+        return Map.copyOf(result);
+    }
+
+    private PayrollRuleMatch resolve(
+            List<PayrollComponentVersionView> all,
+            PayrollEmployeeView employee,
+            Long department,
+            YearMonth month) {
         var issues = new ArrayList<String>();
         var date = month.atDay(1);
         var salary =
@@ -63,10 +120,35 @@ public class PayrollRuleResolver {
         if (department == null) issues.add("本月任职部门缺失");
         var performance = one(all, "PERFORMANCE", role, department, null, date, issues, "绩效规则");
         // Fixed allowances are a sales-only component, not a required zero-value manager rule.
-        var allowance =
-                "SALES".equals(role)
-                        ? one(all, "ALLOWANCE", role, department, null, date, issues, "销售补贴规则")
-                        : null;
+        var personal = salary == null ? null : salary.definition().salary().personalPolicy();
+        PayrollComponentVersionView allowance = null;
+        if (personal != null
+                && personal.allowanceVersionId() != null
+                && !personal.allowanceVersionId().isBlank()) {
+            allowance =
+                    all.stream()
+                            .filter(
+                                    v ->
+                                            !v.deleted()
+                                                    && v.enabledAt(date)
+                                                    && v.id().equals(personal.allowanceVersionId())
+                                                    && "ALLOWANCE".equals(v.definition().kind())
+                                                    && ("ALL".equals(v.definition().role())
+                                                            || Objects.equals(
+                                                                    role, v.definition().role()))
+                                                    && v.definition()
+                                                            .departmentIds()
+                                                            .contains(department)
+                                                    && !v.definition().effectiveFrom().isAfter(date)
+                                                    && !v.definition()
+                                                            .effectiveTo()
+                                                            .isBefore(month.atEndOfMonth()))
+                            .findFirst()
+                            .orElse(null);
+            if (allowance == null) issues.add("个人关联的补贴版本不适用本月、身份或部门，请调整员工薪资标准");
+        } else if ("SALES".equals(role)) {
+            allowance = one(all, "ALLOWANCE", role, department, null, date, issues, "销售补贴规则");
+        }
         var commission = one(all, "COMMISSION", role, department, null, date, issues, "提成规则");
         var attendance = one(all, "ATTENDANCE", role, department, null, date, issues, "考勤规则");
         if (!issues.isEmpty()) return new PayrollRuleMatch(null, List.copyOf(issues));
@@ -139,7 +221,8 @@ public class PayrollRuleResolver {
                         allowance == null ? List.of() : allowance.definition().allowance().items(),
                         commission.definition().commission(),
                         "系统自动匹配，HR无需维护方案",
-                        refs);
+                        refs,
+                        amount.personalPolicy());
         issues.addAll(PayrollSchemeValidator.check(definition).errors());
         if (!issues.isEmpty()) return new PayrollRuleMatch(null, List.copyOf(issues));
         String id =
@@ -236,7 +319,8 @@ public class PayrollRuleResolver {
         Map<String, PayrollComponentVersionView> families = new HashMap<>();
         for (var row : all) {
             var d = row.definition();
-            if (!kind.equals(d.kind()) || d.effectiveFrom().isAfter(date)) continue;
+            if (row.deleted() || !kind.equals(d.kind()) || d.effectiveFrom().isAfter(date))
+                continue;
             if (employee != null
                     ? d.employeeCodes() == null || !d.employeeCodes().contains(employee)
                     : department == null
@@ -245,9 +329,20 @@ public class PayrollRuleResolver {
                             || !("ALL".equals(d.role()) || role.equals(d.role()))) continue;
             families.merge(row.ruleId(), row, (a, b) -> a.version() > b.version() ? a : b);
         }
-        families.values().removeIf(row -> row.definition().effectiveTo().isBefore(date));
+        boolean stopped =
+                families.values().stream()
+                        .anyMatch(
+                                row ->
+                                        !row.enabledAt(date)
+                                                && !row.definition().effectiveTo().isBefore(date));
+        families.values()
+                .removeIf(
+                        row ->
+                                !row.enabledAt(date)
+                                        || row.definition().effectiveTo().isBefore(date));
         if (families.size() != 1) {
-            issues.add(label + (families.isEmpty() ? "未配置" : "存在多条冲突配置"));
+            issues.add(
+                    label + (families.isEmpty() ? stopped ? "已停用，请启用或配置替代规则" : "未配置" : "存在多条冲突配置"));
             return null;
         }
         return families.values().iterator().next();

@@ -15,6 +15,12 @@ import java.util.List;
 @RestController
 public final class OrderCostSourceController implements OrderCostSourceApi {
     @Override
+    public ApiResponse<List<com.rigour.order.api.v1.model.OrderCityCollectionSourceView>>
+            cityCollections(String cityCode, LocalDate from, LocalDate to) {
+        return ApiResponse.success(service.cityCollections(cityCode, from, to));
+    }
+
+    @Override
     public ApiResponse<List<OrderCollectionSourceView>> collections(
             String employeeCode, LocalDate from, LocalDate to) {
         return ApiResponse.success(service.collections(employeeCode, from, to));

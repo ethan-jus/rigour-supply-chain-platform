@@ -32,6 +32,8 @@ public class HrPayrollPersistenceSupport {
     public void lock(String tenant) {
         payroll.ensureGuard(tenant);
         payroll.lock(tenant);
+        // 与工资写入同事务推进；确认、撤回、发放及补差失败时一起回滚。
+        payroll.advanceAnalyticsVersion(tenant);
     }
 
     public void audit(

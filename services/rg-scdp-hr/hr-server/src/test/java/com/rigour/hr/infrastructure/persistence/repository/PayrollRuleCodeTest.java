@@ -25,7 +25,8 @@ class PayrollRuleCodeTest {
                         mapper,
                         mock(HrPayrollConfigurationMapper.class),
                         locks,
-                        JsonMapper.builder().build());
+                        JsonMapper.builder().build(),
+                        mock(MybatisPlusHrPayrollComponentLifecycleRepository.class));
         var d =
                 new PayrollComponentDefinition(
                         "补贴",

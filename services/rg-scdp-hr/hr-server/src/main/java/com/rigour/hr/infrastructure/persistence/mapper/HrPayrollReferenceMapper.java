@@ -26,6 +26,9 @@ ${ew.customSqlSegment}
 """)
     List<PayrollEmployeeView> employees(@Param(Constants.WRAPPER) Wrapper<?> query);
 
+    @Select("SELECT e.primary_position_name_snapshot FROM hr_employee e ${ew.customSqlSegment}")
+    String employeePositionName(@Param(Constants.WRAPPER) Wrapper<?> query);
+
     @Select(
             """
 SELECT e.payroll_category payrollCategory,e.regularized,e.regularization_date regularizationDate,
@@ -43,6 +46,27 @@ WHERE e.tenant_id=#{tenant} AND e.employee_code=#{employee} AND e.deleted=0
     List<Long> departmentsAt(
             @Param("tenant") String tenant,
             @Param("employee") String employee,
+            @Param("from") LocalDateTime from,
+            @Param("until") LocalDateTime until);
+
+    @Select(
+            """
+<script>
+SELECT e.employee_code employeeCode,
+       COALESCE(i.department_override_id, CASE WHEN COUNT(a.id)=1 THEN MAX(a.department_id) ELSE NULL END) departmentId
+FROM hr_employee e
+LEFT JOIN hr_payroll_input i ON i.tenant_id=e.tenant_id COLLATE utf8mb4_general_ci AND i.employee_code=e.employee_code COLLATE utf8mb4_general_ci AND i.payroll_month=#{month}
+LEFT JOIN hr_employee_assignment a ON a.tenant_id=e.tenant_id COLLATE utf8mb4_general_ci AND a.employee_code=e.employee_code COLLATE utf8mb4_general_ci
+ AND a.effective_from &lt; #{until} AND (a.effective_to IS NULL OR a.effective_to &gt;= #{from})
+WHERE e.tenant_id=#{tenant} AND e.deleted=0 AND e.employee_code IN
+<foreach collection="employees" item="code" open="(" separator="," close=")">#{code}</foreach>
+GROUP BY e.employee_code,i.department_override_id
+</script>
+""")
+    List<com.rigour.hr.application.model.PayrollPreparationDepartment> preparationDepartments(
+            @Param("tenant") String tenant,
+            @Param("employees") List<String> employees,
+            @Param("month") String month,
             @Param("from") LocalDateTime from,
             @Param("until") LocalDateTime until);
 

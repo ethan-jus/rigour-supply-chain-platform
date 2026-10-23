@@ -51,6 +51,13 @@ public class HrPayrollService {
     private final HrPayrollSource source;
 
     private final ConfiguredPayrollService configured;
+    private com.rigour.hr.application.port.out.HrPayrollComponentLifecycleStore ruleReviews;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setRuleReviews(
+            com.rigour.hr.application.port.out.HrPayrollComponentLifecycleStore reviews) {
+        this.ruleReviews = reviews;
+    }
 
     public HrPayrollService(
             HrPayrollStore store, HrPayrollSource source, ConfiguredPayrollService configured) {
@@ -325,6 +332,10 @@ public class HrPayrollService {
                         .equals(
                                 store.employee(t, c.employeeCode(), "hr:payroll-rule:write")
                                         .payrollCategory())) throw bad("城市总员工应在员工档案中设置为销售薪酬类别");
+        if ("CITY_MANAGER".equals(c.kindCode())
+                && !Set.of("城市总", "见习城市总").contains(
+                        Objects.toString(store.employeePositionName(t, c.employeeCode(), "hr:payroll-rule:write"), "").strip()))
+            throw bad("仅城市总和见习城市总可配置管辖城市，请先核对员工档案岗位");
         store.lock(t);
         for (var old : store.rules(t)) {
             var r = old.data();
@@ -559,6 +570,9 @@ public class HrPayrollService {
                 || !fresh.sourceFingerprint().equals(old.calculation().sourceFingerprint()))
             throw new BusinessException(ErrorCode.CONFLICT, "规则、员工或订单回款已变化，请重新核算", List.of());
         var confirmed = store.transition(t, id, command, "CONFIRMED", a.principalId().toString());
+        if (ruleReviews != null)
+            ruleReviews.resolveSubject(
+                    t, "PAYROLL", id, "按最新规则重新核算并确认薪酬", a.principalId().toString());
         log.info(
                 "Payroll confirmed tenant={} actor={} payrollId={} revision={}",
                 t,

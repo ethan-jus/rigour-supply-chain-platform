@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.rigour.settings.api.v1.model.DictCommand;
@@ -16,6 +17,7 @@ import com.rigour.settings.api.v1.model.DictSyncCommand;
 import com.rigour.settings.api.v1.model.DictView;
 import com.rigour.settings.application.port.out.BusinessDictionaryStore;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.TestAuthorizationContext;
 import com.rigour.shared.core.exception.BusinessException;
 import java.util.List;
@@ -24,6 +26,8 @@ import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 
 /** 验证新业务字典只按 dictionaryCode 维护和解析。 */
@@ -116,6 +120,69 @@ class BusinessDictionaryServiceTest {
         when(store.items("EMPLOYEE_STATUS")).thenReturn(List.of(new DictItemView(1L,"EMPLOYEE_STATUS",1,null,"INACTIVE","停用",null,1,1)));
         var result=service.syncItems(new DictSyncCommand("EMPLOYEE_STATUS",List.of(new DictSourceValue("禁用",null))));
         assertThat(result.resolutions().get("禁用").itemCode()).isEqualTo("INACTIVE");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "erp:cost:purchase:read,PRODUCT_UNIT",
+        "erp:cost:loss:read,PRODUCT_UNIT",
+        "erp:cost:rental:read,COST_PREMISES_TYPE",
+        "erp:cost:marketing:read,MARKETING_EXPENSE_TYPE",
+        "order:logistics-cost:read,COST_LOGISTICS_LEG",
+        "order:logistics-cost:read,COST_TRANSPORT_METHOD",
+        "order:logistics-cost:read,WAREHOUSE_TYPE",
+        "hr:expense:read,REIMBURSEMENT_EXPENSE_TYPE",
+        "hr:expense:read,COST_PAYMENT_STATUS",
+        "erp:cost:rental:read,COST_STATUS",
+        "analytics:cost-dashboard:read,MARKETING_EXPENSE_TYPE",
+        "hr:payroll:read,PAYROLL_STATUS",
+        "hr:payroll:read,PAYROLL_RULE_KIND",
+        "hr:payroll:read,COMMISSION_RECIPIENT_ROLE",
+        "hr:payroll-rule:read,PRODUCT_UNIT",
+        "hr:attendance:read,ATTENDANCE_LEAVE_TYPE",
+        "hr:attendance:read,ATTENDANCE_STATUS"
+    })
+    void businessReaderCanLoadOwnOptionsWithoutDictionaryManagement(String permission, String code) {
+        setBusinessReader(permission);
+        when(store.findByCode(code)).thenReturn(Optional.of(new DictView(1L,code,"业务选项","COMMON",null,1)));
+        when(store.items(code)).thenReturn(List.of(new DictItemView(1L,code,1,null,"OPTION","业务选项",null,1,1)));
+
+        assertThat(service.resolve(code).items()).extracting(DictItemView::dictionaryItemName)
+                .containsExactly("业务选项");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "erp:cost:purchase:read,MARKETING_EXPENSE_TYPE",
+        "hr:expense:read,PRODUCT_UNIT",
+        "hr:employee:read,COST_STATUS",
+        "analytics:cost-dashboard:read,PRIVATE_CUSTOM_DICTIONARY",
+        "analytics:cost-dashboard:read,PAYROLL_RULE_KIND",
+        "analytics:cost-dashboard:read,ATTENDANCE_STATUS",
+        "hr:expense:read,ATTENDANCE_LEAVE_TYPE",
+        "hr:attendance:read,PRIVATE_CUSTOM_DICTIONARY",
+        "unrelated:read,COST_STATUS"
+    })
+    void businessReaderCannotEnumerateUnrelatedDictionaries(String permission, String code) {
+        setBusinessReader(permission);
+        assertThatThrownBy(() -> service.resolve(code)).isInstanceOf(AuthorizationDeniedException.class);
+        verifyNoInteractions(store);
+    }
+
+    @Test
+    void businessOptionsAccessDoesNotGrantManagementListItemsOrWrites() {
+        setBusinessReader("analytics:cost-dashboard:read");
+        assertThatThrownBy(() -> service.list(null, null)).isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(() -> service.items(1L)).isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(() -> service.create(new DictCommand("COST_STATUS","费用状态","COMMON",null,0)))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        verifyNoInteractions(store);
+    }
+
+    private static void setBusinessReader(String permission) {
+        UUID actor = UUID.randomUUID();
+        TestAuthorizationContext.set(new CallerIdentity("TENANT",actor,UUID.randomUUID(),actor,null,
+                UUID.randomUUID(),0,0,0,Set.of(),Set.of(permission)));
     }
 
     private static void setService() {

@@ -123,6 +123,7 @@ class HrPayrollCityCommissionTest {
     void sameManagerCanManageDifferentCitiesDuringTheSamePeriodButCannotDuplicateOneCity() {
         authorize("hr:payroll-rule:write");
         when(store.employee(anyString(), eq("M1"), anyString())).thenReturn(manager());
+        when(store.employeePositionName(anyString(), eq("M1"), anyString())).thenReturn("城市总");
         var shijiazhuang = rule("CITY_MANAGER", null, "SHIJIAZHUANG");
         var tangshan = rule("CITY_MANAGER", null, "TANGSHAN");
         when(store.rules(anyString())).thenReturn(List.of(shijiazhuang));
@@ -159,6 +160,30 @@ class HrPayrollCityCommissionTest {
                                         new PayrollCalculateCommand("2026-09", List.of("M1"))))
                 .isInstanceOf(AuthorizationDeniedException.class);
         verifyNoInteractions(store, source);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"城市总", "见习城市总"})
+    void bothManagerPositionsCanMaintainCities(String position) {
+        authorize("hr:payroll-rule:write");
+        when(store.employee(anyString(), eq("M1"), anyString())).thenReturn(manager());
+        when(store.employeePositionName(anyString(), eq("M1"), anyString())).thenReturn(position);
+        var command = rule("CITY_MANAGER", null, "TEST_CITY").data();
+        service.saveRule(null, command);
+        verify(store).saveRule(anyString(), isNull(), eq(command), anyString());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"业务员", "人事", "总部人员", "城市总助理"})
+    void salesPayrollCategoryAloneDoesNotAllowCityManagement(String position) {
+        authorize("hr:payroll-rule:write");
+        when(store.employee(anyString(), eq("M1"), anyString())).thenReturn(manager());
+        when(store.employeePositionName(anyString(), eq("M1"), anyString())).thenReturn(position);
+        assertThatThrownBy(() -> service.saveRule(null, rule("CITY_MANAGER", null, "TEST_CITY").data()))
+                .hasMessageContaining("仅城市总和见习城市总");
+        verify(store, never()).lock(anyString());
+        verify(store, never()).saveRule(anyString(), any(), any(), anyString());
     }
 
     PayrollRuleView configured(

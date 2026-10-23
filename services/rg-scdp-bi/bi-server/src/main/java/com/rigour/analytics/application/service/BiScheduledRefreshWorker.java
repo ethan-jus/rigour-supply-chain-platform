@@ -17,6 +17,7 @@ public class BiScheduledRefreshWorker {
             org.slf4j.LoggerFactory.getLogger(BiScheduledRefreshWorker.class);
     private final BiScheduleCoordinator coordinator;
     private final SupplyDashboardRefreshService refresh;
+    private final CostDashboardRefreshService costs;
     private final ScheduledExecutorService heartbeats =
             Executors.newSingleThreadScheduledExecutor(
                     r -> {
@@ -27,9 +28,12 @@ public class BiScheduledRefreshWorker {
     private final Map<Key, Completion> pending = new ConcurrentHashMap<>();
 
     public BiScheduledRefreshWorker(
-            BiScheduleCoordinator coordinator, SupplyDashboardRefreshService refresh) {
+            BiScheduleCoordinator coordinator,
+            SupplyDashboardRefreshService refresh,
+            CostDashboardRefreshService costs) {
         this.coordinator = coordinator;
         this.refresh = refresh;
+        this.costs = costs;
     }
 
     @Scheduled(
@@ -66,16 +70,36 @@ public class BiScheduledRefreshWorker {
                             TimeUnit.SECONDS);
             Completion done;
             try {
-                var run = refresh.refreshConfiguredTenant(key.tenant().toString());
-                done = new Completion(run.statusCode(), run.failureReason());
-            } catch (RuntimeException e) {
-                done = new Completion("FAILED", "BI刷新失败，请检查刷新记录");
+                done = refreshDashboards(key.tenant());
             } finally {
                 beat.cancel(false);
             }
             pending.put(key, done);
             acknowledge(key, done);
         }
+    }
+
+    private Completion refreshDashboards(UUID tenant) {
+        Completion result;
+        try {
+            var run = refresh.refreshConfiguredTenant(tenant.toString());
+            result = new Completion(run.statusCode(), run.failureReason());
+        } catch (RuntimeException e) {
+            log.warn("BI经营数据刷新失败 tenant={}", tenant, e);
+            result = new Completion("FAILED", "BI经营数据刷新失败，请检查刷新记录");
+        }
+        // 已有同租户刷新占锁时，本次不额外启动费用批次。
+        if ("SKIPPED".equals(result.status())) return result;
+        try {
+            // 复用同一次计划认领和心跳；经营源失败不阻止独立的费用源更新。
+            costs.refreshConfiguredTenant(tenant.toString());
+        } catch (RuntimeException e) {
+            log.warn("BI费用数据刷新失败 tenant={}", tenant, e);
+            return new Completion(
+                    "FAILED".equals(result.status()) ? "FAILED" : "PARTIAL",
+                    "费用数据刷新失败，请检查费用来源；经营数据状态：" + result.status());
+        }
+        return result;
     }
 
     private void acknowledge(Key key, Completion done) {

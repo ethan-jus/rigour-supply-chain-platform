@@ -1,5 +1,6 @@
 package com.rigour.hr.infrastructure.persistence.mapper;
 
+
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.baomidou.mybatisplus.core.toolkit.Constants;
@@ -23,8 +24,12 @@ public interface HrAttendanceEmployeeMapper extends BaseMapper<HrEmployeeEntity>
     @Select(
             "SELECT id,parent_id parentId,department_name departmentName,sort_order sortOrder FROM"
                 + " hr_department WHERE tenant_id=#{tenant} AND deleted=0 ORDER BY sort_order,id")
-    List<com.rigour.hr.api.v1.model.HrAttendanceModels.DepartmentOption> departments(
+    List<com.rigour.hr.api.v1.model.AttendanceDepartmentOption> departments(
             @Param("tenant") String tenant);
+
+    @Select("SELECT id,parent_id parentId,department_name departmentName,sort_order sortOrder FROM hr_department ${ew.customSqlSegment}")
+    List<com.rigour.hr.api.v1.model.AttendanceDepartmentOption> departmentsInScope(
+            @Param(Constants.WRAPPER) Wrapper<?> query);
 
     @Select("SELECT COUNT(*) FROM hr_employee e ${ew.customSqlSegment}")
     long countEmployees(@Param(Constants.WRAPPER) Wrapper<?> query);

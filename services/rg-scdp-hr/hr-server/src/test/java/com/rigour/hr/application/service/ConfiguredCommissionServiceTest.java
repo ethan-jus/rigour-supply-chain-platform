@@ -36,7 +36,7 @@ class ConfiguredCommissionServiceTest {
                 new PayrollEmployeeView(
                         "A", "测试", 1L, "销售", null, LocalDate.of(2026, 9, 1), null, "SALES");
         when(store.departmentAt(anyString(), anyString(), any())).thenReturn(1L);
-        when(store.released("t")).thenReturn(Set.of());
+        when(store.releasedForCalculation("t", "A", "2026-10")).thenReturn(Set.of());
         when(source.productsByVariants(eq("t"), anyList()))
                 .thenReturn(List.of(product(1, 10), product(2, 20), product(3, 21)));
         when(source.productCategories("t"))
@@ -114,6 +114,47 @@ class ConfiguredCommissionServiceTest {
             List<OrderPayrollLineView> lines, List<PayrollRuleView> assignments) {
         return service.calculate(
                 "t", employee, YearMonth.of(2026, 10), scheme, List.of(scheme), lines, assignments);
+    }
+
+    @Test
+    void excludedCategoryAndDescendantsAreConfiguredZeroForBothRecipients() throws Exception {
+        var json = tools.jackson.databind.json.JsonMapper.builder().build();
+        var definition =
+                (tools.jackson.databind.node.ObjectNode) json.valueToTree(scheme.definition());
+        ((tools.jackson.databind.node.ObjectNode) definition.get("commission"))
+                .set(
+                        "rules",
+                        json.valueToTree(
+                                scheme.definition().commission().rules().stream()
+                                        .filter(rule -> !rule.code().startsWith("CLOTH_"))
+                                        .toList()));
+        scheme =
+                PayrollSchemeTestFixture.version(
+                        json.treeToValue(definition, PayrollSchemeDefinition.class));
+        when(source.productCategories("t"))
+                .thenReturn(
+                        List.of(
+                                new ErpPayrollCategoryView(20L, null, "周边", 0),
+                                new ErpPayrollCategoryView(21L, 20L, "台呢", 0),
+                                new ErpPayrollCategoryView(22L, 21L, "台呢子分类", 0)));
+        for (long category : List.of(21L, 22L)) {
+            when(source.productsByVariants(eq("t"), anyList()))
+                    .thenReturn(List.of(product(4, category)));
+            var result =
+                    calculate(
+                            List.of(line("excluded", 4, "C", true)),
+                            List.of(assignment("C", "A", LocalDate.of(2026, 9, 1), LocalDate.MAX)));
+            assertThat(result.issues()).isEmpty();
+            assertThat(result.released()).isZero();
+            assertThat(result.held()).isZero();
+        }
+    }
+
+    @Test
+    void productOutsideConfiguredScopeStillRequiresAStandard() {
+        when(source.productsByVariants(eq("t"), anyList())).thenReturn(List.of(product(4, 30)));
+        var result = calculate(List.of(line("unknown", 4, "C", true)), List.of());
+        assertThat(result.issues()).anyMatch(issue -> issue.contains("提成标准未配置"));
     }
 
     @Test
@@ -330,7 +371,7 @@ class ConfiguredCommissionServiceTest {
                 calculate(List.of(line("1", 1, "C1", true), line("2", 2, "C2", true)), assignments);
         assertThat(result.released()).isEqualByComparingTo("170");
         assertThat(result.details()).hasSize(4);
-        when(store.released("t"))
+        when(store.releasedForCalculation("t", "A", "2026-10"))
                 .thenReturn(Set.of("1|SALES", "1|CITY_MANAGER", "2|SALES", "2|CITY_MANAGER"));
         assertThat(
                         calculate(

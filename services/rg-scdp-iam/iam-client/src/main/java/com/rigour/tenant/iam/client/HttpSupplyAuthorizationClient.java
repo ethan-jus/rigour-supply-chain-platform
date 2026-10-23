@@ -37,6 +37,23 @@ public final class HttpSupplyAuthorizationClient implements SupplyAuthorizationC
         return read(caller, action, "authorization");
     }
 
+    @Override
+    public boolean supportsBatchAuthorization() { return true; }
+
+    @Override
+    public List<SupplyAuthorizationView> authorizations(CallerIdentity caller, List<String> actions) {
+        if (caller == null || !"TENANT".equals(caller.principalScope()))
+            throw new AuthorizationDeniedException("supply-original-user");
+        var requested = SupplyAuthorizationBatches.actions(actions);
+        URI uri = UriComponentsBuilder.fromUri(base)
+                .path("/internal/v1/iam/supply/authorizations")
+                .queryParam("actions", requested.toArray()).build().encode().toUri();
+        var h = headers(caller, "GET", uri);
+        var response = client.get().uri(uri).headers(headers -> h.forEach(headers::set)).retrieve()
+                .body(new org.springframework.core.ParameterizedTypeReference<List<SupplyAuthorizationView>>() {});
+        return List.copyOf(SupplyAuthorizationBatches.verify(caller, requested, response).values());
+    }
+
     private SupplyAuthorizationView read(CallerIdentity caller, String action, String endpoint) {
         if (caller == null || !"TENANT".equals(caller.principalScope()))
             throw new AuthorizationDeniedException("supply-original-user");

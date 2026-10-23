@@ -4,4 +4,14 @@ public record PayrollComponentSaveCommand(
         String requestId,
         String previousId,
         PayrollComponentDefinition definition,
-        String reason) {}
+        String reason,
+        boolean replacePending,
+        Integer revision) {
+    public PayrollComponentSaveCommand(
+            String requestId,
+            String previousId,
+            PayrollComponentDefinition definition,
+            String reason) {
+        this(requestId, previousId, definition, reason, false, null);
+    }
+}

@@ -3,7 +3,9 @@ package com.rigour.tenant.iam.client;
 import com.rigour.shared.context.*;
 import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView;
 
+import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.*;
 
 /** 单请求授权状态；每个动作保留完整角色条件，应用版本变化时要求重试。 */
 public final class SupplyAuthorizationContext implements AutoCloseable {
@@ -44,17 +46,97 @@ public final class SupplyAuthorizationContext implements AutoCloseable {
                                 () ->
                                         new AuthorizationDeniedException(
                                                 "supply-authorization-context"));
-        return state.actions.computeIfAbsent(
-                action,
-                key -> {
-                    SupplyAuthorizationView result = state.client.authorization(state.caller, key);
-                    if (!"ACTIVE".equals(result.mode())
-                            || result.applicationVersion() != state.initial.applicationVersion()
-                            || result.memberVersion() != state.initial.memberVersion())
-                        throw new IllegalStateException("授权配置已变化，请重试");
-                    if (!result.functionAllowed()) throw new AuthorizationDeniedException(action);
-                    return result;
-                });
+        var result = state.actions.computeIfAbsent(action, state::readAction);
+        if (!result.functionAllowed()) throw new AuthorizationDeniedException(action);
+        return result;
+    }
+
+    private SupplyAuthorizationView readAction(String action) {
+        var result = client.authorization(caller, action);
+        if (result == null
+                || !Objects.equals(caller.tenantId(), result.tenantId())
+                || !Objects.equals(caller.userId(), result.userId())
+                || !Objects.equals(action, result.action())
+                || !"ACTIVE".equals(result.mode())
+                || !SupplyAuthorizationBatches.sameVersions(initial, result)
+                || !Objects.equals(initial.employeeCode(), result.employeeCode())
+                || !initial.permissions().equals(result.permissions()))
+            throw new AuthorizationStateChangedException();
+        return result;
+    }
+
+    /** 并发获取本请求所需的独立策略；全部成功校验后才写入请求缓存，不跨请求复用。 */
+    public void prefetchActions(
+            Collection<String> requested, ExecutorService executor, Duration timeout) {
+        if (CURRENT.get() != this) throw new IllegalStateException("授权上下文不属于当前请求");
+        if (timeout.isZero() || timeout.isNegative())
+            throw new IllegalArgumentException("授权超时必须大于零");
+        if (client.supportsBatchAuthorization()) {
+            prefetchBatch(requested, executor, timeout);
+            return;
+        }
+        Map<String, Future<SupplyAuthorizationView>> pending = new LinkedHashMap<>();
+        long deadline = System.nanoTime() + timeout.toNanos();
+        try {
+            for (String action : new LinkedHashSet<>(requested)) {
+                if (action == null || action.isBlank())
+                    throw new IllegalArgumentException("授权动作不能为空");
+                if (!actions.containsKey(action))
+                    pending.put(action, executor.submit(() -> readAction(action)));
+            }
+            Map<String, SupplyAuthorizationView> verified = new HashMap<>();
+            for (var entry : pending.entrySet()) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) throw new TimeoutException();
+                verified.put(entry.getKey(), entry.getValue().get(remaining, TimeUnit.NANOSECONDS));
+            }
+            actions.putAll(verified);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("授权查询已中断，请重试", ex);
+        } catch (ExecutionException ex) {
+            if (ex.getCause() instanceof RuntimeException cause) throw cause;
+            throw new IllegalStateException("授权查询失败，请重试", ex.getCause());
+        } catch (TimeoutException | RejectedExecutionException ex) {
+            throw new IllegalStateException("授权查询繁忙，请稍后重试", ex);
+        } finally {
+            pending.values().forEach(future -> future.cancel(true));
+        }
+    }
+
+    private void prefetchBatch(
+            Collection<String> requested, ExecutorService executor, Duration timeout) {
+        var missing = new LinkedHashSet<>(SupplyAuthorizationBatches.actions(requested));
+        missing.removeAll(actions.keySet());
+        if (missing.isEmpty()) return;
+        Future<List<SupplyAuthorizationView>> pending = null;
+        long deadline = System.nanoTime() + timeout.toNanos();
+        try {
+            var batch = List.copyOf(missing);
+            pending = executor.submit(() -> client.authorizations(caller, batch));
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) throw new TimeoutException();
+            var verified =
+                    SupplyAuthorizationBatches.verify(
+                            caller, missing, pending.get(remaining, TimeUnit.NANOSECONDS));
+            for (var result : verified.values())
+                if (!SupplyAuthorizationBatches.sameVersions(initial, result)
+                        || !Objects.equals(initial.employeeCode(), result.employeeCode())
+                        || !initial.permissions().equals(result.permissions()))
+                    throw new AuthorizationStateChangedException();
+            actions.putAll(verified);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("授权查询已中断，请重试", ex);
+        } catch (ExecutionException ex) {
+            if (ex.getCause() instanceof RuntimeException cause) throw cause;
+            throw new IllegalStateException("授权查询失败，请重试", ex.getCause());
+        } catch (TimeoutException | RejectedExecutionException ex) {
+            throw new IllegalStateException("授权查询繁忙，请稍后重试", ex);
+        } finally {
+            if (pending != null) pending.cancel(true);
+            if (executor instanceof ThreadPoolExecutor pool) pool.purge();
+        }
     }
 
     public boolean active() {

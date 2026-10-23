@@ -69,6 +69,7 @@ final class PayrollSchemeValidator {
         if ("SALES".equals(d.role()) && "MANAGER".equals(d.performanceMode())
                 || !"SALES".equals(d.role()) && "SALES".equals(d.performanceMode()))
             errors.add("人员身份与绩效模板不匹配");
+        personal(d.personalPolicy(), d.baseSalary(), errors);
         calendar(d.calendar(), errors);
         if (d.calendar() != null
                 && "SALES".equals(d.performanceMode())
@@ -157,6 +158,7 @@ final class PayrollSchemeValidator {
                         "");
         var result = check(definition);
         var errors = new ArrayList<>(result.errors());
+        if (salary != null) personal(salary.personalPolicy(), salary.baseSalary(), errors);
         if (performance != null && "SALES".equals(performance.mode())) {
             var grades = performance.grades();
             if (grades == null
@@ -182,11 +184,33 @@ final class PayrollSchemeValidator {
         return new PayrollSchemeCheckView(List.copyOf(errors), result.warnings());
     }
 
+    private static void personal(
+            PayrollPersonalPolicy personal, PayrollSchemeBaseSalary base, List<String> errors) {
+        if (personal == null) return;
+        if (personal.exemptDays().size() > 366
+                || personal.exemptDays().stream().anyMatch(Objects::isNull))
+            errors.add("个人免考核日期最多366天，且不能包含空日期");
+        if (personal.probationUntil() != null
+                && (personal.probationBasePercent() == null
+                        || personal.probationBasePercent().signum() < 0
+                        || personal.probationBasePercent().compareTo(new BigDecimal("100")) > 0))
+            errors.add("请配置试用期底薪比例，范围为0至100%");
+        if (personal.salaryChangeDate() != null) {
+            nonnegative(personal.baseAfterChange(), "调整后底薪", errors);
+            nonnegative(personal.performanceAfterChange(), "调整后绩效基数", errors);
+            if (base != null && "TIERS".equals(base.mode()))
+                errors.add("档位薪资请通过版本调整，月内金额切换仅适用固定薪资");
+        }
+    }
+
     private static void sales(PayrollSalesPolicy p, List<String> errors) {
         if (p == null) {
             errors.add("请配置销售绩效");
             return;
         }
+        if (p.processProtectionDays() != null
+                && (p.processProtectionDays() < 0 || p.processProtectionDays() > 366))
+            errors.add("销售打卡拜访保护期应为0至366个自然日");
         range(p.processPercent(), BigDecimal.ZERO, new BigDecimal("100"), "过程权重", errors);
         if (p.dailyCheckins() < 0
                 || p.dailyCheckins() > 1000
@@ -221,7 +245,8 @@ final class PayrollSchemeValidator {
             errors.add("请配置城市总绩效");
             return;
         }
-        positive(p.cap(), "综合封顶系数", errors);
+        choice(p.calculationMode(), Set.of("ACTUAL_COMPLETION", "TIERED"), "城市总绩效计算口径", errors);
+        if ("TIERED".equals(p.calculationMode())) positive(p.cap(), "综合封顶系数", errors);
         var protection = p.protection();
         if (protection == null) errors.add("请明确城市总保护期");
         else {
@@ -235,10 +260,23 @@ final class PayrollSchemeValidator {
         unique(p.metrics().stream().map(PayrollMetricDefinition::code).toList(), "指标编码", errors);
         BigDecimal weight = BigDecimal.ZERO;
         for (var metric : p.metrics()) {
+            if (metric.cityMetric() != null
+                    && !metric.cityMetric().isBlank()
+                    && !ManagerCityTargetResolver.METRICS.containsKey(metric.cityMetric()))
+                errors.add("关联的城市指标无效");
             if (metric.name() == null || metric.name().isBlank()) errors.add("请填写指标名称");
+            // Missing mode keeps historical rules on actual completion, even if old bands exist.
+            if (metric.scoringMode() != null)
+                choice(metric.scoringMode(), Set.of("ACTUAL", "TIERED"), "单项指标计分方式", errors);
+            if ("TIERED".equals(metric.scoringMode()))
+                steps(metric.steps(), metric.name() + "计分区间", errors);
             choice(
                     metric.source(),
-                    Set.of("MANUAL_CONFIRMED", "FULLY_PAID_RECEIPTS", "ORDER_SALES"),
+                    Set.of(
+                            "MANUAL_CONFIRMED",
+                            "FULLY_PAID_RECEIPTS",
+                            "ORDER_SALES",
+                            "CITY_RECEIPTS"),
                     "指标数据源",
                     errors);
             // Null means the monthly target is owned by Target Settings; historical snapshots
@@ -249,7 +287,7 @@ final class PayrollSchemeValidator {
             nonnegative(metric.weight(), "指标权重", errors);
             if (metric.weight() != null) weight = weight.add(metric.weight());
         }
-        steps(p.steps(), "综合完成率系数", errors);
+        if ("TIERED".equals(p.calculationMode())) steps(p.steps(), "综合完成率系数", errors);
         if (weight.compareTo(new BigDecimal("100")) != 0) errors.add("指标权重合计必须为100%");
     }
 
@@ -287,6 +325,9 @@ final class PayrollSchemeValidator {
         }
         if (c.weekdays().stream().anyMatch(d -> d == null || d < 1 || d > 7))
             errors.add("星期应在1至7之间");
+        if (c.source() != null
+                && !Set.of("MANUAL", "STATUTORY", "STATUTORY_SNAPSHOT").contains(c.source()))
+            errors.add("工作日历来源无效");
         if (!empty(c.alternateWeekdays())
                 && (c.alternateAnchor() == null
                         || c.alternateWeekdays().stream()

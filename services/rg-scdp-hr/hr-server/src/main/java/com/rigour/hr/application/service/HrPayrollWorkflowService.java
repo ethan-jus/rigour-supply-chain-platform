@@ -51,6 +51,13 @@ public class HrPayrollWorkflowService {
 
     private HrPayrollComponentService components;
     private PayrollRuleResolver ruleResolver;
+    private com.rigour.hr.application.port.out.HrPayrollComponentLifecycleStore ruleReviews;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setRuleReviews(
+            com.rigour.hr.application.port.out.HrPayrollComponentLifecycleStore reviews) {
+        this.ruleReviews = reviews;
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     void setRuleResolver(PayrollRuleResolver rules) {
@@ -73,22 +80,42 @@ public class HrPayrollWorkflowService {
                                         PayrollDetailView::employeeCode, Function.identity()));
         var rows = new ArrayList<PayrollPreparationEmployeeView>();
         var employees = store.employees(tenant, "hr:payroll:read");
-        var salaryRoles =
+        var eligibleEmployees =
+                employees.stream()
+                        .filter(
+                                e ->
+                                        e.entryDate() == null
+                                                || !e.entryDate().isAfter(m.atEndOfMonth()))
+                        .toList();
+        var departments =
                 ruleResolver == null
-                        ? Map.<String, String>of()
-                        : ruleResolver.salaryRoles(
+                        ? Map.<String, Long>of()
+                        : store.preparationDepartments(
                                 tenant,
-                                employees.stream().map(PayrollEmployeeView::employeeCode).toList(),
-                                m.atDay(1));
+                                eligibleEmployees.stream()
+                                        .map(PayrollEmployeeView::employeeCode)
+                                        .toList(),
+                                value);
+        var matches =
+                ruleResolver == null
+                        ? Map.<String, PayrollRuleMatch>of()
+                        : ruleResolver.prepare(
+                                tenant,
+                                eligibleEmployees,
+                                m,
+                                e -> departments.get(e.employeeCode()));
         for (var e : employees) {
             if (e.entryDate() != null && e.entryDate().isAfter(m.atEndOfMonth())) continue;
-            boolean outsideEmployment = e.leaveDate() != null && e.leaveDate().isBefore(m.atDay(1));
             // 离职人员仍可结算后续付清的订单；生成时只计算提成及更正，不再发固定工资。
             var issues = new ArrayList<String>();
-            if (outsideEmployment) issues.add("离职后结算：仅提成及历史更正");
-            var ruleIssues = List.<String>of();
+            if (e.entryDate() == null) issues.add("入职日期未维护");
+            var match = matches.get(e.employeeCode());
+            var ruleIssues = match == null ? List.<String>of() : match.issues();
+            var snapshot = match == null ? null : match.snapshot();
+            String salaryRole =
+                    snapshot == null ? e.payrollCategory() : snapshot.definition().role();
+            if (salaryRole == null) issues.add("薪资类别未维护，请在员工档案中设置");
             var p = existing.get(e.employeeCode());
-            String salaryRole = salaryRoles.getOrDefault(e.employeeCode(), e.payrollCategory());
             rows.add(
                     new PayrollPreparationEmployeeView(
                             e.employeeCode(),
@@ -106,9 +133,9 @@ public class HrPayrollWorkflowService {
                             null,
                             null,
                             null,
+                            e.entryDate() != null && salaryRole != null && ruleIssues.isEmpty(),
                             true,
-                            true,
-                            null,
+                            snapshot == null ? null : snapshot.definition().name(),
                             salaryRole,
                             e.entryDate(),
                             e.leaveDate()));
@@ -129,28 +156,25 @@ public class HrPayrollWorkflowService {
         var result = new ArrayList<PayrollPreviewView>();
         for (var code : new LinkedHashSet<>(c.employeeCodes())) {
             var e = store.employee(tenant, code, "hr:payroll:calculate");
-            if (store.byMonth(tenant, code, c.month())
-                    .map(p -> Set.of("CONFIRMED", "PAID").contains(p.statusCode()))
-                    .orElse(false))
-                result.add(
-                        new PayrollPreviewView(code, e.employeeName(), List.of("已确认或已发放，跳过检查与重算")));
-            else {
-                var calculated = payroll.calculation(tenant, e, m);
-                var previous =
-                        store.byMonth(tenant, code, c.month())
-                                .map(p -> p.calculation().sourceFingerprint())
-                                .orElse(null);
-                result.add(
-                        new PayrollPreviewView(
-                                code,
-                                e.employeeName(),
-                                calculated.issues(),
-                                previous != null
-                                        && !Objects.equals(
-                                                previous, calculated.sourceFingerprint()),
-                                previous,
-                                calculated.sourceFingerprint()));
-            }
+            // Read-only comparison also supports confirmed/paid snapshots. No transitions or
+            // writes.
+            var saved = store.byMonth(tenant, code, c.month()).orElse(null);
+            var calculated = payroll.calculation(tenant, e, m);
+            var previous = saved == null ? null : saved.calculation();
+            result.add(
+                    new PayrollPreviewView(
+                            code,
+                            e.employeeName(),
+                            calculated.issues(),
+                            previous != null
+                                    && !Objects.equals(
+                                            previous.sourceFingerprint(),
+                                            calculated.sourceFingerprint()),
+                            previous == null ? null : previous.sourceFingerprint(),
+                            calculated.sourceFingerprint(),
+                            saved == null ? null : saved.statusCode(),
+                            calculated,
+                            previous));
         }
         return List.copyOf(result);
     }
@@ -182,7 +206,7 @@ public class HrPayrollWorkflowService {
                 throw bad("转正日期不能晚于今天");
             for (String salary : new String[] {p.probationSalary(), p.regularSalary()}) {
                 if (salary != null && !salary.matches("[0-9]{1,14}([.][0-9]{1,2})?"))
-                    throw bad("销售工资须为非负金额，最多两位小数");
+                    throw bad("底薪金额须为非负金额，最多两位小数");
             }
             if (p.payrollCategory() == null
                     && p.regularized() == null
@@ -217,6 +241,7 @@ public class HrPayrollWorkflowService {
         return result;
     }
 
+    @Transactional
     public PayrollDetailView pay(String id, PayrollPaymentCommand c) {
         var a = actor("hr:payroll:paid");
         if (c == null) throw bad("缺少发放信息");
@@ -227,6 +252,14 @@ public class HrPayrollWorkflowService {
         required(c.reason(), 500, "发放说明");
         if (c.paidDate() == null || c.paidDate().isAfter(LocalDate.now(ZoneId.of("Asia/Shanghai"))))
             throw bad("请填写不晚于今天的实际发放日期");
+        String tenant = a.tenantId().toString();
+        store.lock(tenant);
+        var current = store.detail(tenant, id, "hr:payroll:paid");
+        if ("CONFIRMED".equals(current.statusCode())
+                && ruleReviews != null
+                && ruleReviews.reviews(tenant, "PAYROLL", current.month()).stream()
+                        .anyMatch(review -> review.subjectId().equals(id)))
+            throw bad("该薪酬存在规则变更待复核任务，请先重新核算确认或登记复核说明后再发放");
         var result = store.pay(a.tenantId().toString(), id, c, a.principalId().toString());
         log.info(
                 "Payroll payment registered tenant={} actor={} payrollId={}",

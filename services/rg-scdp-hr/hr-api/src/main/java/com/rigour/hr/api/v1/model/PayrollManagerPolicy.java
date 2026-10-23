@@ -7,4 +7,18 @@ public record PayrollManagerPolicy(
         List<PayrollMetricDefinition> metrics,
         PayrollProtectionPolicy protection,
         BigDecimal cap,
-        List<PayrollMetricStep> steps) {}
+        List<PayrollMetricStep> steps,
+        String calculationMode) {
+    public PayrollManagerPolicy {
+        // Published historical rules keep their original calculation semantics.
+        calculationMode = calculationMode == null ? "TIERED" : calculationMode;
+    }
+
+    public PayrollManagerPolicy(
+            List<PayrollMetricDefinition> metrics,
+            PayrollProtectionPolicy protection,
+            BigDecimal cap,
+            List<PayrollMetricStep> steps) {
+        this(metrics, protection, cap, steps, "TIERED");
+    }
+}

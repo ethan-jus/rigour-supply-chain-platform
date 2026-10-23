@@ -1,6 +1,15 @@
 package com.rigour.hr.application.service;
 
-import com.rigour.hr.api.v1.model.HrAttendanceModels.*;
+import com.rigour.hr.api.v1.model.AttendanceDepartmentOption;
+import com.rigour.hr.api.v1.model.AttendanceExceptionPeriod;
+import com.rigour.hr.api.v1.model.AttendanceRecordCommand;
+import com.rigour.hr.api.v1.model.AttendanceReopenCommand;
+import com.rigour.hr.api.v1.model.AttendanceRow;
+import com.rigour.hr.api.v1.model.AttendanceRuleCommand;
+import com.rigour.hr.api.v1.model.AttendanceRuleListRow;
+import com.rigour.hr.api.v1.model.AttendanceRuleListView;
+import com.rigour.hr.api.v1.model.AttendanceRuleView;
+import com.rigour.hr.api.v1.model.AttendanceView;
 import com.rigour.hr.api.v1.model.HrPageView;
 import com.rigour.hr.application.port.out.HrAttendanceSource;
 import com.rigour.hr.application.port.out.HrAttendanceStore;
@@ -29,6 +38,13 @@ public class HrAttendanceService {
     private final Clock clock;
 
     private final PayrollAttendanceEvidenceService payrollAttendance;
+    private com.rigour.hr.application.port.out.HrPayrollComponentLifecycleStore ruleReviews;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setRuleReviews(
+            com.rigour.hr.application.port.out.HrPayrollComponentLifecycleStore reviews) {
+        this.ruleReviews = reviews;
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     public HrAttendanceService(
@@ -49,15 +65,20 @@ public class HrAttendanceService {
         this.payrollAttendance = null;
     }
 
-    public Rule rule(String month, Long departmentId) {
+    public AttendanceRuleView rule(String month, Long departmentId) {
         var actor = actor(RULE_READ);
         month(month);
         String tenant = actor.tenantId().toString();
+        store.requireRuleScope(tenant, departmentId, RULE_READ);
         validateDepartment(tenant, departmentId);
-        return store.rule(tenant, month, departmentId);
+        var rule = store.rule(tenant, month, departmentId);
+        return new AttendanceRuleView(rule.month(), rule.departmentId(), rule.expectedDays(),
+                rule.revision(), rule.companyExpectedDays(), rule.locked(),
+                store.ruleWritable(tenant, departmentId));
     }
 
-    public RuleListView rules(String value, Long departmentId, String status, int begin, int step) {
+    public AttendanceRuleListView rules(
+            String value, Long departmentId, String status, int begin, int step) {
         var actor = actor(RULE_READ);
         month(value);
         if (departmentId != null && departmentId < 0) throw bad("部门无效");
@@ -65,12 +86,14 @@ public class HrAttendanceService {
         if (!Set.of("", "LOCKED", "UNLOCKED").contains(selectedStatus)) throw bad("规则状态无效");
         if (begin < 0 || step < 1 || step > 100) throw bad("分页范围无效");
         String tenant = actor.tenantId().toString();
+        if (departmentId != null && departmentId > 0)
+            store.requireRuleScope(tenant, departmentId, RULE_READ);
         var overview = store.ruleOverview(tenant, value);
         var departments =
                 store.departments(tenant).stream()
                         .sorted(
-                                Comparator.comparingInt(DepartmentOption::sortOrder)
-                                        .thenComparing(DepartmentOption::id))
+                                Comparator.comparingInt(AttendanceDepartmentOption::sortOrder)
+                                        .thenComparing(AttendanceDepartmentOption::id))
                         .toList();
         var names = new HashMap<Long, String>();
         departments.forEach(d -> names.put(d.id(), d.departmentName()));
@@ -110,7 +133,7 @@ public class HrAttendanceService {
                                                         == selectedStatus.equals("LOCKED"))
                         .map(
                                 r ->
-                                        new RuleListRow(
+                                        new AttendanceRuleListRow(
                                                 value,
                                                 r.departmentId() == 0 ? null : r.departmentId(),
                                                 r.departmentId() == 0
@@ -122,9 +145,10 @@ public class HrAttendanceService {
                                                 r.revision(),
                                                 overview.lockedDepartmentIds()
                                                         .contains(r.departmentId()),
-                                                r.updatedTime()))
+                                                r.updatedTime(),
+                                                store.ruleWritable(tenant, r.departmentId() == 0 ? null : r.departmentId())))
                         .toList();
-        return new RuleListView(
+        return new AttendanceRuleListView(
                 value,
                 companyDays,
                 records.stream().map(HrAttendanceStore.RuleRecord::departmentId).toList(),
@@ -134,7 +158,7 @@ public class HrAttendanceService {
     }
 
     private static void appendDepartmentOrder(
-            Long id, List<DepartmentOption> departments, Map<Long, Integer> order) {
+            Long id, List<AttendanceDepartmentOption> departments, Map<Long, Integer> order) {
         if (order.containsKey(id)) return;
         order.put(id, order.size());
         departments.stream()
@@ -142,11 +166,12 @@ public class HrAttendanceService {
                 .forEach(d -> appendDepartmentOrder(d.id(), departments, order));
     }
 
-    public Rule saveRule(RuleCommand command) {
+    public AttendanceRuleView saveRule(AttendanceRuleCommand command) {
         var actor = actor(RULE_WRITE);
         if (command == null) throw bad("请填写考勤规则");
         var month = month(command.month());
         revision(command.revision());
+        store.requireRuleScope(actor.tenantId().toString(), command.departmentId(), RULE_WRITE);
         validateDepartment(actor.tenantId().toString(), command.departmentId());
         if ((command.expectedDays() == null && command.departmentId() == null)
                 || (command.expectedDays() != null
@@ -156,12 +181,17 @@ public class HrAttendanceService {
         return store.saveRule(actor.tenantId().toString(), command, actor.principalId().toString());
     }
 
-    public List<DepartmentOption> departments() {
-        var actor = actor(AuthorizationContext.hasPermission(READ) ? READ : RULE_READ);
-        return store.departments(actor.tenantId().toString());
+    public List<AttendanceDepartmentOption> departments() {
+        return departments(false);
     }
 
-    public View list(
+    public List<AttendanceDepartmentOption> departments(boolean forRules) {
+        String action = forRules || !AuthorizationContext.hasPermission(READ) ? RULE_READ : READ;
+        var actor = actor(action);
+        return store.departments(actor.tenantId().toString(), action);
+    }
+
+    public AttendanceView list(
             String value,
             String employeeName,
             String employeeCode,
@@ -187,20 +217,39 @@ public class HrAttendanceService {
         return attendanceView(tenant, value, month, page);
     }
 
-    private View attendanceView(
+    private AttendanceView attendanceView(
             String tenant,
             String value,
             YearMonth month,
             HrPageView<HrAttendanceStore.Employee> page) {
         var rule = store.rule(tenant, value, null);
-        var departmentRules = store.departmentRules(tenant, value);
+        var departmentRules = new java.util.HashMap<>(store.departmentRules(tenant, value));
+        var unavailableCalendars = new java.util.HashSet<Long>();
+        if (payrollAttendance != null) {
+            for (var department :
+                    page.items().stream()
+                            .filter(e -> e.confirmation() == null)
+                            .map(HrAttendanceStore.Employee::departmentId)
+                            .filter(Objects::nonNull)
+                            .distinct()
+                            .toList()) {
+                try {
+                    payrollAttendance
+                            .expectedDays(tenant, department, month)
+                            .ifPresent(days -> departmentRules.put(department, days));
+                } catch (BusinessException unavailable) {
+                    unavailableCalendars.add(department);
+                }
+            }
+        }
         var pending = page.items().stream().filter(e -> e.confirmation() == null).toList();
         LocalDate today = LocalDate.now(clock.withZone(ZoneId.of("Asia/Shanghai")));
         LocalDate through = today.isBefore(month.atEndOfMonth()) ? today : month.atEndOfMonth();
         boolean future = through.isBefore(month.atDay(1));
         boolean provisional = !month.atEndOfMonth().isBefore(today);
         Map<String, Evidence> evidence = Map.of();
-        String sourceError = null;
+        String sourceError =
+                unavailableCalendars.isEmpty() ? null : month.getYear() + "年法定日历尚不可用，相关部门暂不计算应出勤天数";
         if (!future && !pending.isEmpty()) {
             try {
                 evidence =
@@ -219,12 +268,16 @@ public class HrAttendanceService {
                                                 Evidence::employeeCode, Function.identity()));
             } catch (RuntimeException unavailable) {
                 // 数据源不可用时仍可查看和维护 HR 考勤；不能将取数失败折成零出勤。
-                sourceError = "销售打卡暂不可用，请稍后刷新";
+                sourceError = (sourceError == null ? "" : sourceError + "；") + "销售打卡暂不可用，请稍后刷新";
             }
         }
         if (!future && payrollAttendance != null)
             evidence = payrollAttendance.apply(tenant, month, through, pending, evidence);
         var facts = evidence;
+        var stoppedDepartments =
+                payrollAttendance == null
+                        ? Set.<Long>of()
+                        : payrollAttendance.stoppedDepartments(tenant, month);
         var rows =
                 page.items().stream()
                         .map(
@@ -283,12 +336,19 @@ public class HrAttendanceService {
                                             employee.departmentId() == null
                                                     ? null
                                                     : departmentRules.get(employee.departmentId());
-                                    Integer expected =
-                                            ownDays == null ? rule.expectedDays() : ownDays;
-                                    String ruleSource =
-                                            expected == null
-                                                    ? "UNSET"
-                                                    : ownDays == null ? "COMPANY" : "DEPARTMENT";
+                                    boolean stopped =
+                                            employee.departmentId() != null
+                                                    && stoppedDepartments.contains(
+                                                            employee.departmentId());
+                                    var effectiveRule =
+                                            HrAttendanceStore.EffectiveRule.resolve(
+                                                    rule.expectedDays(),
+                                                    ownDays,
+                                                    stopped,
+                                                    unavailableCalendars.contains(
+                                                            employee.departmentId()));
+                                    Integer expected = effectiveRule.expectedDays();
+                                    String ruleSource = effectiveRule.source();
                                     BigDecimal absent =
                                             record.absentDaysOverride() != null
                                                     ? record.absentDaysOverride()
@@ -299,7 +359,7 @@ public class HrAttendanceService {
                                                             : BigDecimal.valueOf(expected)
                                                                     .subtract(actual)
                                                                     .max(BigDecimal.ZERO);
-                                    return new Row(
+                                    return new AttendanceRow(
                                             employee.code(),
                                             employee.name(),
                                             employee.departmentName(),
@@ -315,10 +375,11 @@ public class HrAttendanceService {
                                             status,
                                             dates,
                                             record.reason(),
-                                            record.revision());
+                                            record.revision(),
+                                            record.exceptions());
                                 })
                         .toList();
-        return new View(
+        return new AttendanceView(
                 value,
                 future ? null : through,
                 provisional,
@@ -327,7 +388,8 @@ public class HrAttendanceService {
                 new HrPageView<>(page.total(), page.begin(), page.step(), rows));
     }
 
-    public void confirmRecord(String month, String employee, RecordCommand command) {
+    @org.springframework.transaction.annotation.Transactional
+    public void confirmRecord(String month, String employee, AttendanceRecordCommand command) {
         var actor = actor(WRITE);
         var period = month(month);
         if (employee == null || employee.isBlank() || employee.length() > 50 || command == null)
@@ -339,21 +401,28 @@ public class HrAttendanceService {
         if (reason.length() > 500) throw bad("缺卡原因最多500字");
         String type = command.leaveTypeCode();
         if (type == null || type.isBlank() || type.length() > 64) throw bad("请选择请假类型");
+        validateExceptions(command, period);
         String tenant = actor.tenantId().toString();
+        if (ruleReviews != null) ruleReviews.lock(tenant);
         var employeeData = store.employee(tenant, period, employee);
+        if (payrollAttendance != null
+                && payrollAttendance.stopped(tenant, employeeData.departmentId(), period))
+            throw bad("本月考勤规则已停用，请重新启用或配置替代规则后再确认");
         if (employeeData.confirmation() != null)
             throw new BusinessException(ErrorCode.CONFLICT, "考勤已确认，不能重复确认或修改，请刷新列表", List.of());
         if (!Objects.equals(employeeData.record().revision(), command.revision()))
             throw new BusinessException(ErrorCode.CONFLICT, "考勤资料已变更，请刷新后重试", List.of());
         if (!source.leaveTypes(actor.tenantId().toString()).contains(type))
             throw bad("请假类型已停用或不存在，请刷新后选择");
+        if (!"NONE".equals(type) && reason.isBlank()) throw bad("请假类型不为“无”时，请填写缺卡原因");
         var normalized =
-                new RecordCommand(
+                new AttendanceRecordCommand(
                         command.actualDaysOverride(),
                         command.absentDaysOverride(),
                         type,
                         reason,
-                        command.revision());
+                        command.revision(),
+                        command.exceptions());
         var adjusted =
                 new HrAttendanceStore.Employee(
                         employeeData.code(),
@@ -373,7 +442,7 @@ public class HrAttendanceService {
         if (row.actualDays() == null || row.absentDays() == null)
             throw bad("请填写实际出勤和缺勤天数，或在系统统计完整后再确认");
         var snapshot =
-                new Row(
+                new AttendanceRow(
                         row.employeeCode(),
                         row.employeeName(),
                         row.departmentName(),
@@ -389,7 +458,8 @@ public class HrAttendanceService {
                         row.sourceStatus(),
                         row.dates(),
                         row.reason(),
-                        command.revision() + 1);
+                        command.revision() + 1,
+                        command.exceptions());
         store.confirmRecord(
                 tenant,
                 month,
@@ -398,6 +468,91 @@ public class HrAttendanceService {
                 snapshot,
                 employeeData.departmentId(),
                 actor.principalId().toString());
+        if (ruleReviews != null)
+            ruleReviews.resolveSubject(
+                    tenant,
+                    "ATTENDANCE",
+                    month + ":" + employee,
+                    "按最新规则重新核定并确认考勤",
+                    actor.principalId().toString());
+        org.slf4j.LoggerFactory.getLogger(getClass())
+                .info(
+                        "Attendance confirmed tenant={} employee={} month={} revision={}"
+                                + " exceptions={} actor={}",
+                        tenant,
+                        employee,
+                        month,
+                        snapshot.revision(),
+                        command.exceptions().size(),
+                        actor.principalId());
+    }
+
+    @org.springframework.transaction.annotation.Transactional
+    public void reopenRecord(String value, String employee, AttendanceReopenCommand command) {
+        var a = actor(WRITE);
+        var month = month(value);
+        if (employee == null || employee.isBlank() || employee.length() > 50 || command == null)
+            throw bad("员工或考勤资料无效");
+        revision(command.revision());
+        if (command.reason() == null
+                || command.reason().isBlank()
+                || command.reason().length() > 500) throw bad("请填写500字以内的撤销确认原因");
+        String tenant = a.tenantId().toString();
+        if (ruleReviews != null) ruleReviews.lock(tenant);
+        var current = store.employee(tenant, month, employee);
+        if (current.confirmation() == null) throw bad("考勤尚未确认，请刷新");
+        if (ruleReviews == null
+                || ruleReviews.reviews(tenant, "ATTENDANCE", value).stream()
+                        .noneMatch(r -> r.employeeCode().equals(employee)))
+            throw bad("当前记录没有规则变更待复核任务");
+        store.reopenRecord(tenant, value, employee, command, a.principalId().toString());
+        org.slf4j.LoggerFactory.getLogger(getClass())
+                .info(
+                        "Attendance reopened tenant={} employee={} month={} actor={} revision={}",
+                        tenant,
+                        employee,
+                        value,
+                        a.principalId(),
+                        command.revision());
+    }
+
+    private static void validateExceptions(AttendanceRecordCommand command, YearMonth month) {
+        if (command.exceptions().isEmpty()) return;
+        if (command.exceptions().size() > 100) throw bad("单月异常区间最多100条");
+        if (command.actualDaysOverride() == null || command.absentDaysOverride() == null)
+            throw bad("登记异常日期后，请同时核定实际出勤和缺勤天数");
+        var sorted = new ArrayList<>(command.exceptions());
+        for (var period : sorted) {
+            if (period == null
+                    || period.start() == null
+                    || period.end() == null
+                    || !period.start().isBefore(period.end())
+                    || !period.start().isBefore(month.plusMonths(1).atDay(1).atStartOfDay())
+                    || !period.end().isAfter(month.atDay(1).atStartOfDay()))
+                throw bad("异常起止时间无效，须与核算月份有交集，结束时间不包含在区间内");
+            if (!Set.of(
+                            "COMPENSATORY_LEAVE",
+                            "PAID_LEAVE",
+                            "UNPAID_LEAVE",
+                            "ACTIVITY",
+                            "MISSING_PUNCH")
+                    .contains(period.kind() == null ? "" : period.kind()))
+                throw bad("请选择有效的考勤异常类型");
+            if (period.reason() == null
+                    || period.reason().isBlank()
+                    || period.reason().length() > 500) throw bad("每条异常须填写500字以内的说明");
+        }
+        sorted.sort(Comparator.comparing(AttendanceExceptionPeriod::start));
+        for (int i = 1; i < sorted.size(); i++) {
+            if (sorted.get(i).start().isBefore(sorted.get(i - 1).end()))
+                throw bad("考勤异常时间不能重叠，请合并或调整区间");
+            // End is exclusive: midnight belongs to the following day, not this record.
+            if (!sorted.get(i)
+                    .start()
+                    .toLocalDate()
+                    .isAfter(sorted.get(i - 1).end().minusNanos(1).toLocalDate()))
+                throw bad("考勤异常日期不能重复，请合并或调整记录");
+        }
     }
 
     private static void validateDays(BigDecimal days, YearMonth month, String label) {

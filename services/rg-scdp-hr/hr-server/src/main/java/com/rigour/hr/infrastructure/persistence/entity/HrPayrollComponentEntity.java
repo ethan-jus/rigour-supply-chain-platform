@@ -23,6 +23,25 @@ public class HrPayrollComponentEntity {
     private Integer version;
     private String kind;
     private String dataJson;
+    private Integer revision = 1;
+    private Boolean deleted = false;
+
+    public Integer getRevision() {
+        return revision;
+    }
+
+    public void setRevision(Integer value) {
+        revision = value;
+    }
+
+    public Boolean getDeleted() {
+        return deleted;
+    }
+
+    public void setDeleted(Boolean value) {
+        deleted = value;
+    }
+
     private String reason;
     private String createdBy;
     private java.time.LocalDateTime createdTime;

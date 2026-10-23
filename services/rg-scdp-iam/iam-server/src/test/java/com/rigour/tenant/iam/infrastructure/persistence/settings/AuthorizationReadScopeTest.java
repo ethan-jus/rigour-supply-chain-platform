@@ -25,4 +25,26 @@ class AuthorizationReadScopeTest {
         assertThat(settings.authorizationRead(settings::applicationId)).isEqualTo(next);
         verify(jdbc, times(2)).queryForObject(anyString(), eq(byte[].class));
     }
+
+    @Test void employeeFactsAreReusedOnlyWithinTheSameActorAndCall() {
+        var employees = mock(AppEmployeeClient.class);
+        var settings = new JdbcAppSettingsStore(mock(JdbcTemplate.class), mock(PlatformTransactionManager.class), employees);
+        var actor = new com.rigour.tenant.iam.application.service.management.ManagementModels.Actor(
+                "TENANT", UUID.randomUUID(), UUID.randomUUID());
+        var other = new com.rigour.tenant.iam.application.service.management.ManagementModels.Actor(
+                "TENANT", UUID.randomUUID(), UUID.randomUUID());
+        var active = new AppEmployeeClient.Employee(1, "E1", "员工", "ACTIVE", 1L, "部门", "STAFF", "员工", java.util.List.of(1L), 1, 1, 1, true, null);
+        var disabled = new AppEmployeeClient.Employee(1, "E1", "员工", "INACTIVE", 1L, "部门", "STAFF", "员工", java.util.List.of(1L), 2, 1, 2, false, "已离职");
+        when(employees.employee(actor.tenantId(), "E1")).thenReturn(active, disabled);
+        when(employees.employee(other.tenantId(), "E1")).thenReturn(active);
+        settings.authorizationRead(() -> {
+            assertThat(settings.authorizationEmployee(actor, "E1")).isSameAs(active);
+            assertThat(settings.authorizationEmployee(actor, "E1")).isSameAs(active);
+            assertThat(settings.authorizationEmployee(other, "E1")).isSameAs(active);
+            return null;
+        });
+        assertThat(settings.authorizationRead(() -> settings.authorizationEmployee(actor, "E1"))).isSameAs(disabled);
+        verify(employees, times(2)).employee(actor.tenantId(), "E1");
+        verify(employees).employee(other.tenantId(), "E1");
+    }
 }

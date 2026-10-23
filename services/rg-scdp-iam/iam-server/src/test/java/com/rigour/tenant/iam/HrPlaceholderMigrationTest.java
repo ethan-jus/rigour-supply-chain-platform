@@ -17,7 +17,7 @@ class HrPlaceholderMigrationTest {
 
     @Test void retiresOnlyPlaceholderAndPreservesEmployeeCustomizationAndGrants() {
         var ds = new DriverManagerDataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
-        Flyway.configure().dataSource(ds).target("106").load().migrate();
+        IamTestMigrations.configuration(ds).target("106").load().migrate();
         var jdbc = new JdbcTemplate(ds);
         jdbc.execute("INSERT INTO iam_tenant(id,tenant_code,company_name,status,created_at,updated_at) VALUES(UUID_TO_BIN(UUID()),'hr-upgrade','HR升级测试','ACTIVE',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))");
         var tenant = jdbc.queryForObject("SELECT id FROM iam_tenant WHERE tenant_code='hr-upgrade'", byte[].class);
@@ -49,7 +49,7 @@ class HrPlaceholderMigrationTest {
                  WHERE ui.route_key='supply.hr.employees'
                 """);
 
-        Flyway.configure().dataSource(ds).target("107").load().migrate();
+        IamTestMigrations.configuration(ds).target("107").load().migrate();
 
         assertThat(jdbc.queryForObject("SELECT r.status FROM iam_resource r JOIN iam_resource_ui ui ON ui.resource_id=r.id WHERE ui.route_key='supply.hr.index'", String.class)).isEqualTo("DISABLED");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM iam_app_menu_node n JOIN iam_resource_ui ui ON ui.resource_id=n.resource_id WHERE ui.route_key='supply.hr.index' AND (n.status='ACTIVE' OR n.visible=1)", Integer.class)).isZero();

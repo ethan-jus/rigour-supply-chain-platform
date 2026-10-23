@@ -116,6 +116,127 @@ public class PayrollSchemePersistenceTest {
     }
 
     @Test
+    void monthlyCompletionAndCommissionAdjustmentRoundTripWithTenantMonthIsolation() {
+        var command =
+                new PayrollSchemeFactsCommand(
+                        0,
+                        null,
+                        List.of(),
+                        "月度核定",
+                        new java.math.BigDecimal("87.5"),
+                        new java.math.BigDecimal("-30.25"));
+        repository.saveFacts("tenant-a", "EMP", "2026-10", command, "actor");
+        var loaded = repository.facts("tenant-a", "EMP", "2026-10");
+        assertThat(loaded.performanceCompletionPercent()).isEqualByComparingTo("87.5");
+        assertThat(loaded.commissionAdjustment()).isEqualByComparingTo("-30.25");
+        assertThat(loaded.revision()).isEqualTo(1);
+        assertThat(repository.facts("tenant-b", "EMP", "2026-10").performanceCompletionPercent())
+                .isNull();
+        assertThat(repository.facts("tenant-a", "EMP", "2026-11").commissionAdjustment()).isNull();
+        assertThatThrownBy(
+                        () -> repository.saveFacts("tenant-a", "EMP", "2026-10", command, "actor"))
+                .hasMessageContaining("月度指标已更新");
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM hr_payroll_scheme_event WHERE event_type ="
+                                        + " 'MONTHLY_FACTS'",
+                                Integer.class))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void completionIsIsolatedByEmployeeWithinOneTenantAndMonth() {
+        repository.saveFacts(
+                "tenant-a",
+                "EMP-A",
+                "2026-10",
+                new PayrollSchemeFactsCommand(
+                        0, null, List.of(), "A核定", new java.math.BigDecimal("80")),
+                "actor");
+        repository.saveFacts(
+                "tenant-a",
+                "EMP-B",
+                "2026-10",
+                new PayrollSchemeFactsCommand(
+                        0, null, List.of(), "B核定", new java.math.BigDecimal("110")),
+                "actor");
+        assertThat(repository.facts("tenant-a", "EMP-A", "2026-10").performanceCompletionPercent())
+                .isEqualByComparingTo("80");
+        assertThat(repository.facts("tenant-a", "EMP-B", "2026-10").performanceCompletionPercent())
+                .isEqualByComparingTo("110");
+        assertThat(repository.facts("tenant-a", "EMP-C", "2026-10").performanceCompletionPercent())
+                .isNull();
+        assertThat(repository.facts("tenant-a", "EMP-B", "2026-11").performanceCompletionPercent())
+                .isNull();
+    }
+
+    @Test
+    void hrMetricScoringBandsRoundTripWithoutChangingPublishedHistory() {
+        var json = JsonMapper.builder().build();
+        tools.jackson.databind.node.ObjectNode node =
+                (tools.jackson.databind.node.ObjectNode)
+                        json.valueToTree(PayrollSchemeTestFixture.definition());
+        var bands =
+                List.of(
+                        new PayrollMetricStep(
+                                java.math.BigDecimal.ZERO,
+                                null,
+                                true,
+                                false,
+                                "FIXED",
+                                new java.math.BigDecimal("1.73")));
+        node.set(
+                "manager",
+                json.valueToTree(
+                        new PayrollManagerPolicy(
+                                List.of(
+                                        new PayrollMetricDefinition(
+                                                "store",
+                                                "建联门店",
+                                                "MANUAL_CONFIRMED",
+                                                null,
+                                                new java.math.BigDecimal("100"),
+                                                bands,
+                                                null,
+                                                "CONTACTED_STORE_COUNT",
+                                                "TIERED")),
+                                new PayrollProtectionPolicy("MONTHS", 1, true),
+                                null,
+                                List.of(),
+                                "ACTUAL_COMPLETION")));
+        var definition = json.treeToValue(node, PayrollSchemeDefinition.class);
+        var saved =
+                repository.save(
+                        "tenant-a",
+                        null,
+                        new PayrollSchemeSaveCommand("scoring", 0, null, definition, "HR配置"),
+                        "actor");
+        var published =
+                repository.publish(
+                        "tenant-a",
+                        saved.id(),
+                        new PayrollSchemePublishCommand(saved.revision(), "发布"),
+                        "actor");
+        var loaded =
+                repository.versions("tenant-a").stream()
+                        .filter(v -> v.id().equals(published.id()))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(loaded.definition().manager().metrics().getFirst().scoringMode())
+                .isEqualTo("TIERED");
+        assertThat(
+                        loaded.definition()
+                                .manager()
+                                .metrics()
+                                .getFirst()
+                                .steps()
+                                .getFirst()
+                                .coefficient())
+                .isEqualByComparingTo("1.73");
+        assertThat(repository.versions("tenant-b")).isEmpty();
+    }
+
+    @Test
     void failedAuditRollsBackMonthlyFacts() {
         jdbc.execute("DROP TABLE hr_payroll_scheme_event");
         assertThatThrownBy(

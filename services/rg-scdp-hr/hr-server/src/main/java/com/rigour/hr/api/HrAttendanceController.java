@@ -1,7 +1,13 @@
 package com.rigour.hr.api;
 
 import com.rigour.hr.api.v1.HrAttendanceApi;
-import com.rigour.hr.api.v1.model.HrAttendanceModels.*;
+import com.rigour.hr.api.v1.model.AttendanceDepartmentOption;
+import com.rigour.hr.api.v1.model.AttendanceRecordCommand;
+import com.rigour.hr.api.v1.model.AttendanceReopenCommand;
+import com.rigour.hr.api.v1.model.AttendanceRuleCommand;
+import com.rigour.hr.api.v1.model.AttendanceRuleListView;
+import com.rigour.hr.api.v1.model.AttendanceRuleView;
+import com.rigour.hr.api.v1.model.AttendanceView;
 import com.rigour.hr.application.service.HrAttendanceService;
 import com.rigour.shared.core.api.ApiResponse;
 
@@ -17,24 +23,24 @@ public class HrAttendanceController implements HrAttendanceApi {
         this.service = service;
     }
 
-    public ApiResponse<Rule> rule(String month, Long departmentId) {
+    public ApiResponse<AttendanceRuleView> rule(String month, Long departmentId) {
         return ApiResponse.success(service.rule(month, departmentId));
     }
 
-    public ApiResponse<RuleListView> rules(
+    public ApiResponse<AttendanceRuleListView> rules(
             String month, Long departmentId, String status, int begin, int step) {
         return ApiResponse.success(service.rules(month, departmentId, status, begin, step));
     }
 
-    public ApiResponse<Rule> saveRule(RuleCommand command) {
+    public ApiResponse<AttendanceRuleView> saveRule(AttendanceRuleCommand command) {
         return ApiResponse.success(service.saveRule(command));
     }
 
-    public ApiResponse<List<DepartmentOption>> departments() {
-        return ApiResponse.success(service.departments());
+    public ApiResponse<List<AttendanceDepartmentOption>> departments(boolean forRules) {
+        return ApiResponse.success(service.departments(forRules));
     }
 
-    public ApiResponse<View> list(
+    public ApiResponse<AttendanceView> list(
             String month,
             String employeeName,
             String employeeCode,
@@ -53,8 +59,15 @@ public class HrAttendanceController implements HrAttendanceApi {
                         step));
     }
 
-    public ApiResponse<Void> confirmRecord(String month, String employee, RecordCommand command) {
-        service.confirmRecord(month, employee, command);
+    public ApiResponse<Void> confirmRecord(
+            String month, String employeeCode, AttendanceRecordCommand command) {
+        service.confirmRecord(month, employeeCode, command);
+        return ApiResponse.success(null);
+    }
+
+    public ApiResponse<Void> reopenRecord(
+            String month, String employeeCode, AttendanceReopenCommand command) {
+        service.reopenRecord(month, employeeCode, command);
         return ApiResponse.success(null);
     }
 }

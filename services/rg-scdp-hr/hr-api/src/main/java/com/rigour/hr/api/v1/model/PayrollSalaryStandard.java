@@ -6,4 +6,12 @@ import java.math.BigDecimal;
 public record PayrollSalaryStandard(
         PayrollSchemeBaseSalary baseSalary,
         BigDecimal performanceBase,
-        PayrollProrationPolicy proration) {}
+        PayrollProrationPolicy proration,
+        PayrollPersonalPolicy personalPolicy) {
+    public PayrollSalaryStandard(
+            PayrollSchemeBaseSalary baseSalary,
+            BigDecimal performanceBase,
+            PayrollProrationPolicy proration) {
+        this(baseSalary, performanceBase, proration, null);
+    }
+}

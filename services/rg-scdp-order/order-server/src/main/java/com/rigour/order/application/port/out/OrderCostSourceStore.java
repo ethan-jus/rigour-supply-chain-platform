@@ -8,6 +8,11 @@ import java.time.LocalDate;
 import java.util.List;
 
 public interface OrderCostSourceStore {
+    default List<com.rigour.order.api.v1.model.OrderCityCollectionSourceView> cityCollections(
+            String tenant, String city, LocalDate from, LocalDate to) {
+        throw new UnsupportedOperationException("城市到账来源尚未接入");
+    }
+
     List<OrderCollectionSourceView> collections(
             String tenant, String employee, LocalDate from, LocalDate to);
 

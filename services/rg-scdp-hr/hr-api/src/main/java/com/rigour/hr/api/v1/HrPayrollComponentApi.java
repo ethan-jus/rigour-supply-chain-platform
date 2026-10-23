@@ -16,4 +16,19 @@ public interface HrPayrollComponentApi {
 
     @PostMapping(PATH)
     ApiResponse<PayrollComponentVersionView> save(@RequestBody PayrollComponentSaveCommand command);
+
+    @PostMapping(PATH + "/{id}/actions")
+    ApiResponse<PayrollComponentActionResult> act(
+            @PathVariable String id, @RequestBody PayrollComponentActionCommand command);
+
+    @GetMapping(PATH + "/{id}/operations")
+    ApiResponse<List<PayrollComponentOperationView>> operations(@PathVariable String id);
+
+    @GetMapping(PATH + "/reviews")
+    ApiResponse<List<PayrollRuleReviewView>> reviews(
+            @RequestParam String subject, @RequestParam String month);
+
+    @PostMapping(PATH + "/reviews/{id}/resolve")
+    ApiResponse<Void> resolveReview(
+            @PathVariable String id, @RequestBody PayrollRuleReviewCommand command);
 }

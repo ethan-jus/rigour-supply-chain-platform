@@ -21,7 +21,47 @@ public record PayrollSchemeDefinition(
         List<PayrollSchemeAllowance> allowances,
         PayrollSchemeCommissionPolicy commission,
         String remark,
-        PayrollRuleReferences ruleReferences) {
+        PayrollRuleReferences ruleReferences,
+        PayrollPersonalPolicy personalPolicy) {
+    public PayrollSchemeDefinition(
+            String name,
+            String role,
+            List<Long> departmentIds,
+            List<String> employeeCodes,
+            LocalDate effectiveFrom,
+            LocalDate effectiveTo,
+            PayrollSchemeBaseSalary baseSalary,
+            BigDecimal performanceBase,
+            String performanceMode,
+            PayrollSalesPolicy sales,
+            PayrollManagerPolicy manager,
+            PayrollWorkCalendar calendar,
+            PayrollProrationPolicy proration,
+            List<PayrollSchemeAllowance> allowances,
+            PayrollSchemeCommissionPolicy commission,
+            String remark,
+            PayrollRuleReferences ruleReferences) {
+        this(
+                name,
+                role,
+                departmentIds,
+                employeeCodes,
+                effectiveFrom,
+                effectiveTo,
+                baseSalary,
+                performanceBase,
+                performanceMode,
+                sales,
+                manager,
+                calendar,
+                proration,
+                allowances,
+                commission,
+                remark,
+                ruleReferences,
+                null);
+    }
+
     /** Historical payroll snapshots predate component references. */
     public PayrollSchemeDefinition(
             String name,
@@ -87,6 +127,7 @@ public record PayrollSchemeDefinition(
                 allowances,
                 commission,
                 remark,
-                refs);
+                refs,
+                personalPolicy);
     }
 }

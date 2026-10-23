@@ -3,7 +3,13 @@ package com.rigour.hr.application.service;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-import com.rigour.hr.api.v1.model.HrAttendanceModels.*;
+import com.rigour.hr.api.v1.model.AttendanceDepartmentOption;
+import com.rigour.hr.api.v1.model.AttendanceExceptionPeriod;
+import com.rigour.hr.api.v1.model.AttendanceRecordCommand;
+import com.rigour.hr.api.v1.model.AttendanceRow;
+import com.rigour.hr.api.v1.model.AttendanceRuleCommand;
+import com.rigour.hr.api.v1.model.AttendanceRuleListRow;
+import com.rigour.hr.api.v1.model.AttendanceRuleView;
 import com.rigour.hr.api.v1.model.HrPageView;
 import com.rigour.hr.application.port.out.*;
 import com.rigour.sales.api.v1.model.SalesAttendanceModels.*;
@@ -39,7 +45,7 @@ class HrAttendanceServiceTest {
                         HrAttendanceService.RULE_READ,
                         HrAttendanceService.RULE_WRITE));
         when(store.rule(anyString(), anyString(), isNull()))
-                .thenAnswer(i -> new Rule(i.getArgument(1), null, 26, 1, 26, false));
+                .thenAnswer(i -> new AttendanceRuleView(i.getArgument(1), null, 26, 1, 26, false));
         when(store.employees(
                         anyString(),
                         any(),
@@ -59,7 +65,8 @@ class HrAttendanceServiceTest {
                                                 "销售部",
                                                 null,
                                                 null,
-                                                new RecordCommand(null, null, "NONE", "已说明", 2),
+                                                new AttendanceRecordCommand(
+                                                        null, null, "NONE", "已说明", 2),
                                                 null))));
     }
 
@@ -86,9 +93,9 @@ class HrAttendanceServiceTest {
 
     @Test
     void ruleListSortsByOrganizationThenFiltersBeforePagingAndKeepsFullMonthOptions() {
-        var a = mock(DepartmentOption.class);
-        var b = mock(DepartmentOption.class);
-        var c = mock(DepartmentOption.class);
+        var a = mock(AttendanceDepartmentOption.class);
+        var b = mock(AttendanceDepartmentOption.class);
+        var c = mock(AttendanceDepartmentOption.class);
         when(a.id()).thenReturn(1L);
         when(a.departmentName()).thenReturn("销售部");
         when(a.sortOrder()).thenReturn(0);
@@ -109,12 +116,12 @@ class HrAttendanceServiceTest {
                                 Set.of(2L)));
         var all = service.rules("2026-10", null, "", 0, 20);
         assertThat(all.page().items())
-                .extracting(RuleListRow::departmentName)
+                .extracting(AttendanceRuleListRow::departmentName)
                 .containsExactly("公司默认", "销售一部", "人事部");
         var unlocked = service.rules("2026-10", null, "UNLOCKED", 1, 1);
         assertThat(unlocked.page().total()).isEqualTo(2);
         assertThat(unlocked.page().items())
-                .extracting(RuleListRow::departmentId)
+                .extracting(AttendanceRuleListRow::departmentId)
                 .containsExactly(3L);
         assertThat(unlocked.configuredDepartmentIds()).containsExactly(0L, 2L, 3L);
         assertThat(unlocked.companyExpectedDays()).isEqualTo(26);
@@ -216,7 +223,7 @@ class HrAttendanceServiceTest {
     @Test
     void preservesExtraDaysAndMissingRulesWithoutNegativeAbsence() {
         when(store.rule(anyString(), anyString(), isNull()))
-                .thenReturn(new Rule("2026-09", null, 1, 1, 1, false));
+                .thenReturn(new AttendanceRuleView("2026-09", null, 1, 1, 1, false));
         when(source.evidence(anyString(), any()))
                 .thenReturn(
                         List.of(
@@ -230,7 +237,7 @@ class HrAttendanceServiceTest {
         assertThat(row.actualDays()).isEqualByComparingTo("2");
         assertThat(row.absentDays()).isZero();
         when(store.rule(anyString(), anyString(), isNull()))
-                .thenReturn(new Rule("2026-09", null, null, 0, null, false));
+                .thenReturn(new AttendanceRuleView("2026-09", null, null, 0, null, false));
         assertThat(
                         service.list("2026-09", "", "", null, "", 0, 20)
                                 .page()
@@ -242,13 +249,14 @@ class HrAttendanceServiceTest {
 
     @Test
     void validatesCalendarDaysAndRequiresPermissionsBeforeReadingSources() {
-        assertThatThrownBy(() -> service.saveRule(new RuleCommand("2026-02", null, 29, 0)))
+        assertThatThrownBy(
+                        () -> service.saveRule(new AttendanceRuleCommand("2026-02", null, 29, 0)))
                 .hasMessageContaining("当月天数");
-        service.saveRule(new RuleCommand("2028-02", null, 29, 0));
+        service.saveRule(new AttendanceRuleCommand("2028-02", null, 29, 0));
         verify(store)
                 .saveRule(
                         tenant.toString(),
-                        new RuleCommand("2028-02", null, 29, 0),
+                        new AttendanceRuleCommand("2028-02", null, 29, 0),
                         user.toString());
         identity(Set.of());
         assertThatThrownBy(() -> service.list("2026-09", "", "", null, "", 0, 20))
@@ -279,18 +287,43 @@ class HrAttendanceServiceTest {
     @Test
     void departmentOptionsUseAttendancePermissionAndCurrentTenant() {
         identity(Set.of(HrAttendanceService.READ));
-        when(store.departments(tenant.toString())).thenReturn(List.of());
+        when(store.departments(eq(tenant.toString()), anyString())).thenReturn(List.of());
         assertThat(service.departments()).isEmpty();
-        verify(store).departments(tenant.toString());
+        verify(store).departments(eq(tenant.toString()), anyString());
         clearInvocations(store);
         identity(Set.of(HrAttendanceService.RULE_READ));
         assertThat(service.departments()).isEmpty();
-        verify(store).departments(tenant.toString());
+        verify(store).departments(eq(tenant.toString()), anyString());
         clearInvocations(store);
         identity(Set.of());
         assertThatThrownBy(() -> service.departments())
                 .isInstanceOf(AuthorizationDeniedException.class);
         verifyNoInteractions(store);
+    }
+
+    @Test
+    void annualCalendarExpectedDaysOverrideLegacyCountsAndUnavailableReferenceDoesNotFallBack() {
+        var attendance = mock(PayrollAttendanceEvidenceService.class);
+        when(attendance.expectedDays(tenant.toString(), 2L, YearMonth.of(2026, 10)))
+                .thenReturn(Optional.of(18))
+                .thenThrow(
+                        new com.rigour.shared.core.exception.BusinessException(
+                                com.rigour.shared.core.api.ErrorCode.SERVICE_UNAVAILABLE,
+                                "年度日历未就绪",
+                                List.of()));
+        when(attendance.apply(anyString(), any(), any(), anyList(), anyMap()))
+                .thenAnswer(i -> i.getArgument(4));
+        service =
+                new HrAttendanceService(
+                        store,
+                        source,
+                        Clock.fixed(Instant.parse("2026-11-01T02:00:00Z"), ZoneOffset.UTC),
+                        attendance);
+        var available = service.list("2026-10", "", "", null, "", 0, 20);
+        assertThat(available.page().items().getFirst().expectedDays()).isEqualTo(18);
+        var unavailable = service.list("2026-10", "", "", null, "", 0, 20);
+        assertThat(unavailable.page().items().getFirst().expectedDays()).isNull();
+        assertThat(unavailable.sourceError()).contains("法定日历尚不可用");
     }
 
     @Test
@@ -309,7 +342,7 @@ class HrAttendanceServiceTest {
         assertThat(fallback.expectedDays()).isEqualTo(26);
         assertThat(fallback.ruleSource()).isEqualTo("COMPANY");
         when(store.rule(tenant.toString(), "2026-09", null))
-                .thenReturn(new Rule("2026-09", null, null, 0, null, false));
+                .thenReturn(new AttendanceRuleView("2026-09", null, null, 0, null, false));
         var unset = service.list("2026-09", "", "", null, "", 0, 20).page().items().getFirst();
         assertThat(unset.expectedDays()).isNull();
         assertThat(unset.absentDays()).isNull();
@@ -323,32 +356,35 @@ class HrAttendanceServiceTest {
 
     @Test
     void validatesDepartmentInCurrentTenantAndAllowsRestoringOnlyDepartmentDefaults() {
-        var department = mock(DepartmentOption.class);
+        var department = mock(AttendanceDepartmentOption.class);
         when(department.id()).thenReturn(2L);
         when(store.departments(tenant.toString())).thenReturn(List.of(department));
+        when(store.rule(tenant.toString(), "2026-09", 2L))
+                .thenReturn(new AttendanceRuleView("2026-09", 2L, null, 0, 26, false));
         service.rule("2026-09", 2L);
         verify(store).rule(tenant.toString(), "2026-09", 2L);
-        service.saveRule(new RuleCommand("2026-09", 2L, 0, 0));
-        service.saveRule(new RuleCommand("2026-09", 2L, null, 1));
+        service.saveRule(new AttendanceRuleCommand("2026-09", 2L, 0, 0));
+        service.saveRule(new AttendanceRuleCommand("2026-09", 2L, null, 1));
         verify(store)
                 .saveRule(
                         tenant.toString(),
-                        new RuleCommand("2026-09", 2L, null, 1),
+                        new AttendanceRuleCommand("2026-09", 2L, null, 1),
                         user.toString());
         clearInvocations(store);
         assertThatThrownBy(() -> service.rule("2026-09", 9L)).hasMessageContaining("部门不存在");
-        assertThatThrownBy(() -> service.saveRule(new RuleCommand("2026-09", 9L, 22, 0)))
+        assertThatThrownBy(() -> service.saveRule(new AttendanceRuleCommand("2026-09", 9L, 22, 0)))
                 .hasMessageContaining("部门不存在");
-        assertThatThrownBy(() -> service.saveRule(new RuleCommand("2026-09", null, null, 1)))
+        assertThatThrownBy(
+                        () -> service.saveRule(new AttendanceRuleCommand("2026-09", null, null, 1)))
                 .hasMessageContaining("当月天数");
         identity(Set.of(HrAttendanceService.RULE_READ));
-        assertThatThrownBy(() -> service.saveRule(new RuleCommand("2026-09", 2L, 22, 0)))
+        assertThatThrownBy(() -> service.saveRule(new AttendanceRuleCommand("2026-09", 2L, 22, 0)))
                 .isInstanceOf(AuthorizationDeniedException.class);
         verify(store, never()).rule(anyString(), anyString(), any());
         verify(store, never()).saveRule(anyString(), any(), anyString());
     }
 
-    void employeeWith(RecordCommand record) {
+    void employeeWith(AttendanceRecordCommand record) {
         when(store.employees(anyString(), any(), any(), anyInt(), anyInt()))
                 .thenReturn(
                         new HrPageView<>(
@@ -366,7 +402,7 @@ class HrAttendanceServiceTest {
                 .thenReturn(
                         List.of(new Evidence("E1", true, List.of(LocalDate.parse("2026-09-01")))));
         employeeWith(
-                new RecordCommand(
+                new AttendanceRecordCommand(
                         new BigDecimal("20.5"), new BigDecimal("2.5"), "SICK", "核对后调整", 3));
         var row = service.list("2026-09", "", "", null, "", 0, 20).page().items().getFirst();
         assertThat(row.actualDays()).isEqualByComparingTo("20.5");
@@ -374,7 +410,7 @@ class HrAttendanceServiceTest {
         assertThat(row.punchDays()).isEqualTo(1);
         assertThat(row.dates()).containsExactly(LocalDate.parse("2026-09-01"));
         assertThat(row.leaveTypeCode()).isEqualTo("SICK");
-        employeeWith(new RecordCommand(new BigDecimal("20.5"), null, "PERSONAL", "", 4));
+        employeeWith(new AttendanceRecordCommand(new BigDecimal("20.5"), null, "PERSONAL", "", 4));
         assertThat(
                         service.list("2026-09", "", "", null, "", 0, 20)
                                 .page()
@@ -382,7 +418,7 @@ class HrAttendanceServiceTest {
                                 .getFirst()
                                 .absentDays())
                 .isEqualByComparingTo("5.5");
-        employeeWith(new RecordCommand(null, null, "NONE", "", 5));
+        employeeWith(new AttendanceRecordCommand(null, null, "NONE", "", 5));
         assertThat(
                         service.list("2026-09", "", "", null, "", 0, 20)
                                 .page()
@@ -394,7 +430,9 @@ class HrAttendanceServiceTest {
 
     @Test
     void manualZeroAndHalfDaysWorkForCurrentMonthAndUnavailableSources() {
-        employeeWith(new RecordCommand(BigDecimal.ZERO, new BigDecimal("0.5"), "COMP_TIME", "", 1));
+        employeeWith(
+                new AttendanceRecordCommand(
+                        BigDecimal.ZERO, new BigDecimal("0.5"), "COMP_TIME", "", 1));
         when(source.evidence(anyString(), any())).thenThrow(new IllegalStateException("down"));
         var row = service.list("2026-10", "", "", null, "", 0, 20).page().items().getFirst();
         assertThat(row.actualDays()).isZero();
@@ -416,7 +454,7 @@ class HrAttendanceServiceTest {
     @Test
     void confirmsPendingRecordWithHalfDaysAndPreservesImmutableSnapshot() {
         var command =
-                new RecordCommand(
+                new AttendanceRecordCommand(
                         new BigDecimal("20.5"), new BigDecimal("0.5"), "ANNUAL", "  核对  ", 2);
         var employee =
                 new HrAttendanceStore.Employee(
@@ -426,21 +464,21 @@ class HrAttendanceServiceTest {
                         "销售部",
                         null,
                         null,
-                        new RecordCommand(null, null, "NONE", "", 2),
+                        new AttendanceRecordCommand(null, null, "NONE", "", 2),
                         null);
         when(store.employee(tenant.toString(), YearMonth.of(2026, 9), "E1")).thenReturn(employee);
         when(source.evidence(anyString(), any()))
                 .thenReturn(
                         List.of(new Evidence("E1", true, List.of(LocalDate.parse("2026-09-01")))));
         service.confirmRecord("2026-09", "E1", command);
-        var saved = org.mockito.ArgumentCaptor.forClass(Row.class);
+        var saved = org.mockito.ArgumentCaptor.forClass(AttendanceRow.class);
         verify(store)
                 .confirmRecord(
                         eq(tenant.toString()),
                         eq("2026-09"),
                         eq("E1"),
                         eq(
-                                new RecordCommand(
+                                new AttendanceRecordCommand(
                                         new BigDecimal("20.5"),
                                         new BigDecimal("0.5"),
                                         "ANNUAL",
@@ -461,7 +499,7 @@ class HrAttendanceServiceTest {
         when(store.employees(anyString(), any(), any(), anyInt(), anyInt()))
                 .thenReturn(new HrPageView<>(1, 0, 20, List.of(confirmed)));
         when(store.rule(anyString(), anyString(), isNull()))
-                .thenReturn(new Rule("2026-09", null, 10, 2, 10, false));
+                .thenReturn(new AttendanceRuleView("2026-09", null, 10, 2, 10, false));
         clearInvocations(source);
         var result = service.list("2026-09", "", "", null, "CONFIRMED", 0, 20);
         assertThat(result.page().items()).containsExactly(snapshot);
@@ -487,7 +525,7 @@ class HrAttendanceServiceTest {
                                 "销售部",
                                 null,
                                 null,
-                                new RecordCommand(null, null, "NONE", "", 0),
+                                new AttendanceRecordCommand(null, null, "NONE", "", 0),
                                 null));
         when(source.evidence(anyString(), any()))
                 .thenReturn(List.of(new Evidence("E1", true, List.of())));
@@ -496,7 +534,7 @@ class HrAttendanceServiceTest {
                                 service.confirmRecord(
                                         "2026-10",
                                         "E1",
-                                        new RecordCommand(null, null, "NONE", "", 0)))
+                                        new AttendanceRecordCommand(null, null, "NONE", "", 0)))
                 .hasMessageContaining("实际出勤和缺勤天数");
         when(source.evidence(anyString(), any()))
                 .thenReturn(List.of(new Evidence("E1", false, List.of())));
@@ -505,16 +543,17 @@ class HrAttendanceServiceTest {
                                 service.confirmRecord(
                                         "2026-09",
                                         "E1",
-                                        new RecordCommand(null, BigDecimal.ZERO, "NONE", "", 0)))
+                                        new AttendanceRecordCommand(
+                                                null, BigDecimal.ZERO, "NONE", "", 0)))
                 .hasMessageContaining("实际出勤和缺勤天数");
         when(store.rule(anyString(), anyString(), isNull()))
-                .thenReturn(new Rule("2026-09", null, null, 0, null, false));
+                .thenReturn(new AttendanceRuleView("2026-09", null, null, 0, null, false));
         assertThatThrownBy(
                         () ->
                                 service.confirmRecord(
                                         "2026-09",
                                         "E1",
-                                        new RecordCommand(
+                                        new AttendanceRecordCommand(
                                                 BigDecimal.ZERO, BigDecimal.ZERO, "NONE", "", 0)))
                 .hasMessageContaining("考勤规则");
         verify(store, never())
@@ -533,12 +572,13 @@ class HrAttendanceServiceTest {
                                 "销售部",
                                 null,
                                 null,
-                                new RecordCommand(null, null, "NONE", "", 0),
+                                new AttendanceRecordCommand(null, null, "NONE", "", 0),
                                 null));
         service.confirmRecord(
                 "2026-02",
                 "E1",
-                new RecordCommand(new BigDecimal("27.5"), BigDecimal.ZERO, "ANNUAL", "", 0));
+                new AttendanceRecordCommand(
+                        new BigDecimal("27.5"), BigDecimal.ZERO, "ANNUAL", "年假已核对", 0));
         clearInvocations(store);
         for (String days : List.of("-0.5", "0.1", "28.5")) {
             assertThatThrownBy(
@@ -546,7 +586,7 @@ class HrAttendanceServiceTest {
                                     service.confirmRecord(
                                             "2026-02",
                                             "E1",
-                                            new RecordCommand(
+                                            new AttendanceRecordCommand(
                                                     new BigDecimal(days), null, "NONE", "", 0)))
                     .hasMessageContaining("0.5天");
             assertThatThrownBy(
@@ -554,7 +594,7 @@ class HrAttendanceServiceTest {
                                     service.confirmRecord(
                                             "2026-02",
                                             "E1",
-                                            new RecordCommand(
+                                            new AttendanceRecordCommand(
                                                     null, new BigDecimal(days), "NONE", "", 0)))
                     .hasMessageContaining("0.5天");
         }
@@ -563,21 +603,22 @@ class HrAttendanceServiceTest {
                                 service.confirmRecord(
                                         "2026-02",
                                         "E1",
-                                        new RecordCommand(null, null, "NONE", "x".repeat(501), 0)))
+                                        new AttendanceRecordCommand(
+                                                null, null, "NONE", "x".repeat(501), 0)))
                 .hasMessageContaining("500");
         assertThatThrownBy(
                         () ->
                                 service.confirmRecord(
                                         "2026-02",
                                         "E1",
-                                        new RecordCommand(null, null, "NONE", "", 2)))
+                                        new AttendanceRecordCommand(null, null, "NONE", "", 2)))
                 .hasMessageContaining("已变更");
         assertThatThrownBy(
                         () ->
                                 service.confirmRecord(
                                         "2026-02",
                                         "E1",
-                                        new RecordCommand(null, null, "UNKNOWN", "", 0)))
+                                        new AttendanceRecordCommand(null, null, "UNKNOWN", "", 0)))
                 .hasMessageContaining("请假类型");
         when(source.leaveTypes(anyString())).thenThrow(new IllegalStateException("字典暂不可用"));
         assertThatThrownBy(
@@ -585,7 +626,7 @@ class HrAttendanceServiceTest {
                                 service.confirmRecord(
                                         "2026-02",
                                         "E1",
-                                        new RecordCommand(null, null, "NONE", "", 0)))
+                                        new AttendanceRecordCommand(null, null, "NONE", "", 0)))
                 .hasMessageContaining("字典暂不可用");
         identity(Set.of(HrAttendanceService.READ));
         assertThatThrownBy(
@@ -593,7 +634,7 @@ class HrAttendanceServiceTest {
                                 service.confirmRecord(
                                         "2026-02",
                                         "E1",
-                                        new RecordCommand(null, null, "NONE", "", 0)))
+                                        new AttendanceRecordCommand(null, null, "NONE", "", 0)))
                 .isInstanceOf(AuthorizationDeniedException.class);
         verify(store, never())
                 .confirmRecord(
@@ -621,5 +662,249 @@ class HrAttendanceServiceTest {
         assertThatThrownBy(() -> service.list("2026-09", "", "", null, "INVALID", 0, 20))
                 .hasMessageContaining("考勤状态");
         verifyNoInteractions(store);
+    }
+
+    @Test
+    void crossDayExceptionsPreserveSourceDatesAndRequireExplicitDayConfirmation() {
+        var periods =
+                List.of(
+                        new AttendanceExceptionPeriod(
+                                LocalDateTime.of(2026, 9, 3, 12, 0),
+                                LocalDateTime.of(2026, 9, 5, 12, 0),
+                                "COMPENSATORY_LEAVE",
+                                "活动调休"));
+        assertThatThrownBy(
+                        () ->
+                                service.confirmRecord(
+                                        "2026-09",
+                                        "E1",
+                                        new AttendanceRecordCommand(
+                                                null, null, "COMP_TIME", "调休核定", 2, periods)))
+                .hasMessageContaining("同时核定");
+        when(store.employee(tenant.toString(), YearMonth.of(2026, 9), "E1"))
+                .thenReturn(
+                        new HrAttendanceStore.Employee(
+                                "E1",
+                                "员工",
+                                2L,
+                                "销售部",
+                                null,
+                                null,
+                                new AttendanceRecordCommand(null, null, "NONE", "", 2),
+                                null));
+        when(source.evidence(anyString(), any()))
+                .thenReturn(List.of(new Evidence("E1", true, List.of(LocalDate.of(2026, 9, 1)))));
+        service.confirmRecord(
+                "2026-09",
+                "E1",
+                new AttendanceRecordCommand(
+                        new BigDecimal("26"), BigDecimal.ZERO, "COMP_TIME", "调休核定", 2, periods));
+        var saved = org.mockito.ArgumentCaptor.forClass(AttendanceRow.class);
+        verify(store)
+                .confirmRecord(
+                        eq(tenant.toString()),
+                        eq("2026-09"),
+                        eq("E1"),
+                        any(),
+                        saved.capture(),
+                        eq(2L),
+                        anyString());
+        assertThat(saved.getValue().exceptions()).isEqualTo(periods);
+        assertThat(saved.getValue().dates()).containsExactly(LocalDate.of(2026, 9, 1));
+        assertThat(saved.getValue().actualDays()).isEqualByComparingTo("26");
+    }
+
+    @Test
+    void overlappingExceptionPeriodsCannotBeConfirmed() {
+        var periods =
+                List.of(
+                        new AttendanceExceptionPeriod(
+                                LocalDateTime.of(2026, 9, 3, 0, 0),
+                                LocalDateTime.of(2026, 9, 5, 0, 0),
+                                "ACTIVITY",
+                                "活动"),
+                        new AttendanceExceptionPeriod(
+                                LocalDateTime.of(2026, 9, 4, 0, 0),
+                                LocalDateTime.of(2026, 9, 6, 0, 0),
+                                "COMPENSATORY_LEAVE",
+                                "调休"));
+        assertThatThrownBy(
+                        () ->
+                                service.confirmRecord(
+                                        "2026-09",
+                                        "E1",
+                                        new AttendanceRecordCommand(
+                                                new BigDecimal("26"),
+                                                BigDecimal.ZERO,
+                                                "COMP_TIME",
+                                                "调整",
+                                                2,
+                                                periods)))
+                .hasMessageContaining("不能重叠");
+        verify(store, never())
+                .confirmRecord(
+                        anyString(), anyString(), anyString(), any(), any(), any(), anyString());
+    }
+
+    private void stubPendingEmployee() {
+        when(store.employee(tenant.toString(), YearMonth.of(2026, 9), "E1"))
+                .thenReturn(
+                        new HrAttendanceStore.Employee(
+                                "E1",
+                                "员工",
+                                2L,
+                                "销售部",
+                                null,
+                                null,
+                                new AttendanceRecordCommand(null, null, "NONE", "", 0),
+                                null));
+    }
+
+    @Test
+    void everyNonNoneLeaveTypeRequiresANonblankReason() {
+        stubPendingEmployee();
+        for (String type : List.of("COMP_TIME", "PERSONAL", "SICK", "ANNUAL")) {
+            for (String reason : new String[] {null, "", "  \t  "}) {
+                assertThatThrownBy(
+                                () ->
+                                        service.confirmRecord(
+                                                "2026-09",
+                                                "E1",
+                                                new AttendanceRecordCommand(
+                                                        new BigDecimal("26"),
+                                                        BigDecimal.ZERO,
+                                                        type,
+                                                        reason,
+                                                        0)))
+                        .hasMessageContaining("请填写缺卡原因");
+            }
+        }
+        verify(store, never())
+                .confirmRecord(
+                        anyString(), anyString(), anyString(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void noneAllowsBlankReasonWithOrWithoutExceptionDates() {
+        stubPendingEmployee();
+        var exception =
+                new AttendanceExceptionPeriod(
+                        LocalDateTime.of(2026, 9, 3, 0, 0),
+                        LocalDateTime.of(2026, 9, 4, 0, 0),
+                        "MISSING_PUNCH",
+                        "当天忘记打卡，已核对");
+        for (String reason : new String[] {null, "", "  \t  "}) {
+            for (var periods : List.of(List.<AttendanceExceptionPeriod>of(), List.of(exception))) {
+                service.confirmRecord(
+                        "2026-09",
+                        "E1",
+                        new AttendanceRecordCommand(
+                                new BigDecimal("26"), BigDecimal.ZERO, "NONE", reason, 0, periods));
+            }
+        }
+        var saved = org.mockito.ArgumentCaptor.forClass(AttendanceRecordCommand.class);
+        var snapshots = org.mockito.ArgumentCaptor.forClass(AttendanceRow.class);
+        verify(store, times(6))
+                .confirmRecord(
+                        eq(tenant.toString()),
+                        eq("2026-09"),
+                        eq("E1"),
+                        saved.capture(),
+                        snapshots.capture(),
+                        eq(2L),
+                        eq(user.toString()));
+        assertThat(saved.getAllValues())
+                .allSatisfy(command -> assertThat(command.reason()).isEmpty());
+        assertThat(snapshots.getAllValues()).allSatisfy(row -> assertThat(row.reason()).isEmpty());
+    }
+
+    @Test
+    void separateTimesOnTheSameDateCannotBeRegisteredTwice() {
+        var periods =
+                List.of(
+                        new AttendanceExceptionPeriod(
+                                LocalDateTime.of(2026, 9, 3, 9, 0),
+                                LocalDateTime.of(2026, 9, 3, 12, 0),
+                                "ACTIVITY",
+                                "上午活动"),
+                        new AttendanceExceptionPeriod(
+                                LocalDateTime.of(2026, 9, 3, 14, 0),
+                                LocalDateTime.of(2026, 9, 3, 18, 0),
+                                "MISSING_PUNCH",
+                                "下午缺卡"));
+        assertThatThrownBy(
+                        () ->
+                                service.confirmRecord(
+                                        "2026-09",
+                                        "E1",
+                                        new AttendanceRecordCommand(
+                                                new BigDecimal("26"),
+                                                BigDecimal.ZERO,
+                                                "NONE",
+                                                "",
+                                                0,
+                                                periods)))
+                .hasMessageContaining("日期不能重复");
+        verify(store, never())
+                .confirmRecord(
+                        anyString(), anyString(), anyString(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void adjacentDatesDoNotRepeatWhenPreviousPeriodEndsAtMidnight() {
+        stubPendingEmployee();
+        var periods =
+                List.of(
+                        new AttendanceExceptionPeriod(
+                                LocalDateTime.of(2026, 9, 3, 0, 0),
+                                LocalDateTime.of(2026, 9, 4, 0, 0),
+                                "ACTIVITY",
+                                "活动"),
+                        new AttendanceExceptionPeriod(
+                                LocalDateTime.of(2026, 9, 4, 0, 0),
+                                LocalDateTime.of(2026, 9, 5, 0, 0),
+                                "MISSING_PUNCH",
+                                "缺卡"));
+        service.confirmRecord(
+                "2026-09",
+                "E1",
+                new AttendanceRecordCommand(
+                        new BigDecimal("26"), BigDecimal.ZERO, "NONE", "", 0, periods));
+        verify(store)
+                .confirmRecord(
+                        eq(tenant.toString()),
+                        eq("2026-09"),
+                        eq("E1"),
+                        argThat(command -> command.exceptions().equals(periods)),
+                        any(),
+                        eq(2L),
+                        anyString());
+    }
+
+    @Test
+    void optionalGeneralReasonDoesNotRemoveIndividualExceptionExplanationRequirement() {
+        var periods =
+                List.of(
+                        new AttendanceExceptionPeriod(
+                                LocalDateTime.of(2026, 9, 3, 0, 0),
+                                LocalDateTime.of(2026, 9, 4, 0, 0),
+                                "MISSING_PUNCH",
+                                " "));
+        assertThatThrownBy(
+                        () ->
+                                service.confirmRecord(
+                                        "2026-09",
+                                        "E1",
+                                        new AttendanceRecordCommand(
+                                                new BigDecimal("26"),
+                                                BigDecimal.ZERO,
+                                                "NONE",
+                                                "",
+                                                0,
+                                                periods)))
+                .hasMessageContaining("每条异常须填写");
+        verify(store, never())
+                .confirmRecord(
+                        anyString(), anyString(), anyString(), any(), any(), any(), anyString());
     }
 }

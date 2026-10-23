@@ -14,6 +14,7 @@ import java.util.*;
 class BiScheduledRefreshWorkerTest {
     private final BiScheduleCoordinator coordinator = mock(BiScheduleCoordinator.class);
     private final SupplyDashboardRefreshService refresh = mock(SupplyDashboardRefreshService.class);
+    private final CostDashboardRefreshService costs = mock(CostDashboardRefreshService.class);
     private final UUID tenant = UUID.randomUUID();
 
     @Test
@@ -21,7 +22,7 @@ class BiScheduledRefreshWorkerTest {
         when(coordinator.due()).thenReturn(List.of(new BiScheduleCoordinator.Work(tenant, 1)));
         try (WorkerHandle handle = new WorkerHandle()) {
             handle.worker.consume();
-            verifyNoInteractions(refresh);
+            verifyNoInteractions(refresh, costs);
         }
     }
 
@@ -52,6 +53,7 @@ class BiScheduledRefreshWorkerTest {
             handle.worker.consume();
             handle.worker.consume();
             verify(refresh, times(1)).refreshConfiguredTenant(tenant.toString());
+            verify(costs, times(1)).refreshConfiguredTenant(tenant.toString());
             var tokens = org.mockito.ArgumentCaptor.forClass(UUID.class);
             verify(coordinator, times(2))
                     .complete(eq(tenant), tokens.capture(), eq("SUCCESS"), isNull());
@@ -69,11 +71,55 @@ class BiScheduledRefreshWorkerTest {
         try (WorkerHandle handle = new WorkerHandle()) {
             handle.worker.consume();
             verify(coordinator).complete(eq(tenant), any(), eq("FAILED"), anyString());
+            verify(costs).refreshConfiguredTenant(tenant.toString());
         }
     }
 
+    @Test
+    void costFailureReportsPartialWithoutLosingSuccessfulSalesRefresh() {
+        claimedRun("SUCCESS");
+        doThrow(new IllegalStateException("cost source unavailable"))
+                .when(costs)
+                .refreshConfiguredTenant(tenant.toString());
+        try (WorkerHandle handle = new WorkerHandle()) {
+            handle.worker.consume();
+            verify(coordinator).complete(eq(tenant), any(), eq("PARTIAL"), contains("费用数据刷新失败"));
+            verify(refresh).refreshConfiguredTenant(tenant.toString());
+        }
+    }
+
+    @Test
+    void skippedSalesLockDoesNotStartAnotherCostRefresh() {
+        claimedRun("SKIPPED");
+        try (WorkerHandle handle = new WorkerHandle()) {
+            handle.worker.consume();
+            verifyNoInteractions(costs);
+            verify(coordinator).complete(eq(tenant), any(), eq("SKIPPED"), isNull());
+        }
+    }
+
+    private void claimedRun(String status) {
+        when(coordinator.due()).thenReturn(List.of(new BiScheduleCoordinator.Work(tenant, 1)));
+        when(coordinator.claim(eq(tenant), eq(1L), any())).thenReturn(true);
+        when(refresh.refreshConfiguredTenant(tenant.toString()))
+                .thenReturn(
+                        new SupplyDashboardRefreshRunView(
+                                1L,
+                                "HOURLY",
+                                tenant.toString(),
+                                status,
+                                Instant.now(),
+                                Instant.now(),
+                                null,
+                                1L,
+                                1L,
+                                0L,
+                                null));
+    }
+
     private class WorkerHandle implements AutoCloseable {
-        final BiScheduledRefreshWorker worker = new BiScheduledRefreshWorker(coordinator, refresh);
+        final BiScheduledRefreshWorker worker =
+                new BiScheduledRefreshWorker(coordinator, refresh, costs);
 
         public void close() {
             worker.close();

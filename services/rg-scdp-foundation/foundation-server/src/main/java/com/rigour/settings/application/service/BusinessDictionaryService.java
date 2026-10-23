@@ -46,6 +46,28 @@ public class BusinessDictionaryService {
     private static final Set<String> DICTIONARY_TYPES =
             Set.of("COMMON", "ERP", "CRM", "ORDER", "HR");
     private static final Pattern CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,49}");
+    // 业务表单只能读取与自身功能相关的固定字典，不能因此获得字典管理权限。
+    private static final String COST_DASHBOARD_READ = "analytics:cost-dashboard:read";
+    private static final Set<String> PAYROLL_DICTIONARIES = Set.of(
+            "PAYROLL_STATUS", "PAYROLL_RULE_KIND", "COMMISSION_RECIPIENT_ROLE", "PRODUCT_UNIT");
+    private static final Set<String> ATTENDANCE_DICTIONARIES =
+            Set.of("ATTENDANCE_LEAVE_TYPE", "ATTENDANCE_STATUS");
+    private static final Map<String, Set<String>> BUSINESS_READ_PERMISSIONS = Map.ofEntries(
+            Map.entry("PRODUCT_UNIT", Set.of("erp:cost:purchase:read", "erp:cost:loss:read")),
+            Map.entry("MARKETING_EXPENSE_TYPE", Set.of("erp:cost:marketing:read")),
+            Map.entry("REIMBURSEMENT_EXPENSE_TYPE", Set.of("hr:expense:read")),
+            Map.entry("COST_LOGISTICS_LEG", Set.of("order:logistics-cost:read", "hr:expense:read")),
+            Map.entry("COST_TRANSPORT_METHOD", Set.of("order:logistics-cost:read")),
+            Map.entry("COST_PAYER", Set.of("order:logistics-cost:read")),
+            Map.entry("WAREHOUSE_TYPE", Set.of("order:logistics-cost:read")),
+            Map.entry("COST_PREMISES_TYPE", Set.of("erp:cost:rental:read")),
+            Map.entry("COST_STATUS", costReaders()),
+            Map.entry("COST_PAYMENT_STATUS", costReaders()));
+
+    private static Set<String> costReaders() {
+        return Set.of("erp:cost:purchase:read", "erp:cost:loss:read", "erp:cost:rental:read",
+                "erp:cost:marketing:read", "order:logistics-cost:read", "hr:expense:read");
+    }
 
     private final BusinessDictionaryStore store;
 
@@ -88,8 +110,8 @@ public class BusinessDictionaryService {
     }
 
     public EffectiveDictView resolve(String dictionaryCode) {
-        AuthorizationContext.requirePermission(READ_PERMISSION);
         String code = code(dictionaryCode, "dictionaryCode", true);
+        requireResolvePermission(code);
         DictView dictionary =
                 store.findByCode(code).orElseThrow(() -> notFound("未配置有效字典: " + code));
         List<DictItemView> stored = store.items(dictionary.dictionaryCode());
@@ -138,6 +160,19 @@ public class BusinessDictionaryService {
                 dictionary.revision(),
                 items.size());
         return new EffectiveDictView(dictionary, items);
+    }
+
+    private static void requireResolvePermission(String code) {
+        if (AuthorizationContext.hasPermission(READ_PERMISSION)) return;
+        if (PAYROLL_DICTIONARIES.contains(code)
+                && (AuthorizationContext.hasPermission("hr:payroll:read")
+                        || AuthorizationContext.hasPermission("hr:payroll-rule:read"))) return;
+        if (ATTENDANCE_DICTIONARIES.contains(code)
+                && AuthorizationContext.hasPermission("hr:attendance:read")) return;
+        Set<String> readers = BUSINESS_READ_PERMISSIONS.get(code);
+        if (readers != null && (AuthorizationContext.hasPermission(COST_DASHBOARD_READ)
+                || readers.stream().anyMatch(AuthorizationContext::hasPermission))) return;
+        AuthorizationContext.requirePermission(READ_PERMISSION);
     }
 
     /**

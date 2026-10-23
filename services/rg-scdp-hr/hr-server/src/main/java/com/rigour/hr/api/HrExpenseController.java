@@ -3,8 +3,8 @@ package com.rigour.hr.api;
 import com.rigour.hr.api.v1.HrExpenseApi;
 import com.rigour.hr.api.v1.model.HrExpenseCommand;
 import com.rigour.hr.api.v1.model.HrExpenseDetailView;
+import com.rigour.hr.api.v1.model.HrExpensePageView;
 import com.rigour.hr.api.v1.model.HrExpenseQuery;
-import com.rigour.hr.api.v1.model.HrPageView;
 import com.rigour.hr.api.v1.model.PayrollActionCommand;
 import com.rigour.hr.api.v1.model.PayrollAuditView;
 import com.rigour.hr.api.v1.model.PayrollEmployeeView;
@@ -23,12 +23,17 @@ public final class HrExpenseController implements HrExpenseApi {
         this.service = service;
     }
 
-    public ApiResponse<HrPageView<HrExpenseDetailView>> expenses(HrExpenseQuery query) {
+    public ApiResponse<HrExpensePageView> expenses(HrExpenseQuery query) {
         return ApiResponse.success(service.expenses(query));
     }
 
-    public ApiResponse<List<PayrollEmployeeView>> employees() {
-        return ApiResponse.success(service.employees());
+    public ApiResponse<HrExpenseDetailView> detail(String id) {
+        return ApiResponse.success(service.detail(id));
+    }
+
+    public ApiResponse<List<PayrollEmployeeView>> employees(
+            String cityCode, String cityName, java.time.LocalDate costDate) {
+        return ApiResponse.success(service.employees(cityCode, cityName, costDate));
     }
 
     public ApiResponse<HrExpenseDetailView> create(HrExpenseCommand command) {

@@ -11,6 +11,13 @@ import java.util.*;
 /** 本领域固定投影目录；所有动态标识来自代码常量，外部输入仅作为绑定值。 */
 @Repository
 public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshotStore {
+    private MybatisPlusCostAnalyticsSource costs;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void costSource(MybatisPlusCostAnalyticsSource costs) {
+        this.costs = costs;
+    }
+
     private final JdbcTemplate jdbc;
 
     public JdbcAnalyticsSourceSnapshotStore(JdbcTemplate jdbc) {
@@ -246,6 +253,7 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
 
     @Override
     public String version(String tenant, String dataset) {
+        if (MybatisPlusCostAnalyticsSource.DATASET.equals(dataset)) return costs.version(tenant);
         var d = definition(dataset);
         return jdbc.queryForObject(
                 "SELECT "
@@ -261,6 +269,8 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
     @Override
     @Transactional(readOnly = true)
     public Page page(String tenant, String dataset, String after) {
+        if (MybatisPlusCostAnalyticsSource.DATASET.equals(dataset))
+            return costs.page(tenant, after);
         var d = definition(dataset);
         String cursor = after == null ? "" : after;
         if (!cursor.isEmpty() && !cursor.matches(d.binaryKey() ? "[0-9a-fA-F]{32}" : "[0-9]{1,20}"))

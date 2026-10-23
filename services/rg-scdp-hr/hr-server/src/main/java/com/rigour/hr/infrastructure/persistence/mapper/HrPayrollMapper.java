@@ -8,6 +8,7 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -19,6 +20,12 @@ public interface HrPayrollMapper extends BaseMapper<HrPayrollEntity> {
 
     @Select("SELECT version FROM hr_payroll_guard WHERE tenant_id=#{tenant} FOR UPDATE")
     Long lock(@Param("tenant") String tenant);
+
+    @Select("SELECT COALESCE((SELECT version FROM hr_payroll_guard WHERE tenant_id=#{tenant}),0)")
+    String analyticsVersion(@Param("tenant") String tenant);
+
+    @Update("UPDATE hr_payroll_guard SET version=version+1 WHERE tenant_id=#{tenant}")
+    int advanceAnalyticsVersion(@Param("tenant") String tenant);
 
     @Select(
             "SELECT revision,base_override baseOverride,performance_override"
@@ -48,6 +55,22 @@ reason=VALUES(reason),allowance_override=VALUES(allowance_override),department_o
             "SELECT CONCAT(source_line_id,'|',recipient_role_code) FROM"
                     + " hr_payroll_commission_release WHERE tenant_id=#{tenant}")
     List<String> released(@Param("tenant") String tenant);
+
+    @Select("""
+            SELECT CONCAT(r.source_line_id,'|',r.recipient_role_code)
+            FROM hr_payroll_commission_release r
+            WHERE r.tenant_id=#{tenant}
+              AND NOT EXISTS (
+                SELECT 1 FROM hr_payroll p
+                WHERE p.tenant_id=r.tenant_id AND p.id=r.payroll_id
+                  AND p.employee_code=#{employee} AND p.payroll_month=#{month}
+                  AND p.status_code IN ('CONFIRMED','PAID')
+              )
+            """)
+    List<String> releasedForCalculation(
+            @Param("tenant") String tenant,
+            @Param("employee") String employee,
+            @Param("month") String month);
 
     @Insert(
             "INSERT INTO"

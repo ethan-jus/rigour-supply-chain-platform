@@ -77,6 +77,12 @@ public interface HrPayrollApi {
     ApiResponse<PayrollInputCommand> input(
             @PathVariable String month, @PathVariable String employeeCode);
 
+    @PutMapping(BASE_PATH + "/determinations/{month}/{employeeCode}")
+    ApiResponse<PayrollDeterminationView> determination(
+            @PathVariable String month,
+            @PathVariable String employeeCode,
+            @RequestBody PayrollDeterminationCommand command);
+
     @PostMapping(BASE_PATH + "/{id}/confirm")
     ApiResponse<PayrollDetailView> confirm(
             @PathVariable String id, @RequestBody PayrollActionCommand command);

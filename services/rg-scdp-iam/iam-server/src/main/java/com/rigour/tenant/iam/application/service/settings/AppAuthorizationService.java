@@ -24,4 +24,8 @@ public final class AppAuthorizationService {
     public AppAuthorizationSnapshot authorization(CallerIdentity caller, String action) {
         return store.authorization(caller, action);
     }
+
+    public java.util.List<AppAuthorizationSnapshot> authorizations(CallerIdentity caller, java.util.List<String> actions) {
+        return store.authorizations(caller, actions);
+    }
 }

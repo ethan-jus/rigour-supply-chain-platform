@@ -447,7 +447,8 @@ class HrApplicationTests {
         assertThat(organizations.departments(tenant)).containsExactly(root, edited);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.saveDepartment(tenant, child.id(),
                 new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "旧版本覆盖", 5, "ACTIVE", child.revision(), null, null, null), "admin"))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOfSatisfying(com.rigour.shared.core.exception.BusinessException.class,
+                        failure -> assertThat(failure.getErrorCode()).isEqualTo(com.rigour.shared.core.api.ErrorCode.CONFLICT));
         var inactive = organizations.saveDepartment(tenant, child.id(),
                 new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, edited.departmentName(), 5, "INACTIVE", edited.revision(), null, null, null), "admin");
         organizations.deleteDepartment(tenant, child.id(), inactive.revision(), "admin");

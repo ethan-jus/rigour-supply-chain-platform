@@ -186,6 +186,8 @@ class HrProductCommissionRuleTest {
     }
 
     PayrollRuleCommand city(PayrollCityCommissionPolicy policy) {
+        when(store.employeePositionName(tenant, "M1", "hr:payroll-rule:write"))
+                .thenReturn("城市总");
         when(store.employee(anyString(), eq("M1"), anyString()))
                 .thenReturn(
                         new PayrollEmployeeView(

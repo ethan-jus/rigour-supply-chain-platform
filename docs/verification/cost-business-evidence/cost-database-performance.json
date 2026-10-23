@@ -1,0 +1,1 @@
+{"records":10000,"snapshotReadMs":192.28325,"projectionMs":428.454208,"environment":"isolated H2; mocked source HTTP; real MyBatis inserts and reads"}

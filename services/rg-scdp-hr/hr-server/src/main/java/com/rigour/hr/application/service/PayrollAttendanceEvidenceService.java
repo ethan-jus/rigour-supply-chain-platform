@@ -29,6 +29,38 @@ public class PayrollAttendanceEvidenceService {
         this.source = source;
     }
 
+    public boolean stopped(String tenant, Long department, YearMonth month) {
+        return components != null && components.calendarStopped(tenant, department, month.atDay(1));
+    }
+
+    public Set<Long> stoppedDepartments(String tenant, YearMonth month) {
+        return components == null
+                ? Set.of()
+                : components.stoppedCalendarDepartments(tenant, month.atDay(1));
+    }
+
+    public Optional<Integer> expectedDays(String tenant, Long department, YearMonth month) {
+        if (components == null || department == null) return Optional.empty();
+        return components
+                .calendar(tenant, department, month.atDay(1))
+                .map(
+                        rule -> {
+                            var calendar =
+                                    new HrStatutoryCalendarResolver(source)
+                                            .resolve(tenant, rule.definition().calendar(), month);
+                            return SalarySchemeCalculator.workDates(
+                                            month,
+                                            calendar.weekdays(),
+                                            calendar.workDays(),
+                                            calendar.restDays(),
+                                            calendar.alternateWeekdays() == null
+                                                    ? List.of()
+                                                    : calendar.alternateWeekdays(),
+                                            calendar.alternateAnchor())
+                                    .size();
+                        });
+    }
+
     public Map<String, Evidence> apply(
             String tenant,
             YearMonth month,

@@ -61,9 +61,8 @@ public class CostAttachmentService {
         String action = "write";
         String permission = ErpCostService.permission(c, action);
         var current = costs.entry(tenant, c, entry, permission);
-        if (!"DRAFT".equals(current.statusCode()) || current.revision() != revision)
+        if (!"DRAFT".equals(current.statusCode()))
             throw new BusinessException(ErrorCode.CONFLICT, "请刷新记录，仅待确认记录可以上传附件", List.of());
-        if (files.list(tenant, entry).size() >= 20) throw bad("每条记录最多20个附件");
         if (name == null
                 || name.isBlank()
                 || name.length() > 200
@@ -71,6 +70,15 @@ public class CostAttachmentService {
         if (bytes == null || bytes.length == 0 || bytes.length > 10 * 1024 * 1024)
             throw bad("附件须为1字节至10MB");
         if (!validContent(contentType, bytes)) throw bad("仅支持内容匹配的 PNG、JPEG 或 PDF 文件");
+        // 同一单据、文件名及内容的重试复用已有附件；不因响应丢失重复写对象或增加版本。
+        String attachmentId = attachmentId(tenant, entry, name, contentType, bytes);
+        var existing = files.list(tenant, entry);
+        var duplicate =
+                existing.stream().filter(file -> file.id().equals(attachmentId)).findFirst();
+        if (duplicate.isPresent()) return duplicate.get();
+        if (current.revision() != revision)
+            throw new BusinessException(ErrorCode.CONFLICT, "记录已更新，请刷新后上传附件", List.of());
+        if (existing.size() >= 20) throw bad("每条记录最多20个附件");
         String key = storage.upload(tenant, entry, contentType, bytes);
         if (TransactionSynchronizationManager.isSynchronizationActive())
             TransactionSynchronizationManager.registerSynchronization(
@@ -82,7 +90,7 @@ public class CostAttachmentService {
                     });
         var file =
                 new ErpCostAttachmentView(
-                        UUID.randomUUID().toString(),
+                        attachmentId,
                         name,
                         contentType,
                         bytes.length,
@@ -106,6 +114,21 @@ public class CostAttachmentService {
                     }
                 });
         return file;
+    }
+
+    static String attachmentId(
+            String tenant, String entry, String name, String type, byte[] bytes) {
+        try {
+            var digest = java.security.MessageDigest.getInstance("SHA-256");
+            for (String part : List.of(tenant, entry, name, type)) {
+                digest.update(part.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+            }
+            digest.update(bytes);
+            return UUID.nameUUIDFromBytes(digest.digest()).toString();
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     static boolean validContent(String type, byte[] b) {

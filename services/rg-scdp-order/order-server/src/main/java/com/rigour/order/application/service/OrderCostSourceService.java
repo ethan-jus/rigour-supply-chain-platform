@@ -14,6 +14,21 @@ import java.util.List;
 
 @Service
 public final class OrderCostSourceService {
+    public List<com.rigour.order.api.v1.model.OrderCityCollectionSourceView> cityCollections(
+            String city, LocalDate from, LocalDate to) {
+        String tenant = tenant("order:payroll:source-read");
+        if (city == null
+                || city.isBlank()
+                || city.length() > 64
+                || from == null
+                || to == null
+                || to.isBefore(from)
+                || java.time.temporal.ChronoUnit.DAYS.between(from, to) > 31)
+            throw new com.rigour.shared.core.exception.BusinessException(
+                    com.rigour.shared.core.api.ErrorCode.BAD_REQUEST, "城市或核算期间无效", List.of());
+        return store.cityCollections(tenant, city, from, to);
+    }
+
     public List<OrderCollectionSourceView> collections(
             String employee, LocalDate from, LocalDate to) {
         String tenant = tenant("order:payroll:source-read");

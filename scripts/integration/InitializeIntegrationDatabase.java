@@ -14,7 +14,7 @@ import org.flywaydb.core.Flyway;
  * Usage: java --class-path 'extracted/BOOT-INF/lib/*' InitializeIntegrationDatabase.java
  *        expected-mysql-hostname extracted/BOOT-INF/classes/db/migration
  * Stop Integration before running. Never reads Nacos or development defaults; refuses every nonempty
- * schema, including partial runs. Runs the B24 general-ci baseline (V1-V24); it is not an upgrade
+ * schema, including partial runs. Runs the B27 general-ci baseline (V1-V27); it is not an upgrade
  * tool. Retains built-in Feishu template configuration and Flyway history; imports no business data.
  */
 public final class InitializeIntegrationDatabase {
@@ -30,12 +30,12 @@ public final class InitializeIntegrationDatabase {
         }
         Path migrations = Path.of(args[1]).toAbsolutePath().normalize();
         if (!Files.isRegularFile(migrations.resolve("V1__integration_dinghuobao.sql"))
-                || !Files.isRegularFile(migrations.resolve("V24__dhb_object_sync_checkpoint.sql"))) {
-            throw new IllegalArgumentException("Integration V1-V24 migrations required: " + migrations);
+                || !Files.isRegularFile(migrations.resolve("V27__sync_schedule.sql"))) {
+            throw new IllegalArgumentException("Integration V1-V27 migrations required: " + migrations);
         }
         Path bootstrap = migrations.resolveSibling("bootstrap");
-        if (!Files.isRegularFile(bootstrap.resolve("B24__general_ci_bootstrap.sql"))) {
-            throw new IllegalArgumentException("Updated Integration JAR and db/bootstrap/B24__general_ci_bootstrap.sql required");
+        if (!Files.isRegularFile(bootstrap.resolve("B27__general_ci_bootstrap.sql"))) {
+            throw new IllegalArgumentException("Updated Integration JAR and db/bootstrap/B27__general_ci_bootstrap.sql required");
         }
         Console console = System.console();
         if (console == null) {
@@ -81,7 +81,7 @@ public final class InitializeIntegrationDatabase {
                 .schemas(SCHEMA)
                 .createSchemas(false)
                 .locations("filesystem:" + migrations, "filesystem:" + bootstrap)
-                .target("24")
+                .target("27")
                 .cleanDisabled(true)
                 .baselineOnMigrate(false)
                 .validateOnMigrate(true)

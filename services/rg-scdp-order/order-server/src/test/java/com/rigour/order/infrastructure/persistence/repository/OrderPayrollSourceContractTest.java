@@ -118,10 +118,39 @@ public class OrderPayrollSourceContractTest {
     }
 
     @Test
+    void cityReceiptsIncludeAllPartialPaymentsWithoutNettingRefundsOrDuplicatingOrderLines() {
+        jdbc.update(
+                "INSERT INTO order_refund_record VALUES(1,'t',1,200,'2026-09-20"
+                        + " 02:00:00','CONFIRMED',0)");
+        jdbc.update(
+                "INSERT INTO order_payment_record VALUES(99,'other',1,9999,'2026-09-10"
+                        + " 02:00:00','RECEIVED',0)");
+        var from = LocalDateTime.of(2026, 8, 31, 16, 0);
+        var until = LocalDateTime.of(2026, 9, 30, 16, 0);
+        var rows = mapper.cityCollections("t", "ORIGINAL-CITY", from, until);
+        assertThat(rows).hasSize(1);
+        assertThat(rows)
+                .extracting(r -> r.amount())
+                .containsExactly(new java.math.BigDecimal("2000.00"));
+        assertThat(rows)
+                .allSatisfy(
+                        r -> {
+                            assertThat(r.qualityStatus()).isEqualTo("COMPLETE");
+                            assertThat(r.cityCode()).isEqualTo("ORIGINAL-CITY");
+                        });
+        assertThat(mapper.cityCollections("t", "NEW-CITY", from, until)).isEmpty();
+        assertThat(mapper.cityCollections("other", "ORIGINAL-CITY", from, until)).isEmpty();
+    }
+
+    @Test
     void importedOrderUsesItsRecordedOwnerButNeverBypassesExistingReviewOrMissingOwner() {
         jdbc.update("DELETE FROM order_attribution_snapshot");
         jdbc.update("UPDATE order_sales_order SET source_system_code='DHB'");
         var until = LocalDateTime.of(2026, 10, 31, 16, 0);
+        var from = LocalDateTime.of(2026, 8, 31, 16, 0);
+        assertThat(mapper.cityCollections("t", "NEW-CITY", from, until))
+                .hasSize(2)
+                .allSatisfy(row -> assertThat(row.qualityStatus()).isEqualTo("COMPLETE"));
         assertThat(mapper.payrollLines("t", "NEW", null, until))
                 .allSatisfy(
                         line -> {
@@ -131,16 +160,28 @@ public class OrderPayrollSourceContractTest {
                         });
         jdbc.update(
                 "INSERT INTO order_attribution_snapshot VALUES('t',1,'NEW','NEW-CITY',7,'REVIEW')");
+        assertThat(mapper.cityCollections("t", "NEW-CITY", from, until))
+                .hasSize(2)
+                .allSatisfy(
+                        row -> assertThat(row.qualityStatus()).isEqualTo("ATTRIBUTION_PENDING"));
         assertThat(mapper.payrollLines("t", "NEW", null, until))
                 .allSatisfy(
                         line -> assertThat(line.qualityStatus()).isEqualTo("ATTRIBUTION_PENDING"));
         jdbc.update("DELETE FROM order_attribution_snapshot");
         jdbc.update("UPDATE order_sales_order SET owner_employee_code=NULL");
+        assertThat(mapper.cityCollections("t", "NEW-CITY", from, until))
+                .hasSize(2)
+                .allSatisfy(
+                        row -> assertThat(row.qualityStatus()).isEqualTo("ATTRIBUTION_PENDING"));
         assertThat(mapper.payrollLines("t", null, "NEW-CITY", until))
                 .allSatisfy(
                         line -> assertThat(line.qualityStatus()).isEqualTo("ATTRIBUTION_PENDING"));
         jdbc.update(
                 "UPDATE order_sales_order SET owner_employee_code='NEW',source_system_code=NULL");
+        assertThat(mapper.cityCollections("t", "NEW-CITY", from, until))
+                .hasSize(2)
+                .allSatisfy(
+                        row -> assertThat(row.qualityStatus()).isEqualTo("ATTRIBUTION_PENDING"));
         assertThat(mapper.payrollLines("t", "NEW", null, until))
                 .allSatisfy(
                         line -> assertThat(line.qualityStatus()).isEqualTo("ATTRIBUTION_PENDING"));

@@ -39,7 +39,8 @@ public class ConfiguredCommissionService {
             List<PayrollRuleView> assignments) {
         List<String> issues = new ArrayList<>();
         List<PayrollCommissionDetailView> details = new ArrayList<>();
-        var released = payroll.released(tenant);
+        var released =
+                payroll.releasedForCalculation(tenant, employee.employeeCode(), month.toString());
         // 只有已整单付清的订单进入计提，未付清商品也不要求提前匹配经济标准。
         facts =
                 facts.stream()
@@ -411,16 +412,20 @@ public class ConfiguredCommissionService {
         }
         List<PayrollSchemeCommissionRule> candidates = new ArrayList<>();
         int best = Integer.MAX_VALUE;
+        boolean explicitlyExcluded = false;
         for (var rule : standard.definition().commission().rules()) {
-            if (!role.equals(rule.recipientRole())
-                    || rule.excludedVariantIds().contains(f.productVariantId())
-                    || distance(product.categoryId(), rule.excludedCategoryIds(), categories) >= 0)
-                continue;
+            if (!role.equals(rule.recipientRole())) continue;
             int priority =
                     rule.variantIds().contains(f.productVariantId())
                             ? 0
                             : distance(product.categoryId(), rule.categoryIds(), categories);
             if (priority < 0) continue;
+            if (rule.excludedVariantIds().contains(f.productVariantId())
+                    || distance(product.categoryId(), rule.excludedCategoryIds(), categories)
+                            >= 0) {
+                explicitlyExcluded = true;
+                continue;
+            }
             if (!rule.variantIds().contains(f.productVariantId())) priority += 1;
             if (priority < best) {
                 candidates.clear();
@@ -428,6 +433,9 @@ public class ConfiguredCommissionService {
             }
             if (priority == best) candidates.add(rule);
         }
+        // An explicit exception is a configured zero, not a missing commission standard.
+        // A separate applicable SKU standard can still take precedence over a category exception.
+        if (candidates.isEmpty() && explicitlyExcluded) return;
         if (candidates.size() != 1) {
             issues.add(
                     f.orderNo()

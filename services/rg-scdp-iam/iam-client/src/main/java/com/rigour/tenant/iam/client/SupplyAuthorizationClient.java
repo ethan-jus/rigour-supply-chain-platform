@@ -6,4 +6,10 @@ import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView;
 /** 原操作人身份透传给 IAM；禁止将业务请求替换成具有全局权限的服务账号。 */
 public interface SupplyAuthorizationClient {
     SupplyAuthorizationView authorization(CallerIdentity caller, String action);
+
+    default boolean supportsBatchAuthorization() { return false; }
+
+    default java.util.List<SupplyAuthorizationView> authorizations(CallerIdentity caller, java.util.List<String> actions) {
+        return actions.stream().map(action -> authorization(caller, action)).toList();
+    }
 }

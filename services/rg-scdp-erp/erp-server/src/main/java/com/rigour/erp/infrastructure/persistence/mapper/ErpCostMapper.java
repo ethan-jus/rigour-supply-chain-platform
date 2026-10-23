@@ -7,6 +7,7 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface ErpCostMapper extends BaseMapper<ErpCostEntity> {
@@ -15,4 +16,11 @@ public interface ErpCostMapper extends BaseMapper<ErpCostEntity> {
 
     @Select("SELECT version FROM erp_cost_guard WHERE tenant_id=#{tenant} FOR UPDATE")
     long lock(@Param("tenant") String tenant);
+
+    @Update("UPDATE erp_cost_guard SET version=version+1 WHERE tenant_id=#{tenant}")
+    void advanceAnalyticsVersion(@org.apache.ibatis.annotations.Param("tenant") String tenant);
+
+    @org.apache.ibatis.annotations.Select(
+            "SELECT COALESCE((SELECT version FROM erp_cost_guard WHERE tenant_id=#{tenant}),0)")
+    String analyticsVersion(@org.apache.ibatis.annotations.Param("tenant") String tenant);
 }

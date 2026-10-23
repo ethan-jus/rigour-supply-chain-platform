@@ -213,7 +213,12 @@ public class MybatisPlusHrPayrollSchemeRepository implements HrPayrollSchemeStor
         if (r == null) return new PayrollSchemeFactsView(0, null, List.of(), "");
         var c = json.readValue(r.getDataJson(), PayrollSchemeFactsCommand.class);
         return new PayrollSchemeFactsView(
-                r.getRevision(), c.performanceBase(), c.metrics(), c.reason());
+                r.getRevision(),
+                c.performanceBase(),
+                c.metrics(),
+                c.reason(),
+                c.performanceCompletionPercent(),
+                c.commissionAdjustment());
     }
 
     private QueryWrapper<HrPayrollSchemeInputEntity> inputQuery(

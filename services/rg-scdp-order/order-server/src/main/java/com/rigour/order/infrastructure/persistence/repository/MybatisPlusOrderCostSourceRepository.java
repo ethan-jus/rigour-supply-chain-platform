@@ -36,6 +36,24 @@ public class MybatisPlusOrderCostSourceRepository implements OrderCostSourceStor
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public List<com.rigour.order.api.v1.model.OrderCityCollectionSourceView> cityCollections(
+            String tenant, String city, LocalDate from, LocalDate to) {
+        var rows =
+                mapper.cityCollections(
+                        tenant,
+                        city,
+                        from.atStartOfDay().minusHours(8),
+                        to.plusDays(1).atStartOfDay().minusHours(8));
+        if (rows.size() > 20000)
+            throw new com.rigour.shared.core.exception.BusinessException(
+                    com.rigour.shared.core.api.ErrorCode.BAD_REQUEST,
+                    "城市到账来源超过上限，请分期核对",
+                    List.of());
+        return rows;
+    }
+
+    @Override
     public List<OrderDeliveryCostSourceView> deliveries(
             String tenant, String keyword, List<Long> ids) {
         return deliveries(tenant, keyword, ids, null, 0, null);

@@ -10,8 +10,8 @@ DB_URL_PARAMS="${DB_URL_PARAMS:-useUnicode=true&characterEncoding=UTF-8&connecti
 SERVICES="${SERVICES:-settings iam integration erp crm order hr}"
 ACTION="${ACTION:-migrate}"
 
-if [[ "$ACTION" != "info" && "$ACTION" != "validate" && "$ACTION" != "migrate" && "$ACTION" != "repair" ]]; then
-  printf 'ACTION must be one of: info, validate, migrate, repair\n' >&2
+if [[ "$ACTION" != "info" && "$ACTION" != "validate" && "$ACTION" != "migrate" ]]; then
+  printf 'ACTION must be one of: info, validate, migrate\n' >&2
   exit 2
 fi
 
@@ -32,10 +32,9 @@ import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.MigrationInfo;
 import org.flywaydb.core.api.MigrationInfoService;
 import org.flywaydb.core.api.output.MigrateResult;
-import org.flywaydb.core.api.output.RepairResult;
 
 public final class FlywayServiceRunner {
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         if (args.length != 4) {
             throw new IllegalArgumentException("Usage: FlywayServiceRunner <action> <schema> <jdbcUrl> <location>");
         }
@@ -43,7 +42,7 @@ public final class FlywayServiceRunner {
         String schema = args[1];
         String jdbcUrl = args[2];
         String location = args[3];
-        Flyway flyway = Flyway.configure()
+        var configuration = Flyway.configure()
                 .dataSource(jdbcUrl, requiredEnv("DB_USER"), requiredEnv("DB_PASSWORD"))
                 .defaultSchema(schema)
                 .schemas(schema)
@@ -52,8 +51,13 @@ public final class FlywayServiceRunner {
                 .baselineOnMigrate(false)
                 .cleanDisabled(true)
                 .validateOnMigrate(true)
-                .outOfOrder(false)
-                .load();
+                .outOfOrder(false);
+        if ("rigour_iam".equals(schema)) {
+            Class.forName("com.rigour.tenant.iam.infrastructure.persistence.migration.IamV139MigrationResources")
+                    .getMethod("configure", org.flywaydb.core.api.configuration.FluentConfiguration.class)
+                    .invoke(null, configuration);
+        }
+        Flyway flyway = configuration.load();
         switch (action) {
             case "info" -> printInfo(schema, flyway.info());
             case "validate" -> {
@@ -64,12 +68,6 @@ public final class FlywayServiceRunner {
                 MigrateResult result = flyway.migrate();
                 System.out.printf("%s migrate OK initial=%s target=%s migrations=%d%n",
                         schema, result.initialSchemaVersion, result.targetSchemaVersion, result.migrationsExecuted);
-                printInfo(schema, flyway.info());
-            }
-            case "repair" -> {
-                RepairResult result = flyway.repair();
-                System.out.printf("%s repair OK migrationsRemoved=%d migrationsDeleted=%d migrationsAligned=%d%n",
-                        schema, result.migrationsRemoved.size(), result.migrationsDeleted.size(), result.migrationsAligned.size());
                 printInfo(schema, flyway.info());
             }
             default -> throw new IllegalArgumentException("Unsupported action: " + action);
@@ -153,6 +151,12 @@ for service in $SERVICES; do
   "$ROOT_DIR/mvnw" -q -f "$pom" dependency:build-classpath \
     -Dmdep.outputFile="$classpath_file" \
     -DincludeScope=runtime
-  javac -cp "$(cat "$classpath_file")" "$TMP_DIR/FlywayServiceRunner.java"
+  if [[ "$service" == "iam" ]]; then
+    javac -cp "$(cat "$classpath_file")" -d "$TMP_DIR" \
+      "$ROOT_DIR/services/rg-scdp-iam/iam-server/src/main/java/com/rigour/tenant/iam/infrastructure/persistence/migration/IamV139MigrationResources.java" \
+      "$TMP_DIR/FlywayServiceRunner.java"
+  else
+    javac -cp "$(cat "$classpath_file")" -d "$TMP_DIR" "$TMP_DIR/FlywayServiceRunner.java"
+  fi
   java -cp "$(cat "$classpath_file"):$TMP_DIR" FlywayServiceRunner "$ACTION" "$schema" "$jdbc_url" "$location"
 done

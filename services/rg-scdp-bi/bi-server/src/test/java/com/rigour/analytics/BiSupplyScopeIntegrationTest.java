@@ -781,12 +781,77 @@ class BiSupplyScopeIntegrationTest {
                 1,
                 1,
                 1,
-                Set.of("analytics:dashboard:read"),
+                actor.permissions(),
                 "analytics:dashboard:read",
                 true,
                 clauses,
                 regions,
                 warehouses);
+    }
+
+    private void grantAdditionalAction(String action) {
+        var permissions = new HashSet<>(actor.permissions());
+        permissions.add(action);
+        actor = new CallerIdentity(actor.principalScope(), actor.principalId(), actor.tenantId(),
+                actor.userId(), actor.platformUserId(), actor.sessionId(), actor.sessionVersion(),
+                actor.userSecurityVersion(), actor.tenantPolicyVersion(), actor.roles(), permissions);
+        TestAuthorizationContext.set(actor);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "SELF,2,300", "REGION,2,1000", "ALL,3,1200", "SELF_HZ,1,100"
+    })
+    void batchedTargetActualsMatchScalarQueriesWithinCurrentScope(
+            String mode, int customers, int amount) {
+        fact(9501, "A", "HZ", 10, 11, 100);
+        fact(9502, "A", "NB", 10, 11, 200);
+        fact(9503, "B", "HZ", 20, 22, 900);
+        jdbc.update("UPDATE bi_sales_order_fact SET customer_id=order_id,order_date='2026-10-15',"
+                + "order_status_code='COMPLETED',deleted=0 WHERE tenant_id=?", tenant);
+        jdbc.update("""
+                INSERT INTO bi_sales_order_line_fact
+                    (tenant_id,order_id,order_line_id,owner_staff_code,region_code,brand_name,
+                     line_amount,order_date,order_status_code,deleted,synced_time)
+                SELECT tenant_id,order_id,order_id,owner_staff_code,region_code,
+                       '杨掌柜 X CBSA世界斯诺克学院',payable_amount,order_date,'COMPLETED',0,UTC_TIMESTAMP(6)
+                  FROM bi_sales_order_fact WHERE tenant_id=?
+                """, tenant);
+        var p = switch (mode) {
+            case "SELF" -> policy(List.of(clause("SELF", none(), all(), none())), all(), all());
+            case "SELF_HZ" -> policy(List.of(clause("SELF", none(), all(), none())), specified("HZ"), all());
+            case "REGION" -> policy(List.of(clause("REGION", none(), specified("HZ"), none())), all(), all());
+            default -> policy(List.of(clause("ALL", all(), all(), all())), all(), all());
+        };
+        when(iam.authorization(any(), any())).thenReturn(p);
+        var from = java.time.LocalDateTime.of(2026, 10, 1, 0, 0);
+        var to = java.time.LocalDateTime.of(2026, 10, 23, 15, 59, 59);
+        try (var ctx = SupplyAuthorizationContext.open(iam, actor, p);
+                var session = sessions.openSession()) {
+            var mapper = session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
+            for (boolean city : List.of(false, true)) {
+                var rows = mapper.targetBusinessActuals(tenant, from, to, null, null, city);
+                var count = java.math.BigDecimal.ZERO;
+                var brand = java.math.BigDecimal.ZERO;
+                for (var row : rows) {
+                    String code = (String) row.get("dimensionCode");
+                    var value = new java.math.BigDecimal(row.get("actualValue").toString());
+                    if ("ORDERED_STORE_COUNT".equals(row.get("metricCode"))) {
+                        var legacy = mapper.customerRetention(tenant, from, to,
+                                city ? code : null, city ? null : code, null, null);
+                        assertThat(value).isEqualByComparingTo(legacy.get("orderingCustomerCount").toString());
+                        count = count.add(value);
+                    } else {
+                        assertThat(value).isEqualByComparingTo(mapper.yangzhangguiTargetSales(tenant,
+                                from, to, city ? code : null, city ? null : code));
+                        brand = brand.add(value);
+                    }
+                }
+                assertThat(count).isEqualByComparingTo(String.valueOf(customers));
+                assertThat(brand).isEqualByComparingTo(String.valueOf(amount));
+                assertThat(mapper.targetBusinessActuals(tenant, from, to, "UNKNOWN-CITY", null, city)).isEmpty();
+            }
+        }
     }
 
     static Clause clause(String scope, Limit department, Limit region, Limit warehouse) {
@@ -808,6 +873,7 @@ class BiSupplyScopeIntegrationTest {
 
     @Test
     void targetsRequireWholeFootprintAndWritesCannotBorrowReadScope() {
+        grantAdditionalAction("analytics:targets:write");
         fact(901, "A", "HZ", 10, 11, 100);
         fact(902, "B", "HZ", 10, 11, 100);
         fact(903, "B", "NB", 10, 11, 100);
@@ -834,7 +900,7 @@ class BiSupplyScopeIntegrationTest {
                             1,
                             1,
                             1,
-                            Set.of("analytics:targets:write"),
+                            actor.permissions(),
                             "analytics:targets:write",
                             true,
                             List.of(clause("REGION", none(), specified("NB"), none())),
@@ -918,6 +984,7 @@ class BiSupplyScopeIntegrationTest {
 
     @Test
     void cityCostImportUsesWriteScopeAndCannotAdoptAnOutOfScopeRecord() {
+        grantAdditionalAction("analytics:city-cost:write");
         jdbc.update(
                 "INSERT INTO bi_region_authority(tenant_id,region_code,region_path)"
                         + " VALUES(?,'HZ',JSON_ARRAY('HZ')),(?,'NB',JSON_ARRAY('NB'))",
@@ -934,7 +1001,7 @@ class BiSupplyScopeIntegrationTest {
                         1,
                         1,
                         1,
-                        Set.of("analytics:city-cost:write"),
+                        actor.permissions(),
                         "analytics:city-cost:write",
                         true,
                         List.of(clause("REGION", none(), specified("HZ"), none())),
@@ -1000,6 +1067,70 @@ class BiSupplyScopeIntegrationTest {
 
     @Autowired com.rigour.analytics.application.port.out.EmployeeAnalyticsStore employeeStore;
     @Autowired com.rigour.analytics.application.port.out.VisitAnalyticsStore visitStore;
+
+    @Test
+    void employeeCityAliasesUseOperatingCodesWithoutDuplicateRowsOrGuessingAmbiguousNames() {
+        department(1, null, "SALES", "销售部");
+        department(10, 1L, "CITY-WH", "武汉市");
+        department(20, 1L, "CITY-HZ", "杭州市");
+        department(30, 1L, "CITY-J1", "江城市");
+        department(31, 1L, "CITY-J2", "江城市");
+        department(40, 1L, "CITY-K1", "昆明");
+        department(41, 1L, "CITY-K2", "昆明市");
+        department(50, 1L, "PROVINCE", "湖北省");
+        jdbc.update("INSERT INTO bi_source_crm_crm_customer_area(id,tenant_id,area_code,area_name,status,deleted)"
+                + " VALUES(UUID_TO_BIN(UUID()),UUID_TO_BIN(?),'RAW-WH','武汉市','ACTIVE',0),"
+                + "(UUID_TO_BIN(UUID()),UUID_TO_BIN(?),'RAW-HZ','杭州市','ACTIVE',0)", tenant, tenant);
+        String[] cities = {"武汉", " 武汉市 ", "杭州", "江城", "江城市", "昆明", "昆明市", "湖北省", "总部", null, "武汉"};
+        String[] employees = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"};
+        for (int i = 0; i < cities.length; i++) {
+            int department = i == 0 || i == 1 ? 10 : 20;
+            jdbc.update("INSERT INTO bi_source_hr_hr_employee(id,tenant_id,employee_code,employee_name,"
+                    + "employment_status,city_name,department_id,department_path) VALUES(?,?,?,?,'ACTIVE',?,?,JSON_ARRAY(?))",
+                    i + 1, tenant, employees[i], employees[i], cities[i], department, department);
+        }
+        String other = UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO bi_source_hr_hr_employee(id,tenant_id,employee_code,employee_name,"
+                + "employment_status,city_name) VALUES(1,?,'A','另一租户','ACTIVE','武汉')", other);
+        employeeStore.refresh(tenant, java.time.Instant.now());
+        productionMapper.refreshCityDimension(tenant);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_employee_dim WHERE tenant_id=?", Integer.class, tenant))
+                .isEqualTo(11);
+        var assigned = new HashMap<String, String>();
+        jdbc.query("SELECT employee_code,region_code FROM bi_employee_dim WHERE tenant_id=?", rs -> {
+            assigned.put(rs.getString(1), rs.getString(2));
+        }, tenant);
+        assertThat(assigned).containsEntry("A", "CITY-WH").containsEntry("B", "CITY-WH")
+                .containsEntry("C", "CITY-HZ").containsEntry("F", "CITY-K1")
+                .containsEntry("G", "CITY-K2").containsEntry("I", "COST_HEADQUARTERS")
+                .containsEntry("K", "CITY-WH");
+        for (String code : List.of("D", "E", "H", "J")) assertThat(assigned.get(code)).isNull();
+        assertThat(jdbc.queryForObject("SELECT city_name FROM bi_source_hr_hr_employee WHERE tenant_id=? AND employee_code='A'",
+                String.class, tenant)).isEqualTo("武汉");
+        jdbc.update("INSERT INTO bi_region_authority(tenant_id,region_code,region_path)"
+                + " VALUES(?,'RAW-WH',JSON_ARRAY('PROVINCE-HB','RAW-WH')),(?,'RAW-HZ',JSON_ARRAY('PROVINCE-ZJ','RAW-HZ'))", tenant, tenant);
+        var from = java.time.Instant.parse("2026-10-01T00:00:00Z");
+        var to = java.time.Instant.parse("2026-10-23T15:59:59Z");
+        var wh = policy(List.of(clause("REGION", none(), specified("RAW-WH"), none())), all(), all());
+        when(iam.authorization(any(), any())).thenReturn(wh);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, wh)) {
+            assertThat(employeeStore.read(tenant, from, to, "CITY-WH", null).rows())
+                    .extracting(r -> r.employee().employeeCode()).containsExactlyInAnyOrder("A", "B", "K");
+            assertThat(employeeStore.read(tenant, from, to, "CITY-HZ", null).rows()).isEmpty();
+        }
+        var department = policy(List.of(clause("DEPARTMENT", specified("10"), all(), none())), all(), all());
+        when(iam.authorization(any(), any())).thenReturn(department);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, department)) {
+            assertThat(employeeStore.read(tenant, from, to, null, null).rows())
+                    .extracting(r -> r.employee().employeeCode()).containsExactlyInAnyOrder("A", "B");
+        }
+        var self = policy(List.of(clause("SELF", none(), all(), none())), all(), all());
+        when(iam.authorization(any(), any())).thenReturn(self);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, self)) {
+            assertThat(employeeStore.read(tenant, from, to, "CITY-WH", null).rows())
+                    .extracting(r -> r.employee().employeeCode()).containsExactly("A");
+        }
+    }
 
     @Autowired
     com.rigour.analytics.application.port.out.CustomerAttributeAnalyticsStore attributeStore;

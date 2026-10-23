@@ -43,22 +43,45 @@ public class JdbcEmployeeAnalyticsStore implements EmployeeAnalyticsStore {
         var args =
                 new MapSqlParameterSource("tenant", tenantId).addValue("synced", local(syncedAt));
         // 一个事务替换完整快照；来源失败会回滚旧投影，绝不把失败转换为零员工。
+        // HR仅有城市名称。使用与筛选项相同的经营城市代码，精确名优先，简称唯一才关联；
+        // CRM镜像没有地区层级，不能将省、散客或同名地区推断成经营城市。
         jdbc.update("DELETE FROM bi_employee_dim WHERE tenant_id = :tenant", args);
         int count =
                 jdbc.update(
                         """
 INSERT INTO bi_employee_dim (tenant_id, employee_code, employee_name, employment_status,
     city_name, region_code, position_name, department_name, department_id, department_path, entry_date, leave_date, synced_time)
+WITH operating_cities(tenant_id,region_code,city_name,department_id,department_path,source_region_code) AS (
+""" + com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.SELECT.replace("#{tenantId}", ":tenant") + """
+), eligible_cities AS (
+    SELECT TRIM(city_name) AS city_name, region_code
+      FROM operating_cities
+     WHERE NULLIF(TRIM(city_name), '') IS NOT NULL
+       AND TRIM(city_name) NOT IN ('总部','全国','散客','大客户地区')
+       AND TRIM(city_name) NOT LIKE '%省' AND TRIM(city_name) NOT LIKE '%自治区'
+), exact_names AS (
+    SELECT city_name,MIN(region_code) AS region_code FROM eligible_cities
+     GROUP BY city_name HAVING COUNT(DISTINCT region_code)=1
+), city_aliases AS (
+    SELECT CASE WHEN RIGHT(city_name,1)='市' THEN LEFT(city_name,CHAR_LENGTH(city_name)-1)
+                ELSE city_name END AS city_alias, MIN(region_code) AS region_code,
+           MIN(city_name) AS city_name
+      FROM eligible_cities
+     GROUP BY CASE WHEN RIGHT(city_name,1)='市' THEN LEFT(city_name,CHAR_LENGTH(city_name)-1)
+                   ELSE city_name END
+    HAVING COUNT(DISTINCT region_code)=1
+)
 SELECT e.tenant_id, e.employee_code, e.employee_name, e.employment_status,
-       NULLIF(TRIM(e.city_name), ''), a.area_code,
+       CASE WHEN TRIM(e.city_name)='总部' THEN '总部'
+            ELSE COALESCE(exact_city.city_name,alias_city.city_name,NULLIF(TRIM(e.city_name),'')) END,
+       CASE WHEN TRIM(e.city_name)='总部' THEN 'COST_HEADQUARTERS'
+            ELSE COALESCE(exact_city.region_code,alias_city.region_code) END,
        e.position_name, e.department_name, e.department_id, e.department_path, e.entry_date,e.leave_date,:synced
   FROM bi_source_hr_hr_employee e
-  LEFT JOIN (
-       SELECT TRIM(area_name) AS area_name, MIN(area_code) AS area_code
-         FROM bi_source_crm_crm_customer_area
-        WHERE tenant_id = UUID_TO_BIN(:tenant) AND deleted = 0 AND status = 'ACTIVE'
-        GROUP BY TRIM(area_name) HAVING COUNT(*) = 1
-  ) a ON a.area_name = TRIM(e.city_name)
+  LEFT JOIN exact_names exact_city ON exact_city.city_name=TRIM(e.city_name)
+  LEFT JOIN city_aliases alias_city ON exact_city.region_code IS NULL
+   AND alias_city.city_alias=CASE WHEN RIGHT(TRIM(e.city_name),1)='市'
+           THEN LEFT(TRIM(e.city_name),CHAR_LENGTH(TRIM(e.city_name))-1) ELSE TRIM(e.city_name) END
  WHERE e.tenant_id = :tenant
 """,
                         args);

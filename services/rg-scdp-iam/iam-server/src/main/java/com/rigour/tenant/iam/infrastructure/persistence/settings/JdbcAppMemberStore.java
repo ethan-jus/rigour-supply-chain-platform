@@ -373,7 +373,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
                                 bin(target),
                                 c.status(),
                                 c.remark());
-                    } else
+                    } else {
                         jdbc.update(
                                 "UPDATE iam_app_member SET"
                                     + " status=?,remark=?,version=version+1,security_version=security_version+1,updated_at=UTC_TIMESTAMP(6)"
@@ -383,6 +383,12 @@ public class JdbcAppMemberStore implements AppMemberStore {
                                 tenant(a),
                                 app(),
                                 bin(target));
+                        // 用户管理展示的姓名取自关联员工，保存时同步登录身份，避免两处实名不一致。
+                        jdbc.update(
+                                "UPDATE iam_user SET display_name=?,updated_at=UTC_TIMESTAMP(6),updated_by=?"
+                                        + " WHERE tenant_id=? AND id=? AND deleted_at IS NULL",
+                                employee.employeeName(), bin(a.principalId()), tenant(a), bin(target));
+                    }
                     if (bindingChanged) {
                         if (settings.count(
                                         "SELECT COUNT(*) FROM iam_app_employee_binding WHERE"

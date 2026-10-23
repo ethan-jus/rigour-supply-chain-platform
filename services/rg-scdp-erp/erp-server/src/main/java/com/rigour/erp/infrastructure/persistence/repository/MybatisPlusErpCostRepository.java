@@ -63,6 +63,8 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
     private void lock(String tenant) {
         mapper.ensureGuard(tenant);
         mapper.lock(tenant);
+        // 与费用写入处于同一事务；失败回滚，确认、更正及作废均推进分析版本。
+        mapper.advanceAnalyticsVersion(tenant);
     }
 
     private QueryWrapper<ErpCostEntity> where(String tenant, String category, String action) {
@@ -574,7 +576,12 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                     "products".equals(kind)
                             ? "p.product_code"
                             : "variants".equals(kind) ? "v.variant_code" : "s.supplier_code";
-            q.and(w -> w.like(name, keyword).or().like(code, keyword));
+            q.and(
+                    w -> {
+                        w.like(name, keyword).or().like(code, keyword);
+                        if ("variants".equals(kind))
+                            w.or().like("v.specification_snapshot", keyword);
+                    });
         }
         q.orderByAsc(alias + ".id").last("LIMIT 50 OFFSET " + Math.max(0, begin));
         return switch (kind) {

@@ -153,4 +153,83 @@ class SalarySchemeCalculatorTest {
                         "NONE");
         assertEquals(d("2400.00"), over.amount());
     }
+
+    @Test
+    void actualCompletionUsesWeightedRateWithoutTierMappingOrCap() {
+        var metrics =
+                List.of(
+                        new ManagerMetric("A", "销售", d("110"), d("100"), d("40"), List.of(), null),
+                        new ManagerMetric("B", "回款", d("150"), d("100"), d("60"), List.of(), null));
+        var result =
+                SalarySchemeCalculator.manager(
+                        d("8000"),
+                        metrics,
+                        List.of(),
+                        null,
+                        YearMonth.of(2026, 9),
+                        LocalDate.of(2026, 1, 1),
+                        null,
+                        LocalDate.of(2026, 2, 1),
+                        false,
+                        Set.of(),
+                        "CALENDAR_DAYS",
+                        "ACTUAL_COMPLETION");
+        assertTrue(result.issues().isEmpty());
+        assertEquals(0, result.weightedCompletion().compareTo(d("1.34")));
+        assertEquals(d("10720.00"), result.amount());
+        var uncapped =
+                SalarySchemeCalculator.manager(
+                        d("4000"),
+                        List.of(
+                                new ManagerMetric(
+                                        "A", "回款", d("400"), d("100"), d("100"), List.of(), null)),
+                        List.of(),
+                        d("3"),
+                        YearMonth.of(2026, 9),
+                        LocalDate.of(2026, 1, 1),
+                        null,
+                        LocalDate.of(2026, 2, 1),
+                        false,
+                        Set.of(),
+                        "NONE",
+                        "ACTUAL_COMPLETION");
+        assertEquals(d("16000.00"), uncapped.amount());
+    }
+
+    @Test
+    void personalSalaryChangeAndProtectionAreWeightedTogetherByDate() {
+        var month = YearMonth.of(2026, 9);
+        var entry = LocalDate.of(2026, 1, 1);
+        assertEquals(
+                d("10000.00"),
+                PersonalSalaryCalculator.managerAmount(
+                        d("4000"),
+                        d("8000"),
+                        LocalDate.of(2026, 9, 16),
+                        d("2"),
+                        LocalDate.of(2026, 9, 16),
+                        month,
+                        entry,
+                        null,
+                        Set.of(),
+                        "CALENDAR_DAYS"));
+        // 15 days at 80% + 15 days at 100%, not 80% for the entire transition month.
+        assertEquals(
+                0,
+                PersonalSalaryCalculator.average(
+                                d("8000"),
+                                null,
+                                null,
+                                LocalDate.of(2026, 9, 16),
+                                d("80"),
+                                month,
+                                entry,
+                                null,
+                                Set.of(),
+                                "CALENDAR_DAYS")
+                        .compareTo(d("7200")));
+        assertEquals(
+                LocalDate.of(2026, 11, 10),
+                SalarySchemeCalculator.protectionUntil(LocalDate.of(2026, 10, 10), "MONTHS", 1));
+    }
 }

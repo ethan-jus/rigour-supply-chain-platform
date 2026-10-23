@@ -117,6 +117,8 @@ class IamApplicationTests {
         registry.add("spring.flyway.url", MYSQL::getJdbcUrl);
         registry.add("spring.flyway.user", MYSQL::getUsername);
         registry.add("spring.flyway.password", MYSQL::getPassword);
+        // Exercise the historical V1-to-current chain; fresh B120 is covered by IamSchemaMigrationTest.
+        registry.add("spring.flyway.locations", () -> "classpath:db/migration");
         registry.add("rigour.iam.oidc.authorization-attributes.enabled", () -> "true");
         registry.add("rigour.iam.oidc.authorization-attributes.active-key-version", () -> "v1");
         registry.add(
@@ -168,9 +170,11 @@ class IamApplicationTests {
     @Test
     void contextLoadsAndMigratesIamSchema() throws java.io.IOException {
         int migrationCount =
-                new org.springframework.core.io.support.PathMatchingResourcePatternResolver()
-                        .getResources("classpath:db/migration/V*.sql")
-                        .length;
+                (int) Arrays.stream(new org.springframework.core.io.support.PathMatchingResourcePatternResolver()
+                        .getResources("classpath:db/migration/V*.sql"))
+                        .map(resource -> org.flywaydb.core.api.MigrationVersion.fromVersion(
+                                resource.getFilename().substring(1).split("__", 2)[0]))
+                        .distinct().count();
         assertCount("SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1", migrationCount);
         assertCount(
                 "SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1 AND version IN"
@@ -239,9 +243,9 @@ class IamApplicationTests {
         assertThat(
                         jdbcTemplate.queryForList(
                                 "SELECT permission_code FROM iam_resource "
-                                        // V123 deliberately reuses the BI read action on these two pages.
+                                        // V123/V141 deliberately reuse the BI read action on these pages.
                                         + "WHERE permission_code IS NOT NULL AND NOT (permission_code='analytics:dashboard:read'"
-                                        + " AND resource_code IN ('SUPPLY_CHAIN.PAGE.BI_SALES','SUPPLY_CHAIN.PAGE.BI_CITY_OPERATING'))",
+                                        + " AND resource_code IN ('SUPPLY_CHAIN.PAGE.BI_SALES','SUPPLY_CHAIN.PAGE.BI_CITY_OPERATING','SUPPLY_CHAIN.PAGE.BI_PAYMENT_RISK'))",
                                 String.class))
                 .isNotEmpty()
                 .doesNotHaveDuplicates();
@@ -725,7 +729,9 @@ class IamApplicationTests {
     void rotatesHashedRefreshTokenWithoutInvalidatingSessionAndRevokesSessionOnReplay() {
         RegisteredClient client = scdpClient();
         registeredClientRepository.save(client);
-        SessionFixture session = insertActiveSession();
+        // SCDP issues refresh tokens only for an active tenant and tenant user. A synthetic
+        // PLATFORM session is deliberately rejected by the production refresh validator.
+        SessionFixture session = insertActiveTenantSession();
         Instant issuedAt = Instant.now().minusSeconds(2);
         OAuth2AuthorizationCode code =
                 new OAuth2AuthorizationCode(
@@ -845,6 +851,31 @@ SELECT COUNT(*) FROM iam_refresh_token old_token
                                 Integer.class,
                                 uuidBytes(UUID.fromString(rotated.getId()))))
                 .isEqualTo(2);
+    }
+
+    @Test
+    void rejectsRefreshForSyntheticPlatformSessionEvenWhenTokenHashExists() {
+        RegisteredClient client = scdpClient();
+        registeredClientRepository.save(client);
+        SessionFixture session = insertActiveSession();
+        Instant issuedAt = Instant.now().minusSeconds(2);
+        String rawRefresh = "unsupported-scope-refresh-" + UUID.randomUUID();
+        OAuth2Authorization issued = OAuth2Authorization.from(authorizationWithCode(client, session,
+                        new OAuth2AuthorizationCode("platform-code-" + UUID.randomUUID(), issuedAt,
+                                issuedAt.plusSeconds(300))))
+                .accessToken(new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER,
+                        "self-contained-platform-test", issuedAt, issuedAt.plusSeconds(900),
+                        Set.of("openid", "profile")))
+                .refreshToken(new OAuth2RefreshToken(rawRefresh, issuedAt, issuedAt.plusSeconds(3600)))
+                .build();
+        authorizationService.save(issued);
+        assertThat(jdbcTemplate.queryForObject("""
+                        SELECT COUNT(*) FROM iam_refresh_token
+                         WHERE authorization_id=? AND token_hash=UNHEX(SHA2(?,256))
+                           AND consumed_at IS NULL AND revoked_at IS NULL
+                        """, Integer.class, uuidBytes(UUID.fromString(issued.getId())), rawRefresh))
+                .isEqualTo(1);
+        assertThat(authorizationService.findByToken(rawRefresh, OAuth2TokenType.REFRESH_TOKEN)).isNull();
     }
 
     @Test
@@ -1103,9 +1134,9 @@ SELECT COUNT(*) FROM iam_refresh_token old_token
         authentication.setDetails(
                 IamAuthenticationDetails.create(
                         session.sessionId(),
-                        PrincipalScope.PLATFORM.name(),
+                        session.tenantId() == null ? PrincipalScope.PLATFORM.name() : PrincipalScope.TENANT.name(),
                         session.principalId(),
-                        null,
+                        session.tenantId(),
                         0));
         return authentication;
     }
@@ -1133,6 +1164,23 @@ SELECT COUNT(*) FROM iam_refresh_token old_token
         return new SessionFixture(sessionId, principalId);
     }
 
+    private SessionFixture insertActiveTenantSession() {
+        var identity = insertTenantIdentity("refresh-" + UUID.randomUUID(), UUID.randomUUID().toString(),
+                "ACTIVE", "ACTIVE", "ACTIVE");
+        UUID sessionId = UUID.randomUUID();
+        LocalDateTime issuedAt = LocalDateTime.ofInstant(Instant.now().minusSeconds(5), ZoneOffset.UTC);
+        jdbcTemplate.update("""
+                INSERT INTO iam_auth_session (
+                    id, principal_scope, tenant_id, principal_id, client_type,
+                    device_name, client_fingerprint_hash, user_agent_hash, ip_address,
+                    issued_at, last_seen_at, expires_at, revoked_at, revoke_reason, status, version
+                ) VALUES (?, 'TENANT', ?, ?, 'WEB', 'integration-test', NULL, NULL, NULL,
+                          ?, ?, ?, NULL, NULL, 'ACTIVE', 0)
+                """, uuidBytes(sessionId), uuidBytes(identity.tenantId()), uuidBytes(identity.userId()),
+                issuedAt, issuedAt, issuedAt.plusHours(1));
+        return new SessionFixture(sessionId, identity.userId(), identity.tenantId());
+    }
+
     private static String testEncryptionKeyBase64() {
         byte[] testKey = new byte[32];
         Arrays.fill(testKey, (byte) 0x5A);
@@ -1146,7 +1194,11 @@ SELECT COUNT(*) FROM iam_refresh_token old_token
                 .array();
     }
 
-    private record SessionFixture(UUID sessionId, UUID principalId) {}
+    private record SessionFixture(UUID sessionId, UUID principalId, UUID tenantId) {
+        private SessionFixture(UUID sessionId, UUID principalId) {
+            this(sessionId, principalId, null);
+        }
+    }
 
     private IamLoginAuthenticationToken loginToken(
             PrincipalScope scope, String tenantCode, String username, String password) {

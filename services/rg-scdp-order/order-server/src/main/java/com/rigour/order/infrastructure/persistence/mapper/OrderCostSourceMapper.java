@@ -19,6 +19,29 @@ import java.util.List;
 public interface OrderCostSourceMapper extends BaseMapper<InternalSalesOrderEntity> {
     @Select(
             """
+SELECT CONCAT('PAYMENT:',p.id) sourceId,o.order_no orderNo,COALESCE(a.region_code,o.region_code) cityCode,
+ DATE(CONVERT_TZ(p.payment_time,'+00:00','+08:00')) `date`,p.paid_amount amount,
+ CASE WHEN a.order_id IS NOT NULL THEN o.data_quality_status_code
+      WHEN NULLIF(o.source_system_code,'') IS NOT NULL
+       AND NULLIF(o.owner_employee_code,'') IS NOT NULL AND NULLIF(o.region_code,'') IS NOT NULL
+       AND NOT EXISTS(SELECT 1 FROM order_attribution_snapshot pending
+           WHERE pending.tenant_id=o.tenant_id AND pending.order_id=o.id)
+      THEN o.data_quality_status_code ELSE 'ATTRIBUTION_PENDING' END qualityStatus
+FROM order_payment_record p JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
+LEFT JOIN order_attribution_snapshot a ON a.tenant_id=o.tenant_id AND a.order_id=o.id AND a.state='FROZEN'
+WHERE p.tenant_id=#{tenant} AND COALESCE(a.region_code,o.region_code)=#{city} AND p.deleted=0 AND o.deleted=0
+ AND p.payment_status_code IN ('RECEIVED','CHECKED')
+ AND p.payment_time>=#{from} AND p.payment_time<#{until}
+ORDER BY `date`,sourceId LIMIT 20001
+""")
+    List<com.rigour.order.api.v1.model.OrderCityCollectionSourceView> cityCollections(
+            @Param("tenant") String tenant,
+            @Param("city") String city,
+            @Param("from") LocalDateTime from,
+            @Param("until") LocalDateTime until);
+
+    @Select(
+            """
 SELECT CAST(p.id AS CHAR) sourceId,o.order_no orderNo,DATE(CONVERT_TZ(p.payment_time,'+00:00','+08:00')) `date`,p.paid_amount amount,'PAYMENT' kind
 FROM order_payment_record p JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
 WHERE p.tenant_id=#{tenant} AND o.owner_employee_code=#{employee} AND p.deleted=0 AND o.deleted=0

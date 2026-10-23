@@ -3,7 +3,12 @@ package com.rigour.hr.infrastructure.persistence.repository;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-import com.rigour.hr.api.v1.model.HrAttendanceModels.*;
+import com.rigour.hr.api.v1.model.AttendanceDepartmentOption;
+import com.rigour.hr.api.v1.model.AttendanceExceptionPeriod;
+import com.rigour.hr.api.v1.model.AttendanceRecordCommand;
+import com.rigour.hr.api.v1.model.AttendanceRow;
+import com.rigour.hr.api.v1.model.AttendanceRuleCommand;
+import com.rigour.hr.api.v1.model.AttendanceRuleView;
 import com.rigour.hr.application.port.out.HrAttendanceStore.EmployeeFilter;
 import com.rigour.hr.application.service.HrAttendanceService;
 import com.rigour.hr.infrastructure.persistence.mapper.*;
@@ -96,6 +101,7 @@ public class HrAttendancePersistenceTest {
                             : "hr_attendance_audit";
             jdbc.execute(statement.replace(",\n    ADD", ";\nALTER TABLE " + table + " ADD"));
         }
+        jdbc.execute("ALTER TABLE hr_attendance_note ADD COLUMN exceptions_json CLOB NULL");
         jdbc.execute(
                 "CREATE TABLE hr_employee(tenant_id VARCHAR(64),employee_code"
                         + " VARCHAR(50),employee_name VARCHAR(128),department_id BIGINT,entry_date"
@@ -112,6 +118,12 @@ public class HrAttendancePersistenceTest {
                 "INSERT INTO hr_employee"
                     + " VALUES('T1','E1','员工一',1,NULL,NULL,0),('T1','E2','员工二',1,NULL,NULL,0),('T2','E1','其他租户',1,NULL,NULL,0)");
         scope = mock(HrDataScope.class);
+        when(scope.allDepartments(anyString())).thenReturn(true);
+        when(scope.departmentPredicate(anyString())).thenReturn(new HrDataScope.Predicate("1=1", List.of()));
+        var user = UUID.randomUUID();
+        com.rigour.shared.context.TestAuthorizationContext.set(new com.rigour.shared.context.CallerIdentity(
+                "TENANT", user, UUID.randomUUID(), user, null, UUID.randomUUID(), 1, 1, 1, Set.of(),
+                Set.of(HrAttendanceService.RULE_READ, HrAttendanceService.RULE_WRITE)));
         when(scope.employeePredicate(anyString(), eq("e.")))
                 .thenReturn(new HrDataScope.Predicate("e.employee_code=?", List.of("E1")));
         store = createStore(ds);
@@ -151,19 +163,174 @@ public class HrAttendancePersistenceTest {
 
     @AfterEach
     void close() {
+        com.rigour.shared.context.TestAuthorizationContext.clear();
         ds.destroy();
     }
 
     @Test
+    void limitedDepartmentCannotWriteOtherDepartmentOrCompanyDefault() throws Exception {
+        jdbc.execute("ALTER TABLE hr_department ADD status_code VARCHAR(16) DEFAULT 'ACTIVE'");
+        jdbc.execute("ALTER TABLE hr_department ADD deleted INT DEFAULT 0");
+        jdbc.execute("ALTER TABLE hr_department ADD parent_id BIGINT");
+        jdbc.execute("ALTER TABLE hr_department ADD sort_order INT DEFAULT 0");
+        jdbc.update("INSERT INTO hr_department(tenant_id,id,department_name,parent_id) VALUES('T1',2,'其他部门',NULL),('T1',3,'授权子部门',1)");
+        jdbc.update("INSERT INTO hr_department_closure VALUES('T1',1,3,1)");
+        var tenant = UUID.randomUUID();
+        String tenantKey = tenant.toString();
+        for (String table : List.of("hr_department", "hr_employee", "hr_department_closure"))
+            jdbc.update("UPDATE " + table + " SET tenant_id=? WHERE tenant_id='T1'", tenantKey);
+        var user = UUID.randomUUID();
+        com.rigour.shared.context.TestAuthorizationContext.set(new com.rigour.shared.context.CallerIdentity(
+                "TENANT", user, tenant, user, null, UUID.randomUUID(), 1, 1, 1, Set.of(),
+                Set.of(HrAttendanceService.RULE_READ, HrAttendanceService.RULE_WRITE)));
+        var client = mock(com.rigour.tenant.iam.client.SupplyAuthorizationClient.class);
+        var all = new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Limit("ALL", List.of());
+        var specified = new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Limit("SPECIFIED", List.of("1"));
+        var descendants = new java.util.concurrent.atomic.AtomicBoolean(false);
+        when(client.authorization(any(), anyString())).thenAnswer(invocation ->
+                new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView("ACTIVE", tenant, user, "E1",
+                        1, 1, 1, 1, Set.of(HrAttendanceService.RULE_READ, HrAttendanceService.RULE_WRITE),
+                        invocation.getArgument(1), true,
+                        List.of(new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Clause(
+                                UUID.randomUUID(), "EMPLOYEE", "DEPARTMENT", specified, all, all, descendants.get())), all, all));
+        scope = new HrDataScope(client, jdbc);
+        store = createStore(ds);
+        store.saveRule(tenantKey, new AttendanceRuleCommand("2026-09", 1L, 22, 0), "HR");
+        assertThatThrownBy(() -> store.saveRule(tenantKey, new AttendanceRuleCommand("2026-09", 2L, 21, 0), "HR"))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(() -> store.saveRule(tenantKey, new AttendanceRuleCommand("2026-09", null, 26, 0), "HR"))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(() -> store.saveRule(tenantKey, new AttendanceRuleCommand("2026-09", 3L, 22, 0), "HR"))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_attendance_rule WHERE tenant_id=? AND attendance_month='2026-09'", Integer.class, tenantKey))
+                .isEqualTo(1);
+        descendants.set(true);
+        store.saveRule(tenantKey, new AttendanceRuleCommand("2026-09", 3L, 22, 0), "HR");
+        // Existing company and unrelated-department records predate this restricted assignment.
+        jdbc.update("INSERT INTO hr_attendance_rule(tenant_id,attendance_month,department_id,expected_days,revision,updated_by) VALUES(?,'2026-09',0,26,1,'HR'),(?,'2026-09',2,25,1,'HR')", tenantKey, tenantKey);
+        store.requireRuleScope(tenantKey, null, HrAttendanceService.RULE_READ);
+        assertThat(store.rule(tenantKey, "2026-09", null).companyExpectedDays()).isEqualTo(26);
+        assertThat(store.ruleWritable(tenantKey, null)).isFalse();
+        assertThat(store.ruleWritable(tenantKey, 1L)).isTrue();
+        assertThatThrownBy(() -> store.requireRuleScope(tenantKey, 2L, HrAttendanceService.RULE_READ))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        assertThat(store.departments(tenantKey, HrAttendanceService.RULE_READ))
+                .extracting(AttendanceDepartmentOption::id).containsExactly(1L, 3L);
+        assertThat(store.ruleOverview(tenantKey, "2026-09").rules())
+                .extracting(com.rigour.hr.application.port.out.HrAttendanceStore.RuleRecord::departmentId)
+                .containsExactlyInAnyOrder(0L, 1L, 3L);
+        jdbc.update("INSERT INTO hr_attendance_note(tenant_id,attendance_month,employee_code,attendance_status,confirmed_department_id,confirmed_rule_department_id,updated_by,confirmed_snapshot_json) VALUES(?,'2026-09','E1','CONFIRMED',1,1,'HR','{}'),(?,'2026-09','E2','CONFIRMED',2,2,'HR','{}')", tenantKey, tenantKey);
+        assertThat(store.ruleOverview(tenantKey, "2026-09").lockedDepartmentIds()).containsExactly(1L);
+        assertThatThrownBy(() -> store.saveRule(tenantKey, new AttendanceRuleCommand("2026-09", 1L, 21, 1), "HR"))
+                .hasMessageContaining("已锁定");
+        com.rigour.shared.context.TestAuthorizationContext.set(new com.rigour.shared.context.CallerIdentity(
+                "TENANT", user, tenant, user, null, UUID.randomUUID(), 1, 1, 1, Set.of(), Set.of()));
+        assertThatThrownBy(() -> store.saveRule(tenantKey, new AttendanceRuleCommand("2026-10", 1L, 22, 0), "HR"))
+                .isInstanceOf(AuthorizationDeniedException.class);
+    }
+
+    @Test
+    void componentCalendarConfirmsAgainstItsEffectiveDaysInsteadOfLegacyCompanyCount() {
+        var components = mock(com.rigour.hr.application.service.HrPayrollComponentService.class);
+        var evidence = new com.rigour.hr.application.service.PayrollAttendanceEvidenceService(
+                mock(com.rigour.hr.application.port.out.HrPayrollSchemeStore.class),
+                mock(com.rigour.hr.application.port.out.HrPayrollSource.class));
+        org.springframework.test.util.ReflectionTestUtils.setField(evidence, "components", components);
+        var calendar = new com.rigour.hr.api.v1.model.PayrollWorkCalendar(
+                List.of(1, 2, 3, 4, 5), List.of(), List.of(), List.of(), null, List.of(), null);
+        var definition = new com.rigour.hr.api.v1.model.PayrollComponentDefinition(
+                "部门工作日", "ATTENDANCE", "ALL", List.of(1L),
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 30),
+                null, null, null, calendar);
+        var component = new com.rigour.hr.api.v1.model.PayrollComponentVersionView(
+                "CALENDAR", "RULE", 1, definition, "登记日历", "HR", Instant.now());
+        when(components.calendar("T1", 1L, LocalDate.of(2026, 9, 1)))
+                .thenReturn(Optional.of(component));
+        store.setPayrollAttendance(evidence);
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "HR");
+        int expected = evidence.expectedDays("T1", 1L, YearMonth.of(2026, 9)).orElseThrow();
+        assertThat(expected).isEqualTo(22);
+        var command = new AttendanceRecordCommand(new BigDecimal("22"), BigDecimal.ZERO, "NONE", "", 0);
+        var snapshot = new AttendanceRow("E1", "员工一", "销售部", expected, "DEPARTMENT",
+                new BigDecimal("22"), BigDecimal.ZERO, 0, new BigDecimal("22"), BigDecimal.ZERO,
+                "NONE", "CONFIRMED", "AVAILABLE", List.of(), "", 1);
+        store.confirmRecord("T1", "2026-09", "E1", command, snapshot, 1L, "HR");
+        var confirmed = store.employee("T1", YearMonth.of(2026, 9), "E1").confirmation();
+        assertThat(confirmed.expectedDays()).isEqualTo(22);
+        assertThat(confirmed.ruleSource()).isEqualTo("DEPARTMENT");
+        assertThat(store.rule("T1", "2026-09", null).expectedDays()).isEqualTo(26);
+        assertThat(store.rule("T1", "2026-09", null).locked()).isFalse();
+        assertThat(store.rule("T1", "2026-09", 1L).locked()).isTrue();
+    }
+
+    @Test
+    void componentCalendarChangedBeforePersistenceRejectsStaleSnapshotWithoutWriting() {
+        var evidence = mock(com.rigour.hr.application.service.PayrollAttendanceEvidenceService.class);
+        when(evidence.expectedDays("T1", 1L, YearMonth.of(2026, 9))).thenReturn(Optional.of(21));
+        store.setPayrollAttendance(evidence);
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "HR");
+        var command = new AttendanceRecordCommand(new BigDecimal("22"), BigDecimal.ZERO, "NONE", "", 0);
+        var snapshot = new AttendanceRow("E1", "员工一", "销售部", 22, "DEPARTMENT",
+                new BigDecimal("22"), BigDecimal.ZERO, 0, new BigDecimal("22"), BigDecimal.ZERO,
+                "NONE", "CONFIRMED", "AVAILABLE", List.of(), "", 1);
+        assertThatThrownBy(() -> store.confirmRecord("T1", "2026-09", "E1", command, snapshot, 1L, "HR"))
+                .hasMessageContaining("规则已变更");
+        assertThat(store.employee("T1", YearMonth.of(2026, 9), "E1").confirmation()).isNull();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_attendance_audit WHERE action_code='CONFIRM'", Integer.class)).isZero();
+    }
+
+    @Test
+    void stoppedOrUnavailableComponentCannotFallBackToLegacyRuleDuringConfirmation() {
+        var evidence = mock(com.rigour.hr.application.service.PayrollAttendanceEvidenceService.class);
+        when(evidence.expectedDays("T1", 1L, YearMonth.of(2026, 9))).thenReturn(Optional.of(22));
+        when(evidence.stopped("T1", 1L, YearMonth.of(2026, 9))).thenReturn(true);
+        store.setPayrollAttendance(evidence);
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "HR");
+        var command = new AttendanceRecordCommand(new BigDecimal("22"), BigDecimal.ZERO, "NONE", "", 0);
+        var snapshot = new AttendanceRow("E1", "员工一", "销售部", 22, "DEPARTMENT",
+                new BigDecimal("22"), BigDecimal.ZERO, 0, new BigDecimal("22"), BigDecimal.ZERO,
+                "NONE", "CONFIRMED", "AVAILABLE", List.of(), "", 1);
+        assertThatThrownBy(() -> store.confirmRecord("T1", "2026-09", "E1", command, snapshot, 1L, "HR"))
+                .hasMessageContaining("规则已变更");
+        when(evidence.stopped("T1", 1L, YearMonth.of(2026, 9))).thenReturn(false);
+        when(evidence.expectedDays("T1", 1L, YearMonth.of(2026, 9)))
+                .thenThrow(new com.rigour.shared.core.exception.BusinessException(
+                        com.rigour.shared.core.api.ErrorCode.SERVICE_UNAVAILABLE, "年度日历不可用", List.of()));
+        assertThatThrownBy(() -> store.confirmRecord("T1", "2026-09", "E1", command, snapshot, 1L, "HR"))
+                .hasMessageContaining("年度日历不可用");
+        assertThat(store.employee("T1", YearMonth.of(2026, 9), "E1").confirmation()).isNull();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_attendance_audit WHERE action_code='CONFIRM'", Integer.class)).isZero();
+    }
+
+    @Test
+    void employeeWithoutDepartmentStillConfirmsUsingCompanyRule() {
+        jdbc.update("UPDATE hr_employee SET department_id=NULL WHERE tenant_id='T1' AND employee_code='E1'");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "HR");
+        var command = new AttendanceRecordCommand(new BigDecimal("26"), BigDecimal.ZERO, "NONE", "", 0);
+        var snapshot = new AttendanceRow("E1", "员工一", null, 26, "COMPANY",
+                new BigDecimal("26"), BigDecimal.ZERO, 0, new BigDecimal("26"), BigDecimal.ZERO,
+                "NONE", "CONFIRMED", "AVAILABLE", List.of(), "", 1);
+        store.confirmRecord("T1", "2026-09", "E1", command, snapshot, null, "HR");
+        assertThat(store.employee("T1", YearMonth.of(2026, 9), "E1").confirmation().ruleSource())
+                .isEqualTo("COMPANY");
+        assertThat(store.rule("T1", "2026-09", null).locked()).isTrue();
+    }
+
+    @Test
     void rulesStayInTheirMonthAndTenantAndRejectLostUpdates() {
-        store.saveRule("T1", new RuleCommand("2026-09", null, 26, 0), "U");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "U");
         assertThat(store.rule("T1", "2026-10", null).expectedDays()).isNull();
         assertThat(store.rule("T2", "2026-09", null).expectedDays()).isNull();
-        assertThatThrownBy(() -> store.saveRule("T1", new RuleCommand("2026-09", null, 22, 0), "U"))
+        assertThatThrownBy(
+                        () ->
+                                store.saveRule(
+                                        "T1",
+                                        new AttendanceRuleCommand("2026-09", null, 22, 0),
+                                        "U"))
                 .hasMessageContaining("已变更");
-        store.saveRule("T1", new RuleCommand("2026-09", null, 22, 1), "U");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 22, 1), "U");
         assertThat(store.rule("T1", "2026-09", null))
-                .isEqualTo(new Rule("2026-09", null, 22, 2, 22, false));
+                .isEqualTo(new AttendanceRuleView("2026-09", null, 22, 2, 22, false));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_attendance_audit", Integer.class))
                 .isEqualTo(2);
     }
@@ -181,27 +348,33 @@ public class HrAttendancePersistenceTest {
                 .containsEntry("ABSENT_DAYS_OVERRIDE", null)
                 .containsEntry("LEAVE_TYPE_CODE", "NONE");
         assertThat(store.rule("T1", "2026-08", null))
-                .isEqualTo(new Rule("2026-08", null, 24, 3, 24, false));
-        store.saveRule("T1", new RuleCommand("2026-09", null, 26, 0), "U");
-        store.saveRule("T1", new RuleCommand("2026-09", 1L, 22, 0), "U");
-        store.saveRule("T1", new RuleCommand("2026-09", 2L, 0, 0), "U");
+                .isEqualTo(new AttendanceRuleView("2026-08", null, 24, 3, 24, false));
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "U");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", 1L, 22, 0), "U");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", 2L, 0, 0), "U");
         assertThat(store.rule("T1", "2026-09", 1L))
-                .isEqualTo(new Rule("2026-09", 1L, 22, 1, 26, false));
+                .isEqualTo(new AttendanceRuleView("2026-09", 1L, 22, 1, 26, false));
         assertThat(store.rule("T1", "2026-09", 3L))
-                .isEqualTo(new Rule("2026-09", 3L, null, 0, 26, false));
+                .isEqualTo(new AttendanceRuleView("2026-09", 3L, null, 0, 26, false));
         assertThat(store.departmentRules("T1", "2026-09"))
                 .containsExactlyInAnyOrderEntriesOf(Map.of(1L, 22, 2L, 0));
         assertThat(store.departmentRules("T2", "2026-09")).isEmpty();
         assertThat(store.departmentRules("T1", "2026-10")).isEmpty();
-        assertThatThrownBy(() -> store.saveRule("T1", new RuleCommand("2026-09", 1L, 20, 0), "U"))
+        assertThatThrownBy(
+                        () ->
+                                store.saveRule(
+                                        "T1", new AttendanceRuleCommand("2026-09", 1L, 20, 0), "U"))
                 .hasMessageContaining("已变更");
-        store.saveRule("T1", new RuleCommand("2026-09", 1L, null, 1), "U");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", 1L, null, 1), "U");
         assertThat(store.rule("T1", "2026-09", 1L))
-                .isEqualTo(new Rule("2026-09", 1L, null, 2, 26, false));
+                .isEqualTo(new AttendanceRuleView("2026-09", 1L, null, 2, 26, false));
         assertThat(store.departmentRules("T1", "2026-09")).containsOnlyKeys(2L);
-        assertThatThrownBy(() -> store.saveRule("T1", new RuleCommand("2026-09", 1L, 20, 1), "U"))
+        assertThatThrownBy(
+                        () ->
+                                store.saveRule(
+                                        "T1", new AttendanceRuleCommand("2026-09", 1L, 20, 1), "U"))
                 .hasMessageContaining("已变更");
-        store.saveRule("T1", new RuleCommand("2026-09", null, 25, 1), "U");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 25, 1), "U");
         assertThat(store.rule("T1", "2026-09", 1L).companyExpectedDays()).isEqualTo(25);
         assertThat(
                         jdbc.queryForObject(
@@ -213,31 +386,38 @@ public class HrAttendancePersistenceTest {
 
     @Test
     void confirmedDepartmentLocksOnlyItsOwnRuleAndCannotBeReset() {
-        store.saveRule("T1", new RuleCommand("2026-09", null, 26, 0), "HR");
-        store.saveRule("T1", new RuleCommand("2026-09", 1L, 22, 0), "HR");
-        assertThatThrownBy(() -> store.saveRule("T1", new RuleCommand("2026-09", 1L, 22, 1), "HR"))
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", 1L, 22, 0), "HR");
+        assertThatThrownBy(
+                        () ->
+                                store.saveRule(
+                                        "T1",
+                                        new AttendanceRuleCommand("2026-09", 1L, 22, 1),
+                                        "HR"))
                 .hasMessageContaining("无需重复设置");
-        store.saveRule("T1", new RuleCommand("2026-09", 1L, 23, 1), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", 1L, 23, 1), "HR");
         confirm(
                 "T1",
                 "2026-09",
                 "E1",
-                new RecordCommand(BigDecimal.valueOf(22), BigDecimal.ONE, "NONE", "", 0),
+                new AttendanceRecordCommand(BigDecimal.valueOf(22), BigDecimal.ONE, "NONE", "", 0),
                 "HR");
         assertThat(store.rule("T1", "2026-09", 1L).locked()).isTrue();
         for (Integer days : Arrays.asList(24, null)) {
             assertThatThrownBy(
                             () ->
                                     store.saveRule(
-                                            "T1", new RuleCommand("2026-09", 1L, days, 2), "HR"))
+                                            "T1",
+                                            new AttendanceRuleCommand("2026-09", 1L, days, 2),
+                                            "HR"))
                     .hasMessageContaining("已锁定");
         }
         // A parent's rule is not inherited; another department, month, and tenant stay independent.
         assertThat(store.rule("T1", "2026-09", null).locked()).isFalse();
-        store.saveRule("T1", new RuleCommand("2026-09", null, 25, 1), "HR");
-        store.saveRule("T1", new RuleCommand("2026-09", 2L, 20, 0), "HR");
-        store.saveRule("T1", new RuleCommand("2026-10", 1L, 24, 0), "HR");
-        store.saveRule("T2", new RuleCommand("2026-09", 1L, 21, 0), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 25, 1), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", 2L, 20, 0), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-10", 1L, 24, 0), "HR");
+        store.saveRule("T2", new AttendanceRuleCommand("2026-09", 1L, 21, 0), "HR");
         assertThat(store.departmentRules("T1", "2026-09"))
                 .containsEntry(1L, 23)
                 .containsEntry(2L, 20);
@@ -253,30 +433,40 @@ public class HrAttendancePersistenceTest {
 
     @Test
     void companyFallbackConfirmationLocksCompanyAndPreventsCreatingADepartmentOverride() {
-        store.saveRule("T1", new RuleCommand("2026-09", null, 26, 0), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "HR");
         confirm(
                 "T1",
                 "2026-09",
                 "E1",
-                new RecordCommand(BigDecimal.valueOf(26), BigDecimal.ZERO, "NONE", "", 0),
+                new AttendanceRecordCommand(BigDecimal.valueOf(26), BigDecimal.ZERO, "NONE", "", 0),
                 "HR");
         assertThat(store.rule("T1", "2026-09", null).locked()).isTrue();
         assertThat(store.rule("T1", "2026-09", 1L).locked()).isTrue();
         assertThatThrownBy(
-                        () -> store.saveRule("T1", new RuleCommand("2026-09", null, 24, 1), "HR"))
+                        () ->
+                                store.saveRule(
+                                        "T1",
+                                        new AttendanceRuleCommand("2026-09", null, 24, 1),
+                                        "HR"))
                 .hasMessageContaining("已锁定");
-        assertThatThrownBy(() -> store.saveRule("T1", new RuleCommand("2026-09", 1L, 22, 0), "HR"))
+        assertThatThrownBy(
+                        () ->
+                                store.saveRule(
+                                        "T1",
+                                        new AttendanceRuleCommand("2026-09", 1L, 22, 0),
+                                        "HR"))
                 .hasMessageContaining("已锁定");
-        store.saveRule("T1", new RuleCommand("2026-09", 2L, 20, 0), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", 2L, 20, 0), "HR");
         assertThat(store.rule("T1", "2026-09", 2L).locked()).isFalse();
     }
 
     @Test
     void staleRuleOrChangedDepartmentCannotBeConfirmed() {
-        store.saveRule("T1", new RuleCommand("2026-09", null, 26, 0), "HR");
-        var command = new RecordCommand(BigDecimal.valueOf(26), BigDecimal.ZERO, "NONE", "", 0);
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "HR");
+        var command =
+                new AttendanceRecordCommand(BigDecimal.valueOf(26), BigDecimal.ZERO, "NONE", "", 0);
         var snapshot =
-                new Row(
+                new AttendanceRow(
                         "E1",
                         "员工",
                         "销售部",
@@ -293,7 +483,7 @@ public class HrAttendancePersistenceTest {
                         List.of(),
                         "",
                         1);
-        store.saveRule("T1", new RuleCommand("2026-09", null, 24, 1), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 24, 1), "HR");
         assertThatThrownBy(
                         () ->
                                 store.confirmRecord(
@@ -316,7 +506,8 @@ public class HrAttendancePersistenceTest {
 
     @Test
     void concurrentRuleWriteWaitsForConfirmationCommitAndThenIsRejected() throws Exception {
-        store.saveRule("T1", new RuleCommand("2026-09", null, 26, 0), "HR");
+        var caller = com.rigour.shared.context.AuthorizationContext.requireCurrent();
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "HR");
         var parallelDs = new DriverManagerDataSource(ds.getUrl(), "sa", "");
         var parallelStore = createStore(parallelDs);
         var transaction =
@@ -331,7 +522,7 @@ public class HrAttendancePersistenceTest {
                                         "T1",
                                         "2026-09",
                                         "E1",
-                                        new RecordCommand(
+                                        new AttendanceRecordCommand(
                                                 BigDecimal.valueOf(26),
                                                 BigDecimal.ZERO,
                                                 "NONE",
@@ -341,10 +532,12 @@ public class HrAttendancePersistenceTest {
                                 var future =
                                         executor.submit(
                                                 () -> {
+                                                    com.rigour.shared.context.TestAuthorizationContext.set(caller);
                                                     started.countDown();
                                                     return parallelStore.saveRule(
                                                             "T1",
-                                                            new RuleCommand("2026-09", null, 24, 1),
+                                                            new AttendanceRuleCommand(
+                                                                    "2026-09", null, 24, 1),
                                                             "OTHER");
                                                 });
                                 assertThatCode(
@@ -378,22 +571,24 @@ public class HrAttendancePersistenceTest {
         jdbc.execute("ALTER TABLE hr_department ADD sort_order INT DEFAULT 0");
         jdbc.execute("ALTER TABLE hr_department ADD deleted INT DEFAULT 0");
         var rows = store.departments("T1");
-        assertThat(rows).extracting(DepartmentOption::departmentName).containsExactly("销售部");
+        assertThat(rows)
+                .extracting(AttendanceDepartmentOption::departmentName)
+                .containsExactly("销售部");
         jdbc.update("UPDATE hr_department SET deleted=1 WHERE tenant_id='T1'");
         assertThat(store.departments("T1")).isEmpty();
     }
 
     @Test
     void ruleOverviewIncludesOnlyConfiguredRulesAndSeparatelyTracksLockedFallbackDepartments() {
-        store.saveRule("T1", new RuleCommand("2026-09", null, 26, 0), "HR");
-        store.saveRule("T1", new RuleCommand("2026-09", 2L, 22, 0), "HR");
-        store.saveRule("T1", new RuleCommand("2026-09", 3L, 24, 0), "HR");
-        store.saveRule("T1", new RuleCommand("2026-09", 3L, null, 1), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", 2L, 22, 0), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", 3L, 24, 0), "HR");
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", 3L, null, 1), "HR");
         confirm(
                 "T1",
                 "2026-09",
                 "E1",
-                new RecordCommand(BigDecimal.valueOf(26), BigDecimal.ZERO, "NONE", "", 0),
+                new AttendanceRecordCommand(BigDecimal.valueOf(26), BigDecimal.ZERO, "NONE", "", 0),
                 "HR");
         var result = store.ruleOverview("T1", "2026-09");
         assertThat(result.rules())
@@ -407,7 +602,12 @@ public class HrAttendancePersistenceTest {
 
     @Test
     void notesAndEmployeePaginationRespectTenantAndEmployeeScope() {
-        confirm("T1", "2026-09", "E1", new RecordCommand(null, null, "NONE", "漏打卡", 0), "U");
+        confirm(
+                "T1",
+                "2026-09",
+                "E1",
+                new AttendanceRecordCommand(null, null, "NONE", "漏打卡", 0),
+                "U");
         var page =
                 store.employees(
                         "T1", YearMonth.of(2026, 9), new EmployeeFilter("员工", "E1", 1L, ""), 0, 20);
@@ -454,7 +654,7 @@ public class HrAttendancePersistenceTest {
                                         "T1",
                                         "2026-09",
                                         "E2",
-                                        new RecordCommand(null, null, "NONE", "越权", 0),
+                                        new AttendanceRecordCommand(null, null, "NONE", "越权", 0),
                                         "U"))
                 .isInstanceOf(AuthorizationDeniedException.class);
         assertThatThrownBy(
@@ -463,7 +663,7 @@ public class HrAttendancePersistenceTest {
                                         "T1",
                                         "2026-09",
                                         "E1",
-                                        new RecordCommand(null, null, "NONE", "覆盖", 0),
+                                        new AttendanceRecordCommand(null, null, "NONE", "覆盖", 0),
                                         "U"))
                 .hasMessageContaining("已变更");
         verify(scope, times(4)).employeePredicate(HrAttendanceService.READ, "e.");
@@ -519,7 +719,11 @@ public class HrAttendancePersistenceTest {
                 "ALTER TABLE hr_attendance_audit ADD CONSTRAINT reject_audit"
                         + " CHECK(actor_id<>'FAIL')");
         assertThatThrownBy(
-                        () -> store.saveRule("T1", new RuleCommand("2026-09", null, 26, 0), "FAIL"))
+                        () ->
+                                store.saveRule(
+                                        "T1",
+                                        new AttendanceRuleCommand("2026-09", null, 26, 0),
+                                        "FAIL"))
                 .isInstanceOf(RuntimeException.class);
         assertThat(store.rule("T1", "2026-09", null).expectedDays()).isNull();
         assertThatThrownBy(
@@ -528,7 +732,7 @@ public class HrAttendancePersistenceTest {
                                         "T1",
                                         "2026-09",
                                         "E1",
-                                        new RecordCommand(
+                                        new AttendanceRecordCommand(
                                                 new BigDecimal("20.5"),
                                                 new BigDecimal("0.5"),
                                                 "SICK",
@@ -545,8 +749,16 @@ public class HrAttendancePersistenceTest {
 
     @Test
     void confirmedRecordsPersistHalfDaysAndAuditAndCannotBeChanged() {
+        var exceptions =
+                List.of(
+                        new AttendanceExceptionPeriod(
+                                java.time.LocalDateTime.parse("2026-09-10T18:00:00"),
+                                java.time.LocalDateTime.parse("2026-09-11T12:00:00"),
+                                "COMPENSATORY_LEAVE",
+                                "活动后跨日调休"));
         var command =
-                new RecordCommand(new BigDecimal("20.5"), new BigDecimal("2.5"), "SICK", "核实", 0);
+                new AttendanceRecordCommand(
+                        new BigDecimal("20.5"), new BigDecimal("2.5"), "SICK", "核实", 0, exceptions);
         confirm("T1", "2026-09", "E1", command, "HR1");
         var record =
                 store.employees(
@@ -583,12 +795,20 @@ public class HrAttendancePersistenceTest {
                                         "T1",
                                         "2026-09",
                                         "E1",
-                                        new RecordCommand(null, null, "NONE", "", 1),
+                                        new AttendanceRecordCommand(null, null, "NONE", "", 1),
                                         "HR2"))
                 .hasMessageContaining("已变更");
         var frozen = store.employee("T1", YearMonth.of(2026, 9), "E1").confirmation();
         assertThat(frozen.attendanceStatus()).isEqualTo("CONFIRMED");
         assertThat(frozen.actualDays()).isEqualByComparingTo("20.5");
+        assertThat(frozen.exceptions()).isEqualTo(exceptions);
+        assertThat(frozen.dates())
+                .containsExactly(LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 2));
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT confirmed_snapshot_json FROM hr_attendance_audit",
+                                String.class))
+                .contains("COMPENSATORY_LEAVE", "活动后跨日调休");
         assertThatThrownBy(() -> confirm("T1", "2026-09", "E1", command, "HR1"))
                 .hasMessageContaining("已变更");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_attendance_audit", Integer.class))
@@ -619,15 +839,71 @@ public class HrAttendancePersistenceTest {
                 .isNull();
     }
 
+    @Test
+    void reopeningKeepsTheOriginalConfirmationAuditAndExceptionsAndRejectsStaleRevision() {
+        store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "HR");
+        var periods =
+                List.of(
+                        new AttendanceExceptionPeriod(
+                                LocalDateTime.of(2026, 9, 2, 9, 0),
+                                LocalDateTime.of(2026, 9, 2, 12, 0),
+                                "PAID_LEAVE",
+                                "已报备"));
+        confirm(
+                "T1",
+                "2026-09",
+                "E1",
+                new AttendanceRecordCommand(
+                        BigDecimal.valueOf(25.5),
+                        BigDecimal.valueOf(0.5),
+                        "PAID",
+                        "原确认",
+                        0,
+                        periods),
+                "HR");
+        store.reopenRecord(
+                "T1",
+                "2026-09",
+                "E1",
+                new com.rigour.hr.api.v1.model.AttendanceReopenCommand(1, "规则调整"),
+                "HR2");
+        var pending = store.employee("T1", YearMonth.of(2026, 9), "E1");
+        assertThat(pending.confirmation()).isNull();
+        assertThat(pending.record().revision()).isEqualTo(2);
+        assertThat(pending.record().exceptions()).isEqualTo(periods);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM hr_attendance_audit WHERE"
+                                        + " action_code='REOPEN' AND confirmed_snapshot_json IS NOT"
+                                        + " NULL",
+                                Integer.class))
+                .isEqualTo(1);
+        assertThatThrownBy(
+                        () ->
+                                store.reopenRecord(
+                                        "T1",
+                                        "2026-09",
+                                        "E1",
+                                        new com.rigour.hr.api.v1.model.AttendanceReopenCommand(
+                                                1, "重复"),
+                                        "HR2"))
+                .hasMessageContaining("已变更");
+        assertThat(store.employee("T2", YearMonth.of(2026, 9), "E1").confirmation()).isNull();
+    }
+
     void confirm(
-            String tenant, String month, String employee, RecordCommand command, String actor) {
+            String tenant,
+            String month,
+            String employee,
+            AttendanceRecordCommand command,
+            String actor) {
         var rule = store.rule(tenant, month, 1L);
         Integer expected =
                 rule.expectedDays() == null ? rule.companyExpectedDays() : rule.expectedDays();
         String source =
                 expected == null ? "UNSET" : rule.expectedDays() == null ? "COMPANY" : "DEPARTMENT";
         var snapshot =
-                new Row(
+                new AttendanceRow(
                         employee,
                         "员工",
                         "销售部",
@@ -643,7 +919,8 @@ public class HrAttendancePersistenceTest {
                         "AVAILABLE",
                         List.of(LocalDate.parse(month + "-01"), LocalDate.parse(month + "-02")),
                         command.reason(),
-                        command.revision() + 1);
+                        command.revision() + 1,
+                        command.exceptions());
         store.confirmRecord(tenant, month, employee, command, snapshot, 1L, actor);
     }
 
@@ -674,7 +951,7 @@ public class HrAttendancePersistenceTest {
                 "T1",
                 "2026-09",
                 "E1",
-                new RecordCommand(new BigDecimal("20.5"), BigDecimal.ZERO, "NONE", "", 0),
+                new AttendanceRecordCommand(new BigDecimal("20.5"), BigDecimal.ZERO, "NONE", "", 0),
                 "HR");
         var pending =
                 store.employees("T1", month, new EmployeeFilter("", "", null, "PENDING"), 0, 1);
@@ -742,7 +1019,12 @@ public class HrAttendancePersistenceTest {
                     + " hr_attendance_note(tenant_id,attendance_month,employee_code,reason,revision,updated_by)"
                     + " VALUES('T1','2026-09','E1','legacy',3,'HR')");
         assertThat(store.employee("T1", YearMonth.of(2026, 9), "E1").confirmation()).isNull();
-        confirm("T1", "2026-09", "E1", new RecordCommand(null, null, "NONE", "legacy", 3), "HR");
+        confirm(
+                "T1",
+                "2026-09",
+                "E1",
+                new AttendanceRecordCommand(null, null, "NONE", "legacy", 3),
+                "HR");
         assertThat(store.employee("T1", YearMonth.of(2026, 9), "E1").confirmation().revision())
                 .isEqualTo(4);
         assertThatThrownBy(
@@ -751,7 +1033,8 @@ public class HrAttendancePersistenceTest {
                                         "T1",
                                         "2026-09",
                                         "E1",
-                                        new RecordCommand(null, null, "NONE", "changed", 4),
+                                        new AttendanceRecordCommand(
+                                                null, null, "NONE", "changed", 4),
                                         "HR"))
                 .hasMessageContaining("已变更");
     }

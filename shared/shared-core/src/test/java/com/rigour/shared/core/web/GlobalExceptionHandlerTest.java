@@ -2,6 +2,7 @@ package com.rigour.shared.core.web;
 
 import com.rigour.shared.context.RequestContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
+import com.rigour.shared.context.AuthorizationStateChangedException;
 import com.rigour.shared.core.api.ApiResponse;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
@@ -62,6 +63,16 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().code()).isEqualTo("SERVICE_UNAVAILABLE");
         assertThat(response.getBody().requestId()).isEqualTo("request-downstream");
+    }
+
+    @Test
+    void changedAuthorizationReturnsRetryableConflictWithoutInternalError() {
+        RequestContext.set("request-authorization-change", "zh-CN");
+        var response = handler.handleAuthorizationStateChanged(new AuthorizationStateChangedException());
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        assertThat(response.getBody().code()).isEqualTo("IAM_AUTHORIZATION_CHANGED");
+        assertThat(response.getBody().message()).isEqualTo("权限配置已更新，请重试当前操作");
+        assertThat(response.getBody().requestId()).isEqualTo("request-authorization-change");
     }
 
     @Test

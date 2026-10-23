@@ -1,0 +1,87 @@
+{
+  "run": "2026-10-21 local targeted HR and BI",
+  "passed": 52,
+  "skipped": 2,
+  "suites": [
+    {
+      "name": "com.rigour.analytics.domain.cost.CostSourceNormalizerTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.007"
+    },
+    {
+      "name": "com.rigour.analytics.infrastructure.persistence.repository.CostSnapshotPersistenceTest",
+      "tests": "8",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "1",
+      "time": "1.604"
+    },
+    {
+      "name": "com.rigour.analytics.domain.cost.CostPeriodTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.001"
+    },
+    {
+      "name": "com.rigour.analytics.domain.cost.CostDashboardServiceTest",
+      "tests": "19",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "1",
+      "time": "0.514"
+    },
+    {
+      "name": "com.rigour.analytics.application.service.CostDashboardRefreshServiceTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.612"
+    },
+    {
+      "name": "com.rigour.hr.infrastructure.persistence.repository.HrExpenseFilterTest",
+      "tests": "2",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.533"
+    },
+    {
+      "name": "com.rigour.hr.infrastructure.integration.HrExpenseCostSourceTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.117"
+    },
+    {
+      "name": "com.rigour.hr.application.service.HrExpenseAttachmentTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.583"
+    },
+    {
+      "name": "com.rigour.hr.infrastructure.persistence.repository.CostAnalyticsSourceTest",
+      "tests": "1",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.066"
+    },
+    {
+      "name": "com.rigour.hr.infrastructure.persistence.repository.HrExpenseWorkflowTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.262"
+    }
+  ]
+}

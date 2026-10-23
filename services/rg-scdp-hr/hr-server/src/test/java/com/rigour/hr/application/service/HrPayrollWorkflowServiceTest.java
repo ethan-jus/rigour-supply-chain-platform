@@ -78,7 +78,8 @@ class HrPayrollWorkflowServiceTest {
         var rows = service.preparation("2026-09").employees();
         assertThat(rows).hasSize(1);
         assertThat(rows.getFirst().payrollCategory()).isNull();
-        assertThat(rows.getFirst().profileIssues()).isEmpty();
+        assertThat(rows.getFirst().profileIssues()).contains("薪资类别未维护，请在员工档案中设置");
+        assertThat(rows.getFirst().canCalculate()).isFalse();
         verifyNoInteractions(payroll, profiles);
     }
 
@@ -113,7 +114,86 @@ class HrPayrollWorkflowServiceTest {
                                         Instant.EPOCH)));
         var rows = service.preparation("2026-09").employees();
         assertThat(rows).hasSize(1);
-        assertThat(rows.getFirst().profileIssues()).anyMatch(i -> i.contains("离职后结算"));
+        assertThat(rows.getFirst().profileIssues()).isEmpty();
+        assertThat(rows.getFirst().leaveDate()).isEqualTo(LocalDate.of(2026, 8, 31));
+    }
+
+    @Test
+    void previewComparesLockedSalaryWithoutAnyWritesAndDeduplicatesEmployees() {
+        var e =
+                new PayrollEmployeeView(
+                        "E1",
+                        "员工",
+                        10L,
+                        "销售",
+                        "城市",
+                        LocalDate.of(2025, 1, 1),
+                        null,
+                        "SALES",
+                        1,
+                        1L);
+        when(store.employee(anyString(), eq("E1"), eq("hr:payroll:calculate"))).thenReturn(e);
+        var before = calculation("old", "8000");
+        var current = calculation("new", "8800");
+        when(store.byMonth(anyString(), eq("E1"), eq("2026-09")))
+                .thenReturn(
+                        Optional.of(
+                                new PayrollDetailView(
+                                        "P1",
+                                        "2026-09",
+                                        "E1",
+                                        "员工",
+                                        10L,
+                                        "销售",
+                                        "城市",
+                                        "PAID",
+                                        3,
+                                        before,
+                                        Instant.EPOCH)));
+        when(payroll.calculation(anyString(), eq(e), eq(YearMonth.of(2026, 9))))
+                .thenReturn(current);
+        var result = service.preview(new PayrollCalculateCommand("2026-09", List.of("E1", "E1")));
+        assertThat(result).hasSize(1);
+        assertThat(result.getFirst().savedStatus()).isEqualTo("PAID");
+        assertThat(result.getFirst().calculation().netPay()).isEqualByComparingTo("8800");
+        assertThat(result.getFirst().previousCalculation().netPay()).isEqualByComparingTo("8000");
+        assertThat(result.getFirst().sourceChanged()).isTrue();
+        verify(store, never())
+                .saveCalculation(anyString(), anyString(), anyString(), any(), any(), anyString());
+        verify(store, never()).lock(anyString());
+        verifyNoInteractions(profiles);
+    }
+
+    @Test
+    void invalidPreviewBatchNeverReadsEmployees() {
+        assertThatThrownBy(() -> service.preview(new PayrollCalculateCommand("2026-09", List.of())))
+                .hasMessageContaining("1至100");
+        assertThatThrownBy(
+                        () ->
+                                service.preview(
+                                        new PayrollCalculateCommand("2026-13", List.of("E1"))))
+                .hasMessageContaining("月份格式");
+        verifyNoInteractions(store, payroll);
+    }
+
+    private PayrollCalculationView calculation(String fingerprint, String amount) {
+        var value = new BigDecimal(amount);
+        return new PayrollCalculationView(
+                value,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                value,
+                value,
+                List.of(),
+                List.of(),
+                List.of(),
+                null,
+                fingerprint,
+                null,
+                null);
     }
 
     @Test
@@ -160,6 +240,84 @@ class HrPayrollWorkflowServiceTest {
     }
 
     @Test
+    void paidSalaryRetriesRemainIdempotentWhenLaterRuleChangesRequireReview() {
+        var reviews = mock(HrPayrollComponentLifecycleStore.class);
+        service.setRuleReviews(reviews);
+        var paid =
+                new PayrollDetailView(
+                        "P1",
+                        "2026-09",
+                        "E1",
+                        "员工",
+                        1L,
+                        "销售",
+                        "北京",
+                        "PAID",
+                        2,
+                        null,
+                        Instant.EPOCH);
+        when(store.detail(anyString(), eq("P1"), eq("hr:payroll:paid"))).thenReturn(paid);
+        when(store.pay(anyString(), eq("P1"), any(), anyString())).thenReturn(paid);
+        var command =
+                new PayrollPaymentCommand(
+                        UUID.randomUUID().toString(),
+                        1,
+                        LocalDate.of(2026, 9, 1),
+                        BigDecimal.TEN,
+                        "BANK",
+                        "重试同一发放请求");
+        assertThat(service.pay("P1", command)).isSameAs(paid);
+        verifyNoInteractions(reviews);
+    }
+
+    @Test
+    void unresolvedRuleReviewPreventsPaymentOfAConfirmedSalary() {
+        var reviews = mock(HrPayrollComponentLifecycleStore.class);
+        service.setRuleReviews(reviews);
+        when(store.detail(anyString(), eq("P1"), eq("hr:payroll:paid")))
+                .thenReturn(
+                        new PayrollDetailView(
+                                "P1",
+                                "2026-09",
+                                "E1",
+                                "员工",
+                                1L,
+                                "销售",
+                                "北京",
+                                "CONFIRMED",
+                                1,
+                                null,
+                                Instant.EPOCH));
+        when(reviews.reviews(anyString(), eq("PAYROLL"), eq("2026-09")))
+                .thenReturn(
+                        List.of(
+                                new PayrollRuleReviewView(
+                                        "review",
+                                        "PAYROLL",
+                                        "P1",
+                                        "E1",
+                                        "员工",
+                                        "2026-09",
+                                        "提成规则",
+                                        "DISABLE",
+                                        "调整",
+                                        Instant.EPOCH)));
+        assertThatThrownBy(
+                        () ->
+                                service.pay(
+                                        "P1",
+                                        new PayrollPaymentCommand(
+                                                UUID.randomUUID().toString(),
+                                                1,
+                                                LocalDate.of(2026, 9, 30),
+                                                BigDecimal.TEN,
+                                                "银行凭证",
+                                                "工资发放")))
+                .hasMessageContaining("规则变更待复核");
+        verify(store, never()).pay(anyString(), anyString(), any(), anyString());
+    }
+
+    @Test
     void negativeCorrectionsAreAllowedButZeroIsRejected() {
         String request = UUID.randomUUID().toString();
         service.correct(
@@ -174,6 +332,36 @@ class HrPayrollWorkflowServiceTest {
                                         new PayrollCorrectionCommand(
                                                 request, 1, "2026-10", BigDecimal.ZERO, "冲回")))
                 .hasMessageContaining("不能为0");
+    }
+
+    @Test
+    void correctionRequiresPayrollConfirmationPermission() {
+        UUID user = UUID.randomUUID(), tenant = UUID.randomUUID();
+        TestAuthorizationContext.set(
+                new CallerIdentity(
+                        "TENANT",
+                        user,
+                        tenant,
+                        user,
+                        null,
+                        UUID.randomUUID(),
+                        0,
+                        0,
+                        0,
+                        Set.of(),
+                        Set.of("hr:payroll:read")));
+        assertThatThrownBy(
+                        () ->
+                                service.correct(
+                                        "P1",
+                                        new PayrollCorrectionCommand(
+                                                UUID.randomUUID().toString(),
+                                                1,
+                                                "2026-10",
+                                                BigDecimal.TEN,
+                                                "补发")))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        verifyNoInteractions(store);
     }
 
     @Test

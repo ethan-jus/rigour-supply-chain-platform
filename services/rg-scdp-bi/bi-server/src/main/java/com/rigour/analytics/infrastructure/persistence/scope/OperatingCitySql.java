@@ -3,9 +3,7 @@ package com.rigour.analytics.infrastructure.persistence.scope;
 /** 城市名单只取启用的销售部所有下级部门；地区关联用于映射原始订单的历史城市。 */
 public final class OperatingCitySql {
     private OperatingCitySql() {}
-    public static final String INSERT = """
-INSERT INTO bi_sales_contact_city_dim
- (tenant_id,region_code,city_name,department_id,department_path,source_region_code)
+    public static final String SELECT = """
 SELECT d.tenant_id,d.department_code,d.department_name,d.id,d.department_path,
  (SELECT CASE WHEN COUNT(*)=1 THEN MIN(a.area_code) END
     FROM bi_source_crm_crm_customer_area a
@@ -16,4 +14,9 @@ SELECT d.tenant_id,d.department_code,d.department_name,d.id,d.department_path,
  WHERE d.tenant_id=#{tenantId} AND d.deleted=0 AND d.status_code='ACTIVE'
    AND p.deleted=0 AND p.status_code='ACTIVE' AND p.department_name='销售部'
 """;
+
+    public static final String INSERT = """
+INSERT INTO bi_sales_contact_city_dim
+ (tenant_id,region_code,city_name,department_id,department_path,source_region_code)
+""" + SELECT;
 }

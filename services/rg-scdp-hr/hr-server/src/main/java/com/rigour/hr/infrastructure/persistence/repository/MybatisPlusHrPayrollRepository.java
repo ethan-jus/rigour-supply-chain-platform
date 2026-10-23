@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.rigour.hr.api.v1.model.*;
 import com.rigour.hr.application.port.out.HrPayrollStore;
+import com.rigour.hr.application.port.out.PayrollPaymentAttachmentStore;
 import com.rigour.hr.infrastructure.persistence.entity.*;
 import com.rigour.hr.infrastructure.persistence.mapper.*;
 import com.rigour.shared.core.api.ErrorCode;
@@ -40,6 +41,12 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
     private final HrPayrollPaymentMapper paymentMapper;
     private final HrPayrollCorrectionMapper correctionMapper;
     private final HrPayrollCommissionReleaseMapper releaseMapper;
+    private PayrollPaymentAttachmentStore paymentAttachments;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setPaymentAttachments(PayrollPaymentAttachmentStore attachments) {
+        this.paymentAttachments = attachments;
+    }
 
     public MybatisPlusHrPayrollRepository(
             HrPayrollMapper mapper,
@@ -86,12 +93,59 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
     }
 
     @Override
+    public List<PayrollEmployeeView> expenseEmployees(
+            String tenant, String action, String cityCode, String cityName, LocalDate at) {
+        // 只读取有效城市管辖记录，不能把员工所在部门的名称当作城市归属。
+        var managers =
+                ruleMapper
+                        .selectList(
+                                new QueryWrapper<HrPayrollRuleEntity>()
+                                        .eq("tenant_id", tenant)
+                                        .eq("kind_code", "CITY_MANAGER")
+                                        .eq("enabled", true)
+                                        .le("effective_from", at)
+                                        .and(
+                                                q ->
+                                                        q.isNull("effective_to")
+                                                                .or()
+                                                                .ge("effective_to", at)))
+                        .stream()
+                        .filter(
+                                r ->
+                                        cityCode.equals(
+                                                json.readTree(r.getDataJson())
+                                                        .path("cityCode")
+                                                        .asText()))
+                        .map(HrPayrollRuleEntity::getEmployeeCode)
+                        .filter(Objects::nonNull)
+                        .distinct()
+                        .toList();
+        String city = cityName.strip().replaceFirst("市$", "");
+        var query = employeeQuery(tenant, action);
+        query.and(
+                q -> {
+                    q.apply("TRIM(TRAILING '市' FROM TRIM(e.city_name)) = {0}", city);
+                    if (!managers.isEmpty()) q.or().in("e.employee_code", managers);
+                });
+        var rows = references.employees(query.orderByAsc("e.employee_code").last("LIMIT 20001"));
+        if (rows.size() > 20000) throw error(ErrorCode.BAD_REQUEST, "员工数量超过上限，请缩小权限范围");
+        return rows;
+    }
+
+    @Override
     public PayrollEmployeeView employee(String tenant, String code, String action) {
         return references
                 .employees(employeeQuery(tenant, action).eq("e.employee_code", code))
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> error(ErrorCode.NOT_FOUND, "员工不存在或无权限"));
+    }
+
+    @Override
+    public String employeePositionName(String tenant, String code, String action) {
+        // 与保存处于同一事务，避免核验后员工岗位被并发改成普通销售。
+        return references.employeePositionName(
+                employeeQuery(tenant, action).eq("e.employee_code", code).last("FOR UPDATE"));
     }
 
     @Override
@@ -110,6 +164,34 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
                         date.atStartOfDay().minusHours(8),
                         date.plusDays(1).atStartOfDay().minusHours(8));
         return rows.size() == 1 ? rows.getFirst() : null;
+    }
+
+    @Override
+    public Set<Long> departmentsDuring(
+            String tenant, String employee, LocalDate from, LocalDate to) {
+        return new HashSet<>(
+                references.departmentsAt(
+                        tenant,
+                        employee,
+                        from.atStartOfDay().minusHours(8),
+                        to.plusDays(1).atStartOfDay().minusHours(8)));
+    }
+
+    @Override
+    public Map<String, Long> preparationDepartments(
+            String tenant, List<String> employees, String month) {
+        if (employees.isEmpty()) return Map.of();
+        var date = java.time.YearMonth.parse(month).atEndOfMonth();
+        Map<String, Long> result = new java.util.HashMap<>();
+        for (var row :
+                references.preparationDepartments(
+                        tenant,
+                        employees,
+                        month,
+                        date.atStartOfDay().minusHours(8),
+                        date.plusDays(1).atStartOfDay().minusHours(8)))
+            if (row.departmentId() != null) result.put(row.employeeCode(), row.departmentId());
+        return Map.copyOf(result);
     }
 
     @Override
@@ -305,6 +387,11 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
     }
 
     @Override
+    public Set<String> releasedForCalculation(String tenant, String employee, String month) {
+        return new HashSet<>(mapper.releasedForCalculation(tenant, employee, month));
+    }
+
+    @Override
     public Optional<PayrollDetailView> byMonth(String tenant, String employee, String month) {
         return Optional.ofNullable(
                         mapper.selectOne(
@@ -424,7 +511,12 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
         // 与列表复用租户、历史部门、员工搜索和数据权限；数据库聚合，不加载工资明细或逐人查付款。
         var allStages =
                 new PayrollQuery(
-                        0, 0, query.month(), query.keyword(), query.departmentId(), null,
+                        0,
+                        0,
+                        query.month(),
+                        query.keyword(),
+                        query.departmentId(),
+                        null,
                         query.payrollCategory());
         String complete =
                 "status_code IN ('READY','CONFIRMED','PAID') AND"
@@ -559,13 +651,17 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
     }
 
     private List<PayrollPaymentView> payments(String tenant, String id) {
-        return paymentMapper
+        var payments = paymentMapper
                 .selectList(
                         new QueryWrapper<HrPayrollPaymentEntity>()
                                 .eq("tenant_id", tenant)
                                 .eq("payroll_id", id)
-                                .orderByAsc("created_time", "id"))
-                .stream()
+                                .orderByAsc("created_time", "id"));
+        // One metadata query for all payments of this wage, including Excel export.
+        var attachments = payments.isEmpty() || paymentAttachments == null
+                ? Map.<String, List<PayrollPaymentAttachmentView>>of()
+                : paymentAttachments.listByPayroll(tenant, id);
+        return payments.stream()
                 .map(
                         p ->
                                 new PayrollPaymentView(
@@ -575,7 +671,8 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
                                         p.getAmount(),
                                         p.getReferenceNo(),
                                         p.getReason(),
-                                        p.getCreatedTime().toInstant(ZoneOffset.UTC)))
+                                        p.getCreatedTime().toInstant(ZoneOffset.UTC),
+                                        attachments.getOrDefault(p.getId(), List.of())))
                 .toList();
     }
 
@@ -723,7 +820,7 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
             String tenant, String id, PayrollCorrectionCommand c, String actor) {
         lock(tenant);
         var old = detail(tenant, id, "hr:payroll:confirm");
-        var recipient = employee(tenant, old.employeeCode(), "hr:payroll:confirm");
+        employee(tenant, old.employeeCode(), "hr:payroll:confirm");
         var previous =
                 correctionMapper.selectOne(
                         new QueryWrapper<HrPayrollCorrectionEntity>()
@@ -737,8 +834,6 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
                 throw error(ErrorCode.CONFLICT, "补差请求编号已使用");
             return correctionView(previous);
         }
-        if (!"SALES".equals(recipient.payrollCategory()))
-            throw error(ErrorCode.BAD_REQUEST, "员工当前不参与销售薪酬核算，暂不能自动结算跨月补差，请由HR核对");
         if ((!"PAID".equals(old.statusCode())
                         && !("CONFIRMED".equals(old.statusCode()) && !old.payments().isEmpty()))
                 || old.revision() != c.revision())

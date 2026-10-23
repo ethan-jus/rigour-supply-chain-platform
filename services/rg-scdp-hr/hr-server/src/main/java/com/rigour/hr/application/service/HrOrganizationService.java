@@ -11,18 +11,21 @@ import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
 /** 人员组织维护用例；账号角色始终由 IAM 管理。 */
 @Service
-public final class HrOrganizationService {
+public class HrOrganizationService {
     private final HrOrganizationStore store;
     private final HrEmployeeStore employees;
+    private final HrEmployeeCityScopeService cityScopes;
 
-    public HrOrganizationService(HrOrganizationStore store, HrEmployeeStore employees) {
+    public HrOrganizationService(HrOrganizationStore store, HrEmployeeStore employees, HrEmployeeCityScopeService cityScopes) {
         this.store = store;
         this.employees = employees;
+        this.cityScopes = cityScopes;
     }
 
     public List<HrDepartmentView> departments() {
@@ -59,6 +62,7 @@ public final class HrOrganizationService {
                 actor.tenantId().toString(), id, revision, actor.principalId().toString());
     }
 
+    @Transactional
     public HrEmployeeView saveEmployee(Long id, HrEmployeeCommand c) {
         CallerIdentity actor = actor(id == null ? "hr:employee:create" : "hr:employee:update");
         if (c == null) throw bad("员工参数不能为空");
@@ -72,8 +76,11 @@ public final class HrOrganizationService {
         if (!"LEFT".equals(c.employmentStatus()) && c.leaveDate() != null) throw bad("仅离职员工可填写离职日期");
         if (c.entryDate() != null && c.leaveDate() != null && c.leaveDate().isBefore(c.entryDate()))
             throw bad("离职时间不能早于入职时间");
-        if (c.payrollCategory() != null && !List.of("SALES", "HEADQUARTERS").contains(c.payrollCategory()))
+        if (c.payrollCategory() == null || c.payrollCategory().isBlank())
+            throw bad("请选择薪酬类别");
+        if (!List.of("SALES", "HEADQUARTERS").contains(c.payrollCategory()))
             throw bad("薪酬类别无效");
+        if (c.regularized() == null) throw bad("请选择是否转正");
         if (c.regularizationDate() != null) {
             if (!Boolean.TRUE.equals(c.regularized())) throw bad("仅已转正员工可填写转正日期");
             if (c.entryDate() != null && c.regularizationDate().isBefore(c.entryDate().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate()))
@@ -114,7 +121,9 @@ public final class HrOrganizationService {
                         id,
                         normalized,
                         actor.principalId().toString());
-        return employees.employee(actor.tenantId().toString(), result).orElseThrow();
+        var saved = employees.employee(actor.tenantId().toString(), result).orElseThrow();
+        cityScopes.save(saved, c.cityScopes());
+        return saved;
     }
 
     public List<HrAssignmentView> assignments(Long id) {

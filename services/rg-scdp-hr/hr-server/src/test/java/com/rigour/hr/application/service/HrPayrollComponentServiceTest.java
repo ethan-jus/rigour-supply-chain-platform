@@ -14,8 +14,9 @@ import java.util.*;
 class HrPayrollComponentServiceTest {
     final HrPayrollComponentStore catalog = mock(HrPayrollComponentStore.class);
     final HrPayrollStore payroll = mock(HrPayrollStore.class);
+    final HrPayrollComponentLifecycleStore lifecycle = mock(HrPayrollComponentLifecycleStore.class);
     final HrPayrollComponentService service =
-            new HrPayrollComponentService(catalog, payroll, mock(HrPayrollSource.class));
+            new HrPayrollComponentService(catalog, payroll, mock(HrPayrollSource.class), lifecycle);
     final PayrollRuleResolver resolver = new PayrollRuleResolver(catalog);
     final PayrollSchemeDefinition base = PayrollSchemeTestFixture.definition();
     final PayrollEmployeeView employee =
@@ -367,5 +368,177 @@ class HrPayrollComponentServiceTest {
         assertThat(result.issues()).isEmpty();
         assertThat(result.snapshot().definition().allowances()).isEmpty();
         assertThat(result.snapshot().definition().ruleReferences().allowanceId()).isNull();
+    }
+
+    @Test
+    void stoppingARuleAffectsItsOperationMonthWithoutChangingHistoricalMonths() {
+        var original = rules.get(2);
+        var stopped =
+                new PayrollComponentVersionView(
+                        original.id(),
+                        original.ruleId(),
+                        1,
+                        original.definition(),
+                        original.reason(),
+                        original.createdBy(),
+                        original.createdTime(),
+                        original.ruleCode(),
+                        1,
+                        false,
+                        List.of(
+                                new PayrollComponentStateChange(
+                                        1, "2026-10", false, "停用", "HR", Instant.now())));
+        rules.set(2, stopped);
+        assertThat(resolver.resolve("t", employee, 1L, YearMonth.of(2026, 9)).issues()).isEmpty();
+        assertThat(resolver.resolve("t", employee, 1L, YearMonth.of(2026, 10)).issues())
+                .contains("提成规则已停用，请启用或配置替代规则");
+        var changes = new ArrayList<>(stopped.stateChanges());
+        changes.add(
+                new PayrollComponentStateChange(2, "2026-10", true, "重新启用", "HR", Instant.now()));
+        rules.set(
+                2,
+                new PayrollComponentVersionView(
+                        original.id(),
+                        original.ruleId(),
+                        1,
+                        original.definition(),
+                        original.reason(),
+                        original.createdBy(),
+                        original.createdTime(),
+                        original.ruleCode(),
+                        1,
+                        false,
+                        changes));
+        assertThat(resolver.resolve("t", employee, 1L, YearMonth.of(2026, 10)).issues()).isEmpty();
+    }
+
+    @Test
+    void deletedUnstartedVersionDoesNotReplaceTheCurrentSalary() {
+        var current = rules.getFirst();
+        var d = current.definition();
+        rules.add(
+                new PayrollComponentVersionView(
+                        "deleted-next",
+                        current.ruleId(),
+                        2,
+                        new PayrollComponentDefinition(
+                                d.name(),
+                                d.kind(),
+                                d.role(),
+                                d.departmentIds(),
+                                LocalDate.of(2026, 11, 1),
+                                d.effectiveTo(),
+                                d.salary(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                d.employeeCodes()),
+                        "删除",
+                        "HR",
+                        Instant.now(),
+                        current.ruleCode(),
+                        2,
+                        true,
+                        List.of()));
+        var result = resolver.resolve("t", employee, 1L, YearMonth.of(2026, 11));
+        assertThat(result.issues()).isEmpty();
+        assertThat(result.snapshot().definition().ruleReferences().salaryId())
+                .isEqualTo(current.id());
+    }
+
+    @Test
+    void deletingAnEffectiveRuleOrStoppingAFutureRuleIsRejectedBeforePersistence() {
+        var tenant = UUID.randomUUID();
+        com.rigour.shared.context.TestAuthorizationContext.set(
+                new com.rigour.shared.context.CallerIdentity(
+                        "SERVICE",
+                        UUID.randomUUID(),
+                        tenant,
+                        null,
+                        null,
+                        UUID.randomUUID(),
+                        0,
+                        0,
+                        0,
+                        Set.of(),
+                        Set.of("*:*:*")));
+        try {
+            when(catalog.versions(tenant.toString())).thenAnswer(i -> rules);
+            when(payroll.departments(eq(tenant.toString()), anyString()))
+                    .thenReturn(List.of(new PayrollDepartmentView(1L, null, "销售部", 1)));
+            var original = rules.get(4);
+            var d = original.definition();
+            var currentMonth = YearMonth.now(ZoneId.of("Asia/Shanghai"));
+            var current =
+                    new PayrollComponentVersionView(
+                            original.id(),
+                            original.ruleId(),
+                            1,
+                            new PayrollComponentDefinition(
+                                    d.name(),
+                                    d.kind(),
+                                    d.role(),
+                                    d.departmentIds(),
+                                    currentMonth.atDay(1),
+                                    d.effectiveTo(),
+                                    null,
+                                    null,
+                                    null,
+                                    null,
+                                    d.allowance(),
+                                    List.of()),
+                            "创建",
+                            "HR",
+                            Instant.EPOCH);
+            rules.set(4, current);
+            assertThatThrownBy(
+                            () ->
+                                    service.act(
+                                            current.id(),
+                                            new PayrollComponentActionCommand(
+                                                    "delete-current", "DELETE", 1, 0, "测试")))
+                    .hasMessageContaining("尚未生效");
+            var future =
+                    new PayrollComponentVersionView(
+                            original.id(),
+                            original.ruleId(),
+                            1,
+                            new PayrollComponentDefinition(
+                                    d.name(),
+                                    d.kind(),
+                                    d.role(),
+                                    d.departmentIds(),
+                                    currentMonth.plusMonths(1).atDay(1),
+                                    d.effectiveTo(),
+                                    null,
+                                    null,
+                                    null,
+                                    null,
+                                    d.allowance(),
+                                    List.of()),
+                            "创建",
+                            "HR",
+                            Instant.EPOCH);
+            rules.set(4, future);
+            assertThatThrownBy(
+                            () ->
+                                    service.act(
+                                            future.id(),
+                                            new PayrollComponentActionCommand(
+                                                    "stop-future", "DISABLE", 1, 0, "测试")))
+                    .hasMessageContaining("当前有效期间");
+            when(lifecycle.inUse(tenant.toString(), future.id())).thenReturn(true);
+            assertThatThrownBy(
+                            () ->
+                                    service.act(
+                                            future.id(),
+                                            new PayrollComponentActionCommand(
+                                                    "delete-used", "DELETE", 1, 0, "测试")))
+                    .hasMessageContaining("确认结果引用");
+            verify(lifecycle, never()).act(anyString(), any(), any(), anyString(), any());
+        } finally {
+            com.rigour.shared.context.TestAuthorizationContext.clear();
+        }
     }
 }

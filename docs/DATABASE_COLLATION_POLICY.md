@@ -38,7 +38,7 @@ cd ..
   train integration-general-ci-init/BOOT-INF/classes/db/migration
 ```
 
-工具先验证本机 MySQL:3306、主机名、排序规则和 `UUID_TO_BIN`，再确认 `rigour_integration` 没有任何表；非空或部分失败的库会拒绝继续，不自动清理或 repair。随后只执行 B24，验证 Flyway 历史、库/表/字符列排序规则和业务表为空。保留 6 个内置飞书模板、2 个模板依赖和 Flyway 历史。若数据库能力检查失败，记录版本与完整错误，先解决兼容性问题，不开启服务自动迁移。
+工具先验证本机 MySQL:3306、主机名、排序规则和 `UUID_TO_BIN`，再确认 `rigour_integration` 没有任何表；非空或部分失败的库会拒绝继续，不自动清理或 repair。随后只执行 B27，验证 Flyway 历史、库/表/字符列排序规则和业务表为空。保留 6 个内置飞书模板、2 个模板依赖和 Flyway 历史。若数据库能力检查失败，记录版本与完整错误，先解决兼容性问题，不开启服务自动迁移。
 
 ## 已有数据库转换
 
@@ -59,3 +59,22 @@ mysql -h 127.0.0.1 -P 3306 -u root -p \
 4. 重跑清单，非 general-ci 的库/表/字符列查询应为空；Flyway validate 应通过，再恢复服务。
 
 `general_ci` 不区分大小写，比较语义也与其他排序规则不同。尤其原 Foundation 的 `business_dictionary.value`、Integration 的 `integration_dictionary_source_mapping.source_value`、Sales 的临时拜访员工/客户编码曾使用 `utf8mb4_bin`，转换后仅大小写不同的值可能相等。冲突检查可保护唯一约束，但业务上的大小写语义仍需验收。
+
+## 2026-10-23 新库基线补齐
+
+在 MySQL 8.4 默认 `utf8mb4_0900_ai_ci` 连接下，隔离验收发现旧 HR、ERP、Order、Sales 基线的 CAST / JSON_TABLE / UNION 比较及 Foundation、Integration 的部分表或视图列未完全采用 general-ci。旧 B 和 V 文件保持原字节及校验值，新增以下基线供空库选择：
+
+| 服务 | 新基线 | 冻结的 V 范围 |
+| --- | --- | --- |
+| ERP | B40 | V1–V40 |
+| Foundation | B44 | V1–V44 |
+| HR | B25 | V1–V25 |
+| Integration | B27 | V1–V27 |
+| Order | B57 | V1–V57 |
+| Sales | B27.1 | V1–V27 |
+
+这些新文件使用现有生成器的 `explicit_charset_collation=true`，明确连接、表和视图表达式的 general-ci。Sales 的 B27 已冻结，因此新基线使用 B27.1；它不是新增的 V 迁移，未来 V28 仍会正常执行。manifest 保留原 10 项并增加 6 项，`prepare-general-ci-baselines.py --check` 继续逐项校验全部原 B/V 指纹。 Integration 的新 B27 另启用 `normalize_ascii_character_columns=true`，将规范化 SHA-256 十六进制摘要列统一为 utf8mb4/general；默认关闭此选项以保护旧文件，原有二进制采集 ID 主键及可重复采集同一摘要的行为不变。
+
+空库使用该域版本最高的 B；已有 V 历史的库忽略所有 B，继续原 V 升级，不导入基线、不转换原业务表、不替换历史。隔离验收分别覆盖九域当前 B 的初始化、校验和重复启动，以及这六域从旧 V 截止版本升级时历史 checksum、原业务哨兵数据和重复执行保持不变。测试只创建并销毁自身的 MySQL 容器，不连接共享 DEV。
+
+已因旧基线初始化失败的半成品库不由此自动恢复，不能用清库或 repair 绕过；部署前按原有新库/存量库流程判断并处理。

@@ -182,6 +182,35 @@ public class ConfiguredPayrollService {
                             selected.publishedTime(),
                             selected.stopFrom());
         }
+        try {
+            var calendar =
+                    new HrStatutoryCalendarResolver(source)
+                            .resolve(tenant, definition.calendar(), month);
+            if (calendar != definition.calendar()) {
+                definition =
+                        definition.withCalendar(
+                                calendar,
+                                definition.ruleReferences() == null
+                                        ? null
+                                        : definition.ruleReferences().attendanceId());
+                selected =
+                        new PayrollSchemeVersionView(
+                                selected.id(),
+                                selected.schemeId(),
+                                selected.version(),
+                                selected.revision(),
+                                selected.status(),
+                                definition,
+                                selected.reason(),
+                                selected.createdBy(),
+                                selected.publishedBy(),
+                                selected.updatedTime(),
+                                selected.publishedTime(),
+                                selected.stopFrom());
+            }
+        } catch (com.rigour.shared.core.exception.BusinessException unavailable) {
+            return pending(tenant, e, month, unavailable.getMessage());
+        }
         List<String> issues = new ArrayList<>(PayrollSchemeValidator.check(definition).errors());
         if (!issues.isEmpty())
             throw new IllegalStateException("已发布薪酬方案不完整：" + String.join("；", issues));
@@ -218,19 +247,22 @@ public class ConfiguredPayrollService {
                                                         .isBefore(month.atDay(1))))
             issues.add("该员工当月担任城市总，请在员工档案设置城市总薪资类别，避免误领销售补贴");
         Map<String, OrderPayrollLineView> lineMap = new LinkedHashMap<>();
+        boolean ordersRequired = requiresOrderSource(tenant, e, month, definition, versions, ownAssignments);
         boolean ordersAvailable = true;
-        try {
-            source.payrollLines(tenant, e.employeeCode(), null, month.atEndOfMonth())
-                    .forEach(f -> lineMap.put(f.lineId(), f));
-            for (String city :
-                    ownAssignments.stream().map(r -> r.data().cityCode()).distinct().toList())
-                source.payrollLines(tenant, null, city, month.atEndOfMonth())
+        if (ordersRequired) {
+            try {
+                source.payrollLines(tenant, e.employeeCode(), null, month.atEndOfMonth())
                         .forEach(f -> lineMap.put(f.lineId(), f));
-        } catch (RuntimeException unavailable) {
-            org.slf4j.LoggerFactory.getLogger(getClass())
-                    .warn("Payroll order source unavailable", unavailable);
-            ordersAvailable = false;
-            issues.add("订单付清核算来源暂不可用，不能按零业绩确认工资");
+                for (String city :
+                        ownAssignments.stream().map(r -> r.data().cityCode()).distinct().toList())
+                    source.payrollLines(tenant, null, city, month.atEndOfMonth())
+                            .forEach(f -> lineMap.put(f.lineId(), f));
+            } catch (RuntimeException unavailable) {
+                org.slf4j.LoggerFactory.getLogger(getClass())
+                        .warn("Payroll order source unavailable", unavailable);
+                ordersAvailable = false;
+                issues.add("订单付清核算来源暂不可用，不能按零业绩确认工资");
+            }
         }
         var facts =
                 lineMap.values().stream()
@@ -238,10 +270,10 @@ public class ConfiguredPayrollService {
                         .toList();
         var own = facts.stream().filter(f -> e.employeeCode().equals(f.employeeCode())).toList();
         BigDecimal achievement =
-                ordersAvailable
+                ordersRequired && ordersAvailable
                         ? achievement(own, month.atDay(1), month.atEndOfMonth(), issues)
                         : null;
-        if (input.baseOverride() == null || input.performanceOverride() == null) {
+        if (ordersRequired && (input.baseOverride() == null || input.performanceOverride() == null)) {
             var legacyOrders =
                     payroll
                             .commissionHistory(
@@ -325,6 +357,34 @@ public class ConfiguredPayrollService {
                             .orElse(null);
             if (performanceBase == null && tier != null) issues.add("员工档案缺少当月档位的绩效基数");
         }
+        var personal = definition.personalPolicy();
+        BigDecimal originalPerformanceBase = performanceBase;
+        if (personal != null) {
+            standardBase =
+                    com.rigour.hr.domain.payroll.PersonalSalaryCalculator.average(
+                            standardBase,
+                            personal.baseAfterChange(),
+                            personal.salaryChangeDate(),
+                            personal.probationUntil(),
+                            personal.probationBasePercent(),
+                            month,
+                            e.entryDate(),
+                            e.leaveDate(),
+                            workDays,
+                            definition.proration().base());
+            performanceBase =
+                    com.rigour.hr.domain.payroll.PersonalSalaryCalculator.average(
+                            performanceBase,
+                            personal.performanceAfterChange(),
+                            personal.salaryChangeDate(),
+                            null,
+                            null,
+                            month,
+                            e.entryDate(),
+                            e.leaveDate(),
+                            workDays,
+                            definition.proration().performance());
+        }
         BigDecimal base =
                 input.baseOverride() == null
                         ? prorate(
@@ -347,18 +407,31 @@ public class ConfiguredPayrollService {
         if (performance == null) {
             switch (definition.performanceMode()) {
                 case "NONE" -> performance = BigDecimal.ZERO;
-                case "FIXED" ->
-                        performance =
-                                prorate(
-                                        performanceBase,
-                                        definition.proration().performance(),
-                                        month,
-                                        e,
-                                        workDays,
-                                        actualDays,
-                                        expectedDays,
-                                        issues,
-                                        "绩效");
+                case "FIXED" -> {
+                    BigDecimal fixedBase = performanceBase;
+                    if ("HEADQUARTERS".equals(definition.role())) {
+                        if (monthly.performanceCompletionPercent() == null) {
+                            issues.add("请由HR核定该员工本月绩效完成率");
+                            fixedBase = null;
+                        } else if (fixedBase != null) {
+                            fixedBase =
+                                    fixedBase
+                                            .multiply(monthly.performanceCompletionPercent())
+                                            .movePointLeft(2);
+                        }
+                    }
+                    performance =
+                            prorate(
+                                    fixedBase,
+                                    definition.proration().performance(),
+                                    month,
+                                    e,
+                                    workDays,
+                                    actualDays,
+                                    expectedDays,
+                                    issues,
+                                    "绩效");
+                }
                 case "SALES" -> {
                     var p = definition.sales();
                     long stage =
@@ -377,6 +450,7 @@ public class ConfiguredPayrollService {
                                     .toList();
                     BigDecimal target =
                             targets.size() == 1 ? targets.getFirst().target() : BigDecimal.ONE;
+                    boolean targetManuallySet = false;
                     if (definition.ruleReferences() != null && targetStore != null) {
                         var explicit =
                                 targetStore
@@ -390,6 +464,7 @@ public class ConfiguredPayrollService {
                                                                         .equals(v.metric()))
                                         .findFirst();
                         if (explicit.isPresent()) {
+                            targetManuallySet = true;
                             evidence.add(explicit.get());
                             target = explicit.get().value();
                             if (!(stage == 1 && p.firstMonthExempt())
@@ -400,8 +475,48 @@ public class ConfiguredPayrollService {
                         }
                     }
                     boolean exempt = stage == 1 && p.firstMonthExempt();
+                    if (!exempt
+                            && !targetManuallySet
+                            && p.processProtectionDays() != null
+                            && e.entryDate() != null) {
+                        long employedDays =
+                                month.atDay(1)
+                                        .datesUntil(month.atEndOfMonth().plusDays(1))
+                                        .filter(
+                                                d ->
+                                                        !d.isBefore(e.entryDate())
+                                                                && (e.leaveDate() == null
+                                                                        || !d.isAfter(
+                                                                                e.leaveDate())))
+                                        .count();
+                        target =
+                                target.multiply(BigDecimal.valueOf(employedDays))
+                                        .divide(
+                                                BigDecimal.valueOf(month.lengthOfMonth()),
+                                                2,
+                                                java.math.RoundingMode.HALF_UP);
+                    }
                     if (!exempt && targets.size() != 1) issues.add("入职阶段目标未匹配或冲突");
-                    boolean needsCheckins = !exempt && p.processPercent().signum() > 0;
+                    Set<LocalDate> assessment = new HashSet<>(workDays);
+                    assessment.removeAll(calendar.exemptDays());
+                    if (personal != null) assessment.removeAll(personal.exemptDays());
+                    if (p.processProtectionDays() != null && e.entryDate() != null) {
+                        LocalDate protectedEnd = e.entryDate().plusDays(p.processProtectionDays());
+                        assessment.removeIf(d -> d.isBefore(protectedEnd));
+                    }
+                    boolean legacyExempt = exempt && p.processProtectionDays() == null;
+                    boolean needsCheckins =
+                            !legacyExempt
+                                    && p.processPercent().signum() > 0
+                                    && assessment.stream()
+                                            .anyMatch(
+                                                    d ->
+                                                            e.entryDate() != null
+                                                                    && !d.isBefore(e.entryDate())
+                                                                    && (e.leaveDate() == null
+                                                                            || !d.isAfter(
+                                                                                    e
+                                                                                            .leaveDate())));
                     var visits = new SalesPayrollEvidenceView(!needsCheckins, List.of());
                     if (needsCheckins)
                         try {
@@ -442,13 +557,13 @@ public class ConfiguredPayrollService {
                                             v.verifiedCommunicationMillis(),
                                             v.durationComplete()));
                     }
-                    Set<LocalDate> assessment = new HashSet<>(workDays);
-                    assessment.removeAll(calendar.exemptDays());
                     var policy =
                             new SalesPerformancePolicy(
                                     performanceBase,
                                     performanceBase,
-                                    exempt ? "EXEMPT_ALL" : "ASSESS",
+                                    legacyExempt
+                                            ? "EXEMPT_ALL"
+                                            : exempt ? "EXEMPT_COLLECTION" : "ASSESS",
                                     p.processPercent().intValue(),
                                     p.dailyCheckins(),
                                     p.checkinPenalty(),
@@ -514,6 +629,8 @@ public class ConfiguredPayrollService {
                                     e.entryDate(),
                                     policy.protection().unit(),
                                     policy.protection().count());
+                    if (personal != null && personal.protectionUntil() != null)
+                        until = personal.protectionUntil();
                     LocalDate from =
                             policy.protection().assessUnprotectedOnly()
                                             && until != null
@@ -521,7 +638,25 @@ public class ConfiguredPayrollService {
                                     ? until
                                     : month.atDay(1);
                     List<ManagerMetric> metrics = new ArrayList<>();
+                    boolean needsTargets =
+                            definition.ruleReferences() != null
+                                    || "ACTUAL_COMPLETION".equals(policy.calculationMode())
+                                            && policy.metrics().stream()
+                                                    .anyMatch(
+                                                            m ->
+                                                                    ManagerCityTargetResolver
+                                                                                    .metric(m)
+                                                                            != null);
+                    var monthlyTargets =
+                            targetStore == null || !needsTargets
+                                    ? List.<TargetSettingsModels.Target>of()
+                                    : targetStore.targets(
+                                            tenant, month.toString(), month.toString());
                     for (var metric : policy.metrics()) {
+                        String cityMetric =
+                                "ACTUAL_COMPLETION".equals(policy.calculationMode())
+                                        ? ManagerCityTargetResolver.metric(metric)
+                                        : null;
                         var inputMetric =
                                 monthly.metrics().stream()
                                         .filter(a -> metric.code().equals(a.code()))
@@ -529,11 +664,29 @@ public class ConfiguredPayrollService {
                                         .orElse(null);
                         BigDecimal actual = null;
                         String proof = "";
-                        if ("MANUAL_CONFIRMED".equals(metric.source())) {
+                        if ("RECEIPT_AMOUNT".equals(cityMetric)
+                                || (cityMetric == null
+                                        && "CITY_RECEIPTS".equals(metric.source()))) {
+                            actual =
+                                    cityReceipts(
+                                            tenant,
+                                            e,
+                                            month,
+                                            from,
+                                            ownAssignments,
+                                            evidence,
+                                            issues);
+                            proof = "管辖城市全部有效到账，按到账日期归属任期；退款单独统计，不自动冲减回款额";
+                        } else if ("MANUAL_CONFIRMED".equals(metric.source())) {
                             if (inputMetric != null) {
                                 actual = inputMetric.value();
                                 proof = inputMetric.evidence();
                             }
+                        } else if (cityMetric != null
+                                && (!"SALES_AMOUNT".equals(cityMetric)
+                                        || !"ORDER_SALES".equals(metric.source()))) {
+                            issues.add(metric.name() + "：实际值来源与城市指标不一致，请核对数据来源或由HR核定");
+                            proof = "该指标实际值来源待核对";
                         } else {
                             var scoped =
                                     facts.stream()
@@ -543,9 +696,37 @@ public class ConfiguredPayrollService {
                                                                             .assignmentsAt(
                                                                                     ownAssignments,
                                                                                     f.cityCode(),
-                                                                                    f.orderDate())
+                                                                                    cityMetric
+                                                                                                            != null
+                                                                                                    && "FULLY_PAID_RECEIPTS"
+                                                                                                            .equals(
+                                                                                                                    metric
+                                                                                                                            .source())
+                                                                                            ? (f
+                                                                                                                    .fullyPaidDate()
+                                                                                                            == null
+                                                                                                    ? f
+                                                                                                            .orderDate()
+                                                                                                    : f
+                                                                                                            .fullyPaidDate())
+                                                                                            : f
+                                                                                                    .orderDate())
                                                                             .size()
                                                                     == 1)
+                                            .filter(
+                                                    f ->
+                                                            cityMetric == null
+                                                                    || (e.entryDate() != null
+                                                                            && !f.orderDate()
+                                                                                    .isBefore(
+                                                                                            e
+                                                                                                    .entryDate())
+                                                                            && (e.leaveDate()
+                                                                                            == null
+                                                                                    || !f.orderDate()
+                                                                                            .isAfter(
+                                                                                                    e
+                                                                                                            .leaveDate()))))
                                             .toList();
                             actual =
                                     !ordersAvailable
@@ -556,11 +737,33 @@ public class ConfiguredPayrollService {
                                                             from,
                                                             month.atEndOfMonth(),
                                                             issues)
-                                                    : sales(scoped, from, month.atEndOfMonth());
+                                                    : sales(
+                                                            scoped,
+                                                            from,
+                                                            month.atEndOfMonth(),
+                                                            issues);
                             proof = "订单来源，" + from + "至" + month.atEndOfMonth();
                         }
                         BigDecimal target = metric.target();
-                        if (definition.ruleReferences() != null && targetStore != null) {
+                        boolean cityTarget = cityMetric != null;
+                        if (cityTarget) {
+                            var resolved =
+                                    ManagerCityTargetResolver.resolve(
+                                            e.employeeCode(),
+                                            cityMetric,
+                                            month,
+                                            e.entryDate(),
+                                            e.leaveDate(),
+                                            from,
+                                            workDays,
+                                            definition.proration().performance(),
+                                            allAssignments,
+                                            monthlyTargets);
+                            target = resolved.amount();
+                            issues.addAll(resolved.issues());
+                            evidence.add(resolved);
+                            proof += "；城市目标归集：" + resolved.evidence();
+                        } else if (definition.ruleReferences() != null && targetStore != null) {
                             var explicit =
                                     targetStore
                                             .targets(tenant, month.toString(), month.toString())
@@ -600,7 +803,9 @@ public class ConfiguredPayrollService {
                                                                         s.mode(),
                                                                         s.coefficient()))
                                                 .toList(),
-                                        metric.cap()));
+                                        metric.cap(),
+                                        cityTarget,
+                                        metric.scoringMode()));
                         metricResults.add(
                                 new PayrollMetricResultView(
                                         metric.code(),
@@ -621,17 +826,20 @@ public class ConfiguredPayrollService {
                             SalarySchemeCalculator.manager(
                                     performanceBase,
                                     metrics,
-                                    policy.steps().stream()
-                                            .map(
-                                                    s ->
-                                                            new PerformanceBand(
-                                                                    s.lower(),
-                                                                    s.upper(),
-                                                                    s.lowerInclusive(),
-                                                                    s.upperInclusive(),
-                                                                    s.mode(),
-                                                                    s.coefficient()))
-                                            .toList(),
+                                    (policy.steps() == null
+                                                    ? List.<PayrollMetricStep>of()
+                                                    : policy.steps())
+                                            .stream()
+                                                    .map(
+                                                            s ->
+                                                                    new PerformanceBand(
+                                                                            s.lower(),
+                                                                            s.upper(),
+                                                                            s.lowerInclusive(),
+                                                                            s.upperInclusive(),
+                                                                            s.mode(),
+                                                                            s.coefficient()))
+                                                    .toList(),
                                     policy.cap(),
                                     month,
                                     e.entryDate(),
@@ -639,12 +847,30 @@ public class ConfiguredPayrollService {
                                     until,
                                     policy.protection().assessUnprotectedOnly(),
                                     workDays,
-                                    managerProration);
+                                    managerProration,
+                                    policy.calculationMode());
                     issues.addAll(calculated.issues());
+                    BigDecimal managerAmount = calculated.amount();
+                    if (personal != null
+                            && personal.salaryChangeDate() != null
+                            && calculated.issues().isEmpty()) {
+                        managerAmount =
+                                com.rigour.hr.domain.payroll.PersonalSalaryCalculator.managerAmount(
+                                        originalPerformanceBase,
+                                        personal.performanceAfterChange(),
+                                        personal.salaryChangeDate(),
+                                        calculated.coefficient(),
+                                        until,
+                                        month,
+                                        e.entryDate(),
+                                        e.leaveDate(),
+                                        workDays,
+                                        managerProration);
+                    }
                     performance =
                             "CONFIRMED_ATTENDANCE".equals(definition.proration().performance())
                                     ? prorate(
-                                            calculated.amount(),
+                                            managerAmount,
                                             "CONFIRMED_ATTENDANCE",
                                             month,
                                             e,
@@ -653,7 +879,7 @@ public class ConfiguredPayrollService {
                                             expectedDays,
                                             issues,
                                             "绩效")
-                                    : calculated.amount();
+                                    : managerAmount;
                     managerCoefficient = calculated.coefficient();
                     managerCompletion = calculated.weightedCompletion();
                     protectedDays = calculated.protectedDays();
@@ -702,16 +928,18 @@ public class ConfiguredPayrollService {
                 new ConfiguredCommissionResult(
                         BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of());
         boolean commissionAvailable = true;
-        try {
-            commission =
-                    commissions.calculate(
-                            tenant, e, month, selected, versions, facts, allAssignments);
-            issues.addAll(commission.issues());
-        } catch (RuntimeException unavailable) {
-            org.slf4j.LoggerFactory.getLogger(getClass())
-                    .warn("Payroll commission calculation unavailable", unavailable);
-            commissionAvailable = false;
-            issues.add("提成规则或商品来源暂不可用，请核对后重算");
+        if (ordersRequired) {
+            try {
+                commission =
+                        commissions.calculate(
+                                tenant, e, month, selected, versions, facts, allAssignments);
+                issues.addAll(commission.issues());
+            } catch (RuntimeException unavailable) {
+                org.slf4j.LoggerFactory.getLogger(getClass())
+                        .warn("Payroll commission calculation unavailable", unavailable);
+                commissionAvailable = false;
+                issues.add("提成规则或商品来源暂不可用，请核对后重算");
+            }
         }
         var corrections = payroll.corrections(tenant, e.employeeCode(), month.toString());
         var correctionAmount =
@@ -722,6 +950,9 @@ public class ConfiguredPayrollService {
                 ordersAvailable && commissionAvailable && commission.issues().isEmpty()
                         ? commission.released()
                         : null;
+        if (commissionPay != null && monthly.commissionAdjustment() != null)
+            commissionPay = commissionPay.add(monthly.commissionAdjustment());
+        if (commissionPay != null && commissionPay.signum() < 0) issues.add("提成调整后金额为负，请核对扣回金额");
         BigDecimal gross =
                 base == null || performance == null || allowance == null || commissionPay == null
                         ? null
@@ -750,18 +981,20 @@ public class ConfiguredPayrollService {
                         assessedDays,
                         List.of(
                                 "按员工薪资档案与当月独立规则计算；人工调整单独留痕",
-                                "回款业绩按首次整单付清归月",
+                                "销售回款业绩与提成按首次整单付清归月；城市回款指标按全部有效到账归月",
                                 "底薪、绩效与补贴分别执行折算政策",
                                 "打卡与有效拜访扣减以该项额度为上限，逐日展示扣减依据"),
                         rules == null
                                 ? List.of()
-                                : rules.appliedRules(tenant, definition.ruleReferences()));
+                                : rules.appliedRules(tenant, definition.ruleReferences()),
+                        monthly.performanceCompletionPercent(),
+                        monthly.commissionAdjustment());
         var relevantLines =
                 facts.stream()
                         .map(OrderPayrollLineView::lineId)
                         .collect(java.util.stream.Collectors.toSet());
         var relevantReleases =
-                payroll.released(tenant).stream()
+                payroll.releasedForCalculation(tenant, e.employeeCode(), month.toString()).stream()
                         .filter(key -> relevantLines.contains(key.split("\\|", 2)[0]))
                         .sorted()
                         .toList();
@@ -806,6 +1039,46 @@ public class ConfiguredPayrollService {
                 snapshot);
     }
 
+    private boolean requiresOrderSource(
+            String tenant,
+            PayrollEmployeeView employee,
+            YearMonth month,
+            PayrollSchemeDefinition definition,
+            List<PayrollSchemeVersionView> versions,
+            List<PayrollRuleView> assignments) {
+        if (!"HEADQUARTERS".equals(definition.role())
+                || !"FIXED".equals(definition.baseSalary().mode())
+                || !Set.of("NONE", "FIXED").contains(definition.performanceMode())
+                || !definition.commission().rules().isEmpty()
+                || !assignments.isEmpty()
+                || employee.entryDate() == null) return true;
+        var departments =
+                payroll.departmentsDuring(
+                        tenant,
+                        employee.employeeCode(),
+                        employee.entryDate(),
+                        month.atEndOfMonth());
+        if (departments.isEmpty()) return true;
+        if (rules == null
+                || rules.hasHistoricalOrderDependency(tenant, employee, departments, month))
+            return true;
+        return versions.stream()
+                .anyMatch(
+                        version -> {
+                            var prior = version.definition();
+                            return !prior.effectiveFrom().isAfter(month.atEndOfMonth())
+                                    && !prior.effectiveTo().isBefore(employee.entryDate())
+                                    && (prior.employeeCodes().contains(employee.employeeCode())
+                                            || prior.departmentIds().stream()
+                                                    .anyMatch(departments::contains))
+                                    && (!"HEADQUARTERS".equals(prior.role())
+                                            || "TIERS".equals(prior.baseSalary().mode())
+                                            || !Set.of("NONE", "FIXED")
+                                                    .contains(prior.performanceMode())
+                                            || !prior.commission().rules().isEmpty());
+                        });
+    }
+
     private static BigDecimal prorate(
             BigDecimal amount,
             String mode,
@@ -824,6 +1097,66 @@ public class ConfiguredPayrollService {
             return null;
         }
         return SalarySchemeCalculator.money(amount.multiply(factor));
+    }
+
+    private BigDecimal cityReceipts(
+            String tenant,
+            PayrollEmployeeView employee,
+            YearMonth month,
+            LocalDate from,
+            List<PayrollRuleView> assignments,
+            List<Object> evidence,
+            List<String> issues) {
+        if (from.isAfter(month.atEndOfMonth())) return BigDecimal.ZERO;
+        var seen = new HashSet<String>();
+        var total = BigDecimal.ZERO;
+        for (String city : assignments.stream().map(r -> r.data().cityCode()).distinct().toList()) {
+            try {
+                var rows =
+                        source.cityCollections(tenant, city, month.atDay(1), month.atEndOfMonth());
+                if (rows == null) throw new IllegalStateException("城市到账来源未返回数据");
+                for (var row : rows) {
+                    if (!city.equals(row.cityCode())
+                            || row.date() == null
+                            || row.date().isBefore(from)
+                            || row.date().isAfter(month.atEndOfMonth())
+                            || employee.entryDate() == null
+                            || row.date().isBefore(employee.entryDate())
+                            || employee.leaveDate() != null
+                                    && row.date().isAfter(employee.leaveDate())
+                            || ConfiguredCommissionService.assignmentsAt(
+                                                    assignments, city, row.date())
+                                            .size()
+                                    != 1) continue;
+                    evidence.add(row);
+                    if (!"COMPLETE".equals(row.qualityStatus())
+                            || row.amount() == null
+                            || row.sourceId() == null
+                            || row.amount().signum() < 0) {
+                        issues.add(row.orderNo() + "：城市到账归属或金额待核定");
+                        return null;
+                    }
+                    if (!seen.add(row.sourceId())) {
+                        issues.add("城市到账来源重复，请核对后重算");
+                        return null;
+                    }
+                    total = total.add(row.amount());
+                }
+            } catch (RuntimeException unavailable) {
+                org.slf4j.LoggerFactory.getLogger(getClass())
+                        .warn(
+                                "Manager city receipts unavailable tenant={} employee={} city={}"
+                                        + " month={}",
+                                tenant,
+                                employee.employeeCode(),
+                                city,
+                                month,
+                                unavailable);
+                issues.add("城市到账来源暂不可用，请核对后重算");
+                return null;
+            }
+        }
+        return SalarySchemeCalculator.money(total);
     }
 
     static BigDecimal achievement(
@@ -852,11 +1185,16 @@ public class ConfiguredPayrollService {
     }
 
     private static BigDecimal sales(
-            List<OrderPayrollLineView> facts, LocalDate from, LocalDate to) {
+            List<OrderPayrollLineView> facts, LocalDate from, LocalDate to, List<String> issues) {
         Map<String, BigDecimal> orders = new HashMap<>();
-        facts.stream()
-                .filter(f -> !f.orderDate().isBefore(from) && !f.orderDate().isAfter(to))
-                .forEach(f -> orders.put(f.orderId(), f.orderAmount()));
+        for (var fact : facts) {
+            if (fact.orderDate().isBefore(from) || fact.orderDate().isAfter(to)) continue;
+            if (!"COMPLETE".equals(fact.qualityStatus()) || fact.orderAmount() == null) {
+                issues.add(fact.orderNo() + "：城市销售归属或金额待核定");
+                return null;
+            }
+            orders.put(fact.orderId(), fact.orderAmount());
+        }
         return orders.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 

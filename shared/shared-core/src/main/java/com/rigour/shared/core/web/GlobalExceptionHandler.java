@@ -1,6 +1,7 @@
 package com.rigour.shared.core.web;
 
 import com.rigour.shared.context.AuthorizationDeniedException;
+import com.rigour.shared.context.AuthorizationStateChangedException;
 import com.rigour.shared.core.api.ApiErrorDetail;
 import com.rigour.shared.core.api.ApiResponse;
 import com.rigour.shared.core.api.ErrorCode;
@@ -113,6 +114,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         log.warn("授权校验拒绝请求 requestId={}", com.rigour.shared.context.RequestContext.getRequestId());
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(ApiResponse.error("IAM_FORBIDDEN", "没有访问该资源的权限", List.of()));
+    }
+
+    @ExceptionHandler(AuthorizationStateChangedException.class)
+    ResponseEntity<ApiResponse<Void>> handleAuthorizationStateChanged(AuthorizationStateChangedException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiResponse.error("IAM_AUTHORIZATION_CHANGED", exception.getMessage(), List.of()));
     }
 
     @ExceptionHandler(ResourceAccessException.class)

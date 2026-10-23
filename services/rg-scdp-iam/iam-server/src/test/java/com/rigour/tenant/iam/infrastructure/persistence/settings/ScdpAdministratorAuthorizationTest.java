@@ -7,7 +7,7 @@ import static org.mockito.Mockito.*;
 import com.rigour.tenant.iam.application.port.out.AppEmployeeClient;
 import com.rigour.tenant.iam.application.service.management.ManagementModels.Actor;
 import java.util.UUID;
-import org.flywaydb.core.Flyway;
+import com.rigour.tenant.iam.IamTestMigrations;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -35,7 +35,7 @@ class ScdpAdministratorAuthorizationTest {
 
     @BeforeAll static void migrate() {
         ds = new DriverManagerDataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
-        Flyway.configure().dataSource(ds).load().migrate();
+        IamTestMigrations.configuration(ds).load().migrate();
     }
 
     @BeforeEach void seed() {
@@ -162,6 +162,39 @@ class ScdpAdministratorAuthorizationTest {
         jdbc.update("INSERT INTO iam_tenant_subscription(id,tenant_id,package_version_id,status,effective_from,effective_to,user_limit,created_at,updated_at) VALUES(?,?,UUID_TO_BIN('019facf3-0000-7000-8000-000000000002'),'ACTIVE',UTC_TIMESTAMP(6),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 YEAR),100,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))", bin(UUID.randomUUID()), bin(id));
         jdbc.update("INSERT INTO iam_app_settings(tenant_id,application_id,authorization_mode) VALUES(?,?,'ACTIVE')", bin(id), bin(app));
         return id;
+    }
+
+    @Test
+    void savingLinkedEmployeeSynchronizesLoginNameAndRejectsStaleUpdates() {
+        jdbc.update("""
+                INSERT INTO iam_app_menu_node(tenant_id,application_id,id,parent_id,resource_id,node_type,display_name)
+                SELECT ?,r.application_id,r.id,?,r.id,'BUTTON',r.display_name FROM iam_resource r
+                WHERE r.application_id=? AND r.permission_code IN
+                ('supply:user:update','supply:user:read','supply:user:assign-role','supply:role:read','supply:role:grant')
+                """,bin(admin.tenantId()),bin(page),bin(app));
+        var people = mock(AppEmployeeClient.class);
+        var person = new AppEmployeeClient.Employee(1,"EMP-RENAME","张三","ACTIVE",6L,"总部",
+                "P1","平台运营",java.util.List.of(6L),1,0,0,true,null);
+        when(people.employee(admin.tenantId(),"EMP-RENAME")).thenReturn(person);
+        var manager = new DataSourceTransactionManager(ds);
+        var roleStore = new JdbcAppRoleStore(jdbc,settings,manager,mock(AppReferenceValidator.class),people);
+        var store = new JdbcAppMemberStore(jdbc,settings,roleStore,people,
+                mock(com.rigour.tenant.iam.application.port.out.PasswordHasher.class),manager);
+        jdbc.update("UPDATE iam_app_member SET member_kind='BUSINESS' WHERE tenant_id=? AND user_id=?",
+                bin(ordinary.tenantId()),bin(ordinary.principalId()));
+        jdbc.update("INSERT INTO iam_app_employee_binding(tenant_id,application_id,user_id,employee_code,hr_revision,hr_access_version) VALUES(?,?,?,'EMP-RENAME',0,0)",
+                bin(ordinary.tenantId()),bin(app),bin(ordinary.principalId()));
+        var command = new com.rigour.tenant.iam.application.service.settings.AppMemberModels.Command(
+                null,null,null,"EMP-RENAME","ACTIVE",null,0,store.assignments(admin,ordinary.principalId()),null);
+        var saved = store.save(admin,ordinary.principalId(),command);
+        var reader = new com.rigour.tenant.iam.infrastructure.persistence.auth.JdbcIdentityAccessReader(jdbc,settings);
+        var query = new com.rigour.tenant.iam.application.service.identity.IdentityAccessQuery("TENANT",ordinary.principalId(),ordinary.tenantId());
+        assertThat(saved.name()).isEqualTo("张三");
+        assertThat(reader.readCurrentUser(query).displayName()).isEqualTo("张三");
+        assertThat(reader.readCurrentUser(new com.rigour.tenant.iam.application.service.identity.IdentityAccessQuery("TENANT",admin.principalId(),admin.tenantId())).displayName()).isEqualTo("admin");
+        assertThatThrownBy(() -> store.save(admin,ordinary.principalId(),command))
+                .isInstanceOf(com.rigour.shared.core.exception.StateConflictException.class);
+        assertThat(reader.readCurrentUser(query).displayName()).isEqualTo("张三");
     }
 
     UUID user(UUID tenant, String name, boolean protectedRole) {

@@ -67,6 +67,7 @@ public class ErpCostFilterTest {
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(ErpCostMapper.class);
+        config.addMapper(ErpCostReferenceMapper.class);
         var factory = new MybatisSqlSessionFactoryBean();
         factory.setDataSource(ds);
         factory.setConfiguration(config);
@@ -83,7 +84,7 @@ public class ErpCostFilterTest {
                         JSON,
                         scope,
                         mock(com.rigour.erp.application.port.out.CostReferenceSource.class),
-                        mock(ErpCostReferenceMapper.class));
+                        session.getMapper(ErpCostReferenceMapper.class));
         insert("good", "T1", "DOC-A", 7L);
         insert("other", "T2", "DOC-A", 7L);
         insert("hidden", "T1", "DOC-H", 8L);
@@ -140,6 +141,42 @@ public class ErpCostFilterTest {
         var result = store.entries("T1", "RENTAL", filter, "cost:read");
         assertThat(result.items()).hasSize((int) result.total());
         return result.total();
+    }
+
+    @Test
+    void variantSearchMatchesSpecificationWithinTheSelectedProductAndTenant() {
+        jdbc.execute(
+                "CREATE TABLE erp_product(id BIGINT, tenant_id VARCHAR(40), product_name"
+                        + " VARCHAR(200), deleted INT)");
+        jdbc.execute(
+                "CREATE TABLE erp_product_variant(id BIGINT, tenant_id VARCHAR(40), product_id"
+                        + " BIGINT, variant_code VARCHAR(40), specification_snapshot VARCHAR(500),"
+                        + " unit_code VARCHAR(40), deleted INT)");
+        jdbc.update(
+                "INSERT INTO erp_product VALUES (1,'T1','皮头',0),(2,'T1','其他商品',0),"
+                        + "(1,'T2','其他租户商品',0),(3,'T1','已删商品',1)");
+        jdbc.update(
+                "INSERT INTO erp_product_variant VALUES"
+                        + " (10,'T1',1,'SKU-10','H','PIECE',0),"
+                        + " (11,'T1',1,'SKU-11','M','BOX',0),"
+                        + " (12,'T1',1,'SKU-12',NULL,'PIECE',0),"
+                        + " (13,'T1',2,'SKU-13','H','PIECE',0),"
+                        + " (14,'T2',1,'SKU-14','H','PIECE',0),"
+                        + " (15,'T1',1,'SKU-15','H','PIECE',1),"
+                        + " (16,'T1',3,'SKU-16','H','PIECE',0)");
+        assertThat(store.references("T1", "variants", "H", null, 1L, 0, "cost:read"))
+                .extracting(com.rigour.erp.api.v1.model.ErpCostReferenceView::id)
+                .containsExactly("10");
+        assertThat(store.references("T1", "variants", "SKU-11", null, 1L, 0, "cost:read"))
+                .extracting(com.rigour.erp.api.v1.model.ErpCostReferenceView::specification)
+                .containsExactly("M");
+        assertThat(store.references("T1", "variants", "皮头", null, 1L, 0, "cost:read"))
+                .extracting(com.rigour.erp.api.v1.model.ErpCostReferenceView::id)
+                .containsExactly("10", "11", "12");
+        assertThat(store.references("T1", "variants", "", null, 1L, 1, "cost:read"))
+                .extracting(com.rigour.erp.api.v1.model.ErpCostReferenceView::id)
+                .containsExactly("11", "12");
+        assertThat(store.references("T1", "variants", "H", null, 3L, 0, "cost:read")).isEmpty();
     }
 
     @Test

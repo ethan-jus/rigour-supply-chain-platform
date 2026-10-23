@@ -30,7 +30,7 @@ public final class HttpHrPayrollSource implements HrPayrollSource {
     private final RestClient client;
     private final TrustedContextSigner signer;
     private final EffectiveDictionaryClient dictionaries;
-    private final String order, erp, sales;
+    private final String order, erp, sales, settings;
 
     public HttpHrPayrollSource(
             RestClient.Builder builder,
@@ -45,9 +45,38 @@ public final class HttpHrPayrollSource implements HrPayrollSource {
         this.order = order;
         this.erp = erp;
         this.sales = sales;
+        this.settings = settings;
         this.dictionaries =
                 new EffectiveDictionaryClient(
                         builder, signer, settings, "rigour-hr-payroll-service");
+    }
+
+    public com.rigour.settings.api.v1.model.StatutoryCalendarView statutoryCalendar(
+            String tenant, int year) {
+        var uri =
+                java.net.URI.create(
+                        settings + "/api/v1/business-settings/statutory-calendars/" + year);
+        var headers =
+                OutboundContextHeaders.service(
+                        signer,
+                        "GET",
+                        uri,
+                        "rigour-hr-payroll-service",
+                        tenant,
+                        "business-settings:dict:read");
+        var response =
+                client.get()
+                        .uri(uri)
+                        .headers(h -> headers.forEach(h::set))
+                        .retrieve()
+                        .body(
+                                new ParameterizedTypeReference<
+                                        ApiResponse<
+                                                com.rigour.settings.api.v1.model
+                                                        .StatutoryCalendarView>>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("法定节假日日历暂不可用");
+        return response.data();
     }
 
     public SalesPayrollEvidenceView performanceEvidence(
@@ -79,6 +108,41 @@ public final class HttpHrPayrollSource implements HrPayrollSource {
                                         ApiResponse<SalesPayrollEvidenceView>>() {});
         if (response == null || !"OK".equals(response.code()) || response.data() == null)
             throw new IllegalStateException("过程考核依据暂不可用");
+        return response.data();
+    }
+
+    public List<com.rigour.order.api.v1.model.OrderCityCollectionSourceView> cityCollections(
+            String tenant, String city, LocalDate from, LocalDate to) {
+        var uri =
+                UriComponentsBuilder.fromUriString(order)
+                        .path("/api/v1/orders/cost-sources/city-collections")
+                        .queryParam("cityCode", city)
+                        .queryParam("from", from)
+                        .queryParam("to", to)
+                        .build()
+                        .encode()
+                        .toUri();
+        var headers =
+                OutboundContextHeaders.service(
+                        signer,
+                        "GET",
+                        uri,
+                        "rigour-hr-payroll-service",
+                        tenant,
+                        "order:payroll:source-read");
+        var response =
+                client.get()
+                        .uri(uri)
+                        .headers(h -> headers.forEach(h::set))
+                        .retrieve()
+                        .body(
+                                new ParameterizedTypeReference<
+                                        ApiResponse<
+                                                List<
+                                                        com.rigour.order.api.v1.model
+                                                                .OrderCityCollectionSourceView>>>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "城市到账依据暂不可用", List.of());
         return response.data();
     }
 

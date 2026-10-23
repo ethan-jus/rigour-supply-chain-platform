@@ -74,8 +74,10 @@ public class MybatisPlusHrEmployeePayrollProfileRepository
             boolean salaryChanged = c.probationSalary() != null || c.regularSalary() != null;
             String category =
                     c.payrollCategory() == null ? old.payrollCategory : c.payrollCategory();
-            if (salaryChanged && !"SALES".equals(category))
-                throw error(ErrorCode.BAD_REQUEST, old.employeeName + "：批量工资维护仅适用于销售");
+            if (salaryChanged
+                    && !java.util.Set.of("SALES", "HEADQUARTERS")
+                            .contains(category == null ? "" : category))
+                throw error(ErrorCode.BAD_REQUEST, old.employeeName + "：请先维护薪资类别");
             if (salaryChanged && c.salaryEffectiveFrom() == null && old.salaryEffectiveFrom == null)
                 throw error(ErrorCode.BAD_REQUEST, old.employeeName + "：请填写薪资生效日期");
             var oldSalary =

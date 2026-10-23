@@ -10,6 +10,11 @@ import org.testcontainers.mysql.MySQLContainer;
 import org.yaml.snakeyaml.Yaml;
 
 import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.util.UUID;
+import java.sql.SQLException;
 import java.nio.file.Path;
 import java.sql.DriverManager;
 import java.util.List;
@@ -42,7 +47,9 @@ class DatabaseCollationMySqlTest {
                     .max(MigrationVersion::compareTo).orElseThrow();
         }
         Flyway flyway = Flyway.configure().dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())
-                .locations("filesystem:" + migrations, "filesystem:" + migrations.resolveSibling("bootstrap"))
+                // This case validates the frozen B snapshot itself, not the later V upgrade chain.
+                // IAM historical V139 selection is verified by its domain migration tests.
+                .locations("filesystem:" + migrations.resolveSibling("bootstrap"))
                 .target(baselineVersion)
                 .schemas(MYSQL.getDatabaseName()).baselineOnMigrate(false)
                 .cleanDisabled(false) // This URL is owned exclusively by the disposable container above.
@@ -61,6 +68,46 @@ class DatabaseCollationMySqlTest {
                     assertTrue(result.next());
                     assertEquals(0, result.getLong(1), directory + ": " + sql);
                 }
+            }
+            if (directory.contains("rg-scdp-integration/")) verifyIntegrationChecksum(connection);
+        }
+    }
+
+    private void verifyIntegrationChecksum(java.sql.Connection connection) throws Exception {
+        String payload = "{\"tables\":[],\"name\":\"摘要内容回归\"}";
+        String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(payload.getBytes(StandardCharsets.UTF_8)));
+        assertTrue(digest.matches("[0-9a-f]{64}"));
+        String tenant = UUID.randomUUID().toString(), actor = UUID.randomUUID().toString();
+        String first = UUID.randomUUID().toString();
+        String sql = "INSERT INTO integration_feishu_online_capture(id,tenant_id,actor_id,source_id,source_name,"
+                + "source_url,started_at,completed_at,complete,filtered,checksum,record_count,page_count,payload_json)"
+                + " VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'fixture','fixture','https://example.invalid',"
+                + "'2026-10-23 01:00:00','2026-10-23 01:00:01',TRUE,FALSE,?,0,1,?)";
+        try (var insert = connection.prepareStatement(sql)) {
+            for (String id : List.of(first, UUID.randomUUID().toString())) {
+                insert.setString(1, id); insert.setString(2, tenant); insert.setString(3, actor);
+                insert.setString(4, digest); insert.setString(5, payload);
+                assertEquals(1, insert.executeUpdate());
+            }
+            // Capture identity is unique; identical payload digests on distinct captures remain legal.
+            insert.setString(1, first);
+            SQLException conflict = org.junit.jupiter.api.Assertions.assertThrows(SQLException.class, insert::executeUpdate);
+            assertEquals("23000", conflict.getSQLState());
+            assertEquals(1062, conflict.getErrorCode());
+        }
+        try (var query = connection.prepareStatement("SELECT checksum,payload_json,LOWER(SHA2(payload_json,256))"
+                + " FROM integration_feishu_online_capture WHERE tenant_id=UUID_TO_BIN(?)")) {
+            query.setString(1, tenant);
+            try (var rows = query.executeQuery()) {
+                int count = 0;
+                while (rows.next()) {
+                    assertEquals(digest, rows.getString(1));
+                    assertEquals(payload, rows.getString(2));
+                    assertEquals(digest, rows.getString(3));
+                    count++;
+                }
+                assertEquals(2, count);
             }
         }
     }

@@ -1,6 +1,11 @@
 package com.rigour.hr.application.port.out;
 
-import com.rigour.hr.api.v1.model.HrAttendanceModels.*;
+import com.rigour.hr.api.v1.model.AttendanceDepartmentOption;
+import com.rigour.hr.api.v1.model.AttendanceRecordCommand;
+import com.rigour.hr.api.v1.model.AttendanceReopenCommand;
+import com.rigour.hr.api.v1.model.AttendanceRow;
+import com.rigour.hr.api.v1.model.AttendanceRuleCommand;
+import com.rigour.hr.api.v1.model.AttendanceRuleView;
 import com.rigour.hr.api.v1.model.HrPageView;
 
 import java.time.Instant;
@@ -18,8 +23,8 @@ public interface HrAttendanceStore {
             String departmentName,
             LocalDate entry,
             LocalDate leave,
-            RecordCommand record,
-            Row confirmation) {}
+            AttendanceRecordCommand record,
+            AttendanceRow confirmation) {}
 
     record EmployeeFilter(String name, String code, Long departmentId, String attendanceStatus) {}
 
@@ -27,27 +32,60 @@ public interface HrAttendanceStore {
 
     record RuleOverview(List<RuleRecord> rules, Set<Long> lockedDepartmentIds) {}
 
-    List<DepartmentOption> departments(String tenant);
+    /** Display and persistence must use the same precedence for the effective calendar. */
+    record EffectiveRule(Integer expectedDays, String source) {
+        public static EffectiveRule resolve(
+                Integer companyDays, Integer departmentDays, boolean stopped, boolean unavailable) {
+            Integer days =
+                    stopped || unavailable
+                            ? null
+                            : departmentDays == null ? companyDays : departmentDays;
+            return new EffectiveRule(
+                    days,
+                    stopped
+                            ? "DISABLED"
+                            : days == null
+                                    ? "UNSET"
+                                    : departmentDays == null ? "COMPANY" : "DEPARTMENT");
+        }
+    }
+
+    List<AttendanceDepartmentOption> departments(String tenant);
+
+    List<AttendanceDepartmentOption> departments(String tenant, String action);
+
+    void requireRuleScope(String tenant, Long departmentId, String action);
+
+    boolean ruleWritable(String tenant, Long departmentId);
 
     RuleOverview ruleOverview(String tenant, String month);
 
-    Rule rule(String tenant, String month, Long departmentId);
+    AttendanceRuleView rule(String tenant, String month, Long departmentId);
 
     Map<Long, Integer> departmentRules(String tenant, String month);
 
-    Rule saveRule(String tenant, RuleCommand command, String actor);
+    AttendanceRuleView saveRule(String tenant, AttendanceRuleCommand command, String actor);
 
     HrPageView<Employee> employees(
             String tenant, YearMonth month, EmployeeFilter filter, int begin, int step);
 
     Employee employee(String tenant, YearMonth month, String employeeCode);
 
+    Employee employee(String tenant, YearMonth month, String employeeCode, String action);
+
+    void reopenRecord(
+            String tenant,
+            String month,
+            String employee,
+            AttendanceReopenCommand command,
+            String actor);
+
     void confirmRecord(
             String tenant,
             String month,
             String employee,
-            RecordCommand command,
-            Row snapshot,
+            AttendanceRecordCommand command,
+            AttendanceRow snapshot,
             Long departmentId,
             String actor);
 }

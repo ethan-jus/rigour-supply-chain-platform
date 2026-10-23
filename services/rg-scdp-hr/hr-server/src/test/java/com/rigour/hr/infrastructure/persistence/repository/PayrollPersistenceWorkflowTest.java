@@ -65,6 +65,11 @@ class PayrollPersistenceWorkflowTest {
                         .replace(" JSON ", " LONGTEXT ");
         schemaConnection = ds.getConnection();
         schemaConnection.createStatement().execute(ddl);
+        // 与现行 V25 实体保持一致；隔离测试是空表，略过 MySQL 专用的历史月份回填。
+        schemaConnection.createStatement().execute(new ClassPathResource("db/migration/V25__expense_details_and_evidence.sql")
+                .getContentAsString(StandardCharsets.UTF_8)
+                .replace("UPDATE hr_expense SET cost_month = DATE_FORMAT(cost_date, '%Y-%m') WHERE cost_month IS NULL;", "")
+                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci", ""));
         schemaConnection
                 .createStatement()
                 .execute(
@@ -74,6 +79,9 @@ class PayrollPersistenceWorkflowTest {
                                         "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
                                                 + " COLLATE=utf8mb4_general_ci",
                                         ""));
+        jdbc.execute(
+                "CREATE TABLE hr_expense_guard(tenant_id VARCHAR(36) PRIMARY KEY,version BIGINT NOT"
+                        + " NULL DEFAULT 0)");
         jdbc.execute(
                 "CREATE ALIAS IF NOT EXISTS UTC_TIMESTAMP FOR"
                     + " 'com.rigour.hr.infrastructure.persistence.repository.PayrollPersistenceWorkflowTest.utcNow'");
@@ -312,7 +320,7 @@ class PayrollPersistenceWorkflowTest {
     }
 
     @Test
-    void salaryChangesRequireSalesCategoryAndEffectiveDate() {
+    void headquartersSalaryChangesPersistWithAudit() {
         employeeProfileFixture();
         var headquarters =
                 new PayrollProfilePatchCommand(
@@ -324,13 +332,39 @@ class PayrollPersistenceWorkflowTest {
                         LocalDate.of(2026, 9, 1),
                         "4000",
                         null);
+        profiles.update("T1", new PayrollBatchProfileCommand(List.of(headquarters), "测试"), "ACTOR");
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT payroll_category FROM hr_employee WHERE id=1",
+                                String.class))
+                .isEqualTo("HEADQUARTERS");
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT probation_salary FROM hr_employee_profile WHERE"
+                                    + " employee_id=1 AND tenant_id='T1'",
+                                String.class))
+                .isEqualTo("4000");
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT revision FROM hr_employee WHERE id=1", Integer.class))
+                .isEqualTo(4);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_payroll_audit", Integer.class))
+                .isEqualTo(2);
+    }
+
+    @Test
+    void salaryChangesStillRequireKnownCategoryAndEffectiveDate() {
+        employeeProfileFixture();
+        var unknown =
+                new PayrollProfilePatchCommand(
+                        "E1", 3, "UNKNOWN", null, null, LocalDate.of(2026, 9, 1), "4000", null);
         assertThatThrownBy(
                         () ->
                                 profiles.update(
                                         "T1",
-                                        new PayrollBatchProfileCommand(List.of(headquarters), "测试"),
+                                        new PayrollBatchProfileCommand(List.of(unknown), "测试"),
                                         "ACTOR"))
-                .hasMessageContaining("仅适用于销售");
+                .hasMessageContaining("薪资类别");
         var missingDate =
                 new PayrollProfilePatchCommand("E1", 3, "SALES", null, null, null, "4000", null);
         assertThatThrownBy(
@@ -520,6 +554,440 @@ class PayrollPersistenceWorkflowTest {
     }
 
     @Test
+    void confirmedAndPaidPayrollPreviewRetainsItsOwnCommissionWithoutInventingADifference() {
+        var tenant = UUID.randomUUID();
+        var user = UUID.randomUUID();
+        com.rigour.shared.context.TestAuthorizationContext.set(
+                new com.rigour.shared.context.CallerIdentity(
+                        "TENANT",
+                        user,
+                        tenant,
+                        user,
+                        null,
+                        UUID.randomUUID(),
+                        0,
+                        0,
+                        0,
+                        java.util.Set.of(),
+                        java.util.Set.of(
+                                "hr:payroll:read", "hr:payroll:calculate", "hr:payroll:confirm")));
+        String t = tenant.toString();
+        var e =
+                new PayrollEmployeeView(
+                        "E1", "员工", 1L, "销售部", "武汉市", LocalDate.of(2026, 9, 1), null, "SALES");
+        doReturn(List.of(e)).when(references).employees(any());
+        doReturn(List.of(1L))
+                .when(references)
+                .departmentsAt(anyString(), anyString(), any(), any());
+        doReturn(null).when(references).salarySource(anyString(), anyString());
+        var source = mock(com.rigour.hr.application.port.out.HrPayrollSource.class);
+        var schemes = mock(com.rigour.hr.application.port.out.HrPayrollSchemeStore.class);
+        var version =
+                com.rigour.hr.application.service.PayrollSchemeTestFixture.version(
+                        com.rigour.hr.application.service.PayrollSchemeTestFixture.definition());
+        when(schemes.versions(t)).thenReturn(List.of(version));
+        when(schemes.facts(t, "E1", "2026-09"))
+                .thenReturn(new PayrollSchemeFactsView(0, null, List.of(), ""));
+        when(source.payrollLines(eq(t), eq("E1"), isNull(), any()))
+                .thenReturn(
+                        List.of(
+                                new com.rigour.order.api.v1.model.OrderPayrollLineView(
+                                        "LINE1",
+                                        "O1",
+                                        "SO1",
+                                        "E1",
+                                        "WH",
+                                        1L,
+                                        1L,
+                                        1L,
+                                        "商品",
+                                        "BOX",
+                                        LocalDate.of(2026, 9, 2),
+                                        BigDecimal.ONE,
+                                        new BigDecimal("1000"),
+                                        new BigDecimal("1000"),
+                                        new BigDecimal("1000"),
+                                        new BigDecimal("1000"),
+                                        LocalDate.of(2026, 9, 5),
+                                        BigDecimal.ZERO,
+                                        null,
+                                        "COMPLETE")));
+        when(source.productsByVariants(eq(t), anyList()))
+                .thenReturn(
+                        List.of(
+                                new com.rigour.erp.api.v1.model.ErpPayrollProductView(
+                                        1L, 1L, "P1", "SKU1", "商品", "规格", "BOX", 10L, "方便面")));
+        when(source.productCategories(t))
+                .thenReturn(
+                        List.of(
+                                new com.rigour.erp.api.v1.model.ErpPayrollCategoryView(
+                                        10L, null, "方便面", 0)));
+        var rules = mock(com.rigour.hr.application.service.PayrollRuleResolver.class);
+        when(rules.resolve(eq(t), eq(e), eq(1L), any()))
+                .thenReturn(
+                        new com.rigour.hr.application.service.PayrollRuleMatch(version, List.of()));
+        var commissions =
+                new com.rigour.hr.application.service.ConfiguredCommissionService(payroll, source);
+        var configured =
+                new com.rigour.hr.application.service.ConfiguredPayrollService(
+                        payroll,
+                        schemes,
+                        source,
+                        mock(com.rigour.hr.application.port.out.HrAttendanceStore.class),
+                        commissions,
+                        JsonMapper.builder().build());
+        org.springframework.test.util.ReflectionTestUtils.setField(configured, "rules", rules);
+        var service =
+                proxy(
+                        new com.rigour.hr.application.service.HrPayrollService(
+                                payroll, source, configured),
+                        dataSource);
+        var workflow =
+                new com.rigour.hr.application.service.HrPayrollWorkflowService(
+                        payroll,
+                        service,
+                        mock(
+                                com.rigour.hr.application.port.out.HrEmployeePayrollProfileStore
+                                        .class));
+        var calculated =
+                service.calculate(new PayrollCalculateCommand("2026-09", List.of("E1"))).getFirst();
+        assertThat(calculated.statusCode()).isEqualTo("READY");
+        assertThat(calculated.calculation().commission()).isEqualByComparingTo("40");
+        var confirmed =
+                service.confirm(
+                        calculated.id(), new PayrollActionCommand(calculated.revision(), "核对完成"));
+        assertThat(payroll.released(t)).containsExactly("LINE1|SALES");
+        for (int attempt = 0; attempt < 2; attempt++) {
+            var saved =
+                    attempt == 0
+                            ? confirmed
+                            : payroll.pay(
+                                    t,
+                                    confirmed.id(),
+                                    new PayrollPaymentCommand(
+                                            "PAY-OWN-PREVIEW",
+                                            confirmed.revision(),
+                                            LocalDate.of(2026, 10, 1),
+                                            confirmed.calculation().netPay(),
+                                            "BANK-PREVIEW",
+                                            "发放登记"),
+                                    "ACTOR");
+            var preview =
+                    workflow.preview(new PayrollCalculateCommand("2026-09", List.of("E1")))
+                            .getFirst();
+            assertThat(preview.calculation().commission()).isEqualByComparingTo("40");
+            assertThat(preview.sourceChanged()).isFalse();
+            assertThat(preview.calculation().netPay())
+                    .isEqualByComparingTo(saved.calculation().netPay());
+            assertThat(payroll.detail(t, saved.id(), "hr:payroll:read").revision())
+                    .isEqualTo(saved.revision());
+        }
+    }
+
+    @Test
+    void historicalDepartmentsReadOnlyTheEmployeesTenantAndEmploymentRange() {
+        jdbc.execute("CREATE TABLE hr_employee_assignment(id BIGINT,tenant_id VARCHAR(36),employee_code VARCHAR(50),department_id BIGINT,effective_from TIMESTAMP,effective_to TIMESTAMP)");
+        jdbc.update("INSERT INTO hr_employee_assignment VALUES"
+                + "(1,'T1','E1',1,'2026-08-31 16:00:00','2026-09-14 15:59:59'),"
+                + "(2,'T1','E1',9,'2026-09-14 16:00:00',NULL),"
+                + "(3,'T2','E1',99,'2026-08-31 16:00:00',NULL),"
+                + "(4,'T1','E2',88,'2026-08-31 16:00:00',NULL),"
+                + "(5,'T1','E1',77,'2026-09-30 16:00:00',NULL)");
+        assertThat(payroll.departmentsDuring("T1", "E1", LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 30)))
+                .containsExactlyInAnyOrder(1L, 9L);
+        assertThat(payroll.departmentsDuring("T1", "E1", LocalDate.of(2026, 9, 15), LocalDate.of(2026, 9, 30)))
+                .containsExactly(9L);
+        assertThat(payroll.departmentsDuring("T2", "E1", LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 30)))
+                .containsExactly(99L);
+    }
+
+    @Test
+    void headquartersPaidSalaryCorrectionIsCountedOnceInTheFollowingMonth() throws Exception {
+        var tenant = UUID.randomUUID();
+        var user = UUID.randomUUID();
+        com.rigour.shared.context.TestAuthorizationContext.set(
+                new com.rigour.shared.context.CallerIdentity(
+                        "TENANT",
+                        user,
+                        tenant,
+                        user,
+                        null,
+                        UUID.randomUUID(),
+                        0,
+                        0,
+                        0,
+                        java.util.Set.of(),
+                        java.util.Set.of(
+                                "hr:payroll:read", "hr:payroll:calculate", "hr:payroll:confirm")));
+        String t = tenant.toString();
+        var e =
+                new PayrollEmployeeView(
+                        "E1",
+                        "总部员工",
+                        1L,
+                        "总部",
+                        null,
+                        LocalDate.of(2026, 1, 1),
+                        null,
+                        "HEADQUARTERS");
+        doReturn(List.of(e)).when(references).employees(any());
+        doReturn(List.of(1L))
+                .when(references)
+                .departmentsAt(anyString(), anyString(), any(), any());
+        doReturn(null).when(references).salarySource(anyString(), anyString());
+        var json = JsonMapper.builder().build();
+        var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(calculation("HQ"));
+        node.put("baseSalary", 6000).put("commission", 0).put("grossPay", 6000).put("netPay", 6000);
+        node.set("details", json.valueToTree(List.of()));
+        var original =
+                payroll.saveCalculation(
+                        t,
+                        "E1",
+                        "2026-09",
+                        e,
+                        json.treeToValue(node, PayrollCalculationView.class),
+                        "ACTOR");
+        var confirmed =
+                payroll.transition(
+                        t,
+                        original.id(),
+                        new PayrollActionCommand(original.revision(), "确认"),
+                        "CONFIRMED",
+                        "ACTOR");
+        assertThatThrownBy(
+                        () ->
+                                payroll.correct(
+                                        t,
+                                        confirmed.id(),
+                                        new PayrollCorrectionCommand(
+                                                "UNPAID",
+                                                confirmed.revision(),
+                                                "2026-10",
+                                                BigDecimal.TEN,
+                                                "未发放"),
+                                        "ACTOR"))
+                .hasMessageContaining("未发放工资");
+        var paid =
+                payroll.pay(
+                        t,
+                        confirmed.id(),
+                        new PayrollPaymentCommand(
+                                "HQ-PAY",
+                                confirmed.revision(),
+                                LocalDate.of(2026, 10, 1),
+                                new BigDecimal("6000"),
+                                "HQ-BANK",
+                                "发放登记"),
+                        "ACTOR");
+        assertThatThrownBy(
+                        () ->
+                                payroll.correct(
+                                        t,
+                                        paid.id(),
+                                        new PayrollCorrectionCommand(
+                                                "STALE",
+                                                confirmed.revision(),
+                                                "2026-10",
+                                                BigDecimal.TEN,
+                                                "过期版本"),
+                                        "ACTOR"))
+                .hasMessageContaining("工资单已变更");
+        var command =
+                new PayrollCorrectionCommand(
+                        UUID.randomUUID().toString(),
+                        paid.revision(),
+                        "2026-10",
+                        new BigDecimal("100"),
+                        "补发遗漏薪资");
+        var correction = payroll.correct(t, paid.id(), command, "ACTOR");
+        assertThat(payroll.correct(t, paid.id(), command, "ACTOR").id()).isEqualTo(correction.id());
+
+        var d = com.rigour.hr.application.service.PayrollSchemeTestFixture.definition();
+        var definition =
+                new PayrollSchemeDefinition(
+                        "总部薪资",
+                        "HEADQUARTERS",
+                        List.of(),
+                        List.of("E1"),
+                        d.effectiveFrom(),
+                        d.effectiveTo(),
+                        new PayrollSchemeBaseSalary(
+                                "FIXED", new BigDecimal("6000"), List.of(), null),
+                        BigDecimal.ZERO,
+                        "NONE",
+                        null,
+                        null,
+                        d.calendar(),
+                        d.proration(),
+                        List.of(),
+                        new PayrollSchemeCommissionPolicy("ORDER_DATE", "ORDER_DATE", List.of()),
+                        "");
+        var version =
+                com.rigour.hr.application.service.PayrollSchemeTestFixture.version(definition);
+        var source = mock(com.rigour.hr.application.port.out.HrPayrollSource.class);
+        var schemes = mock(com.rigour.hr.application.port.out.HrPayrollSchemeStore.class);
+        when(schemes.versions(t)).thenReturn(List.of(version));
+        when(schemes.facts(eq(t), eq("E1"), anyString()))
+                .thenReturn(new PayrollSchemeFactsView(0, null, List.of(), ""));
+        var resolver = mock(com.rigour.hr.application.service.PayrollRuleResolver.class);
+        when(resolver.resolve(eq(t), eq(e), eq(1L), any()))
+                .thenReturn(
+                        new com.rigour.hr.application.service.PayrollRuleMatch(version, List.of()));
+        var configured =
+                new com.rigour.hr.application.service.ConfiguredPayrollService(
+                        payroll,
+                        schemes,
+                        source,
+                        mock(com.rigour.hr.application.port.out.HrAttendanceStore.class),
+                        new com.rigour.hr.application.service.ConfiguredCommissionService(
+                                payroll, source),
+                        json);
+        org.springframework.test.util.ReflectionTestUtils.setField(configured, "rules", resolver);
+        var service =
+                new com.rigour.hr.application.service.HrPayrollService(payroll, source, configured);
+        var workflow =
+                new com.rigour.hr.application.service.HrPayrollWorkflowService(
+                        payroll,
+                        service,
+                        mock(
+                                com.rigour.hr.application.port.out.HrEmployeePayrollProfileStore
+                                        .class));
+        for (int i = 0; i < 2; i++) {
+            var trial =
+                    workflow.preview(new PayrollCalculateCommand("2026-10", List.of("E1")))
+                            .getFirst()
+                            .calculation();
+            assertThat(trial.correctionAmount()).isEqualByComparingTo("100");
+            assertThat(trial.netPay()).isEqualByComparingTo("6100");
+            assertThat(trial.corrections()).hasSize(1);
+        }
+        assertThat(payroll.corrections(t, "E1", "2026-10")).hasSize(1);
+        assertThat(payroll.detail(t, paid.id(), "hr:payroll:read").calculation().netPay())
+                .isEqualByComparingTo("6000");
+        doReturn(List.of()).when(references).employees(any());
+        assertThatThrownBy(
+                        () ->
+                                payroll.correct(
+                                        t,
+                                        paid.id(),
+                                        new PayrollCorrectionCommand(
+                                                "OUT-OF-SCOPE",
+                                                paid.revision(),
+                                                "2026-10",
+                                                BigDecimal.TEN,
+                                                "越权"),
+                                        "ACTOR"))
+                .hasMessageContaining("员工不存在或无权限");
+        assertThat(payroll.corrections(t, "E1", "2026-10")).hasSize(1);
+    }
+
+    @Test
+    void salaryCorrectionDoesNotDependOnTheEmployeesCurrentPayrollCategory() {
+        doReturn(List.of(employee())).when(references).employees(any());
+        var confirmed = confirmed();
+        var paid =
+                payroll.pay(
+                        "T1",
+                        confirmed.id(),
+                        new PayrollPaymentCommand(
+                                "ROLE-CHANGE-PAY",
+                                confirmed.revision(),
+                                LocalDate.of(2026, 10, 1),
+                                new BigDecimal("3040"),
+                                "ROLE-CHANGE-BANK",
+                                "发放"),
+                        "ACTOR");
+        doReturn(
+                        List.of(
+                                new PayrollEmployeeView(
+                                        "E1",
+                                        "转总部员工",
+                                        10L,
+                                        "总部",
+                                        null,
+                                        LocalDate.of(2020, 1, 1),
+                                        null,
+                                        "HEADQUARTERS")))
+                .when(references)
+                .employees(any());
+        var correction =
+                payroll.correct(
+                        "T1",
+                        paid.id(),
+                        new PayrollCorrectionCommand(
+                                "ROLE-CHANGE-CORRECTION",
+                                paid.revision(),
+                                "2026-10",
+                                new BigDecimal("-40"),
+                                "原销售工资更正"),
+                        "ACTOR");
+        assertThat(correction.amount()).isEqualByComparingTo("-40");
+        assertThat(payroll.detail("T1", paid.id(), "hr:payroll:read").calculation().netPay())
+                .isEqualByComparingTo("3040");
+    }
+
+    @Test
+    void calculationReleasesExcludeOnlyTheMatchingLockedPayrollOwner() throws Exception {
+        var current = confirmed();
+        var json = JsonMapper.builder().build();
+        var otherEmployee =
+                payroll.saveCalculation(
+                        "T1",
+                        "E2",
+                        "2026-09",
+                        employee(),
+                        json.readValue(
+                                json.writeValueAsString(calculation("OTHER-EMPLOYEE"))
+                                        .replace("LINE1", "LINE2"),
+                                PayrollCalculationView.class),
+                        "ACTOR");
+        payroll.transition(
+                "T1",
+                otherEmployee.id(),
+                new PayrollActionCommand(otherEmployee.revision(), "核对"),
+                "CONFIRMED",
+                "ACTOR");
+        var otherMonth =
+                payroll.saveCalculation(
+                        "T1",
+                        "E1",
+                        "2026-08",
+                        employee(),
+                        json.readValue(
+                                json.writeValueAsString(calculation("OTHER-MONTH"))
+                                        .replace("LINE1", "LINE3"),
+                                PayrollCalculationView.class),
+                        "ACTOR");
+        payroll.transition(
+                "T1",
+                otherMonth.id(),
+                new PayrollActionCommand(otherMonth.revision(), "核对"),
+                "CONFIRMED",
+                "ACTOR");
+        jdbc.update(
+                "INSERT INTO"
+                    + " hr_payroll_commission_release(tenant_id,source_line_id,recipient_role_code,payroll_id,amount)"
+                    + " VALUES('T1','OTHER-LINE','SALES','OTHER',5)");
+        jdbc.update(
+                "INSERT INTO"
+                    + " hr_payroll_commission_release(tenant_id,source_line_id,recipient_role_code,payroll_id,amount)"
+                    + " VALUES('T2','OTHER-TENANT','SALES','OTHER',5)");
+        assertThat(payroll.releasedForCalculation("T1", "E1", "2026-09"))
+                .containsExactlyInAnyOrder("LINE2|SALES", "LINE3|SALES", "OTHER-LINE|SALES");
+        assertThat(payroll.releasedForCalculation("T1", "E2", "2026-09"))
+                .containsExactlyInAnyOrder("LINE1|SALES", "LINE3|SALES", "OTHER-LINE|SALES");
+        assertThat(payroll.releasedForCalculation("T1", "E1", "2026-10"))
+                .containsExactlyInAnyOrder(
+                        "LINE1|SALES", "LINE2|SALES", "LINE3|SALES", "OTHER-LINE|SALES");
+        assertThat(payroll.releasedForCalculation("T2", "E1", "2026-09"))
+                .containsExactly("OTHER-TENANT|SALES");
+        payroll.reopen(
+                "T1", current.id(), new PayrollActionCommand(current.revision(), "重新核算"), "ACTOR");
+        assertThat(payroll.releasedForCalculation("T1", "E1", "2026-09"))
+                .containsExactlyInAnyOrder("LINE2|SALES", "LINE3|SALES", "OTHER-LINE|SALES");
+    }
+
+    @Test
     void correctionsCannotChangeLockedTargetMonth() {
         doReturn(List.of(employee())).when(references).employees(any());
         var source = confirmed();
@@ -676,7 +1144,11 @@ class PayrollPersistenceWorkflowTest {
                 new BigDecimal("20"),
                 "UNPAID",
                 "",
-                "修改原因");
+                "修改原因",
+                "2026-09",
+                new HrExpenseDetails("expense", "测试拜访差旅", null, null, null, null, null, null,
+                        "DEV-TRIP", LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 1),
+                        "测试出发地", "测试目的地", "DEV-EVIDENCE", null, null, null));
     }
 
     @Test
@@ -915,9 +1387,112 @@ class PayrollPersistenceWorkflowTest {
     }
 
     @Test
+    void employeeAndCitiesCommitTogetherAndRollBackAllChangesWhenLaterCityIsInvalid() {
+        var tenant = UUID.randomUUID();
+        var user = UUID.randomUUID();
+        com.rigour.shared.context.TestAuthorizationContext.set(new com.rigour.shared.context.CallerIdentity(
+                "TENANT", user, tenant, user, null, UUID.randomUUID(), 0, 0, 0, java.util.Set.of(),
+                java.util.Set.of("hr:employee:create", "hr:payroll-rule:write")));
+        jdbc.execute(
+                "CREATE TABLE hr_employee(id BIGINT,tenant_id VARCHAR(64),employee_code"
+                    + " VARCHAR(64),deleted INT,primary_position_name_snapshot VARCHAR(100))");
+        doReturn(List.of(employee())).when(references).employees(any());
+        var orgStore = mock(com.rigour.hr.application.port.out.HrOrganizationStore.class);
+        when(orgStore.saveEmployee(anyString(), isNull(), any(), anyString())).thenAnswer(invocation -> {
+            jdbc.update("INSERT INTO hr_employee VALUES(10,?,'E1',0,'城市总')", tenant.toString());
+            return 10L;
+        });
+        var employeeStore = mock(com.rigour.hr.application.port.out.HrEmployeeStore.class);
+        var saved = mock(HrEmployeeView.class);
+        when(saved.employeeCode()).thenReturn("E1");
+        when(saved.employeeName()).thenReturn("测试城市总");
+        when(saved.positionName()).thenReturn("城市总");
+        when(employeeStore.employee(tenant.toString(), 10L)).thenReturn(java.util.Optional.of(saved));
+        var payrollService = proxy(new com.rigour.hr.application.service.HrPayrollService(payroll,
+                mock(com.rigour.hr.application.port.out.HrPayrollSource.class),
+                mock(com.rigour.hr.application.service.ConfiguredPayrollService.class)), dataSource);
+        var scopes = new com.rigour.hr.application.service.HrEmployeeCityScopeService(payrollService, payroll);
+        var organization = proxy(new com.rigour.hr.application.service.HrOrganizationService(orgStore, employeeStore, scopes), dataSource);
+        var first =
+                new HrEmployeeCityScopeCommand(
+                        null,
+                        null,
+                        UUID.randomUUID().toString(),
+                        "CITY_A",
+                        "测试城市A",
+                        LocalDate.of(2099, 1, 1),
+                        LocalDate.of(2099, 1, 31),
+                        false,
+                        "DEV测试");
+        var invalid =
+                new HrEmployeeCityScopeCommand(
+                        null,
+                        null,
+                        UUID.randomUUID().toString(),
+                        "CITY_B",
+                        "测试城市B",
+                        LocalDate.of(2099, 1, 1),
+                        LocalDate.of(2098, 1, 31),
+                        false,
+                        "DEV测试");
+        java.util.function.Function<List<HrEmployeeCityScopeCommand>, HrEmployeeCommand> command =
+                records ->
+                        new HrEmployeeCommand(
+                                "测试城市总",
+                                10L,
+                                "CITY_MANAGER",
+                                "ACTIVE",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                0,
+                                null,
+                                null,
+                                false,
+                                null,
+                                "SALES",
+                                null,
+                                records);
+        assertThatThrownBy(() -> organization.saveEmployee(null, command.apply(List.of(first, invalid))))
+                .hasMessageContaining("生效日期");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_employee", Integer.class)).isZero();
+        assertThat(payroll.rules(tenant.toString())).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_payroll_audit", Integer.class))
+                .isZero();
+        var second =
+                new HrEmployeeCityScopeCommand(
+                        null,
+                        null,
+                        UUID.randomUUID().toString(),
+                        "CITY_B",
+                        "测试城市B",
+                        LocalDate.of(2099, 1, 1),
+                        LocalDate.of(2099, 1, 31),
+                        false,
+                        "DEV测试");
+        assertThat(organization.saveEmployee(null, command.apply(List.of(first, second)))).isSameAs(saved);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_employee", Integer.class))
+                .isEqualTo(1);
+        assertThat(payroll.rules(tenant.toString())).hasSize(2);
+        assertThat(payroll.employeePositionName(tenant.toString(), "E1", "hr:payroll-rule:write"))
+                .isEqualTo("城市总");
+        assertThat(payroll.employeePositionName("OTHER_TENANT", "E1", "hr:payroll-rule:write"))
+                .isNull();
+    }
+
+    @Test
     void cityBatchPersistsPoliciesIdempotentlyAndRollsBackEarlierCityAndAuditOnConflict() {
         var tenant = UUID.randomUUID();
         var user = UUID.randomUUID();
+        jdbc.execute(
+                "CREATE TABLE hr_employee(tenant_id VARCHAR(64),employee_code VARCHAR(64),deleted"
+                    + " INT,primary_position_name_snapshot VARCHAR(100))");
+        jdbc.update(
+                "INSERT INTO hr_employee VALUES(?,?,0,'城市总')",
+                tenant.toString(),
+                employee().employeeCode());
         com.rigour.shared.context.TestAuthorizationContext.set(
                 new com.rigour.shared.context.CallerIdentity(
                         "TENANT",

@@ -147,6 +147,34 @@ public final class SalarySchemeCalculator {
             boolean assessUnprotectedOnly,
             Set<LocalDate> countingDays,
             String proration) {
+        return manager(
+                base,
+                metrics,
+                steps,
+                cap,
+                month,
+                entry,
+                leave,
+                protectedUntil,
+                assessUnprotectedOnly,
+                countingDays,
+                proration,
+                "TIERED");
+    }
+
+    public static ManagerPerformanceResult manager(
+            BigDecimal base,
+            List<ManagerMetric> metrics,
+            List<PerformanceBand> steps,
+            BigDecimal cap,
+            YearMonth month,
+            LocalDate entry,
+            LocalDate leave,
+            LocalDate protectedUntil,
+            boolean assessUnprotectedOnly,
+            Set<LocalDate> countingDays,
+            String proration,
+            String calculationMode) {
         List<String> issues = new ArrayList<>();
         List<ManagerMetricResult> details = new ArrayList<>();
         if (entry == null || base == null || protectedUntil == null)
@@ -174,6 +202,7 @@ public final class SalarySchemeCalculator {
             return new ManagerPerformanceResult(
                     null, null, null, 0, 0, List.of(), List.of("月度折算分母为0"));
         BigDecimal completionTotal = BigDecimal.ZERO;
+        BigDecimal scoredTotal = BigDecimal.ZERO;
         if (assessed > 0)
             for (var metric : metrics) {
                 if (metric.weight().signum() == 0) continue;
@@ -184,7 +213,7 @@ public final class SalarySchemeCalculator {
                     continue;
                 }
                 BigDecimal target = metric.target();
-                if (assessUnprotectedOnly)
+                if (assessUnprotectedOnly && !metric.targetProrated())
                     target =
                             target.multiply(BigDecimal.valueOf(assessed))
                                     .divide(
@@ -195,20 +224,51 @@ public final class SalarySchemeCalculator {
                         metric.actual()
                                 .max(BigDecimal.ZERO)
                                 .divide(target, 12, RoundingMode.HALF_UP);
-                // 先汇总完成率；不得将各指标奖励系数加权后当作综合系数。
-                BigDecimal contribution = completion.multiply(metric.weight()).divide(HUNDRED);
-                completionTotal = completionTotal.add(contribution);
+                completionTotal =
+                        completionTotal.add(completion.multiply(metric.weight()).divide(HUNDRED));
+                BigDecimal score = completion;
+                if ("ACTUAL_COMPLETION".equals(calculationMode)
+                        && "TIERED".equals(metric.scoringMode())) {
+                    var bands =
+                            metric.bands() == null ? List.<PerformanceBand>of() : metric.bands();
+                    var matched =
+                            bands.stream()
+                                    .filter(
+                                            b ->
+                                                    contains(
+                                                            completion,
+                                                            b.lower(),
+                                                            b.upper(),
+                                                            b.lowerInclusive(),
+                                                            b.upperInclusive()))
+                                    .toList();
+                    if (matched.size() != 1
+                            || matched.getFirst().coefficient() == null
+                            || matched.getFirst().coefficient().signum() < 0) {
+                        issues.add(metric.name() + "：完成率未匹配唯一的有效计分区间，请核对单项阶梯规则");
+                        continue;
+                    }
+                    var band = matched.getFirst();
+                    score =
+                            "LINEAR".equals(band.mode())
+                                    ? completion.multiply(band.coefficient())
+                                    : band.coefficient();
+                }
+                BigDecimal contribution = score.multiply(metric.weight()).divide(HUNDRED);
+                scoredTotal = scoredTotal.add(contribution);
                 details.add(
                         new ManagerMetricResult(
                                 metric.code(),
                                 metric.actual(),
                                 target,
                                 completion,
-                                null,
+                                "ACTUAL_COMPLETION".equals(calculationMode) ? score : null,
                                 contribution));
             }
         BigDecimal coefficient = BigDecimal.ONE;
-        if (assessed > 0 && issues.isEmpty()) {
+        if (assessed > 0 && issues.isEmpty() && "ACTUAL_COMPLETION".equals(calculationMode)) {
+            coefficient = scoredTotal;
+        } else if (assessed > 0 && issues.isEmpty()) {
             var completion = completionTotal;
             var matching =
                     steps == null

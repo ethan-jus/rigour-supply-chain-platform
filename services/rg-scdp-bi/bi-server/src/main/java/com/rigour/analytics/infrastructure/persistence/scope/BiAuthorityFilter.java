@@ -25,6 +25,11 @@ public final class BiAuthorityFilter extends OncePerRequestFilter {
     protected void doFilterInternal(
             HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
+        // 新成本看板在用例内独立核验页面及三域费用范围，不调用旧销售事实投影。
+        if (request.getRequestURI().startsWith("/api/v1/analytics/supply/cost-dashboard/")) {
+            chain.doFilter(request, response);
+            return;
+        }
         if (SupplyAuthorizationContext.current()
                 .map(SupplyAuthorizationContext::active)
                 .orElse(false)) {
@@ -37,12 +42,14 @@ public final class BiAuthorityFilter extends OncePerRequestFilter {
                                                 "analytics:dashboard:read"));
                 if (!allDataRead) {
                     projector.refresh(AuthorizationContext.requireCurrent().tenantId());
-                    boolean visitRequest = java.util.Set.of(
-                                    "/api/v1/analytics/supply/dashboard/visits",
-                                    "/api/v1/analytics/supply/dashboard/city-contacts")
-                            .contains(request.getRequestURI());
+                    boolean visitRequest =
+                            java.util.Set.of(
+                                            "/api/v1/analytics/supply/dashboard/visits",
+                                            "/api/v1/analytics/supply/dashboard/city-contacts")
+                                    .contains(request.getRequestURI());
                     if (!visitRequest)
-                        people.refreshOrganization(AuthorizationContext.requireCurrent().tenantId());
+                        people.refreshOrganization(
+                                AuthorizationContext.requireCurrent().tenantId());
                     else people.refresh(AuthorizationContext.requireCurrent().tenantId());
                 }
             } catch (AuthorizationDeniedException e) {

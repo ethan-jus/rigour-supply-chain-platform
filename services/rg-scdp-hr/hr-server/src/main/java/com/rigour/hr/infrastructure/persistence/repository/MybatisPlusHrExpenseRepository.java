@@ -6,11 +6,12 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.rigour.hr.api.v1.model.HrExpenseCommand;
 import com.rigour.hr.api.v1.model.HrExpenseDetailView;
+import com.rigour.hr.api.v1.model.HrExpensePageView;
 import com.rigour.hr.api.v1.model.HrExpenseQuery;
-import com.rigour.hr.api.v1.model.HrPageView;
 import com.rigour.hr.api.v1.model.PayrollActionCommand;
 import com.rigour.hr.api.v1.model.PayrollEmployeeView;
 import com.rigour.hr.application.port.out.HrExpenseStore;
+import com.rigour.hr.application.service.HrExpenseRules;
 import com.rigour.hr.infrastructure.persistence.entity.HrExpenseEntity;
 import com.rigour.hr.infrastructure.persistence.mapper.HrExpenseMapper;
 import com.rigour.shared.core.api.ErrorCode;
@@ -22,8 +23,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import tools.jackson.databind.ObjectMapper;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.Map;
 import java.util.UUID;
 
 /** 报销独立持久化，采用与成本一致的草稿、确认和作废流程。 */
@@ -50,13 +53,13 @@ public class MybatisPlusHrExpenseRepository implements HrExpenseStore {
     }
 
     @Override
-    public HrPageView<HrExpenseDetailView> expenses(
-            String tenant, HrExpenseQuery c, String action) {
+    public HrExpensePageView expenses(String tenant, HrExpenseQuery c, String action) {
         var q =
                 query(tenant, action)
                         .eq(text(c.typeCode()), "type_code", c.typeCode())
                         .eq(text(c.employeeCode()), "employee_code", c.employeeCode())
                         .eq(text(c.cityCode()), "city_code", c.cityCode())
+                        .eq(text(c.costMonth()), "cost_month", c.costMonth())
                         .eq(text(c.statusCode()), "status_code", c.statusCode())
                         .eq(
                                 text(c.paymentStatusCode()),
@@ -71,8 +74,23 @@ public class MybatisPlusHrExpenseRepository implements HrExpenseStore {
                     "LOCATE({0},JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.remark')))>0",
                     c.remark().trim());
         long total = mapper.selectCount(q);
+        var totals =
+                mapper.selectMaps(
+                                q.clone()
+                                        .select(
+                                                "COALESCE(SUM(CASE WHEN status_code<>'VOID' THEN"
+                                                    + " amount ELSE 0 END),0) AS registered_amount",
+                                                "COALESCE(SUM(CASE WHEN status_code='CONFIRMED'"
+                                                        + " THEN amount ELSE 0 END),0) AS"
+                                                        + " confirmed_amount",
+                                                "COALESCE(SUM(CASE WHEN status_code='CONFIRMED' AND"
+                                                    + " payment_status_code='PAID' THEN amount ELSE"
+                                                    + " 0 END),0) AS paid_amount",
+                                                "COUNT(CASE WHEN status_code='DRAFT' THEN 1 END) AS"
+                                                        + " pending_count"))
+                        .getFirst();
         int begin = Math.max(0, c.begin()), step = pageSize(c.step());
-        return new HrPageView<>(
+        return new HrExpensePageView(
                 total,
                 begin,
                 step,
@@ -82,7 +100,20 @@ public class MybatisPlusHrExpenseRepository implements HrExpenseStore {
                                         .last("LIMIT " + step + " OFFSET " + begin))
                         .stream()
                         .map(this::view)
-                        .toList());
+                        .toList(),
+                decimal(totals, "registered_amount"),
+                decimal(totals, "confirmed_amount"),
+                decimal(totals, "paid_amount"),
+                decimal(totals, "pending_count").longValueExact(),
+                0);
+    }
+
+    private static BigDecimal decimal(Map<String, Object> values, String key) {
+        Object value =
+                values.containsKey(key)
+                        ? values.get(key)
+                        : values.get(key.toUpperCase(java.util.Locale.ROOT));
+        return value == null ? BigDecimal.ZERO : new BigDecimal(value.toString());
     }
 
     @Override
@@ -97,6 +128,9 @@ public class MybatisPlusHrExpenseRepository implements HrExpenseStore {
     public HrExpenseDetailView save(
             String tenant, String id, HrExpenseCommand c, PayrollEmployeeView e, String actor) {
         support.lock(tenant);
+        mapper.ensureGuard(tenant);
+        mapper.lock(tenant);
+        mapper.advanceAnalyticsVersion(tenant);
         String body = json.writeValueAsString(c);
         if (id == null) {
             var previous =
@@ -124,11 +158,17 @@ public class MybatisPlusHrExpenseRepository implements HrExpenseStore {
             row.setDepartmentName(e.departmentName());
             row.setCityCode(c.cityCode());
             row.setCostDate(c.costDate());
+            row.setCostMonth(HrExpenseRules.month(c));
             row.setAmount(c.amount());
             row.setPaymentStatusCode(c.paymentStatusCode());
             row.setDataJson(body);
             row.setCreatedBy(actor);
             row.setUpdatedBy(actor);
+            // Subsequent edits and attachment uploads use the application UTC clock as well.
+            // Do not mix database defaults with JVM timestamps when the hosts have clock skew.
+            var createdAt = LocalDateTime.now(ZoneOffset.UTC).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+            row.setCreatedTime(createdAt);
+            row.setUpdatedTime(createdAt);
             mapper.insert(row);
             id = row.getId();
         } else {
@@ -152,6 +192,7 @@ public class MybatisPlusHrExpenseRepository implements HrExpenseStore {
                                     .set("department_name", e.departmentName())
                                     .set("city_code", c.cityCode())
                                     .set("cost_date", c.costDate())
+                                    .set("cost_month", HrExpenseRules.month(c))
                                     .set("amount", c.amount())
                                     .set("payment_status_code", c.paymentStatusCode())
                                     .set("data_json", body)
@@ -160,6 +201,7 @@ public class MybatisPlusHrExpenseRepository implements HrExpenseStore {
                                     .set("updated_by", actor)
                                     .set("updated_time", LocalDateTime.now(ZoneOffset.UTC)));
             if (changed != 1) throw error(ErrorCode.CONFLICT, "报销已修改，请刷新");
+            mapper.releaseCostLink(tenant, id);
             support.audit(tenant, id, "EXPENSE_BEFORE", actor, c.reason(), old);
         }
         var saved = expenseDetail(tenant, id, "hr:expense:write");
@@ -172,11 +214,25 @@ public class MybatisPlusHrExpenseRepository implements HrExpenseStore {
     public HrExpenseDetailView expenseTransition(
             String tenant, String id, PayrollActionCommand c, String status, String actor) {
         support.lock(tenant);
+        mapper.ensureGuard(tenant);
+        mapper.lock(tenant);
+        mapper.advanceAnalyticsVersion(tenant);
         String action = "hr:expense:" + ("VOID".equals(status) ? "void" : "confirm");
         var old = expenseDetail(tenant, id, action);
         if ("VOID".equals(old.statusCode())
                 || "CONFIRMED".equals(status) && !"DRAFT".equals(old.statusCode())
                 || old.revision() != c.revision()) throw error(ErrorCode.CONFLICT, "报销状态或版本已变更");
+        if ("CONFIRMED".equals(status)) {
+            HrExpenseRules.validate(old.data(), true, mapper.attachmentCount(tenant, id));
+            var link = old.data().expense().relatedCost();
+            if (link != null) {
+                try {
+                    mapper.claimCostLink(tenant, id, link.source(), link.id());
+                } catch (org.springframework.dao.DuplicateKeyException duplicate) {
+                    throw error(ErrorCode.CONFLICT, "原费用已关联其他报销，请先核对，不能重复全额报销");
+                }
+            }
+        } else mapper.releaseCostLink(tenant, id);
         if (("VOID".equals(status) || old.data().amount().signum() == 0) && !text(c.reason()))
             throw error(ErrorCode.BAD_REQUEST, "请填写作废或零元确认原因");
         if (mapper.update(
@@ -196,6 +252,18 @@ public class MybatisPlusHrExpenseRepository implements HrExpenseStore {
         return saved;
     }
 
+    @Override
+    public void attachmentAdded(String tenant, String id, String actor, String file) {
+        mapper.advanceAnalyticsVersion(tenant);
+        support.audit(
+                tenant,
+                id,
+                "EXPENSE_ATTACHMENT",
+                actor,
+                "上传附件 " + file,
+                expenseDetail(tenant, id, "hr:expense:write"));
+    }
+
     private HrExpenseDetailView view(HrExpenseEntity r) {
         return new HrExpenseDetailView(
                 r.getId(),
@@ -206,6 +274,9 @@ public class MybatisPlusHrExpenseRepository implements HrExpenseStore {
                 r.getEmployeeName(),
                 r.getDepartmentId(),
                 r.getDepartmentName(),
-                r.getUpdatedTime().toInstant(ZoneOffset.UTC));
+                r.getUpdatedTime().toInstant(ZoneOffset.UTC),
+                r.getCreatedBy(),
+                r.getUpdatedBy(),
+                r.getCreatedTime() == null ? null : r.getCreatedTime().toInstant(ZoneOffset.UTC));
     }
 }

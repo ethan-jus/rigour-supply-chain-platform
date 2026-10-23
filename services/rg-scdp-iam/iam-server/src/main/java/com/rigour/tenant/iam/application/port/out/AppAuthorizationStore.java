@@ -9,4 +9,8 @@ public interface AppAuthorizationStore {
                     CallerIdentity caller, String employeeCode, java.util.UUID userId);
 
     AppAuthorizationSnapshot authorization(CallerIdentity caller, String action);
+
+    default java.util.List<AppAuthorizationSnapshot> authorizations(CallerIdentity caller, java.util.List<String> actions) {
+        return actions.stream().map(action -> authorization(caller, action)).toList();
+    }
 }

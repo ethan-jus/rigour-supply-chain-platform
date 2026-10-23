@@ -8,6 +8,7 @@
     <name>hr-server</name>
     <description>HR Payroll业务实现和启动应用</description>
     <dependencies>
+        <dependency><groupId>com.qcloud</groupId><artifactId>cos_api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>sales-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>erp-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>foundation-client</artifactId></dependency>

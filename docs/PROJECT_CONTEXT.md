@@ -1,5 +1,7 @@
 # 瑞盖项目功能与开发索引
 
+最新六类成本实现、全系统模块审查和验收边界见 [2026-10-21 接手与验收记录](verification/PROJECT_COST_REVIEW_2026-10-21.md)。前期设计见 [2026-10-16 核对记录](PROJECT_CONTEXT_2026-10-16_COST_DASHBOARD.md)。以下日期、提交和迁移版本保留为当时快照，不代表当前部署状态。
+
 核对日期：2026 年 10 月 14 日。本索引面向后续开发接手，说明功能用途、源码入口、服务调用和数据库操作。实现状态以本次检出的源码为依据；数据库部署、真实数据与浏览器验收需要分别核验。
 
 ## 仓库与当前基线
@@ -78,7 +80,7 @@ Portal [routes.ts](../../rigour-supply-chain-portal/src/router/routes.ts) 中未
 
 Sales PC 入口 `IndexView.vue` 实际接入管控台、拜访计划、主管复核和定位轨迹对比；其他 pageKey 显示“功能暂未开放”。独立 Workbench 的配送页是空列表结构，拜访页主要演示录音适配，没有完整拜访提交闭环；不要把 Sales 服务内置临时 H5 的能力归到 Workbench。
 
-BI 的 `BiSourceDatasets`、源快照客户端和当前查询尚未形成物流、营销、仓租、薪酬、报销全部自动汇总的成本闭环；现有城市成本查询仍使用 `bi_city_cost_record`，有单独导入用例。商品估算成本、费用单据和完整经营利润不能等同。
+2026-10-21 补充：新成本看板使用独立 `CostSourceDatasets`，接入 ERP 成本、Order 物流、HR 报销及已确认薪酬源，经 BI 本地快照汇总；`bi_city_cost_record` 旧城市成本与演示值不混入新口径。代码与隔离测试状态见最新验收记录，不能据此认定目标环境已上线。商品估算成本、费用单据和完整经营利润仍不能等同。
 
 ## 服务如何调用
 
@@ -229,3 +231,37 @@ Docker/Testcontainers 跳过不能算数据库测试通过；源码检查、编�
 | 销售 | [SalesWorkVisitAssessmentService](../services/rg-scdp-sales/sales-server/src/main/java/com/rigour/sales/application/service/SalesWorkVisitAssessmentService.java)、[SalesAttendanceSourceService](../services/rg-scdp-sales/sales-server/src/main/java/com/rigour/sales/application/service/SalesAttendanceSourceService.java)、[TemporaryCheckinController](../services/rg-scdp-sales/sales-server/src/main/java/com/rigour/sales/temporarycheckin/TemporaryCheckinController.java) |
 | 分析 | [SupplyDashboardRefreshService](../services/rg-scdp-bi/bi-server/src/main/java/com/rigour/analytics/application/service/SupplyDashboardRefreshService.java)、[HttpBiSourceSnapshotClient](../services/rg-scdp-bi/bi-server/src/main/java/com/rigour/analytics/infrastructure/integration/HttpBiSourceSnapshotClient.java)、[BiSourceDatasets](../services/rg-scdp-bi/bi-server/src/main/java/com/rigour/analytics/infrastructure/persistence/scope/BiSourceDatasets.java)、[BiSourceSnapshotProjector](../services/rg-scdp-bi/bi-server/src/main/java/com/rigour/analytics/infrastructure/persistence/scope/BiSourceSnapshotProjector.java)、[SupplyDashboardQueryService](../services/rg-scdp-bi/bi-server/src/main/java/com/rigour/analytics/application/service/SupplyDashboardQueryService.java)、[HttpHrTargetClient](../services/rg-scdp-bi/bi-server/src/main/java/com/rigour/analytics/infrastructure/integration/HttpHrTargetClient.java) |
 | 字典 | [BusinessDictionaryService](../services/rg-scdp-foundation/foundation-server/src/main/java/com/rigour/settings/application/service/BusinessDictionaryService.java)、[JdbcTenantDictionaryRepository](../services/rg-scdp-foundation/foundation-server/src/main/java/com/rigour/settings/infrastructure/persistence/repository/JdbcTenantDictionaryRepository.java) |
+
+## 法定工作日历（2026-10-20 实现与开发环境验收）
+
+- Foundation 从中国政府网公开政策检索页面的数据请求发现年度通知，再读取政府站点公告正文；这是网页采集，不是政府承诺对外开放的节假日专用 API。运行时不依赖第三方节假日镜像，也不内置年度放假日期。检索地址配置为 `rigour.settings.calendar.government-search-url`，默认 `https://sousuo.www.gov.cn/search-gov/data`，仅允许政府 HTTPS 站点。
+- `StatutoryNoticeParser` 校验标题、国务院办公厅文号、完整节日覆盖、日期跨度、公布天数和日期冲突；结构变化、无法识别或取数失败不得替换旧日历。年度公告原文、来源链接、解析日期和内容版本通过 MyBatis-Plus 保存到 `settings_statutory_calendar_year`，内容变更另存不可变历史；这是 `GLOBAL` 公共配置，不是租户业务事实。首次发布须执行 Foundation 新增迁移 `V43__statutory_calendar_snapshots.sql`。
+- Foundation 启动 30 秒后及每 6 小时刷新已使用年份、上年、当年和下一年；首次读取缺失年份按需同步。`rigour.settings.calendar.initial-delay-ms`、`refresh-delay-ms` 可配置调度；数据库每年刷新尝试间隔固定为 6 小时，多实例使用租约避免重复写入。未检索到公告返回 `NOT_PUBLISHED`，不猜测未来安排；失败保留最近成功数据并返回过期提示。下一年度公告涉及上一年 12 月的日期会合并进上一年度日历。
+- Portal 与 HR 经 `/api/v1/business-settings/statutory-calendars/{year}` 读取同一份全年日历，沿用 `business-settings:dict:read`；HR 使用可信服务签名。新规则默认 `STATUTORY` 自动跟随，保存的 `workDays/restDays` 仅为人事人工覆盖，优先于法定安排；历史 `source=null/MANUAL` 规则保留原安排，不静默重写。大小周仍由人事在月历手动设置。
+- HR 应出勤与薪酬计算都解析该年度基准；缺失基准时阻止自动计算，不能回退为旧默认天数。薪酬计算快照保存 `STATUTORY_SNAPSHOT` 与年度版本，后续公告变化影响未确认计算指纹，已确认历史仍保留快照。
+- 验证应区分：离线公告/跨年/错误输入测试、隔离 H2 的 MyBatis-Plus 与历史保存测试、显式启用 `-Drigour.calendar.live-test=true` 的政府站点只读联网测试，以及真实 MySQL 迁移/服务启动/登录页面验收。后面三项部署验收未由本地单元测试替代。
+- 2026-10-20 实际修复：Portal 请求此前仍命中 09:58 启动的 Foundation 旧进程，新日历接口返回 404；开发库 `192.168.12.7:13306/rigour_settings` 仅到 V42。先核对有效 `dev,local` 配置、Nacos `ethan-local` 唯一服务实例及历史迁移校验，再编译并仅重启 Foundation。15:49 启动的新进程由 Flyway 将数据库迁移至 V43，事后校验无待执行迁移。
+- 真实数据验收：启动后的定时任务自动获取政府公告，2025、2026 年状态为 `AVAILABLE`，分别保存 33、39 条公告日期例外、公告正文、政府来源链接和各 1 条历史版本；2027 年为 `NOT_PUBLISHED`，无虚构日期。MySQL 只读查询确认已经落库，不能把这些例外条数当作全年工作日或休息日总数。
+- 登录页面验收：经当前 Portal/Gateway 实际打开新增考勤规则，2026 年 10 月显示工作日 18 天、休息日 13 天，1—7 日放假、10 日补班；将 10 日手动改休息后为 17/14，恢复本月法定安排后为 18/13。切换到 2025 年可见 10 月 8 日仍放假、11 日补班；切换到 2027 年显示尚未公布并禁止编辑未知安排。未保存测试规则、未修改既有考勤或工资。截图位于 Portal `docs/qa/attendance-calendar/statutory-live-2026-10-20.png`；本次未执行薪酬确认、重算或生产环境部署。
+
+## 城市总绩效关联补齐（2026-10-20）
+
+- 城市总 `ACTUAL_COMPLETION` 的五个标准指标通过 `cityMetric` 关联城市月度经营目标；按员工管辖城市、实际任期、入离职和保护期归集。同一城市重复任职、缺少目标或目标不唯一时标记待核对，不用个人目标、其他城市或上月目标补零。CRM 城市编码与 HR 部门编码不同时，仅接受唯一的规范化城市名称匹配；计算证据保留各城市目标修订和折算过程，参与确认指纹。
+- 城市“回款额”实际值来自 Order 新增可信服务接口 `/api/v1/orders/cost-sources/city-collections`，按到账日期和冻结城市归属汇总该期全部有效回款记录，包含未整单付清订单已到账款项；退款单列，不自动冲减回款额。销售人员业绩、等级与提成的整单付清口径不变。城市销售总额可读取订单来源；建联门店数、有效门店数、品牌销售额没有在本轮新增可靠的自动来源，仍由 HR 核定实际值并填写依据，不能拿城市销售额或回款额替代门店数。
+- 城市目标已按任期和保护期折算后，绩效计算器不再重复折算目标。现行口径支持按指标选择实际完成率或 HR 配置的阶梯计分，再按权重求和；综合层不二次映射阶梯，保护期内按既有规则 100% 计入。薪资金额依员工档案配置：见习底薪 8000、绩效基数 4000；正式底薪 8000、绩效基数 8000。试用结束日期和 80% 比例须维护；试用期仅底薪折为 6400，绩效基数不打八折。这些金额没有按身份硬编码，也未批量改写现有员工档案。
+- 验证：HR/Order 共 8 类定向测试 63 项通过、无跳过；Portal 相关测试 22 项、类型检查、相关 lint、生产构建通过。H2 覆盖到账期间、原冻结城市、退款单列及租户隔离。真实 DEV 只读签名调用核对 9 月某城 90 条有效回款，与本域数据库金额、记录数一致；随机其他租户为空，未签名请求返回 403。未确认、撤销确认、发放或重算真实工资。
+- 运行：校验 HR/Order 实际数据库 Flyway 历史、无待执行迁移后，更新本地 `dev,local` 服务，保留 `ethan-local` 注册空间，订单 26885、HR 26889 健康检查和 Nacos 注册正常。本轮没有数据库迁移。Nacos 前期诊断误用了未被当前 YAML 引用的 `NACOS_PASSWORD`；改用实际生效凭据后认证、配置读取和实例查询成功，未修改 Nacos 或切换环境。页面新增指标关联与实际回款来源已验证，截图在 Portal `docs/qa/city-manager-performance/city-target-link-2026-10-20.png`，未保存测试规则；完整真实薪酬业务验收及生产部署仍未执行。
+
+## HR 可配置单项计分与统一个人薪酬核定（2026-10-20）
+
+- `PayrollMetricDefinition.scoringMode` 可为 `ACTUAL` 或 `TIERED`，为空保留历史实际完成率算法，不激活过去未使用的单项区间。HR 在每项城市总指标内维护完成率区间、线性/固定取值方式和系数；前端提供 0—100%、100—150%、150—200%、200% 以上的可编辑示例，系数只在保存的规则 JSON 中取值，计算器没有硬编码 1、1.2、1.5。区间必须从 0 连续覆盖至无上限，端点不能重复；缺失、重叠或无有效匹配时阻止确定绩效金额。
+- 计算顺序为：实际值 ÷ 当期目标 → 按该单项规则计分 → 计分系数 × 权重 → 汇总发放比例 → 绩效基数及保护期折算。原始加权完成率与计分后发放比例分开保存，单项完成率、系数、加权贡献在页面及 Excel 中展示；历史全局 `TIERED` 算法保留。已保存规则不自动切换，新建指标默认提供可编辑阶梯，实际采用何种方式由 HR 保存规则决定。
+- 总部固定绩效继续按 `tenant_id + employee_code + payroll_month` 独立核定完成率，再按个人绩效基数及折算政策计算；不使用部门共用完成率。月度薪酬列表直接展示“核定薪酬”，详情和绩效页入口均打开同一面板。面板集中展示本人的月度完成率、人工指标、提成调整、底薪、最终绩效、补贴、扣款和统一核定说明；金额留空按规则，明确填写时覆盖本人的当月金额。
+- 新增 `PUT /api/v1/hr/payroll/determinations/{month}/{employeeCode}`，输入为独立文件模型 `PayrollDeterminationCommand`，返回 `PayrollDeterminationView`。应用事务同时调用现有金额核定与月度事实保存，沿用权限、租户、员工范围、版本校验及审计；任何一步冲突整体回滚，统一采用金额核定说明。成功后单独调用既有重算流程；来源失败保留已核定内容、提示重算失败，不能显示已确认。HR 核对最终结果后仍须明确确认薪酬，已确认/发放结果沿用撤回或补差流程。
+- 验证：9 类后端定向测试共 85 项通过，无跳过，覆盖分档边界、自定义系数、历史兼容、保护期加权、规则校验、JSON 保存回读、同部门员工不同完成率、按人/月/租户隔离，以及统一核定事务回滚。Portal 4 类相关测试 27 项、类型检查、相关 lint 和生产构建通过；修复金额控件在异步加载后残留 `aria-disabled` 的问题，以加载占位后再创建表单。
+- 运行与验收边界：复核有效 Nacos 配置及 HR 数据库 Flyway 历史、待迁移数为 0 后，仅更新本地 HR 26889；健康检查 UP、`ethan-local` 注册实例唯一且健康。本轮没有新增/执行迁移、没有修改真实规则或保存/重算/确认真实员工工资。浏览器实际验证 HR 可编辑单项系数；统一核定面板使用单独标签页的隔离演示响应，验证完成率、提成、底薪、绩效、补贴、扣款均可编辑，未发送保存请求。演示拦截在验收后移除。截图在 Portal `docs/qa/payroll-determination/`；真实业务工资验收、生产部署未执行。
+
+
+### 2026-10-23 成本／人事 feature 验收收尾
+
+本次用户范围为人事与绩效、六成本台账、本次成本看板的城市／总部分析。最终业务边界、真实 DEV 对账、MySQL 迁移并发、权限、工资凭证七天 COS 链接、WPS 实际打开及性能证据，统一以 `docs/verification/FEATURE_COST_MANAGEMENT_ACCEPTANCE_2026-10-23.md` 为准，早期未执行项已有替代结果时不继续当作当前状态。未进行生产部署／真实收支核验，不将服务层 12 万事实测试当作生产全链路 SLA。

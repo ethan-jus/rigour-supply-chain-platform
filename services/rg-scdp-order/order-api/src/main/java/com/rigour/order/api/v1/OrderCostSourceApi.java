@@ -12,6 +12,12 @@ import java.time.LocalDate;
 import java.util.List;
 
 public interface OrderCostSourceApi {
+    @GetMapping("/api/v1/orders/cost-sources/city-collections")
+    ApiResponse<List<com.rigour.order.api.v1.model.OrderCityCollectionSourceView>> cityCollections(
+            @RequestParam String cityCode,
+            @RequestParam LocalDate from,
+            @RequestParam LocalDate to);
+
     @GetMapping("/api/v1/orders/cost-sources/collections")
     ApiResponse<List<OrderCollectionSourceView>> collections(
             @RequestParam String employeeCode,

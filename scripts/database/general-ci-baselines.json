@@ -90,5 +90,60 @@
     "source_sha256": "3cb3adf619a19e3a07079adc583e400525a2b05271ecb5f78a39c9bbb8179583",
     "baseline": "services/rg-scdp-sales/sales-server/src/main/resources/db/bootstrap/B27__general_ci_bootstrap.sql",
     "baseline_sha256": "920d35054e81ad663166a77f2895a1c72f1147c08d557bcf0b2efe5b9cdb9d83"
+  },
+  {
+    "migration_directory": "services/rg-scdp-erp/erp-server/src/main/resources/db/migration",
+    "through_version": "40",
+    "migration_count": 40,
+    "source_sha256": "e4961f6a7b37d1cd30603aa2f642abfabdd6ffd00d0bf577f5182dc945a5185c",
+    "baseline": "services/rg-scdp-erp/erp-server/src/main/resources/db/bootstrap/B40__general_ci_bootstrap.sql",
+    "baseline_sha256": "cc3a55495592db6112d5f26898394cb0f9725e88a7aa3550cf13b62a50e29aac",
+    "explicit_charset_collation": true
+  },
+  {
+    "migration_directory": "services/rg-scdp-foundation/foundation-server/src/main/resources/db/migration",
+    "through_version": "44",
+    "migration_count": 44,
+    "source_sha256": "7ac1f47e68d5cdd36d7809d0ea6f506720afd141f85755d1e4efa7f25c4508a7",
+    "baseline": "services/rg-scdp-foundation/foundation-server/src/main/resources/db/bootstrap/B44__general_ci_bootstrap.sql",
+    "baseline_sha256": "4fd23ab2e6dd97d1591ff8b6c0531be07f13c3b0601f57b5896656775cdf1065",
+    "explicit_charset_collation": true
+  },
+  {
+    "migration_directory": "services/rg-scdp-hr/hr-server/src/main/resources/db/migration",
+    "through_version": "25",
+    "migration_count": 25,
+    "source_sha256": "53db8c48bfb67af7e00cc64bc718a685bfe84d607c04d0a87e1ee7e81a26072d",
+    "baseline": "services/rg-scdp-hr/hr-server/src/main/resources/db/bootstrap/B25__general_ci_bootstrap.sql",
+    "baseline_sha256": "562cbacfee0ce024d181c6194791e21ec28d4f77697d1fbe68e3a2577d4c3056",
+    "explicit_charset_collation": true
+  },
+  {
+    "migration_directory": "services/rg-scdp-integration/integration-server/src/main/resources/db/migration",
+    "through_version": "27",
+    "migration_count": 27,
+    "source_sha256": "ea85e8e98bbbaf6e7c32d734959d8491dfd3d2855e58a806885dec48654330b2",
+    "baseline": "services/rg-scdp-integration/integration-server/src/main/resources/db/bootstrap/B27__general_ci_bootstrap.sql",
+    "baseline_sha256": "247df13b4a09d594f6070d3464f81e01d7c6d47d09dfbb8e37cdcf0d545b4d8c",
+    "explicit_charset_collation": true,
+    "normalize_ascii_character_columns": true
+  },
+  {
+    "migration_directory": "services/rg-scdp-order/order-server/src/main/resources/db/migration",
+    "through_version": "57",
+    "migration_count": 57,
+    "source_sha256": "e9194ec30b6b60d54b18a3fdad052d06cd34fad7738644f9fdbb14d5d31d6db9",
+    "baseline": "services/rg-scdp-order/order-server/src/main/resources/db/bootstrap/B57__general_ci_bootstrap.sql",
+    "baseline_sha256": "bfdd96d4576b06178874c16f0dc77897a000e8ab5f3e7eeb9aae57469e5c8550",
+    "explicit_charset_collation": true
+  },
+  {
+    "migration_directory": "services/rg-scdp-sales/sales-server/src/main/resources/db/migration",
+    "through_version": "27",
+    "migration_count": 27,
+    "source_sha256": "3cb3adf619a19e3a07079adc583e400525a2b05271ecb5f78a39c9bbb8179583",
+    "baseline": "services/rg-scdp-sales/sales-server/src/main/resources/db/bootstrap/B27.1__general_ci_bootstrap.sql",
+    "baseline_sha256": "381e837227219047461f1a7ac35c467ba999407f3a7d5e8a53392db73143e7d4",
+    "explicit_charset_collation": true
   }
 ]

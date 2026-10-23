@@ -1,0 +1,20 @@
+package com.rigour.analytics.api.v1.model;
+
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.List;
+
+/** 金额均为精确十进制字符串，空值与零值有不同含义。 */
+public record CostDashboardMeta(
+        String metricVersion,
+        String snapshotId,
+        Instant generatedAt,
+        LocalDate effectiveCutoff,
+        CostDashboardPeriod period,
+        List<String> includedSources,
+        List<String> excludedScopes,
+        boolean comparisonAvailable,
+        String comparisonReason,
+        String dataState,
+        boolean exportAllowed,
+        List<String> availableCategories) {}

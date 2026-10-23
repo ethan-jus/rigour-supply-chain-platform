@@ -8,10 +8,15 @@ import com.rigour.erp.application.port.out.*;
 import com.rigour.shared.context.*;
 
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import tools.jackson.databind.json.JsonMapper;
 
 import java.util.*;
+import java.util.stream.Stream;
 
 class ManualErpCostTest {
     final ErpCostStore store = mock(ErpCostStore.class);
@@ -120,6 +125,107 @@ class ManualErpCostTest {
                                         command(
                                                 "\"goods\":{\"productId\":1,\"productName\":\"伪造名\",\"unit\":\"箱\",\"unitPrice\":1}")))
                 .hasMessageContaining("主档不一致");
+    }
+
+    static Stream<Arguments> matchingSpecifications() {
+        return Stream.of("purchases", "losses")
+                .flatMap(
+                        category ->
+                                Stream.of(
+                                        Arguments.of(category, null, ""),
+                                        Arguments.of(category, null, null),
+                                        Arguments.of(category, "", null),
+                                        Arguments.of(category, " \t", ""),
+                                        Arguments.of(category, "12桶/箱", "12桶/箱")));
+    }
+
+    @ParameterizedTest
+    @MethodSource("matchingSpecifications")
+    void linkedSkuAcceptsEquivalentOptionalSpecificationOnSaveAndConfirm(
+            String category, String sourceSpecification, String formSpecification) {
+        linkedSku(sourceSpecification);
+        var c = linkedGoods(formSpecification, "BUCKET");
+        service.save(category, null, c);
+        verify(store)
+                .save(
+                        any(),
+                        eq(ErpCostService.category(category)),
+                        isNull(),
+                        eq(c),
+                        any(),
+                        any(),
+                        any(),
+                        any(),
+                        any());
+        var row =
+                new ErpCostDetailView(
+                        "E",
+                        "CST-1",
+                        ErpCostService.category(category),
+                        "DRAFT",
+                        1,
+                        c,
+                        List.of(),
+                        null,
+                        null,
+                        java.time.Instant.now(),
+                        java.time.Instant.now(),
+                        "U",
+                        "U");
+        when(store.entry(any(), any(), eq("E"), any())).thenReturn(row);
+        service.action(category, "E", new ErpCostActionCommand(1, ""), true);
+        verify(store)
+                .transition(
+                        any(), eq(ErpCostService.category(category)), eq("E"), any(), any(), any());
+        assertThat(c.goods().unit()).isEqualTo("BUCKET");
+    }
+
+    @ParameterizedTest
+    @CsvSource(
+            nullValues = "NULL",
+            value = {
+                "purchases,12桶/箱,6桶/箱,BUCKET,规格",
+                "losses,12桶/箱,'',BUCKET,规格",
+                "purchases,NULL,12桶/箱,BUCKET,规格",
+                "purchases,NULL,'',BOX,单位",
+                "losses,NULL,'',桶,单位"
+            })
+    void linkedSkuStillRejectsChangedSpecificationOrUnit(
+            String category,
+            String sourceSpecification,
+            String formSpecification,
+            String unit,
+            String field) {
+        linkedSku(sourceSpecification);
+        assertThatThrownBy(() -> service.save(category, null, linkedGoods(formSpecification, unit)))
+                .hasMessageContaining(field + "与 SKU 不一致");
+        verify(store, never()).save(any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    private void linkedSku(String specification) {
+        when(store.references(any(), eq("products"), any(), eq(1L), isNull(), anyInt(), any()))
+                .thenReturn(
+                        List.of(new ErpCostReferenceView("1", "P1", "真实商品", 1L, "12桶/箱", "BOX")));
+        when(store.references(any(), eq("variants"), any(), eq(2L), eq(1L), anyInt(), any()))
+                .thenReturn(
+                        List.of(
+                                new ErpCostReferenceView(
+                                        "2", "SKU2", "真实商品", 1L, specification, "BUCKET")));
+    }
+
+    private ErpCostCommand linkedGoods(String specification, String unit) {
+        var goods = new HashMap<String, Object>();
+        goods.put("productId", 1);
+        goods.put("variantId", 2);
+        goods.put("productName", "真实商品");
+        goods.put("specification", specification);
+        goods.put("unit", unit);
+        goods.put("unitPrice", 1);
+        goods.put("quantity", 1);
+        goods.put("supplierName", "供应商");
+        goods.put("location", "手填地点");
+        goods.put("lossReason", "破损");
+        return command("\"amount\":1,\"goods\":" + json.writeValueAsString(goods));
     }
 
     @Test

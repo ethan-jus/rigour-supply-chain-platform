@@ -49,6 +49,7 @@ public class HrExpenseFilterTest {
                                 "")
                         .replace(" JSON ", " LONGTEXT ");
         jdbc.execute(ddl);
+        jdbc.execute("ALTER TABLE hr_expense ADD COLUMN cost_month VARCHAR(7)");
         for (String name : List.of("extract", "unquote", "search")) {
             String function =
                     name.equals("extract")
@@ -61,6 +62,9 @@ public class HrExpenseFilterTest {
                             + name
                             + "'");
         }
+        jdbc.execute(
+                "CREATE TABLE hr_expense_guard(tenant_id VARCHAR(36) PRIMARY KEY,version BIGINT NOT"
+                        + " NULL DEFAULT 0)");
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(HrExpenseMapper.class);

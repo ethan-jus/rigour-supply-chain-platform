@@ -87,10 +87,10 @@ class HrDashboardTargetsTest {
         when(mapper.cityReceipts(any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(
                         List.of(Map.of("regionCode", "BJ", "receiptAmount", new BigDecimal("50"))));
-        when(mapper.customerRetention(any(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(Map.of("orderingCustomerCount", 10));
-        when(mapper.yangzhangguiTargetSales(any(), any(), any(), any(), any()))
-                .thenReturn(new BigDecimal("64.25"));
+        when(mapper.targetBusinessActuals(any(), any(), any(), any(), any(), eq(true)))
+                .thenReturn(List.of(
+                        Map.of("dimensionCode", "BJ", "metricCode", "ORDERED_STORE_COUNT", "actualValue", 10),
+                        Map.of("dimensionCode", "BJ", "metricCode", "YANGZHANGGUI_SALES_AMOUNT", "actualValue", new BigDecimal("64.25"))));
         var filter =
                 new SupplyDashboardFilter(
                         Instant.parse("2025-12-31T16:00:00Z"),
@@ -133,6 +133,43 @@ class HrDashboardTargetsTest {
                             assertThat(t.achievementRate()).isEqualByComparingTo("20");
                         });
         verify(client, times(1)).values(any(), any(), any());
+        verify(mapper, times(1)).targetBusinessActuals(any(), any(), any(), any(), any(), eq(true));
+        verify(mapper, never()).customerRetention(any(), any(), any(), any(), any(), any(), any());
+        verify(mapper, never()).yangzhangguiTargetSales(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void fiveHundredEmployeeTargetsUseOneBatchAndNoUnneededRetentionOrBrandReads() {
+        var mapper = mock(SupplyDashboardQueryMapper.class);
+        var targets = new HrDashboardTargets(mock(HrTargetClient.class), mock(javax.sql.DataSource.class), mapper);
+        var goals = new ArrayList<Target>();
+        var actuals = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 500; i++) {
+            String code = "E" + i;
+            goals.add(new Target("2026-10", "SALES_OWNER", code, code, "ORDERED_STORE_COUNT", new BigDecimal("20"), 1));
+            goals.add(new Target("2026-10", "SALES_OWNER", code, code, "YANGZHANGGUI_SALES_AMOUNT", new BigDecimal("1000"), 1));
+            actuals.add(Map.of("dimensionCode", code, "metricCode", "ORDERED_STORE_COUNT", "actualValue", i));
+            actuals.add(Map.of("dimensionCode", code, "metricCode", "YANGZHANGGUI_SALES_AMOUNT", "actualValue", new BigDecimal(i + ".25")));
+        }
+        when(mapper.targetBusinessActuals(any(), any(), any(), any(), any(), eq(false))).thenReturn(actuals);
+        var filter = new SupplyDashboardFilter(Instant.parse("2026-09-30T16:00:00Z"),
+                Instant.parse("2026-10-23T15:59:59Z"), null, null, null, null, null);
+        var result = targets.completions("T", filter, "SALES_OWNER", goals);
+        assertThat(result).hasSize(1000);
+        assertThat(result).filteredOn(r -> r.dimensionCode().equals("E499") && r.metricCode().equals("ORDERED_STORE_COUNT"))
+                .singleElement().satisfies(r -> assertThat(r.actualValue()).isEqualByComparingTo("499"));
+        assertThat(result).filteredOn(r -> r.dimensionCode().equals("E499") && r.metricCode().equals("YANGZHANGGUI_SALES_AMOUNT"))
+                .singleElement().satisfies(r -> assertThat(r.actualValue()).isEqualByComparingTo("499.25"));
+        verify(mapper, times(1)).targetBusinessActuals(any(), any(), any(), any(), any(), eq(false));
+        verify(mapper, never()).customerRetention(any(), any(), any(), any(), any(), any(), any());
+        verify(mapper, never()).yangzhangguiTargetSales(any(), any(), any(), any(), any());
+
+        clearInvocations(mapper);
+        var salaryOnly = List.of(new Target("2026-10", "SALES_OWNER", "E1", "E1", "SALES_AMOUNT", BigDecimal.TEN, 1));
+        assertThat(targets.completions("T", filter, "SALES_OWNER", salaryOnly)).hasSize(1);
+        assertThat(targets.completions("T", filter, "CITY", salaryOnly)).isEmpty();
+        verify(mapper, never()).targetBusinessActuals(any(), any(), any(), any(), any(), anyBoolean());
+        verify(mapper, never()).customerRetention(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -146,5 +183,83 @@ class HrDashboardTargetsTest {
                         mock(javax.sql.DataSource.class),
                         mock(SupplyDashboardQueryMapper.class));
         assertThatThrownBy(() -> targets.cityGoals("T", 2026, null)).hasMessage("HR unavailable");
+    }
+
+    @Test
+    void batchedSqlPreservesDistinctCustomersBrandRefundsTenantAndExactDateCutoff() {
+        var ds = new SingleConnectionDataSource("jdbc:h2:mem:target_actuals_" + UUID.randomUUID()
+                + ";MODE=MySQL", "sa", "", true);
+        try {
+            var jdbc = new JdbcTemplate(ds);
+            jdbc.execute("CREATE TABLE bi_sales_order_fact(tenant_id VARCHAR,order_id BIGINT,customer_id BIGINT,"
+                    + "region_code VARCHAR,owner_staff_code VARCHAR,order_date TIMESTAMP,order_status_code VARCHAR,deleted INT)");
+            jdbc.execute("CREATE TABLE bi_sales_order_line_fact(tenant_id VARCHAR,order_id BIGINT,"
+                    + "region_code VARCHAR,owner_staff_code VARCHAR,order_date TIMESTAMP,order_status_code VARCHAR,"
+                    + "deleted INT,brand_name VARCHAR,line_amount DECIMAL(18,2))");
+            jdbc.execute("CREATE TABLE bi_dashboard_customer_history(tenant_id VARCHAR,customer_id BIGINT,first_order_date TIMESTAMP)");
+            jdbc.update("""
+                    INSERT INTO bi_sales_order_fact VALUES
+                    ('T',1,1,'BJ','E1','2026-10-10','COMPLETED',0),
+                    ('T',2,1,'BJ','E1','2026-10-11','COMPLETED',0),
+                    ('T',3,2,'BJ','E2','2026-10-12','COMPLETED',0),
+                    ('T',4,3,'HZ','E1','2026-10-13','COMPLETED',0),
+                    ('T',5,4,'BJ','E1','2026-09-30 15:59:59','COMPLETED',0),
+                    ('T',6,5,'BJ','E1','2026-10-23 16:00:00','COMPLETED',0),
+                    ('T',7,6,'BJ','E1','2026-10-10','CANCELLED',0),
+                    ('T',8,7,'BJ','E1','2026-10-10','COMPLETED',1),
+                    ('OTHER',1,8,'BJ','E1','2026-10-10','COMPLETED',0)
+                    """);
+            jdbc.update("""
+                    INSERT INTO bi_sales_order_line_fact
+                    SELECT tenant_id,order_id,region_code,owner_staff_code,order_date,order_status_code,
+                           deleted,'杨掌柜 X CBSA世界斯诺克学院',
+                           CASE order_id WHEN 1 THEN 100 WHEN 2 THEN -5 WHEN 3 THEN 90 WHEN 4 THEN 50 ELSE 9999 END
+                      FROM bi_sales_order_fact
+                    """);
+            jdbc.update("INSERT INTO bi_sales_order_line_fact VALUES('T',1,'BJ','E1','2026-10-10',"
+                    + "'COMPLETED',0,'其他品牌',7777)");
+            var config = new org.apache.ibatis.session.Configuration();
+            config.addMapper(SupplyDashboardQueryMapper.class);
+            var args = new HashMap<String, Object>();
+            args.put("tenantId", "T");
+            args.put("from", java.time.LocalDateTime.parse("2026-09-30T16:00:00"));
+            args.put("to", java.time.LocalDateTime.parse("2026-10-23T15:59:59"));
+            for (boolean city : List.of(false, true)) {
+                args.put("city", city);
+                var rows = query(jdbc, config, "targetBusinessActuals", args);
+                assertThat(rows.stream().filter(r -> r.get("metricCode").equals("ORDERED_STORE_COUNT"))
+                        .map(r -> new BigDecimal(r.get("actualValue").toString())).reduce(BigDecimal.ZERO, BigDecimal::add))
+                        .isEqualByComparingTo("3");
+                assertThat(rows.stream().filter(r -> r.get("metricCode").equals("YANGZHANGGUI_SALES_AMOUNT"))
+                        .map(r -> new BigDecimal(r.get("actualValue").toString())).reduce(BigDecimal.ZERO, BigDecimal::add))
+                        .isEqualByComparingTo("235");
+                for (var row : rows) {
+                    var scalar = new HashMap<>(args);
+                    scalar.put(city ? "regionCode" : "ownerStaffCode", row.get("dimensionCode"));
+                    boolean count = row.get("metricCode").equals("ORDERED_STORE_COUNT");
+                    var old = query(jdbc, config, count ? "customerRetention" : "yangzhangguiTargetSales", scalar).getFirst();
+                    Object expected = count ? old.get("orderingCustomerCount") : old.values().iterator().next();
+                    assertThat(new BigDecimal(row.get("actualValue").toString()))
+                            .isEqualByComparingTo(expected.toString());
+                }
+                args.put("regionCode", "BJ"); args.put("ownerStaffCode", "E1");
+                assertThat(query(jdbc, config, "targetBusinessActuals", args))
+                        .anySatisfy(r -> {
+                            assertThat(r.get("metricCode")).isEqualTo("YANGZHANGGUI_SALES_AMOUNT");
+                            assertThat(new BigDecimal(r.get("actualValue").toString())).isEqualByComparingTo("95");
+                        });
+                args.put("regionCode", "UNKNOWN");
+                assertThat(query(jdbc, config, "targetBusinessActuals", args)).isEmpty();
+                args.remove("regionCode"); args.remove("ownerStaffCode");
+            }
+        } finally { ds.destroy(); }
+    }
+
+    private static List<Map<String, Object>> query(JdbcTemplate jdbc,
+            org.apache.ibatis.session.Configuration config, String statement, Map<String, Object> args) {
+        var bound = config.getMappedStatement(SupplyDashboardQueryMapper.class.getName() + "." + statement)
+                .getBoundSql(args);
+        return jdbc.queryForList(bound.getSql(), bound.getParameterMappings().stream()
+                .map(p -> args.get(p.getProperty())).toArray());
     }
 }

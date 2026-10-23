@@ -130,6 +130,34 @@ SELECT COALESCE(SUM(l.line_amount), 0)
             @Param("from") LocalDateTime from, @Param("to") LocalDateTime to,
             @Param("regionCode") String regionCode, @Param("ownerStaffCode") String ownerStaffCode);
 
+    /** One scoped read per target dimension; never issue two aggregate queries for every employee. */
+    @Select("""
+<script>
+SELECT <choose><when test="city">o.region_code</when><otherwise>o.owner_staff_code</otherwise></choose> AS dimensionCode,
+       'ORDERED_STORE_COUNT' AS metricCode, COUNT(DISTINCT o.customer_id) AS actualValue
+  FROM bi_sales_order_fact o
+ WHERE o.tenant_id = #{tenantId} AND o.deleted = 0 AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.order_date &gt;= #{from} AND o.order_date &lt;= #{to}
+<if test="regionCode != null"> AND o.region_code = #{regionCode} </if>
+<if test="ownerStaffCode != null"> AND o.owner_staff_code = #{ownerStaffCode} </if>
+ GROUP BY <choose><when test="city">o.region_code</when><otherwise>o.owner_staff_code</otherwise></choose>
+UNION ALL
+SELECT <choose><when test="city">l.region_code</when><otherwise>l.owner_staff_code</otherwise></choose> AS dimensionCode,
+       'YANGZHANGGUI_SALES_AMOUNT' AS metricCode, COALESCE(SUM(l.line_amount), 0) AS actualValue
+  FROM bi_sales_order_line_fact l
+ WHERE l.tenant_id = #{tenantId} AND l.deleted = 0 AND l.order_status_code &lt;&gt; 'CANCELLED'
+   AND l.order_date &gt;= #{from} AND l.order_date &lt;= #{to}
+   AND TRIM(l.brand_name) = '杨掌柜 X CBSA世界斯诺克学院'
+<if test="regionCode != null"> AND l.region_code = #{regionCode} </if>
+<if test="ownerStaffCode != null"> AND l.owner_staff_code = #{ownerStaffCode} </if>
+ GROUP BY <choose><when test="city">l.region_code</when><otherwise>l.owner_staff_code</otherwise></choose>
+</script>
+""")
+    List<Map<String, Object>> targetBusinessActuals(@Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from, @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode, @Param("ownerStaffCode") String ownerStaffCode,
+            @Param("city") boolean city);
+
     @Select("""
 <script>
 SELECT e.employee_code AS ownerStaffCode, e.employee_name AS ownerStaffName,

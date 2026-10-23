@@ -100,7 +100,7 @@ public final class ErpCostService {
         text(q.documentNo(), 100, "费用单号");
         text(q.title(), 200, "费用事项");
         text(q.remark(), 1000, "备注");
-        text(q.contractNo(), 100, "租赁合同号");
+        text(q.contractNo(), 100, "租赁合同编号");
         if (q.dateFrom() != null && q.dateTo() != null && q.dateTo().isBefore(q.dateFrom()))
             throw bad("截止日期不能早于开始日期");
         return store.entries(
@@ -279,9 +279,11 @@ public final class ErpCostService {
             if (g.variantId() != null) {
                 if (g.productId() == null) throw bad("请先关联商品");
                 var variant = reference(t, "variants", g.variantId(), g.productId(), p);
-                if (!Objects.equals(variant.specification(), g.specification())
-                        || !Objects.equals(variant.unit(), g.unit()))
-                    throw bad("规格或单位与 SKU 不一致，请重新选择");
+                if (!Objects.equals(
+                        optionalSpecification(variant.specification()),
+                        optionalSpecification(g.specification())))
+                    throw bad("规格与 SKU 不一致，请重新选择 SKU");
+                if (!Objects.equals(variant.unit(), g.unit())) throw bad("单位与 SKU 不一致，请重新选择 SKU");
             }
             if (g.supplierId() != null
                     && !Objects.equals(
@@ -483,6 +485,11 @@ public final class ErpCostService {
 
     private static void text(String value, int max, String name) {
         if (value != null && value.length() > max) throw bad(name + "长度不能超过" + max);
+    }
+
+    private static String optionalSpecification(String value) {
+        // 规格非必填：主档 null 与表单空字符串都表示未维护，非空规格仍须完全一致。
+        return value == null || value.isBlank() ? "" : value;
     }
 
     private static void rules(Runnable runnable) {

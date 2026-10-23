@@ -11,6 +11,19 @@ import java.util.*;
 /** 本领域固定投影目录；所有动态标识来自代码常量，外部输入仅作为绑定值。 */
 @Repository
 public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshotStore {
+    private MybatisPlusCostAnalyticsSource costs;
+    private MybatisPlusPayrollCostAnalyticsSource payrollCosts;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void payrollCostSource(MybatisPlusPayrollCostAnalyticsSource payrollCosts) {
+        this.payrollCosts = payrollCosts;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void costSource(MybatisPlusCostAnalyticsSource costs) {
+        this.costs = costs;
+    }
+
     private final JdbcTemplate jdbc;
 
     public JdbcAnalyticsSourceSnapshotStore(JdbcTemplate jdbc) {
@@ -34,9 +47,19 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
    WHERE c.tenant_id=d.tenant_id AND c.descendant_id=d.id),JSON_ARRAY(d.id)) department_path
  FROM hr_department d) source_rows
 """,
-                            List.of("id","tenant_id","department_code","department_name","parent_id","status_code","deleted","department_path"),
-                            false,false,
-                            "CONCAT(COUNT(*),':',COALESCE(SUM(CAST(CRC32(CONCAT_WS('|',id,department_code,department_name,COALESCE(parent_id,0),status_code,deleted,department_path)) AS UNSIGNED)),0))"),
+                            List.of(
+                                    "id",
+                                    "tenant_id",
+                                    "department_code",
+                                    "department_name",
+                                    "parent_id",
+                                    "status_code",
+                                    "deleted",
+                                    "department_path"),
+                            false,
+                            false,
+                            "CONCAT(COUNT(*),':',COALESCE(SUM(CAST(CRC32(CONCAT_WS('|',id,department_code,department_name,COALESCE(parent_id,0),status_code,deleted,department_path))"
+                                + " AS UNSIGNED)),0))"),
                     "HR_EMPLOYEE",
                     new Definition(
                             """
@@ -79,6 +102,9 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
 
     @Override
     public String version(String tenant, String dataset) {
+        if (MybatisPlusPayrollCostAnalyticsSource.DATASET.equals(dataset))
+            return payrollCosts.version(tenant);
+        if (MybatisPlusCostAnalyticsSource.DATASET.equals(dataset)) return costs.version(tenant);
         var d = definition(dataset);
         return jdbc.queryForObject(
                 "SELECT "
@@ -94,6 +120,10 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
     @Override
     @Transactional(readOnly = true)
     public Page page(String tenant, String dataset, String after) {
+        if (MybatisPlusPayrollCostAnalyticsSource.DATASET.equals(dataset))
+            return payrollCosts.page(tenant, after);
+        if (MybatisPlusCostAnalyticsSource.DATASET.equals(dataset))
+            return costs.page(tenant, after);
         var d = definition(dataset);
         String cursor = after == null ? "" : after;
         if (!cursor.isEmpty() && !cursor.matches(d.binaryKey() ? "[0-9a-fA-F]{32}" : "[0-9]{1,20}"))

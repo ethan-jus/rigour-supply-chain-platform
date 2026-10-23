@@ -58,6 +58,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
     private void lock(String tenant) {
         mapper.ensureGuard(tenant);
         mapper.lock(tenant);
+        // 与费用写入处于同一事务；失败回滚，确认、更正及作废均推进分析版本。
+        mapper.advanceAnalyticsVersion(tenant);
     }
 
     private QueryWrapper<OrderLogisticsCostEntity> where(

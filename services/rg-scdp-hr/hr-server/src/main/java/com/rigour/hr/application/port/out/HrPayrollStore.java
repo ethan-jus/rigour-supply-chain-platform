@@ -35,9 +35,35 @@ public interface HrPayrollStore {
 
     List<PayrollEmployeeView> employees(String tenant, String action);
 
+    /** 报销城市人员引用：本城市员工和费用发生日有效的城市管辖人，仍受调用者人员范围限制。 */
+    List<PayrollEmployeeView> expenseEmployees(
+            String tenant, String action, String cityCode, String cityName, LocalDate at);
+
     PayrollEmployeeView employee(String tenant, String code, String action);
 
+    String employeePositionName(String tenant, String code, String action);
+
     Long departmentAt(String tenant, String employee, LocalDate date);
+
+    Set<Long> departmentsDuring(String tenant, String employee, LocalDate from, LocalDate to);
+
+    /** Only codes already selected through the caller's employee data scope may be supplied. */
+    default Map<String, Long> preparationDepartments(
+            String tenant, List<String> employees, String month) {
+        Map<String, Long> result = new java.util.HashMap<>();
+        for (String employee : employees) {
+            var input = input(tenant, employee, month);
+            Long department =
+                    input.departmentOverrideId() != null
+                            ? input.departmentOverrideId()
+                            : departmentAt(
+                                    tenant,
+                                    employee,
+                                    java.time.YearMonth.parse(month).atEndOfMonth());
+            if (department != null) result.put(employee, department);
+        }
+        return Map.copyOf(result);
+    }
 
     List<PayrollDepartmentView> departments(String tenant, String action);
 
@@ -55,6 +81,9 @@ public interface HrPayrollStore {
             String tenant, String employee, String month, PayrollInputCommand input, String actor);
 
     Set<String> released(String tenant);
+
+    /** 已保存工资的只读重算须保留本单提成，其他工资的已计提行仍不能重复计入。 */
+    Set<String> releasedForCalculation(String tenant, String employee, String month);
 
     Map<String, PayrollCommissionDetailView> confirmedSalesCommissions(
             String tenant, Set<String> employees, Set<String> lineIds, String throughMonth);

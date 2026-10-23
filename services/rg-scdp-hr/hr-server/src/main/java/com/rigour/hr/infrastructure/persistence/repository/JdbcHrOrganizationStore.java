@@ -5,6 +5,8 @@ import com.rigour.hr.application.port.out.HrOrganizationStore;
 import com.rigour.hr.domain.code.HrBusinessCodeRules;
 import com.rigour.hr.domain.organization.DepartmentTree;
 import com.rigour.shared.core.code.BusinessCodeGenerator;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -71,11 +73,13 @@ public class JdbcHrOrganizationStore implements HrOrganizationStore {
                 jdbc.update(
                         """
 INSERT INTO hr_employee_assignment(tenant_id,employee_code,department_id,department_name_snapshot,position_code,position_name_snapshot,effective_from,actor_id)
-SELECT e.tenant_id,e.employee_code,e.department_id,d.department_name,e.primary_position_code,p.position_name,UTC_TIMESTAMP(6),?
+SELECT e.tenant_id,e.employee_code,e.department_id,d.department_name,e.primary_position_code,p.position_name,
+       CASE WHEN ? THEN COALESCE(e.entry_date,UTC_TIMESTAMP(6)) ELSE UTC_TIMESTAMP(6) END,?
 FROM hr_employee e JOIN hr_department d ON d.tenant_id=e.tenant_id AND d.id=e.department_id AND d.deleted=0 AND d.status_code='ACTIVE'
 JOIN hr_position p ON p.tenant_id=e.tenant_id AND p.position_code=e.primary_position_code AND p.deleted=0 AND p.status_code='ACTIVE'
 WHERE e.tenant_id=? AND e.employee_code=? AND e.deleted=0
 """,
+                        previousStatus == null,
                         actor,
                         tenant,
                         employee);
@@ -145,7 +149,7 @@ WHERE e.tenant_id=? AND e.employee_code=? AND e.deleted=0
                                             .orElseThrow(
                                                     () -> new IllegalArgumentException("部门不存在"));
                     if ((old == null ? 0 : old.revision()) != c.revision())
-                        throw new IllegalStateException("部门已修改，请刷新");
+                        throw new BusinessException(ErrorCode.CONFLICT, "部门已修改，请刷新", List.of());
                     if (c.parentId() != null
                             && all.stream()
                                     .noneMatch(
@@ -280,7 +284,7 @@ UPDATE hr_employee SET department_name_snapshot=?,revision=revision+1,updated_ti
                                     .findFirst()
                                     .orElseThrow(() -> new IllegalArgumentException("部门不存在"));
                     if (department.revision() != revision)
-                        throw new IllegalStateException("部门已修改，请刷新");
+                        throw new BusinessException(ErrorCode.CONFLICT, "部门已修改，请刷新", List.of());
                     if (!"INACTIVE".equals(department.statusCode()))
                         throw new IllegalArgumentException("请先停用部门");
                     if (count(
@@ -338,7 +342,7 @@ UPDATE hr_employee SET department_name_snapshot=?,revision=revision+1,updated_ti
                                 old = rawIdentity(tenant, code.getFirst()).orElseThrow();
                             }
                             if ((old == null ? 0 : old.employeeRevision()) != c.revision())
-                                throw new IllegalStateException("员工已修改，请刷新");
+                                throw new BusinessException(ErrorCode.CONFLICT, "员工已修改，请刷新", List.of());
                             if (old == null
                                     || !Objects.equals(old.departmentId(), c.departmentId())
                                     || !Objects.equals(old.positionCode(), c.positionCode()))
@@ -439,7 +443,8 @@ UPDATE hr_employee SET access_version=access_version+CASE WHEN employment_status
                                                 tenant,
                                                 target,
                                                 c.revision());
-                                if (changed != 1) throw new IllegalStateException("员工已修改，请刷新");
+                                if (changed != 1)
+                                    throw new BusinessException(ErrorCode.CONFLICT, "员工已修改，请刷新", List.of());
                             }
                             employeeMapper.update(null,
                                     new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<com.rigour.hr.infrastructure.persistence.entity.HrEmployeeEntity>()
@@ -493,7 +498,7 @@ UPDATE hr_employee_assignment SET effective_to=UTC_TIMESTAMP(6),revision=revisio
                                     jdbc.update(
                                             """
 INSERT INTO hr_employee_assignment(tenant_id,employee_code,department_id,department_name_snapshot,
-    position_code,position_name_snapshot,effective_from,actor_id) VALUES(?,?,?,?,?,?,UTC_TIMESTAMP(6),?)
+    position_code,position_name_snapshot,effective_from,actor_id) VALUES(?,?,?,?,?,?,COALESCE(?,UTC_TIMESTAMP(6)),?)
 """,
                                             tenant,
                                             code,
@@ -501,6 +506,7 @@ INSERT INTO hr_employee_assignment(tenant_id,employee_code,department_id,departm
                                             department.departmentName(),
                                             c.positionCode(),
                                             positionNames.getFirst(),
+                                            old == null ? timestamp(c.entryDate()) : null,
                                             actor);
                             }
                             change(

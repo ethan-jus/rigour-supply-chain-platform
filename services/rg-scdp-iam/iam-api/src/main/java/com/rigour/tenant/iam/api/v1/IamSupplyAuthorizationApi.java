@@ -10,6 +10,9 @@ public interface IamSupplyAuthorizationApi {
     @GetMapping("/internal/v1/iam/supply/authorization")
     SupplyAuthorizationView authorization(@RequestParam String action);
 
+    @GetMapping("/internal/v1/iam/supply/authorizations")
+    java.util.List<SupplyAuthorizationView> authorizations(@RequestParam java.util.List<String> actions);
+
     @GetMapping("/internal/v1/iam/supply/customer-assignment-target")
     com.rigour.tenant.iam.api.v1.model.CustomerAssignmentTargetView customerAssignmentTarget(
             @RequestParam(required = false) String employeeCode,

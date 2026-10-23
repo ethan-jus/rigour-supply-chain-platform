@@ -2,6 +2,7 @@ package com.rigour.hr.api;
 
 import com.rigour.hr.api.v1.HrPayrollApi;
 import com.rigour.hr.api.v1.model.*;
+import com.rigour.hr.application.service.HrPayrollDeterminationService;
 import com.rigour.hr.application.service.HrPayrollService;
 import com.rigour.hr.application.service.HrPayrollWorkflowService;
 import com.rigour.shared.core.api.ApiResponse;
@@ -47,9 +48,21 @@ public final class HrPayrollController implements HrPayrollApi {
 
     private final HrPayrollWorkflowService workflow;
 
-    public HrPayrollController(HrPayrollService service, HrPayrollWorkflowService workflow) {
+    private final HrPayrollDeterminationService determinations;
+
+    public HrPayrollController(
+            HrPayrollService service,
+            HrPayrollWorkflowService workflow,
+            HrPayrollDeterminationService determinations) {
         this.workflow = workflow;
         this.service = service;
+        this.determinations = determinations;
+    }
+
+    @Override
+    public ApiResponse<PayrollDeterminationView> determination(
+            String month, String employeeCode, PayrollDeterminationCommand command) {
+        return ApiResponse.success(determinations.save(month, employeeCode, command));
     }
 
     @Override

@@ -23,11 +23,9 @@ public final class HttpBiSourceSnapshotClient implements BiSourceSnapshotClient 
 
     public HttpBiSourceSnapshotClient(
             TrustedContextSigner signer,
-            @Value(
-                            "${rigour.analytics.scope.order-base-url:http://rigour-order-center-service}")
+            @Value("${rigour.analytics.scope.order-base-url:http://rigour-order-center-service}")
                     String order,
-            @Value(
-                            "${rigour.analytics.scope.crm-base-url:http://rigour-merchant-crm-service}")
+            @Value("${rigour.analytics.scope.crm-base-url:http://rigour-merchant-crm-service}")
                     String crm,
             @Value("${rigour.analytics.scope.erp-base-url:http://rigour-erp-core-service}")
                     String erp,
@@ -36,8 +34,7 @@ public final class HttpBiSourceSnapshotClient implements BiSourceSnapshotClient 
                     String integration,
             @Value("${rigour.analytics.scope.hr-base-url:http://rigour-hr-payroll-service}")
                     String hr,
-            @Value(
-                            "${rigour.analytics.scope.sales-base-url:http://rigour-sales-work-service}")
+            @Value("${rigour.analytics.scope.sales-base-url:http://rigour-sales-work-service}")
                     String sales,
             RestClient.Builder restClientBuilder) {
         this.signer = signer;
@@ -66,7 +63,9 @@ public final class HttpBiSourceSnapshotClient implements BiSourceSnapshotClient 
     }
 
     public Page page(UUID tenant, String source, String dataset, String after) {
-        if (!after.isEmpty() && !after.matches("[0-9A-Fa-f]{1,32}"))
+        if (!after.isEmpty()
+                && !after.matches(
+                        "[0-9A-Fa-f]{1,32}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"))
             throw new IllegalArgumentException("源游标无效");
         var result = get(tenant, source, dataset, "?after=" + after);
         var rows = result.path("items");

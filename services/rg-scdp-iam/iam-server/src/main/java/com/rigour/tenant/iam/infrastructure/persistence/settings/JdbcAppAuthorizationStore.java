@@ -119,27 +119,64 @@ public class JdbcAppAuthorizationStore implements AppAuthorizationStore {
                 : employee.unavailableReason();
     }
 
-    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    @org.springframework.transaction.annotation.Transactional(readOnly = true,
+            isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     @Override
     public AppAuthorizationSnapshot authorization(CallerIdentity caller, String action) {
-        return settings.authorizationRead(() -> readAuthorization(caller, action));
+        return authorizations(caller, java.util.Collections.singletonList(action)).getFirst();
     }
 
-    private AppAuthorizationSnapshot readAuthorization(CallerIdentity caller, String action) {
+    @org.springframework.transaction.annotation.Transactional(readOnly = true,
+            isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    @Override
+    public List<AppAuthorizationSnapshot> authorizations(
+            CallerIdentity caller, List<String> actions) {
+        if (actions == null || actions.isEmpty() || actions.size() > 32)
+            throw new RequestValidationException("一次授权查询需要1至32个动作");
+        for (String action : actions)
+            if (action == null
+                    || action.length() > 120
+                    || !action.matches("[a-z][a-z0-9-]*(?::[a-z0-9_-]+){1,3}"))
+                throw new RequestValidationException("业务动作编码无效");
+        var requested = new LinkedHashSet<>(actions);
+        return settings.authorizationRead(
+                () -> {
+                    Actor actor = requireCaller(caller);
+                    var facts = prepare(actor, requested);
+                    return requested.stream().map(action -> evaluate(facts, action)).toList();
+                });
+    }
+
+    private Actor requireCaller(CallerIdentity caller) {
         if (caller == null
                 || !"TENANT".equals(caller.principalScope())
-                || caller.tenantId() == null) throw new AccessDeniedException("需要受信的原操作人身份");
-        if (action == null || !action.matches("[a-z][a-z0-9-]*(?::[a-z0-9_-]+){1,3}"))
-            throw new RequestValidationException("业务动作编码无效");
+                || caller.tenantId() == null
+                || caller.userId() == null
+                || caller.sessionId() == null
+                || !Objects.equals(caller.principalId(), caller.userId()))
+            throw new AccessDeniedException("需要受信的原操作人身份");
         requireSession(caller);
         Actor actor = new Actor("TENANT", caller.userId(), caller.tenantId());
         settings.requireIdentity(actor);
         if (!settings.initialized(actor)) throw new AccessDeniedException("供应链尚未初始化");
-        return proposed(actor, action);
+        return actor;
     }
 
     /** 与正式授权共用解析器，预览不切换模式、不伪造登录会话，也不授予目标账号权限。 */
     AppAuthorizationSnapshot proposed(Actor actor, String action) {
+        return settings.authorizationRead(() -> evaluate(prepare(actor, Set.of(action)), action));
+    }
+
+    private record AuthorizationFacts(
+            Actor actor,
+            com.rigour.tenant.iam.application.service.settings.AppSettingsModels.Context context,
+            String code,
+            AppEmployeeClient.Employee employee,
+            long memberVersion,
+            UUID administratorRole,
+            List<com.rigour.tenant.iam.application.service.settings.AppAccessModels.Role> roles) {}
+
+    private AuthorizationFacts prepare(Actor actor, Collection<String> actions) {
         var context = settings.context(actor);
         if (!settings.eligible(actor)) throw new AccessDeniedException("供应链账号或员工资格不可用");
         var app = bin(settings.applicationId());
@@ -155,7 +192,7 @@ public class JdbcAppAuthorizationStore implements AppAuthorizationStore {
                         .stream()
                         .findFirst()
                         .orElse(null);
-        var employee = code == null ? null : employees.employee(actor.tenantId(), code);
+        var employee = code == null ? null : settings.authorizationEmployee(actor, code);
         long memberVersion =
                 jdbc.queryForObject(
                         "SELECT security_version FROM iam_app_member WHERE tenant_id=? AND"
@@ -165,6 +202,38 @@ public class JdbcAppAuthorizationStore implements AppAuthorizationStore {
                         app,
                         bin(actor.principalId()));
         UUID administratorRole = settings.protectedAdministratorRole(actor, null);
+        List<com.rigour.tenant.iam.application.service.settings.AppAccessModels.Role> assigned =
+                List.of();
+        if (administratorRole == null
+                && actions.stream().anyMatch(context.permissions()::contains)) {
+            var assignments = members.assignments(actor, actor.principalId());
+            var byId =
+                    roles.all(actor).stream()
+                            .collect(
+                                    java.util.stream.Collectors.toMap(
+                                            role -> role.id(), role -> role));
+            assigned =
+                    assignments.stream()
+                            .map(
+                                    assignment -> {
+                                        var role = byId.get(assignment.roleId());
+                                        if (role == null)
+                                            throw new RequestValidationException("角色不存在");
+                                        return role;
+                                    })
+                            .toList();
+        }
+        return new AuthorizationFacts(
+                actor, context, code, employee, memberVersion, administratorRole, assigned);
+    }
+
+    private AppAuthorizationSnapshot evaluate(AuthorizationFacts facts, String action) {
+        var actor = facts.actor();
+        var context = facts.context();
+        var code = facts.code();
+        var employee = facts.employee();
+        var memberVersion = facts.memberVersion();
+        var administratorRole = facts.administratorRole();
         Limit all = new Limit("ALL", List.of());
         List<Clause> clauses = new ArrayList<>();
         // 仍先核验动作权限、租户和账号资格；管理员的数据范围随新功能自动生效。
@@ -173,13 +242,11 @@ public class JdbcAppAuthorizationStore implements AppAuthorizationStore {
                     com.rigour.tenant.iam.domain.model.settings.AppScopeRules.objectType(action);
             if (object != null)
                 clauses.add(new Clause(administratorRole, object, "ALL", all, all, all, true));
-        } else if (context.permissions().contains(action))
-            for (var assignment : members.assignments(actor, actor.principalId())) {
-                var role = roles.role(actor, assignment.roleId());
+        } else if (context.permissions().contains(action)) {
+            var actionNodes = settings.enabledActionNodes(actor, action);
+            for (var role : facts.roles()) {
                 if (!"ACTIVE".equals(role.status())) continue;
-                boolean grantsAction =
-                        settings.enabledActionNodes(actor, action).stream()
-                                .anyMatch(role.menuNodeIds()::contains);
+                boolean grantsAction = actionNodes.stream().anyMatch(role.menuNodeIds()::contains);
                 if (!grantsAction) continue;
                 var scope = role.dataScope();
                 String object =
@@ -209,6 +276,7 @@ public class JdbcAppAuthorizationStore implements AppAuthorizationStore {
                                 all,
                                 false));
             }
+        }
         return new AppAuthorizationSnapshot(
                 context.mode(),
                 actor.tenantId(),

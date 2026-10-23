@@ -1,0 +1,1 @@
+{"concurrentReaders":20,"scope":"local in-memory service only; excludes HTTP, database loading, auth server and source refresh","csvBytes":11362727,"csvMs":198.346333,"csvRows":70460,"maxMs":1155.785208,"facts":100000,"p95Ms":1148.326166,"p50Ms":1114.626208}

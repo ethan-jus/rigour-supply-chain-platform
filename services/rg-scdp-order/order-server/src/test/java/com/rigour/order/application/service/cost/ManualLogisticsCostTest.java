@@ -8,6 +8,8 @@ import com.rigour.order.application.port.out.*;
 import com.rigour.shared.context.*;
 
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import tools.jackson.databind.json.JsonMapper;
 
@@ -126,9 +128,15 @@ class ManualLogisticsCostTest {
         verifyNoInteractions(store);
     }
 
-    @Test
-    void manualSupplierAndCentralWarehouseKeepTheirVerifiedNames() {
-        var original = command("MANUAL", "[]", dhb + ",\"supplierId\":1,\"targetWarehouseId\":2");
+    @ParameterizedTest
+    @ValueSource(strings = {"MANUAL", "NONE"})
+    void manualSupplierAndCentralWarehouseKeepTheirVerifiedNames(String mode) {
+        var original =
+                command(
+                        mode,
+                        "[]",
+                        ("MANUAL".equals(mode) ? dhb : "")
+                                + ",\"supplierId\":1,\"targetWarehouseId\":2");
         var c =
                 json.readValue(
                         json.writeValueAsString(original)

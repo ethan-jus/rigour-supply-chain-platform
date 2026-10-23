@@ -1,0 +1,405 @@
+{
+  "label": "市场价格参考的合成测试数据，不代表公司实际交易",
+  "references": [
+    {
+      "id": "NBS-202607-LATE",
+      "url": "https://www.stats.gov.cn/sj/zxfbhjd/202608/t20260803_1964273.html",
+      "date": "2026-08-04",
+      "period": "2026年7月下旬",
+      "values": {
+        "soybeanPerTonne": "4525.9",
+        "sugarPerTonne": "5191.9"
+      },
+      "method": "单价按吨除以1000换算为kg，数量为测试假设"
+    },
+    {
+      "id": "PAPER-202503",
+      "url": "https://www.ccgp.gov.cn/cggg/dfgg/zbgg/202503/t20250319_24320207.htm",
+      "date": "2025-03-19",
+      "values": {
+        "A4_70g_perPack": "14.63"
+      },
+      "method": "历史集中采购成交单价参考，不是2026年实时零售价；10包为测试假设"
+    }
+  ],
+  "assumptions": "运输、租金、工资、住宿、车票、打车及营销金额均为场景假设；不是市场报价、薪酬建议或会计政策。员工、供应商、业务单据均虚构。",
+  "expected": {
+    "opex": "20717.30",
+    "purchase": "7121.85",
+    "loss": "22.63",
+    "travel": "1151.00",
+    "office": "2646.30",
+    "monthly": "15300.00",
+    "dailyOpex": "5417.30",
+    "linked": "320.00",
+    "review": "4500.00"
+  },
+  "records": [
+    {
+      "source": "ERP",
+      "dataset": "ERP_COST_ENTRY",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "document_no": "TEST-001",
+        "title": "测试黄豆采购 1000 kg",
+        "amount": "4525.90",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"goods\":{\"productName\":\"黄豆\",\"unit\":\"kg\",\"unitPrice\":\"4.5259\",\"quantity\":\"1000\",\"supplierName\":\"测试供应商甲\"},\"costMonth\":\"2026-10\",\"title\":\"测试黄豆采购 1000 kg\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"4525.90\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "category_code": "PURCHASE"
+      }
+    },
+    {
+      "source": "ERP",
+      "dataset": "ERP_COST_ENTRY",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "document_no": "TEST-002",
+        "title": "测试白砂糖采购 500 kg",
+        "amount": "2595.95",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"goods\":{\"productName\":\"白砂糖\",\"unit\":\"kg\",\"unitPrice\":\"5.1919\",\"quantity\":\"500\",\"supplierName\":\"测试供应商乙\"},\"costMonth\":\"2026-10\",\"title\":\"测试白砂糖采购 500 kg\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"2595.95\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "category_code": "PURCHASE"
+      }
+    },
+    {
+      "source": "ERP",
+      "dataset": "ERP_COST_ENTRY",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000003",
+        "document_no": "TEST-003",
+        "title": "测试黄豆破袋损耗 5 kg",
+        "amount": "22.63",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"goods\":{\"productName\":\"黄豆\",\"quantity\":\"5\",\"unitPrice\":\"4.5259\",\"unit\":\"kg\",\"lossReason\":\"测试破袋\"},\"title\":\"测试黄豆破袋损耗 5 kg\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"22.63\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "category_code": "LOSS"
+      }
+    },
+    {
+      "source": "ORDER",
+      "dataset": "ORDER_LOGISTICS_COST",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000004",
+        "document_no": "TEST-004",
+        "title": "测试三段运输 PURCHASE",
+        "amount": "1200.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"logistics\":{\"legCode\":\"PURCHASE\",\"payerCode\":\"COMPANY\",\"carrierName\":\"测试承运商\"},\"title\":\"测试三段运输 PURCHASE\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"1200.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "category_code": "LOGISTICS",
+        "payer_code": "COMPANY"
+      }
+    },
+    {
+      "source": "ORDER",
+      "dataset": "ORDER_LOGISTICS_COST",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000005",
+        "document_no": "TEST-005",
+        "title": "测试三段运输 TRANSFER",
+        "amount": "600.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"logistics\":{\"legCode\":\"TRANSFER\",\"payerCode\":\"COMPANY\",\"carrierName\":\"测试承运商\"},\"title\":\"测试三段运输 TRANSFER\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"600.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "category_code": "LOGISTICS",
+        "payer_code": "COMPANY"
+      }
+    },
+    {
+      "source": "ORDER",
+      "dataset": "ORDER_LOGISTICS_COST",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000006",
+        "document_no": "TEST-006",
+        "title": "测试三段运输 DELIVERY",
+        "amount": "320.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"logistics\":{\"legCode\":\"DELIVERY\",\"payerCode\":\"COMPANY\",\"carrierName\":\"测试承运商\"},\"title\":\"测试三段运输 DELIVERY\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"320.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "category_code": "LOGISTICS",
+        "payer_code": "COMPANY"
+      }
+    },
+    {
+      "source": "ERP",
+      "dataset": "ERP_COST_ENTRY",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000007",
+        "document_no": "TEST-007",
+        "title": "测试仓储十月租金",
+        "amount": "6000.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-09-30",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"costMonth\":\"2026-10\",\"rental\":{\"premisesType\":\"WAREHOUSE\",\"premisesName\":\"测试中心仓\",\"area\":\"500\",\"deposit\":\"12000\"},\"title\":\"测试仓储十月租金\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-09-30\",\"amount\":\"6000.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "category_code": "RENTAL",
+        "premises_type": "WAREHOUSE"
+      }
+    },
+    {
+      "source": "ERP",
+      "dataset": "ERP_COST_ENTRY",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000008",
+        "document_no": "TEST-008",
+        "title": "测试办公室十月租金",
+        "amount": "2500.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-09-30",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"costMonth\":\"2026-10\",\"rental\":{\"premisesType\":\"OFFICE\",\"premisesName\":\"测试办公室\",\"area\":\"100\"},\"title\":\"测试办公室十月租金\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-09-30\",\"amount\":\"2500.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "category_code": "RENTAL",
+        "premises_type": "OFFICE"
+      }
+    },
+    {
+      "source": "ERP",
+      "dataset": "ERP_COST_ENTRY",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000009",
+        "document_no": "TEST-009",
+        "title": "测试本地推广",
+        "amount": "2000.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"marketing\":{\"channelName\":\"测试推广渠道\"},\"title\":\"测试本地推广\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"2000.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "category_code": "MARKETING"
+      }
+    },
+    {
+      "source": "HR",
+      "dataset": "HR_PAYROLL_COST",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000010",
+        "document_no": "TEST-010",
+        "title": "测试十月已确认薪酬",
+        "amount": "6800.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-31",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"costMonth\":\"2026-10\",\"title\":\"测试十月已确认薪酬\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-31\",\"amount\":\"6800.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "category_code": "PAYROLL",
+        "employee_code": "E1",
+        "employee_name": "测试员工甲",
+        "department_id": "10",
+        "department_name": "武汉测试部",
+        "components_json": "{\"baseSalary\": 5000, \"performance\": 800, \"commission\": 1000, \"allowance\": 0, \"correctionAmount\": 0}"
+      }
+    },
+    {
+      "source": "HR",
+      "dataset": "HR_EXPENSE",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000011",
+        "document_no": "TEST-011",
+        "title": "测试高铁",
+        "amount": "300.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"costMonth\":\"2026-10\",\"expense\":{\"costCategory\":\"expense\",\"purpose\":\"测试客户拜访\",\"tripReference\":\"TEST-TRIP-1\",\"itemName\":\"测试高铁\",\"quantity\":null,\"unit\":null,\"unitPrice\":null,\"startDate\":\"2026-10-01\",\"endDate\":\"2026-10-04\",\"departure\":\"武汉\",\"destination\":\"成都\",\"evidenceNo\":\"TEST-PAPER-TRAVEL\"},\"title\":\"测试高铁\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"300.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "employee_code": "E1",
+        "employee_name": "测试员工甲",
+        "department_id": "10",
+        "department_name": "武汉测试部",
+        "type_code": "TRAVEL"
+      }
+    },
+    {
+      "source": "HR",
+      "dataset": "HR_EXPENSE",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000012",
+        "document_no": "TEST-012",
+        "title": "测试住宿两晚",
+        "amount": "796.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"costMonth\":\"2026-10\",\"expense\":{\"costCategory\":\"expense\",\"purpose\":\"测试客户拜访\",\"tripReference\":\"TEST-TRIP-1\",\"itemName\":\"测试住宿两晚\",\"quantity\":null,\"unit\":null,\"unitPrice\":null,\"startDate\":\"2026-10-01\",\"endDate\":\"2026-10-04\",\"departure\":\"武汉\",\"destination\":\"成都\",\"evidenceNo\":\"TEST-PAPER-ACCOMMODATION\"},\"title\":\"测试住宿两晚\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"796.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "employee_code": "E1",
+        "employee_name": "测试员工甲",
+        "department_id": "10",
+        "department_name": "武汉测试部",
+        "type_code": "ACCOMMODATION"
+      }
+    },
+    {
+      "source": "HR",
+      "dataset": "HR_EXPENSE",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000013",
+        "document_no": "TEST-013",
+        "title": "测试打车",
+        "amount": "55.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"costMonth\":\"2026-10\",\"expense\":{\"costCategory\":\"expense\",\"purpose\":\"测试客户拜访\",\"tripReference\":\"TEST-TRIP-1\",\"itemName\":\"测试打车\",\"quantity\":null,\"unit\":null,\"unitPrice\":null,\"startDate\":\"2026-10-01\",\"endDate\":\"2026-10-04\",\"departure\":\"武汉\",\"destination\":\"成都\",\"evidenceNo\":\"TEST-PAPER-TAXI\"},\"title\":\"测试打车\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"55.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "employee_code": "E1",
+        "employee_name": "测试员工甲",
+        "department_id": "10",
+        "department_name": "武汉测试部",
+        "type_code": "TAXI"
+      }
+    },
+    {
+      "source": "HR",
+      "dataset": "HR_EXPENSE",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000014",
+        "document_no": "TEST-014",
+        "title": "测试复印纸十包",
+        "amount": "146.30",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"costMonth\":\"2026-10\",\"expense\":{\"costCategory\":\"office\",\"purpose\":\"测试办公室耗材\",\"tripReference\":null,\"itemName\":\"A4 70g复印纸\",\"quantity\":\"10\",\"unit\":\"包\",\"unitPrice\":\"14.63\",\"startDate\":\"2026-10-01\",\"endDate\":\"2026-10-04\",\"departure\":\"武汉\",\"destination\":\"成都\",\"evidenceNo\":\"TEST-PAPER-OFFICE_SUPPLIES\"},\"title\":\"测试复印纸十包\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"146.30\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "employee_code": "E1",
+        "employee_name": "测试员工甲",
+        "department_id": "10",
+        "department_name": "武汉测试部",
+        "type_code": "OFFICE_SUPPLIES"
+      }
+    },
+    {
+      "source": "HR",
+      "dataset": "HR_EXPENSE",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000015",
+        "document_no": "TEST-015",
+        "title": "测试报销已登记配送费",
+        "amount": "320.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"costMonth\":\"2026-10\",\"expense\":{\"costCategory\":\"freight\",\"purpose\":\"测试先垫付配送费\",\"freightLeg\":\"DELIVERY\",\"evidenceNo\":\"TEST-DELIVERY\",\"relatedCost\":{\"source\":\"ORDER\",\"category\":\"LOGISTICS\",\"id\":\"00000000-0000-0000-0000-000000000006\",\"revision\":1}},\"title\":\"测试报销已登记配送费\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"320.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "employee_code": "E1",
+        "employee_name": "测试员工甲",
+        "department_id": "10",
+        "department_name": "武汉测试部",
+        "type_code": "FREIGHT"
+      }
+    },
+    {
+      "source": "HR",
+      "dataset": "HR_EXPENSE",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000016",
+        "document_no": "TEST-016",
+        "title": "测试办公资产待核对",
+        "amount": "4500.00",
+        "status_code": "CONFIRMED",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"expense\":{\"costCategory\":\"office\",\"purpose\":\"测试资产购置\"},\"title\":\"测试办公资产待核对\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"4500.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "employee_code": "E1",
+        "employee_name": "测试员工甲",
+        "department_id": "10",
+        "department_name": "武汉测试部",
+        "type_code": "FIXED_ASSET"
+      }
+    },
+    {
+      "source": "HR",
+      "dataset": "HR_EXPENSE",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000017",
+        "document_no": "TEST-017",
+        "title": "测试待确认打车",
+        "amount": "78.00",
+        "status_code": "DRAFT",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"expense\":{\"costCategory\":\"expense\",\"purpose\":\"测试待确认\"},\"title\":\"测试待确认打车\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"78.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "employee_code": "E1",
+        "employee_name": "测试员工甲",
+        "department_id": "10",
+        "department_name": "武汉测试部",
+        "type_code": "TAXI"
+      }
+    },
+    {
+      "source": "HR",
+      "dataset": "HR_EXPENSE",
+      "fields": {
+        "id": "00000000-0000-0000-0000-000000000018",
+        "document_no": "TEST-018",
+        "title": "测试已作废打车",
+        "amount": "66.00",
+        "status_code": "VOID",
+        "cost_date": "2026-10-03",
+        "revision": "1",
+        "city_code": "4201",
+        "payment_status_code": "UNPAID",
+        "data_json": "{\"expense\":{\"costCategory\":\"expense\",\"purpose\":\"测试重复作废\"},\"title\":\"测试已作废打车\",\"cityCode\":\"4201\",\"cityName\":\"武汉测试归属\",\"costDate\":\"2026-10-03\",\"amount\":\"66.00\",\"remark\":\"隔离测试，非公司真实业务\"}",
+        "created_by": "00000000-0000-0000-0000-000000000001",
+        "employee_code": "E1",
+        "employee_name": "测试员工甲",
+        "department_id": "10",
+        "department_name": "武汉测试部",
+        "type_code": "TAXI"
+      }
+    }
+  ]
+}

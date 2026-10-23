@@ -7,4 +7,23 @@ public record PayrollSchemeFactsCommand(
         Integer revision,
         BigDecimal performanceBase,
         List<PayrollMetricActual> metrics,
-        String reason) {}
+        String reason,
+        BigDecimal performanceCompletionPercent,
+        BigDecimal commissionAdjustment) {
+    public PayrollSchemeFactsCommand(
+            Integer revision,
+            BigDecimal performanceBase,
+            List<PayrollMetricActual> metrics,
+            String reason,
+            BigDecimal performanceCompletionPercent) {
+        this(revision, performanceBase, metrics, reason, performanceCompletionPercent, null);
+    }
+
+    public PayrollSchemeFactsCommand(
+            Integer revision,
+            BigDecimal performanceBase,
+            List<PayrollMetricActual> metrics,
+            String reason) {
+        this(revision, performanceBase, metrics, reason, null);
+    }
+}

@@ -40,6 +40,12 @@ public final class InternalSupplyAuthorizationController implements IamSupplyAut
         return view(p);
     }
 
+    @Override
+    public java.util.List<SupplyAuthorizationView> authorizations(java.util.List<String> actions) {
+        return service.authorizations(AuthorizationContext.requireCurrent(), actions).stream()
+                .map(InternalSupplyAuthorizationController::view).toList();
+    }
+
     private static SupplyAuthorizationView view(
             com.rigour.tenant.iam.application.model.settings.AppAuthorizationSnapshot p) {
         return new SupplyAuthorizationView(

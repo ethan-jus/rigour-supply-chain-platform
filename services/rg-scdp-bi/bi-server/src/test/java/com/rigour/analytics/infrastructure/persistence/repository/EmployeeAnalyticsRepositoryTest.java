@@ -32,6 +32,10 @@ class EmployeeAnalyticsRepositoryTest {
         jdbc.execute(
                 "CREATE TABLE bi_source_crm_crm_customer_area (tenant_id VARCHAR, area_name"
                     + " VARCHAR, area_code VARCHAR, status VARCHAR, deleted INT)");
+        jdbc.execute("CREATE TABLE bi_source_hr_hr_department(tenant_id VARCHAR,id BIGINT,department_code VARCHAR,"
+                + "department_name VARCHAR,department_path VARCHAR,status_code VARCHAR,deleted INT)");
+        jdbc.update("INSERT INTO bi_source_hr_hr_department VALUES"
+                + "('T',1,'SALES','销售部','[1]','ACTIVE',0),('T',10,'BJ','北京','[1,10]','ACTIVE',0)");
         jdbc.execute(
                 "CREATE TABLE bi_employee_dim (tenant_id VARCHAR, employee_code VARCHAR,"
                     + " employee_name VARCHAR, employment_status VARCHAR, city_name VARCHAR,"

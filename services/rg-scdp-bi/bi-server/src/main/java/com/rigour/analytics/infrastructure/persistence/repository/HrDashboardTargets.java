@@ -148,18 +148,20 @@ WHERE e.tenant_id=:tenant AND e.region_code=:region
                         .collect(
                                 Collectors.groupingBy(
                                         Target::code, TreeMap::new, Collectors.toList()));
+        if (groups.isEmpty()) return List.of();
+        boolean needsBusinessActuals = groups.values().stream().flatMap(Collection::stream)
+                .anyMatch(g -> Set.of("ORDERED_STORE_COUNT", "YANGZHANGGUI_SALES_AMOUNT")
+                        .contains(g.metric()));
+        Map<String, Map<String, BigDecimal>> businessActuals = new HashMap<>();
+        if (needsBusinessActuals)
+            for (var row : mapper.targetBusinessActuals(tenant, from, to, filter.regionCode(),
+                    city ? null : filter.ownerStaffCode(), city))
+                businessActuals.computeIfAbsent(Objects.toString(row.get("dimensionCode"), ""),
+                        ignored -> new HashMap<>()).put(Objects.toString(row.get("metricCode"), ""),
+                        number(row, "actualValue"));
         for (var entry : groups.entrySet()) {
             var code = entry.getKey();
             if (owners != null && !owners.contains(code)) continue;
-            var retention =
-                    mapper.customerRetention(
-                            tenant,
-                            from,
-                            to,
-                            city ? code : filter.regionCode(),
-                            city ? null : code,
-                            null,
-                            null);
             var metrics = entry.getValue().stream().collect(Collectors.groupingBy(Target::metric));
             for (var metric : metrics.entrySet()) {
                 var targets = metric.getValue();
@@ -190,17 +192,13 @@ WHERE e.tenant_id=:tenant AND e.region_code=:region
                     }
                     case "ORDERED_STORE_COUNT" -> {
                         label = "有效门店数";
-                        actual = number(retention, "orderingCustomerCount");
+                        actual = businessActuals.getOrDefault(code, Map.of())
+                                .getOrDefault("ORDERED_STORE_COUNT", BigDecimal.ZERO);
                     }
                     case "YANGZHANGGUI_SALES_AMOUNT" -> {
                         label = "杨掌柜品牌销售额";
-                        actual =
-                                mapper.yangzhangguiTargetSales(
-                                        tenant,
-                                        from,
-                                        to,
-                                        city ? code : filter.regionCode(),
-                                        city ? null : code);
+                        actual = businessActuals.getOrDefault(code, Map.of())
+                                .getOrDefault("YANGZHANGGUI_SALES_AMOUNT", BigDecimal.ZERO);
                     }
                     default -> throw new IllegalStateException("未知 HR 指标");
                 }

@@ -24,6 +24,16 @@ public class HrExpenseEntity {
     private String departmentName;
     private String cityCode;
     private LocalDate costDate;
+    private String costMonth;
+
+    public String getCostMonth() {
+        return costMonth;
+    }
+
+    public void setCostMonth(String value) {
+        costMonth = value;
+    }
+
     private BigDecimal amount;
     private String paymentStatusCode;
     private String statusCode;

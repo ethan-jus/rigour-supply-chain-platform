@@ -15,4 +15,36 @@ public record HrExpenseCommand(
         BigDecimal amount,
         String paymentStatusCode,
         String remark,
-        String reason) {}
+        String reason,
+        String costMonth,
+        HrExpenseDetails expense) {
+    public HrExpenseCommand(
+            String requestId,
+            Integer revision,
+            String title,
+            String typeCode,
+            String employeeCode,
+            String cityCode,
+            String cityName,
+            LocalDate costDate,
+            BigDecimal amount,
+            String paymentStatusCode,
+            String remark,
+            String reason) {
+        this(
+                requestId,
+                revision,
+                title,
+                typeCode,
+                employeeCode,
+                cityCode,
+                cityName,
+                costDate,
+                amount,
+                paymentStatusCode,
+                remark,
+                reason,
+                null,
+                null);
+    }
+}

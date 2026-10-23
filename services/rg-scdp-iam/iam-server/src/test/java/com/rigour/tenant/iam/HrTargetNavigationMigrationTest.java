@@ -16,7 +16,7 @@ class HrTargetNavigationMigrationTest {
 
     @Test void restoresDeletedTargetsWithoutRevivingDefaultsOrChangingOtherGrants() {
         var ds = new DriverManagerDataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
-        Flyway.configure().dataSource(ds).target("128").load().migrate();
+        IamTestMigrations.configuration(ds).target("128").load().migrate();
         var jdbc = new JdbcTemplate(ds);
         jdbc.execute("INSERT INTO iam_tenant(id,tenant_code,company_name,status,created_at,updated_at) VALUES(UUID_TO_BIN(UUID()),'hr-target-restore','指标恢复测试','ACTIVE',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))");
         var tenant = jdbc.queryForObject("SELECT id FROM iam_tenant WHERE tenant_code='hr-target-restore'", byte[].class);
@@ -43,14 +43,14 @@ class HrTargetNavigationMigrationTest {
                 WHERE r.tenant_id=?
                 """, tenant);
 
-        Flyway.configure().dataSource(ds).target("130").load().migrate();
+        IamTestMigrations.configuration(ds).target("130").load().migrate();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM iam_resource WHERE permission_code LIKE 'hr:targets:%'", Integer.class)).isZero();
         var grants = jdbc.queryForList("SELECT HEX(role_id),HEX(menu_node_id) FROM iam_app_role_grant ORDER BY menu_node_id");
         var hr = jdbc.queryForList("SELECT * FROM iam_app_menu_node WHERE tenant_id=?", tenant);
         long version = jdbc.queryForObject("SELECT version FROM iam_app_settings WHERE tenant_id=?", Long.class, tenant);
         long policy = jdbc.queryForObject("SELECT policy_version FROM iam_tenant WHERE id=?", Long.class, tenant);
 
-        Flyway.configure().dataSource(ds).target("131").load().migrate();
+        IamTestMigrations.configuration(ds).target("131").load().migrate();
 
         assertThat(jdbc.queryForList("SELECT permission_code FROM iam_resource WHERE permission_code LIKE 'hr:targets:%' ORDER BY permission_code", String.class))
                 .containsExactly("hr:targets:read", "hr:targets:write");
@@ -80,6 +80,6 @@ class HrTargetNavigationMigrationTest {
                 .usingRecursiveComparison().isEqualTo(hr);
         assertThat(jdbc.queryForObject("SELECT version FROM iam_app_settings WHERE tenant_id=?", Long.class, tenant)).isEqualTo(version + 1);
         assertThat(jdbc.queryForObject("SELECT policy_version FROM iam_tenant WHERE id=?", Long.class, tenant)).isEqualTo(policy + 1);
-        assertThat(Flyway.configure().dataSource(ds).target("131").load().migrate().migrationsExecuted).isZero();
+        assertThat(IamTestMigrations.configuration(ds).target("131").load().migrate().migrationsExecuted).isZero();
     }
 }

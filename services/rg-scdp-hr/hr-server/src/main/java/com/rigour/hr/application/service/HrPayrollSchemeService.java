@@ -186,6 +186,15 @@ public class HrPayrollSchemeService {
         reason(command.reason());
         if (command.performanceBase() != null && command.performanceBase().signum() < 0)
             throw bad("绩效基数不能为负数");
+        if (command.performanceCompletionPercent() != null
+                && (command.performanceCompletionPercent().signum() < 0
+                        || command.performanceCompletionPercent().precision() > 12
+                        || command.performanceCompletionPercent().scale() > 4))
+            throw bad("绩效完成率须为非负百分数，最多保留4位小数");
+        if (command.commissionAdjustment() != null
+                && (command.commissionAdjustment().scale() > 2
+                        || command.commissionAdjustment().precision() > 14))
+            throw bad("提成调整金额最多保留2位小数，且不能超出金额范围");
         if (command.metrics() == null) throw bad("指标列表不能为空");
         Set<String> codes = new HashSet<>();
         for (var actual : command.metrics()) {
@@ -198,7 +207,17 @@ public class HrPayrollSchemeService {
                     || actual.evidence() == null
                     || actual.evidence().isBlank()) throw bad("指标须有唯一编码、非负实际值及核定依据");
         }
-        return store.saveFacts(tenant, employee, month, command, a.principalId().toString());
+        var saved = store.saveFacts(tenant, employee, month, command, a.principalId().toString());
+        org.slf4j.LoggerFactory.getLogger(getClass())
+                .info(
+                        "Payroll monthly facts saved tenant={} employee={} month={} revision={}"
+                            + " actor={}",
+                        tenant,
+                        employee,
+                        month,
+                        saved.revision(),
+                        a.principalId());
+        return saved;
     }
 
     private void verifyProductReferences(String tenant, PayrollSchemeDefinition definition) {

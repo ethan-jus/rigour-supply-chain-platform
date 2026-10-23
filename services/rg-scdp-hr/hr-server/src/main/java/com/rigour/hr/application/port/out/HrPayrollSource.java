@@ -11,6 +11,16 @@ import java.util.List;
 import java.util.Set;
 
 public interface HrPayrollSource {
+    default List<com.rigour.order.api.v1.model.OrderCityCollectionSourceView> cityCollections(
+            String tenant, String city, LocalDate from, LocalDate to) {
+        throw new UnsupportedOperationException("城市到账来源尚未接入");
+    }
+
+    default com.rigour.settings.api.v1.model.StatutoryCalendarView statutoryCalendar(
+            String tenant, int year) {
+        throw new UnsupportedOperationException("法定节假日日历来源尚未接入");
+    }
+
     SalesPayrollEvidenceView performanceEvidence(
             String tenant, String employee, LocalDate from, LocalDate to);
 

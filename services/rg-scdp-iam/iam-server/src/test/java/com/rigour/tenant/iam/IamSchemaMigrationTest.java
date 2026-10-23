@@ -2,6 +2,7 @@ package com.rigour.tenant.iam;
 
 import java.sql.DriverManager;
 import org.flywaydb.core.Flyway;
+import com.rigour.tenant.iam.infrastructure.persistence.migration.IamV139MigrationResources;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.junit.jupiter.Container;
@@ -20,10 +21,11 @@ class IamSchemaMigrationTest {
         String[] locations = includeBaselines
                 ? new String[] {"classpath:db/migration", "classpath:db/bootstrap"}
                 : new String[] {"classpath:db/migration"};
-        return Flyway.configure().dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())
+        var configuration = Flyway.configure().dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())
                 .locations(locations).target(target).baselineOnMigrate(false).outOfOrder(false)
-                .cleanDisabled(false) // Only the disposable container owned by this test.
-                .load();
+                .cleanDisabled(false); // Only the disposable container owned by this test.
+        IamV139MigrationResources.configure(configuration);
+        return configuration.load();
     }
 
     @BeforeEach
@@ -36,7 +38,7 @@ class IamSchemaMigrationTest {
         Flyway flyway = migration(true, "latest");
         flyway.migrate();
         flyway.validate();
-        assertEquals("133", flyway.info().current().getVersion().getVersion());
+        assertEquals("141", flyway.info().current().getVersion().getVersion());
         assertEquals(1, scalar("SELECT COUNT(*) FROM flyway_schema_history WHERE version='120' AND type='SQL_BASELINE'"));
         try (var connection = DriverManager.getConnection(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
              var statement = connection.createStatement();
@@ -50,7 +52,7 @@ class IamSchemaMigrationTest {
     }
 
     @Test
-    void existingVersionedDatabaseKeepsHistoryAndDataAndOnlyAppliesNativeClientMigration() throws Exception {
+    void existingVersionedDatabaseKeepsHistoryAndDataThroughEveryFollowingMigration() throws Exception {
         migration(false, "132").migrate();
         long checksum = scalar("SELECT checksum FROM flyway_schema_history WHERE version='120'");
         long historyCount = scalar("SELECT COUNT(*) FROM flyway_schema_history");
@@ -60,9 +62,10 @@ class IamSchemaMigrationTest {
             statement.execute("INSERT INTO migration_sentinel VALUES(42)");
         }
         Flyway upgraded = migration(true, "latest");
-        assertEquals(1, upgraded.migrate().migrationsExecuted);
+        assertEquals(9, upgraded.migrate().migrationsExecuted);
         upgraded.validate();
-        assertEquals(historyCount + 1, scalar("SELECT COUNT(*) FROM flyway_schema_history"));
+        assertEquals(historyCount + 9, scalar("SELECT COUNT(*) FROM flyway_schema_history"));
+        assertEquals("141", upgraded.info().current().getVersion().getVersion());
         assertEquals(checksum, scalar("SELECT checksum FROM flyway_schema_history WHERE version='120'"));
         assertEquals(0, scalar("SELECT COUNT(*) FROM flyway_schema_history WHERE type='SQL_BASELINE'"));
         assertEquals(42, scalar("SELECT id FROM migration_sentinel"));

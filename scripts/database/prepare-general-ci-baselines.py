@@ -29,7 +29,7 @@ def source_hash(paths):
     return digest.hexdigest()
 
 
-def baseline(paths, explicit_charset_collation=False):
+def baseline(paths, explicit_charset_collation=False, normalize_ascii_character_columns=False):
     parts = ["-- Frozen fresh-schema baseline. Do not edit after deployment.\n"
              "-- Historical V migrations remain available for existing databases.\n"
              "-- Contains built-in configuration seeds, not an import of historical business data.\n"
@@ -46,6 +46,11 @@ def baseline(paths, explicit_charset_collation=False):
             # The effective-role view is merged into queries on other connections. Give its
             # constant explicit precedence over callers' differently collated 'ACTIVE' literals.
             sql = sql.replace("'ACTIVE' AS status", "'ACTIVE' COLLATE utf8mb4_general_ci AS status")
+        if normalize_ascii_character_columns:
+            # Fresh schemas follow the common character-column policy, including canonical hex digests.
+            # Opt in per new baseline so every previously frozen B remains byte-for-byte unchanged.
+            sql = re.sub(r"\bCHARACTER\s+SET\s+ascii\s+COLLATE\s+ascii_bin\b",
+                         "CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci", sql, flags=re.I)
         parts.append("\n-- Source: " + path.name + "\n" + sql.rstrip() + "\n")
     # Flyway creates its history before executing this baseline, possibly under an old DB default.
     parts.append("\nALTER TABLE flyway_schema_history CONVERT TO CHARACTER SET utf8mb4 "
@@ -95,7 +100,8 @@ def main():
         assert source_hash(frozen) == entry["source_sha256"], "Historical migration changed: " + str(directory)
         content = (ROOT / entry["baseline"]).read_bytes()
         assert hashlib.sha256(content).hexdigest() == entry["baseline_sha256"], entry["baseline"]
-        assert content == baseline(frozen, entry.get("explicit_charset_collation", False)), "Baseline does not match its frozen sources"
+        assert content == baseline(frozen, entry.get("explicit_charset_collation", False),
+                                   entry.get("normalize_ascii_character_columns", False)), "Baseline does not match its frozen sources"
         # These files were already on dev when the policy gate was introduced.
         # Pin their exact contents instead of rewriting applied Flyway migrations.
         legacy = entry.get("legacy_migrations", {})

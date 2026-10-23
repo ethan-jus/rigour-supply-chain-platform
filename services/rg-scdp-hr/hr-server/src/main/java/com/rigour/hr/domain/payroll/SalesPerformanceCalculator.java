@@ -185,13 +185,15 @@ public final class SalesPerformanceCalculator {
         if (assessmentDays != null) processDeduction = processDeduction.min(processBudget);
         BigDecimal processPay =
                 issues.isEmpty() ? money(processBudget.subtract(processDeduction).max(ZERO)) : null;
+        boolean collectionExempt =
+                first && (assessmentDays == null || "EXEMPT_COLLECTION".equals(p.firstMonthMode()));
         BigDecimal target =
-                first && assessmentDays == null
+                collectionExempt
                         ? ZERO
                         : serviceMonth <= 2 ? p.secondMonthTarget() : p.laterMonthTarget();
         BigDecimal collectionPay;
         if (collectionBudget.signum() == 0) collectionPay = ZERO;
-        else if (first && assessmentDays == null) collectionPay = collectionBudget;
+        else if (collectionExempt) collectionPay = collectionBudget;
         else if (collections == null) {
             issues.add("当月回款依据不完整");
             collectionPay = null;

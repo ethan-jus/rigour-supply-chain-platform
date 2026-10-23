@@ -294,8 +294,10 @@ public final class BiScopePredicates {
                 args,
                 tenant,
                 "bi_employee_dim",
-                "LEFT JOIN bi_region_authority a ON a.tenant_id=f.tenant_id AND"
-                        + " a.region_code=f.region_code",
+                "LEFT JOIN bi_sales_contact_city_dim employee_city"
+                        + " ON employee_city.tenant_id=f.tenant_id AND employee_city.region_code=f.region_code"
+                        + " LEFT JOIN bi_region_authority a ON a.tenant_id=f.tenant_id AND"
+                        + " a.region_code=COALESCE(employee_city.source_region_code,f.region_code)",
                 new Sql(
                         employee.text()
                                 .replace("a.employee_code", "f.employee_code")

@@ -437,8 +437,13 @@ SELECT m.member_kind,b.employee_code,b.hr_access_version FROM iam_app_member m
         Binding binding = bindings.getFirst();
         if ("PROTECTED".equals(binding.kind())) return true;
         if (binding.code() == null) return false;
-        var employee = employees.employee(actor.tenantId(), binding.code());
+        var employee = authorizationEmployee(actor, binding.code());
         return employee.usable() && employee.accessVersion() == binding.access();
+    }
+
+    com.rigour.tenant.iam.application.port.out.AppEmployeeClient.Employee authorizationEmployee(Actor actor, String code) {
+        return readOnce(new ReadKey("employee:" + code, actor, null),
+                () -> employees.employee(actor.tenantId(), code));
     }
 
     /** 在同一应用配置锁内写入后复核，失败会回滚整个授权变更。 */

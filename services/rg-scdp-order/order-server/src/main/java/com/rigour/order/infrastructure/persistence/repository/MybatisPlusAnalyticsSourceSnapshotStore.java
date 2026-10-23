@@ -12,6 +12,13 @@ import java.util.*;
 /** 本领域源快照；保持原始列名、空值与金额精度，不跨库读取。 */
 @Repository
 public class MybatisPlusAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshotStore {
+    private MybatisPlusCostAnalyticsSource costs;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void costSource(MybatisPlusCostAnalyticsSource costs) {
+        this.costs = costs;
+    }
+
     private final OrderAnalyticsSourceMapper mapper;
 
     public MybatisPlusAnalyticsSourceSnapshotStore(OrderAnalyticsSourceMapper mapper) {
@@ -20,6 +27,7 @@ public class MybatisPlusAnalyticsSourceSnapshotStore implements AnalyticsSourceS
 
     @Override
     public String version(String tenant, String dataset) {
+        if (MybatisPlusCostAnalyticsSource.DATASET.equals(dataset)) return costs.version(tenant);
         OrderAnalyticsSourceSql.dataset(dataset);
         return mapper.version(tenant, dataset);
     }
@@ -27,6 +35,8 @@ public class MybatisPlusAnalyticsSourceSnapshotStore implements AnalyticsSourceS
     @Override
     @Transactional(readOnly = true)
     public Page page(String tenant, String dataset, String after) {
+        if (MybatisPlusCostAnalyticsSource.DATASET.equals(dataset))
+            return costs.page(tenant, after);
         var d = OrderAnalyticsSourceSql.dataset(dataset);
         String cursor = after == null ? "" : after;
         if (!cursor.isEmpty() && !cursor.matches(d.binaryKey() ? "[0-9a-fA-F]{32}" : "[0-9]{1,20}"))
