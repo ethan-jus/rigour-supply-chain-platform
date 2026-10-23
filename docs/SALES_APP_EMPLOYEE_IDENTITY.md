@@ -55,28 +55,30 @@ App 首次拜访读取等待同一次身份同步，失败明确展示原因；�
 
 ## IDEA 本地重启交接
 
-用户要求由本人通过 IDEA 重启；开发代理不自行停止或重启进程。
+后端和 App 已于 2026-10-23 合并回用户日常项目。以后默认在以下目录开发；使用其他工作树必须先说明并征得用户同意。服务由用户通过 IDEA 重启，代理不自行操作。
 
-本次更新目标只有 **SalesApplication / sales-server / rigour-sales-work-service**，源码工作树：
-`/Users/ethan/.codex/worktrees/sales-app-platform-integration-20261014`。
-主 Platform 工作树并没有本次代码；IDEA 必须加载上述工作树，入口为 `com.rigour.sales.SalesApplication`，模块为 `sales-server`。
+- 后端：`/Users/ethan/myspance/rigour/B2B供应链/自动化系统构建/06_代码工程/rigour-supply-chain-digital-platform`，分支 `feature/hr-target-settings`，已包含功能提交 `69ea6ed4`。
+- App：同级 `rigour-sales-workbench`，分支 `dev`，已包含功能提交 `c21a9e5`；HBuilderX 打开其中的 `app/`。
+- 合并采用快进，未切换分支。原有 BOM 和 AppDelegate.swift 未提交修改的文件哈希在合并前后相同。
 
-App Gateway 当前连接 **27686**，不是主开发服务默认的 26886。IDEA 的该隔离运行配置采用以下 Program arguments（已有无关参数保留）：
+在现有后端 IDEA 工程的 `.run/` 中已准备两个本机运行项：
 
-```text
---spring.profiles.active=dev
---server.port=27686
---spring.config.import=
---spring.cloud.nacos.config.enabled=false
---spring.cloud.nacos.discovery.enabled=false
---spring.cloud.nacos.discovery.register-enabled=false
---spring.cloud.discovery.enabled=false
---rigour.sales.identity.iam-base-url=http://127.0.0.1:27681
---rigour.sales.identity.hr-base-url=http://127.0.0.1:26882
---rigour.sales.temporary-checkin.enabled=false
---rigour.sales.temporary-checkin.ai.enabled=false
-```
+| IDEA 运行项 | 入口 / 模块 | 用途 |
+|---|---|---|
+| `SalesApplication - App 本地 26886` | `com.rigour.sales.SalesApplication` / `sales-server` | 加载主工程的新 Sales 代码，核验 IAM 27681、HR 26882 |
+| `GatewayApplication - App 本地 27680` | `com.rigour.gateway.GatewayApplication` / `gateway-server` | 保持 App 入口 27680，将 Sales 路由改到主工程 26886 |
 
-沿用本机现有可信上下文签名环境变量 `RIGOUR_CONTEXT_TRUST_KEY_V1`，与当前 IAM/HR 一致；不要生成新密钥或把值粘到文档/Git。已有 SPRING_APPLICATION_JSON 若存在也应核对，不能保留旧端口或错误的路由覆盖。先准备好配置再由用户替换占用 27686 的旧 Sales 进程。其他 IAM、HR、CRM、Order、Gateway 不需要因本次改动重启。
+这些是当前主工程的运行配置，不是另外的项目或分支。文件名为 `.run/sales-app-sales-local.run.xml`、`.run/sales-app-gateway-local.run.xml`，复用现有 IDEA 签名密钥，权限 600，已用本机 `.git/info/exclude` 排除，不提交 Git。两者禁用 Nacos 配置/发现/注册，Sales 禁用临时打卡/AI，以免个人联调进程影响共享服务。Gateway 保留原生 App 现有 IAM、CRM、ERP、Order 目标和令牌校验设置，仅将 Sales 下游改为 26886。
 
-DEV 启动会通过现有 Flyway 执行新增 V28，修改的是共享 DEV Sales Schema；V27→V28 已在一次性 MySQL 验证，真实 DEV 尚未执行。启动后应核实：27686 health、V28 成功且历史 checksum 不变、新接口可达、真实 IAM 登录后 HR 身份识别。手机连接后再验证 App，不能只凭健康检查确认功能生效。
+重启顺序：
+
+1. 在 IDEA 执行 Reload All Maven Projects，以加载新增的 iam-api / hr-api 依赖。
+2. 停止现有占用 26886 的 Sales，再运行 **SalesApplication - App 本地 26886**。
+3. 由用户停止旧 App Gateway（27680，创建配置时 PID 39074，停止前需重新核对），再运行 **GatewayApplication - App 本地 27680**。旧进程来自之前的命令行，不一定显示在 IDEA；新配置不能与它同时占用端口。
+4. 主开发 Gateway 26880、IAM、HR、CRM、Order 无需因本次改动重启。原先的旧 Sales 27686 不再是新 Gateway 的目标；验收新路由后再清理旧进程，不能先按旧 PID 盲目停止。
+
+只重启 Sales 不会改变旧 Gateway 的内存路由，因此本次需同时替换 App Gateway。代理尚未替用户重启任何进程，新增运行项也尚未做真实启动验收。
+
+DEV Sales 启动会通过既有 Flyway 执行 V28，修改共享 DEV Sales Schema。一次性 MySQL 的 V27→V28 升级已通过；最近真实 DEV 查询仍为 V27。启动后核实 26886/27680 health、V28 与历史 checksum、实际 Sales 路由、真实 IAM 登录及 HR 身份识别。手机连接后再同步主目录中的 App，健康检查不代替真实登录验收。
+
+合并回主目录后重新验证：App 141/141、Android 编译通过；后端身份与升级 18/18、0 跳过，Sales/Gateway 及依赖打包通过。原完整 Sales 323 项与全仓失败边界见上文，不把定向复跑写成全仓通过。
