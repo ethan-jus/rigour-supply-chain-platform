@@ -1,5 +1,6 @@
 package com.rigour.analytics.application.port.out;
 
+import com.rigour.analytics.api.v1.model.SupplyDashboardReceiptDetailsView;
 import com.rigour.analytics.application.model.SupplyDashboardFilter;
 
 import java.math.BigDecimal;
@@ -9,6 +10,11 @@ import java.util.Optional;
 
 /** 供应链看板读模型仓储。 */
 public interface SupplyDashboardStore {
+    default SupplyDashboardReceiptDetailsView receiptDetails(String tenantId,
+            SupplyDashboardFilter filter, String kind, int begin, int step) {
+        throw new UnsupportedOperationException("receiptDetails");
+    }
+
     SupplyDashboardData overview(String tenantId, SupplyDashboardFilter filter);
 
     OperatingAnalysisData operatingAnalysis(

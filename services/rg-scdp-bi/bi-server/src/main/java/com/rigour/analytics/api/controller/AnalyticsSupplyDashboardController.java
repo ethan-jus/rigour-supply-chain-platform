@@ -1,5 +1,6 @@
 package com.rigour.analytics.api.controller;
 
+import com.rigour.analytics.api.v1.model.SupplyDashboardReceiptDetailsView;
 import com.rigour.analytics.api.v1.AnalyticsSupplyDashboardApi;
 import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostImportCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostImportResultView;
@@ -58,6 +59,14 @@ public final class AnalyticsSupplyDashboardController implements AnalyticsSupply
             String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
         return ApiResponse.success(queryService.operatingAnalysis(
                 from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId, sourceSystemCode));
+    }
+
+    @Override
+    public ApiResponse<SupplyDashboardReceiptDetailsView> receiptDetails(
+            String kind, Instant from, Instant to, String regionCode, String ownerStaffCode,
+            String customerTypeCode, String sourceSystemCode, Long productCategoryId, int begin, int step) {
+        return ApiResponse.success(queryService.receiptDetails(kind, from, to, regionCode,
+                ownerStaffCode, customerTypeCode, sourceSystemCode, productCategoryId, begin, step));
     }
 
     @Override

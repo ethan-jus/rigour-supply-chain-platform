@@ -125,6 +125,47 @@ class BiSupplyScopeIntegrationTest {
         }
     }
 
+    @Test
+    void receiptDetailsUseSameFactsDatesAndPermissionsAsCards() {
+        department(1,null,"SALES","销售部"); department(27,1L,"HB","河北省");
+        department(11,27L,"SJZ","石家庄"); department(28,27L,"TS","唐山市");
+        jdbc.update("INSERT INTO bi_sales_contact_city_dim(tenant_id,region_code,city_name,department_id,department_path) VALUES(?,'HB','河北省',27,'[1,27]'),(?,'SJZ','石家庄',11,'[1,27,11]'),(?,'TS','唐山市',28,'[1,27,28]')",tenant,tenant,tenant);
+        for (int i=1;i<=6;i++) fact(i,"A",i==2 ? "TS" : "SJZ",i==2 ? 28 : 11,1,100);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_date='2026-09-30 16:00:00',order_status_code='CONFIRMED',paid_amount=40,unpaid_amount=60 WHERE tenant_id=?",tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_date='2026-08-01' WHERE tenant_id=? AND order_id=3",tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_status_code='CANCELLED' WHERE tenant_id=? AND order_id=4",tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET deleted=1 WHERE tenant_id=? AND order_id=5",tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET unpaid_amount=0,paid_amount=100 WHERE tenant_id=? AND order_id=6",tenant);
+        jdbc.update("""
+            INSERT INTO bi_sales_payment_fact(tenant_id,payment_id,order_id,region_code,payment_time,paid_amount,synced_time,deleted)
+            VALUES (?,101,3,'SJZ','2026-10-01',40,UTC_TIMESTAMP(6),0),
+                   (?,102,2,'TS','2026-10-23 15:59:59.999999',30,UTC_TIMESTAMP(6),0),
+                   (?,103,1,'SJZ','2026-10-24',999,UTC_TIMESTAMP(6),0),
+                   (?,104,1,'SJZ','2026-10-01',999,UTC_TIMESTAMP(6),1)
+            """,tenant,tenant,tenant,tenant);
+        var from=java.time.LocalDateTime.parse("2026-09-30T16:00:00");
+        var to=java.time.LocalDateTime.parse("2026-10-23T15:59:59.999999");
+        var full=policy(List.of(clause("ALL",all(),all(),all())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(full);
+        try(var context=SupplyAuthorizationContext.open(iam,actor,full);var session=sessions.openSession()) {
+            var mapper=session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
+            var payments=mapper.receiptDetails(tenant,from,to,"HB",null,null,null,"receipts",true,0,20).getFirst();
+            assertThat(payments.get("total")).isEqualTo(2L);
+            assertThat(payments.get("amount")).isEqualTo(mapper.collectionSummary(tenant,from,to,"HB",null,null,null).get("receiptAmount"));
+            var orders=mapper.receiptDetails(tenant,from,to,"HB",null,null,null,"unpaid",true,0,20).getFirst();
+            assertThat(orders.get("total")).isEqualTo(2L);
+            assertThat(orders.get("amount")).isEqualTo(mapper.salesSummary(tenant,from,to,"HB",null,null,null).get("unpaidAmount"));
+            assertThat(mapper.receiptDetails(tenant,from,to,"HB",null,null,null,"receipts",false,1,1)).singleElement().satisfies(row -> assertThat(row.get("id")).isEqualTo(101L));
+        }
+        var scoped=policy(List.of(clause("REGION",none(),specified("TS"),none())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(scoped);
+        try(var context=SupplyAuthorizationContext.open(iam,actor,scoped);var session=sessions.openSession()) {
+            var mapper=session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
+            assertThat(mapper.receiptDetails(tenant,from,to,"TS",null,null,null,"receipts",false,0,20)).singleElement().satisfies(row -> assertThat(row.get("id")).isEqualTo(102L));
+            assertThat(mapper.receiptDetails(tenant,from,to,"SJZ",null,null,null,"receipts",false,0,20)).isEmpty();
+        }
+    }
+
     @AfterEach
     void clear() {
         TestAuthorizationContext.clear();

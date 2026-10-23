@@ -115,6 +115,57 @@ ON DUPLICATE KEY UPDATE category_code=VALUES(category_code), category_name=VALUE
 
     /** 保留城市在职零业绩人员；历史业绩人员即使调离城市，也按事实查询其真实状态。 */
     /** The named brand goal must not be derived from a top-N brand ranking. */
+    String RECEIPT_DETAILS_FROM = """
+<choose>
+ <when test="kind == 'receipts'">FROM bi_sales_payment_fact f</when>
+ <otherwise>FROM bi_sales_order_fact f</otherwise>
+</choose>
+WHERE f.tenant_id=#{tenantId} AND f.deleted=0
+<choose>
+ <when test="kind == 'receipts'">AND f.payment_time &gt;=#{from} AND f.payment_time &lt;=#{to}</when>
+ <otherwise>AND f.order_status_code &lt;&gt;'CANCELLED' AND f.unpaid_amount &gt;0
+ AND f.order_date &gt;=#{from} AND f.order_date &lt;=#{to}</otherwise>
+</choose>
+<if test="regionCode != null">AND f.region_code""" + REGION_SCOPE + """
+</if>
+<if test="ownerStaffCode != null">AND f.owner_staff_code=#{ownerStaffCode}</if>
+<if test="customerTypeCode != null">AND f.customer_type_code=#{customerTypeCode}</if>
+<if test="sourceSystemCode != null">AND f.source_system_code=#{sourceSystemCode}</if>
+""";
+
+    @Select("""
+<script>
+<choose>
+ <when test="summary">
+ SELECT COUNT(*) AS total, COALESCE(SUM(
+ <choose><when test="kind == 'receipts'">f.paid_amount</when><otherwise>f.unpaid_amount</otherwise></choose>
+ ),0) AS amount
+ </when>
+ <otherwise>
+ SELECT f.order_no AS orderNo, f.customer_name AS customerName, f.region_name AS regionName,
+ f.owner_staff_name AS ownerStaffName, f.paid_amount AS paidAmount,
+ <choose><when test="kind == 'receipts'">
+ f.payment_id AS id, f.payment_no AS paymentNo, f.payment_time AS occurredAt,
+ NULL AS orderAmount, NULL AS unpaidAmount
+ </when><otherwise>
+ f.order_id AS id, NULL AS paymentNo, f.order_date AS occurredAt,
+ f.payable_amount AS orderAmount, f.unpaid_amount AS unpaidAmount
+ </otherwise></choose>
+ </otherwise>
+</choose>
+""" + RECEIPT_DETAILS_FROM + """
+<if test="!summary">
+ ORDER BY occurredAt DESC, id DESC LIMIT #{step} OFFSET #{begin}
+</if>
+</script>
+""")
+    List<Map<String, Object>> receiptDetails(@Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from, @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode, @Param("ownerStaffCode") String ownerStaffCode,
+            @Param("customerTypeCode") String customerTypeCode, @Param("sourceSystemCode") String sourceSystemCode,
+            @Param("kind") String kind, @Param("summary") boolean summary,
+            @Param("begin") int begin, @Param("step") int step);
+
     @Select("""
 <script>
 SELECT COALESCE(SUM(l.line_amount), 0)
