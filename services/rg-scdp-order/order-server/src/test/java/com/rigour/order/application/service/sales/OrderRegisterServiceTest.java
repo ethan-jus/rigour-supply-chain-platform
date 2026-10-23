@@ -208,11 +208,32 @@ class OrderRegisterServiceTest {
         verify(store, org.mockito.Mockito.times(2)).orders(eq(TENANT), eq(0), eq(20), any());
     }
 
-    private static OrderRegisterOrderView order(String departmentName) {
+    @Test
+    void displaysOrderCityDepartmentInsteadOfEmployeesCurrentDepartment() {
+        var store = mock(OrderRegisterStore.class);
+        var crm = mock(CrmCustomerAreaDisplayClient.class);
+        var hr = mock(HrEmployeeDisplayClient.class);
+        TestAuthorizationContext.set(caller("order:read"));
+        when(store.orders(any(),anyInt(),anyInt(),any())).thenReturn(new OrderRegisterPage<>(1L,0,20,List.of(order(null,"TS","唐山市")),Map.of(),null));
+        when(hr.departments(any())).thenReturn(List.of(
+            new HrEmployeeDisplayClient.DepartmentDisplay(5L,null,"销售部","ACTIVE"),
+            new HrEmployeeDisplayClient.DepartmentDisplay(27L,5L,"河北省","ACTIVE"),
+            new HrEmployeeDisplayClient.DepartmentDisplay(28L,27L,"唐山市","ACTIVE")));
+        when(hr.resolve(any(),any())).thenReturn(List.of(new HrEmployeeDisplayClient.EmployeeDisplay("EMP001","张三","ACTIVE","石家庄")));
+        var service = new OrderRegisterService(store,crm,hr,invoiceStore(),resolverProvider());
+        var page = service.orders(0,20,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null);
+        assertThat(page.items().getFirst().departmentId()).isEqualTo(28L);
+        assertThat(page.items().getFirst().departmentName()).isEqualTo("唐山市");
+        assertThat(page.items().getFirst().ownerEmployeeCode()).isEqualTo("EMP001");
+    }
+
+    private static OrderRegisterOrderView order(String departmentName) { return order(departmentName,null,null); }
+
+    private static OrderRegisterOrderView order(String departmentName, String regionCode, String regionName) {
         return new OrderRegisterOrderView(
                 1L, "A001", null, "DINGHUOBAO", "A001", null, null,
                 null, null, null,
-                null, null,
+                regionCode, regionName,
                 "EMP001", "张三",
                 null, departmentName,
                 null, null, null,

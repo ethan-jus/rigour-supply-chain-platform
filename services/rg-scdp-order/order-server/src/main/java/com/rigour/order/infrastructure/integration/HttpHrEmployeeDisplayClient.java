@@ -91,6 +91,14 @@ public final class HttpHrEmployeeDisplayClient implements HrEmployeeDisplayClien
     }
 
     @Override
+    public List<DepartmentDisplay> departments(CallerIdentity caller) {
+        URI uri = UriComponentsBuilder.fromUri(baseUri).path("/api/v1/hr/employee-departments").build().toUri();
+        return fetchDepartments(caller, uri).stream().map(row -> new DepartmentDisplay(
+                longValue(row.get("id")), longValue(row.get("parentId")),
+                text(row.get("departmentName")), text(row.get("statusCode")))).toList();
+    }
+
+    @Override
     public Set<String> departmentEmployeeCodes(CallerIdentity caller, Long departmentId, Boolean includeSubDepartments) {
         if (caller == null || caller.tenantId() == null) throw new IllegalArgumentException("HR查询必须携带租户上下文");
         if (departmentId == null) return Set.of();

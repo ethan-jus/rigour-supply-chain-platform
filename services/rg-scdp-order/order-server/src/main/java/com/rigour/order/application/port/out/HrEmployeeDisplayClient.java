@@ -34,6 +34,10 @@ public interface HrEmployeeDisplayClient {
         throw new UnsupportedOperationException("HR部门人员查询未配置");
     }
 
+    default List<DepartmentDisplay> departments(CallerIdentity caller) { return List.of(); }
+
+    record DepartmentDisplay(Long id, Long parentId, String name, String status) {}
+
     record EmployeeDisplay(
             String employeeCode, String employeeName, String employmentStatus, String departmentName) {
     }

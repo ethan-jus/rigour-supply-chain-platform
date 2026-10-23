@@ -80,7 +80,29 @@ public interface OrderRegisterStore {
             Boolean hasDiscount,
             String sortBy,
             String sortDirection,
+            String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo, Set<String> departmentEmployeeCodes, Map<String, Long> departmentRegionIds) {
+        public OrderCriteria(
+            String orderNo,
+            Long customerId,
+            String customerName,
+            String customerCode,
+            String regionCode,
+            String ownerEmployeeCode,
+            Set<Long> departmentIds,
+            Instant orderDateFrom,
+            Instant orderDateTo,
+            String orderStatusCode,
+            String paymentStatusCode,
+            Boolean hasUnpaid,
+            String invoiceStatusCode,
+            Boolean dhbLinked,
+            String dhbOrderNo,
+            Boolean hasDiscount,
+            String sortBy,
+            String sortDirection,
             String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo, Set<String> departmentEmployeeCodes) {
+            this(orderNo, customerId, customerName, customerCode, regionCode, ownerEmployeeCode, departmentIds, orderDateFrom, orderDateTo, orderStatusCode, paymentStatusCode, hasUnpaid, invoiceStatusCode, dhbLinked, dhbOrderNo, hasDiscount, sortBy, sortDirection, createdBy, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes, Map.of());
+        }
     }
 
     record LineCriteria(
@@ -102,7 +124,27 @@ public interface OrderRegisterStore {
             String paymentStatusCode,
             Boolean hasDiscount,
             String sortBy,
+            String sortDirection, Long productVariantId, List<Long> productVariantIds, Instant paymentTimeFrom, Instant paymentTimeTo, Set<String> departmentEmployeeCodes, Map<String, Long> departmentRegionIds) {
+        public LineCriteria(
+            String orderNo,
+            Long customerId,
+            String customerName,
+            String customerCode,
+            String regionCode,
+            String ownerEmployeeCode,
+            Set<Long> departmentIds,
+            Instant orderDateFrom,
+            Instant orderDateTo,
+            String orderStatusCode,
+            String productKeyword,
+            String productCode,
+            List<Long> productIds,
+            String paymentStatusCode,
+            Boolean hasDiscount,
+            String sortBy,
             String sortDirection, Long productVariantId, List<Long> productVariantIds, Instant paymentTimeFrom, Instant paymentTimeTo, Set<String> departmentEmployeeCodes) {
+            this(orderNo, customerId, customerName, customerCode, regionCode, ownerEmployeeCode, departmentIds, orderDateFrom, orderDateTo, orderStatusCode, productKeyword, productCode, productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId, productVariantIds, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes, Map.of());
+        }
     }
 
     record PaymentCriteria(
@@ -125,7 +167,28 @@ public interface OrderRegisterStore {
             /** 排序字段：paymentTime / createdTime / syncedAt；空按收款时间倒序。 */
             String sortBy,
             String sortDirection,
+            String createdBy, List<Long> productIds, Long productVariantId, List<Long> productVariantIds, Set<String> departmentEmployeeCodes, Map<String, Long> departmentRegionIds) {
+        public PaymentCriteria(
+            String orderNo,
+            Long customerId,
+            String customerName,
+            String customerCode,
+            String regionCode,
+            String ownerEmployeeCode,
+            Set<Long> departmentIds,
+            Instant orderDateFrom,
+            Instant orderDateTo,
+            String orderStatusCode,
+            String paymentNo,
+            String transactionNo,
+            String paymentStatusCode,
+            Instant paymentTimeFrom,
+            Instant paymentTimeTo,
+            String sortBy,
+            String sortDirection,
             String createdBy, List<Long> productIds, Long productVariantId, List<Long> productVariantIds, Set<String> departmentEmployeeCodes) {
+            this(orderNo, customerId, customerName, customerCode, regionCode, ownerEmployeeCode, departmentIds, orderDateFrom, orderDateTo, orderStatusCode, paymentNo, transactionNo, paymentStatusCode, paymentTimeFrom, paymentTimeTo, sortBy, sortDirection, createdBy, productIds, productVariantId, productVariantIds, departmentEmployeeCodes, Map.of());
+        }
     }
 
     record PeriodCriteria(
