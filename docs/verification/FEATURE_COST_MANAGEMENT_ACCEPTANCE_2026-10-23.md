@@ -99,3 +99,18 @@ Platform 基准 HEAD `6db6b50491e7e49f2dcd5e5086e7c41b9284a4f9`；Portal 基准 
 | 真实 HTTP 性能 | 当前已启动 DEV 首次总览请求 752.10ms，同快照明细 571.94ms；随后 5 并发、20 次总览／workspace 混合查询，P50 490.26ms、P95 638.39ms、最大 680.83ms，错误和快照不一致均 0。此为当前小数据、已运行服务的观察值，不称冷启动、生产 SLA 或 12 万条事实的全链路容量。 |
 
 最终证据另见 `payroll-grouped-actual-proof.json`、`payroll-wps-final-proof.json`、`payroll-wps-grouped-final.png`、`cost-live-final.json`（含修复前 ERP 500）、`cost-source-reconcile-final.json`、`cost-headquarters-export-final.json`、`expense-city-change-final.png`、`cost-bi-original-route-desktop-final.png`、`cost-headquarters-desktop-final.png`（PC 1440×1000 验收后已恢复窗口尺寸），以及 `portal-final-close-{full,typecheck,lint,build}.log`。修复前失败测试日志保留，最终结果以上述收尾日志为准。实际业务导出与包含工资的截图留在本机，不加入 Git。
+
+
+## 合入最新 dev 后的交付复验
+
+用户明确授权 Platform、Portal 分别完成“提交并推送 feature → 合入最新 dev → 再推送 feature → 合并推送 dev”。Platform 同步 dev `1cc15169c3581cf08277a0726de4ca9535ee8f2e`，Portal 同步 dev `ec7ccd9a6f00636e31afaa23b9c3ffb6c7ceb72d`；完整最终引用以交付时 Git 远程校验为准，没有强推或覆盖历史。
+
+- 处理 OperatingCitySql 与 HR 目标测试冲突：保留现有城市来源 SELECT、dev 父子部门范围及展示层级，目标实际值按可见祖先分别批量汇总。父部门去重客户数直接 COUNT DISTINCT，不把子部门计数相加；父子目标为替代层级，不在同一总计重复相加。销售与回款批量查询保留，未回退到逐城市／逐人员标量查询。
+- Portal 合并后的首次全量因旧 mock 缺少 dev 新增的筛选接口而失败；补齐 mock 后 177 文件、1351 项全量通过，类型检查、全量 lint、正式构建通过（15.17 秒），原有 ExcelJS 分块告警保留。
+- 后端在独立验证副本执行 47 工程完整 verify，首次 2647 项中 1 失败、42 错误，全部集中在 BI：旧隔离测试缺少 dev 新增的城市维表／字段／H2 JSON_LENGTH，另一个新增用例在同一 MyBatis 会话内通过 JDBC 改写夹具后未清除本地查询缓存。修正仅限测试夹具与清缓存，不弱化生产权限、生产 SQL、MySQL 模式或断言。
+- 保留首次失败与一次 Jackson 3 测试辅助类编译失败日志；修复后执行 `./mvnw -fae -pl :bi-server -am verify -Dcost.performance=true -Drigour.calendar.live-test=true`，15 工程、85 类、552 项通过，失败／错误／跳过均 0，其中 BI 为 468 项。对首次通过且生产代码未变的其余工程保留结果，按报告路径替换 BI／依赖复验记录，最终 386 类、2647 项均通过，无跳过；不声称首次完整命令已直接通过。
+- 新测试覆盖省级汇总、子城市下钻、跨子城市相同客户去重、销售／回款／品牌金额的同口径，真实 MySQL 8.4 严格模式实际执行；16 个冻结基线与 684 个历史迁移检查通过。
+- 本地 DEV 订单与 BI 已使用上述隔离验证产物重启并健康 UP，沿用原 dev,local 及 ethan-local 配置，其他服务未重启。运行产物位于本机验证副本，供本轮 DEV 验收使用；正式部署由用户构建交付提交并执行。
+- 重启后七类源台账与看板均实际 200，浏览器刷新经营费用仍为 13718.60。当前小数据 5 并发、20 次真实 HTTP 混合查询 P50 359.90ms、P95 445.73ms、最大 451.27ms，错误／快照不一致均 0，不代表生产容量或冷启动 SLA。
+
+交付复验证据：`maven-merged-verify/`、`maven-merged-bi-reverify/`（保留编译失败）、`maven-merged-bi-final/`、`merged-final-summary.json`、`merged-runtime-proof.json`、`cost-live-merged.json`、`cost-source-reconcile-merged.json`，以及 `portal-merged-{full-final,typecheck,lint,build}.log`。前两轮失败没有删除或改写；实际导出／工资信息仍仅留本机。
