@@ -41,7 +41,7 @@ App 首次拜访读取等待同一次身份同步，失败明确展示原因；�
 - V27→V28 升级测试单独检查旧员工引用、历史 checksum、不重复迁移和新列排序规则。
 - App 单元回归、Android 原生编译与真实普通销售/手机验收分别报告。当前没有连接手机，不把编译当作实机通过。
 
-当前只读 DEV 快照：Sales 到 V27，正式档案 1、身份投影 1、门店投影 11；IAM 到 V141、HR 到 V26，均高于此次开始时 `origin/dev` 的 IAM V140、HR V22。禁止据此直接重启旧源码 IAM/HR；本次未执行 DEV V28，也未修改业务身份、权限或临时打卡数据。
+首次只读快照为 Sales V27；随后用户启动主项目 Sales 已执行 V28。IAM/HR 迁移差异需按下方最新说明处理；未修改业务身份、权限或临时打卡数据。
 
 
 ## 2026-10-23 最终本地检查
@@ -51,34 +51,22 @@ App 首次拜访读取等待同一次身份同步，失败明确展示原因；�
 - App 141/141 回归通过、0 跳过；Android 编译、H5 typecheck/lint 通过。
 - 根 `./mvnw verify` 在未修改的 IAM 测试停止：刷新令牌断言、重复 analytics:dashboard:read，以及 V120 的排序规则冲突。
 - 单独架构模块执行 21 项，其中 15 项通过；DatabaseCollationMySqlTest 的 6 项失败/错误来自冻结 B 基线空库初始化或存量排序规则（含 Sales B27），发生在新增 V28 之前。未改写历史基线以绕过检查。全仓 verify 尚未通过。
-- 未重启本地服务，未向共享 DEV 执行 V28，未完成真机验收。
+- 以上测试完成时未执行共享 DEV 迁移；随后用户已启动主工程 Sales 并执行 V28，真实身份验收仍未完成。
 
-## IDEA 本地重启交接
+## 主项目 IDEA 环境（2026-10-23）
 
-后端和 App 已于 2026-10-23 合并回用户日常项目。以后默认在以下目录开发；使用其他工作树必须先说明并征得用户同意。服务由用户通过 IDEA 重启，代理不自行操作。
+后端位于 `/Users/ethan/myspance/rigour/B2B供应链/自动化系统构建/06_代码工程/rigour-supply-chain-digital-platform`，分支 `feature/hr-target-settings`；App 位于同级 `rigour-sales-workbench`，分支 `dev`。所有开发默认在上述日常目录，其他工作树需事先获得用户同意。
 
-- 后端：`/Users/ethan/myspance/rigour/B2B供应链/自动化系统构建/06_代码工程/rigour-supply-chain-digital-platform`，分支 `feature/hr-target-settings`，已包含功能提交 `69ea6ed4`。
-- App：同级 `rigour-sales-workbench`，分支 `dev`，已包含功能提交 `c21a9e5`；HBuilderX 打开其中的 `app/`。
-- 合并采用快进，未切换分支。原有 BOM 和 AppDelegate.swift 未提交修改的文件哈希在合并前后相同。
+仅使用用户原有 IDEA 运行项：GatewayApplication 26880、IamApplication 26881、SalesApplication 26886。Gateway 的 Sales 路由继续用 `lb://rigour-sales-work-service`，不为 App 另建端口或启动配置。现有 Nacos 环境按服务名发现依赖；共享注册中心实例可能来自其他机器，应在真实登录验收时检查解析目标，不能把所有发现地址都称为本机。
 
-在现有后端 IDEA 工程的 `.run/` 中已准备两个本机运行项：
+App 的 Gateway / issuer 已统一为 `http://localhost:26880` / `http://localhost:26881`，原 HTTP 精确白名单同步更新；Android 使用 ADB reverse 26880/26881。issuer 改变后重新登录，不迁移旧 refresh token。
 
-| IDEA 运行项 | 入口 / 模块 | 用途 |
-|---|---|---|
-| `SalesApplication - App 本地 26886` | `com.rigour.sales.SalesApplication` / `sales-server` | 加载主工程的新 Sales 代码，核验 IAM 27681、HR 26882 |
-| `GatewayApplication - App 本地 27680` | `com.rigour.gateway.GatewayApplication` / `gateway-server` | 保持 App 入口 27680，将 Sales 路由改到主工程 26886 |
+IAM DEV 原生登录已在源码启用，仅允许 `rigour-sales-app-android-dev`；PUBLIC 客户端已存在且 ACTIVE，bootstrap 明确关闭。生产默认仍关闭。源码修改需要 IAM 重启才会生效。
 
-这些是当前主工程的运行配置，不是另外的项目或分支。文件名为 `.run/sales-app-sales-local.run.xml`、`.run/sales-app-gateway-local.run.xml`，复用现有 IDEA 签名密钥，权限 600，已用本机 `.git/info/exclude` 排除，不提交 Git。两者禁用 Nacos 配置/发现/注册，Sales 禁用临时打卡/AI，以免个人联调进程影响共享服务。Gateway 保留原生 App 现有 IAM、CRM、ERP、Order 目标和令牌校验设置，仅将 Sales 下游改为 26886。
+**当前不能直接重启 IAM**：真实 DEV 只读 Flyway validate 返回 V139 CHECKSUM_MISMATCH。库中的 V139 为 `cost_dashboard_permissions`、checksum -812060856；主代码的 V139 为 `iam_payment_risk_page_read_permission`、checksum 466362980。DEV 还存在 V141 `iam_converge_cost_and_payment_risk_permissions`（477565154），其源文件也未进入主项目或 origin/dev。需要取得原始脚本并正确处理环境历史；禁止 repair、忽略 mismatch、关闭 Flyway 或改写已执行生产迁移来绕过。当前 IAM 老进程仍健康，但不能据此宣称新配置已加载。
 
-重启顺序：
+已按用户授权停止之前独立启动的 5 个 App JAR；旧监听端口全部释放。删除了为那套环境新增的两份 `.run/sales-app-*.run.xml` 及其专用 Git 排除条目，原有 IDEA 运行项和密钥保持原状。没有停止或重启任何主项目 IDEA 服务，没有写业务数据。后续只在确有必要时告知用户重启具体服务，由用户操作。
 
-1. 在 IDEA 执行 Reload All Maven Projects，以加载新增的 iam-api / hr-api 依赖。
-2. 停止现有占用 26886 的 Sales，再运行 **SalesApplication - App 本地 26886**。
-3. 由用户停止旧 App Gateway（27680，创建配置时 PID 39074，停止前需重新核对），再运行 **GatewayApplication - App 本地 27680**。旧进程来自之前的命令行，不一定显示在 IDEA；新配置不能与它同时占用端口。
-4. 主开发 Gateway 26880、IAM、HR、CRM、Order 无需因本次改动重启。原先的旧 Sales 27686 不再是新 Gateway 的目标；验收新路由后再清理旧进程，不能先按旧 PID 盲目停止。
+Sales V28 已由用户的主工程 Sales 启动于 17:05:44 成功执行；新列存在，现存 HR 身份档案仍为 0。新身份链路真实登录待验收。
 
-只重启 Sales 不会改变旧 Gateway 的内存路由，因此本次需同时替换 App Gateway。代理尚未替用户重启任何进程，新增运行项也尚未做真实启动验收。
-
-DEV Sales 启动会通过既有 Flyway 执行 V28，修改共享 DEV Sales Schema。一次性 MySQL 的 V27→V28 升级已通过；最近真实 DEV 查询仍为 V27。启动后核实 26886/27680 health、V28 与历史 checksum、实际 Sales 路由、真实 IAM 登录及 HR 身份识别。手机连接后再同步主目录中的 App，健康检查不代替真实登录验收。
-
-合并回主目录后重新验证：App 141/141、Android 编译通过；后端身份与升级 18/18、0 跳过，Sales/Gateway 及依赖打包通过。原完整 Sales 323 项与全仓失败边界见上文，不把定向复跑写成全仓通过。
+统一端口后重新验证：App 141/141、Android 编译通过；IAM 原生登录与客户端 bootstrap 定向测试 8/8。完整 Sales 323 项与全仓既有失败边界见上文；不能把定向通过写成全仓或新环境登录通过。
