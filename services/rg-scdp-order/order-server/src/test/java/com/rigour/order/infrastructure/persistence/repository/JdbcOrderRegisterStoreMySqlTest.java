@@ -72,6 +72,35 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     @Test
+    void sourceCityOverridesEmployeeDepartmentInAllThreeListsAndTotals() {
+        String tenant = UUID.randomUUID().toString();
+        long a = order(tenant,"CITY-SJZ",1L,"C1","石家庄客户","SJZ","E1","同一业务员","2026-10-01T00:00:00Z",100,0);
+        long b = order(tenant,"CITY-TS",2L,"C2","唐山客户","TS","E1","同一业务员","2026-10-01T00:00:00Z",80,0);
+        insertLine(tenant,a,1,"商品","100");insertLine(tenant,b,1,"商品","80");
+        insertPayment(tenant,"CITY-P1",a,"2026-10-02T00:00:00Z",100,"CHECKED",null);
+        insertPayment(tenant,"CITY-P2",b,"2026-10-02T00:00:00Z",80,"CHECKED",null);
+        var regions = Map.of("SJZ",11L,"TS",28L);
+        for (var departments : List.of(java.util.Set.of(27L,11L,28L),java.util.Set.of(11L),java.util.Set.of(28L))) {
+            var employees = departments.contains(11L) ? java.util.Set.of("E1") : java.util.Set.<String>of();
+            long expected = departments.size()==3 ? 2 : 1;
+            var orders = store.orders(tenant,0,20,new OrderCriteria(null,null,null,null,null,null,departments,
+                null,null,null,null,null,null,null,null,null,null,null,null,null,null,employees,regions));
+            var lines = store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,departments,
+                null,null,null,null,null,null,null,null,null,null,null,null,null,null,employees,regions));
+            var payments = store.payments(tenant,0,20,new PaymentCriteria(null,null,null,null,null,null,departments,
+                null,null,null,null,null,null,null,null,null,null,null,null,null,null,employees,regions));
+            assertThat(orders.total()).isEqualTo(expected);assertThat(lines.total()).isEqualTo(expected);assertThat(payments.total()).isEqualTo(expected);
+            String amount = departments.size()==3 ? "180" : departments.contains(11L) ? "100" : "80";
+            assertThat(orders.totals().get("payableAmount")).isEqualByComparingTo(amount);
+            if (departments.equals(java.util.Set.of(28L))) {
+                assertThat(orders.items()).extracting(v -> v.regionCode()).containsExactly("TS");
+                assertThat(lines.items()).extracting(v -> v.regionCode()).containsExactly("TS");
+                assertThat(payments.items()).extracting(v -> v.regionCode()).containsExactly("TS");
+            }
+        }
+    }
+
+    @Test
     void periodTotalsCoverOrderReceivedRefundNetAndEndingUnpaid() {
         PeriodStatisticsView view = store.periodStatistics(TENANT, period("region", null, null, null, null));
 

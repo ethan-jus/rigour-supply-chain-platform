@@ -52,6 +52,27 @@ public final class HttpCrmCustomerAreaDisplayClient implements CrmCustomerAreaDi
         return List.copyOf(result);
     }
 
+    @Override
+    public List<CustomerAreaDisplay> all(CallerIdentity caller) {
+        List<CustomerAreaDisplay> result = new ArrayList<>();
+        for (int begin = 0; ; begin += 200) {
+            URI uri = UriComponentsBuilder.fromUri(baseUri).path("/api/v1/crm/customer-areas")
+                    .queryParam("begin", begin).queryParam("step", 200).build().toUri();
+            ApiResponse<CustomerAreaPage> response = restClient.get().uri(uri)
+                    .headers(h -> signedHeaders("GET", uri, caller).forEach(h::set))
+                    .retrieve().body(new ParameterizedTypeReference<>() {});
+            if (response == null || !"OK".equals(response.code()) || response.data() == null
+                    || response.data().items() == null) throw new IllegalStateException("CRM地区查询失败");
+            var rows = response.data().items();
+            for (var row : rows) {
+                if ("INACTIVE".equals(text(row.get("status")))) continue;
+                String code = text(row.get("code")), name = text(row.get("name"));
+                if (code != null && name != null) result.add(new CustomerAreaDisplay(code, name));
+            }
+            if (rows.size() < 200) return List.copyOf(result);
+        }
+    }
+
     private CustomerAreaDisplay resolveOne(CallerIdentity caller, String areaCode) {
         URI uri = UriComponentsBuilder.fromUri(baseUri)
                 .path("/api/v1/crm/customer-areas")

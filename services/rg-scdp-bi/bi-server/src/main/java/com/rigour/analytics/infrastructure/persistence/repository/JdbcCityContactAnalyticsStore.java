@@ -7,6 +7,7 @@ import com.rigour.analytics.application.port.out.SupplyDashboardStore.SourceRefr
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import static com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.JDBC_REGION_SCOPE;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -109,7 +110,8 @@ WITH stores AS (
            MAX(CASE WHEN customer_code IS NOT NULL THEN 1 ELSE 0 END) linked
       FROM bi_sales_contact_fact
      WHERE tenant_id = :tenant AND submitted_at >= :from AND submitted_at <= :to
-       AND (:region IS NULL OR region_code = :region)
+       AND (:region IS NULL OR region_code""" + JDBC_REGION_SCOPE + """
+)
        AND (:owner IS NULL OR owner_staff_code = :owner)
      GROUP BY region_code, city_name, store_id
 ), totals AS (
@@ -120,7 +122,8 @@ WITH stores AS (
     SELECT c.region_code, c.city_name, COALESCE(t.contacted, 0) contacted,
            COALESCE(t.approved, 0) approved, COALESCE(t.flagged, 0) flagged, COALESCE(t.linked, 0) linked
       FROM bi_sales_contact_city_dim c LEFT JOIN totals t ON t.region_code = c.region_code
-     WHERE c.tenant_id = :tenant AND (:region IS NULL OR c.region_code = :region)
+     WHERE c.tenant_id = :tenant AND (:region IS NULL OR c.region_code""" + JDBC_REGION_SCOPE + """
+)
     UNION ALL
     SELECT region_code, city_name, contacted, approved, flagged, linked FROM totals WHERE region_code IS NULL
 )

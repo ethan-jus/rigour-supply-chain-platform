@@ -281,7 +281,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 criteria.orderNo(), criteria.customerId(), criteria.customerName(), criteria.customerCode(),
                 criteria.regionCode(), criteria.ownerEmployeeCode(), criteria.departmentIds(),
                 criteria.orderDateFrom(), criteria.orderDateTo(), criteria.orderStatusCode(),
-                criteria.paymentStatusCode(), null, null, null, null, null, null, null, null, criteria.paymentTimeFrom(), criteria.paymentTimeTo(), criteria.departmentEmployeeCodes()));
+                criteria.paymentStatusCode(), null, null, null, null, null, null, null, null, criteria.paymentTimeFrom(), criteria.paymentTimeTo(), criteria.departmentEmployeeCodes(), criteria.departmentRegionIds()));
         boolean lineFiltered = criteria.hasDiscount() != null || (criteria.productKeyword() != null && !criteria.productKeyword().isBlank())
                 || (criteria.productCode() != null && !criteria.productCode().isBlank())
                 || (criteria.productIds() != null && !criteria.productIds().isEmpty());
@@ -998,14 +998,27 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         return " ORDER BY " + column + ("asc".equalsIgnoreCase(c.sortDirection()) ? " ASC" : " DESC") + ",o.id DESC";
     }
 
-    private static void departmentFilter(Sql where, java.util.Set<Long> ids, java.util.Set<String> employees) {
+    private static void departmentFilter(Sql where, java.util.Set<Long> ids, java.util.Set<String> employees, Map<String, Long> regions) {
         if (ids == null) return;
         if (ids.isEmpty()) { where.and("1=0"); return; }
         String sql = "snap.department_id IN (" + String.join(",", java.util.Collections.nCopies(ids.size(), "?")) + ")";
         List<Object> args = new ArrayList<>(ids);
+        List<String> matching = regions.entrySet().stream().filter(e -> ids.contains(e.getValue())).map(Map.Entry::getKey).toList();
+        String missing = "snap.department_id IS NULL AND NULLIF(TRIM(snap.department_name),'') IS NULL";
+        if (!matching.isEmpty()) {
+            sql += " OR (" + missing + " AND COALESCE(snap.region_code,o.region_code) IN ("
+                    + String.join(",", java.util.Collections.nCopies(matching.size(), "?")) + "))";
+            args.addAll(matching);
+        }
         if (employees != null && !employees.isEmpty()) {
-            sql += " OR (snap.department_id IS NULL AND NULLIF(TRIM(snap.department_name),'') IS NULL"
-                    + " AND COALESCE(snap.employee_code,o.owner_employee_code) IN ("
+            sql += " OR (" + missing;
+            // A known order city takes precedence over the employee's current department.
+            if (!regions.isEmpty()) {
+                sql += " AND (COALESCE(snap.region_code,o.region_code) IS NULL OR COALESCE(snap.region_code,o.region_code) NOT IN ("
+                        + String.join(",", java.util.Collections.nCopies(regions.size(), "?")) + "))";
+                args.addAll(regions.keySet());
+            }
+            sql += " AND COALESCE(snap.employee_code,o.owner_employee_code) IN ("
                     + String.join(",", java.util.Collections.nCopies(employees.size(), "?")) + "))";
             args.addAll(employees);
         }
@@ -1023,7 +1036,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
-        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes());
+        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes(), c.departmentRegionIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         ge(where, LATEST_PAYMENT_TIME, c.paymentTimeFrom());
@@ -1084,7 +1097,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
-        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes());
+        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes(), c.departmentRegionIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
@@ -1137,7 +1150,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
-        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes());
+        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes(), c.departmentRegionIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());

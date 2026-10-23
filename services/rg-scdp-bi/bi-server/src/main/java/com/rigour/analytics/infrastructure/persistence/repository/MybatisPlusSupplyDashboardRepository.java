@@ -1,5 +1,6 @@
 package com.rigour.analytics.infrastructure.persistence.repository;
 
+import com.rigour.analytics.api.v1.model.SupplyDashboardReceiptDetailsView;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.rigour.analytics.application.model.SupplyDashboardFilter;
 import com.rigour.analytics.application.port.out.SupplyDashboardStore;
@@ -78,6 +79,25 @@ public class MybatisPlusSupplyDashboardRepository
     public MybatisPlusSupplyDashboardRepository(SupplyDashboardQueryMapper mapper, HrDashboardTargets targets) {
         this.targets=targets;
         this.baseMapper = mapper;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public SupplyDashboardReceiptDetailsView receiptDetails(String tenantId,
+            SupplyDashboardFilter filter, String kind, int begin, int step) {
+        var mapper = getBaseMapper();
+        var summary = mapper.receiptDetails(tenantId, local(filter.from()), local(filter.to()),
+                filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(),
+                filter.sourceSystemCode(), kind, true, begin, step).getFirst();
+        var rows = mapper.receiptDetails(tenantId, local(filter.from()), local(filter.to()),
+                filter.regionCode(), filter.ownerStaffCode(), filter.customerTypeCode(),
+                filter.sourceSystemCode(), kind, false, begin, step);
+        return new SupplyDashboardReceiptDetailsView(((Number) summary.get("total")).longValue(),
+                decimal(summary, "amount"), rows.stream().map(row -> new SupplyDashboardReceiptDetailsView.Row(
+                        text(row, "id"), text(row, "paymentNo"), text(row, "orderNo"),
+                        text(row, "customerName"), text(row, "regionName"), text(row, "ownerStaffName"),
+                        instant(row, "occurredAt"), decimal(row, "orderAmount"), decimal(row, "paidAmount"),
+                        decimal(row, "unpaidAmount"))).toList());
     }
 
     @Override

@@ -7,6 +7,9 @@ import java.util.List;
 
 public interface PaymentRiskStore {
     List<Category> categories(String tenant);
+    default List<com.rigour.analytics.api.v1.model.PaymentRiskView.Region> regions(String tenant) {
+        return List.of();
+    }
     List<Fact> load(String tenant, Instant from, Instant to, String region, String owner, int limit);
 
     record Fact(

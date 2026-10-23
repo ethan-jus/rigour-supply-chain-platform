@@ -21,6 +21,7 @@ class EmployeeAnalyticsRepositoryTest {
                         "sa",
                         "");
         var jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE bi_sales_contact_city_dim(tenant_id VARCHAR,region_code VARCHAR,department_id BIGINT,department_path VARCHAR)");
         jdbc.execute(
                 "CREATE ALIAS UUID_TO_BIN FOR"
                     + " 'com.rigour.analytics.infrastructure.persistence.repository.CityContactRefreshTest.identity'");
@@ -92,6 +93,7 @@ class EmployeeAnalyticsRepositoryTest {
                         "sa",
                         "");
         var jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE bi_sales_contact_city_dim(tenant_id VARCHAR,region_code VARCHAR,department_id BIGINT,department_path VARCHAR)");
         jdbc.execute(
                 "CREATE TABLE bi_employee_snapshot (tenant_id VARCHAR, synced_time TIMESTAMP)");
         jdbc.execute(

@@ -8,6 +8,7 @@ import com.rigour.analytics.application.port.out.VisitAnalyticsStore;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import static com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.JDBC_REGION_SCOPE;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -28,7 +29,8 @@ public class JdbcVisitAnalyticsStore implements VisitAnalyticsStore {
             """
             WITH scoped AS (SELECT * FROM bi_sales_contact_fact
                 WHERE tenant_id = :tenant AND submitted_at >= :from AND submitted_at <= :to
-                  AND (:region IS NULL OR region_code = :region)
+                  AND (:region IS NULL OR region_code""" + JDBC_REGION_SCOPE + """
+)
                   AND (:employee IS NULL OR owner_staff_code = :employee))
             """;
     private final NamedParameterJdbcTemplate jdbc;

@@ -1,5 +1,6 @@
 package com.rigour.analytics.application.service;
 
+import com.rigour.analytics.api.v1.model.SupplyDashboardReceiptDetailsView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardCityCustomerItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardCityProductItemView;
@@ -61,6 +62,20 @@ public final class SupplyDashboardQueryService {
         this.store = Objects.requireNonNull(store, "store");
         this.clock = Objects.requireNonNull(analyticsClock, "analyticsClock");
         this.scopes = Objects.requireNonNull(scopes, "scopes");
+    }
+
+    public SupplyDashboardReceiptDetailsView receiptDetails(
+            String kind, Instant from, Instant to, String regionCode, String ownerStaffCode,
+            String customerTypeCode, String sourceSystemCode, Long productCategoryId, int begin, int step) {
+        String tenant = actor().tenantId().toString();
+        var scope = scopes.resolve(regionCode, ownerStaffCode);
+        if (!List.of("receipts", "unpaid").contains(kind)) throw badRequest("明细类型无效");
+        if (from == null || to == null) throw badRequest("明细必须指定看板日期范围");
+        if (begin < 0 || step < 1 || step > 100) throw badRequest("分页范围无效");
+        if (productCategoryId != null) throw badRequest("回款分析明细不支持商品分类过滤");
+        var selection = filter(tenant, Instant.now(clock), from, to, scope.regionCode(),
+                scope.ownerStaffCode(), customerTypeCode, null, sourceSystemCode);
+        return store.receiptDetails(tenant, selection, kind, begin, step);
     }
 
     public SupplyDashboardOverviewView overview(

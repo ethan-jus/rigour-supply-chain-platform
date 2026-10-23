@@ -9,6 +9,7 @@ import com.rigour.shared.core.exception.BusinessException;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import static com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.JDBC_REGION_SCOPE;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.ResultSet;
@@ -134,7 +135,8 @@ SELECT e.*, COALESCE(c.customer_count, 0) AS customer_count,
        SELECT owner_staff_code, COUNT(*) AS customer_count
          FROM bi_customer_dim
         WHERE tenant_id = :tenant AND deleted = 0
-          AND (:region IS NULL OR region_code = :region)
+          AND (:region IS NULL OR region_code""" + JDBC_REGION_SCOPE + """
+)
           AND (:employee IS NULL OR owner_staff_code = :employee)
         GROUP BY owner_staff_code
   ) c ON c.owner_staff_code = e.employee_code
@@ -145,7 +147,8 @@ SELECT e.*, COALESCE(c.customer_count, 0) AS customer_count,
         WHERE tenant_id = :tenant AND deleted = 0
           AND (order_status_code IS NULL OR order_status_code != 'CANCELLED')
           AND order_date >= :from AND order_date <= :to
-          AND (:region IS NULL OR region_code = :region)
+          AND (:region IS NULL OR region_code""" + JDBC_REGION_SCOPE + """
+)
           AND (:employee IS NULL OR owner_staff_code = :employee)
         GROUP BY owner_staff_code
   ) o ON o.owner_staff_code = e.employee_code
@@ -154,11 +157,13 @@ SELECT e.*, COALESCE(c.customer_count, 0) AS customer_count,
          FROM bi_sales_payment_fact
         WHERE tenant_id = :tenant AND deleted = 0
           AND payment_time >= :from AND payment_time <= :to
-          AND (:region IS NULL OR region_code = :region)
+          AND (:region IS NULL OR region_code""" + JDBC_REGION_SCOPE + """
+)
           AND (:employee IS NULL OR owner_staff_code = :employee)
         GROUP BY owner_staff_code
   ) p ON p.owner_staff_code = e.employee_code
- WHERE e.tenant_id = :tenant AND (:region IS NULL OR e.region_code = :region)
+ WHERE e.tenant_id = :tenant AND (:region IS NULL OR e.region_code""" + JDBC_REGION_SCOPE + """
+)
    AND (:employee IS NULL OR e.employee_code = :employee)
  ORDER BY sales_amount DESC, e.employee_code
  LIMIT 20001

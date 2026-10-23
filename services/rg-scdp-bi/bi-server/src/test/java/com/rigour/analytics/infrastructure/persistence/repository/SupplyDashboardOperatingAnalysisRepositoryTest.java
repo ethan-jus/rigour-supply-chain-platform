@@ -123,7 +123,7 @@ CREATE TABLE bi_sales_payment_fact (
 """);
         jdbc.execute("CREATE TABLE bi_dashboard_customer_history(tenant_id VARCHAR(64),customer_id BIGINT,first_order_date DATETIME(6))");
         jdbc.execute("CREATE TABLE bi_employee_dim(tenant_id VARCHAR(64),employee_code VARCHAR(64),employee_name VARCHAR(100),employment_status VARCHAR(32),department_id BIGINT,department_path VARCHAR(256))");
-        jdbc.execute("CREATE TABLE bi_sales_contact_city_dim(tenant_id VARCHAR(64),region_code VARCHAR(64),city_name VARCHAR(160),department_id BIGINT)");
+        jdbc.execute("CREATE TABLE bi_sales_contact_city_dim(tenant_id VARCHAR(64),region_code VARCHAR(64),city_name VARCHAR(160),department_id BIGINT,department_path VARCHAR(1000))");
         jdbc.execute("CREATE TABLE bi_business_target(id BIGINT,tenant_id VARCHAR(64),target_month DATE,dimension_type VARCHAR(32),dimension_code VARCHAR(64),metric_code VARCHAR(64),target_value DECIMAL(24,6),deleted INT)");
         mapper = session.getMapper(SupplyDashboardQueryMapper.class);
         jdbc.execute(

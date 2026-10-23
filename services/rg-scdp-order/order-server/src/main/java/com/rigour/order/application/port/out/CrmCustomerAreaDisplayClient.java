@@ -8,6 +8,8 @@ import java.util.Set;
 public interface CrmCustomerAreaDisplayClient {
     List<CustomerAreaDisplay> resolve(CallerIdentity caller, Set<String> areaCodes);
 
+    default List<CustomerAreaDisplay> all(CallerIdentity caller) { return List.of(); }
+
     record CustomerAreaDisplay(String areaCode, String areaName) {
     }
 }

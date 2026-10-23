@@ -28,6 +28,7 @@ class CustomerAttributeAnalyticsRepositoryTest {
                         "sa",
                         "");
         var jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE bi_sales_contact_city_dim(tenant_id VARCHAR,region_code VARCHAR,department_id BIGINT,department_path VARCHAR)");
         jdbc.execute("CREATE SCHEMA rigour_crm");
         jdbc.execute(
                 "CREATE TABLE bi_source_crm_crm_customer (tenant_id VARCHAR, id BIGINT,"

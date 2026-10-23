@@ -8,6 +8,7 @@ import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import static com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.*;
 import org.apache.ibatis.annotations.Update;
 
 import static com.rigour.analytics.infrastructure.persistence.scope.PaymentPerformanceSql.*;
@@ -114,6 +115,57 @@ ON DUPLICATE KEY UPDATE category_code=VALUES(category_code), category_name=VALUE
 
     /** 保留城市在职零业绩人员；历史业绩人员即使调离城市，也按事实查询其真实状态。 */
     /** The named brand goal must not be derived from a top-N brand ranking. */
+    String RECEIPT_DETAILS_FROM = """
+<choose>
+ <when test="kind == 'receipts'">FROM bi_sales_payment_fact f</when>
+ <otherwise>FROM bi_sales_order_fact f</otherwise>
+</choose>
+WHERE f.tenant_id=#{tenantId} AND f.deleted=0
+<choose>
+ <when test="kind == 'receipts'">AND f.payment_time &gt;=#{from} AND f.payment_time &lt;=#{to}</when>
+ <otherwise>AND f.order_status_code &lt;&gt;'CANCELLED' AND f.unpaid_amount &gt;0
+ AND f.order_date &gt;=#{from} AND f.order_date &lt;=#{to}</otherwise>
+</choose>
+<if test="regionCode != null">AND f.region_code""" + REGION_SCOPE + """
+</if>
+<if test="ownerStaffCode != null">AND f.owner_staff_code=#{ownerStaffCode}</if>
+<if test="customerTypeCode != null">AND f.customer_type_code=#{customerTypeCode}</if>
+<if test="sourceSystemCode != null">AND f.source_system_code=#{sourceSystemCode}</if>
+""";
+
+    @Select("""
+<script>
+<choose>
+ <when test="summary">
+ SELECT COUNT(*) AS total, COALESCE(SUM(
+ <choose><when test="kind == 'receipts'">f.paid_amount</when><otherwise>f.unpaid_amount</otherwise></choose>
+ ),0) AS amount
+ </when>
+ <otherwise>
+ SELECT f.order_no AS orderNo, f.customer_name AS customerName, f.region_name AS regionName,
+ f.owner_staff_name AS ownerStaffName, f.paid_amount AS paidAmount,
+ <choose><when test="kind == 'receipts'">
+ f.payment_id AS id, f.payment_no AS paymentNo, f.payment_time AS occurredAt,
+ NULL AS orderAmount, NULL AS unpaidAmount
+ </when><otherwise>
+ f.order_id AS id, NULL AS paymentNo, f.order_date AS occurredAt,
+ f.payable_amount AS orderAmount, f.unpaid_amount AS unpaidAmount
+ </otherwise></choose>
+ </otherwise>
+</choose>
+""" + RECEIPT_DETAILS_FROM + """
+<if test="!summary">
+ ORDER BY occurredAt DESC, id DESC LIMIT #{step} OFFSET #{begin}
+</if>
+</script>
+""")
+    List<Map<String, Object>> receiptDetails(@Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from, @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode, @Param("ownerStaffCode") String ownerStaffCode,
+            @Param("customerTypeCode") String customerTypeCode, @Param("sourceSystemCode") String sourceSystemCode,
+            @Param("kind") String kind, @Param("summary") boolean summary,
+            @Param("begin") int begin, @Param("step") int step);
+
     @Select("""
 <script>
 SELECT COALESCE(SUM(l.line_amount), 0)
@@ -122,7 +174,8 @@ SELECT COALESCE(SUM(l.line_amount), 0)
    AND l.order_status_code &lt;&gt; 'CANCELLED'
    AND l.order_date &gt;= #{from} AND l.order_date &lt;= #{to}
    AND TRIM(l.brand_name) = '杨掌柜 X CBSA世界斯诺克学院'
-<if test="regionCode != null"> AND l.region_code = #{regionCode} </if>
+<if test="regionCode != null"> AND l.region_code""" + REGION_SCOPE + """
+ </if>
 <if test="ownerStaffCode != null"> AND l.owner_staff_code = #{ownerStaffCode} </if>
 </script>
 """)
@@ -130,27 +183,63 @@ SELECT COALESCE(SUM(l.line_amount), 0)
             @Param("from") LocalDateTime from, @Param("to") LocalDateTime to,
             @Param("regionCode") String regionCode, @Param("ownerStaffCode") String ownerStaffCode);
 
+    /** A parent and its descendants are separate target alternatives, never a sum of child counts. */
+    @Select("""
+<script>
+SELECT COALESCE(target_city.region_code,f.region_code) AS dimensionCode,
+       'SALES_AMOUNT' AS metricCode, SUM(f.payable_amount) AS actualValue
+  FROM bi_sales_order_fact f
+""" + TARGET_CITY_JOIN + """
+ WHERE f.tenant_id=#{tenantId} AND f.deleted=0 AND f.order_status_code&lt;&gt;'CANCELLED'
+   AND f.order_date&gt;=#{from} AND f.order_date&lt;=#{to}
+<if test="regionCode != null">AND f.region_code""" + REGION_SCOPE + """
+</if>
+ GROUP BY COALESCE(target_city.region_code,f.region_code)
+UNION ALL
+SELECT COALESCE(target_city.region_code,f.region_code) AS dimensionCode,
+       'RECEIPT_AMOUNT' AS metricCode, SUM(f.paid_amount) AS actualValue
+  FROM bi_sales_payment_fact f
+""" + TARGET_CITY_JOIN + """
+ WHERE f.tenant_id=#{tenantId} AND f.deleted=0
+   AND f.payment_time&gt;=#{from} AND f.payment_time&lt;=#{to}
+<if test="regionCode != null">AND f.region_code""" + REGION_SCOPE + """
+</if>
+ GROUP BY COALESCE(target_city.region_code,f.region_code)
+</script>
+""")
+    List<Map<String, Object>> targetCityAmounts(@Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from, @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode);
+
     /** One scoped read per target dimension; never issue two aggregate queries for every employee. */
     @Select("""
 <script>
-SELECT <choose><when test="city">o.region_code</when><otherwise>o.owner_staff_code</otherwise></choose> AS dimensionCode,
-       'ORDERED_STORE_COUNT' AS metricCode, COUNT(DISTINCT o.customer_id) AS actualValue
-  FROM bi_sales_order_fact o
- WHERE o.tenant_id = #{tenantId} AND o.deleted = 0 AND o.order_status_code &lt;&gt; 'CANCELLED'
-   AND o.order_date &gt;= #{from} AND o.order_date &lt;= #{to}
-<if test="regionCode != null"> AND o.region_code = #{regionCode} </if>
-<if test="ownerStaffCode != null"> AND o.owner_staff_code = #{ownerStaffCode} </if>
- GROUP BY <choose><when test="city">o.region_code</when><otherwise>o.owner_staff_code</otherwise></choose>
+SELECT <choose><when test="city">COALESCE(target_city.region_code,f.region_code)</when><otherwise>f.owner_staff_code</otherwise></choose> AS dimensionCode,
+       'ORDERED_STORE_COUNT' AS metricCode, COUNT(DISTINCT f.customer_id) AS actualValue
+  FROM bi_sales_order_fact f
+<if test="city">
+""" + TARGET_CITY_JOIN + """
+</if>
+ WHERE f.tenant_id = #{tenantId} AND f.deleted = 0 AND f.order_status_code &lt;&gt; 'CANCELLED'
+   AND f.order_date &gt;= #{from} AND f.order_date &lt;= #{to}
+<if test="regionCode != null"> AND f.region_code""" + REGION_SCOPE + """
+</if>
+<if test="ownerStaffCode != null"> AND f.owner_staff_code = #{ownerStaffCode} </if>
+ GROUP BY <choose><when test="city">COALESCE(target_city.region_code,f.region_code)</when><otherwise>f.owner_staff_code</otherwise></choose>
 UNION ALL
-SELECT <choose><when test="city">l.region_code</when><otherwise>l.owner_staff_code</otherwise></choose> AS dimensionCode,
-       'YANGZHANGGUI_SALES_AMOUNT' AS metricCode, COALESCE(SUM(l.line_amount), 0) AS actualValue
-  FROM bi_sales_order_line_fact l
- WHERE l.tenant_id = #{tenantId} AND l.deleted = 0 AND l.order_status_code &lt;&gt; 'CANCELLED'
-   AND l.order_date &gt;= #{from} AND l.order_date &lt;= #{to}
-   AND TRIM(l.brand_name) = '杨掌柜 X CBSA世界斯诺克学院'
-<if test="regionCode != null"> AND l.region_code = #{regionCode} </if>
-<if test="ownerStaffCode != null"> AND l.owner_staff_code = #{ownerStaffCode} </if>
- GROUP BY <choose><when test="city">l.region_code</when><otherwise>l.owner_staff_code</otherwise></choose>
+SELECT <choose><when test="city">COALESCE(target_city.region_code,f.region_code)</when><otherwise>f.owner_staff_code</otherwise></choose> AS dimensionCode,
+       'YANGZHANGGUI_SALES_AMOUNT' AS metricCode, COALESCE(SUM(f.line_amount), 0) AS actualValue
+  FROM bi_sales_order_line_fact f
+<if test="city">
+""" + TARGET_CITY_JOIN + """
+</if>
+ WHERE f.tenant_id = #{tenantId} AND f.deleted = 0 AND f.order_status_code &lt;&gt; 'CANCELLED'
+   AND f.order_date &gt;= #{from} AND f.order_date &lt;= #{to}
+   AND TRIM(f.brand_name) = '杨掌柜 X CBSA世界斯诺克学院'
+<if test="regionCode != null"> AND f.region_code""" + REGION_SCOPE + """
+</if>
+<if test="ownerStaffCode != null"> AND f.owner_staff_code = #{ownerStaffCode} </if>
+ GROUP BY <choose><when test="city">COALESCE(target_city.region_code,f.region_code)</when><otherwise>f.owner_staff_code</otherwise></choose>
 </script>
 """)
     List<Map<String, Object>> targetBusinessActuals(@Param("tenantId") String tenantId,
@@ -168,19 +257,22 @@ SELECT e.employee_code AS ownerStaffCode, e.employee_name AS ownerStaffName,
    AND #{regionCode} IS NOT NULL
    AND (EXISTS (
        SELECT 1 FROM bi_sales_contact_city_dim c
-        WHERE c.tenant_id=e.tenant_id AND c.region_code=#{regionCode}
+        WHERE c.tenant_id=e.tenant_id AND c.region_code""" + REGION_SCOPE + """
+
           AND (e.department_id=c.department_id
                OR REPLACE(REPLACE(REPLACE(e.department_path,'[',','),']',','),' ','')
                   LIKE CONCAT('%,',c.department_id,',%')))
        OR EXISTS (
        SELECT 1 FROM bi_sales_order_fact o
         WHERE o.tenant_id=e.tenant_id AND o.owner_staff_code=e.employee_code
-          AND o.region_code=#{regionCode} AND o.deleted=0 AND o.order_status_code&lt;&gt;'CANCELLED'
+          AND o.region_code""" + REGION_SCOPE + """
+ AND o.deleted=0 AND o.order_status_code&lt;&gt;'CANCELLED'
           AND o.order_date&gt;=#{from} AND o.order_date&lt;=#{to})
        OR EXISTS (
        SELECT 1 FROM bi_sales_payment_fact p
         WHERE p.tenant_id=e.tenant_id AND p.owner_staff_code=e.employee_code
-          AND p.region_code=#{regionCode} AND p.deleted=0
+          AND p.region_code""" + REGION_SCOPE + """
+ AND p.deleted=0
           AND p.payment_time&gt;=#{from} AND p.payment_time&lt;=#{to}))
  ORDER BY e.employee_code
 </script>
@@ -275,7 +367,8 @@ SELECT COUNT(*) AS orderCount,
            AND order_date &gt;= #{from}
            AND order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND region_code = #{regionCode}
+           AND region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND owner_staff_code = #{ownerStaffCode}
@@ -294,7 +387,8 @@ SELECT COUNT(*) AS orderCount,
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-   AND o.region_code = #{regionCode}
+   AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND o.owner_staff_code = #{ownerStaffCode}
@@ -327,7 +421,8 @@ SELECT COUNT(*) AS orderCount,
                AND c.deleted = 0
                AND c.status_code = 'ACTIVE'
             <if test="regionCode != null">
-               AND c.region_code = #{regionCode}
+               AND c.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="ownerStaffCode != null">
                AND c.owner_staff_code = #{ownerStaffCode}
@@ -361,7 +456,8 @@ WITH base_customers AS (
        AND c.deleted = 0
        AND c.status_code = 'ACTIVE'
 <if test="regionCode != null">
-       AND c.region_code = #{regionCode}
+       AND c.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND c.owner_staff_code = #{ownerStaffCode}
@@ -384,7 +480,8 @@ period_orders AS (
        AND o.order_date &gt;= #{from}
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-       AND o.region_code = #{regionCode}
+       AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND o.owner_staff_code = #{ownerStaffCode}
@@ -404,7 +501,8 @@ history_orders AS (
        AND o.order_status_code &lt;&gt; 'CANCELLED'
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-       AND o.region_code = #{regionCode}
+       AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND o.owner_staff_code = #{ownerStaffCode}
@@ -425,7 +523,8 @@ period_payments AS (
        AND p.payment_time &gt;= #{from}
        AND p.payment_time &lt;= #{to}
 <if test="regionCode != null">
-       AND p.region_code = #{regionCode}
+       AND p.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND p.owner_staff_code = #{ownerStaffCode}
@@ -536,7 +635,8 @@ WITH base_customers AS (
        AND c.deleted = 0
        AND c.status_code = 'ACTIVE'
 <if test="regionCode != null">
-       AND c.region_code = #{regionCode}
+       AND c.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND c.owner_staff_code = #{ownerStaffCode}
@@ -559,7 +659,8 @@ period_orders AS (
        AND o.order_date &gt;= #{from}
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-       AND o.region_code = #{regionCode}
+       AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND o.owner_staff_code = #{ownerStaffCode}
@@ -579,7 +680,8 @@ history_orders AS (
        AND o.order_status_code &lt;&gt; 'CANCELLED'
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-       AND o.region_code = #{regionCode}
+       AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND o.owner_staff_code = #{ownerStaffCode}
@@ -600,7 +702,8 @@ period_payments AS (
        AND p.payment_time &gt;= #{from}
        AND p.payment_time &lt;= #{to}
 <if test="regionCode != null">
-       AND p.region_code = #{regionCode}
+       AND p.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND p.owner_staff_code = #{ownerStaffCode}
@@ -722,7 +825,8 @@ WITH base_customers AS (
        AND c.deleted = 0
        AND c.status_code = 'ACTIVE'
 <if test="regionCode != null">
-       AND c.region_code = #{regionCode}
+       AND c.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND c.owner_staff_code = #{ownerStaffCode}
@@ -745,7 +849,8 @@ period_orders AS (
        AND o.order_date &gt;= #{from}
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-       AND o.region_code = #{regionCode}
+       AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND o.owner_staff_code = #{ownerStaffCode}
@@ -765,7 +870,8 @@ history_orders AS (
        AND o.order_status_code &lt;&gt; 'CANCELLED'
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-       AND o.region_code = #{regionCode}
+       AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND o.owner_staff_code = #{ownerStaffCode}
@@ -786,7 +892,8 @@ period_payments AS (
        AND p.payment_time &gt;= #{from}
        AND p.payment_time &lt;= #{to}
 <if test="regionCode != null">
-       AND p.region_code = #{regionCode}
+       AND p.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND p.owner_staff_code = #{ownerStaffCode}
@@ -904,7 +1011,8 @@ SELECT COUNT(*) AS paymentCount,
    AND p.payment_time &gt;= #{from}
    AND p.payment_time &lt;= #{to}
 <if test="regionCode != null">
-   AND p.region_code = #{regionCode}
+   AND p.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND p.owner_staff_code = #{ownerStaffCode}
@@ -939,7 +1047,8 @@ SELECT COUNT(*) AS paymentCount,
                AND cost_date &gt;= #{from}
                AND cost_date &lt;= #{to}
             <if test="regionCode != null">
-               AND region_code = #{regionCode}
+               AND region_code""" + REGION_SCOPE + """
+
             </if>
             </script>
             """)
@@ -972,7 +1081,8 @@ SELECT COALESCE(SUM(l.line_amount), 0) AS salesAmount,
    AND l.order_date &gt;= #{from}
    AND l.order_date &lt;= #{to}
 <if test="regionCode != null">
-   AND l.region_code = #{regionCode}
+   AND l.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND l.owner_staff_code = #{ownerStaffCode}
@@ -1025,7 +1135,8 @@ SELECT COALESCE(SUM(o.unpaid_amount), 0) AS riskAmount,
            AND order_date &gt;= #{from}
            AND order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND region_code = #{regionCode}
+           AND region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND owner_staff_code = #{ownerStaffCode}
@@ -1045,7 +1156,8 @@ SELECT COALESCE(SUM(o.unpaid_amount), 0) AS riskAmount,
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-   AND o.region_code = #{regionCode}
+   AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND o.owner_staff_code = #{ownerStaffCode}
@@ -1081,7 +1193,8 @@ SELECT COALESCE(SUM(o.unpaid_amount), 0) AS riskAmount,
                AND o.order_date &gt;= #{from}
                AND o.order_date &lt;= #{to}
             <if test="regionCode != null">
-                   AND o.region_code = #{regionCode}
+                   AND o.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="ownerStaffCode != null">
                    AND o.owner_staff_code = #{ownerStaffCode}
@@ -1118,7 +1231,8 @@ SELECT 'receipt_amount' AS metricCode,
    AND p.payment_time &gt;= #{from}
    AND p.payment_time &lt;= #{to}
 <if test="regionCode != null">
-   AND p.region_code = #{regionCode}
+   AND p.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND p.owner_staff_code = #{ownerStaffCode}
@@ -1166,7 +1280,8 @@ SELECT l.region_code AS regionCode,
    AND NULLIF(TRIM(l.region_code), '') IS NOT NULL
    AND UPPER(TRIM(l.region_code)) NOT IN ('UNKNOWN', 'MULTI')
 <if test="regionCode != null">
-   AND l.region_code = #{regionCode}
+   AND l.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND l.owner_staff_code = #{ownerStaffCode}
@@ -1213,7 +1328,8 @@ SELECT l.region_code AS regionCode,
                        AND UPPER(TRIM(o.region_code)) NOT IN ('UNKNOWN', 'MULTI')
                        AND o.customer_id IS NOT NULL
             <if test="regionCode != null">
-                       AND o.region_code = #{regionCode}
+                       AND o.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="ownerStaffCode != null">
                        AND o.owner_staff_code = #{ownerStaffCode}
@@ -1256,7 +1372,8 @@ SELECT p.owner_staff_code AS ownerStaffCode,
    AND NULLIF(TRIM(p.owner_staff_code), '') IS NOT NULL
    AND UPPER(TRIM(p.owner_staff_code)) NOT IN ('UNKNOWN', 'MULTI')
 <if test="regionCode != null">
-   AND p.region_code = #{regionCode}
+   AND p.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND p.owner_staff_code = #{ownerStaffCode}
@@ -1284,18 +1401,20 @@ SELECT p.owner_staff_code AS ownerStaffCode,
     @Select(
             """
 <script>
-SELECT COALESCE(NULLIF(TRIM(p.region_code), ''), 'UNKNOWN') AS regionCode,
-       COALESCE(MAX(NULLIF(TRIM(p.region_name), '')), MAX(NULLIF(TRIM(p.region_code), '')), '归属待核对') AS regionName,
+SELECT COALESCE(display_city.region_code, NULLIF(TRIM(p.region_code), ''), 'UNKNOWN') AS regionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(TRIM(p.region_name), '')), MAX(NULLIF(TRIM(p.region_code), '')), '归属待核对') AS regionName,
        COALESCE(SUM(p.paid_amount), 0) AS receiptAmount,
        COUNT(*) AS paymentCount,
        COUNT(DISTINCT p.customer_id) AS customerCount
   FROM bi_sales_payment_fact p
+""" + DISPLAY_CITY_JOIN + "p.region_code " + DISPLAY_CITY_END + """
  WHERE p.tenant_id = #{tenantId}
    AND p.deleted = 0
    AND p.payment_time &gt;= #{from}
    AND p.payment_time &lt;= #{to}
 <if test="regionCode != null">
-   AND p.region_code = #{regionCode}
+   AND p.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND p.owner_staff_code = #{ownerStaffCode}
@@ -1306,7 +1425,7 @@ SELECT COALESCE(NULLIF(TRIM(p.region_code), ''), 'UNKNOWN') AS regionCode,
 <if test="sourceSystemCode != null">
    AND p.source_system_code = #{sourceSystemCode}
 </if>
- GROUP BY COALESCE(NULLIF(TRIM(p.region_code), ''), 'UNKNOWN')
+ GROUP BY COALESCE(display_city.region_code, NULLIF(TRIM(p.region_code), ''), 'UNKNOWN')
  ORDER BY receiptAmount DESC, regionCode
 </script>
 """)
@@ -1349,7 +1468,8 @@ SELECT COUNT(DISTINCT o.customer_id) AS orderingCustomerCount,
  WHERE o.tenant_id = #{tenantId} AND o.deleted = 0
    AND o.order_status_code &lt;&gt; 'CANCELLED'
    AND o.order_date &gt;= #{from} AND o.order_date &lt;= #{to}
-<if test="regionCode != null"> AND o.region_code = #{regionCode} </if>
+<if test="regionCode != null"> AND o.region_code""" + REGION_SCOPE + """
+ </if>
 <if test="ownerStaffCode != null"> AND o.owner_staff_code = #{ownerStaffCode} </if>
 <if test="customerTypeCode != null"> AND o.customer_type_code = #{customerTypeCode} </if>
 <if test="sourceSystemCode != null"> AND o.source_system_code = #{sourceSystemCode} </if>
@@ -1377,7 +1497,8 @@ SELECT COUNT(DISTINCT o.customer_id) AS orderingCustomerCount,
                AND cost_date &gt;= #{from}
                AND cost_date &lt;= #{to}
             <if test="regionCode != null">
-               AND region_code = #{regionCode}
+               AND region_code""" + REGION_SCOPE + """
+
             </if>
              GROUP BY DATE_FORMAT(TIMESTAMPADD(HOUR, 8, cost_date), '%Y-%m-%d')
              ORDER BY period
@@ -1393,10 +1514,10 @@ SELECT COUNT(DISTINCT o.customer_id) AS orderingCustomerCount,
             """
 <script>
 SELECT 'CITY_SALES' AS rankType,
-       COALESCE(o.region_code, 'UNKNOWN') AS dimensionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS dimensionName,
-       COALESCE(o.region_code, 'UNKNOWN') AS regionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS regionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS dimensionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS dimensionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS regionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS regionName,
        COALESCE(SUM(o.payable_amount), 0) AS salesAmount,
        COALESCE(SUM(o.paid_amount), 0) AS paidAmount,
        COALESCE(SUM(o.unpaid_amount), 0) AS unpaidAmount,
@@ -1405,13 +1526,15 @@ SELECT 'CITY_SALES' AS rankType,
        CASE WHEN COALESCE(SUM(o.payable_amount), 0) = 0 THEN 0
             ELSE COALESCE(SUM(o.paid_amount), 0) / COALESCE(SUM(o.payable_amount), 0) * 100 END AS rate
   FROM bi_sales_order_fact o
+""" + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
    AND o.order_status_code &lt;&gt; 'CANCELLED'
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-   AND o.region_code = #{regionCode}
+   AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND o.owner_staff_code = #{ownerStaffCode}
@@ -1422,7 +1545,7 @@ SELECT 'CITY_SALES' AS rankType,
 <if test="sourceSystemCode != null">
    AND o.source_system_code = #{sourceSystemCode}
 </if>
- GROUP BY COALESCE(o.region_code, 'UNKNOWN')
+ GROUP BY COALESCE(display_city.region_code, o.region_code, 'UNKNOWN')
  ORDER BY salesAmount DESC, orderCount DESC
 </script>
 """)
@@ -1439,10 +1562,10 @@ SELECT 'CITY_SALES' AS rankType,
             """
 <script>
 SELECT 'CITY_COLLECTION_RATE' AS rankType,
-       COALESCE(o.region_code, 'UNKNOWN') AS dimensionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS dimensionName,
-       COALESCE(o.region_code, 'UNKNOWN') AS regionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS regionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS dimensionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS dimensionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS regionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS regionName,
        COALESCE(SUM(o.payable_amount), 0) AS salesAmount,
        COALESCE(SUM(o.paid_amount), 0) AS paidAmount,
        COALESCE(SUM(o.unpaid_amount), 0) AS unpaidAmount,
@@ -1451,13 +1574,15 @@ SELECT 'CITY_COLLECTION_RATE' AS rankType,
        CASE WHEN COALESCE(SUM(o.payable_amount), 0) = 0 THEN 0
             ELSE COALESCE(SUM(o.paid_amount), 0) / COALESCE(SUM(o.payable_amount), 0) * 100 END AS rate
   FROM bi_sales_order_fact o
+""" + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
    AND o.order_status_code &lt;&gt; 'CANCELLED'
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-   AND o.region_code = #{regionCode}
+   AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND o.owner_staff_code = #{ownerStaffCode}
@@ -1468,7 +1593,7 @@ SELECT 'CITY_COLLECTION_RATE' AS rankType,
 <if test="sourceSystemCode != null">
    AND o.source_system_code = #{sourceSystemCode}
 </if>
- GROUP BY COALESCE(o.region_code, 'UNKNOWN')
+ GROUP BY COALESCE(display_city.region_code, o.region_code, 'UNKNOWN')
 HAVING salesAmount &gt; 0
  ORDER BY rate DESC, paidAmount DESC, salesAmount DESC
  LIMIT 50
@@ -1510,7 +1635,8 @@ SELECT 'SALES_OWNER' AS rankType,
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-   AND o.region_code = #{regionCode}
+   AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND o.owner_staff_code = #{ownerStaffCode}
@@ -1546,7 +1672,8 @@ SELECT DISTINCT COALESCE(o.owner_staff_code, 'UNKNOWN') AS dimensionCode,
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0 AND o.order_status_code &lt;&gt; 'CANCELLED'
    AND o.order_date &gt;= #{from} AND o.order_date &lt;= #{to}
-<if test="regionCode != null">AND o.region_code = #{regionCode}</if>
+<if test="regionCode != null">AND o.region_code""" + REGION_SCOPE + """
+</if>
 <if test="ownerStaffCode != null">AND o.owner_staff_code = #{ownerStaffCode}</if>
 <if test="customerTypeCode != null">AND o.customer_type_code = #{customerTypeCode}</if>
 <if test="sourceSystemCode != null">AND o.source_system_code = #{sourceSystemCode}</if>
@@ -1588,7 +1715,8 @@ SELECT DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m') AS period,
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-       AND o.region_code = #{regionCode}
+       AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND o.owner_staff_code = #{ownerStaffCode}
@@ -1644,7 +1772,8 @@ SELECT DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m') AS period,
                        AND o.order_date &gt;= #{from}
                        AND o.order_date &lt;= #{to}
             <if test="regionCode != null">
-                       AND o.region_code = #{regionCode}
+                       AND o.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="ownerStaffCode != null">
                        AND o.owner_staff_code = #{ownerStaffCode}
@@ -1674,10 +1803,10 @@ SELECT DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m') AS period,
             """
 <script>
 SELECT 'PAYMENT_RISK_CITY' AS rankType,
-       COALESCE(o.region_code, 'UNKNOWN') AS dimensionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS dimensionName,
-       COALESCE(o.region_code, 'UNKNOWN') AS regionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS regionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS dimensionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS dimensionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS regionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS regionName,
        COALESCE(SUM(o.payable_amount), 0) AS salesAmount,
        COALESCE(SUM(o.paid_amount), 0) AS paidAmount,
        COALESCE(SUM(o.unpaid_amount), 0) AS unpaidAmount,
@@ -1686,6 +1815,7 @@ SELECT 'PAYMENT_RISK_CITY' AS rankType,
        CASE WHEN COALESCE(SUM(o.payable_amount), 0) = 0 THEN 0
             ELSE COALESCE(SUM(o.paid_amount), 0) / COALESCE(SUM(o.payable_amount), 0) * 100 END AS rate
   FROM bi_sales_order_fact o
+""" + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
    AND o.order_status_code &lt;&gt; 'CANCELLED'
@@ -1694,7 +1824,8 @@ SELECT 'PAYMENT_RISK_CITY' AS rankType,
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-   AND o.region_code = #{regionCode}
+   AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND o.owner_staff_code = #{ownerStaffCode}
@@ -1705,7 +1836,7 @@ SELECT 'PAYMENT_RISK_CITY' AS rankType,
 <if test="sourceSystemCode != null">
    AND o.source_system_code = #{sourceSystemCode}
 </if>
- GROUP BY COALESCE(o.region_code, 'UNKNOWN')
+ GROUP BY COALESCE(display_city.region_code, o.region_code, 'UNKNOWN')
  ORDER BY unpaidAmount DESC, rate ASC
  LIMIT 20
 </script>
@@ -1748,7 +1879,8 @@ SELECT 'PAYMENT_RISK_OWNER' AS rankType,
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-   AND o.region_code = #{regionCode}
+   AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND o.owner_staff_code = #{ownerStaffCode}
@@ -1810,7 +1942,8 @@ SELECT bucketCode,
            AND o.order_date &gt;= #{from}
            AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND o.region_code = #{regionCode}
+           AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND o.owner_staff_code = #{ownerStaffCode}
@@ -1848,7 +1981,8 @@ WITH scoped_lines AS (
        AND l.order_status_code &lt;&gt; 'CANCELLED'
        AND l.order_date &gt;= #{from}
        AND l.order_date &lt;= #{to}
-    <if test="regionCode != null">AND l.region_code = #{regionCode}</if>
+    <if test="regionCode != null">AND l.region_code""" + REGION_SCOPE + """
+</if>
     <if test="ownerStaffCode != null">AND l.owner_staff_code = #{ownerStaffCode}</if>
     <if test="customerTypeCode != null">AND l.customer_type_code = #{customerTypeCode}</if>
     <if test="sourceSystemCode != null">AND l.source_system_code = #{sourceSystemCode}</if>
@@ -1949,7 +2083,8 @@ SELECT 'SKU' AS rankType,
    AND l.order_date &gt;= #{from}
    AND l.order_date &lt;= #{to}
 <if test="regionCode != null">
-   AND l.region_code = #{regionCode}
+   AND l.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND l.owner_staff_code = #{ownerStaffCode}
@@ -1989,7 +2124,8 @@ WITH scoped_lines AS (
        AND l.order_status_code &lt;&gt; 'CANCELLED'
        AND l.order_date &gt;= #{from}
        AND l.order_date &lt;= #{to}
-    <if test="regionCode != null">AND l.region_code = #{regionCode}</if>
+    <if test="regionCode != null">AND l.region_code""" + REGION_SCOPE + """
+</if>
     <if test="ownerStaffCode != null">AND l.owner_staff_code = #{ownerStaffCode}</if>
     <if test="customerTypeCode != null">AND l.customer_type_code = #{customerTypeCode}</if>
     <if test="sourceSystemCode != null">AND l.source_system_code = #{sourceSystemCode}</if>
@@ -2076,7 +2212,8 @@ SELECT 'BRAND' AS rankType,
    AND l.order_date &gt;= #{from}
    AND l.order_date &lt;= #{to}
 <if test="regionCode != null">
-   AND l.region_code = #{regionCode}
+   AND l.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
    AND l.owner_staff_code = #{ownerStaffCode}
@@ -2200,7 +2337,8 @@ WITH sales_rows AS (
        AND l.order_date &lt;= #{to}
        AND l.product_id IS NOT NULL
 <if test="regionCode != null">
-       AND l.region_code = #{regionCode}
+       AND l.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
        AND l.owner_staff_code = #{ownerStaffCode}
@@ -2240,7 +2378,8 @@ inventory_rows AS (
        )
        AND b.product_id IS NOT NULL
 <if test="regionCode != null">
-       AND b.region_code = #{regionCode}
+       AND b.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="productCategoryId != null">
        AND (b.product_category_id = #{productCategoryId} OR b.product_category_id IN (SELECT descendant_id FROM bi_product_category_closure WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId}))
@@ -2335,34 +2474,38 @@ SELECT cc.regionCode AS regionCode,
        cc.recordCount AS recordCount,
        cc.latestCostTime AS latestCostTime
   FROM (
-        SELECT region_code AS regionCode,
-               COALESCE(MAX(region_name), region_code) AS regionName,
+        SELECT COALESCE(display_city.region_code,c.region_code) AS regionCode,
+               COALESCE(MAX(display_city.city_name),MAX(c.region_name),MAX(c.region_code)) AS regionName,
                COALESCE(SUM(cost_amount), 0) AS costAmount,
                COALESCE(SUM(budget_amount), 0) AS budgetAmount,
                COALESCE(SUM(cost_amount), 0) - COALESCE(SUM(budget_amount), 0) AS varianceAmount,
                COUNT(*) AS recordCount,
                MAX(cost_date) AS latestCostTime
-          FROM bi_city_cost_record
-         WHERE tenant_id = #{tenantId}
+          FROM bi_city_cost_record c
+""" + DISPLAY_CITY_JOIN + "c.region_code " + DISPLAY_CITY_END + """
+         WHERE c.tenant_id = #{tenantId}
            AND deleted = 0
            AND cost_date &gt;= #{from}
            AND cost_date &lt;= #{to}
 <if test="regionCode != null">
-           AND region_code = #{regionCode}
+           AND c.region_code""" + REGION_SCOPE + """
+
 </if>
-         GROUP BY region_code
+         GROUP BY COALESCE(display_city.region_code,c.region_code)
   ) cc
   LEFT JOIN (
-        SELECT COALESCE(region_code, 'UNKNOWN') AS regionCode,
+        SELECT COALESCE(display_city.region_code,o.region_code, 'UNKNOWN') AS regionCode,
                COALESCE(SUM(payable_amount), 0) AS salesAmount
-          FROM bi_sales_order_fact
-         WHERE tenant_id = #{tenantId}
+          FROM bi_sales_order_fact o
+""" + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
+         WHERE o.tenant_id = #{tenantId}
            AND deleted = 0
            AND order_status_code &lt;&gt; 'CANCELLED'
            AND order_date &gt;= #{from}
            AND order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND region_code = #{regionCode}
+           AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND owner_staff_code = #{ownerStaffCode}
@@ -2373,7 +2516,7 @@ SELECT cc.regionCode AS regionCode,
 <if test="sourceSystemCode != null">
            AND source_system_code = #{sourceSystemCode}
 </if>
-         GROUP BY COALESCE(region_code, 'UNKNOWN')
+         GROUP BY COALESCE(display_city.region_code,o.region_code, 'UNKNOWN')
   ) s ON s.regionCode = cc.regionCode
  ORDER BY cc.costAmount DESC, cc.latestCostTime DESC
  LIMIT 50
@@ -2419,7 +2562,8 @@ SELECT 'INVENTORY' AS riskType,
             AND (b.available_quantity &lt;&gt; 0 OR b.locked_quantity &lt;&gt; 0 OR b.in_transit_quantity &lt;&gt; 0))
    )
 <if test="regionCode != null">
-   AND b.region_code = #{regionCode}
+   AND b.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="productCategoryId != null">
    AND (b.product_category_id = #{productCategoryId} OR b.product_category_id IN (SELECT descendant_id FROM bi_product_category_closure WHERE tenant_id = #{tenantId} AND ancestor_id = #{productCategoryId}))
@@ -2523,11 +2667,16 @@ SELECT 'INVENTORY' AS riskType,
     @Select(
             """
 SELECT 'REGION' AS optionType,c.region_code AS optionValue,c.city_name AS optionLabel,
+       (SELECT p.region_code FROM bi_sales_contact_city_dim p
+        WHERE p.tenant_id=c.tenant_id AND p.department_id<>c.department_id
+          AND REPLACE(REPLACE(REPLACE(c.department_path,'[',','),']',','),' ','')
+              LIKE CONCAT('%,',p.department_id,',%')
+        ORDER BY JSON_LENGTH(p.department_path) DESC,p.region_code LIMIT 1) AS parentOptionValue,
        COUNT(o.order_id) AS usageCount
   FROM bi_sales_contact_city_dim c
   LEFT JOIN bi_sales_order_fact o ON o.tenant_id=c.tenant_id AND o.region_code=c.region_code AND o.deleted=0
  WHERE c.tenant_id=#{tenantId}
- GROUP BY c.region_code,c.city_name
+ GROUP BY c.region_code,c.city_name,c.tenant_id,c.department_id,c.department_path
  ORDER BY usageCount DESC,c.region_code
 """)
     List<Map<String, Object>> regionOptions(@Param("tenantId") String tenantId);
@@ -2740,7 +2889,8 @@ SELECT 'SALES_ORDER' AS subjectCode,
            AND o.order_date &gt;= #{from}
            AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND o.region_code = #{regionCode}
+           AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND NULLIF(o.owner_employee_code, '') = #{ownerStaffCode}
@@ -2760,7 +2910,8 @@ SELECT 'SALES_ORDER' AS subjectCode,
            AND b.order_date &gt;= #{from}
            AND b.order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND b.region_code = #{regionCode}
+           AND b.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND b.owner_staff_code = #{ownerStaffCode}
@@ -2786,7 +2937,8 @@ SELECT 'SALES_ORDER' AS subjectCode,
            AND o.order_date &gt;= #{from}
            AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND o.region_code = #{regionCode}
+           AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND NULLIF(o.owner_employee_code, '') = #{ownerStaffCode}
@@ -2806,7 +2958,8 @@ SELECT 'SALES_ORDER' AS subjectCode,
            AND b.order_date &gt;= #{from}
            AND b.order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND b.region_code = #{regionCode}
+           AND b.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND b.owner_staff_code = #{ownerStaffCode}
@@ -3045,7 +3198,8 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
            AND p.payment_time &gt;= #{from}
            AND p.payment_time &lt;= #{to}
 <if test="regionCode != null">
-           AND o.region_code = #{regionCode}
+           AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND
@@ -3066,7 +3220,8 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
            AND b.payment_time &gt;= #{from}
            AND b.payment_time &lt;= #{to}
 <if test="regionCode != null">
-           AND b.region_code = #{regionCode}
+           AND b.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND b.owner_staff_code = #{ownerStaffCode}
@@ -3093,7 +3248,8 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
            AND p.payment_time &gt;= #{from}
            AND p.payment_time &lt;= #{to}
 <if test="regionCode != null">
-           AND o.region_code = #{regionCode}
+           AND o.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND
@@ -3114,7 +3270,8 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
            AND b.payment_time &gt;= #{from}
            AND b.payment_time &lt;= #{to}
 <if test="regionCode != null">
-           AND b.region_code = #{regionCode}
+           AND b.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND b.owner_staff_code = #{ownerStaffCode}
@@ -3149,7 +3306,8 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
                        AND c.deleted = 0
                        AND c.status_code = 'ACTIVE'
             <if test="regionCode != null">
-                       AND c.region_code = #{regionCode}
+                       AND c.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="ownerStaffCode != null">
                        AND c.owner_employee_code = #{ownerStaffCode}
@@ -3164,7 +3322,8 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
                        AND b.deleted = 0
                        AND b.status_code = 'ACTIVE'
             <if test="regionCode != null">
-                       AND b.region_code = #{regionCode}
+                       AND b.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="ownerStaffCode != null">
                        AND b.owner_staff_code = #{ownerStaffCode}
@@ -3213,7 +3372,8 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
                             OR contact.party_id IS NOT NULL
                        )
             <if test="regionCode != null">
-                       AND c.region_code = #{regionCode}
+                       AND c.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="ownerStaffCode != null">
                        AND c.owner_employee_code = #{ownerStaffCode}
@@ -3229,7 +3389,8 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
                        AND b.status_code = 'ACTIVE'
                        AND b.has_contact = 1
             <if test="regionCode != null">
-                       AND b.region_code = #{regionCode}
+                       AND b.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="ownerStaffCode != null">
                        AND b.owner_staff_code = #{ownerStaffCode}
@@ -3357,7 +3518,8 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
                        AND b.order_date &gt;= #{from}
                        AND b.order_date &lt;= #{to}
             <if test="regionCode != null">
-                       AND b.region_code = #{regionCode}
+                       AND b.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="ownerStaffCode != null">
                        AND b.owner_staff_code = #{ownerStaffCode}
@@ -3411,7 +3573,8 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
                        AND b.order_date &gt;= #{from}
                        AND b.order_date &lt;= #{to}
             <if test="regionCode != null">
-                       AND b.region_code = #{regionCode}
+                       AND b.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="ownerStaffCode != null">
                        AND b.owner_staff_code = #{ownerStaffCode}
@@ -3484,7 +3647,8 @@ SELECT 'ESTIMATED_GROSS_PROFIT' AS subjectCode,
            AND b.order_date &gt;= #{from}
            AND b.order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND b.region_code = #{regionCode}
+           AND b.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND b.owner_staff_code = #{ownerStaffCode}
@@ -3556,7 +3720,8 @@ SELECT 'ESTIMATED_GROSS_PROFIT' AS subjectCode,
            AND b.order_date &gt;= #{from}
            AND b.order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND b.region_code = #{regionCode}
+           AND b.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND b.owner_staff_code = #{ownerStaffCode}
@@ -3627,7 +3792,8 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
            AND b.order_date &gt;= #{from}
            AND b.order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND b.region_code = #{regionCode}
+           AND b.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND b.owner_staff_code = #{ownerStaffCode}
@@ -3678,7 +3844,8 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
            AND b.order_date &gt;= #{from}
            AND b.order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND b.region_code = #{regionCode}
+           AND b.region_code""" + REGION_SCOPE + """
+
 </if>
 <if test="ownerStaffCode != null">
            AND b.owner_staff_code = #{ownerStaffCode}
@@ -3731,7 +3898,8 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
                             OR s.in_transit_quantity &lt;&gt; 0
                        )
             <if test="regionCode != null">
-                       AND w.region_code = #{regionCode}
+                       AND w.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="productCategoryId != null">
                        AND p.category_id = #{productCategoryId}
@@ -3747,7 +3915,8 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
                             OR b.in_transit_quantity &lt;&gt; 0
                        )
             <if test="regionCode != null">
-                       AND b.region_code = #{regionCode}
+                       AND b.region_code""" + REGION_SCOPE + """
+
             </if>
             <if test="productCategoryId != null">
                        AND b.product_category_id = #{productCategoryId}
@@ -3885,7 +4054,8 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
                        AND c.cost_date &gt;= #{from}
                        AND c.cost_date &lt;= #{to}
             <if test="regionCode != null">
-                       AND c.region_code = #{regionCode}
+                       AND c.region_code""" + REGION_SCOPE + """
+
             </if>
                    ) AS businessRowCount,
                    (SELECT COUNT(*)
@@ -3895,7 +4065,8 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
                        AND c.cost_date &gt;= #{from}
                        AND c.cost_date &lt;= #{to}
             <if test="regionCode != null">
-                       AND c.region_code = #{regionCode}
+                       AND c.region_code""" + REGION_SCOPE + """
+
             </if>
                    ) AS biRowCount,
                    0 AS sourceAmount,
@@ -3906,7 +4077,8 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
                        AND c.cost_date &gt;= #{from}
                        AND c.cost_date &lt;= #{to}
             <if test="regionCode != null">
-                       AND c.region_code = #{regionCode}
+                       AND c.region_code""" + REGION_SCOPE + """
+
             </if>
                    ) AS businessAmount,
                    (SELECT COALESCE(SUM(c.cost_amount), 0)
@@ -3916,7 +4088,8 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
                        AND c.cost_date &gt;= #{from}
                        AND c.cost_date &lt;= #{to}
             <if test="regionCode != null">
-                       AND c.region_code = #{regionCode}
+                       AND c.region_code""" + REGION_SCOPE + """
+
             </if>
                    ) AS biAmount
             </script>

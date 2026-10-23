@@ -1,5 +1,6 @@
 package com.rigour.analytics.api.v1;
 
+import com.rigour.analytics.api.v1.model.SupplyDashboardReceiptDetailsView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostImportCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostImportResultView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardDataTrustView;
@@ -50,6 +51,18 @@ public interface AnalyticsSupplyDashboardApi {
             @RequestParam(required = false) String customerTypeCode,
             @RequestParam(required = false) Long productCategoryId,
             @RequestParam(required = false) String sourceSystemCode);
+
+    @GetMapping("/api/v1/analytics/supply/dashboard/receipt-details")
+    ApiResponse<SupplyDashboardReceiptDetailsView> receiptDetails(
+            @RequestParam String kind,
+            @RequestParam Instant from, @RequestParam Instant to,
+            @RequestParam(required = false) String regionCode,
+            @RequestParam(required = false) String ownerStaffCode,
+            @RequestParam(required = false) String customerTypeCode,
+            @RequestParam(required = false) String sourceSystemCode,
+            @RequestParam(required = false) Long productCategoryId,
+            @RequestParam(defaultValue = "0") int begin,
+            @RequestParam(defaultValue = "20") int step);
 
     @PostMapping(REFRESH_RUNS_PATH)
     ApiResponse<SupplyDashboardRefreshRunView> triggerRefreshRun(

@@ -12,6 +12,7 @@ class VisitAnalyticsRepositoryTest {
     @Test void aggregatesDistinctStoresSeparatelyAndKeepsEveryScope() {
         var ds = new DriverManagerDataSource("jdbc:h2:mem:visits_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", "");
         var jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE bi_sales_contact_city_dim(tenant_id VARCHAR,region_code VARCHAR,department_id BIGINT,department_path VARCHAR)");
         jdbc.execute("CREATE TABLE bi_sales_contact_snapshot (tenant_id VARCHAR, synced_time TIMESTAMP, business_links_ready INT)");
         jdbc.execute("CREATE TABLE bi_employee_dim (tenant_id VARCHAR, employee_code VARCHAR, employee_name VARCHAR)");
         jdbc.execute("CREATE TABLE bi_sales_contact_fact (tenant_id VARCHAR, store_id VARCHAR, region_code VARCHAR, city_name VARCHAR, submitted_at TIMESTAMP, review_status VARCHAR, salesperson_id VARCHAR, owner_staff_code VARCHAR, customer_code VARCHAR)");

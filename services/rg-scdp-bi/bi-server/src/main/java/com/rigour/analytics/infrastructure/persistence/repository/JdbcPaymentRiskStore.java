@@ -10,6 +10,7 @@ import javax.sql.DataSource;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import static com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.JDBC_REGION_SCOPE;
 
 @Repository
 public class JdbcPaymentRiskStore implements PaymentRiskStore {
@@ -26,6 +27,21 @@ public class JdbcPaymentRiskStore implements PaymentRiskStore {
                  WHERE tenant_id=:tenant AND deleted=0 ORDER BY ordinal,category_id
                 """, new MapSqlParameterSource("tenant", tenant),
                 (r, n) -> new Category(r.getString(1), r.getString(2), r.getString(3)));
+    }
+
+    @Override
+    public List<com.rigour.analytics.api.v1.model.PaymentRiskView.Region> regions(String tenant) {
+        return BiScopedQueries.query(jdbc, """
+            SELECT c.region_code,c.city_name,
+              (SELECT p.region_code FROM bi_sales_contact_city_dim p
+               WHERE p.tenant_id=c.tenant_id AND p.department_id<>c.department_id
+                 AND REPLACE(REPLACE(REPLACE(c.department_path,'[',','),']',','),' ','')
+                   LIKE CONCAT('%,',p.department_id,',%')
+               ORDER BY JSON_LENGTH(p.department_path) DESC,p.region_code LIMIT 1) parent_code
+            FROM bi_sales_contact_city_dim c WHERE c.tenant_id=:tenant
+            """, new MapSqlParameterSource("tenant",tenant),
+            (r,n) -> new com.rigour.analytics.api.v1.model.PaymentRiskView.Region(
+                r.getString(1),r.getString(2),r.getString(3)));
     }
 
     @Override
@@ -47,7 +63,8 @@ public class JdbcPaymentRiskStore implements PaymentRiskStore {
                  WHERE o.tenant_id=:tenant AND o.deleted=0 AND COALESCE(o.order_status_code,'')<>'CANCELLED'
                    AND o.payable_amount>0 AND o.paid_amount<o.payable_amount
                    AND o.order_date BETWEEN :from AND :to
-                   AND (:region IS NULL OR o.region_code=:region)
+                   AND (:region IS NULL OR o.region_code""" + JDBC_REGION_SCOPE + """
+)
                    AND (:owner IS NULL OR o.owner_staff_code=:owner)
                  ORDER BY o.order_date,o.order_id,l.order_line_id LIMIT :limit
                 """, args, (r, n) -> new Fact(

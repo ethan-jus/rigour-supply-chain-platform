@@ -116,7 +116,7 @@ public class OrderRegisterService {
                         text(paymentStatusCode, 64, "paymentStatusCode"),
                         hasUnpaid,
                         invoiceStatusCode(invoiceStatusCode),
-                        dhbLinked, text(dhbOrderNo, 80, "dhbOrderNo"), hasDiscount, sortBy, sortDirection, text(createdBy, 200, "createdBy"), paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments));
+                        dhbLinked, text(dhbOrderNo, 80, "dhbOrderNo"), hasDiscount, sortBy, sortDirection, text(createdBy, 200, "createdBy"), paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments), departmentRegions(actor, departmentId));
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         var result = store.orders(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withInvoiceStatuses(
@@ -225,7 +225,7 @@ public class OrderRegisterService {
                         text(productKeyword, 200, "productKeyword"),
                         text(productCode, 128, "productCode"),
                         filterProductIds(productIds),
-                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection, null, productVariantIds, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments));
+                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection, null, productVariantIds, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments), departmentRegions(actor, departmentId));
         var result = store.lines(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withDepartmentNames(actor, withRegionNames(actor, result));
     }
@@ -279,7 +279,7 @@ public class OrderRegisterService {
                         paymentTimeFrom,
                         paymentTimeTo,
                         text(sortBy, 32, "sortBy"),
-                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, null, productVariantIds, departmentEmployeeCodes(actor, departmentId, includeSubDepartments));
+                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, null, productVariantIds, departmentEmployeeCodes(actor, departmentId, includeSubDepartments), departmentRegions(actor, departmentId));
         var result = store.payments(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         var page = withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
         var numbers = store.voucherTransactionNos(actor.tenantId().toString(), page.items().stream().map(OrderRegisterPaymentView::id).toList());
@@ -573,10 +573,22 @@ public class OrderRegisterService {
         return item;
     }
 
+    private Map<String, Long> departmentRegions(CallerIdentity actor, Long departmentId) {
+        if (departmentId == null) return Map.of();
+        try {
+            return OrderDepartmentRegions.ids(hrEmployeeDisplayClient.departments(hrServiceCaller(actor.tenantId())),
+                    crmAreaDisplayClient.all(crmServiceCaller(actor.tenantId())));
+        } catch (RuntimeException exception) {
+            throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "订单地区部门暂时无法解析，请稍后重试", List.of());
+        }
+    }
+
     /** 用业务员当前 HR 员工档案补齐部门名；归属快照缺失时列表仍可展示部门。 */
     private <T> OrderRegisterPage<T> withDepartmentNames(
             CallerIdentity actor, OrderRegisterPage<T> page) {
         if (page == null || page.items().isEmpty()) return page;
+        Map<String, HrEmployeeDisplayClient.DepartmentDisplay> cities = OrderDepartmentRegions.byName(
+                hrEmployeeDisplayClient.departments(hrServiceCaller(actor.tenantId())));
         Set<String> employeeCodes = new LinkedHashSet<>();
         for (T item : page.items()) {
             String code = employeeCodeOf(item);
@@ -584,7 +596,7 @@ public class OrderRegisterService {
                 employeeCodes.add(code.strip());
             }
         }
-        if (employeeCodes.isEmpty()) return page;
+        if (employeeCodes.isEmpty() && cities.isEmpty()) return page;
         Map<String, String> departments = new LinkedHashMap<>();
         try {
             for (HrEmployeeDisplayClient.EmployeeDisplay display :
@@ -596,17 +608,21 @@ public class OrderRegisterService {
         } catch (RuntimeException ignored) {
             // 部门展示名补齐失败不阻断登记列表；业务员和地区仍可正常展示。
         }
-        if (departments.isEmpty()) return page;
-        List<T> items = page.items().stream().map(item -> withDepartmentName(item, departments)).toList();
+        if (departments.isEmpty() && cities.isEmpty()) return page;
+        List<T> items = page.items().stream().map(item -> withDepartmentName(item, departments, cities)).toList();
         return new OrderRegisterPage<>(
                 page.total(), page.begin(), page.step(), items, page.totals(), page.coverage());
     }
 
     @SuppressWarnings("unchecked")
-    private static <T> T withDepartmentName(T item, Map<String, String> departments) {
+    private static <T> T withDepartmentName(T item, Map<String, String> departments, Map<String, HrEmployeeDisplayClient.DepartmentDisplay> cities) {
         if (departmentNameOf(item) != null) return item;
         String code = employeeCodeOf(item);
-        String department = code == null ? null : departments.get(code.strip());
+        String region = item instanceof OrderRegisterOrderView v ? v.regionName()
+                : item instanceof OrderRegisterLineView v ? v.regionName()
+                : item instanceof OrderRegisterPaymentView v ? v.regionName() : null;
+        var city = cities.get(OrderDepartmentRegions.normalize(region));
+        String department = city != null ? city.name() : code == null ? null : departments.get(code.strip());
         if (department == null || department.isBlank()) return item;
         if (item instanceof OrderRegisterOrderView v) {
             return (T)
@@ -614,7 +630,7 @@ public class OrderRegisterService {
                             v.id(), v.orderNo(), v.legacyOrderNo(), v.sourceSystemCode(),
                             v.sourceOrderNo(), v.dhbOrderNo(), v.orderNumberState(), v.customerId(), v.customerCode(),
                             v.customerName(), v.regionCode(), v.regionName(), v.ownerEmployeeCode(),
-                            v.ownerEmployeeName(), v.departmentId(), department, v.orderStatusCode(),
+                            v.ownerEmployeeName(), city != null ? city.id() : v.departmentId(), department, v.orderStatusCode(),
                             v.paymentStatusCode(), v.dataQualityStatusCode(), v.invoiceStatusCode(),
                             v.invoiceStatusName(),
                             v.originalAmount(), v.payableAmount(), v.paidAmount(),
@@ -632,7 +648,7 @@ public class OrderRegisterService {
                             v.dhbOrderNo(), v.customerId(),
                             v.customerCode(), v.customerName(), v.regionCode(), v.regionName(),
                             v.ownerEmployeeCode(),
-                            v.ownerEmployeeName(), v.departmentId(), department, v.orderStatusCode(),
+                            v.ownerEmployeeName(), city != null ? city.id() : v.departmentId(), department, v.orderStatusCode(),
                             v.paymentStatusCode(), v.orderDate(), v.revision(),
                             v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
                             v.syncedBy(), v.syncedAt(), v.paymentTime());
@@ -643,7 +659,7 @@ public class OrderRegisterService {
                             v.id(), v.paymentNo(), v.sourceRecordId(), v.orderId(), v.orderNo(), v.dhbOrderNo(),
                             v.customerId(), v.customerCode(), v.customerName(), v.regionCode(),
                             v.regionName(), v.ownerEmployeeCode(), v.ownerEmployeeName(),
-                            v.departmentId(), department, v.orderDate(), v.orderAmount(),
+                            city != null ? city.id() : v.departmentId(), department, v.orderDate(), v.orderAmount(),
                             v.paidAmount(), v.paymentStatusCode(), v.paymentTime(), v.transactionNo(),
                             v.attachments(), v.attachmentViews(), v.createdBy(), v.createdTime(),
                             v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.checkedBy(),

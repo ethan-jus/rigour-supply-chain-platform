@@ -93,6 +93,162 @@ class BiSupplyScopeIntegrationTest {
             sessions.getConfiguration().addMapper(Queries.class);
     }
 
+    @Test
+    void provinceIncludesCitiesWhileCityAndAuthorizationRemainNarrow() {
+        department(1,null,"SALES","销售部"); department(27,1L,"HB","河北省");
+        department(11,27L,"SJZ","石家庄"); department(28,27L,"TS","唐山市");
+        jdbc.update("INSERT INTO bi_sales_contact_city_dim(tenant_id,region_code,city_name,department_id,department_path) VALUES(?,'HB','河北省',27,'[1,27]'),(?,'SJZ','石家庄',11,'[1,27,11]'),(?,'TS','唐山市',28,'[1,27,28]')",tenant,tenant,tenant);
+        fact(1,"A","SJZ",11,1,100);fact(2,"A","TS",28,1,80);fact(3,"B","OTHER",30,1,999);
+        jdbc.update("UPDATE bi_order_authority SET department_path=CASE department_id WHEN 11 THEN '[1,27,11]' WHEN 28 THEN '[1,27,28]' ELSE '[1,30]' END WHERE tenant_id=?",tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_status_code='CONFIRMED' WHERE tenant_id=?",tenant);
+        var from = java.time.LocalDateTime.of(2020,1,1,0,0);
+        var to = java.time.LocalDateTime.of(2030,1,1,0,0);
+        var unrestricted = policy(List.of(clause("ALL",all(),all(),all())),all(),all());
+        when(iam.authorization(any(), any())).thenReturn(unrestricted);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, unrestricted); var session = sessions.openSession()) {
+            var mapper = session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
+            assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"HB",null,null,null).get("salesAmount").toString())).isEqualByComparingTo("180");
+            var national = mapper.citySalesRanking(tenant,from,to,null,null,null,null);
+            assertThat(national).extracting(r -> r.get("dimensionCode")).containsExactly("OTHER", "HB");
+            assertThat(new java.math.BigDecimal(national.get(1).get("salesAmount").toString())).isEqualByComparingTo("180");
+            assertThat(mapper.citySalesRanking(tenant,from,to,"HB",null,null,null))
+                    .extracting(r -> r.get("dimensionCode")).containsExactly("SJZ", "TS");
+            assertThat(mapper.cityCollectionRateRanking(tenant,from,to,null,null,null,null))
+                    .extracting(r -> r.get("dimensionCode")).containsExactlyInAnyOrder("HB", "OTHER");
+            jdbc.update("INSERT INTO bi_city_cost_record(tenant_id,region_code,cost_type_code,cost_date,cost_amount,source_system_code,source_record_id) VALUES(?,'SJZ','COST',UTC_TIMESTAMP(6),10,'MANUAL_IMPORT','sjz'),(?,'TS','COST',UTC_TIMESTAMP(6),20,'MANUAL_IMPORT','ts')",tenant,tenant);
+            assertThat(mapper.cityCostRanking(tenant,from,to,null,null,null,null)).singleElement().satisfies(r -> {
+                assertThat(r.get("regionCode")).isEqualTo("HB");
+                assertThat(new java.math.BigDecimal(r.get("costAmount").toString())).isEqualByComparingTo("30");
+                assertThat(new java.math.BigDecimal(r.get("salesAmount").toString())).isEqualByComparingTo("180");
+            });
+            var risk = new com.rigour.analytics.infrastructure.persistence.repository.JdbcPaymentRiskStore(jdbc.getDataSource());
+            assertThat(risk.regions(tenant)).filteredOn(r -> "TS".equals(r.code()))
+                    .singleElement().satisfies(r -> assertThat(r.parentCode()).isEqualTo("HB"));
+            assertThat(risk.load(tenant,from.toInstant(java.time.ZoneOffset.UTC),to.toInstant(java.time.ZoneOffset.UTC),"HB",null,100))
+                    .extracting(r -> r.regionCode()).containsExactlyInAnyOrder("SJZ","TS");
+            var client = mock(com.rigour.analytics.application.port.out.HrTargetClient.class);
+            var goals = List.of("HB","SJZ","TS").stream().map(code ->
+                new com.rigour.hr.api.v1.model.TargetSettingsModels.Target("2026-10","CITY",code,code,
+                    "SALES_AMOUNT",new java.math.BigDecimal("1000"),1)).toList();
+            when(client.values(any(),any(),any())).thenReturn(goals);
+            var targets = new com.rigour.analytics.infrastructure.persistence.repository.HrDashboardTargets(client,jdbc.getDataSource(),mapper);
+            assertThat(targets.cityGoals(tenant,2026,null)).extracting(r -> r.regionCode()).containsExactly("HB");
+            var filter = new com.rigour.analytics.application.model.SupplyDashboardFilter(from.toInstant(java.time.ZoneOffset.UTC),to.toInstant(java.time.ZoneOffset.UTC),null,null,null,null,null);
+            assertThat(targets.completions(tenant,filter,"CITY",goals)).singleElement().satisfies(r -> {
+                assertThat(r.dimensionCode()).isEqualTo("HB");
+                assertThat(r.actualValue()).isEqualByComparingTo("180");
+            });
+            assertThat(targets.cityGoals(tenant,2026,"TS")).extracting(r -> r.regionCode()).containsExactly("TS");
+            // Two sibling cities share a customer: the parent count is distinct, not child-count addition.
+            jdbc.update("UPDATE bi_sales_order_fact SET customer_id=77 WHERE tenant_id=? AND order_id IN (1,2)", tenant);
+            jdbc.update("""
+                    INSERT INTO bi_sales_order_line_fact
+                        (tenant_id,order_id,order_line_id,region_code,owner_staff_code,brand_name,
+                         line_amount,order_date,order_status_code,deleted,synced_time)
+                    SELECT tenant_id,order_id,order_id,region_code,owner_staff_code,
+                           '杨掌柜 X CBSA世界斯诺克学院',payable_amount,order_date,'CONFIRMED',0,UTC_TIMESTAMP(6)
+                      FROM bi_sales_order_fact WHERE tenant_id=?
+                    """, tenant);
+            jdbc.update("""
+                    INSERT INTO bi_sales_payment_fact
+                        (tenant_id,payment_id,order_id,region_code,owner_staff_code,paid_amount,payment_time,synced_time)
+                    SELECT tenant_id,order_id,order_id,region_code,owner_staff_code,payable_amount/2,order_date,UTC_TIMESTAMP(6)
+                      FROM bi_sales_order_fact WHERE tenant_id=?
+                    """, tenant);
+            var allMetrics = new ArrayList<com.rigour.hr.api.v1.model.TargetSettingsModels.Target>();
+            for (String code : List.of("HB", "SJZ", "TS"))
+                for (String metric : List.of("SALES_AMOUNT", "RECEIPT_AMOUNT", "ORDERED_STORE_COUNT", "YANGZHANGGUI_SALES_AMOUNT"))
+                    allMetrics.add(new com.rigour.hr.api.v1.model.TargetSettingsModels.Target("2026-10", "CITY", code, code,
+                            metric, new java.math.BigDecimal("1000"), 1));
+            var completion = targets.completions(tenant, filter, "CITY", allMetrics);
+            assertThat(completion).hasSize(4).allSatisfy(r -> assertThat(r.dimensionCode()).isEqualTo("HB"));
+            for (var r : completion) assertThat(r.actualValue()).isEqualByComparingTo(switch (r.metricCode()) {
+                case "SALES_AMOUNT", "YANGZHANGGUI_SALES_AMOUNT" -> "180";
+                case "RECEIPT_AMOUNT" -> "90";
+                case "ORDERED_STORE_COUNT" -> "1";
+                default -> throw new AssertionError(r.metricCode());
+            });
+            var cityFilter = new com.rigour.analytics.application.model.SupplyDashboardFilter(
+                    filter.from(), filter.to(), "TS", null, null, null, null);
+            assertThat(targets.completions(tenant, cityFilter, "CITY", allMetrics)).hasSize(4)
+                    .allSatisfy(r -> {
+                        assertThat(r.dimensionCode()).isEqualTo("TS");
+                        assertThat(r.actualValue()).isEqualByComparingTo(switch (r.metricCode()) {
+                            case "SALES_AMOUNT", "YANGZHANGGUI_SALES_AMOUNT" -> "80";
+                            case "RECEIPT_AMOUNT" -> "40";
+                            case "ORDERED_STORE_COUNT" -> "1";
+                            default -> throw new AssertionError(r.metricCode());
+                        });
+                    });
+
+
+
+            assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"TS",null,null,null).get("salesAmount").toString())).isEqualByComparingTo("80");
+        }
+        var province = policy(List.of(clause("DEPARTMENT",specified("27"),all(),all())),all(),all());
+        when(iam.authorization(any(), any())).thenReturn(province);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, province); var session = sessions.openSession()) {
+            var mapper = session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
+            assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"HB",null,null,null).get("salesAmount").toString())).isEqualByComparingTo("180");
+        }
+        var restricted = policy(List.of(clause("DEPARTMENT",specified("28"),all(),all())),all(),all());
+        when(iam.authorization(any(), any())).thenReturn(restricted);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, restricted); var session = sessions.openSession()) {
+            var mapper = session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
+            assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"TS",null,null,null).get("salesAmount").toString())).isEqualByComparingTo("80");
+            assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"HB",null,null,null).get("salesAmount").toString())).isZero();
+        }
+    }
+
+    @Test
+    void receiptDetailsUseSameFactsDatesAndPermissionsAsCards() {
+        department(1,null,"SALES","销售部"); department(27,1L,"HB","河北省");
+        department(11,27L,"SJZ","石家庄"); department(28,27L,"TS","唐山市");
+        jdbc.update("INSERT INTO bi_sales_contact_city_dim(tenant_id,region_code,city_name,department_id,department_path) VALUES(?,'HB','河北省',27,'[1,27]'),(?,'SJZ','石家庄',11,'[1,27,11]'),(?,'TS','唐山市',28,'[1,27,28]')",tenant,tenant,tenant);
+        for (int i=1;i<=6;i++) fact(i,"A",i==2 ? "TS" : "SJZ",i==2 ? 28 : 11,1,100);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_date='2026-09-30 16:00:00',order_status_code='CONFIRMED',paid_amount=40,unpaid_amount=60 WHERE tenant_id=?",tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_date='2026-08-01' WHERE tenant_id=? AND order_id=3",tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_status_code='CANCELLED' WHERE tenant_id=? AND order_id=4",tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET deleted=1 WHERE tenant_id=? AND order_id=5",tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET unpaid_amount=0,paid_amount=100 WHERE tenant_id=? AND order_id=6",tenant);
+        jdbc.update("""
+            INSERT INTO bi_sales_payment_fact(tenant_id,payment_id,order_id,region_code,payment_time,paid_amount,synced_time,deleted)
+            VALUES (?,101,3,'SJZ','2026-10-01',40,UTC_TIMESTAMP(6),0),
+                   (?,102,2,'TS','2026-10-23 15:59:59.999999',30,UTC_TIMESTAMP(6),0),
+                   (?,103,1,'SJZ','2026-10-24',999,UTC_TIMESTAMP(6),0),
+                   (?,104,1,'SJZ','2026-10-01',999,UTC_TIMESTAMP(6),1)
+            """,tenant,tenant,tenant,tenant);
+        var from=java.time.LocalDateTime.parse("2026-09-30T16:00:00");
+        var to=java.time.LocalDateTime.parse("2026-10-23T15:59:59.999999");
+        var full=policy(List.of(clause("ALL",all(),all(),all())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(full);
+        try(var context=SupplyAuthorizationContext.open(iam,actor,full);var session=sessions.openSession()) {
+            var mapper=session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
+            var payments=mapper.receiptDetails(tenant,from,to,"HB",null,null,null,"receipts",true,0,20).getFirst();
+            assertThat(payments.get("total")).isEqualTo(2L);
+            var national = mapper.cityReceipts(tenant,from,to,null,null,null,null);
+            assertThat(national).singleElement().satisfies(r -> {
+                assertThat(r.get("regionCode")).isEqualTo("HB");
+                assertThat(new java.math.BigDecimal(r.get("receiptAmount").toString())).isEqualByComparingTo("70");
+            });
+            assertThat(mapper.cityReceipts(tenant,from,to,"HB",null,null,null))
+                    .extracting(r -> r.get("regionCode")).containsExactly("SJZ", "TS");
+
+            assertThat(payments.get("amount")).isEqualTo(mapper.collectionSummary(tenant,from,to,"HB",null,null,null).get("receiptAmount"));
+            var orders=mapper.receiptDetails(tenant,from,to,"HB",null,null,null,"unpaid",true,0,20).getFirst();
+            assertThat(orders.get("total")).isEqualTo(2L);
+            assertThat(orders.get("amount")).isEqualTo(mapper.salesSummary(tenant,from,to,"HB",null,null,null).get("unpaidAmount"));
+            assertThat(mapper.receiptDetails(tenant,from,to,"HB",null,null,null,"receipts",false,1,1)).singleElement().satisfies(row -> assertThat(row.get("id")).isEqualTo(101L));
+        }
+        var scoped=policy(List.of(clause("REGION",none(),specified("TS"),none())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(scoped);
+        try(var context=SupplyAuthorizationContext.open(iam,actor,scoped);var session=sessions.openSession()) {
+            var mapper=session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
+            assertThat(mapper.receiptDetails(tenant,from,to,"TS",null,null,null,"receipts",false,0,20)).singleElement().satisfies(row -> assertThat(row.get("id")).isEqualTo(102L));
+            assertThat(mapper.receiptDetails(tenant,from,to,"SJZ",null,null,null,"receipts",false,0,20)).isEmpty();
+        }
+    }
+
     @AfterEach
     void clear() {
         TestAuthorizationContext.clear();

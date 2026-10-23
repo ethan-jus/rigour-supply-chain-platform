@@ -51,12 +51,42 @@ public class HrDashboardTargets {
                 .toList();
     }
 
+    private Set<String> selectedRegions(String tenant, String region) {
+        if (region == null) return null;
+        var result = new HashSet<String>();
+        result.add(region);
+        result.addAll(jdbc.queryForList("SELECT region_code FROM bi_sales_contact_city_dim WHERE tenant_id=:tenant AND region_code"
+                + OperatingCitySql.JDBC_REGION_SCOPE,
+                new MapSqlParameterSource("tenant",tenant).addValue("region",region),String.class));
+        return result;
+    }
+
+    // Parent and child goals are alternative reporting levels, never additive in the same total.
+    private List<Target> reportingGoals(String tenant, List<Target> goals, String region) {
+        if (goals.stream().noneMatch(t -> "CITY".equals(t.dimensionType()))) return goals;
+        var selected = selectedRegions(tenant, region);
+        var parents = jdbc.queryForList("SELECT child.region_code childCode,parent.region_code parentCode"
+                + " FROM bi_sales_contact_city_dim child JOIN bi_sales_contact_city_dim parent"
+                + " ON parent.tenant_id=child.tenant_id AND parent.department_id<>child.department_id"
+                + " AND REPLACE(REPLACE(REPLACE(child.department_path,'[',','),']',','),' ','')"
+                + " LIKE CONCAT('%,',parent.department_id,',%') WHERE child.tenant_id=:tenant",
+                new MapSqlParameterSource("tenant", tenant));
+        var available = goals.stream().filter(t -> "CITY".equals(t.dimensionType()))
+                .filter(t -> selected == null || selected.contains(t.code())).toList();
+        return goals.stream().filter(t -> !"CITY".equals(t.dimensionType()) ||
+                ((selected == null || selected.contains(t.code())) && parents.stream().noneMatch(p ->
+                    t.code().equals(p.get("childCode")) && available.stream().anyMatch(a ->
+                        a.code().equals(p.get("parentCode")) && a.month().equals(t.month())
+                        && a.metric().equals(t.metric()))))).toList();
+    }
+
     public List<CityMonthlyGoal> cityGoals(String tenant, int year, String region) {
-        return values(tenant, year + "-01", year + "-12").stream()
+        var selected = selectedRegions(tenant, region);
+        return reportingGoals(tenant, values(tenant, year + "-01", year + "-12"), region).stream()
                 .filter(
                         t ->
                                 "CITY".equals(t.dimensionType())
-                                        && (region == null || region.equals(t.code())))
+                                        && (selected == null || selected.contains(t.code())))
                 .collect(
                         Collectors.groupingBy(
                                 t -> t.code() + ":" + t.month(), TreeMap::new, Collectors.toList()))
@@ -86,13 +116,13 @@ public class HrDashboardTargets {
 
     public List<TargetCompletionItem> completions(
             String tenant, SupplyDashboardFilter filter, String type, List<Target> goals) {
+        goals = reportingGoals(tenant, goals, filter.regionCode());
         var from = LocalDateTime.ofInstant(filter.from(), ZoneOffset.UTC);
         var to = LocalDateTime.ofInstant(filter.to(), ZoneOffset.UTC);
         boolean city = "CITY".equals(type);
         var sales =
                 city
-                        ? mapper.citySalesRanking(
-                                tenant, from, to, filter.regionCode(), null, null, null)
+                        ? List.<Map<String, Object>>of()
                         : mapper.salesRanking(
                                 tenant,
                                 from,
@@ -103,8 +133,7 @@ public class HrDashboardTargets {
                                 null);
         var receipts =
                 city
-                        ? mapper.cityReceipts(
-                                tenant, from, to, filter.regionCode(), null, null, null)
+                        ? List.<Map<String, Object>>of()
                         : mapper.salesReceipts(
                                 tenant,
                                 from,
@@ -121,16 +150,19 @@ public class HrDashboardTargets {
                                     jdbc,
                                     """
 SELECT e.employee_code FROM bi_employee_dim e
-WHERE e.tenant_id=:tenant AND e.region_code=:region
+WHERE e.tenant_id=:tenant AND e.region_code""" + OperatingCitySql.JDBC_REGION_SCOPE + """
   AND NOT EXISTS(SELECT 1 FROM bi_customer_authority a WHERE a.tenant_id=e.tenant_id
-    AND a.employee_code=e.employee_code AND (a.region_code IS NULL OR a.region_code<>:region))
+    AND a.employee_code=e.employee_code AND (a.region_code IS NULL OR NOT (a.region_code""" + OperatingCitySql.JDBC_REGION_SCOPE + """
+)))
   AND NOT EXISTS(SELECT 1 FROM bi_order_authority a WHERE a.tenant_id=e.tenant_id
-    AND a.employee_code=e.employee_code AND (a.region_code IS NULL OR a.region_code<>:region))
+    AND a.employee_code=e.employee_code AND (a.region_code IS NULL OR NOT (a.region_code""" + OperatingCitySql.JDBC_REGION_SCOPE + """
+)))
 """,
                                     new MapSqlParameterSource("tenant", tenant)
                                             .addValue("region", filter.regionCode()),
                                     (r, n) -> r.getString(1)));
         }
+        var selected = city ? selectedRegions(tenant, filter.regionCode()) : null;
         var result = new ArrayList<TargetCompletionItem>();
         var groups =
                 goals.stream()
@@ -139,7 +171,7 @@ WHERE e.tenant_id=:tenant AND e.region_code=:region
                                 g ->
                                         !city
                                                 || filter.regionCode() == null
-                                                || filter.regionCode().equals(g.code()))
+                                                || selected.contains(g.code()))
                         .filter(
                                 g ->
                                         city
@@ -149,6 +181,13 @@ WHERE e.tenant_id=:tenant AND e.region_code=:region
                                 Collectors.groupingBy(
                                         Target::code, TreeMap::new, Collectors.toList()));
         if (groups.isEmpty()) return List.of();
+        Map<String, Map<String, BigDecimal>> cityAmounts = new HashMap<>();
+        if (city && groups.values().stream().flatMap(Collection::stream)
+                .anyMatch(g -> Set.of("SALES_AMOUNT", "RECEIPT_AMOUNT").contains(g.metric())))
+            for (var row : mapper.targetCityAmounts(tenant, from, to, filter.regionCode()))
+                cityAmounts.computeIfAbsent(Objects.toString(row.get("dimensionCode"), ""),
+                        ignored -> new HashMap<>()).put(Objects.toString(row.get("metricCode"), ""),
+                        number(row, "actualValue"));
         boolean needsBusinessActuals = groups.values().stream().flatMap(Collection::stream)
                 .anyMatch(g -> Set.of("ORDERED_STORE_COUNT", "YANGZHANGGUI_SALES_AMOUNT")
                         .contains(g.metric()));
@@ -174,12 +213,15 @@ WHERE e.tenant_id=:tenant AND e.region_code=:region
                 switch (metric.getKey()) {
                     case "SALES_AMOUNT" -> {
                         label = "销售总额";
-                        actual = amount(sales, "dimensionCode", code, "salesAmount");
+                        actual = city
+                                ? cityAmounts.getOrDefault(code, Map.of()).getOrDefault("SALES_AMOUNT", BigDecimal.ZERO)
+                                : amount(sales, "dimensionCode", code, "salesAmount");
                     }
                     case "RECEIPT_AMOUNT" -> {
                         label = "回款额";
-                        actual =
-                                amount(
+                        actual = city
+                                ? cityAmounts.getOrDefault(code, Map.of()).getOrDefault("RECEIPT_AMOUNT", BigDecimal.ZERO)
+                                : amount(
                                         receipts,
                                         city ? "regionCode" : "ownerStaffCode",
                                         code,
