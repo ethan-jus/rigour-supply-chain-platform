@@ -21,6 +21,6 @@ public final class OperatingCityTestSchema {
     public static Integer jsonLength(String value) {
         if (value == null) return null;
         var node = JsonMapper.builder().build().readTree(value);
-        return node.isContainerNode() ? node.size() : 1;
+        return node.isArray() || node.isObject() ? node.size() : 1;
     }
 }
