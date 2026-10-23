@@ -6,6 +6,7 @@ import com.rigour.analytics.application.port.out.CustomerAttributeAnalyticsStore
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import static com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.JDBC_REGION_SCOPE;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -59,8 +60,8 @@ SELECT source_code FROM bi_etl_checkpoint WHERE tenant_id = :tenant
         String column = category ? "business_category_name" : "customer_source_name";
         return com.rigour.analytics.infrastructure.persistence.scope.BiScopedQueries.query(
                 jdbc,
-                """
-SELECT a.%s AS attribute_name, COUNT(*) AS customer_count,
+                ("""
+SELECT a.__ATTRIBUTE__ AS attribute_name, COUNT(*) AS customer_count,
        SUM(CASE WHEN o.order_count > 0 THEN 1 ELSE 0 END) AS ordering_customer_count,
        COALESCE(SUM(o.order_count), 0) AS order_count,
        COALESCE(SUM(o.sales_amount), 0) AS sales_amount,
@@ -74,17 +75,18 @@ SELECT a.%s AS attribute_name, COUNT(*) AS customer_count,
         WHERE tenant_id = :tenant AND deleted = 0
           AND (order_status_code IS NULL OR order_status_code <> 'CANCELLED')
           AND order_date >= :from AND order_date <= :to
-          AND (:region IS NULL OR region_code = :region)
+          AND (:region IS NULL OR region_code""" + JDBC_REGION_SCOPE + """
+)
           AND (:employee IS NULL OR owner_staff_code = :employee)
         GROUP BY customer_id
   ) o ON o.customer_id = c.customer_id
  WHERE c.tenant_id = :tenant AND c.deleted = 0
-   AND (:region IS NULL OR c.region_code = :region)
+   AND (:region IS NULL OR c.region_code""" + JDBC_REGION_SCOPE + """
+)
    AND (:employee IS NULL OR c.owner_staff_code = :employee)
- GROUP BY a.%s
+ GROUP BY a.__ATTRIBUTE__
  ORDER BY customer_count DESC, attribute_name
-"""
-                        .formatted(column, column),
+""").replace("__ATTRIBUTE__", column),
                 args,
                 (rs, i) -> {
                     String name = rs.getString("attribute_name");

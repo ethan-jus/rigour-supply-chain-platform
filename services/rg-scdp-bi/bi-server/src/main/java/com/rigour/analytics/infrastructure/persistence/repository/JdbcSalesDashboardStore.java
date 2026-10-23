@@ -7,6 +7,7 @@ import com.rigour.analytics.infrastructure.persistence.scope.BiScopedQueries;
 
 import org.springframework.jdbc.core.namedparam.*;
 import org.springframework.stereotype.Repository;
+import static com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.JDBC_REGION_SCOPE;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
@@ -31,7 +32,8 @@ public class JdbcSalesDashboardStore implements SalesDashboardStore {
             WITH orders AS (
               SELECT o.* FROM bi_sales_order_fact o
                WHERE o.tenant_id=:tenant AND o.deleted=0 AND o.order_status_code<>'CANCELLED'
-                 AND (:region IS NULL OR o.region_code=:region)
+                 AND (:region IS NULL OR o.region_code""" + JDBC_REGION_SCOPE + """
+)
                  AND (:owner IS NULL OR o.owner_staff_code=:owner)
                  AND (:customerType IS NULL OR o.customer_type_code=:customerType)
                  AND (:source IS NULL OR o.source_system_code=:source)
@@ -39,7 +41,8 @@ public class JdbcSalesDashboardStore implements SalesDashboardStore {
               SELECT p.*,o.order_date AS cohort_date FROM bi_sales_payment_fact p
               LEFT JOIN bi_sales_order_fact o ON o.tenant_id=p.tenant_id AND o.order_id=p.order_id
               WHERE p.tenant_id=:tenant AND p.deleted=0
-                AND (:region IS NULL OR p.region_code=:region)
+                AND (:region IS NULL OR p.region_code""" + JDBC_REGION_SCOPE + """
+)
                 AND (:owner IS NULL OR p.owner_staff_code=:owner)
                 AND (:customerType IS NULL OR p.customer_type_code=:customerType)
                 AND (:source IS NULL OR p.source_system_code=:source)
@@ -86,7 +89,8 @@ cash AS (SELECT owner_staff_code code,MAX(owner_staff_name) name,
 roster AS (SELECT DISTINCT e.employee_code code FROM bi_employee_dim e
     JOIN bi_sales_contact_city_dim c ON c.tenant_id=e.tenant_id
       AND (e.department_id=c.department_id OR REPLACE(REPLACE(REPLACE(e.department_path,'[',','),']',','),' ','') LIKE CONCAT('%,',c.department_id,',%'))
-    WHERE e.tenant_id=:tenant AND (:region IS NULL OR c.region_code=:region)
+    WHERE e.tenant_id=:tenant AND (:region IS NULL OR c.region_code""" + JDBC_REGION_SCOPE + """
+)
       AND (:owner IS NULL OR e.employee_code=:owner)),
 codes AS (SELECT code FROM sales UNION SELECT code FROM cash UNION SELECT code FROM roster)
 SELECT c.code,COALESCE(e.employee_name,s.name,p.name,c.code) name,

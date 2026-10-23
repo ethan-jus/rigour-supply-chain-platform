@@ -3,6 +3,19 @@ package com.rigour.analytics.infrastructure.persistence.scope;
 /** 城市名单只取启用的销售部所有下级部门；地区关联用于映射原始订单的历史城市。 */
 public final class OperatingCitySql {
     private OperatingCitySql() {}
+    /** Selected sales department includes its descendants; authorization remains a separate intersection. */
+    public static final String REGION_SCOPE = """
+ IN (SELECT #{regionCode} UNION
+     SELECT child.region_code FROM bi_sales_contact_city_dim child
+     JOIN bi_sales_contact_city_dim parent ON parent.tenant_id=child.tenant_id
+     WHERE child.tenant_id=#{tenantId} AND parent.region_code=#{regionCode}
+       AND (child.department_id=parent.department_id OR
+         REPLACE(REPLACE(REPLACE(child.department_path,'[',','),']',','),' ','')
+           LIKE CONCAT('%,',parent.department_id,',%')))
+""";
+    public static final String JDBC_REGION_SCOPE = REGION_SCOPE
+            .replace("#{regionCode}", ":region").replace("#{tenantId}", ":tenant");
+
     public static final String INSERT = """
 INSERT INTO bi_sales_contact_city_dim
  (tenant_id,region_code,city_name,department_id,department_path,source_region_code)

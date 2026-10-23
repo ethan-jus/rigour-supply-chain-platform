@@ -93,6 +93,38 @@ class BiSupplyScopeIntegrationTest {
             sessions.getConfiguration().addMapper(Queries.class);
     }
 
+    @Test
+    void provinceIncludesCitiesWhileCityAndAuthorizationRemainNarrow() {
+        department(1,null,"SALES","销售部"); department(27,1L,"HB","河北省");
+        department(11,27L,"SJZ","石家庄"); department(28,27L,"TS","唐山市");
+        jdbc.update("INSERT INTO bi_sales_contact_city_dim(tenant_id,region_code,city_name,department_id,department_path) VALUES(?,'HB','河北省',27,'[1,27]'),(?,'SJZ','石家庄',11,'[1,27,11]'),(?,'TS','唐山市',28,'[1,27,28]')",tenant,tenant,tenant);
+        fact(1,"A","SJZ",11,1,100);fact(2,"A","TS",28,1,80);fact(3,"B","OTHER",30,1,999);
+        jdbc.update("UPDATE bi_order_authority SET department_path=CASE department_id WHEN 11 THEN '[1,27,11]' WHEN 28 THEN '[1,27,28]' ELSE '[1,30]' END WHERE tenant_id=?",tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_status_code='CONFIRMED' WHERE tenant_id=?",tenant);
+        var from = java.time.LocalDateTime.of(2020,1,1,0,0);
+        var to = java.time.LocalDateTime.of(2030,1,1,0,0);
+        var unrestricted = policy(List.of(clause("ALL",all(),all(),all())),all(),all());
+        when(iam.authorization(any(), any())).thenReturn(unrestricted);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, unrestricted); var session = sessions.openSession()) {
+            var mapper = session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
+            assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"HB",null,null,null).get("salesAmount").toString())).isEqualByComparingTo("180");
+            assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"TS",null,null,null).get("salesAmount").toString())).isEqualByComparingTo("80");
+        }
+        var province = policy(List.of(clause("DEPARTMENT",specified("27"),all(),all())),all(),all());
+        when(iam.authorization(any(), any())).thenReturn(province);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, province); var session = sessions.openSession()) {
+            var mapper = session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
+            assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"HB",null,null,null).get("salesAmount").toString())).isEqualByComparingTo("180");
+        }
+        var restricted = policy(List.of(clause("DEPARTMENT",specified("28"),all(),all())),all(),all());
+        when(iam.authorization(any(), any())).thenReturn(restricted);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, restricted); var session = sessions.openSession()) {
+            var mapper = session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
+            assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"TS",null,null,null).get("salesAmount").toString())).isEqualByComparingTo("80");
+            assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"HB",null,null,null).get("salesAmount").toString())).isZero();
+        }
+    }
+
     @AfterEach
     void clear() {
         TestAuthorizationContext.clear();

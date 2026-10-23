@@ -7,6 +7,7 @@ import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import static com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.REGION_SCOPE;
 
 /** 仅查询 BI 本地事实表；不联付款流水，避免一单多次付款放大金额。 */
 @Mapper
@@ -19,7 +20,8 @@ public interface CityProductReportMapper {
                    COUNT(DISTINCT customer_id) AS customerCount
               FROM bi_customer_dim
              WHERE tenant_id = #{tenantId} AND deleted = 0
-            <if test="regionCode != null">AND region_code = #{regionCode}</if>
+            <if test="regionCode != null">AND region_code""" + REGION_SCOPE + """
+</if>
             <if test="ownerStaffCode != null">AND owner_staff_code = #{ownerStaffCode}</if>
             <if test="customerTypeCode != null">AND customer_type_code = #{customerTypeCode}</if>
              GROUP BY region_code ORDER BY region_code
@@ -42,7 +44,8 @@ public interface CityProductReportMapper {
                  WHERE o.tenant_id = #{tenantId} AND o.deleted = 0
                    AND o.order_status_code != 'CANCELLED'
                    AND o.order_date &gt;= #{from} AND o.order_date &lt;= #{to}
-                <if test="regionCode != null">AND o.region_code = #{regionCode}</if>
+                <if test="regionCode != null">AND o.region_code""" + REGION_SCOPE + """
+</if>
                 <if test="ownerStaffCode != null">AND o.owner_staff_code = #{ownerStaffCode}</if>
                 <if test="customerTypeCode != null">AND o.customer_type_code = #{customerTypeCode}</if>
                 <if test="sourceSystemCode != null">AND o.source_system_code = #{sourceSystemCode}</if>

@@ -63,7 +63,7 @@ public class SalesDashboardRepositoryTest {
                         + " BIGINT,department_path VARCHAR)");
         jdbc.execute(
                 "CREATE TABLE bi_sales_contact_city_dim(tenant_id VARCHAR,region_code"
-                        + " VARCHAR,department_id BIGINT)");
+                        + " VARCHAR,department_id BIGINT,department_path VARCHAR(1000))");
         jdbc.execute(
                 "CREATE TABLE bi_business_target(tenant_id VARCHAR,dimension_code"
                         + " VARCHAR,dimension_type VARCHAR,target_month DATE,metric_code"
@@ -90,7 +90,7 @@ public class SalesDashboardRepositoryTest {
         jdbc.update(
                 "INSERT INTO bi_employee_dim"
                     + " VALUES('T','S1','Sales1','LEFT','杭州',1,'[1]'),('T','S2','Sales2','ACTIVE','杭州',1,'[1]'),('OTHER','S1','Private','ACTIVE','杭州',1,'[1]')");
-        jdbc.update("INSERT INTO bi_sales_contact_city_dim VALUES('T','HZ',1),('OTHER','HZ',1)");
+        jdbc.update("INSERT INTO bi_sales_contact_city_dim(tenant_id,region_code,department_id) VALUES('T','HZ',1),('OTHER','HZ',1)");
         jdbc.update(
                 "INSERT INTO bi_sales_order_fact"
                     + " VALUES('T',1,'S1','Sales1','HZ','杭州',10,'CustomerA','STORE','DHB',0,'COMPLETED','2026-08-10"

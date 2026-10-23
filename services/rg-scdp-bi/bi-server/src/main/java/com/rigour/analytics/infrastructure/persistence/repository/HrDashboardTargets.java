@@ -51,12 +51,23 @@ public class HrDashboardTargets {
                 .toList();
     }
 
+    private Set<String> selectedRegions(String tenant, String region) {
+        if (region == null) return null;
+        var result = new HashSet<String>();
+        result.add(region);
+        result.addAll(jdbc.queryForList("SELECT region_code FROM bi_sales_contact_city_dim WHERE tenant_id=:tenant AND region_code"
+                + OperatingCitySql.JDBC_REGION_SCOPE,
+                new MapSqlParameterSource("tenant",tenant).addValue("region",region),String.class));
+        return result;
+    }
+
     public List<CityMonthlyGoal> cityGoals(String tenant, int year, String region) {
+        var selected = selectedRegions(tenant, region);
         return values(tenant, year + "-01", year + "-12").stream()
                 .filter(
                         t ->
                                 "CITY".equals(t.dimensionType())
-                                        && (region == null || region.equals(t.code())))
+                                        && (selected == null || selected.contains(t.code())))
                 .collect(
                         Collectors.groupingBy(
                                 t -> t.code() + ":" + t.month(), TreeMap::new, Collectors.toList()))
@@ -131,6 +142,7 @@ WHERE e.tenant_id=:tenant AND e.region_code=:region
                                             .addValue("region", filter.regionCode()),
                                     (r, n) -> r.getString(1)));
         }
+        var selected = city ? selectedRegions(tenant, filter.regionCode()) : null;
         var result = new ArrayList<TargetCompletionItem>();
         var groups =
                 goals.stream()
@@ -139,7 +151,7 @@ WHERE e.tenant_id=:tenant AND e.region_code=:region
                                 g ->
                                         !city
                                                 || filter.regionCode() == null
-                                                || filter.regionCode().equals(g.code()))
+                                                || selected.contains(g.code()))
                         .filter(
                                 g ->
                                         city

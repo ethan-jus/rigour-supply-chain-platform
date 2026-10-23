@@ -10,6 +10,7 @@ import javax.sql.DataSource;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import static com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.JDBC_REGION_SCOPE;
 
 @Repository
 public class JdbcPaymentRiskStore implements PaymentRiskStore {
@@ -47,7 +48,8 @@ public class JdbcPaymentRiskStore implements PaymentRiskStore {
                  WHERE o.tenant_id=:tenant AND o.deleted=0 AND COALESCE(o.order_status_code,'')<>'CANCELLED'
                    AND o.payable_amount>0 AND o.paid_amount<o.payable_amount
                    AND o.order_date BETWEEN :from AND :to
-                   AND (:region IS NULL OR o.region_code=:region)
+                   AND (:region IS NULL OR o.region_code""" + JDBC_REGION_SCOPE + """
+)
                    AND (:owner IS NULL OR o.owner_staff_code=:owner)
                  ORDER BY o.order_date,o.order_id,l.order_line_id LIMIT :limit
                 """, args, (r, n) -> new Fact(
