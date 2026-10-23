@@ -27,7 +27,8 @@ public final class SalesWorkApiModels {
 
     public record SalesContextView(
             UUID userId, UUID employeeId, UUID salesProfileId, String salesNo, UUID cityOrgId,
-            String profileStatus, Set<String> permissions, FieldPolicyView fieldPolicy) {
+            String profileStatus, Set<String> permissions, FieldPolicyView fieldPolicy,
+            String hrEmployeeId, String employeeCode) {
         public SalesContextView {
             permissions = permissions == null ? Set.of() : Set.copyOf(permissions);
         }
@@ -81,7 +82,7 @@ public final class SalesWorkApiModels {
             String timezoneId, UUID fieldPolicyVersionId, String status,
             Instant checkedInAt, Instant checkedOutAt, UUID locationSessionId,
             int locationPointCount, int interruptionCount, int verifiedWorkMinutes,
-            String evidenceQuality) {
+            String evidenceQuality, String hrEmployeeId) {
     }
 
     /** 月历中的单日事实；scheduleStatus=UNKNOWN时不得据此推断休息或旷工。 */

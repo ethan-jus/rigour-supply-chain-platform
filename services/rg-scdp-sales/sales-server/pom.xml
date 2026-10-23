@@ -8,6 +8,8 @@
     <name>sales-server</name>
     <description>Sales Work业务实现和启动应用</description>
     <dependencies>
+        <dependency><groupId>com.rigour</groupId><artifactId>iam-api</artifactId></dependency>
+        <dependency><groupId>com.rigour</groupId><artifactId>hr-api</artifactId></dependency>
         <dependency><groupId>org.apache.poi</groupId><artifactId>poi-ooxml</artifactId><version>5.5.1</version></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>sales-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>rigour-platform-starter</artifactId></dependency>

@@ -36,7 +36,11 @@ public interface SalesWorkQueryRepository {
     record IdentityProjection(UUID platformUserId, UUID employeeId, String status) {
     }
 
-    record SalesProfile(UUID id, UUID employeeId, String salesNo, UUID cityOrgId, String status) {
+    record SalesProfile(UUID id, UUID employeeId, String salesNo, UUID cityOrgId, String status,
+                        Long hrEmployeeId, String employeeCode) {
+        public SalesProfile(UUID id, UUID employeeId, String salesNo, UUID cityOrgId, String status) {
+            this(id, employeeId, salesNo, cityOrgId, status, null, null);
+        }
     }
 
     record FieldPolicy(UUID id, String policyCode, String policyName, int versionNo,

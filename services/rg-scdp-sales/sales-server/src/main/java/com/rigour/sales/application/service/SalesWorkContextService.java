@@ -24,10 +24,13 @@ public final class SalesWorkContextService {
 
     private final SalesWorkQueryRepository repository;
     private final Clock clock;
+    private final SalesEmployeeProfileService employeeProfiles;
 
-    public SalesWorkContextService(SalesWorkQueryRepository repository, Clock clock) {
+    public SalesWorkContextService(SalesWorkQueryRepository repository, Clock clock,
+                                   SalesEmployeeProfileService employeeProfiles) {
         this.repository = repository;
         this.clock = clock;
+        this.employeeProfiles = employeeProfiles;
     }
 
     public SalesContextView context() {
@@ -38,7 +41,9 @@ public final class SalesWorkContextService {
         FieldPolicy policy = resolvePolicy(caller.tenantId(), identity.profile, now);
         return new SalesContextView(caller.userId(), identity.projection.employeeId(), identity.profile.id(),
                 identity.profile.salesNo(), identity.profile.cityOrgId(), identity.profile.status(),
-                Set.copyOf(caller.permissions()), policyView(policy));
+                Set.copyOf(caller.permissions()), policyView(policy),
+                identity.profile.hrEmployeeId() == null ? null : identity.profile.hrEmployeeId().toString(),
+                identity.profile.employeeCode());
     }
 
     public VisitTargetPageView visitTargets(String query, int page, int pageSize) {
@@ -55,6 +60,13 @@ public final class SalesWorkContextService {
     }
 
     SalesIdentity resolveIdentity(CallerIdentity caller, Instant now) {
+        var employeeProfile = employeeProfiles.resolve(caller, now);
+        if (employeeProfile.isPresent()) {
+            var profile = employeeProfile.get();
+            return new SalesIdentity(new IdentityProjection(caller.userId(), null, "ACTIVE"),
+                    new SalesProfile(profile.id(), null, profile.salesNo(), profile.cityOrgId(),
+                            profile.status(), profile.employeeId(), profile.employeeCode()));
+        }
         IdentityProjection projection = repository.findIdentityProjection(caller.tenantId(), caller.userId(), now)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_IDENTITY_UNBOUND));
         SalesProfile profile = repository.findActiveSalesProfile(caller.tenantId(), projection.employeeId(), now)
@@ -104,5 +116,9 @@ public final class SalesWorkContextService {
     }
 
     record SalesIdentity(IdentityProjection projection, SalesProfile profile) {
+        String employeeReference() {
+            return profile.hrEmployeeId() == null ? projection.employeeId().toString()
+                    : profile.hrEmployeeId().toString();
+        }
     }
 }

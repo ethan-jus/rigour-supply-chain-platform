@@ -167,7 +167,7 @@ public class SalesWorkAttendanceService {
                 "SalesWorkDayCheckedIn",
                 Map.of(
                         "workDayId", workDayId.toString(),
-                        "employeeId", identity.projection().employeeId().toString(),
+                        identity.profile().hrEmployeeId() == null ? "employeeId" : "hrEmployeeId", identity.employeeReference(),
                         "salesProfileId", identity.profile().id().toString(),
                         "businessDate", businessDate.toString(),
                         "fieldPolicyVersionId", policy.id().toString(),
@@ -820,7 +820,7 @@ public class SalesWorkAttendanceService {
                 "SalesWorkDayReopened",
                 Map.of(
                         "workDayId", finished.id().toString(),
-                        "employeeId", identity.projection().employeeId().toString(),
+                        identity.profile().hrEmployeeId() == null ? "employeeId" : "hrEmployeeId", identity.employeeReference(),
                         "salesProfileId", identity.profile().id().toString(),
                         "businessDate", finished.businessDate().toString(),
                         "reopenedAt", receivedAt.toString()));
@@ -960,7 +960,8 @@ public class SalesWorkAttendanceService {
                 snapshot.locationPointCount(),
                 snapshot.interruptionCount(),
                 snapshot.verifiedWorkMinutes(),
-                snapshot.evidenceQuality());
+                snapshot.evidenceQuality(),
+                snapshot.hrEmployeeId() == null ? null : snapshot.hrEmployeeId().toString());
     }
 
     private static LocalDate businessDate(Instant instant, FieldPolicy policy) {
