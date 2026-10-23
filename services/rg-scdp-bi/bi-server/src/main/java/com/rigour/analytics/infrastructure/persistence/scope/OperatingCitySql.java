@@ -16,6 +16,23 @@ public final class OperatingCitySql {
     public static final String JDBC_REGION_SCOPE = REGION_SCOPE
             .replace("#{regionCode}", ":region").replace("#{tenantId}", ":tenant");
 
+    /** One display department per source city: national roots, or children of the selected department. */
+    public static final String DISPLAY_CITY_JOIN = """
+ LEFT JOIN bi_sales_contact_city_dim display_city ON display_city.tenant_id=#{tenantId}
+ AND display_city.region_code=(
+   SELECT ancestor.region_code FROM bi_sales_contact_city_dim ancestor
+   JOIN bi_sales_contact_city_dim leaf ON leaf.tenant_id=ancestor.tenant_id
+   WHERE ancestor.tenant_id=#{tenantId} AND leaf.region_code=""";
+    public static final String DISPLAY_CITY_END = """
+     AND (ancestor.department_id=leaf.department_id OR
+       REPLACE(REPLACE(REPLACE(leaf.department_path,'[',','),']',','),' ','')
+         LIKE CONCAT('%,',ancestor.department_id,',%'))
+     AND (#{regionCode} IS NULL OR ancestor.region_code=leaf.region_code OR
+       (ancestor.region_code&lt;&gt;#{regionCode} AND ancestor.region_code""" + REGION_SCOPE + """
+       ))
+   ORDER BY JSON_LENGTH(ancestor.department_path),ancestor.region_code LIMIT 1)
+""";
+
     public static final String INSERT = """
 INSERT INTO bi_sales_contact_city_dim
  (tenant_id,region_code,city_name,department_id,department_path,source_region_code)

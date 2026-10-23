@@ -108,6 +108,39 @@ class BiSupplyScopeIntegrationTest {
         try (var context = SupplyAuthorizationContext.open(iam, actor, unrestricted); var session = sessions.openSession()) {
             var mapper = session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
             assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"HB",null,null,null).get("salesAmount").toString())).isEqualByComparingTo("180");
+            var national = mapper.citySalesRanking(tenant,from,to,null,null,null,null);
+            assertThat(national).extracting(r -> r.get("dimensionCode")).containsExactly("OTHER", "HB");
+            assertThat(new java.math.BigDecimal(national.get(1).get("salesAmount").toString())).isEqualByComparingTo("180");
+            assertThat(mapper.citySalesRanking(tenant,from,to,"HB",null,null,null))
+                    .extracting(r -> r.get("dimensionCode")).containsExactly("SJZ", "TS");
+            assertThat(mapper.cityCollectionRateRanking(tenant,from,to,null,null,null,null))
+                    .extracting(r -> r.get("dimensionCode")).containsExactlyInAnyOrder("HB", "OTHER");
+            jdbc.update("INSERT INTO bi_city_cost_record(tenant_id,region_code,cost_type_code,cost_date,cost_amount,source_system_code,source_record_id) VALUES(?,'SJZ','COST',UTC_TIMESTAMP(6),10,'MANUAL_IMPORT','sjz'),(?,'TS','COST',UTC_TIMESTAMP(6),20,'MANUAL_IMPORT','ts')",tenant,tenant);
+            assertThat(mapper.cityCostRanking(tenant,from,to,null,null,null,null)).singleElement().satisfies(r -> {
+                assertThat(r.get("regionCode")).isEqualTo("HB");
+                assertThat(new java.math.BigDecimal(r.get("costAmount").toString())).isEqualByComparingTo("30");
+                assertThat(new java.math.BigDecimal(r.get("salesAmount").toString())).isEqualByComparingTo("180");
+            });
+            var risk = new com.rigour.analytics.infrastructure.persistence.repository.JdbcPaymentRiskStore(jdbc.getDataSource());
+            assertThat(risk.regions(tenant)).filteredOn(r -> "TS".equals(r.code()))
+                    .singleElement().satisfies(r -> assertThat(r.parentCode()).isEqualTo("HB"));
+            assertThat(risk.load(tenant,from.toInstant(java.time.ZoneOffset.UTC),to.toInstant(java.time.ZoneOffset.UTC),"HB",null,100))
+                    .extracting(r -> r.regionCode()).containsExactlyInAnyOrder("SJZ","TS");
+            var client = mock(com.rigour.analytics.application.port.out.HrTargetClient.class);
+            var goals = List.of("HB","SJZ","TS").stream().map(code ->
+                new com.rigour.hr.api.v1.model.TargetSettingsModels.Target("2026-10","CITY",code,code,
+                    "SALES_AMOUNT",new java.math.BigDecimal("1000"),1)).toList();
+            when(client.values(any(),any(),any())).thenReturn(goals);
+            var targets = new com.rigour.analytics.infrastructure.persistence.repository.HrDashboardTargets(client,jdbc.getDataSource(),mapper);
+            assertThat(targets.cityGoals(tenant,2026,null)).extracting(r -> r.regionCode()).containsExactly("HB");
+            var filter = new com.rigour.analytics.application.model.SupplyDashboardFilter(from.toInstant(java.time.ZoneOffset.UTC),to.toInstant(java.time.ZoneOffset.UTC),null,null,null,null,null);
+            assertThat(targets.completions(tenant,filter,"CITY",goals)).singleElement().satisfies(r -> {
+                assertThat(r.dimensionCode()).isEqualTo("HB");
+                assertThat(r.actualValue()).isEqualByComparingTo("180");
+            });
+            assertThat(targets.cityGoals(tenant,2026,"TS")).extracting(r -> r.regionCode()).containsExactly("TS");
+
+
             assertThat(new java.math.BigDecimal(mapper.salesSummary(tenant,from,to,"TS",null,null,null).get("salesAmount").toString())).isEqualByComparingTo("80");
         }
         var province = policy(List.of(clause("DEPARTMENT",specified("27"),all(),all())),all(),all());
@@ -151,6 +184,14 @@ class BiSupplyScopeIntegrationTest {
             var mapper=session.getMapper(com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper.class);
             var payments=mapper.receiptDetails(tenant,from,to,"HB",null,null,null,"receipts",true,0,20).getFirst();
             assertThat(payments.get("total")).isEqualTo(2L);
+            var national = mapper.cityReceipts(tenant,from,to,null,null,null,null);
+            assertThat(national).singleElement().satisfies(r -> {
+                assertThat(r.get("regionCode")).isEqualTo("HB");
+                assertThat(new java.math.BigDecimal(r.get("receiptAmount").toString())).isEqualByComparingTo("70");
+            });
+            assertThat(mapper.cityReceipts(tenant,from,to,"HB",null,null,null))
+                    .extracting(r -> r.get("regionCode")).containsExactly("SJZ", "TS");
+
             assertThat(payments.get("amount")).isEqualTo(mapper.collectionSummary(tenant,from,to,"HB",null,null,null).get("receiptAmount"));
             var orders=mapper.receiptDetails(tenant,from,to,"HB",null,null,null,"unpaid",true,0,20).getFirst();
             assertThat(orders.get("total")).isEqualTo(2L);

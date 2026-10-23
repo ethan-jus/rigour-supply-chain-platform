@@ -8,7 +8,7 @@ import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
-import static com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.REGION_SCOPE;
+import static com.rigour.analytics.infrastructure.persistence.scope.OperatingCitySql.*;
 import org.apache.ibatis.annotations.Update;
 
 import static com.rigour.analytics.infrastructure.persistence.scope.PaymentPerformanceSql.*;
@@ -1337,12 +1337,13 @@ SELECT p.owner_staff_code AS ownerStaffCode,
     @Select(
             """
 <script>
-SELECT COALESCE(NULLIF(TRIM(p.region_code), ''), 'UNKNOWN') AS regionCode,
-       COALESCE(MAX(NULLIF(TRIM(p.region_name), '')), MAX(NULLIF(TRIM(p.region_code), '')), '归属待核对') AS regionName,
+SELECT COALESCE(display_city.region_code, NULLIF(TRIM(p.region_code), ''), 'UNKNOWN') AS regionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(TRIM(p.region_name), '')), MAX(NULLIF(TRIM(p.region_code), '')), '归属待核对') AS regionName,
        COALESCE(SUM(p.paid_amount), 0) AS receiptAmount,
        COUNT(*) AS paymentCount,
        COUNT(DISTINCT p.customer_id) AS customerCount
   FROM bi_sales_payment_fact p
+""" + DISPLAY_CITY_JOIN + "p.region_code " + DISPLAY_CITY_END + """
  WHERE p.tenant_id = #{tenantId}
    AND p.deleted = 0
    AND p.payment_time &gt;= #{from}
@@ -1360,7 +1361,7 @@ SELECT COALESCE(NULLIF(TRIM(p.region_code), ''), 'UNKNOWN') AS regionCode,
 <if test="sourceSystemCode != null">
    AND p.source_system_code = #{sourceSystemCode}
 </if>
- GROUP BY COALESCE(NULLIF(TRIM(p.region_code), ''), 'UNKNOWN')
+ GROUP BY COALESCE(display_city.region_code, NULLIF(TRIM(p.region_code), ''), 'UNKNOWN')
  ORDER BY receiptAmount DESC, regionCode
 </script>
 """)
@@ -1449,10 +1450,10 @@ SELECT COUNT(DISTINCT o.customer_id) AS orderingCustomerCount,
             """
 <script>
 SELECT 'CITY_SALES' AS rankType,
-       COALESCE(o.region_code, 'UNKNOWN') AS dimensionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS dimensionName,
-       COALESCE(o.region_code, 'UNKNOWN') AS regionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS regionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS dimensionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS dimensionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS regionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS regionName,
        COALESCE(SUM(o.payable_amount), 0) AS salesAmount,
        COALESCE(SUM(o.paid_amount), 0) AS paidAmount,
        COALESCE(SUM(o.unpaid_amount), 0) AS unpaidAmount,
@@ -1461,6 +1462,7 @@ SELECT 'CITY_SALES' AS rankType,
        CASE WHEN COALESCE(SUM(o.payable_amount), 0) = 0 THEN 0
             ELSE COALESCE(SUM(o.paid_amount), 0) / COALESCE(SUM(o.payable_amount), 0) * 100 END AS rate
   FROM bi_sales_order_fact o
+""" + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
    AND o.order_status_code &lt;&gt; 'CANCELLED'
@@ -1479,7 +1481,7 @@ SELECT 'CITY_SALES' AS rankType,
 <if test="sourceSystemCode != null">
    AND o.source_system_code = #{sourceSystemCode}
 </if>
- GROUP BY COALESCE(o.region_code, 'UNKNOWN')
+ GROUP BY COALESCE(display_city.region_code, o.region_code, 'UNKNOWN')
  ORDER BY salesAmount DESC, orderCount DESC
 </script>
 """)
@@ -1496,10 +1498,10 @@ SELECT 'CITY_SALES' AS rankType,
             """
 <script>
 SELECT 'CITY_COLLECTION_RATE' AS rankType,
-       COALESCE(o.region_code, 'UNKNOWN') AS dimensionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS dimensionName,
-       COALESCE(o.region_code, 'UNKNOWN') AS regionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS regionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS dimensionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS dimensionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS regionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS regionName,
        COALESCE(SUM(o.payable_amount), 0) AS salesAmount,
        COALESCE(SUM(o.paid_amount), 0) AS paidAmount,
        COALESCE(SUM(o.unpaid_amount), 0) AS unpaidAmount,
@@ -1508,6 +1510,7 @@ SELECT 'CITY_COLLECTION_RATE' AS rankType,
        CASE WHEN COALESCE(SUM(o.payable_amount), 0) = 0 THEN 0
             ELSE COALESCE(SUM(o.paid_amount), 0) / COALESCE(SUM(o.payable_amount), 0) * 100 END AS rate
   FROM bi_sales_order_fact o
+""" + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
    AND o.order_status_code &lt;&gt; 'CANCELLED'
@@ -1526,7 +1529,7 @@ SELECT 'CITY_COLLECTION_RATE' AS rankType,
 <if test="sourceSystemCode != null">
    AND o.source_system_code = #{sourceSystemCode}
 </if>
- GROUP BY COALESCE(o.region_code, 'UNKNOWN')
+ GROUP BY COALESCE(display_city.region_code, o.region_code, 'UNKNOWN')
 HAVING salesAmount &gt; 0
  ORDER BY rate DESC, paidAmount DESC, salesAmount DESC
  LIMIT 50
@@ -1736,10 +1739,10 @@ SELECT DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m') AS period,
             """
 <script>
 SELECT 'PAYMENT_RISK_CITY' AS rankType,
-       COALESCE(o.region_code, 'UNKNOWN') AS dimensionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS dimensionName,
-       COALESCE(o.region_code, 'UNKNOWN') AS regionCode,
-       COALESCE(MAX(NULLIF(o.region_name, '')), MAX(COALESCE(o.region_code, 'UNKNOWN'))) AS regionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS dimensionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS dimensionName,
+       COALESCE(display_city.region_code, o.region_code, 'UNKNOWN') AS regionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(o.region_name, '')), MAX(COALESCE(display_city.region_code, o.region_code, 'UNKNOWN'))) AS regionName,
        COALESCE(SUM(o.payable_amount), 0) AS salesAmount,
        COALESCE(SUM(o.paid_amount), 0) AS paidAmount,
        COALESCE(SUM(o.unpaid_amount), 0) AS unpaidAmount,
@@ -1748,6 +1751,7 @@ SELECT 'PAYMENT_RISK_CITY' AS rankType,
        CASE WHEN COALESCE(SUM(o.payable_amount), 0) = 0 THEN 0
             ELSE COALESCE(SUM(o.paid_amount), 0) / COALESCE(SUM(o.payable_amount), 0) * 100 END AS rate
   FROM bi_sales_order_fact o
+""" + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
    AND o.order_status_code &lt;&gt; 'CANCELLED'
@@ -1768,7 +1772,7 @@ SELECT 'PAYMENT_RISK_CITY' AS rankType,
 <if test="sourceSystemCode != null">
    AND o.source_system_code = #{sourceSystemCode}
 </if>
- GROUP BY COALESCE(o.region_code, 'UNKNOWN')
+ GROUP BY COALESCE(display_city.region_code, o.region_code, 'UNKNOWN')
  ORDER BY unpaidAmount DESC, rate ASC
  LIMIT 20
 </script>
@@ -2406,35 +2410,37 @@ SELECT cc.regionCode AS regionCode,
        cc.recordCount AS recordCount,
        cc.latestCostTime AS latestCostTime
   FROM (
-        SELECT region_code AS regionCode,
-               COALESCE(MAX(region_name), region_code) AS regionName,
+        SELECT COALESCE(display_city.region_code,c.region_code) AS regionCode,
+               COALESCE(MAX(display_city.city_name),MAX(c.region_name),MAX(c.region_code)) AS regionName,
                COALESCE(SUM(cost_amount), 0) AS costAmount,
                COALESCE(SUM(budget_amount), 0) AS budgetAmount,
                COALESCE(SUM(cost_amount), 0) - COALESCE(SUM(budget_amount), 0) AS varianceAmount,
                COUNT(*) AS recordCount,
                MAX(cost_date) AS latestCostTime
-          FROM bi_city_cost_record
-         WHERE tenant_id = #{tenantId}
+          FROM bi_city_cost_record c
+""" + DISPLAY_CITY_JOIN + "c.region_code " + DISPLAY_CITY_END + """
+         WHERE c.tenant_id = #{tenantId}
            AND deleted = 0
            AND cost_date &gt;= #{from}
            AND cost_date &lt;= #{to}
 <if test="regionCode != null">
-           AND region_code""" + REGION_SCOPE + """
+           AND c.region_code""" + REGION_SCOPE + """
 
 </if>
-         GROUP BY region_code
+         GROUP BY COALESCE(display_city.region_code,c.region_code)
   ) cc
   LEFT JOIN (
-        SELECT COALESCE(region_code, 'UNKNOWN') AS regionCode,
+        SELECT COALESCE(display_city.region_code,o.region_code, 'UNKNOWN') AS regionCode,
                COALESCE(SUM(payable_amount), 0) AS salesAmount
-          FROM bi_sales_order_fact
-         WHERE tenant_id = #{tenantId}
+          FROM bi_sales_order_fact o
+""" + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
+         WHERE o.tenant_id = #{tenantId}
            AND deleted = 0
            AND order_status_code &lt;&gt; 'CANCELLED'
            AND order_date &gt;= #{from}
            AND order_date &lt;= #{to}
 <if test="regionCode != null">
-           AND region_code""" + REGION_SCOPE + """
+           AND o.region_code""" + REGION_SCOPE + """
 
 </if>
 <if test="ownerStaffCode != null">
@@ -2446,7 +2452,7 @@ SELECT cc.regionCode AS regionCode,
 <if test="sourceSystemCode != null">
            AND source_system_code = #{sourceSystemCode}
 </if>
-         GROUP BY COALESCE(region_code, 'UNKNOWN')
+         GROUP BY COALESCE(display_city.region_code,o.region_code, 'UNKNOWN')
   ) s ON s.regionCode = cc.regionCode
  ORDER BY cc.costAmount DESC, cc.latestCostTime DESC
  LIMIT 50
@@ -2597,11 +2603,16 @@ SELECT 'INVENTORY' AS riskType,
     @Select(
             """
 SELECT 'REGION' AS optionType,c.region_code AS optionValue,c.city_name AS optionLabel,
+       (SELECT p.region_code FROM bi_sales_contact_city_dim p
+        WHERE p.tenant_id=c.tenant_id AND p.department_id<>c.department_id
+          AND REPLACE(REPLACE(REPLACE(c.department_path,'[',','),']',','),' ','')
+              LIKE CONCAT('%,',p.department_id,',%')
+        ORDER BY JSON_LENGTH(p.department_path) DESC,p.region_code LIMIT 1) AS parentOptionValue,
        COUNT(o.order_id) AS usageCount
   FROM bi_sales_contact_city_dim c
   LEFT JOIN bi_sales_order_fact o ON o.tenant_id=c.tenant_id AND o.region_code=c.region_code AND o.deleted=0
  WHERE c.tenant_id=#{tenantId}
- GROUP BY c.region_code,c.city_name
+ GROUP BY c.region_code,c.city_name,c.tenant_id,c.department_id,c.department_path
  ORDER BY usageCount DESC,c.region_code
 """)
     List<Map<String, Object>> regionOptions(@Param("tenantId") String tenantId);

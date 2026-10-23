@@ -91,7 +91,7 @@ public class PaymentRiskService {
         }
         Instant updated = facts.stream().map(PaymentRiskStore.Fact::syncedAt).filter(Objects::nonNull)
                 .max(Instant::compareTo).orElse(null);
-        return new PaymentRiskView(generatedAt, updated, categories, List.copyOf(orders));
+        return new PaymentRiskView(generatedAt, updated, categories, List.copyOf(orders), store.regions(tenant));
     }
 
     private static int severity(String level) {

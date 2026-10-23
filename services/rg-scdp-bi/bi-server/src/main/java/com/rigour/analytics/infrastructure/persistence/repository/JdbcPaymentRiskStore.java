@@ -30,6 +30,21 @@ public class JdbcPaymentRiskStore implements PaymentRiskStore {
     }
 
     @Override
+    public List<com.rigour.analytics.api.v1.model.PaymentRiskView.Region> regions(String tenant) {
+        return BiScopedQueries.query(jdbc, """
+            SELECT c.region_code,c.city_name,
+              (SELECT p.region_code FROM bi_sales_contact_city_dim p
+               WHERE p.tenant_id=c.tenant_id AND p.department_id<>c.department_id
+                 AND REPLACE(REPLACE(REPLACE(c.department_path,'[',','),']',','),' ','')
+                   LIKE CONCAT('%,',p.department_id,',%')
+               ORDER BY JSON_LENGTH(p.department_path) DESC,p.region_code LIMIT 1) parent_code
+            FROM bi_sales_contact_city_dim c WHERE c.tenant_id=:tenant
+            """, new MapSqlParameterSource("tenant",tenant),
+            (r,n) -> new com.rigour.analytics.api.v1.model.PaymentRiskView.Region(
+                r.getString(1),r.getString(2),r.getString(3)));
+    }
+
+    @Override
     public List<Fact> load(String tenant, Instant from, Instant to, String region, String owner, int limit) {
         var args = new MapSqlParameterSource("tenant", tenant)
                 .addValue("from", Timestamp.from(from)).addValue("to", Timestamp.from(to))

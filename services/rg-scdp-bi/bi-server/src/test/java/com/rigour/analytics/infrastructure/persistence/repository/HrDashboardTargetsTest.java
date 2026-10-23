@@ -23,6 +23,7 @@ class HrDashboardTargetsTest {
                 "jdbc:h2:mem:hr_targets_" + UUID.randomUUID() + ";MODE=MySQL", "sa", "", true);
         try {
             var jdbc = new JdbcTemplate(ds);
+            jdbc.execute("CREATE TABLE bi_sales_contact_city_dim(tenant_id VARCHAR,region_code VARCHAR,department_id BIGINT,department_path VARCHAR)");
             jdbc.execute("CREATE TABLE bi_employee_dim(tenant_id VARCHAR,employee_code VARCHAR,region_code VARCHAR)");
             jdbc.execute("CREATE TABLE bi_customer_authority(tenant_id VARCHAR,employee_code VARCHAR,region_code VARCHAR)");
             jdbc.execute("CREATE TABLE bi_order_authority(tenant_id VARCHAR,employee_code VARCHAR,region_code VARCHAR)");
@@ -52,7 +53,9 @@ class HrDashboardTargetsTest {
     void apiValuesDriveMonthlyGoalsAndPeriodAttainmentWithoutAnyTargetTable() {
         var client = mock(HrTargetClient.class);
         var mapper = mock(SupplyDashboardQueryMapper.class);
-        var targets = new HrDashboardTargets(client, mock(javax.sql.DataSource.class), mapper);
+        var ds = new SingleConnectionDataSource("jdbc:h2:mem:targets_" + UUID.randomUUID() + ";MODE=MySQL", "sa", "", true);
+        new JdbcTemplate(ds).execute("CREATE TABLE bi_sales_contact_city_dim(tenant_id VARCHAR,region_code VARCHAR,department_id BIGINT,department_path VARCHAR)");
+        var targets = new HrDashboardTargets(client, ds, mapper);
         var values = new ArrayList<Target>();
         for (var month : List.of("2026-01", "2026-02"))
             for (var metric :
@@ -76,17 +79,12 @@ class HrDashboardTargetsTest {
         assertThat(goals).hasSize(2);
         assertThat(goals.getFirst().salesTarget()).isZero();
         assertThat(goals.getLast().salesTarget()).isEqualByComparingTo("321.25");
-        when(mapper.citySalesRanking(any(), any(), any(), any(), any(), any(), any()))
+        when(mapper.salesSummary(any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(
-                        List.of(
-                                Map.of(
-                                        "dimensionCode",
-                                        "BJ",
-                                        "salesAmount",
-                                        new BigDecimal("160.625"))));
-        when(mapper.cityReceipts(any(), any(), any(), any(), any(), any(), any()))
+                        Map.of("salesAmount", new BigDecimal("160.625")));
+        when(mapper.collectionSummary(any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(
-                        List.of(Map.of("regionCode", "BJ", "receiptAmount", new BigDecimal("50"))));
+                        Map.of("receiptAmount", new BigDecimal("50")));
         when(mapper.customerRetention(any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(Map.of("orderingCustomerCount", 10));
         when(mapper.yangzhangguiTargetSales(any(), any(), any(), any(), any()))
