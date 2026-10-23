@@ -52,6 +52,7 @@ class PaymentRiskRepositoryTest {
                 ('T',1,3,13,'删除行',3,'配件',1,2000),('OTHER',1,1,11,'其他租户',9,'私有分类',0,3000)
                 """);
         jdbc.update("INSERT INTO bi_product_dim VALUES('T',12,2,'球杆'),('OTHER',11,9,'其他租户')");
+        OperatingCityTestSchema.install(jdbc);
     }
 
     @Test void fullAmountForPartialPaymentAndNoSettledCancelledZeroDeletedOrOtherTenantOrders() {

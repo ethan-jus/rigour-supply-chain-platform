@@ -43,6 +43,7 @@ class BiBusinessDayRepositoryTest {
         add("T", "2026-09-01T15:59:59.999999", "4.44");
         add("T", "2026-09-01T16:00:00", "5.55");
         add("OTHER", "2026-08-31T16:00:00", "999");
+        OperatingCityTestSchema.install(jdbc);
     }
 
     @AfterEach void close() { source.destroy(); }

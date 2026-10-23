@@ -102,6 +102,7 @@ class CityProductReportRepositoryTest {
         jdbc.execute("CREATE TABLE bi_product_dim (tenant_id VARCHAR(64), product_id BIGINT, product_category_id BIGINT, product_category_code VARCHAR(64), product_category_name VARCHAR(160), brand_id BIGINT, brand_name VARCHAR(120))");
         service = new CityProductReportService(new MybatisCityProductReportRepository(mapper), Clock.fixed(NOW, ZoneOffset.UTC));
         authorize(Set.of("analytics:dashboard:read"));
+        OperatingCityTestSchema.install(jdbc);
     }
 
     @AfterEach

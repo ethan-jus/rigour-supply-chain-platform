@@ -160,6 +160,8 @@ class BiSupplyScopeIntegrationTest {
                 for (String metric : List.of("SALES_AMOUNT", "RECEIPT_AMOUNT", "ORDERED_STORE_COUNT", "YANGZHANGGUI_SALES_AMOUNT"))
                     allMetrics.add(new com.rigour.hr.api.v1.model.TargetSettingsModels.Target("2026-10", "CITY", code, code,
                             metric, new java.math.BigDecimal("1000"), 1));
+            // JDBC fixture writes happened after an earlier mapper read in the same session.
+            session.clearCache();
             var completion = targets.completions(tenant, filter, "CITY", allMetrics);
             assertThat(completion).hasSize(4).allSatisfy(r -> assertThat(r.dimensionCode()).isEqualTo("HB"));
             for (var r : completion) assertThat(r.actualValue()).isEqualByComparingTo(switch (r.metricCode()) {

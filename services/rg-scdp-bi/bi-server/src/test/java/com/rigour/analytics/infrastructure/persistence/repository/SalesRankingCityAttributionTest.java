@@ -57,6 +57,7 @@ class SalesRankingCityAttributionTest {
                 """);
         config = new Configuration();
         config.addMapper(SupplyDashboardQueryMapper.class);
+        OperatingCityTestSchema.install(jdbc);
     }
 
     @AfterEach

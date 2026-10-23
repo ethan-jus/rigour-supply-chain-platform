@@ -45,6 +45,7 @@ CREATE TABLE bi_sales_order_line_fact (
                     ('T','杨掌柜 X CBSA世界斯诺克学院','BJ','E1','2026-10-02','CANCELLED',0,999),
                     ('T','杨掌柜 X CBSA世界斯诺克学院','BJ','E1','2026-10-02','COMPLETED',1,999)
                     """);
+            OperatingCityTestSchema.install(jdbc);
             var config = new Configuration();
             config.addMapper(SupplyDashboardQueryMapper.class);
             var args = new HashMap<String, Object>();

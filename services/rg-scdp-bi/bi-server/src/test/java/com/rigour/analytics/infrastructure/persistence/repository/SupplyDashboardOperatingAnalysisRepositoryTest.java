@@ -157,6 +157,7 @@ CREATE TABLE bi_sales_payment_fact (
                         0,
                         Set.of("TENANT_SUPER_ADMIN"),
                         Set.of("analytics:dashboard:read")));
+        OperatingCityTestSchema.install(jdbc);
     }
 
     @AfterEach

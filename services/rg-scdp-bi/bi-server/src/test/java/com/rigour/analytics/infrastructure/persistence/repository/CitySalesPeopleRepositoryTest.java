@@ -21,6 +21,7 @@ class CitySalesPeopleRepositoryTest {
             jdbc.update("INSERT INTO bi_sales_contact_city_dim VALUES('T','HZ',7),('T','BJ',8)");
             jdbc.update("INSERT INTO bi_employee_dim VALUES('T','A','在职零业绩','ACTIVE',7,'[7,5]'),('T','L','离职','LEFT',7,'[7,5]'),('T','CHILD','下属部门','ACTIVE',70,'[70,7,5]'),('T','PAID','调离后到账','LEFT',8,'[8,5]'),('T','OUT','其他城市','ACTIVE',8,'[8,5]'),('T','SIMILAR','非同部门','ACTIVE',17,'[17,5]'),('OTHER','X','其他租户','ACTIVE',7,'[7,5]')");
             jdbc.update("INSERT INTO bi_sales_payment_fact VALUES('T','PAID','HZ',0,'2026-08-10 00:00:00'),('T','OUT','HZ',0,'2026-07-10 00:00:00')");
+            OperatingCityTestSchema.install(jdbc);
             var config = new Configuration(); config.addMapper(SupplyDashboardQueryMapper.class);
             var args = new HashMap<String,Object>(); args.put("tenantId","T"); args.put("regionCode","HZ"); args.put("ownerStaffCode",null);
             args.put("from", LocalDateTime.parse("2026-08-01T00:00:00")); args.put("to",LocalDateTime.parse("2026-08-31T23:59:59"));

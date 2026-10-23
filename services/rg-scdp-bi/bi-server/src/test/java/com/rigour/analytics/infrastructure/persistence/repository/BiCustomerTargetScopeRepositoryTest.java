@@ -70,6 +70,7 @@ class BiCustomerTargetScopeRepositoryTest {
         payment("T", 4, 1, "SH", "E1", "2026-09-27T00:00:00");
         payment("T", 5, 2, "SH", "E2", "2026-09-29T00:00:00");
         payment("OTHER", 1, 1, "BJ", "E1", "2026-09-30T00:00:00");
+        OperatingCityTestSchema.install(jdbc);
     }
     @AfterEach void close() { source.destroy(); }
 

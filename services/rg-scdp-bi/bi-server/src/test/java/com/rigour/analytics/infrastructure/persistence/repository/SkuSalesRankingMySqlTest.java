@@ -51,6 +51,9 @@ class SkuSalesRankingMySqlTest {
                        0 AS refund_amount, 10 AS sales_net_amount, 4 AS estimated_cost_amount,
                        6 AS estimated_gross_profit_amount, 1 AS cost_covered, order_id AS customer_id
                   FROM fixture
+            ), bi_sales_contact_city_dim AS (
+                SELECT 'sku-strict-mode-test' AS tenant_id, 'BJ' AS region_code,
+                       1 AS department_id, '[1]' AS department_path
             ), bi_product_category_closure AS (
                 SELECT 'sku-strict-mode-test' AS tenant_id, 1 AS ancestor_id, 10 AS descendant_id
             )

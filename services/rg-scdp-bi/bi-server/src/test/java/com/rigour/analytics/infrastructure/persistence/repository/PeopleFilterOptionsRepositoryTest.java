@@ -25,6 +25,7 @@ class PeopleFilterOptionsRepositoryTest {
             jdbc.execute("CREATE TABLE bi_city_cost_record (tenant_id VARCHAR, region_code VARCHAR, region_name VARCHAR, deleted INT)");
             jdbc.update("INSERT INTO bi_employee_dim VALUES ('T','E1','员工一','BJ','北京'),('T','E2','员工二','SH','上海'),('OTHER','E3','其他租户','BJ','北京')");
             jdbc.update("INSERT INTO bi_sales_contact_fact VALUES ('T','E4','BJ','北京')");
+            OperatingCityTestSchema.install(jdbc);
             var config = new Configuration();config.addMapper(BiDataScopeMapper.class);config.addMapper(SupplyDashboardQueryMapper.class);
             var args = new HashMap<String,Object>(); args.put("tenantId","T");args.put("regions",List.of("BJ"));args.put("ownerStaffCode",null);
             var tenant = query(config,jdbc,SupplyDashboardQueryMapper.class,"salesOwnerOptions",args);

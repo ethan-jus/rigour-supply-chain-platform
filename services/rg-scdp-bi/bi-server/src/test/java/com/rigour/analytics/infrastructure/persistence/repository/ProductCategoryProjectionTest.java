@@ -122,6 +122,7 @@ estimated_gross_profit_amount DECIMAL(24,6) DEFAULT 0, cost_covered INT DEFAULT 
         jdbc.update("INSERT INTO bi_inventory_balance_current VALUES (?,100,999,0)", TENANT);
         jdbc.update(
                 "INSERT INTO bi_inventory_operation_fact VALUES (?,100,999,'OLD','Old')", TENANT);
+        OperatingCityTestSchema.install(jdbc);
     }
 
     @AfterEach
