@@ -50,9 +50,10 @@ public class SalesEmployeeProfileService {
         var caller = requireCaller();
         var employee = source.current(caller);
         rejectLegacyBinding(caller);
-        Instant now = clock.instant();
+        Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         var profile = repository.register(caller.tenantId(), caller.userId(), employee, now);
-        validate(profile, employee, now);
+        // 登记可能等待另一个并发事务；校验不能使用等待前取得的时间。
+        validate(profile, employee, clock.instant());
         audit.append(new AuditEvent(caller.tenantId().toString(), RequestContext.getRequestId(),
                 caller.userId().toString(), "SALES_EMPLOYEE_PROFILE_REGISTER", "SALES_PROFILE",
                 profile.id().toString(), Map.of("hrEmployeeId", Long.toString(employee.id()),
