@@ -15,7 +15,11 @@
     <description>Rigour 平台内部库版本清单，不携带运行时依赖</description>
     <dependencyManagement>
         <dependencies>
-            <dependency><groupId>com.rigour</groupId><artifactId>iam-client</artifactId><version>${project.version}</version></dependency>
+            <dependency>
+                <groupId>com.rigour</groupId>
+                <artifactId>iam-client</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>com.rigour</groupId>
                 <artifactId>rigour-platform-starter</artifactId>
