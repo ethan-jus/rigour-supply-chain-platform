@@ -33,14 +33,19 @@ def ensure_namespace():
         with urlopen(Request(base + '/v1/auth/login', data=urlencode({
                 'username': 'nacos', 'password': env['NACOS_PASSWORD']}).encode()), timeout=10) as response:
             token = json.load(response)['accessToken']
+        headers = {'accessToken': token}
         def exists():
-            with urlopen(base + '/v1/console/namespaces?' + urlencode({'accessToken': token}), timeout=10) as response:
-                return any(row.get('namespace') == NAMESPACE for row in json.load(response).get('data', []))
+            with urlopen(Request(base + '/v3/admin/core/namespace/list', headers=headers), timeout=10) as response:
+                result = json.load(response)
+                if result.get('code') != 0 or not isinstance(result.get('data'), list):
+                    raise RuntimeError('Namespace query rejected')
+                return any(row.get('namespace') == NAMESPACE for row in result['data'])
         if not exists():
-            with urlopen(Request(base + '/v1/console/namespaces', data=urlencode({
-                    'accessToken': token, 'customNamespaceId': NAMESPACE,
-                    'namespaceName': '台式机 DEV 发布', 'namespaceDesc': '独立于本机 IDEA 的应用注册空间'}).encode()), timeout=10) as response:
-                if response.read().strip().lower() != b'true':
+            with urlopen(Request(base + '/v3/admin/core/namespace', headers=headers, data=urlencode({
+                    'namespaceId': NAMESPACE, 'namespaceName': '台式机 DEV 发布',
+                    'namespaceDesc': '独立于本机 IDEA 的应用注册空间'}).encode()), timeout=10) as response:
+                result = json.load(response)
+                if result.get('code') != 0 or result.get('data') is not True:
                     raise RuntimeError('Namespace creation rejected')
             if not exists():
                 raise RuntimeError('Namespace not found after creation')

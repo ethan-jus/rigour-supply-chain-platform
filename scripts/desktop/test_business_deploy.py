@@ -25,8 +25,9 @@ class BusinessDeployTest(unittest.TestCase):
             self.assertIn('custom.setting=keep', result)
 
     def test_namespace_creation_uses_only_local_nacos(self):
-        responses = [io.BytesIO(b'{"accessToken":"fake-token"}'), io.BytesIO(b'{"data":[]}'),
-                     io.BytesIO(b'true'), io.BytesIO(('{"data":[{"namespace":"' + business_config.NAMESPACE + '"}]}').encode())]
+        responses = [io.BytesIO(b'{"accessToken":"fake-token"}'), io.BytesIO(b'{"code":0,"data":[]}'),
+                     io.BytesIO(b'{"code":0,"data":true}'),
+                     io.BytesIO(('{"code":0,"data":[{"namespace":"' + business_config.NAMESPACE + '"}]}').encode())]
         with patch.object(business_config, 'read_env', return_value={'NACOS_PASSWORD': 'test-only'}), \
                 patch.object(business_config, 'urlopen', side_effect=responses) as http:
             business_config.ensure_namespace()
@@ -35,6 +36,25 @@ class BusinessDeployTest(unittest.TestCase):
             target = call.args[0]
             url = target if isinstance(target, str) else target.full_url
             self.assertTrue(url.startswith('http://127.0.0.1:18848/nacos/'))
+            self.assertNotIn('fake-token', url)
+        self.assertEqual('/nacos/v3/admin/core/namespace', http.call_args_list[2].args[0].selector)
+        self.assertIn(b'namespaceId=', http.call_args_list[2].args[0].data)
+
+    def test_existing_namespace_does_not_create_again(self):
+        responses = [io.BytesIO(b'{"accessToken":"fake-token"}'),
+                     io.BytesIO(('{"code":0,"data":[{"namespace":"' + business_config.NAMESPACE + '"}]}').encode())]
+        with patch.object(business_config, 'read_env', return_value={'NACOS_PASSWORD': 'test-only'}), \
+                patch.object(business_config, 'urlopen', side_effect=responses) as http:
+            business_config.ensure_namespace()
+        self.assertEqual(2, http.call_count)
+
+    def test_namespace_query_failure_stops_before_creation(self):
+        responses = [io.BytesIO(b'{"accessToken":"fake-token"}'), io.BytesIO(b'{"code":403,"data":null}')]
+        with patch.object(business_config, 'read_env', return_value={'NACOS_PASSWORD': 'test-only'}), \
+                patch.object(business_config, 'urlopen', side_effect=responses) as http:
+            with self.assertRaises(RuntimeError):
+                business_config.ensure_namespace()
+        self.assertEqual(2, http.call_count)
 
     def test_namespace_failure_does_not_expose_credentials(self):
         with patch.object(business_config, 'read_env', side_effect=RuntimeError('sensitive-value')):
