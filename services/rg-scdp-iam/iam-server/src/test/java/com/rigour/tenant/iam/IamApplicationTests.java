@@ -2812,18 +2812,23 @@ SELECT COUNT(*) FROM iam_role_resource rr
                                 uuidBytes(tenantId),
                                 uuidBytes(roleId)))
                 .isEqualTo(1);
+        // 初始化需要一个已经生效的管理员，前置数据不依赖主机与数据库在创建瞬间时钟一致。
         jdbcTemplate.update(
                 """
                 INSERT INTO iam_user_role
                 (tenant_id, user_id, role_id, status, effective_from, created_at, updated_at)
-                VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?)
+                VALUES (?, ?, ?, 'ACTIVE', UTC_TIMESTAMP(6) - INTERVAL 1 MINUTE, ?, ?)
                 """,
                 uuidBytes(tenantId),
                 uuidBytes(userId),
                 uuidBytes(roleId),
                 now,
-                now,
                 now);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM iam_user_role WHERE tenant_id=? AND user_id=?"
+                        + " AND role_id=? AND effective_from<=UTC_TIMESTAMP(6)",
+                Integer.class, uuidBytes(tenantId), uuidBytes(userId), uuidBytes(roleId)))
+                .isEqualTo(1);
         return new TenantAdminFixture(new Actor("TENANT", userId, tenantId), roleId);
     }
 
