@@ -144,6 +144,8 @@ class IamAuthorizationServerSecurityTests {
 
     @Autowired private OAuth2AuthorizationService authorizationService;
 
+    @Autowired private com.rigour.tenant.iam.infrastructure.security.session.IamSessionLogoutHandler logoutHandler;
+
     @BeforeEach
     void initializeClientAndUser() {
         registeredClientRepository.save(scdpClient());
@@ -794,6 +796,38 @@ class IamAuthorizationServerSecurityTests {
         nativeRefresh(other.get("refresh_token").asString()).andExpect(status().isOk());
         mockMvc.perform(post("/oauth2/token").secure(true).param("grant_type", "refresh_token")
                         .param("client_id", CLIENT_ID).param("refresh_token", webRefresh)).andExpect(status().isOk());
+    }
+
+    @Test
+    void logoutSurvivesClockMovingBehindSessionAndRefreshIssuance() throws Exception {
+        var tokens = nativeTokens();
+        UUID sessionId = UUID.fromString(jwtDecoder.decode(tokens.get("access_token").asString())
+                .getClaimAsString("sessionId"));
+        byte[] encodedSessionId = uuid(sessionId);
+        // 模拟签发后系统时钟回拨，确保数据库约束不会阻止用户退出。
+        jdbcTemplate.update("""
+                UPDATE iam_auth_session
+                   SET issued_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 5 SECOND),
+                       last_seen_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 5 SECOND)
+                 WHERE id=?
+                """, encodedSessionId);
+        jdbcTemplate.update("""
+                UPDATE iam_refresh_token
+                   SET issued_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 5 SECOND)
+                 WHERE session_id=? AND consumed_at IS NULL
+                """, encodedSessionId);
+
+        logoutHandler.logoutSession(sessionId);
+
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM iam_auth_session
+                 WHERE id=? AND status='REVOKED' AND revoked_at>=issued_at
+                """, Integer.class, encodedSessionId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM iam_refresh_token
+                 WHERE session_id=? AND revoked_at IS NOT NULL AND revoked_at>=issued_at
+                """, Integer.class, encodedSessionId)).isPositive();
+        nativeRefresh(tokens.get("refresh_token").asString()).andExpect(status().isBadRequest());
     }
 
     @Test

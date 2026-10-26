@@ -47,9 +47,11 @@ public final class IamSessionLogoutHandler implements LogoutHandler {
     private void revoke(UUID sessionId) {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         byte[] encodedSessionId = UuidBinaryCodec.encode(sessionId);
+        // 时钟回拨时仍需撤销会话，撤销时间不能早于该记录的签发时间。
         jdbcTemplate.update("""
                         UPDATE iam_auth_session
-                           SET status = 'REVOKED', revoked_at = ?, revoke_reason = 'USER_LOGOUT', version = version + 1
+                           SET status = 'REVOKED', revoked_at = GREATEST(?, issued_at),
+                               revoke_reason = 'USER_LOGOUT', version = version + 1
                          WHERE id = ? AND status = 'ACTIVE'
                         """, now, encodedSessionId);
         jdbcTemplate.update("""
@@ -60,7 +62,8 @@ public final class IamSessionLogoutHandler implements LogoutHandler {
                         """, now, now, encodedSessionId);
         jdbcTemplate.update("""
                         UPDATE iam_refresh_token
-                           SET revoked_at = COALESCE(revoked_at, ?), revoke_reason = 'USER_LOGOUT'
+                           SET revoked_at = COALESCE(revoked_at, GREATEST(?, issued_at)),
+                               revoke_reason = 'USER_LOGOUT'
                          WHERE session_id = ?
                         """, now, encodedSessionId);
     }
