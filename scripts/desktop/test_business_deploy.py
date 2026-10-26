@@ -1,5 +1,6 @@
 """不访问运行环境的部署契约测试，避免服务清单、配置和权限范围漂移。"""
 import importlib.util
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -10,6 +11,38 @@ from service_catalog import (CORE, DOMAINS, PORTS, backup_schemas, business_comp
 
 
 class BusinessDeployTest(unittest.TestCase):
+    def test_namespace_upgrade_is_idempotent_and_preserves_other_settings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'service.properties'
+            path.write_text('spring.datasource.password=${KEEP_PASSWORD}\n'
+                            'spring.cloud.nacos.discovery.namespace=shared-dev\ncustom.setting=keep\n')
+            business_config.configure_namespace(path)
+            result = path.read_text()
+            business_config.configure_namespace(path)
+            self.assertEqual(result, path.read_text())
+            self.assertIn('spring.cloud.nacos.discovery.namespace=' + business_config.NAMESPACE, result)
+            self.assertIn('spring.datasource.password=${KEEP_PASSWORD}', result)
+            self.assertIn('custom.setting=keep', result)
+
+    def test_namespace_creation_uses_only_local_nacos(self):
+        responses = [io.BytesIO(b'{"accessToken":"fake-token"}'), io.BytesIO(b'{"data":[]}'),
+                     io.BytesIO(b'true'), io.BytesIO(('{"data":[{"namespace":"' + business_config.NAMESPACE + '"}]}').encode())]
+        with patch.object(business_config, 'read_env', return_value={'NACOS_PASSWORD': 'test-only'}), \
+                patch.object(business_config, 'urlopen', side_effect=responses) as http:
+            business_config.ensure_namespace()
+        self.assertEqual(4, http.call_count)
+        for call in http.call_args_list:
+            target = call.args[0]
+            url = target if isinstance(target, str) else target.full_url
+            self.assertTrue(url.startswith('http://127.0.0.1:18848/nacos/'))
+
+    def test_namespace_failure_does_not_expose_credentials(self):
+        with patch.object(business_config, 'read_env', side_effect=RuntimeError('sensitive-value')):
+            with self.assertRaises(RuntimeError) as failure:
+                business_config.ensure_namespace()
+        self.assertNotIn('sensitive-value', str(failure.exception))
+        self.assertTrue(failure.exception.__suppress_context__)
+
     def test_mysql_keeps_stdin_open_and_returns_query_result(self):
         with patch.object(business_config.subprocess, 'run') as command:
             command.return_value.stdout = 'rigour_iam\n'
@@ -92,7 +125,9 @@ class BusinessDeployTest(unittest.TestCase):
                     self.assertIn('RIGOUR_ORDER_FUND_ATTACHMENT_COS_ENABLED=true', result)
                 else:
                     self.assertNotIn('RIGOUR_ORDER_FUND_ATTACHMENT_COS_ENABLED', result)
-                self.assertEqual('existing-setting=preserved\n', (config / (name+'.properties')).read_text())
+                self.assertEqual('existing-setting=preserved\n'
+                                 'spring.cloud.nacos.discovery.namespace=' + business_config.NAMESPACE + '\n',
+                                 (config / (name+'.properties')).read_text())
                 self.assertEqual(0o600, (config / (name+'.env')).stat().st_mode & 0o777)
 
     def test_each_container_has_own_env_and_persistent_data(self):

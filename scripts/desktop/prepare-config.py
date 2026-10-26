@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import shutil
 from datetime import datetime
+from business_config import configure_namespace
 
 root = Path('/srv/rigour-dev')
 if not (root / '.env').exists():
@@ -32,7 +33,7 @@ spring.cloud.nacos.config.enabled=false
 spring.cloud.nacos.config.import-check.enabled=false
 spring.cloud.nacos.username=nacos
 spring.cloud.nacos.password=${NACOS_PASSWORD}
-spring.cloud.nacos.discovery.namespace=3aa03547-8948-4254-bd94-47c630db128b
+spring.cloud.nacos.discovery.namespace=rigour-desktop-dev
 spring.cloud.nacos.discovery.ip=192.168.12.7
 rigour.iam.feishu.enabled=false
 rigour.iam.oidc.server.enabled=true
@@ -57,7 +58,7 @@ spring.cloud.nacos.config.enabled=false
 spring.cloud.nacos.config.import-check.enabled=false
 spring.cloud.nacos.username=nacos
 spring.cloud.nacos.password=${NACOS_PASSWORD}
-spring.cloud.nacos.discovery.namespace=3aa03547-8948-4254-bd94-47c630db128b
+spring.cloud.nacos.discovery.namespace=rigour-desktop-dev
 spring.cloud.nacos.discovery.ip=192.168.12.7
 rigour.gateway.security.enabled=true
 rigour.gateway.security.allow-insecure-http=true
@@ -94,6 +95,8 @@ if original != updated:
     shutil.copy2(iam_path,backup / 'iam.properties')
     iam_path.write_text(updated)
     print('已备份并更新首次空库尝试配置，复用原签名密钥和独立桌面客户端。')
+for name in ['iam.properties', 'gateway.properties']:
+    configure_namespace(config / name)
 # IAM 历史迁移会删除自身临时清理表，迁移账号需要本库 DROP 权限，运行账号不增加权限。
 subprocess.run(['docker','exec','-i','rigour-dev-desktop-mysql-1','sh','-c',
     'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot'],

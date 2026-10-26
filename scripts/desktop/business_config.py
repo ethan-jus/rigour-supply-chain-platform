@@ -2,10 +2,51 @@
 import os
 from pathlib import Path
 import subprocess
+import json
+import re
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from service_catalog import DOMAINS
 
 ROOT = Path('/srv/rigour-dev')
-NAMESPACE = '3aa03547-8948-4254-bd94-47c630db128b'
+NAMESPACE = os.environ.get('RIGOUR_DESKTOP_NACOS_NAMESPACE', 'rigour-desktop-dev')
+
+
+def configure_namespace(path):
+    """发布配置统一使用独立注册空间，保留数据库、密钥和其他配置。"""
+    original = path.read_text()
+    value = 'spring.cloud.nacos.discovery.namespace=' + NAMESPACE
+    updated, count = re.subn(r'^spring\.cloud\.nacos\.discovery\.namespace\s*=.*$',
+                             lambda _: value, original, flags=re.MULTILINE)
+    if not count:
+        updated = original.rstrip('\n') + '\n' + value + '\n'
+    if updated != original:
+        path.write_text(updated)
+        path.chmod(0o600)
+
+
+def ensure_namespace():
+    """只操作本机 Nacos 的命名空间；凭据和登录令牌不进入日志。"""
+    base = 'http://127.0.0.1:18848/nacos'
+    try:
+        env = read_env(ROOT / '.env')
+        with urlopen(Request(base + '/v1/auth/login', data=urlencode({
+                'username': 'nacos', 'password': env['NACOS_PASSWORD']}).encode()), timeout=10) as response:
+            token = json.load(response)['accessToken']
+        def exists():
+            with urlopen(base + '/v1/console/namespaces?' + urlencode({'accessToken': token}), timeout=10) as response:
+                return any(row.get('namespace') == NAMESPACE for row in json.load(response).get('data', []))
+        if not exists():
+            with urlopen(Request(base + '/v1/console/namespaces', data=urlencode({
+                    'accessToken': token, 'customNamespaceId': NAMESPACE,
+                    'namespaceName': '台式机 DEV 发布', 'namespaceDesc': '独立于本机 IDEA 的应用注册空间'}).encode()), timeout=10) as response:
+                if response.read().strip().lower() != b'true':
+                    raise RuntimeError('Namespace creation rejected')
+            if not exists():
+                raise RuntimeError('Namespace not found after creation')
+    except Exception:
+        raise RuntimeError('本机 Nacos 独立发布空间准备失败，请检查注册中心及凭据；未启动应用。') from None
+    print('已核对独立应用注册空间：' + NAMESPACE, flush=True)
 
 
 def read_env(path):
@@ -112,5 +153,6 @@ def prepare(selected):
         if not config.exists():
             config.write_text(domain_properties(row))
             config.chmod(0o600)
+        configure_namespace(config)
         (ROOT / f'apps/data/{name}').mkdir(parents=True, exist_ok=True)
         print('已准备业务服务配置：' + title, flush=True)

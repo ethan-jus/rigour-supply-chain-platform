@@ -16,7 +16,7 @@ from urllib.request import urlopen
 from web_health import check_web
 from service_catalog import (CORE, DOMAINS, PORTS, backup_schemas, retired_services,
                              schemas_for, select_services)
-from business_config import prepare as prepare_business, mysql
+from business_config import prepare as prepare_business, mysql, ensure_namespace
 
 ROOT = Path('/srv/rigour-dev/apps')
 ROOT.mkdir(parents=True, exist_ok=True)
@@ -174,6 +174,7 @@ with (ROOT / 'deploy.lock').open('w') as lock:
                 },ensure_ascii=False,indent=2))
                 print('保留已停止的历史服务容器、配置和数据库：' + ','.join(retired),flush=True)
         backup_before_deploy(release_id)
+        ensure_namespace()
         run(['python3',str(release / 'prepare-config.py')])
         prepare_business(selected)
         compose(release,'config','--quiet')
