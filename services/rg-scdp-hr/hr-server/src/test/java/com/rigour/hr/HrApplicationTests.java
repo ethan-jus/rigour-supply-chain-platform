@@ -24,6 +24,11 @@ class HrApplicationTests {
                     .withUsername("rigour_hr_test")
                     .withPassword("rigour_hr_test_password");
 
+    static {
+        MYSQL.withCommand("--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci");
+        MYSQL.withUrlParam("connectionCollation", "utf8mb4_general_ci");
+    }
+
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", MYSQL::getJdbcUrl);
@@ -97,8 +102,14 @@ class HrApplicationTests {
         jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')", tenant);
         var sales = organizations.saveDepartment(tenant, null,
                 new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "销售部", 0, "ACTIVE", 0, null, null, null), "admin");
+        var province = organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(sales.id(), "河北省", 0, "ACTIVE", 0, null, null, null), "admin");
         var city = organizations.saveDepartment(tenant, null,
-                new com.rigour.hr.api.v1.model.HrDepartmentCommand(sales.id(), "石家庄", 0, "ACTIVE", 0, null, null, null), "admin");
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(province.id(), "石家庄", 0, "ACTIVE", 0, null, null, null), "admin");
+        var otherRoot = organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "运营部", 0, "ACTIVE", 0, null, null, null), "admin");
+        organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(otherRoot.id(), "石家庄市", 0, "ACTIVE", 0, null, null, null), "admin");
         long existing = organizations.saveEmployee(tenant, null, employee("张三", city.id(), "LEFT", 0), "admin");
         var before = jdbcTemplate.queryForMap("SELECT * FROM hr_employee WHERE tenant_id=? AND id=?", tenant, existing);
         var codes = new com.rigour.shared.core.code.BusinessCodeGenerator();

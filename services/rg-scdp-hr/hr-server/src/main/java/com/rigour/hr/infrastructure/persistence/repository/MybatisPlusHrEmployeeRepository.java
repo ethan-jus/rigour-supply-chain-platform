@@ -478,8 +478,18 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
             List<HrDepartmentView> roots = departments.stream()
                     .filter(d -> "销售部".equals(d.departmentName()) && "ACTIVE".equals(d.statusCode())).toList();
             if (roots.size() != 1) throw new IllegalArgumentException("销售部未唯一配置");
+            Set<Long> salesDepartments = new LinkedHashSet<>();
+            salesDepartments.add(roots.getFirst().id());
+            boolean added;
+            do {
+                added = false;
+                for (var department : departments) {
+                    if ("ACTIVE".equals(department.statusCode()) && salesDepartments.contains(department.parentId()))
+                        added |= salesDepartments.add(department.id());
+                }
+            } while (added);
             List<HrDepartmentView> matches = departments.stream()
-                    .filter(d -> roots.getFirst().id().equals(d.parentId()) && "ACTIVE".equals(d.statusCode()))
+                    .filter(d -> salesDepartments.contains(d.id()) && !roots.getFirst().id().equals(d.id()))
                     .filter(d -> departmentKey(d.departmentName()).equals(departmentKey(row.departmentName())))
                     .toList();
             if (matches.size() != 1) throw new IllegalArgumentException("来源部门未唯一匹配销售部下级部门: " + row.departmentName());
