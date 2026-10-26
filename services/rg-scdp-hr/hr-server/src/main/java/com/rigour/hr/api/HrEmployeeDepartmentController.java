@@ -10,13 +10,13 @@ import java.util.List;
 public final class HrEmployeeDepartmentController {
     private final HrOrganizationStore organization;
     public HrEmployeeDepartmentController(HrOrganizationStore organization) { this.organization=organization; }
-    public record Department(Long id, Long parentId, String departmentName, int sortOrder, String statusCode) {}
+    public record Department(Long id, Long parentId, String departmentName, int sortOrder, String statusCode, String leaderEmployeeCode) {}
     @GetMapping("/api/v1/hr/employee-departments")
     public ApiResponse<List<Department>> departments() {
         AuthorizationContext.requirePermission("hr:employee:read");
         var actor=AuthorizationContext.requireCurrent();
         if (actor.tenantId()==null) throw new com.rigour.shared.context.AuthorizationDeniedException("tenant-caller");
         return ApiResponse.success(organization.departments(actor.tenantId().toString()).stream()
-                .map(d -> new Department(d.id(),d.parentId(),d.departmentName(),d.sortOrder(),d.statusCode())).toList());
+                .map(d -> new Department(d.id(),d.parentId(),d.departmentName(),d.sortOrder(),d.statusCode(),d.leaderEmployeeCode())).toList());
     }
 }

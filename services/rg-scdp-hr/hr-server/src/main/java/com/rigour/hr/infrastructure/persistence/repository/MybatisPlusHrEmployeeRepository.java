@@ -693,7 +693,7 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
     }
 
     private QueryWrapper<HrEmployeeEntity> ordered(QueryWrapper<HrEmployeeEntity> query, EmployeeSearchCriteria c) {
-        String field = c == null || c.sortBy() == null ? "createdTime" : c.sortBy();
+        String field = c == null || c.sortBy() == null ? "entryDate" : c.sortBy();
         String column = switch (field) {
             case "employeeCode" -> "employee_code";
             case "employeeName" -> "employee_name";
@@ -703,8 +703,11 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
         };
         String direction = c == null || c.sortDirection() == null ? "desc" : c.sortDirection();
         if (!Set.of("asc", "desc").contains(direction)) throw new IllegalArgumentException("排序方向无效");
-        // Missing dates stay last; the ID tie-breaker makes pagination deterministic.
-        return query.orderByAsc(column + " IS NULL").orderBy(true, "asc".equals(direction), column).orderByDesc("id");
+        // 状态在所有分页和自定义排序前分组；缺失日期置于组末，ID 保证同值翻页稳定。
+        return query.orderByAsc("CASE employment_status WHEN 'ACTIVE' THEN 0 WHEN 'LEFT' THEN 2 ELSE 1 END")
+                .orderByAsc(column + " IS NULL")
+                .orderBy(true, "asc".equals(direction), column)
+                .orderByDesc("id");
     }
 
     private QueryWrapper<HrEmployeeEntity> employeeQuery(

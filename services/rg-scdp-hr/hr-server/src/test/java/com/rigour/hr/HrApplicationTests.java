@@ -264,6 +264,36 @@ class HrApplicationTests {
     }
 
     @Test
+    void employeeDefaultSortGroupsStatusBeforeEntryDateAcrossPages() {
+        String tenant = java.util.UUID.randomUUID().toString();
+        jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')", tenant);
+        var dept = organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null,"排序测试",0,"ACTIVE",0,null,null,null), "admin");
+        var ids = new java.util.ArrayList<Long>();
+        // 创建顺序与预期排序相反；离职员工的入职日期更新，仍应排在所有在职员工之后。
+        for (String name : java.util.List.of("离职新", "离职旧", "停用", "待确认", "在职无日期", "在职旧", "在职新", "在职同日")) {
+            ids.add(organizations.saveEmployee(tenant, null, employee(name, dept.id(), "ACTIVE", 0), "admin"));
+        }
+        String[] statuses = {"LEFT", "LEFT", "INACTIVE", "PENDING", "ACTIVE", "ACTIVE", "ACTIVE", "ACTIVE"};
+        String[] dates = {"2026-10-01", "2026-09-01", "2026-08-01", "2026-09-01", null, "2026-01-01", "2026-02-01", "2026-02-01"};
+        for (int i = 0; i < ids.size(); i++) jdbcTemplate.update(
+                "UPDATE hr_employee SET employment_status=?,entry_date=? WHERE tenant_id=? AND id=?", statuses[i], dates[i], tenant, ids.get(i));
+        var expected = java.util.List.of(ids.get(7), ids.get(6), ids.get(5), ids.get(4), ids.get(3), ids.get(2), ids.get(0), ids.get(1));
+        var actual = new java.util.ArrayList<Long>();
+        for (int begin = 0; begin < ids.size(); begin += 3) {
+            var page = employeeStore.employees(tenant, begin, 3, null);
+            assertThat(page.total()).isEqualTo(8);
+            actual.addAll(page.items().stream().map(e -> e.id()).toList());
+        }
+        assertThat(actual).containsExactlyElementsOf(expected);
+        var ascending = new com.rigour.hr.application.port.out.HrEmployeeStore.EmployeeSearchCriteria(
+                null,null,null,null,null,null,null,null,null,null,dept.id(),null,null,false,"entryDate","asc");
+        assertThat(employeeStore.employees(tenant, 0, 20, ascending).items()).extracting(e -> e.id())
+                .containsExactly(ids.get(5), ids.get(7), ids.get(6), ids.get(4), ids.get(2), ids.get(3), ids.get(1), ids.get(0));
+        assertThat(employeeStore.employees(java.util.UUID.randomUUID().toString(), 0, 20, null).items()).isEmpty();
+    }
+
+    @Test
     void accountMigrationRecoversOnlyMatchingSourceEvidence() throws Exception {
         String tenant=java.util.UUID.randomUUID().toString();
         for(String source:java.util.List.of("verified","different")) jdbcTemplate.update(
