@@ -69,7 +69,7 @@ rigour.sales.temporary-checkin.ai.enabled=false
 
 
 def external_keys(name):
-    if name == 'hr':
+    if name in ('hr', 'order'):
         return ['RIGOUR_COS_' + tail for tail in ('REGION', 'BUCKET', 'SECRET_ID', 'SECRET_KEY')]
     if name in ('erp', 'integration'):
         return [f'RIGOUR_{name.upper()}_PRODUCT_MEDIA_COS_{tail}' for tail in
@@ -98,11 +98,13 @@ def prepare(selected):
             raise RuntimeError(title + '缺少数据库或内部凭据：' + ','.join(absent))
         values = {key: env[key] for key in keys}
         allowed = external_keys(name)
-        if name == 'hr':
+        if name in ('hr', 'order'):
             allowed += ['RIGOUR_COS_SESSION_TOKEN']
         elif name in ('erp', 'integration'):
             allowed += [f'RIGOUR_{name.upper()}_PRODUCT_MEDIA_COS_SESSION_TOKEN']
         values.update({key: external[key] for key in allowed if external.get(key)})
+        if name == 'order':
+            values['RIGOUR_ORDER_FUND_ATTACHMENT_COS_ENABLED'] = 'true'
         path = ROOT / f'apps/config/{name}.env'
         path.write_text('# 本服务所需凭据；不包含其他领域密码和数据库 root。\n' + ''.join(k + '=' + v + '\n' for k, v in values.items()))
         path.chmod(0o600)

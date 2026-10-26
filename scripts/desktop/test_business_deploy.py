@@ -66,28 +66,34 @@ class BusinessDeployTest(unittest.TestCase):
                     business_config.prepare(select_services('hr'))
             self.assertFalse((root / 'apps').exists())
 
-    def test_hr_receives_own_cos_credentials_and_preserves_existing_properties(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            config = root / 'apps/config'
-            config.mkdir(parents=True)
-            keys = ['HR_DB_APP_PASSWORD','HR_DB_MIGRATOR_PASSWORD','NACOS_PASSWORD',
-                    'REDIS_PASSWORD','RIGOUR_CONTEXT_TRUST_KEY_V1','MYSQL_ROOT_PASSWORD']
-            (root / '.env').write_text(''.join(k + '=test-only\n' for k in keys))
-            cos = {k: 'cos-test-only' for k in business_config.external_keys('hr')}
-            cos.update(RIGOUR_COS_SESSION_TOKEN='optional-token',
-                       RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_KEY='other-domain-secret')
-            (config / 'external.env').write_text(''.join(k + '=' + v + '\n' for k,v in cos.items()))
-            (config / 'hr.properties').write_text('existing-setting=preserved\n')
-            with patch.object(business_config,'ROOT',root):
-                business_config.prepare(select_services('hr'))
-            result = (config / 'hr.env').read_text()
-            self.assertIn('RIGOUR_COS_SECRET_ID=cos-test-only',result)
-            self.assertIn('RIGOUR_COS_SESSION_TOKEN=optional-token',result)
-            self.assertNotIn('other-domain-secret',result)
-            self.assertNotIn('MYSQL_ROOT_PASSWORD',result)
-            self.assertEqual('existing-setting=preserved\n',(config / 'hr.properties').read_text())
-            self.assertEqual(0o600,(config / 'hr.env').stat().st_mode & 0o777)
+    def test_cost_writers_receive_cos_and_preserve_existing_properties(self):
+        for name in ('hr', 'order'):
+            with self.subTest(service=name), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                config = root / 'apps/config'
+                config.mkdir(parents=True)
+                keys = [name.upper()+'_DB_APP_PASSWORD', name.upper()+'_DB_MIGRATOR_PASSWORD',
+                        'NACOS_PASSWORD', 'REDIS_PASSWORD', 'RIGOUR_CONTEXT_TRUST_KEY_V1',
+                        'MYSQL_ROOT_PASSWORD']
+                (root / '.env').write_text(''.join(k + '=test-only\n' for k in keys))
+                cos = {k: 'cos-test-only' for k in business_config.external_keys(name)}
+                cos.update(RIGOUR_COS_SESSION_TOKEN='optional-token',
+                           RIGOUR_ERP_PRODUCT_MEDIA_COS_SECRET_KEY='other-domain-secret')
+                (config / 'external.env').write_text(''.join(k + '=' + v + '\n' for k,v in cos.items()))
+                (config / (name+'.properties')).write_text('existing-setting=preserved\n')
+                with patch.object(business_config, 'ROOT', root):
+                    business_config.prepare(select_services(name))
+                result = (config / (name+'.env')).read_text()
+                self.assertIn('RIGOUR_COS_SECRET_ID=cos-test-only', result)
+                self.assertIn('RIGOUR_COS_SESSION_TOKEN=optional-token', result)
+                self.assertNotIn('other-domain-secret', result)
+                self.assertNotIn('MYSQL_ROOT_PASSWORD', result)
+                if name == 'order':
+                    self.assertIn('RIGOUR_ORDER_FUND_ATTACHMENT_COS_ENABLED=true', result)
+                else:
+                    self.assertNotIn('RIGOUR_ORDER_FUND_ATTACHMENT_COS_ENABLED', result)
+                self.assertEqual('existing-setting=preserved\n', (config / (name+'.properties')).read_text())
+                self.assertEqual(0o600, (config / (name+'.env')).stat().st_mode & 0o777)
 
     def test_each_container_has_own_env_and_persistent_data(self):
         for name, config in business_compose().items():
