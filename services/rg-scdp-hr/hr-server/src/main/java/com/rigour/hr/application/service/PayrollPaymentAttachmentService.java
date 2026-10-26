@@ -91,7 +91,8 @@ public class PayrollPaymentAttachmentService {
         if (revision < 1 || locked.revision() != revision) throw conflict("工资单已更新，请刷新后上传凭证");
         if (existing.size() >= 20) throw bad("每笔发放登记最多20个凭证文件");
         var file = new PayrollPaymentAttachmentView(id, name, type, bytes.length, actor.actor(),
-                names.resolve(actor.tenant(), actor.actor()), Instant.now());
+                names.resolve(actor.tenant(), actor.actor()),
+                Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS));
         String key = storage.upload(actor.tenant(), payrollId, paymentId, type, bytes);
         boolean synchronizedTransaction = TransactionSynchronizationManager.isSynchronizationActive();
         if (synchronizedTransaction) TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {

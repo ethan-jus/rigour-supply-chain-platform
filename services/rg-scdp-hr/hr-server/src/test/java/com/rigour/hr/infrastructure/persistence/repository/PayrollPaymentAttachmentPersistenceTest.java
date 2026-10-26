@@ -72,6 +72,7 @@ class PayrollPaymentAttachmentPersistenceTest {
     @Test void savedEvidenceIsReturnedByDetailAndExportWithoutChangingPayrollOrAnalyticsVersion() {
         Long guard=db.jdbc.queryForObject("SELECT version FROM hr_payroll_guard WHERE tenant_id=?",Long.class,tenant.toString());
         var file=upload("银行回单.pdf");
+        assertThat(file.createdTime().getNano() % 1000).isZero();
         assertThat(service.upload(paid.id(),paymentId,1,"银行回单.pdf","application/pdf",pdf)).isEqualTo(file);
         var detail=db.payroll.detail(tenant.toString(),paid.id(),"hr:payroll:read");
         assertThat(detail.payments().getFirst().attachments()).containsExactly(file);
