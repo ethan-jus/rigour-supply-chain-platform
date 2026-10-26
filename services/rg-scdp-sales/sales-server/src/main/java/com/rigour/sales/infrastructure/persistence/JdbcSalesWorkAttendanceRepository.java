@@ -84,8 +84,9 @@ public class JdbcSalesWorkAttendanceRepository implements SalesWorkAttendanceRep
 INSERT INTO sales_work_day
     (id, tenant_id, employee_id, sales_profile_id, business_date, timezone_id,
      field_policy_version_id, status, checked_in_at, evidence_quality,
-     created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 'PENDING', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))
+     created_at, updated_at, hr_employee_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 'PENDING', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6),
+        (SELECT hr_employee_id FROM sales_profile WHERE tenant_id=? AND id=?))
 """,
                 bin(id),
                 bin(tenantId),
@@ -94,7 +95,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 'PENDING', UTC_TIMESTAMP(6), UTC_TIMES
                 businessDate,
                 timezoneId,
                 bin(fieldPolicyVersionId),
-                timestamp(checkedInAt));
+                timestamp(checkedInAt), bin(tenantId), bin(salesProfileId));
     }
 
     @Override
@@ -447,7 +448,7 @@ SELECT longitude, latitude, accuracy_meters, client_occurred_at, server_received
     /** 多次重新签到会产生多个定位会话；月历和当日卡片都展示累计采样事实。 */
     private static String workDaySelect() {
         return """
-SELECT d.id, d.employee_id, d.sales_profile_id, d.business_date, d.timezone_id,
+SELECT d.id, d.employee_id, d.hr_employee_id, d.sales_profile_id, d.business_date, d.timezone_id,
        d.field_policy_version_id, d.status, d.checked_in_at, d.checked_out_at,
        d.verified_work_minutes, d.evidence_quality,
        (SELECT session.id FROM sales_location_session session
@@ -478,7 +479,7 @@ SELECT d.id, d.employee_id, d.sales_profile_id, d.business_date, d.timezone_id,
                 rs.getInt("location_point_count"),
                 rs.getInt("interruption_count"),
                 rs.getInt("verified_work_minutes"),
-                rs.getString("evidence_quality"));
+                rs.getString("evidence_quality"), rs.getObject("hr_employee_id", Long.class));
     }
 
     private static UUID uuid(ResultSet rs, String column) throws SQLException {

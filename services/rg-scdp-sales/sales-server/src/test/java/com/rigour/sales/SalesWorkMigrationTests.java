@@ -419,7 +419,7 @@ class SalesWorkMigrationTests {
                 """, Integer.class);
         assertThat(evidenceColumns).isEqualTo(12);
         assertThat(evidenceUniqueColumns).isEqualTo(7);
-        assertThat(migrationCount).isEqualTo(27);
+        assertThat(migrationCount).isEqualTo(28);
         assertThat(tableCount).isEqualTo(53);
         assertThat(editableStoreTableCount).isZero();
         assertThat(storefrontEvidenceColumnCount).isEqualTo(10);

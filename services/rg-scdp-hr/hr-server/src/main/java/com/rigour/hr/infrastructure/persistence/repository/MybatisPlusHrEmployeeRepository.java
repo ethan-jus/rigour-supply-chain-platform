@@ -478,8 +478,18 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
             List<HrDepartmentView> roots = departments.stream()
                     .filter(d -> "销售部".equals(d.departmentName()) && "ACTIVE".equals(d.statusCode())).toList();
             if (roots.size() != 1) throw new IllegalArgumentException("销售部未唯一配置");
+            Set<Long> salesDepartments = new LinkedHashSet<>();
+            salesDepartments.add(roots.getFirst().id());
+            boolean added;
+            do {
+                added = false;
+                for (var department : departments) {
+                    if ("ACTIVE".equals(department.statusCode()) && salesDepartments.contains(department.parentId()))
+                        added |= salesDepartments.add(department.id());
+                }
+            } while (added);
             List<HrDepartmentView> matches = departments.stream()
-                    .filter(d -> roots.getFirst().id().equals(d.parentId()) && "ACTIVE".equals(d.statusCode()))
+                    .filter(d -> salesDepartments.contains(d.id()) && !roots.getFirst().id().equals(d.id()))
                     .filter(d -> departmentKey(d.departmentName()).equals(departmentKey(row.departmentName())))
                     .toList();
             if (matches.size() != 1) throw new IllegalArgumentException("来源部门未唯一匹配销售部下级部门: " + row.departmentName());
@@ -683,7 +693,7 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
     }
 
     private QueryWrapper<HrEmployeeEntity> ordered(QueryWrapper<HrEmployeeEntity> query, EmployeeSearchCriteria c) {
-        String field = c == null || c.sortBy() == null ? "createdTime" : c.sortBy();
+        String field = c == null || c.sortBy() == null ? "entryDate" : c.sortBy();
         String column = switch (field) {
             case "employeeCode" -> "employee_code";
             case "employeeName" -> "employee_name";
@@ -693,8 +703,11 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
         };
         String direction = c == null || c.sortDirection() == null ? "desc" : c.sortDirection();
         if (!Set.of("asc", "desc").contains(direction)) throw new IllegalArgumentException("排序方向无效");
-        // Missing dates stay last; the ID tie-breaker makes pagination deterministic.
-        return query.orderByAsc(column + " IS NULL").orderBy(true, "asc".equals(direction), column).orderByDesc("id");
+        // 状态在所有分页和自定义排序前分组；缺失日期置于组末，ID 保证同值翻页稳定。
+        return query.orderByAsc("CASE employment_status WHEN 'ACTIVE' THEN 0 WHEN 'LEFT' THEN 2 ELSE 1 END")
+                .orderByAsc(column + " IS NULL")
+                .orderBy(true, "asc".equals(direction), column)
+                .orderByDesc("id");
     }
 
     private QueryWrapper<HrEmployeeEntity> employeeQuery(

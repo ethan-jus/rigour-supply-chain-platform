@@ -24,6 +24,11 @@ class HrApplicationTests {
                     .withUsername("rigour_hr_test")
                     .withPassword("rigour_hr_test_password");
 
+    static {
+        MYSQL.withCommand("--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci");
+        MYSQL.withUrlParam("connectionCollation", "utf8mb4_general_ci");
+    }
+
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", MYSQL::getJdbcUrl);
@@ -97,8 +102,14 @@ class HrApplicationTests {
         jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')", tenant);
         var sales = organizations.saveDepartment(tenant, null,
                 new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "销售部", 0, "ACTIVE", 0, null, null, null), "admin");
+        var province = organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(sales.id(), "河北省", 0, "ACTIVE", 0, null, null, null), "admin");
         var city = organizations.saveDepartment(tenant, null,
-                new com.rigour.hr.api.v1.model.HrDepartmentCommand(sales.id(), "石家庄", 0, "ACTIVE", 0, null, null, null), "admin");
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(province.id(), "石家庄", 0, "ACTIVE", 0, null, null, null), "admin");
+        var otherRoot = organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "运营部", 0, "ACTIVE", 0, null, null, null), "admin");
+        organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(otherRoot.id(), "石家庄市", 0, "ACTIVE", 0, null, null, null), "admin");
         long existing = organizations.saveEmployee(tenant, null, employee("张三", city.id(), "LEFT", 0), "admin");
         var before = jdbcTemplate.queryForMap("SELECT * FROM hr_employee WHERE tenant_id=? AND id=?", tenant, existing);
         var codes = new com.rigour.shared.core.code.BusinessCodeGenerator();
@@ -250,6 +261,36 @@ class HrApplicationTests {
         }
         var invalid = new com.rigour.hr.application.port.out.HrEmployeeStore.EmployeeSearchCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,"id;drop table hr_employee","asc");
         org.assertj.core.api.Assertions.assertThatThrownBy(()->employeeStore.employees(tenant,0,20,invalid)).hasMessageContaining("排序字段");
+    }
+
+    @Test
+    void employeeDefaultSortGroupsStatusBeforeEntryDateAcrossPages() {
+        String tenant = java.util.UUID.randomUUID().toString();
+        jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')", tenant);
+        var dept = organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null,"排序测试",0,"ACTIVE",0,null,null,null), "admin");
+        var ids = new java.util.ArrayList<Long>();
+        // 创建顺序与预期排序相反；离职员工的入职日期更新，仍应排在所有在职员工之后。
+        for (String name : java.util.List.of("离职新", "离职旧", "停用", "待确认", "在职无日期", "在职旧", "在职新", "在职同日")) {
+            ids.add(organizations.saveEmployee(tenant, null, employee(name, dept.id(), "ACTIVE", 0), "admin"));
+        }
+        String[] statuses = {"LEFT", "LEFT", "INACTIVE", "PENDING", "ACTIVE", "ACTIVE", "ACTIVE", "ACTIVE"};
+        String[] dates = {"2026-10-01", "2026-09-01", "2026-08-01", "2026-09-01", null, "2026-01-01", "2026-02-01", "2026-02-01"};
+        for (int i = 0; i < ids.size(); i++) jdbcTemplate.update(
+                "UPDATE hr_employee SET employment_status=?,entry_date=? WHERE tenant_id=? AND id=?", statuses[i], dates[i], tenant, ids.get(i));
+        var expected = java.util.List.of(ids.get(7), ids.get(6), ids.get(5), ids.get(4), ids.get(3), ids.get(2), ids.get(0), ids.get(1));
+        var actual = new java.util.ArrayList<Long>();
+        for (int begin = 0; begin < ids.size(); begin += 3) {
+            var page = employeeStore.employees(tenant, begin, 3, null);
+            assertThat(page.total()).isEqualTo(8);
+            actual.addAll(page.items().stream().map(e -> e.id()).toList());
+        }
+        assertThat(actual).containsExactlyElementsOf(expected);
+        var ascending = new com.rigour.hr.application.port.out.HrEmployeeStore.EmployeeSearchCriteria(
+                null,null,null,null,null,null,null,null,null,null,dept.id(),null,null,false,"entryDate","asc");
+        assertThat(employeeStore.employees(tenant, 0, 20, ascending).items()).extracting(e -> e.id())
+                .containsExactly(ids.get(5), ids.get(7), ids.get(6), ids.get(4), ids.get(2), ids.get(3), ids.get(1), ids.get(0));
+        assertThat(employeeStore.employees(java.util.UUID.randomUUID().toString(), 0, 20, null).items()).isEmpty();
     }
 
     @Test

@@ -124,7 +124,16 @@ public interface SalesWorkAttendanceRepository {
             int locationPointCount,
             int interruptionCount,
             int verifiedWorkMinutes,
-            String evidenceQuality) {}
+            String evidenceQuality, Long hrEmployeeId) {
+        public WorkDaySnapshot(UUID id, UUID employeeId, UUID salesProfileId, LocalDate businessDate,
+                String timezoneId, UUID fieldPolicyVersionId, String status, Instant checkedInAt,
+                Instant checkedOutAt, UUID locationSessionId, int locationPointCount,
+                int interruptionCount, int verifiedWorkMinutes, String evidenceQuality) {
+            this(id, employeeId, salesProfileId, businessDate, timezoneId, fieldPolicyVersionId, status,
+                    checkedInAt, checkedOutAt, locationSessionId, locationPointCount, interruptionCount,
+                    verifiedWorkMinutes, evidenceQuality, null);
+        }
+    }
 
     record LocationPointRow(
             BigDecimal longitude,
