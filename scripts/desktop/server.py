@@ -14,7 +14,8 @@ import tarfile
 import time
 from urllib.request import urlopen
 from web_health import check_web
-from service_catalog import CORE, DOMAINS, PORTS, schemas_for, select_services
+from service_catalog import (CORE, DOMAINS, PORTS, backup_schemas, retired_services,
+                             schemas_for, select_services)
 from business_config import prepare as prepare_business, mysql
 
 ROOT = Path('/srv/rigour-dev/apps')
@@ -52,9 +53,8 @@ def backup_before_deploy(release_id):
         if (ROOT / name).exists():
             shutil.copytree(ROOT / name, backup / name)
     shutil.copy2(ROOT.parent / '.env',backup / 'middleware.env')
-    known = schemas_for(select_services())
     existing = set(query('SELECT schema_name FROM information_schema.schemata;').splitlines())
-    schemas = [name for name in known if name in existing]
+    schemas = backup_schemas(existing)
     if 'rigour_iam' not in schemas:
         raise RuntimeError('未找到IAM业务库，停止发布。')
     partial = backup / 'business.sql.gz.partial'
@@ -158,8 +158,21 @@ with (ROOT / 'deploy.lock').open('w') as lock:
         selected = release_services(release)
         if selected != select_services(','.join(selected)):
             raise SystemExit('发布包服务清单无效。')
-        if current.exists() and not set(release_services(current.resolve())).issubset(selected):
-            raise SystemExit('本次服务范围少于当前版本，停止发布，避免遗漏运行中的服务。')
+        if current.exists():
+            running = subprocess.check_output([
+                'docker','ps','--filter','label=com.docker.compose.project=rigour-dev-apps',
+                '--format','{{.Label "com.docker.compose.service"}}'],text=True).splitlines()
+            try:
+                retired = retired_services(release_services(current.resolve()), selected, running)
+            except ValueError as error:
+                raise SystemExit(str(error)) from error
+            if retired:
+                (release / 'retired-services.json').write_text(json.dumps({
+                    'previousRelease': current.resolve().name,
+                    'stoppedServicesPreserved': retired,
+                    'containersAndDataRemoved': False,
+                },ensure_ascii=False,indent=2))
+                print('保留已停止的历史服务容器、配置和数据库：' + ','.join(retired),flush=True)
         backup_before_deploy(release_id)
         run(['python3',str(release / 'prepare-config.py')])
         prepare_business(selected)

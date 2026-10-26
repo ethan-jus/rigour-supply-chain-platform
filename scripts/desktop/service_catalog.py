@@ -14,6 +14,9 @@ DOMAINS = [
 ]
 CORE = ['iam', 'gateway', 'web']
 PORTS = {'iam': 26881, 'gateway': 26880, **{s[0]: s[3] for s in DOMAINS}}
+# 仅用于保留历史数据和识别升级范围，禁止重新选择或启动已移除的服务。
+RETIRED_SCHEMAS = {'city': 'rigour_city', 'channel': 'rigour_channel',
+                   'collaboration': 'rigour_collaboration'}
 
 
 def select_services(value=None):
@@ -27,6 +30,24 @@ def select_services(value=None):
 
 def schemas_for(selected):
     return ['rigour_iam'] + ['rigour_' + row[4] for row in DOMAINS if row[0] in selected]
+
+
+def backup_schemas(existing):
+    """升级备份也包含已退出当前 reactor 的历史业务库。"""
+    known = schemas_for(select_services()) + list(RETIRED_SCHEMAS.values())
+    return [name for name in known if name in existing]
+
+
+def retired_services(previous, selected, running):
+    """仅允许略过已停止的已移除服务；其他范围缩减和运行中服务均阻断。"""
+    missing = set(previous) - set(selected)
+    unknown = missing - RETIRED_SCHEMAS.keys()
+    if unknown:
+        raise ValueError('本次发布遗漏现有服务：' + ','.join(sorted(unknown)))
+    active = missing & set(running)
+    if active:
+        raise ValueError('历史服务仍在运行，需先核对停用安排：' + ','.join(sorted(active)))
+    return sorted(missing)
 
 
 def business_compose():
