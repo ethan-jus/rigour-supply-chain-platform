@@ -26,7 +26,13 @@ public interface HrPayrollApi {
     ApiResponse<List<PayrollProductView>> products(
             @RequestParam(defaultValue = "") String keyword,
             @RequestParam(required = false) Long categoryId,
-            @RequestParam(required = false) Long productVariantId);
+            @RequestParam(required = false) Long productVariantId,
+            @RequestParam(defaultValue = "0") int begin);
+
+    default ApiResponse<List<PayrollProductView>> products(
+            String keyword, Long categoryId, Long productVariantId) {
+        return products(keyword, categoryId, productVariantId, 0);
+    }
 
     @GetMapping(BASE_PATH + "/product-categories")
     ApiResponse<List<PayrollCategoryView>> productCategories();

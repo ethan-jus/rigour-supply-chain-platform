@@ -7,6 +7,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** 按日核算合格打卡和有效拜访；记录未达资格按规则扣减，来源未关联不能视为零完成。 */
@@ -86,6 +87,66 @@ public final class SalesPerformanceCalculator {
             BigDecimal resultCap,
             BigDecimal processPercent,
             String checkinCountMode) {
+        return calculate(
+                p,
+                month,
+                entry,
+                leave,
+                linked,
+                visits,
+                collections,
+                assessmentDays,
+                resultCap,
+                processPercent,
+                checkinCountMode,
+                Map.of());
+    }
+
+    public static SalesPerformanceResult calculate(
+            SalesPerformancePolicy p,
+            YearMonth month,
+            LocalDate entry,
+            LocalDate leave,
+            boolean linked,
+            List<SalesVisitEvidence> visits,
+            BigDecimal collections,
+            Set<LocalDate> assessmentDays,
+            BigDecimal resultCap,
+            BigDecimal processPercent,
+            String checkinCountMode,
+            Map<LocalDate, BigDecimal> assessmentFractions) {
+        return calculate(
+                p,
+                month,
+                entry,
+                leave,
+                linked,
+                visits,
+                collections,
+                assessmentDays,
+                resultCap,
+                processPercent,
+                checkinCountMode,
+                assessmentFractions,
+                null,
+                null);
+    }
+
+    public static SalesPerformanceResult calculate(
+            SalesPerformancePolicy p,
+            YearMonth month,
+            LocalDate entry,
+            LocalDate leave,
+            boolean linked,
+            List<SalesVisitEvidence> visits,
+            BigDecimal collections,
+            Set<LocalDate> assessmentDays,
+            BigDecimal resultCap,
+            BigDecimal processPercent,
+            String checkinCountMode,
+            Map<LocalDate, BigDecimal> assessmentFractions,
+            Integer missingCheckinsOverride,
+            Integer missingVisitsOverride) {
         List<String> issues = new ArrayList<>();
         List<SalesPerformanceDay> days = new ArrayList<>();
         if (entry == null || entry.isAfter(month.atEndOfMonth()))
@@ -139,48 +200,42 @@ public final class SalesPerformanceCalculator {
                                 .multiply(new BigDecimal("100").subtract(processPercent))
                                 .divide(new BigDecimal("100")));
         BigDecimal processDeduction = ZERO;
-        if (!linked && processBudget.signum() > 0) issues.add("销售打卡账号未关联员工，过程考核待核对");
-        LocalDate from = entry.isAfter(month.atDay(1)) ? entry : month.atDay(1),
-                to =
-                        leave != null && leave.isBefore(month.atEndOfMonth())
-                                ? leave
-                                : month.atEndOfMonth();
-        for (LocalDate date = from; !date.isAfter(to); date = date.plusDays(1)) {
-            if (processBudget.signum() == 0
-                    || assessmentDays != null && !assessmentDays.contains(date)) continue;
-            var current = date;
-            var evidence = visits.stream().filter(v -> current.equals(v.date())).toList();
-            // 打卡可按记录或客户去重；有效拜访始终按当日客户去重，短录音不拼接。
-            Set<String> checkins = new HashSet<>(), effective = new HashSet<>();
-            // 未通过审核或无有效时长的记录不计达标；只有来源不可用才阻止计算。
-            for (var v : evidence) {
-                if (!"APPROVED".equals(v.status()) || v.customer() == null) continue;
-                if ("RECORD".equals(checkinCountMode) && v.id() == null) continue;
-                checkins.add("RECORD".equals(checkinCountMode) ? v.id() : v.customer());
-                if (p.dailyVisits() == 0) continue;
-                if (!v.durationComplete() || v.durationMillis() == null) continue;
-                if (v.durationMillis() >= p.minimumSeconds() * 1000L) effective.add(v.customer());
-            }
-            int missingCheckins = Math.max(0, p.dailyCheckins() - checkins.size()),
-                    missingVisits = Math.max(0, p.dailyVisits() - effective.size());
-            BigDecimal deduction =
-                    linked
-                            ? p.checkinPenalty()
-                                    .multiply(BigDecimal.valueOf(missingCheckins))
-                                    .add(
-                                            p.visitPenalty()
-                                                    .multiply(BigDecimal.valueOf(missingVisits)))
-                            : null;
-            if (linked) processDeduction = processDeduction.add(deduction);
-            days.add(
-                    new SalesPerformanceDay(
-                            date,
-                            checkins.size(),
-                            effective.size(),
-                            missingCheckins,
-                            missingVisits,
-                            deduction,
-                            linked));
+        if (!linked
+                && processBudget.signum() > 0
+                && (missingCheckinsOverride == null || missingVisitsOverride == null))
+            issues.add("销售打卡账号未关联员工，过程考核待核对");
+        if (processBudget.signum() > 0)
+            days.addAll(
+                    processDays(
+                            p,
+                            month,
+                            entry,
+                            leave,
+                            linked,
+                            visits,
+                            assessmentDays,
+                            checkinCountMode,
+                            assessmentFractions));
+        if (linked)
+            processDeduction =
+                    days.stream().map(SalesPerformanceDay::deduction).reduce(ZERO, BigDecimal::add);
+        if ((missingCheckinsOverride != null || missingVisitsOverride != null)
+                && processBudget.signum() > 0) {
+            if (missingCheckinsOverride != null && missingCheckinsOverride < 0
+                    || missingVisitsOverride != null && missingVisitsOverride < 0)
+                throw new IllegalArgumentException("核定缺失次数不能为负数");
+            int checkins =
+                    missingCheckinsOverride != null
+                            ? missingCheckinsOverride
+                            : days.stream().mapToInt(SalesPerformanceDay::missingCheckins).sum();
+            int visitsMissing =
+                    missingVisitsOverride != null
+                            ? missingVisitsOverride
+                            : days.stream().mapToInt(SalesPerformanceDay::missingVisits).sum();
+            processDeduction =
+                    p.checkinPenalty()
+                            .multiply(BigDecimal.valueOf(checkins))
+                            .add(p.visitPenalty().multiply(BigDecimal.valueOf(visitsMissing)));
         }
         if (assessmentDays != null) processDeduction = processDeduction.min(processBudget);
         BigDecimal processPay =
@@ -223,6 +278,76 @@ public final class SalesPerformanceCalculator {
                 total,
                 List.copyOf(days),
                 List.copyOf(issues));
+    }
+
+    /**
+     * Shared by attendance confirmation and payroll; unavailable evidence never becomes zero
+     * misses.
+     */
+    public static List<SalesPerformanceDay> processDays(
+            SalesPerformancePolicy p,
+            YearMonth month,
+            LocalDate entry,
+            LocalDate leave,
+            boolean linked,
+            List<SalesVisitEvidence> visits,
+            Set<LocalDate> assessmentDays,
+            String checkinCountMode,
+            Map<LocalDate, BigDecimal> assessmentFractions) {
+        if (entry == null) return List.of();
+        List<SalesPerformanceDay> days = new ArrayList<>();
+        LocalDate from = entry.isAfter(month.atDay(1)) ? entry : month.atDay(1),
+                to =
+                        leave != null && leave.isBefore(month.atEndOfMonth())
+                                ? leave
+                                : month.atEndOfMonth();
+        for (LocalDate date = from; !date.isAfter(to); date = date.plusDays(1)) {
+            if (assessmentDays != null && !assessmentDays.contains(date)) continue;
+            var fraction = assessmentFractions.getOrDefault(date, BigDecimal.ONE);
+            if (fraction.signum() <= 0) continue;
+            var current = date;
+            var evidence = visits.stream().filter(v -> current.equals(v.date())).toList();
+            // 打卡可按记录或客户去重；有效拜访始终按当日客户去重，短录音不拼接。
+            Set<String> checkins = new HashSet<>(), effective = new HashSet<>();
+            // 未通过审核或无有效时长的记录不计达标；只有来源不可用才阻止计算。
+            for (var v : evidence) {
+                if (!"APPROVED".equals(v.status()) || v.customer() == null) continue;
+                if ("RECORD".equals(checkinCountMode) && v.id() == null) continue;
+                checkins.add("RECORD".equals(checkinCountMode) ? v.id() : v.customer());
+                if (p.dailyVisits() == 0) continue;
+                if (!v.durationComplete() || v.durationMillis() == null) continue;
+                if (v.durationMillis() >= p.minimumSeconds() * 1000L) effective.add(v.customer());
+            }
+            int
+                    missingCheckins =
+                            Math.max(0, required(p.dailyCheckins(), fraction) - checkins.size()),
+                    missingVisits =
+                            Math.max(0, required(p.dailyVisits(), fraction) - effective.size());
+            BigDecimal deduction =
+                    linked
+                            ? p.checkinPenalty()
+                                    .multiply(BigDecimal.valueOf(missingCheckins))
+                                    .add(
+                                            p.visitPenalty()
+                                                    .multiply(BigDecimal.valueOf(missingVisits)))
+                            : null;
+            days.add(
+                    new SalesPerformanceDay(
+                            date,
+                            checkins.size(),
+                            effective.size(),
+                            missingCheckins,
+                            missingVisits,
+                            deduction,
+                            linked));
+        }
+        return List.copyOf(days);
+    }
+
+    private static int required(int daily, BigDecimal fraction) {
+        return fraction.multiply(BigDecimal.valueOf(daily))
+                .setScale(0, RoundingMode.CEILING)
+                .intValueExact();
     }
 
     private static BigDecimal money(BigDecimal value) {

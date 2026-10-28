@@ -30,7 +30,7 @@ public final class ErpPayrollProductController implements ErpPayrollProductApi {
 
     @Override
     public ApiResponse<List<ErpPayrollProductView>> products(
-            String keyword, Long productVariantId, Long categoryId) {
-        return ApiResponse.success(service.products(keyword, productVariantId, categoryId));
+            String keyword, Long productVariantId, Long categoryId, int begin) {
+        return ApiResponse.success(service.products(keyword, productVariantId, categoryId, begin));
     }
 }

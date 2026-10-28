@@ -22,6 +22,21 @@ public final class ErpPayrollProductService {
         return store.products(tenant(), keyword == null ? "" : keyword.trim(), variant, categoryId);
     }
 
+    public List<ErpPayrollProductView> products(
+            String keyword, Long variant, Long categoryId, int begin) {
+        if (begin < 0)
+            throw new com.rigour.shared.core.exception.BusinessException(
+                    com.rigour.shared.core.api.ErrorCode.BAD_REQUEST, "商品分页范围无效", List.of());
+        return begin == 0
+                ? products(keyword, variant, categoryId)
+                : store.products(
+                        tenant(),
+                        keyword == null ? "" : keyword.trim(),
+                        variant,
+                        categoryId,
+                        begin);
+    }
+
     public List<ErpPayrollCategoryView> categories() {
         return store.categories(tenant());
     }

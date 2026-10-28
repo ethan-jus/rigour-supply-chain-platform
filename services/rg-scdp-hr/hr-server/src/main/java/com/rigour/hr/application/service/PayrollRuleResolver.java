@@ -130,7 +130,7 @@ public class PayrollRuleResolver {
                             .filter(
                                     v ->
                                             !v.deleted()
-                                                    && v.enabledAt(date)
+                                                    && v.enabledForDepartmentAt(department, date)
                                                     && v.id().equals(personal.allowanceVersionId())
                                                     && "ALLOWANCE".equals(v.definition().kind())
                                                     && ("ALL".equals(v.definition().role())
@@ -287,6 +287,20 @@ public class PayrollRuleResolver {
         return Optional.ofNullable(row);
     }
 
+    public PayrollPersonalPolicy personalPolicy(String tenant, String employee, LocalDate date) {
+        var salary =
+                one(
+                        store.versions(tenant),
+                        "SALARY",
+                        null,
+                        null,
+                        employee,
+                        date,
+                        new ArrayList<>(),
+                        "员工薪资标准");
+        return salary == null ? null : salary.definition().salary().personalPolicy();
+    }
+
     public Optional<PayrollComponentVersionView> performance(
             String tenant, String employee, Long department, LocalDate date) {
         var all = store.versions(tenant);
@@ -333,12 +347,12 @@ public class PayrollRuleResolver {
                 families.values().stream()
                         .anyMatch(
                                 row ->
-                                        !row.enabledAt(date)
+                                        !enabled(row, department, employee, date)
                                                 && !row.definition().effectiveTo().isBefore(date));
         families.values()
                 .removeIf(
                         row ->
-                                !row.enabledAt(date)
+                                !enabled(row, department, employee, date)
                                         || row.definition().effectiveTo().isBefore(date));
         if (families.size() != 1) {
             issues.add(
@@ -346,5 +360,12 @@ public class PayrollRuleResolver {
             return null;
         }
         return families.values().iterator().next();
+    }
+
+    private static boolean enabled(
+            PayrollComponentVersionView row, Long department, String employee, LocalDate date) {
+        return employee == null
+                ? row.enabledForDepartmentAt(department, date)
+                : row.enabledForEmployeeAt(employee, date);
     }
 }

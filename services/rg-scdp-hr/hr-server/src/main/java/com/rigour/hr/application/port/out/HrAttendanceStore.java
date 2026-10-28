@@ -66,12 +66,17 @@ public interface HrAttendanceStore {
 
     AttendanceRuleView saveRule(String tenant, AttendanceRuleCommand command, String actor);
 
+    List<AttendanceRuleView> saveRules(
+            String tenant, List<AttendanceRuleCommand> commands, String actor);
+
     HrPageView<Employee> employees(
             String tenant, YearMonth month, EmployeeFilter filter, int begin, int step);
 
     Employee employee(String tenant, YearMonth month, String employeeCode);
 
     Employee employee(String tenant, YearMonth month, String employeeCode, String action);
+
+    boolean reopenedSince(String tenant, YearMonth month, String employeeCode, Instant since);
 
     void reopenRecord(
             String tenant,

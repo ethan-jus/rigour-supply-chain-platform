@@ -15,6 +15,7 @@ import java.util.UUID;
 
 class ErpPayrollProductReferenceTest {
     MybatisPlusErpPayrollProductRepository store;
+    JdbcTemplate jdbc;
 
     @BeforeEach
     void setup() throws Exception {
@@ -25,7 +26,7 @@ class ErpPayrollProductReferenceTest {
                                 + ";MODE=MySQL;DB_CLOSE_DELAY=-1",
                         "sa",
                         "");
-        var jdbc = new JdbcTemplate(ds);
+        jdbc = new JdbcTemplate(ds);
         jdbc.execute(
                 "CREATE TABLE erp_product_category(id BIGINT,tenant_id VARCHAR(64),parent_id"
                     + " BIGINT,category_code VARCHAR(64),category_name VARCHAR(100),category_level"
@@ -62,6 +63,28 @@ class ErpPayrollProductReferenceTest {
                 new MybatisPlusErpPayrollProductRepository(
                         session.getMapper(ErpPayrollProductMapper.class),
                         session.getMapper(InternalProductCategoryMapper.class));
+    }
+
+    @Test
+    void categorySelectionCanReadEveryModelBeyondTheFirstHundredWithoutOtherTenantsOrCategories() {
+        for (int index = 0; index < 120; index++)
+            jdbc.update(
+                    "INSERT INTO erp_product_variant VALUES(?,'T1',10,?,?,'SET',0)",
+                    1000 + index,
+                    "SKU" + index,
+                    "新增规格" + index);
+        var first = store.products("T1", "", null, 1L, 0);
+        var second = store.products("T1", "", null, 1L, 100);
+        assertThat(first).hasSize(100);
+        assertThat(second).hasSize(22);
+        assertThat(
+                        java.util.stream.Stream.concat(first.stream(), second.stream())
+                                .map(product -> product.productVariantId())
+                                .distinct()
+                                .toList())
+                .hasSize(122);
+        assertThat(second).allSatisfy(product -> assertThat(product.categoryId()).isEqualTo(2L));
+        assertThat(store.products("T1", "", null, 1L, 200)).isEmpty();
     }
 
     @Test

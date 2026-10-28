@@ -100,6 +100,28 @@ public record PayrollSchemeDefinition(
                 null);
     }
 
+    public PayrollSchemeDefinition withProration(PayrollProrationPolicy value) {
+        return new PayrollSchemeDefinition(
+                name,
+                role,
+                departmentIds,
+                employeeCodes,
+                effectiveFrom,
+                effectiveTo,
+                baseSalary,
+                performanceBase,
+                performanceMode,
+                sales,
+                manager,
+                calendar,
+                value,
+                allowances,
+                commission,
+                remark,
+                ruleReferences,
+                personalPolicy);
+    }
+
     public PayrollSchemeDefinition withCalendar(PayrollWorkCalendar value, String versionId) {
         var refs =
                 ruleReferences == null

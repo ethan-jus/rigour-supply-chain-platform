@@ -4,6 +4,7 @@ import com.rigour.hr.api.v1.HrAttendanceApi;
 import com.rigour.hr.api.v1.model.AttendanceDepartmentOption;
 import com.rigour.hr.api.v1.model.AttendanceRecordCommand;
 import com.rigour.hr.api.v1.model.AttendanceReopenCommand;
+import com.rigour.hr.api.v1.model.AttendanceRow;
 import com.rigour.hr.api.v1.model.AttendanceRuleCommand;
 import com.rigour.hr.api.v1.model.AttendanceRuleListView;
 import com.rigour.hr.api.v1.model.AttendanceRuleView;
@@ -36,6 +37,10 @@ public class HrAttendanceController implements HrAttendanceApi {
         return ApiResponse.success(service.saveRule(command));
     }
 
+    public ApiResponse<List<AttendanceRuleView>> saveRules(List<AttendanceRuleCommand> commands) {
+        return ApiResponse.success(service.saveRules(commands));
+    }
+
     public ApiResponse<List<AttendanceDepartmentOption>> departments(boolean forRules) {
         return ApiResponse.success(service.departments(forRules));
     }
@@ -57,6 +62,11 @@ public class HrAttendanceController implements HrAttendanceApi {
                         attendanceStatus,
                         begin,
                         step));
+    }
+
+    public ApiResponse<AttendanceRow> previewRecord(
+            String month, String employeeCode, AttendanceRecordCommand command) {
+        return ApiResponse.success(service.previewRecord(month, employeeCode, command));
     }
 
     public ApiResponse<Void> confirmRecord(

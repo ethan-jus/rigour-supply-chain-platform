@@ -15,7 +15,29 @@ public record PayrollPersonalPolicy(
         LocalDate protectionUntil,
         LocalDate salaryChangeDate,
         BigDecimal baseAfterChange,
-        BigDecimal performanceAfterChange) {
+        BigDecimal performanceAfterChange,
+        BigDecimal postProbationBasePercent) {
+    public PayrollPersonalPolicy(
+            List<LocalDate> exemptDays,
+            String allowanceVersionId,
+            LocalDate probationUntil,
+            BigDecimal probationBasePercent,
+            LocalDate protectionUntil,
+            LocalDate salaryChangeDate,
+            BigDecimal baseAfterChange,
+            BigDecimal performanceAfterChange) {
+        this(
+                exemptDays,
+                allowanceVersionId,
+                probationUntil,
+                probationBasePercent,
+                protectionUntil,
+                salaryChangeDate,
+                baseAfterChange,
+                performanceAfterChange,
+                null);
+    }
+
     public PayrollPersonalPolicy {
         exemptDays = exemptDays == null ? List.of() : List.copyOf(exemptDays);
     }

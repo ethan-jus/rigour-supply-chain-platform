@@ -20,8 +20,8 @@ public final class HrPayrollController implements HrPayrollApi {
 
     @Override
     public ApiResponse<List<PayrollProductView>> products(
-            String keyword, Long categoryId, Long productVariantId) {
-        return ApiResponse.success(service.products(keyword, categoryId, productVariantId));
+            String keyword, Long categoryId, Long productVariantId, int begin) {
+        return ApiResponse.success(service.products(keyword, categoryId, productVariantId, begin));
     }
 
     @Override

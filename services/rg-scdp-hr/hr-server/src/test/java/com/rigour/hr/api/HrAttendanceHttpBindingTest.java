@@ -3,22 +3,46 @@ package com.rigour.hr.api;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.rigour.hr.api.v1.model.AttendanceRecordCommand;
 import com.rigour.hr.api.v1.model.AttendanceReopenCommand;
 import com.rigour.hr.application.service.HrAttendanceService;
 import com.rigour.shared.core.web.GlobalExceptionHandler;
-import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.List;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+
 class HrAttendanceHttpBindingTest {
+    @Test
+    void batchRuleBodyBindsThroughTheRealController() throws Exception {
+        var service = mock(HrAttendanceService.class);
+        var mvc =
+                MockMvcBuilders.standaloneSetup(new HrAttendanceController(service))
+                        .setControllerAdvice(new GlobalExceptionHandler())
+                        .build();
+        var commands =
+                List.of(
+                        new com.rigour.hr.api.v1.model.AttendanceRuleCommand("2026-10", 1L, 22, 0),
+                        new com.rigour.hr.api.v1.model.AttendanceRuleCommand("2026-10", 2L, 21, 0));
+        mvc.perform(
+                        put("/api/v1/hr/attendance/rules")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        new tools.jackson.databind.ObjectMapper()
+                                                .writeValueAsString(commands)))
+                .andExpect(status().isOk());
+        verify(service).saveRules(commands);
+    }
+
     @Test
     void confirmBindsMonthEmployeeCodeAndBodyThroughRealController() throws Exception {
         var service = mock(HrAttendanceService.class);

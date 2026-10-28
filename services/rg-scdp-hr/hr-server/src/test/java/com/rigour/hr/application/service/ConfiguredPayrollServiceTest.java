@@ -24,6 +24,7 @@ class ConfiguredPayrollServiceTest {
             new PayrollEmployeeView(
                     "A", "员工", 1L, "销售部", null, LocalDate.of(2026, 9, 15), null, "SALES");
     ConfiguredPayrollService service;
+    HrAttendanceStore attendance = mock(HrAttendanceStore.class);
     PayrollRuleResolver rules = mock(PayrollRuleResolver.class);
 
     @BeforeEach
@@ -43,12 +44,43 @@ class ConfiguredPayrollServiceTest {
                 .thenReturn(
                         new ConfiguredCommissionResult(
                                 BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of()));
+        when(attendance.employee(anyString(), any(), anyString()))
+                .thenAnswer(
+                        i -> {
+                            var confirmation =
+                                    new AttendanceRow(
+                                            "A",
+                                            "员工",
+                                            "销售部",
+                                            22,
+                                            "DEPARTMENT",
+                                            new BigDecimal("22"),
+                                            BigDecimal.ZERO,
+                                            22,
+                                            null,
+                                            null,
+                                            "NONE",
+                                            "CONFIRMED",
+                                            "AVAILABLE",
+                                            List.of(),
+                                            "",
+                                            1);
+                            return new HrAttendanceStore.Employee(
+                                    "A",
+                                    "员工",
+                                    1L,
+                                    "销售部",
+                                    employee.entryDate(),
+                                    null,
+                                    new AttendanceRecordCommand(null, null, "NONE", "", 1),
+                                    confirmation);
+                        });
         service =
                 new ConfiguredPayrollService(
                         payroll,
                         schemes,
                         source,
-                        mock(HrAttendanceStore.class),
+                        attendance,
                         commissions,
                         JsonMapper.builder().build());
         service.setRules(rules);
@@ -58,6 +90,69 @@ class ConfiguredPayrollServiceTest {
                                 PayrollSchemeTestFixture.version(
                                         PayrollSchemeTestFixture.definition()),
                                 List.of()));
+    }
+
+    @Test
+    void salesLeaveProratesBaseAndAllowanceButNotEarnedPerformance() {
+        var confirmed =
+                new AttendanceRow(
+                        "A",
+                        "员工",
+                        "销售部",
+                        22,
+                        "DEPARTMENT",
+                        new BigDecimal("11"),
+                        new BigDecimal("11"),
+                        11,
+                        new BigDecimal("11"),
+                        new BigDecimal("11"),
+                        "PERSONAL",
+                        "CONFIRMED",
+                        "AVAILABLE",
+                        List.of(),
+                        "请假",
+                        2,
+                        List.of(
+                                new AttendanceExceptionPeriod(
+                                        LocalDateTime.of(2026, 9, 15, 0, 0),
+                                        LocalDateTime.of(2026, 9, 30, 0, 0),
+                                        "UNPAID_LEAVE",
+                                        "请假")));
+        when(attendance.employee(anyString(), any(), anyString()))
+                .thenReturn(
+                        new HrAttendanceStore.Employee(
+                                "A",
+                                "员工",
+                                1L,
+                                "销售部",
+                                employee.entryDate(),
+                                null,
+                                new AttendanceRecordCommand(
+                                        new BigDecimal("11"),
+                                        new BigDecimal("11"),
+                                        "PERSONAL",
+                                        "请假",
+                                        2),
+                                confirmed));
+        var result =
+                service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
+        assertThat(result.issues()).isEmpty();
+        assertThat(result.baseSalary()).isEqualByComparingTo("1500");
+        assertThat(result.allowance()).isEqualByComparingTo("375");
+        assertThat(result.performance()).isEqualByComparingTo("1000");
+        assertThat(result.grossPay()).isEqualByComparingTo("2875");
+        assertThat(result.scheme().scheme().definition().proration().base())
+                .isEqualTo("CONFIRMED_ATTENDANCE");
+    }
+
+    @Test
+    void salesMissingAttendanceNeverSilentlyPaysFullBaseOrAllowance() {
+        when(attendance.employee(anyString(), any(), anyString())).thenReturn(null);
+        var result =
+                service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
+        assertThat(result.grossPay()).isNull();
+        assertThat(result.issues()).anyMatch(issue -> issue.contains("考勤尚未确认"));
+        assertThat(result.performance()).isEqualByComparingTo("1000");
     }
 
     @Test
@@ -152,7 +247,8 @@ class ConfiguredPayrollServiceTest {
         when(commissions.calculate(
                         anyString(), any(), any(), any(), anyList(), anyList(), anyList()))
                 .thenThrow(new IllegalStateException("commission product source offline"));
-        var result = service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
+        var result =
+                service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
         assertThat(result.issues()).isEmpty();
         assertThat(result.baseSalary()).isEqualByComparingTo("6000");
         assertThat(result.performance()).isZero();
@@ -170,8 +266,11 @@ class ConfiguredPayrollServiceTest {
         when(source.payrollLines(anyString(), any(), any(), any()))
                 .thenThrow(new IllegalStateException("order source offline"));
         when(schemes.facts(anyString(), anyString(), anyString()))
-                .thenReturn(new PayrollSchemeFactsView(1, null, List.of(), "月度核定", new BigDecimal("80")));
-        var result = service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
+                .thenReturn(
+                        new PayrollSchemeFactsView(
+                                1, null, List.of(), "月度核定", new BigDecimal("80")));
+        var result =
+                service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
         assertThat(result.issues()).isEmpty();
         assertThat(result.performance()).isEqualByComparingTo("800");
         assertThat(result.grossPay()).isEqualByComparingTo("6800");
@@ -180,10 +279,12 @@ class ConfiguredPayrollServiceTest {
 
     @Test
     void headquartersWithCommissionRulesStillRequiresAvailableOrders() {
-        useIndependentHeadquartersPolicy("NONE", PayrollSchemeTestFixture.definition().commission().rules());
+        useIndependentHeadquartersPolicy(
+                "NONE", PayrollSchemeTestFixture.definition().commission().rules());
         when(source.payrollLines(anyString(), any(), any(), any()))
                 .thenThrow(new IllegalStateException("order source offline"));
-        var result = service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
+        var result =
+                service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
         assertThat(result.grossPay()).isNull();
         assertThat(result.commission()).isNull();
         assertThat(result.issues()).anyMatch(i -> i.contains("订单付清核算来源暂不可用"));
@@ -197,7 +298,8 @@ class ConfiguredPayrollServiceTest {
                 .thenReturn(true);
         when(source.payrollLines(anyString(), any(), any(), any()))
                 .thenThrow(new IllegalStateException("order source offline"));
-        var result = service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
+        var result =
+                service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
         assertThat(result.grossPay()).isNull();
         assertThat(result.issues()).anyMatch(i -> i.contains("订单付清核算来源暂不可用"));
     }
@@ -205,11 +307,15 @@ class ConfiguredPayrollServiceTest {
     @Test
     void headquartersWithLegacySalesSchemeStillRequiresOrders() {
         useIndependentHeadquartersPolicy("NONE", List.of());
-        when(schemes.versions("t")).thenReturn(List.of(
-                PayrollSchemeTestFixture.version(PayrollSchemeTestFixture.definition())));
+        when(schemes.versions("t"))
+                .thenReturn(
+                        List.of(
+                                PayrollSchemeTestFixture.version(
+                                        PayrollSchemeTestFixture.definition())));
         when(source.payrollLines(anyString(), any(), any(), any()))
                 .thenThrow(new IllegalStateException("order source offline"));
-        var result = service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
+        var result =
+                service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
         assertThat(result.grossPay()).isNull();
         assertThat(result.issues()).anyMatch(i -> i.contains("订单付清核算来源暂不可用"));
     }
@@ -217,28 +323,57 @@ class ConfiguredPayrollServiceTest {
     @Test
     void headquartersWithMissingAssignmentHistoryDoesNotAssumeNoHistoricalCommission() {
         useIndependentHeadquartersPolicy("NONE", List.of());
-        when(payroll.departmentsDuring(anyString(), anyString(), any(), any())).thenReturn(Set.of());
+        when(payroll.departmentsDuring(anyString(), anyString(), any(), any()))
+                .thenReturn(Set.of());
         when(source.payrollLines(anyString(), any(), any(), any()))
                 .thenThrow(new IllegalStateException("order source offline"));
-        var result = service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
+        var result =
+                service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
         assertThat(result.grossPay()).isNull();
         assertThat(result.issues()).anyMatch(i -> i.contains("订单付清核算来源暂不可用"));
     }
 
     private void useIndependentHeadquartersPolicy(
             String mode, List<PayrollSchemeCommissionRule> commissionRules) {
-        employee = new PayrollEmployeeView("A", "总部员工", 1L, "总部", null,
-                LocalDate.of(2026, 9, 15), null, "HEADQUARTERS");
+        employee =
+                new PayrollEmployeeView(
+                        "A",
+                        "总部员工",
+                        1L,
+                        "总部",
+                        null,
+                        LocalDate.of(2026, 9, 15),
+                        null,
+                        "HEADQUARTERS");
         var d = PayrollSchemeTestFixture.definition();
-        var definition = new PayrollSchemeDefinition(
-                d.name(), "HEADQUARTERS", d.departmentIds(), d.employeeCodes(), d.effectiveFrom(), d.effectiveTo(),
-                new PayrollSchemeBaseSalary("FIXED", new BigDecimal("6000"), List.of(), null),
-                new BigDecimal("1000"), mode, null, null, d.calendar(), d.proration(), List.of(),
-                new PayrollSchemeCommissionPolicy("ORDER_DATE", "ORDER_DATE", commissionRules), d.remark());
+        var definition =
+                new PayrollSchemeDefinition(
+                        d.name(),
+                        "HEADQUARTERS",
+                        d.departmentIds(),
+                        d.employeeCodes(),
+                        d.effectiveFrom(),
+                        d.effectiveTo(),
+                        new PayrollSchemeBaseSalary(
+                                "FIXED", new BigDecimal("6000"), List.of(), null),
+                        new BigDecimal("1000"),
+                        mode,
+                        null,
+                        null,
+                        d.calendar(),
+                        d.proration(),
+                        List.of(),
+                        new PayrollSchemeCommissionPolicy(
+                                "ORDER_DATE", "ORDER_DATE", commissionRules),
+                        d.remark());
         when(rules.resolve(anyString(), any(), any(), any()))
-                .thenReturn(new PayrollRuleMatch(PayrollSchemeTestFixture.version(definition), List.of()));
-        when(schemes.versions("t")).thenReturn(List.of(PayrollSchemeTestFixture.version(definition)));
-        when(payroll.departmentsDuring(anyString(), anyString(), any(), any())).thenReturn(Set.of(1L));
+                .thenReturn(
+                        new PayrollRuleMatch(
+                                PayrollSchemeTestFixture.version(definition), List.of()));
+        when(schemes.versions("t"))
+                .thenReturn(List.of(PayrollSchemeTestFixture.version(definition)));
+        when(payroll.departmentsDuring(anyString(), anyString(), any(), any()))
+                .thenReturn(Set.of(1L));
     }
 
     @Test
@@ -449,6 +584,53 @@ class ConfiguredPayrollServiceTest {
     }
 
     @Test
+    void independentPostProbationBaseRatioReachesPayrollWithoutReducingPerformance() {
+        employee =
+                new PayrollEmployeeView(
+                        "A", "员工", 1L, "销售部", null, LocalDate.of(2026, 9, 1), null, "SALES");
+        when(source.performanceEvidence(anyString(), anyString(), any(), any()))
+                .thenReturn(
+                        new com.rigour.sales.api.v1.model.SalesPayrollEvidenceView(
+                                true, List.of()));
+        var month = YearMonth.of(2026, 9);
+        var sales = PayrollSchemeTestFixture.definition().sales();
+        usePolicy("SALES", "SALES", sales, null);
+        var baseline = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        var personal =
+                new PayrollPersonalPolicy(
+                        List.of(),
+                        null,
+                        month.atDay(16),
+                        new BigDecimal("80"),
+                        null,
+                        null,
+                        null,
+                        null,
+                        new BigDecimal("90"));
+        usePolicy("SALES", "SALES", sales, personal);
+        var result = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        assertThat(result.baseSalary()).isEqualByComparingTo("2550");
+        assertThat(result.performance()).isNotNull().isEqualByComparingTo(baseline.performance());
+        assertThat(result.allowance()).isEqualByComparingTo(baseline.allowance());
+        var definition = result.scheme().scheme().definition();
+        var mapper = JsonMapper.builder().build();
+        var reloaded =
+                mapper.readValue(
+                        mapper.writeValueAsString(definition), PayrollSchemeDefinition.class);
+        assertThat(reloaded.personalPolicy().postProbationBasePercent()).isEqualByComparingTo("90");
+        assertThat(PayrollSchemeValidator.check(reloaded).errors())
+                .noneMatch(v -> v.contains("结束后底薪比例"));
+        var tree = (tools.jackson.databind.node.ObjectNode) mapper.valueToTree(reloaded);
+        ((tools.jackson.databind.node.ObjectNode) tree.get("personalPolicy"))
+                .put("postProbationBasePercent", new BigDecimal("100.01"));
+        assertThat(
+                        PayrollSchemeValidator.check(
+                                        mapper.treeToValue(tree, PayrollSchemeDefinition.class))
+                                .errors())
+                .anyMatch(v -> v.contains("结束后底薪比例"));
+    }
+
+    @Test
     void firstMonthOnlyExemptsCollectionAndFirstTenDaysOfProcessPlusPersonalExceptions() {
         var old = PayrollSchemeTestFixture.definition().sales();
         var sales =
@@ -490,5 +672,53 @@ class ConfiguredPayrollServiceTest {
         assertThat(result.performanceDetail().processDeduction()).isPositive();
         assertThat(result.scheme().scheme().definition().sales().dailyCheckins()).isEqualTo(7);
         assertThat(result.scheme().scheme().definition().sales().dailyVisits()).isEqualTo(3);
+    }
+
+    @Test
+    void payrollUsesConfirmedManualCountsAndExplainsTheirBasisEvenIfSalesEvidenceFails() {
+        employee =
+                new PayrollEmployeeView(
+                        "A", "员工", 1L, "销售部", null, LocalDate.of(2026, 1, 1), null, "SALES");
+        var adjustment = new AttendanceAssessmentOverride(0, 1, "业务已核对补卡和拜访");
+        var confirmation =
+                new AttendanceRow(
+                        "A",
+                        "员工",
+                        "销售部",
+                        22,
+                        "DEPARTMENT",
+                        new BigDecimal("22"),
+                        BigDecimal.ZERO,
+                        22,
+                        null,
+                        null,
+                        "NONE",
+                        "CONFIRMED",
+                        "AVAILABLE",
+                        List.of(),
+                        "",
+                        2,
+                        List.of(),
+                        null,
+                        adjustment);
+        when(attendance.employee(anyString(), any(), anyString()))
+                .thenReturn(
+                        new HrAttendanceStore.Employee(
+                                "A",
+                                "员工",
+                                1L,
+                                "销售部",
+                                employee.entryDate(),
+                                null,
+                                new AttendanceRecordCommand(null, null, "NONE", "", 2),
+                                confirmation));
+        when(source.performanceEvidence(anyString(), anyString(), any(), any()))
+                .thenThrow(new IllegalStateException("销售证据暂不可用"));
+        var result =
+                service.calculateIfConfigured("t", employee, YearMonth.of(2026, 9)).orElseThrow();
+        assertThat(result.performanceDetail().processDeduction()).isEqualByComparingTo("30");
+        assertThat(result.performanceDetail().processPay()).isEqualByComparingTo("370");
+        assertThat(result.performanceDetail().assessmentOverride()).isEqualTo(adjustment);
+        assertThat(result.issues()).doesNotContain("打卡拜访依据暂不可用", "销售打卡账号未关联员工，过程考核待核对");
     }
 }

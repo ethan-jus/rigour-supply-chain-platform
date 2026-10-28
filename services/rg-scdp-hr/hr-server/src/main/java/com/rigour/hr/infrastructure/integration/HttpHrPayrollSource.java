@@ -251,12 +251,18 @@ public final class HttpHrPayrollSource implements HrPayrollSource {
 
     public List<ErpPayrollProductView> products(
             String tenant, String keyword, Long variant, Long categoryId) {
+        return products(tenant, keyword, variant, categoryId, 0);
+    }
+
+    public List<ErpPayrollProductView> products(
+            String tenant, String keyword, Long variant, Long categoryId, int begin) {
         var builder =
                 UriComponentsBuilder.fromUriString(erp)
                         .path("/api/v1/erp/payroll-products")
                         .queryParam("keyword", keyword);
         if (variant != null) builder.queryParam("productVariantId", variant);
         if (categoryId != null) builder.queryParam("categoryId", categoryId);
+        if (begin > 0) builder.queryParam("begin", begin);
         var uri = builder.build().encode().toUri();
         var headers =
                 OutboundContextHeaders.service(

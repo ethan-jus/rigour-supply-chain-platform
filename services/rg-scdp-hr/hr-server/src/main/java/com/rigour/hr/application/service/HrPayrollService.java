@@ -52,6 +52,18 @@ public class HrPayrollService {
 
     private final ConfiguredPayrollService configured;
     private com.rigour.hr.application.port.out.HrPayrollComponentLifecycleStore ruleReviews;
+    private PayrollAttendanceGate attendanceGate;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setAttendanceGate(PayrollAttendanceGate gate) {
+        this.attendanceGate = gate;
+    }
+
+    private PayrollDetailView withPaymentGate(String tenant, PayrollDetailView row) {
+        if (attendanceGate == null) throw new IllegalStateException("考勤发薪校验未初始化");
+        return row.withPaymentBlockReason(
+                attendanceGate.blockReason(tenant, row, "hr:payroll:read"));
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     void setRuleReviews(
@@ -83,6 +95,29 @@ public class HrPayrollService {
         var a = actor("hr:payroll-rule:read");
         return source
                 .products(a.tenantId().toString(), keyword, productVariantId, categoryId)
+                .stream()
+                .map(
+                        p ->
+                                new PayrollProductView(
+                                        p.productId(),
+                                        p.productVariantId(),
+                                        p.productCode(),
+                                        p.variantCode(),
+                                        p.productName(),
+                                        p.specification(),
+                                        p.unitCode(),
+                                        p.categoryId(),
+                                        p.categoryName()))
+                .toList();
+    }
+
+    public List<PayrollProductView> products(
+            String keyword, Long categoryId, Long productVariantId, int begin) {
+        if (begin < 0) throw bad("商品分页范围无效");
+        if (begin == 0) return products(keyword, categoryId, productVariantId);
+        var a = actor("hr:payroll-rule:read");
+        return source
+                .products(a.tenantId().toString(), keyword, productVariantId, categoryId, begin)
                 .stream()
                 .map(
                         p ->
@@ -333,9 +368,15 @@ public class HrPayrollService {
                                 store.employee(t, c.employeeCode(), "hr:payroll-rule:write")
                                         .payrollCategory())) throw bad("城市总员工应在员工档案中设置为销售薪酬类别");
         if ("CITY_MANAGER".equals(c.kindCode())
-                && !Set.of("城市总", "见习城市总").contains(
-                        Objects.toString(store.employeePositionName(t, c.employeeCode(), "hr:payroll-rule:write"), "").strip()))
-            throw bad("仅城市总和见习城市总可配置管辖城市，请先核对员工档案岗位");
+                && !Set.of("城市总", "见习城市总")
+                        .contains(
+                                Objects.toString(
+                                                store.employeePositionName(
+                                                        t,
+                                                        c.employeeCode(),
+                                                        "hr:payroll-rule:write"),
+                                                "")
+                                        .strip())) throw bad("仅城市总和见习城市总可配置管辖城市，请先核对员工档案岗位");
         store.lock(t);
         for (var old : store.rules(t)) {
             var r = old.data();
@@ -451,12 +492,19 @@ public class HrPayrollService {
     public HrPageView<PayrollDetailView> payroll(PayrollQuery q) {
         var a = actor("hr:payroll:read");
         if (q.month() != null && !q.month().isBlank()) month(q.month());
-        return store.payroll(a.tenantId().toString(), q, "hr:payroll:read");
+        String tenant = a.tenantId().toString();
+        var page = store.payroll(tenant, q, "hr:payroll:read");
+        return new HrPageView<>(
+                page.total(),
+                page.begin(),
+                page.step(),
+                page.items().stream().map(row -> withPaymentGate(tenant, row)).toList());
     }
 
     public PayrollDetailView detail(String id) {
         var a = actor("hr:payroll:read");
-        return store.detail(a.tenantId().toString(), id, "hr:payroll:read");
+        String tenant = a.tenantId().toString();
+        return withPaymentGate(tenant, store.detail(tenant, id, "hr:payroll:read"));
     }
 
     public PayrollSummaryView summary(PayrollQuery query) {
@@ -564,6 +612,8 @@ public class HrPayrollService {
                 .atEndOfMonth()
                 .isBefore(LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))))
             throw bad("月份尚未结束，当前结果仅供预核算");
+        if (attendanceGate == null) throw new IllegalStateException("考勤发薪校验未初始化");
+        attendanceGate.require(t, old, "hr:payroll:confirm");
         var employee = store.employee(t, old.employeeCode(), "hr:payroll:confirm");
         var fresh = calculation(t, employee, month(old.month()));
         if (!fresh.issues().isEmpty()

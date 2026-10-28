@@ -200,6 +200,9 @@ public class MybatisPlusHrPayrollComponentRepository implements HrPayrollCompone
         row.setCreatedBy(actor);
         row.setCreatedTime(LocalDateTime.now(ZoneOffset.UTC));
         mapper.insert(row);
+        // State changes belong to the rule family, so a revised stopped rule stays stopped.
+        if (previous != null && !previous.enabledAt(LocalDate.now(ZoneId.of("Asia/Shanghai"))))
+            lifecycle.recordModification(tenant, c, view(row), actor);
         locks.audit(tenant, row.getId(), "RULE_VERSION_CREATED", actor, c.reason(), view(row));
         return view(row);
     }

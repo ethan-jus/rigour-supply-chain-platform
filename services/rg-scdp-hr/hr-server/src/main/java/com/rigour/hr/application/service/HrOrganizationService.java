@@ -4,6 +4,7 @@ import com.rigour.hr.api.v1.model.*;
 import com.rigour.hr.application.port.out.HrEmployeeStore;
 import com.rigour.hr.application.port.out.HrOrganizationStore;
 import com.rigour.hr.application.service.support.HrServiceValidation;
+import com.rigour.hr.application.service.support.HrEmployeeValidation;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
@@ -66,34 +67,9 @@ public class HrOrganizationService {
     public HrEmployeeView saveEmployee(Long id, HrEmployeeCommand c) {
         CallerIdentity actor = actor(id == null ? "hr:employee:create" : "hr:employee:update");
         if (c == null) throw bad("员工参数不能为空");
-        if ((id != null && id <= 0) || c.departmentId() == null || c.departmentId() <= 0)
-            throw bad("请选择有效部门");
-        if (c.employmentStatus() == null
-                || !List.of("ACTIVE", "LEFT", "INACTIVE", "PENDING").contains(c.employmentStatus()))
-            throw bad("在职状态无效");
+        if (id != null && id <= 0) throw bad("员工 ID 无效");
         if (c.revision() < 0 || (id != null && c.revision() < 1)) throw bad("员工版本无效");
-        if ("LEFT".equals(c.employmentStatus()) && c.leaveDate() == null) throw bad("离职员工必须填写离职日期");
-        if (!"LEFT".equals(c.employmentStatus()) && c.leaveDate() != null) throw bad("仅离职员工可填写离职日期");
-        if (c.entryDate() != null && c.leaveDate() != null && c.leaveDate().isBefore(c.entryDate()))
-            throw bad("离职时间不能早于入职时间");
-        if (c.payrollCategory() == null || c.payrollCategory().isBlank())
-            throw bad("请选择薪酬类别");
-        if (!List.of("SALES", "HEADQUARTERS").contains(c.payrollCategory()))
-            throw bad("薪酬类别无效");
-        if (c.regularized() == null) throw bad("请选择是否转正");
-        if (c.regularizationDate() != null) {
-            if (!Boolean.TRUE.equals(c.regularized())) throw bad("仅已转正员工可填写转正日期");
-            if (c.entryDate() != null && c.regularizationDate().isBefore(c.entryDate().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate()))
-                throw bad("转正日期不能早于入职日期");
-            if (c.regularizationDate().isAfter(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))))
-                throw bad("实际转正日期不能晚于今天");
-        }
-        if (Boolean.TRUE.equals(c.regularized()) && c.regularizationDate() == null)
-            throw bad("请填写实际转正日期");
-        if ("SALES".equals(c.payrollCategory()) && c.profile() != null) {
-            validateSalesSalary(c.profile().regularSalary());
-            validateSalesSalary(c.profile().probationSalary());
-        }
+        HrEmployeeValidation.requireValid(c);
         if (id != null) {
             var old =
                     employees
@@ -169,11 +145,6 @@ public class HrOrganizationService {
                 .toList();
     }
 
-    private static void validateSalesSalary(String value) {
-        if (value != null && !value.isBlank() && !value.trim().matches("\\d{1,14}(\\.\\d{1,2})?"))
-            throw bad("销售薪资档案仅填写底薪金额，最多两位小数；绩效、提成和补贴在薪酬配置维护");
-    }
-
     private static HrEmployeeProfile normalizeProfile(HrEmployeeProfile p) {
         if (p == null) return null;
         String id = text(p.idNumber(), 18);
@@ -185,7 +156,7 @@ public class HrOrganizationService {
                 text(p.bankAccount(),32), text(p.bankName(),128), social,
                 text(p.emergencyContact(),128), text(p.emergencyPhone(),32),
                 text(p.graduationSchool(),128), text(p.major(),128), text(p.regularSalary(),64),
-                text(p.probationSalary(),64), text(p.probationPeriod(),32));
+                text(p.probationSalary(),64), HrEmployeeValidation.normalizeProbationPeriod(p.probationPeriod()));
     }
 
     private static CallerIdentity identityActor() {

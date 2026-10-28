@@ -9,9 +9,27 @@ public record AttendanceRecordCommand(
         String leaveTypeCode,
         String reason,
         Integer revision,
-        List<AttendanceExceptionPeriod> exceptions) {
+        List<AttendanceExceptionPeriod> exceptions,
+        AttendanceAssessmentOverride assessmentOverride) {
     public AttendanceRecordCommand {
         exceptions = exceptions == null ? List.of() : List.copyOf(exceptions);
+    }
+
+    public AttendanceRecordCommand(
+            BigDecimal actualDaysOverride,
+            BigDecimal absentDaysOverride,
+            String leaveTypeCode,
+            String reason,
+            Integer revision,
+            List<AttendanceExceptionPeriod> exceptions) {
+        this(
+                actualDaysOverride,
+                absentDaysOverride,
+                leaveTypeCode,
+                reason,
+                revision,
+                exceptions,
+                null);
     }
 
     public AttendanceRecordCommand(

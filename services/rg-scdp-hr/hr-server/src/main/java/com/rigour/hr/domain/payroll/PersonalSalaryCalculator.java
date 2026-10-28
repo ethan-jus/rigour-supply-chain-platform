@@ -37,6 +37,32 @@ public final class PersonalSalaryCalculator {
             LocalDate leave,
             Set<LocalDate> workDays,
             String proration) {
+        return average(
+                before,
+                after,
+                change,
+                probationUntil,
+                probationPercent,
+                null,
+                month,
+                entry,
+                leave,
+                workDays,
+                proration);
+    }
+
+    public static BigDecimal average(
+            BigDecimal before,
+            BigDecimal after,
+            LocalDate change,
+            LocalDate probationUntil,
+            BigDecimal probationPercent,
+            BigDecimal postProbationPercent,
+            YearMonth month,
+            LocalDate entry,
+            LocalDate leave,
+            Set<LocalDate> workDays,
+            String proration) {
         if (before == null) return null;
         var dates = dates(month, entry, leave, workDays, proration);
         if (dates.isEmpty()) return BigDecimal.ZERO;
@@ -44,9 +70,12 @@ public final class PersonalSalaryCalculator {
         for (var date : dates) {
             BigDecimal amount = change != null && !date.isBefore(change) ? after : before;
             if (amount == null) return null;
-            if (probationUntil != null && date.isBefore(probationUntil)) {
-                if (probationPercent == null) return null;
-                amount = amount.multiply(probationPercent).movePointLeft(2);
+            if (probationUntil != null) {
+                boolean probation = date.isBefore(probationUntil);
+                BigDecimal percent = probation ? probationPercent : postProbationPercent;
+                if (probation && percent == null) return null;
+                // Missing values in historical rules retain the former full-base behavior.
+                if (percent != null) amount = amount.multiply(percent).movePointLeft(2);
             }
             sum = sum.add(amount);
         }

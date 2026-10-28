@@ -101,8 +101,12 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
 
     public RuleOverview ruleOverview(String tenant, String month) {
         boolean unrestricted = scope.allDepartments(HrAttendanceService.RULE_READ);
-        Set<Long> allowed = unrestricted ? Set.of() : departments(tenant, HrAttendanceService.RULE_READ)
-                .stream().map(AttendanceDepartmentOption::id).collect(Collectors.toSet());
+        Set<Long> allowed =
+                unrestricted
+                        ? Set.of()
+                        : departments(tenant, HrAttendanceService.RULE_READ).stream()
+                                .map(AttendanceDepartmentOption::id)
+                                .collect(Collectors.toSet());
         var records =
                 rules
                         .selectList(
@@ -110,7 +114,11 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
                                                 tenant, month)
                                         .isNotNull("expected_days"))
                         .stream()
-                        .filter(r -> unrestricted || r.departmentId == 0 || allowed.contains(r.departmentId))
+                        .filter(
+                                r ->
+                                        unrestricted
+                                                || r.departmentId == 0
+                                                || allowed.contains(r.departmentId))
                         .map(
                                 r ->
                                         new RuleRecord(
@@ -170,6 +178,13 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
     }
 
     @Transactional
+    public List<AttendanceRuleView> saveRules(
+            String tenant, List<AttendanceRuleCommand> commands, String actor) {
+        // Keep the month lock and every department/audit write in one transaction.
+        return commands.stream().map(command -> saveRule(tenant, command, actor)).toList();
+    }
+
+    @Transactional
     public AttendanceRuleView saveRule(String tenant, AttendanceRuleCommand command, String actor) {
         lockMonth(tenant, command.month());
         requireRuleScope(tenant, command.departmentId(), HrAttendanceService.RULE_WRITE);
@@ -226,7 +241,7 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
     }
 
     public Employee employee(String tenant, YearMonth month, String code) {
-        return employee(tenant, month, code, HrAttendanceService.WRITE);
+        return employee(tenant, month, code, HrAttendanceService.READ);
     }
 
     public Employee employee(String tenant, YearMonth month, String code, String action) {
@@ -236,6 +251,18 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> new AuthorizationDeniedException(action));
+    }
+
+    public boolean reopenedSince(
+            String tenant, YearMonth month, String employeeCode, Instant since) {
+        var query =
+                new QueryWrapper<HrAttendanceAuditEntity>()
+                        .eq("tenant_id", tenant)
+                        .eq("attendance_month", month.toString())
+                        .eq("employee_code", employeeCode)
+                        .eq("action_code", "REOPEN");
+        if (since != null) query.ge("created_time", LocalDateTime.ofInstant(since, ZoneOffset.UTC));
+        return audits.selectCount(query) > 0;
     }
 
     private HrPageView<Employee> employeePage(
@@ -342,7 +369,15 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
                                                                                     n.exceptionsJson,
                                                                                     AttendanceExceptionPeriod
                                                                                                     []
-                                                                                            .class))),
+                                                                                            .class)),
+                                                            n.assessmentOverrideJson == null
+                                                                    ? null
+                                                                    : json.readValue(
+                                                                            n.assessmentOverrideJson,
+                                                                            com.rigour.hr.api.v1
+                                                                                    .model
+                                                                                    .AttendanceAssessmentOverride
+                                                                                    .class)),
                                             n == null || n.confirmedSnapshotJson == null
                                                     ? null
                                                     : json.readValue(
@@ -402,6 +437,10 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
                 row.attendanceStatus = HrAttendanceService.CONFIRMED;
                 row.confirmedSnapshotJson = frozen;
                 row.exceptionsJson = json.writeValueAsString(command.exceptions());
+                row.assessmentOverrideJson =
+                        command.assessmentOverride() == null
+                                ? null
+                                : json.writeValueAsString(command.assessmentOverride());
                 row.confirmedDepartmentId = departmentId;
                 row.confirmedRuleDepartmentId = ruleDepartment;
                 notes.insert(row);
@@ -425,6 +464,12 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
                                     .set(
                                             "exceptions_json",
                                             json.writeValueAsString(command.exceptions()))
+                                    .set(
+                                            "assessment_override_json",
+                                            command.assessmentOverride() == null
+                                                    ? null
+                                                    : json.writeValueAsString(
+                                                            command.assessmentOverride()))
                                     .set("confirmed_department_id", departmentId)
                                     .set("confirmed_rule_department_id", ruleDepartment))
                     != 1) throw conflict();
@@ -482,6 +527,7 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
         audit.attendanceMonth = month;
         audit.employeeCode = employee;
         audit.actionCode = "REOPEN";
+        audit.createdTime = LocalDateTime.now(ZoneOffset.UTC);
         audit.reason = command.reason();
         audit.revision = command.revision() + 1;
         audit.actorId = actor;

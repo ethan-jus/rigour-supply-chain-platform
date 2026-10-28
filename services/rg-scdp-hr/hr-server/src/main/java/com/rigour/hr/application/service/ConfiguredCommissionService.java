@@ -194,7 +194,11 @@ public class ConfiguredCommissionService {
                                             byLine.get(d.sourceLineId()).orderAmount(),
                                             byLine.get(d.sourceLineId()).paidAmount(),
                                             byLine.get(d.sourceLineId()).refundedAmount(),
-                                            month.atEndOfMonth()));
+                                            month.atEndOfMonth()),
+                                    // Fully-paid goods receipts are allocated by line value, even
+                                    // when the commission itself is based on quantity.
+                                    baseAmount(
+                                            byLine.get(d.sourceLineId()), null, new ArrayList<>()));
                     return new PayrollCommissionDetailView(
                             d.sourceLineId(),
                             d.recipientRoleCode(),
@@ -413,20 +417,32 @@ public class ConfiguredCommissionService {
         List<PayrollSchemeCommissionRule> candidates = new ArrayList<>();
         int best = Integer.MAX_VALUE;
         boolean explicitlyExcluded = false;
+        boolean unmatchedUnit = false;
         for (var rule : standard.definition().commission().rules()) {
             if (!role.equals(rule.recipientRole())) continue;
-            int priority =
-                    rule.variantIds().contains(f.productVariantId())
-                            ? 0
-                            : distance(product.categoryId(), rule.categoryIds(), categories);
-            if (priority < 0) continue;
+            int priority;
+            if (!rule.variantIds().isEmpty()) {
+                // Selected models restrict this row; its category must not act as a fallback.
+                if (!rule.variantIds().contains(f.productVariantId())) continue;
+                priority = 0;
+            } else {
+                int categoryDistance =
+                        distance(product.categoryId(), rule.categoryIds(), categories);
+                if (categoryDistance < 0) continue;
+                priority = categoryDistance + 1;
+            }
+            if ("QUANTITY".equals(rule.method())
+                    && (!rule.excluded() || rule.unitCode() != null && !rule.unitCode().isBlank())
+                    && !Objects.equals(rule.unitCode(), f.unitCode())) {
+                unmatchedUnit = true;
+                continue;
+            }
             if (rule.excludedVariantIds().contains(f.productVariantId())
                     || distance(product.categoryId(), rule.excludedCategoryIds(), categories)
                             >= 0) {
                 explicitlyExcluded = true;
                 continue;
             }
-            if (!rule.variantIds().contains(f.productVariantId())) priority += 1;
             if (priority < best) {
                 candidates.clear();
                 best = priority;
@@ -442,7 +458,9 @@ public class ConfiguredCommissionService {
                             + " / "
                             + f.productName()
                             + "："
-                            + (candidates.isEmpty() ? "提成标准未配置" : "同级商品规则冲突"));
+                            + (candidates.isEmpty()
+                                    ? unmatchedUnit ? "计奖单位未匹配，请维护该订单单位的提成标准" : "提成标准未配置"
+                                    : "同级商品规则冲突"));
             return;
         }
         var rule = candidates.getFirst();

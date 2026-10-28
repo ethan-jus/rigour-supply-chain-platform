@@ -21,6 +21,12 @@ public interface HrPayrollComponentLifecycleStore {
             String actor,
             LocalDate today);
 
+    void retire(
+            String tenant,
+            PayrollComponentVersionView previous,
+            PayrollComponentVersionView replacement,
+            String actor);
+
     List<PayrollComponentOperationView> operations(String tenant, String ruleId);
 
     List<PayrollRuleReviewView> reviews(String tenant, String subject, String month);

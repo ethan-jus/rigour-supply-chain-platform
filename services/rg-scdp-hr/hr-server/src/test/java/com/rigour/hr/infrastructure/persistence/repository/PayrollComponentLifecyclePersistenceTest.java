@@ -10,6 +10,8 @@ import com.rigour.hr.infrastructure.persistence.entity.*;
 import com.rigour.hr.infrastructure.persistence.mapper.*;
 
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -57,6 +59,7 @@ class PayrollComponentLifecyclePersistenceTest {
                     + " created_by VARCHAR(50), updated_by VARCHAR(50), created_time TIMESTAMP,"
                     + " updated_time TIMESTAMP)");
         execute("V24__payroll_rule_lifecycle.sql");
+        execute("V27__attendance_assessment_override.sql");
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         for (var mapper :
@@ -129,6 +132,296 @@ class PayrollComponentLifecyclePersistenceTest {
                 "HR",
                 LocalDateTime.of(2026, 9, 1, 0, 0),
                 "PCR001");
+    }
+
+    @Test
+    void postProbationPercentageSurvivesSalarySaveAndTenantScopedReload() {
+        var personal =
+                new PayrollPersonalPolicy(
+                        List.of(),
+                        null,
+                        LocalDate.of(2026, 9, 16),
+                        new java.math.BigDecimal("80"),
+                        null,
+                        null,
+                        null,
+                        null,
+                        new java.math.BigDecimal("92.5"));
+        var salary =
+                new PayrollSalaryStandard(
+                        new PayrollSchemeBaseSalary(
+                                "FIXED", new java.math.BigDecimal("3000"), List.of(), null),
+                        new java.math.BigDecimal("1000"),
+                        new PayrollProrationPolicy("NONE", "NONE", "NONE"),
+                        personal);
+        var definition =
+                new PayrollComponentDefinition(
+                        "试用期比例",
+                        "SALARY",
+                        "SALES",
+                        List.of(),
+                        LocalDate.of(2026, 9, 1),
+                        LocalDate.of(9999, 12, 31),
+                        salary,
+                        null,
+                        null,
+                        null,
+                        null,
+                        List.of("E1"));
+        var saved =
+                catalog.save(
+                        "T1",
+                        new PayrollComponentSaveCommand(
+                                "probation-ratios", null, definition, "约定比例"),
+                        "HR");
+        var reloaded =
+                catalog.versions("T1").stream()
+                        .filter(v -> v.id().equals(saved.id()))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(reloaded.definition().salary().personalPolicy().probationBasePercent())
+                .isEqualByComparingTo("80");
+        assertThat(reloaded.definition().salary().personalPolicy().postProbationBasePercent())
+                .isEqualByComparingTo("92.5");
+        assertThat(catalog.versions("T2")).noneMatch(v -> v.id().equals(saved.id()));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"ATTENDANCE", "PERFORMANCE", "COMMISSION", "ALLOWANCE", "SALARY"})
+    void replacementRetiresOnlyItsScopeAndRetainsDurableAudit(String kind) {
+        var d = rule.definition();
+        var definition =
+                new PayrollComponentDefinition(
+                        "旧规则",
+                        kind,
+                        Set.of("ATTENDANCE", "COMMISSION").contains(kind) ? "ALL" : "SALES",
+                        "SALARY".equals(kind) ? List.of() : List.of(1L, 2L),
+                        d.effectiveFrom(),
+                        d.effectiveTo(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        "SALARY".equals(kind) ? List.of("E1") : List.of());
+        rule =
+                new PayrollComponentVersionView(
+                        rule.id(),
+                        rule.ruleId(),
+                        1,
+                        definition,
+                        "创建",
+                        "HR",
+                        Instant.EPOCH,
+                        rule.ruleCode());
+        jdbc.update(
+                "UPDATE hr_payroll_component_version SET kind=?, data_json=? WHERE id=?",
+                kind,
+                json.writeValueAsString(definition),
+                rule.id());
+        var stopped =
+                store.act(
+                                "T1",
+                                rule,
+                                new PayrollComponentActionCommand(
+                                        "stop-replace", "DISABLE", 1, 0, "停用"),
+                                "HR",
+                                LocalDate.of(2026, 10, 26))
+                        .rule();
+        var laterDefinition =
+                new PayrollComponentDefinition(
+                        "旧规则后续版本",
+                        kind,
+                        definition.role(),
+                        "SALARY".equals(kind) ? List.of() : List.of(1L, 3L),
+                        LocalDate.of(2026, 10, 1),
+                        definition.effectiveTo(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        definition.employeeCodes());
+        var laterVersion =
+                catalog.save(
+                        "T1",
+                        new PayrollComponentSaveCommand(
+                                "later-version",
+                                stopped.id(),
+                                laterDefinition,
+                                "旧规则后续版本",
+                                false,
+                                1),
+                        "HR");
+        var replacement =
+                new PayrollComponentVersionView(
+                        "V2",
+                        "R2",
+                        1,
+                        new PayrollComponentDefinition(
+                                "替代规则",
+                                kind,
+                                definition.role(),
+                                "SALARY".equals(kind) ? List.of() : List.of(1L, 3L),
+                                definition.effectiveFrom(),
+                                definition.effectiveTo(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                definition.employeeCodes()),
+                        "新建替代",
+                        "HR",
+                        Instant.now(),
+                        "PCR002");
+        payroll("affected-confirmed", "T1", "E1", "2026-09", 1, "CONFIRMED");
+        payroll("affected-paid", "T1", "E1", "2026-09", 1, "PAID");
+        payroll("other-department", "T1", "E2", "2026-09", 2, "CONFIRMED");
+        payroll("other-tenant", "T2", "E1", "2026-09", 1, "CONFIRMED");
+        payroll("before-replacement", "T1", "E1", "2026-08", 1, "CONFIRMED");
+        if ("SALARY".equals(kind)) payroll("other-employee", "T1", "E2", "2026-09", 1, "CONFIRMED");
+        if (Set.of("PERFORMANCE", "ALLOWANCE").contains(kind)) {
+            payroll("other-role", "T1", "E3", "2026-09", 1, "CONFIRMED");
+            jdbc.update(
+                    "UPDATE hr_payroll SET calculation_json=? WHERE id='other-role'",
+                    "{\"salarySource\":{\"payrollCategory\":\"CITY_MANAGER\"}}");
+        }
+        store.retire("T1", stopped, replacement, "HR");
+        store.retire("T1", stopped, replacement, "HR");
+        store.retire("T1", laterVersion, replacement, "HR");
+        store.retire("T1", laterVersion, replacement, "HR");
+        var saved =
+                catalog.versions("T1").stream()
+                        .filter(v -> v.id().equals(rule.id()))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(saved.retired()).isTrue();
+        assertThat(saved.enabledAt(LocalDate.of(2026, 9, 10))).isTrue();
+        if ("SALARY".equals(kind)) {
+            assertThat(saved.enabledForEmployeeAt("E1", LocalDate.of(2026, 9, 10))).isFalse();
+            assertThat(saved.enabledForEmployeeAt("E1", LocalDate.of(2026, 8, 31))).isTrue();
+        } else {
+            assertThat(saved.enabledForDepartmentAt(1L, LocalDate.of(2026, 9, 10))).isFalse();
+            assertThat(saved.enabledForDepartmentAt(2L, LocalDate.of(2026, 9, 10))).isTrue();
+        }
+        assertThat(saved.definition()).isEqualTo(rule.definition());
+        assertThat(store.reviews("T1", "PAYROLL", "2026-09"))
+                .extracting(PayrollRuleReviewView::subjectId)
+                .containsExactlyInAnyOrder("affected-confirmed", "affected-paid");
+        assertThat(store.reviews("T2", "PAYROLL", "2026-09")).isEmpty();
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT status_code FROM hr_payroll WHERE id='affected-paid'",
+                                String.class))
+                .isEqualTo("PAID");
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT calculation_json FROM hr_payroll WHERE"
+                                        + " id='affected-confirmed'",
+                                String.class))
+                .isEqualTo("{}");
+        assertThat(store.operations("T1", "R1"))
+                .filteredOn(o -> "RETIRE".equals(o.action()))
+                .hasSize(2);
+        assertThat(saved.stateChanges())
+                .filteredOn(PayrollComponentStateChange::retired)
+                .extracting(PayrollComponentStateChange::effectiveMonth)
+                .containsExactly("2026-09", "2026-10");
+        assertThat(catalog.versions("T2")).isEmpty();
+    }
+
+    @Test
+    void failedReplacementRollsBackNewVersionRetirementAndReviewsTogether() {
+        var stopped =
+                store.act(
+                                "T1",
+                                rule,
+                                new PayrollComponentActionCommand(
+                                        "stop-rollback", "DISABLE", 1, 0, "停用"),
+                                "HR",
+                                LocalDate.of(2026, 10, 26))
+                        .rule();
+        payroll("P1", "T1", "E1", "2026-09", 1, "CONFIRMED");
+        var transaction =
+                new org.springframework.transaction.support.TransactionTemplate(
+                        new DataSourceTransactionManager(ds));
+        assertThatThrownBy(
+                        () ->
+                                transaction.executeWithoutResult(
+                                        status -> {
+                                            var replacement =
+                                                    catalog.save(
+                                                            "T1",
+                                                            new PayrollComponentSaveCommand(
+                                                                    "failed-replacement",
+                                                                    null,
+                                                                    rule.definition(),
+                                                                    "替代后失败"),
+                                                            "HR");
+                                            store.retire("T1", stopped, replacement, "HR");
+                                            throw new IllegalStateException("模拟事务失败");
+                                        }))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(catalog.versions("T1")).hasSize(1);
+        assertThat(catalog.versions("T1").getFirst().retired()).isFalse();
+        assertThat(store.operations("T1", rule.ruleId()))
+                .extracting(PayrollComponentOperationView::action)
+                .containsExactly("DISABLE");
+        assertThat(store.reviews("T1", "PAYROLL", "2026-09")).isEmpty();
+    }
+
+    @Test
+    void editingStoppedRuleCreatesAnAuditedVersionThatStaysStoppedUntilEnabled() {
+        var today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        var stopped =
+                store.act(
+                                "T1",
+                                rule,
+                                new PayrollComponentActionCommand(
+                                        "stop-for-edit", "DISABLE", 1, 0, "停用修订"),
+                                "HR",
+                                today)
+                        .rule();
+        tools.jackson.databind.node.ObjectNode node = json.valueToTree(rule.definition());
+        node.put("name", "修订后的销售考勤");
+        node.put("effectiveFrom", YearMonth.from(today).atDay(1).toString());
+        var definition = json.treeToValue(node, PayrollComponentDefinition.class);
+        var revised =
+                catalog.save(
+                        "T1",
+                        new PayrollComponentSaveCommand(
+                                "stopped-edit", rule.id(), definition, "修正后待核对", false, 1),
+                        "HR");
+        assertThat(revised.version()).isEqualTo(2);
+        assertThat(revised.id()).isNotEqualTo(rule.id());
+        assertThat(revised.enabledAt(today)).isFalse();
+        assertThat(catalog.versions("T1"))
+                .filteredOn(version -> version.id().equals(rule.id()))
+                .singleElement()
+                .satisfies(
+                        version -> assertThat(version.definition()).isEqualTo(rule.definition()));
+        assertThat(store.operations("T1", rule.ruleId()))
+                .anySatisfy(
+                        operation -> {
+                            assertThat(operation.action()).isEqualTo("MODIFY");
+                            assertThat(operation.reason()).isEqualTo("修正后待核对");
+                        });
+        var enabled =
+                store.act(
+                                "T1",
+                                revised,
+                                new PayrollComponentActionCommand(
+                                        "enable-edited",
+                                        "ENABLE",
+                                        revised.revision(),
+                                        revised.stateRevision(),
+                                        "已核对启用"),
+                                "HR",
+                                today)
+                        .rule();
+        assertThat(enabled.enabledAt(today)).isTrue();
+        assertThat(enabled.definition()).isEqualTo(definition);
     }
 
     void execute(String file) throws Exception {

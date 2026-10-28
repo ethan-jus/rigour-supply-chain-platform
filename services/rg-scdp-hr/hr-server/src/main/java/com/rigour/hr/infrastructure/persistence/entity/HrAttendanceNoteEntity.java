@@ -18,6 +18,7 @@ public class HrAttendanceNoteEntity {
     public String attendanceStatus;
     public String confirmedSnapshotJson;
     public String exceptionsJson;
+    public String assessmentOverrideJson;
     public Long confirmedDepartmentId;
     public Long confirmedRuleDepartmentId;
 }

@@ -628,12 +628,21 @@ class PayrollPersistenceWorkflowTest {
                         new com.rigour.hr.application.service.PayrollRuleMatch(version, List.of()));
         var commissions =
                 new com.rigour.hr.application.service.ConfiguredCommissionService(payroll, source);
+        var attendance = mock(com.rigour.hr.application.port.out.HrAttendanceStore.class);
+        var attendanceRow = new AttendanceRow("E1", "员工", "销售部", 22, "DEPARTMENT", new BigDecimal("22"), BigDecimal.ZERO,
+                22, null, null, "NONE", "CONFIRMED", "AVAILABLE", List.of(), "", 1);
+        var employeeAttendance = new com.rigour.hr.application.port.out.HrAttendanceStore.Employee("E1", "员工", 1L, "销售部",
+                LocalDate.of(2026,1,1), null, null, attendanceRow);
+        when(attendance.employee(anyString(), any(), anyString())).thenReturn(employeeAttendance);
+        when(attendance.employee(anyString(), any(), anyString(), anyString())).thenReturn(employeeAttendance);
+        var gate = new com.rigour.hr.application.service.PayrollAttendanceGate(attendance,
+                mock(com.rigour.hr.application.port.out.HrPayrollComponentLifecycleStore.class));
         var configured =
                 new com.rigour.hr.application.service.ConfiguredPayrollService(
                         payroll,
                         schemes,
                         source,
-                        mock(com.rigour.hr.application.port.out.HrAttendanceStore.class),
+                        attendance,
                         commissions,
                         JsonMapper.builder().build());
         org.springframework.test.util.ReflectionTestUtils.setField(configured, "rules", rules);
@@ -649,6 +658,8 @@ class PayrollPersistenceWorkflowTest {
                         mock(
                                 com.rigour.hr.application.port.out.HrEmployeePayrollProfileStore
                                         .class));
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "attendanceGate", gate);
+        org.springframework.test.util.ReflectionTestUtils.setField(workflow, "attendanceGate", gate);
         var calculated =
                 service.calculate(new PayrollCalculateCommand("2026-09", List.of("E1"))).getFirst();
         assertThat(calculated.statusCode()).isEqualTo("READY");
@@ -1442,13 +1453,13 @@ class PayrollPersistenceWorkflowTest {
                                 10L,
                                 "CITY_MANAGER",
                                 "ACTIVE",
+                                "13800000000",
                                 null,
-                                null,
-                                null,
+                                java.time.Instant.parse("2026-01-01T00:00:00Z"),
                                 null,
                                 null,
                                 0,
-                                null,
+                                new HrEmployeeProfile("11010519491231002X", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null),
                                 null,
                                 false,
                                 null,

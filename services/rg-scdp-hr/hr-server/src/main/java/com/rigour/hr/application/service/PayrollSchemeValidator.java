@@ -195,6 +195,13 @@ final class PayrollSchemeValidator {
                         || personal.probationBasePercent().signum() < 0
                         || personal.probationBasePercent().compareTo(new BigDecimal("100")) > 0))
             errors.add("请配置试用期底薪比例，范围为0至100%");
+        if (personal.postProbationBasePercent() != null)
+            range(
+                    personal.postProbationBasePercent(),
+                    BigDecimal.ZERO,
+                    new BigDecimal("100"),
+                    "试用期结束后底薪比例",
+                    errors);
         if (personal.salaryChangeDate() != null) {
             nonnegative(personal.baseAfterChange(), "调整后底薪", errors);
             nonnegative(personal.performanceAfterChange(), "调整后绩效基数", errors);
@@ -269,7 +276,7 @@ final class PayrollSchemeValidator {
             if (metric.scoringMode() != null)
                 choice(metric.scoringMode(), Set.of("ACTUAL", "TIERED"), "单项指标计分方式", errors);
             if ("TIERED".equals(metric.scoringMode()))
-                steps(metric.steps(), metric.name() + "计分区间", errors);
+                steps(metric.steps(), metric.name() + "计分区间", errors, false);
             choice(
                     metric.source(),
                     Set.of(
@@ -287,28 +294,41 @@ final class PayrollSchemeValidator {
             nonnegative(metric.weight(), "指标权重", errors);
             if (metric.weight() != null) weight = weight.add(metric.weight());
         }
-        if ("TIERED".equals(p.calculationMode())) steps(p.steps(), "综合完成率系数", errors);
-        if (weight.compareTo(new BigDecimal("100")) != 0) errors.add("指标权重合计必须为100%");
+        if ("TIERED".equals(p.calculationMode())) {
+            steps(p.steps(), "综合完成率系数", errors, true);
+            if (weight.compareTo(new BigDecimal("100")) != 0) errors.add("指标权重合计必须为100%");
+        }
     }
 
-    private static void steps(List<PayrollMetricStep> values, String label, List<String> errors) {
+    private static void steps(
+            List<PayrollMetricStep> values,
+            String label,
+            List<String> errors,
+            boolean completeCoverage) {
         if (empty(values) || values.stream().anyMatch(Objects::isNull)) {
             errors.add("请配置" + label);
             return;
         }
-        intervals(
-                values.stream()
-                        .map(
-                                s ->
-                                        new PayrollSchemeInterval(
-                                                s.lower(),
-                                                s.upper(),
-                                                s.lowerInclusive(),
-                                                s.upperInclusive()))
-                        .toList(),
-                label,
-                errors);
+        if (completeCoverage)
+            intervals(
+                    values.stream()
+                            .map(
+                                    s ->
+                                            new PayrollSchemeInterval(
+                                                    s.lower(),
+                                                    s.upper(),
+                                                    s.lowerInclusive(),
+                                                    s.upperInclusive()))
+                            .toList(),
+                    label,
+                    errors);
         for (var step : values) {
+            if (!completeCoverage) {
+                nonnegative(step.lower(), label + "下界", errors);
+                if (step.upper() != null
+                        && (step.lower() == null || step.upper().compareTo(step.lower()) <= 0))
+                    errors.add(label + "上界须大于下界");
+            }
             choice(step.mode(), Set.of("FIXED", "LINEAR"), label + "计算方式", errors);
             nonnegative(step.coefficient(), label, errors);
         }
@@ -378,12 +398,7 @@ final class PayrollSchemeValidator {
                 var a = p.rules().get(i);
                 var b = p.rules().get(j);
                 if (Objects.equals(a.recipientRole(), b.recipientRole())
-                        && a.variantIds() != null
-                        && b.variantIds() != null
-                        && a.categoryIds() != null
-                        && b.categoryIds() != null
-                        && (!Collections.disjoint(a.variantIds(), b.variantIds())
-                                || !Collections.disjoint(a.categoryIds(), b.categoryIds())))
+                        && samePriorityScopeOverlaps(a, b))
                     errors.add("同一受益角色存在同级商品范围交叉：" + a.name() + " / " + b.name());
             }
         for (var rule : p.rules()) {
@@ -406,6 +421,32 @@ final class PayrollSchemeValidator {
                     && (rule.unitCode() == null || rule.unitCode().isBlank()))
                 errors.add("按数量提成须选择计价单位");
         }
+    }
+
+    private static boolean samePriorityScopeOverlaps(
+            PayrollSchemeCommissionRule a, PayrollSchemeCommissionRule b) {
+        if ("QUANTITY".equals(a.method())
+                && "QUANTITY".equals(b.method())
+                && a.unitCode() != null
+                && !a.unitCode().isBlank()
+                && b.unitCode() != null
+                && !b.unitCode().isBlank()
+                && !a.unitCode().equals(b.unitCode())) return false;
+        if (a.variantIds() == null || b.variantIds() == null) return false;
+        boolean models = !a.variantIds().isEmpty();
+        // A model standard overrides a category standard; their scopes are not peers.
+        if (models != !b.variantIds().isEmpty()) return false;
+        var first = models ? a.variantIds() : a.categoryIds();
+        var second = models ? b.variantIds() : b.categoryIds();
+        var firstExcluded = models ? a.excludedVariantIds() : a.excludedCategoryIds();
+        var secondExcluded = models ? b.excludedVariantIds() : b.excludedCategoryIds();
+        if (first == null || second == null || firstExcluded == null || secondExcluded == null)
+            return false;
+        var shared = new HashSet<>(first);
+        shared.retainAll(second);
+        shared.removeAll(firstExcluded);
+        shared.removeAll(secondExcluded);
+        return !shared.isEmpty();
     }
 
     private static boolean sameScope(List<Long> first, List<Long> second) {

@@ -104,8 +104,7 @@ public class HrPayrollRuleReviewService {
 
     private static String permission(String subject, boolean write) {
         if ("PAYROLL".equals(subject)) return write ? "hr:payroll:confirm" : "hr:payroll:read";
-        if ("ATTENDANCE".equals(subject))
-            return write ? "hr:attendance:write" : "hr:attendance:read";
+        if ("ATTENDANCE".equals(subject)) return "hr:attendance:read";
         throw bad("复核对象类型无效");
     }
 

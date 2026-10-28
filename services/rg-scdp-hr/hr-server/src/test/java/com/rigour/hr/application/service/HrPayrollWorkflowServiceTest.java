@@ -22,6 +22,7 @@ class HrPayrollWorkflowServiceTest {
 
     @BeforeEach
     void setup() {
+        service.setAttendanceGate(mock(PayrollAttendanceGate.class));
         UUID user = UUID.randomUUID(), tenant = UUID.randomUUID();
         TestAuthorizationContext.set(
                 new CallerIdentity(
@@ -46,6 +47,42 @@ class HrPayrollWorkflowServiceTest {
     @AfterEach
     void clear() {
         TestAuthorizationContext.clear();
+    }
+
+    @Test
+    void attendanceGateIsEnforcedBeforeRecordingPayment() {
+        var gate = mock(PayrollAttendanceGate.class);
+        service.setAttendanceGate(gate);
+        var confirmed =
+                new PayrollDetailView(
+                        "P1",
+                        "2026-09",
+                        "E1",
+                        "员工",
+                        1L,
+                        "销售",
+                        "北京",
+                        "CONFIRMED",
+                        1,
+                        null,
+                        Instant.EPOCH);
+        when(store.detail(anyString(), eq("P1"), eq("hr:payroll:paid"))).thenReturn(confirmed);
+        doThrow(new IllegalArgumentException("考勤尚未确认"))
+                .when(gate)
+                .require(anyString(), eq(confirmed), eq("hr:payroll:paid"));
+        assertThatThrownBy(
+                        () ->
+                                service.pay(
+                                        "P1",
+                                        new PayrollPaymentCommand(
+                                                UUID.randomUUID().toString(),
+                                                1,
+                                                LocalDate.of(2026, 9, 1),
+                                                BigDecimal.TEN,
+                                                "BANK",
+                                                "发薪")))
+                .hasMessageContaining("考勤尚未确认");
+        verify(store, never()).pay(anyString(), anyString(), any(), anyString());
     }
 
     @Test

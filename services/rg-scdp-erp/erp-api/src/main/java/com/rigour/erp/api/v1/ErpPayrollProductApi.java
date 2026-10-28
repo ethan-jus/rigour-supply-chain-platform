@@ -14,7 +14,13 @@ public interface ErpPayrollProductApi {
     ApiResponse<List<ErpPayrollProductView>> products(
             @RequestParam(defaultValue = "") String keyword,
             @RequestParam(required = false) Long productVariantId,
-            @RequestParam(required = false) Long categoryId);
+            @RequestParam(required = false) Long categoryId,
+            @RequestParam(defaultValue = "0") int begin);
+
+    default ApiResponse<List<ErpPayrollProductView>> products(
+            String keyword, Long productVariantId, Long categoryId) {
+        return products(keyword, productVariantId, categoryId, 0);
+    }
 
     @GetMapping("/api/v1/erp/payroll-products/by-variants")
     ApiResponse<List<ErpPayrollProductView>> productsByVariants(@RequestParam List<Long> ids);

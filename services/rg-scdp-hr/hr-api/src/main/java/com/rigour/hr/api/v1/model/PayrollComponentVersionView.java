@@ -25,10 +25,43 @@ public record PayrollComponentVersionView(
         String month = date.toString().substring(0, 7);
         return !deleted
                 && stateChanges.stream()
-                        .filter(change -> change.effectiveMonth().compareTo(month) <= 0)
+                        .filter(
+                                change ->
+                                        !change.retired()
+                                                && change.effectiveMonth().compareTo(month) <= 0)
                         .max(Comparator.comparingInt(PayrollComponentStateChange::revision))
                         .map(PayrollComponentStateChange::enabled)
                         .orElse(true);
+    }
+
+    /** Replacement freezes maintenance, but only replaces its scope from the replacement month. */
+    public boolean retired() {
+        return stateChanges.stream().anyMatch(PayrollComponentStateChange::retired);
+    }
+
+    public boolean enabledForDepartmentAt(Long department, LocalDate date) {
+        String month = date.toString().substring(0, 7);
+        return enabledAt(date)
+                && stateChanges.stream()
+                        .noneMatch(
+                                change ->
+                                        change.retired()
+                                                && change.effectiveMonth().compareTo(month) <= 0
+                                                && change.replacedDepartmentIds()
+                                                        .contains(department));
+    }
+
+    public boolean enabledForEmployeeAt(String employee, LocalDate date) {
+        String month = date.toString().substring(0, 7);
+        // Personal salary families belong to exactly one employee and have no department scope.
+        return "SALARY".equals(definition.kind())
+                && definition.employeeCodes().contains(employee)
+                && enabledAt(date)
+                && stateChanges.stream()
+                        .noneMatch(
+                                change ->
+                                        change.retired()
+                                                && change.effectiveMonth().compareTo(month) <= 0);
     }
 
     public int stateRevision() {

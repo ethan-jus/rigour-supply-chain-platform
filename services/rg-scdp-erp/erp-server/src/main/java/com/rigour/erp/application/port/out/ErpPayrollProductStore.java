@@ -9,6 +9,9 @@ public interface ErpPayrollProductStore {
     List<ErpPayrollProductView> products(
             String tenant, String keyword, Long variant, Long categoryId);
 
+    List<ErpPayrollProductView> products(
+            String tenant, String keyword, Long variant, Long categoryId, int begin);
+
     List<ErpPayrollCategoryView> categories(String tenant);
 
     List<ErpPayrollProductView> productsByVariants(String tenant, List<Long> ids);

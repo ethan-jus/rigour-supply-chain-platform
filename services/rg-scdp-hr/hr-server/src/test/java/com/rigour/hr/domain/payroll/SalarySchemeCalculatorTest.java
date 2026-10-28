@@ -232,4 +232,92 @@ class SalarySchemeCalculatorTest {
                 LocalDate.of(2026, 11, 10),
                 SalarySchemeCalculator.protectionUntil(LocalDate.of(2026, 10, 10), "MONTHS", 1));
     }
+
+    @Test
+    void probationEndUsesItsOwnPercentageIncludingTheBoundaryDate() {
+        var month = YearMonth.of(2026, 9);
+        var entry = month.atDay(1);
+        for (var sample :
+                List.of(
+                        new String[] {"2026-09-01", "5400"},
+                        new String[] {"2026-09-16", "5100"},
+                        new String[] {"2026-09-30", "4820"},
+                        new String[] {"2026-10-01", "4800"})) {
+            var actual =
+                    PersonalSalaryCalculator.average(
+                            d("6000"),
+                            null,
+                            null,
+                            LocalDate.parse(sample[0]),
+                            d("80"),
+                            d("90"),
+                            month,
+                            entry,
+                            null,
+                            Set.of(),
+                            "CALENDAR_DAYS");
+            assertEquals(0, actual.compareTo(d(sample[1])), sample[0]);
+        }
+        var legacy =
+                PersonalSalaryCalculator.average(
+                        d("6000"),
+                        null,
+                        null,
+                        month.atDay(16),
+                        d("80"),
+                        null,
+                        month,
+                        entry,
+                        null,
+                        Set.of(),
+                        "CALENDAR_DAYS");
+        assertEquals(0, legacy.compareTo(d("5400")));
+        var zeroAfter =
+                PersonalSalaryCalculator.average(
+                        d("6000"),
+                        null,
+                        null,
+                        month.atDay(16),
+                        d("80"),
+                        BigDecimal.ZERO,
+                        month,
+                        entry,
+                        null,
+                        Set.of(),
+                        "CALENDAR_DAYS");
+        assertEquals(0, zeroAfter.compareTo(d("2400")));
+    }
+
+    @Test
+    void probationPercentagesApplyOnceToTheSalaryEffectiveOnEachDay() {
+        var month = YearMonth.of(2026, 9);
+        var actual =
+                PersonalSalaryCalculator.average(
+                        d("6000"),
+                        d("9000"),
+                        month.atDay(21),
+                        month.atDay(16),
+                        d("80"),
+                        d("90"),
+                        month,
+                        month.atDay(1),
+                        null,
+                        Set.of(),
+                        "CALENDAR_DAYS");
+        assertEquals(0, actual.compareTo(d("6000")));
+        var inactive =
+                PersonalSalaryCalculator.average(
+                        d("6000"),
+                        null,
+                        null,
+                        null,
+                        d("80"),
+                        d("90"),
+                        month,
+                        month.atDay(1),
+                        null,
+                        Set.of(),
+                        "CALENDAR_DAYS");
+        assertEquals(0, inactive.compareTo(d("6000")));
+    }
 }

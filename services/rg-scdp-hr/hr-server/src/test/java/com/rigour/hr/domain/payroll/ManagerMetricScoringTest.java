@@ -83,13 +83,96 @@ class ManagerMetricScoringTest {
     }
 
     @Test
-    void anAmbiguousOrMissingBandCannotBecomeZeroOrSilentlyUseActualCompletion() {
+    void duplicateMatchesUseTheirScoreAndMissingBandsCannotSilentlyUseActualCompletion() {
         var duplicate = new ArrayList<>(bands("1.2"));
         duplicate.add(duplicate.get(2));
         assertThat(calculate("150", duplicate, "TIERED", LocalDate.of(2026, 2, 1)).amount())
-                .isNull();
+                .isEqualByComparingTo("1020");
         assertThat(calculate("150", List.of(), "TIERED", LocalDate.of(2026, 2, 1)).issues())
                 .anyMatch(s -> s.contains("计分区间"));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"80,1.2,1.1,1.1", "200,0.8,1.5,1.6", "100,1,1,1"})
+    void overlappingRangesChooseHighestCalculatedScoreRegardlessOfRowOrder(
+            String actual, String multiplier, String fixed, String expected) {
+        var overlapping =
+                new ArrayList<>(
+                        List.of(
+                                new PerformanceBand(
+                                        d("0"), d("3"), true, true, "LINEAR", d(multiplier)),
+                                new PerformanceBand(
+                                        d("0.5"), d("3"), true, true, "FIXED", d(fixed))));
+        for (int i = 0; i < 2; i++) {
+            var result = calculate(actual, overlapping, "TIERED", LocalDate.of(2026, 2, 1));
+            assertThat(result.issues()).isEmpty();
+            assertThat(result.metrics().getFirst().coefficient()).isEqualByComparingTo(expected);
+            assertThat(result.metrics().getFirst().completion())
+                    .isEqualByComparingTo(d(actual).movePointLeft(2));
+            Collections.reverse(overlapping);
+        }
+    }
+
+    @Test
+    void finiteGappedRangesOnlyBlockWhenActualCompletionDoesNotMatchAnyRange() {
+        var finite =
+                List.of(
+                        new PerformanceBand(d("0.5"), d("1"), true, true, "FIXED", d("1.1")),
+                        new PerformanceBand(d("2"), d("3"), true, true, "FIXED", d("1.5")));
+        assertThat(calculate("80", finite, "TIERED", LocalDate.of(2026, 2, 1)).issues()).isEmpty();
+        for (var actual : List.of("20", "150", "400")) {
+            var result = calculate(actual, finite, "TIERED", LocalDate.of(2026, 2, 1));
+            assertThat(result.amount()).isNull();
+            assertThat(result.issues()).anyMatch(s -> s.contains("未匹配有效计分区间"));
+        }
+    }
+
+    @Test
+    void sharedIncludedEndpointUsesTheHigherScore() {
+        var intervals =
+                List.of(
+                        new PerformanceBand(d("0"), d("1"), true, true, "FIXED", d("1")),
+                        new PerformanceBand(d("1"), d("2"), true, true, "FIXED", d("1.7")));
+        assertThat(
+                        calculate("100", intervals, "TIERED", LocalDate.of(2026, 2, 1))
+                                .metrics()
+                                .getFirst()
+                                .coefficient())
+                .isEqualByComparingTo("1.7");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"30,300", "140,1400", "0,0"})
+    void weightsAreUsedAsEnteredWithoutNormalizingTheirTotal(String weight, String expected) {
+        var result =
+                SalarySchemeCalculator.manager(
+                        d("1000"),
+                        List.of(
+                                new ManagerMetric(
+                                        "store",
+                                        "建联门店",
+                                        d("100"),
+                                        d("100"),
+                                        d(weight),
+                                        List.of(
+                                                new PerformanceBand(
+                                                        d("0"), d("2"), true, true, "FIXED",
+                                                        d("1"))),
+                                        null,
+                                        true,
+                                        "TIERED")),
+                        List.of(),
+                        null,
+                        YearMonth.of(2026, 9),
+                        LocalDate.of(2026, 1, 1),
+                        null,
+                        LocalDate.of(2026, 2, 1),
+                        false,
+                        Set.of(),
+                        "NONE",
+                        "ACTUAL_COMPLETION");
+        assertThat(result.issues()).isEmpty();
+        assertThat(result.amount()).isEqualByComparingTo(expected);
     }
 
     @Test

@@ -62,16 +62,26 @@ class PayrollBusinessCombinationAcceptanceTest {
                 new ErpPayrollProductView(1L, 1L, "P1", "SKU1", "商品", "规格", "BOX", 10L, "方便面")));
         when(source.productCategories(tenant)).thenReturn(List.of(new ErpPayrollCategoryView(10L, null, "方便面", 0)));
         var commission = new ConfiguredCommissionService(database.payroll, source);
+        var attendance = mock(HrAttendanceStore.class);
+        when(attendance.employee(anyString(), any(), anyString(), anyString())).thenReturn(new HrAttendanceStore.Employee(
+                "E1", "李四", 1L, "总部", employee.entryDate(), null, null,
+                new AttendanceRow("E1", "李四", "总部", 22, "DEPARTMENT", new BigDecimal("22"), BigDecimal.ZERO,
+                        22, null, null, "NONE", "CONFIRMED", "AVAILABLE", List.of(), "", 1)));
+        when(attendance.employee(anyString(), any(), anyString())).thenAnswer(invocation ->
+                attendance.employee(invocation.getArgument(0), invocation.getArgument(1), invocation.getArgument(2), "hr:payroll:read"));
+        var gate = new PayrollAttendanceGate(attendance, mock(HrPayrollComponentLifecycleStore.class));
         var configured = new ConfiguredPayrollService(database.payroll, schemes, source,
-                mock(HrAttendanceStore.class), commission, json);
+                attendance, commission, json);
         ReflectionTestUtils.setField(configured, "rules", resolver);
         var transactionProxy = new ProxyFactory(new HrPayrollService(database.payroll, source, configured));
         transactionProxy.setProxyTargetClass(true);
         transactionProxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(database.dataSource),
                 new AnnotationTransactionAttributeSource()));
         service = (HrPayrollService) transactionProxy.getProxy();
+        ReflectionTestUtils.setField(service, "attendanceGate", gate);
         workflow = new HrPayrollWorkflowService(database.payroll, service,
                 mock(HrEmployeePayrollProfileStore.class));
+        ReflectionTestUtils.setField(workflow, "attendanceGate", gate);
     }
 
     @AfterEach

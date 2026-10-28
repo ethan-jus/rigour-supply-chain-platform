@@ -211,6 +211,34 @@ public class ConfiguredPayrollService {
         } catch (com.rigour.shared.core.exception.BusinessException unavailable) {
             return pending(tenant, e, month, unavailable.getMessage());
         }
+        var nominalProration = definition.proration();
+        if ("SALES".equals(definition.role())) {
+            definition =
+                    definition.withProration(
+                            new PayrollProrationPolicy(
+                                    "CONFIRMED_ATTENDANCE",
+                                    "CONFIRMED_ATTENDANCE"
+                                                    .equals(definition.proration().performance())
+                                            ? "NONE"
+                                            : definition.proration().performance(),
+                                    definition.allowances().isEmpty()
+                                            ? "NONE"
+                                            : "CONFIRMED_ATTENDANCE"));
+            selected =
+                    new PayrollSchemeVersionView(
+                            selected.id(),
+                            selected.schemeId(),
+                            selected.version(),
+                            selected.revision(),
+                            selected.status(),
+                            definition,
+                            selected.reason(),
+                            selected.createdBy(),
+                            selected.publishedBy(),
+                            selected.updatedTime(),
+                            selected.publishedTime(),
+                            selected.stopFrom());
+        }
         List<String> issues = new ArrayList<>(PayrollSchemeValidator.check(definition).errors());
         if (!issues.isEmpty())
             throw new IllegalStateException("已发布薪酬方案不完整：" + String.join("；", issues));
@@ -247,7 +275,8 @@ public class ConfiguredPayrollService {
                                                         .isBefore(month.atDay(1))))
             issues.add("该员工当月担任城市总，请在员工档案设置城市总薪资类别，避免误领销售补贴");
         Map<String, OrderPayrollLineView> lineMap = new LinkedHashMap<>();
-        boolean ordersRequired = requiresOrderSource(tenant, e, month, definition, versions, ownAssignments);
+        boolean ordersRequired =
+                requiresOrderSource(tenant, e, month, definition, versions, ownAssignments);
         boolean ordersAvailable = true;
         if (ordersRequired) {
             try {
@@ -273,7 +302,8 @@ public class ConfiguredPayrollService {
                 ordersRequired && ordersAvailable
                         ? achievement(own, month.atDay(1), month.atEndOfMonth(), issues)
                         : null;
-        if (ordersRequired && (input.baseOverride() == null || input.performanceOverride() == null)) {
+        if (ordersRequired
+                && (input.baseOverride() == null || input.performanceOverride() == null)) {
             var legacyOrders =
                     payroll
                             .commissionHistory(
@@ -307,14 +337,21 @@ public class ConfiguredPayrollService {
                                 ? List.of()
                                 : calendar.alternateWeekdays(),
                         calendar.alternateAnchor());
+        var employeeAttendance = attendance.employee(tenant, month, e.employeeCode());
+        var confirmed = employeeAttendance == null ? null : employeeAttendance.confirmation();
+        var leavePeriods =
+                confirmed == null ? List.<AttendanceExceptionPeriod>of() : confirmed.exceptions();
+        var processOverride = confirmed == null ? null : confirmed.assessmentOverride();
+        boolean completeProcessOverride =
+                processOverride != null
+                        && processOverride.missingCheckins() != null
+                        && processOverride.missingVisits() != null;
         BigDecimal actualDays = null, expectedDays = null;
         if (List.of(
                         definition.proration().base(),
                         definition.proration().performance(),
                         definition.proration().allowance())
                 .contains("CONFIRMED_ATTENDANCE")) {
-            var employeeAttendance = attendance.employee(tenant, month, e.employeeCode());
-            var confirmed = employeeAttendance == null ? null : employeeAttendance.confirmation();
             if (confirmed == null) issues.add("考勤尚未确认，不能执行出勤折算");
             else {
                 actualDays = confirmed.actualDays();
@@ -367,11 +404,12 @@ public class ConfiguredPayrollService {
                             personal.salaryChangeDate(),
                             personal.probationUntil(),
                             personal.probationBasePercent(),
+                            personal.postProbationBasePercent(),
                             month,
                             e.entryDate(),
                             e.leaveDate(),
                             workDays,
-                            definition.proration().base());
+                            nominalProration.base());
             performanceBase =
                     com.rigour.hr.domain.payroll.PersonalSalaryCalculator.average(
                             performanceBase,
@@ -383,7 +421,7 @@ public class ConfiguredPayrollService {
                             e.entryDate(),
                             e.leaveDate(),
                             workDays,
-                            definition.proration().performance());
+                            nominalProration.performance());
         }
         BigDecimal base =
                 input.baseOverride() == null
@@ -404,6 +442,7 @@ public class ConfiguredPayrollService {
         BigDecimal managerCoefficient = null, managerCompletion = null;
         int protectedDays = 0, assessedDays = 0;
         List<Object> evidence = new ArrayList<>();
+        if (confirmed != null) evidence.add(confirmed);
         if (performance == null) {
             switch (definition.performanceMode()) {
                 case "NONE" -> performance = BigDecimal.ZERO;
@@ -497,13 +536,13 @@ public class ConfiguredPayrollService {
                                                 java.math.RoundingMode.HALF_UP);
                     }
                     if (!exempt && targets.size() != 1) issues.add("入职阶段目标未匹配或冲突");
-                    Set<LocalDate> assessment = new HashSet<>(workDays);
-                    assessment.removeAll(calendar.exemptDays());
-                    if (personal != null) assessment.removeAll(personal.exemptDays());
-                    if (p.processProtectionDays() != null && e.entryDate() != null) {
-                        LocalDate protectedEnd = e.entryDate().plusDays(p.processProtectionDays());
-                        assessment.removeIf(d -> d.isBefore(protectedEnd));
-                    }
+                    Set<LocalDate> assessment =
+                            PayrollProcessAssessment.dates(
+                                    month, calendar, personal, p, e.entryDate());
+                    var fractions =
+                            PayrollProcessAssessment.fractions(
+                                    calendar.window(), assessment, leavePeriods);
+                    assessment.removeIf(date -> fractions.get(date).signum() == 0);
                     boolean legacyExempt = exempt && p.processProtectionDays() == null;
                     boolean needsCheckins =
                             !legacyExempt
@@ -525,38 +564,13 @@ public class ConfiguredPayrollService {
                                             tenant,
                                             e.employeeCode(),
                                             month.atDay(1),
-                                            month.atEndOfMonth().plusDays(1));
+                                            month.atEndOfMonth()
+                                                    .plusDays(calendar.window().nextDay() ? 2 : 1));
                         } catch (RuntimeException unavailable) {
-                            issues.add("打卡拜访依据暂不可用");
+                            if (!completeProcessOverride) issues.add("打卡拜访依据暂不可用");
                         }
                     evidence.add(visits);
-                    var window = calendar.window();
-                    List<SalesVisitEvidence> dayVisits = new ArrayList<>();
-                    for (var v : visits.visits()) {
-                        LocalDate date =
-                                v.submittedAt() == null
-                                        ? null
-                                        : SalarySchemeCalculator.businessDate(
-                                                v.submittedAt()
-                                                        .atOffset(ZoneOffset.UTC)
-                                                        .atZoneSameInstant(
-                                                                ZoneId.of("Asia/Shanghai"))
-                                                        .toLocalDateTime(),
-                                                window.start(),
-                                                window.end(),
-                                                window.nextDay(),
-                                                window.outside());
-                        // 无原始时间的记录无法满足当日资格，按未达标处理；来源不可用另行阻断。
-                        if (date != null)
-                            dayVisits.add(
-                                    new SalesVisitEvidence(
-                                            v.sourceId(),
-                                            date,
-                                            v.customerKey(),
-                                            v.reviewStatus(),
-                                            v.verifiedCommunicationMillis(),
-                                            v.durationComplete()));
-                    }
+                    var dayVisits = PayrollProcessAssessment.visits(visits, calendar.window());
                     var policy =
                             new SalesPerformancePolicy(
                                     performanceBase,
@@ -584,7 +598,14 @@ public class ConfiguredPayrollService {
                                     assessment,
                                     p.resultCap(),
                                     p.processPercent(),
-                                    p.checkinCountMode());
+                                    p.checkinCountMode(),
+                                    fractions,
+                                    processOverride == null
+                                            ? null
+                                            : processOverride.missingCheckins(),
+                                    processOverride == null
+                                            ? null
+                                            : processOverride.missingVisits());
                     issues.addAll(calculated.issues());
                     performance =
                             prorate(
@@ -620,7 +641,8 @@ public class ConfiguredPayrollService {
                                                                     d.evidenceComplete()))
                                             .toList(),
                                     collectionEvidence(own, month),
-                                    calculated.issues());
+                                    calculated.issues(),
+                                    processOverride);
                 }
                 case "MANAGER" -> {
                     var policy = definition.manager();
@@ -924,6 +946,32 @@ public class ConfiguredPayrollService {
                             expectedDays,
                             issues,
                             "补贴");
+        if ("SALES".equals(definition.role())
+                && input.baseOverride() == null
+                && input.allowanceOverride() == null
+                && base != null
+                && allowance != null) {
+            var ratio =
+                    SalarySchemeCalculator.proration(
+                            "CONFIRMED_ATTENDANCE",
+                            month,
+                            e.entryDate(),
+                            e.leaveDate(),
+                            workDays,
+                            actualDays,
+                            expectedDays);
+            if (ratio != null) {
+                var combined =
+                        SalarySchemeCalculator.money(
+                                standardBase
+                                        .add(
+                                                definition.allowances().stream()
+                                                        .map(PayrollSchemeAllowance::amount)
+                                                        .reduce(BigDecimal.ZERO, BigDecimal::add))
+                                        .multiply(ratio));
+                allowance = combined.subtract(base);
+            }
+        }
         ConfiguredCommissionResult commission =
                 new ConfiguredCommissionResult(
                         BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of());

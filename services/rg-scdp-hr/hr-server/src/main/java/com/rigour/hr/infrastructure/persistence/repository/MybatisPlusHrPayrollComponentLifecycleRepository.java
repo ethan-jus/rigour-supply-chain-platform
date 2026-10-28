@@ -72,7 +72,17 @@ public class MybatisPlusHrPayrollComponentLifecycleRepository
                                 .orderByAsc("id")
                                 .last("LIMIT 10001"));
         if (rows.size() > 10000) throw error(ErrorCode.BAD_REQUEST, "规则状态记录超过查询上限");
-        for (var row : rows)
+        for (var row : rows) {
+            if ("RETIRE".equals(row.actionCode)) {
+                var snapshot = json.readValue(row.responseJson, PayrollComponentActionResult.class);
+                var change =
+                        snapshot.rule().stateChanges().stream()
+                                .filter(c -> c.revision() == row.stateRevision)
+                                .findFirst()
+                                .orElseThrow();
+                result.computeIfAbsent(row.ruleId, key -> new ArrayList<>()).add(change);
+                continue;
+            }
             result.computeIfAbsent(row.ruleId, key -> new ArrayList<>())
                     .add(
                             new PayrollComponentStateChange(
@@ -82,6 +92,7 @@ public class MybatisPlusHrPayrollComponentLifecycleRepository
                                     row.reason,
                                     row.actorId,
                                     row.createdTime.toInstant(ZoneOffset.UTC)));
+        }
         return result;
     }
 
@@ -197,6 +208,75 @@ public class MybatisPlusHrPayrollComponentLifecycleRepository
         return result;
     }
 
+    @Transactional
+    public void retire(
+            String tenant,
+            PayrollComponentVersionView previous,
+            PayrollComponentVersionView replacement,
+            String actor) {
+        locks.lock(tenant);
+        var request =
+                "retire:"
+                        + UUID.nameUUIDFromBytes(
+                                (replacement.id() + ":" + previous.id())
+                                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (byRequest(tenant, request).isPresent()) return;
+        var changes = new ArrayList<>(states(tenant).getOrDefault(previous.ruleId(), List.of()));
+        int revision =
+                changes.stream().mapToInt(PayrollComponentStateChange::revision).max().orElse(0)
+                        + 1;
+        var departments =
+                previous.definition().departmentIds().stream()
+                        .filter(replacement.definition().departmentIds()::contains)
+                        .toList();
+        var from =
+                replacement
+                                .definition()
+                                .effectiveFrom()
+                                .isAfter(previous.definition().effectiveFrom())
+                        ? replacement.definition().effectiveFrom()
+                        : previous.definition().effectiveFrom();
+        String reason = "由新规则 " + replacement.ruleCode() + " 替代，变更说明见新规则";
+        var operation = operation(tenant, previous, request, "RETIRE", reason, actor);
+        operation.stateRevision = revision;
+        operation.effectiveMonth = YearMonth.from(from).toString();
+        changes.add(
+                new PayrollComponentStateChange(
+                        revision,
+                        operation.effectiveMonth,
+                        false,
+                        reason,
+                        actor,
+                        operation.createdTime.toInstant(ZoneOffset.UTC),
+                        true,
+                        departments));
+        var updated =
+                new PayrollComponentVersionView(
+                        previous.id(),
+                        previous.ruleId(),
+                        previous.version(),
+                        previous.definition(),
+                        previous.reason(),
+                        previous.createdBy(),
+                        previous.createdTime(),
+                        previous.ruleCode(),
+                        previous.revision(),
+                        previous.deleted(),
+                        changes);
+        operation.responseJson = "{}";
+        operations.insert(operation);
+        var counts = markReviews(tenant, updated, operation);
+        var response =
+                new PayrollComponentActionResult(updated, counts[0], counts[1], "RETIRE", reason);
+        operations.update(
+                null,
+                new UpdateWrapper<HrPayrollComponentOperationEntity>()
+                        .eq("tenant_id", tenant)
+                        .eq("id", operation.id)
+                        .set("response_json", json.writeValueAsString(response)));
+        locks.audit(tenant, previous.id(), "RULE_RETIRED", actor, reason, response);
+    }
+
     public void recordModification(
             String tenant,
             PayrollComponentSaveCommand command,
@@ -234,6 +314,14 @@ public class MybatisPlusHrPayrollComponentLifecycleRepository
             PayrollComponentVersionView rule,
             HrPayrollComponentOperationEntity operation) {
         var d = rule.definition();
+        var departments =
+                "RETIRE".equals(operation.actionCode)
+                        ? rule.stateChanges().stream()
+                                .filter(c -> c.revision() == operation.stateRevision)
+                                .findFirst()
+                                .orElseThrow()
+                                .replacedDepartmentIds()
+                        : d.departmentIds();
         String from = operation.effectiveMonth;
         String to = d.effectiveTo().toString().substring(0, 7);
         int attendanceCount = 0;
@@ -245,7 +333,7 @@ public class MybatisPlusHrPayrollComponentLifecycleRepository
                                     .eq("attendance_status", "CONFIRMED")
                                     .ge("attendance_month", from)
                                     .le("attendance_month", to)
-                                    .in("confirmed_department_id", d.departmentIds())
+                                    .in("confirmed_department_id", departments)
                                     .last("LIMIT 10001"));
             if (rows.size() > 10000) throw error(ErrorCode.BAD_REQUEST, "受影响考勤超过处理上限，请分批处理");
             for (var row : rows) {
@@ -267,7 +355,7 @@ public class MybatisPlusHrPayrollComponentLifecycleRepository
                         .ge("payroll_month", from)
                         .le("payroll_month", to);
         if ("SALARY".equals(d.kind())) q.in("employee_code", d.employeeCodes());
-        else q.in("department_id", d.departmentIds());
+        else q.in("department_id", departments);
         var payrollRows = payroll.selectList(q.last("LIMIT 10001"));
         if (payrollRows.size() > 10000) throw error(ErrorCode.BAD_REQUEST, "受影响薪酬超过处理上限，请分批处理");
         int payrollCount = 0;

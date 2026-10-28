@@ -113,7 +113,6 @@ public class HrPayrollComponentService {
                                 .filter(
                                         v ->
                                                 !v.deleted()
-                                                        && v.enabledAt(d.effectiveFrom())
                                                         && v.id().equals(id)
                                                         && "ALLOWANCE"
                                                                 .equals(v.definition().kind()))
@@ -124,6 +123,7 @@ public class HrPayrollComponentService {
                         payroll.departmentAt(
                                 tenant, d.employeeCodes().getFirst(), d.effectiveFrom());
                 if (!plan.definition().role().equals(d.role())
+                        || !plan.enabledForDepartmentAt(department, d.effectiveFrom())
                         || !plan.definition().departmentIds().contains(department)
                         || plan.definition().effectiveFrom().isAfter(d.effectiveFrom())
                         || plan.definition().effectiveTo().isBefore(d.effectiveFrom()))
@@ -137,9 +137,16 @@ public class HrPayrollComponentService {
                                 .filter(r -> r.id().equals(c.previousId()))
                                 .findFirst()
                                 .orElseThrow(() -> bad("原规则不存在"));
+        var today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        boolean stoppedRevision =
+                old != null
+                        && !old.enabledAt(today)
+                        && !old.definition().effectiveFrom().isAfter(today)
+                        && !old.definition().effectiveTo().isBefore(today);
         if (old != null) {
             scope(tenant, old.definition(), permission(d.kind(), true));
             if (old.deleted()) throw bad("规则已删除，请刷新");
+            if (old.retired()) throw bad("规则已废弃，仅可查看和查询操作记录");
             if (c.replacePending()) {
                 if (!old.definition()
                                 .effectiveFrom()
@@ -155,17 +162,37 @@ public class HrPayrollComponentService {
             } else {
                 if (!old.definition().kind().equals(d.kind())
                         || !"SALARY".equals(d.kind()) && !old.definition().role().equals(d.role())
-                        || !new HashSet<>(old.definition().departmentIds())
-                                .equals(new HashSet<>(d.departmentIds()))
+                        || !stoppedRevision
+                                && !new HashSet<>(old.definition().departmentIds())
+                                        .equals(new HashSet<>(d.departmentIds()))
                         || !Objects.equals(old.definition().employeeCodes(), d.employeeCodes()))
                     throw bad("新版本须保留规则类型、身份和适用部门；更换范围请新建规则");
-                if (d.effectiveFrom().isBefore(old.definition().effectiveFrom()))
+                if (!stoppedRevision
+                        && d.effectiveFrom().isBefore(old.definition().effectiveFrom()))
                     throw bad("新版本不能早于原版本生效月份");
-                if (!d.effectiveFrom().isAfter(LocalDate.now(ZoneId.of("Asia/Shanghai"))))
-                    throw bad("已使用规则修订须从未来月份生效");
+                if (stoppedRevision) {
+                    if (c.revision() == null || c.revision() != old.revision())
+                        throw bad("规则已变更，请刷新后重新编辑");
+                } else if (!d.effectiveFrom().isAfter(today)) throw bad("已使用规则修订须从未来月份生效");
             }
         }
         if (c.replacePending() && old == null) throw bad("请选择待修改的规则");
+        var replacements = new ArrayList<PayrollComponentVersionView>();
+        if (old == null) {
+            for (var other : versions) {
+                var p = other.definition();
+                if (!other.deleted()
+                        && d.kind().equals(p.kind())
+                        && !other.enabledAt(today)
+                        && sameScope(d, p)
+                        && !d.effectiveFrom().isAfter(p.effectiveTo())
+                        && !d.effectiveTo().isBefore(p.effectiveFrom())) replacements.add(other);
+            }
+        }
+        var replacementFamilies =
+                replacements.stream()
+                        .map(PayrollComponentVersionView::ruleId)
+                        .collect(java.util.stream.Collectors.toSet());
         if ("ATTENDANCE".equals(d.kind())) {
             if (d.calendar() != null
                     && ("STATUTORY_SNAPSHOT".equals(d.calendar().source())
@@ -181,11 +208,19 @@ public class HrPayrollComponentService {
                                 ? p.effectiveFrom()
                                 : d.effectiveFrom();
                 if (other.deleted()
+                        || replacementFamilies.contains(other.ruleId())
+                        || d.departmentIds().stream()
+                                .noneMatch(
+                                        dept ->
+                                                p.departmentIds().contains(dept)
+                                                        && other.enabledForDepartmentAt(
+                                                                dept, intersection))
                         || !other.enabledAt(intersection)
                         || superseded(other, versions, intersection)
                         || !"ATTENDANCE".equals(p.kind())
                         || old != null && old.ruleId().equals(other.ruleId())) continue;
-                if (!Collections.disjoint(p.departmentIds(), d.departmentIds())
+                if (!stoppedRevision
+                        && !Collections.disjoint(p.departmentIds(), d.departmentIds())
                         && !d.effectiveFrom().isAfter(p.effectiveTo())
                         && !d.effectiveTo().isBefore(p.effectiveFrom()))
                     throw bad("部门已配置工作日历，请从原日历创建新版本");
@@ -200,18 +235,13 @@ public class HrPayrollComponentService {
                             ? p.effectiveFrom()
                             : d.effectiveFrom();
             if (other.deleted()
-                    || !other.enabledAt(intersection)
+                    || replacementFamilies.contains(other.ruleId())
+                    || !enabledInScope(other, d, intersection)
                     || superseded(other, versions, intersection)
                     || !d.kind().equals(p.kind())
                     || old != null && old.ruleId().equals(other.ruleId())) continue;
-            boolean sameScope =
-                    "SALARY".equals(d.kind())
-                            ? Objects.equals(d.employeeCodes(), p.employeeCodes())
-                            : !Collections.disjoint(d.departmentIds(), p.departmentIds())
-                                    && (Objects.equals(d.role(), p.role())
-                                            || "ALL".equals(d.role())
-                                            || "ALL".equals(p.role()));
-            if (sameScope
+            if (!stoppedRevision
+                    && sameScope(d, p)
                     && !d.effectiveFrom().isAfter(p.effectiveTo())
                     && !d.effectiveTo().isBefore(p.effectiveFrom()))
                 throw bad("相同适用范围已存在生效规则，请调整原规则，避免重复计算");
@@ -231,6 +261,11 @@ public class HrPayrollComponentService {
         if ("COMMISSION".equals(d.kind()))
             PayrollProductReferenceValidator.validate(source, tenant, d.commission());
         var saved = store.save(tenant, c, a.principalId().toString());
+        for (var previous : replacements) {
+            // The new rule and retirement events commit together under the tenant lock.
+            scope(tenant, previous.definition(), permission(d.kind(), true));
+            lifecycle.retire(tenant, previous, saved, a.principalId().toString());
+        }
         log.info(
                 "Payroll rule saved tenant={} actor={} requestId={} kind={} ruleId={} versionId={}"
                         + " version={} effectiveFrom={}",
@@ -263,7 +298,7 @@ public class HrPayrollComponentService {
         latest.values()
                 .removeIf(
                         row ->
-                                !row.enabledAt(date)
+                                !row.enabledForDepartmentAt(department, date)
                                         || row.definition().effectiveTo().isBefore(date));
         if (latest.size() > 1) throw bad("部门工作日历存在冲突");
         return latest.values().stream().findFirst();
@@ -296,7 +331,8 @@ public class HrPayrollComponentService {
                     || d.effectiveFrom().isAfter(date)
                     || d.effectiveTo().isBefore(date)
                     || superseded(row, versions, date)) continue;
-            (row.enabledAt(date) ? active : stopped).addAll(d.departmentIds());
+            for (var department : d.departmentIds())
+                (row.enabledForDepartmentAt(department, date) ? active : stopped).add(department);
         }
         stopped.removeAll(active);
         return Set.copyOf(stopped);
@@ -337,6 +373,7 @@ public class HrPayrollComponentService {
             return result;
         }
         if (row.deleted()) throw bad("规则已删除，请刷新");
+        if (row.retired()) throw bad("规则已废弃，仅可查看和查询操作记录");
         var today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
         if ("DELETE".equals(c.action())) {
             if (!row.definition().effectiveFrom().isAfter(today) || lifecycle.inUse(tenant, id))
@@ -393,19 +430,36 @@ public class HrPayrollComponentService {
             if (other.deleted()
                     || row.ruleId().equals(other.ruleId())
                     || !d.kind().equals(p.kind())
-                    || !other.enabledAt(intersection)
+                    || !enabledInScope(other, d, intersection)
                     || superseded(other, versions, intersection)
                     || p.effectiveTo().isBefore(today)
                     || p.effectiveFrom().isAfter(d.effectiveTo())) continue;
-            boolean sameScope =
-                    "SALARY".equals(d.kind())
-                            ? !Collections.disjoint(d.employeeCodes(), p.employeeCodes())
-                            : !Collections.disjoint(d.departmentIds(), p.departmentIds())
-                                    && (d.role().equals(p.role())
-                                            || "ALL".equals(d.role())
-                                            || "ALL".equals(p.role()));
-            if (sameScope) throw bad("相同范围已有其他规则，重新启用会导致重复计算，请先处理冲突规则");
+            if (sameScope(d, p)) throw bad("相同范围已有其他规则，重新启用会导致重复计算，请先处理冲突规则");
         }
+    }
+
+    private static boolean sameScope(
+            PayrollComponentDefinition left, PayrollComponentDefinition right) {
+        if (!left.kind().equals(right.kind())) return false;
+        return "SALARY".equals(left.kind())
+                ? !Collections.disjoint(left.employeeCodes(), right.employeeCodes())
+                : !Collections.disjoint(left.departmentIds(), right.departmentIds())
+                        && (left.role().equals(right.role())
+                                || "ALL".equals(left.role())
+                                || "ALL".equals(right.role()));
+    }
+
+    private static boolean enabledInScope(
+            PayrollComponentVersionView row, PayrollComponentDefinition scope, LocalDate date) {
+        if (!sameScope(scope, row.definition())) return false;
+        return "SALARY".equals(scope.kind())
+                ? scope.employeeCodes().stream()
+                        .anyMatch(employee -> row.enabledForEmployeeAt(employee, date))
+                : scope.departmentIds().stream()
+                        .anyMatch(
+                                dept ->
+                                        row.definition().departmentIds().contains(dept)
+                                                && row.enabledForDepartmentAt(dept, date));
     }
 
     private static boolean superseded(

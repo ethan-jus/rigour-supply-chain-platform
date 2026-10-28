@@ -3,6 +3,7 @@ package com.rigour.hr.api.v1;
 import com.rigour.hr.api.v1.model.AttendanceDepartmentOption;
 import com.rigour.hr.api.v1.model.AttendanceRecordCommand;
 import com.rigour.hr.api.v1.model.AttendanceReopenCommand;
+import com.rigour.hr.api.v1.model.AttendanceRow;
 import com.rigour.hr.api.v1.model.AttendanceRuleCommand;
 import com.rigour.hr.api.v1.model.AttendanceRuleListView;
 import com.rigour.hr.api.v1.model.AttendanceRuleView;
@@ -31,6 +32,10 @@ public interface HrAttendanceApi {
     @PutMapping(ROOT + "/rule")
     ApiResponse<AttendanceRuleView> saveRule(@RequestBody AttendanceRuleCommand command);
 
+    @PutMapping(ROOT + "/rules")
+    ApiResponse<List<AttendanceRuleView>> saveRules(
+            @RequestBody List<AttendanceRuleCommand> commands);
+
     @GetMapping(ROOT + "/departments")
     ApiResponse<List<AttendanceDepartmentOption>> departments(
             @RequestParam(defaultValue = "false") boolean forRules);
@@ -44,6 +49,12 @@ public interface HrAttendanceApi {
             @RequestParam(defaultValue = "") String attendanceStatus,
             @RequestParam(defaultValue = "0") int begin,
             @RequestParam(defaultValue = "20") int step);
+
+    @PostMapping(ROOT + "/{month}/{employeeCode}/preview")
+    ApiResponse<AttendanceRow> previewRecord(
+            @PathVariable("month") String month,
+            @PathVariable("employeeCode") String employeeCode,
+            @RequestBody AttendanceRecordCommand command);
 
     @PostMapping(ROOT + "/{month}/{employeeCode}/confirm")
     ApiResponse<Void> confirmRecord(

@@ -311,8 +311,11 @@ class HrAttendanceServiceTest {
                                 com.rigour.shared.core.api.ErrorCode.SERVICE_UNAVAILABLE,
                                 "年度日历未就绪",
                                 List.of()));
-        when(attendance.apply(anyString(), any(), any(), anyList(), anyMap()))
-                .thenAnswer(i -> i.getArgument(4));
+        when(attendance.applyDetailed(anyString(), any(), any(), any(), anyList(), anyMap()))
+                .thenAnswer(
+                        i ->
+                                new PayrollAttendanceEvidenceService.Batch(
+                                        i.getArgument(5), Map.of()));
         service =
                 new HrAttendanceService(
                         store,
@@ -382,6 +385,101 @@ class HrAttendanceServiceTest {
                 .isInstanceOf(AuthorizationDeniedException.class);
         verify(store, never()).rule(anyString(), anyString(), any());
         verify(store, never()).saveRule(anyString(), any(), anyString());
+    }
+
+    @Test
+    void ruleEditorUsesTheSameCalendarCalculationWithoutReplacingSavedMonthlyValues() {
+        var attendance = mock(PayrollAttendanceEvidenceService.class);
+        service = new HrAttendanceService(store, source, Clock.systemUTC(), attendance);
+        when(store.departments(tenant.toString()))
+                .thenReturn(List.of(new AttendanceDepartmentOption(2L, 1L, "销售一部", 0)));
+        when(store.rule(tenant.toString(), "2026-10", 2L))
+                .thenReturn(new AttendanceRuleView("2026-10", 2L, 24, 3, 26, false));
+        when(attendance.expectedDays(tenant.toString(), 2L, YearMonth.of(2026, 10)))
+                .thenReturn(Optional.of(18), Optional.of(0), Optional.empty());
+        var computed = service.rule("2026-10", 2L);
+        assertThat(computed.expectedDays()).isEqualTo(24);
+        assertThat(computed.calendarExpectedDays()).isEqualTo(18);
+        assertThat(computed.calendarMessage()).contains("生效的薪资考勤规则");
+        assertThat(service.rule("2026-10", 2L).calendarExpectedDays()).isZero();
+        var missing = service.rule("2026-10", 2L);
+        assertThat(missing.calendarExpectedDays()).isNull();
+        assertThat(missing.calendarMessage()).contains("未匹配");
+        assertThat(missing.companyExpectedDays()).isEqualTo(26);
+        verify(store, never()).saveRule(anyString(), any(), anyString());
+    }
+
+    @Test
+    void stoppedOrUnavailableCalendarsNeverInventSuggestedDays() {
+        var attendance = mock(PayrollAttendanceEvidenceService.class);
+        service = new HrAttendanceService(store, source, Clock.systemUTC(), attendance);
+        when(store.departments(tenant.toString()))
+                .thenReturn(List.of(new AttendanceDepartmentOption(2L, 1L, "销售一部", 0)));
+        when(store.rule(tenant.toString(), "2026-10", 2L))
+                .thenReturn(new AttendanceRuleView("2026-10", 2L, null, 0, 26, false));
+        when(attendance.stopped(tenant.toString(), 2L, YearMonth.of(2026, 10))).thenReturn(true);
+        var stopped = service.rule("2026-10", 2L);
+        assertThat(stopped.calendarExpectedDays()).isNull();
+        assertThat(stopped.calendarMessage()).contains("已停用");
+        verify(attendance, never()).expectedDays(anyString(), any(), any());
+        when(attendance.stopped(tenant.toString(), 2L, YearMonth.of(2026, 10))).thenReturn(false);
+        when(attendance.expectedDays(tenant.toString(), 2L, YearMonth.of(2026, 10)))
+                .thenThrow(
+                        new com.rigour.shared.core.exception.BusinessException(
+                                com.rigour.shared.core.api.ErrorCode.SERVICE_UNAVAILABLE,
+                                "年度日历未就绪",
+                                List.of()));
+        var unavailable = service.rule("2026-10", 2L);
+        assertThat(unavailable.calendarExpectedDays()).isNull();
+        assertThat(unavailable.calendarMessage()).isEqualTo("年度日历未就绪");
+    }
+
+    @Test
+    void batchRulesValidateEveryDepartmentPermissionAndValueBeforeAnyWrite() {
+        when(store.departments(tenant.toString()))
+                .thenReturn(
+                        List.of(
+                                new AttendanceDepartmentOption(2L, 1L, "北京", 0),
+                                new AttendanceDepartmentOption(3L, 1L, "杭州", 1)));
+        var first = new AttendanceRuleCommand("2026-10", 2L, 22, 0);
+        var second = new AttendanceRuleCommand("2026-10", 3L, 21, 0);
+        var commands = List.of(first, second);
+        service.saveRules(commands);
+        verify(store).saveRules(tenant.toString(), commands, user.toString());
+        clearInvocations(store);
+        assertThatThrownBy(() -> service.saveRules(List.of(first, first)))
+                .hasMessageContaining("重复");
+        assertThatThrownBy(
+                        () ->
+                                service.saveRules(
+                                        List.of(
+                                                first,
+                                                new AttendanceRuleCommand("2026-10", 3L, 32, 0))))
+                .hasMessageContaining("当月天数");
+        assertThatThrownBy(
+                        () ->
+                                service.saveRules(
+                                        List.of(
+                                                first,
+                                                new AttendanceRuleCommand("2026-11", 3L, 22, 0))))
+                .hasMessageContaining("同一考勤月份");
+        assertThatThrownBy(
+                        () ->
+                                service.saveRules(
+                                        List.of(
+                                                first,
+                                                new AttendanceRuleCommand("2026-10", null, 22, 0))))
+                .hasMessageContaining("单独设置");
+        assertThatThrownBy(() -> service.saveRules(List.of())).hasMessageContaining("选择");
+        doThrow(new AuthorizationDeniedException("无部门权限"))
+                .when(store)
+                .requireRuleScope(tenant.toString(), 3L, HrAttendanceService.RULE_WRITE);
+        assertThatThrownBy(() -> service.saveRules(commands))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        verify(store, never()).saveRules(anyString(), anyList(), anyString());
+        identity(Set.of(HrAttendanceService.RULE_READ));
+        assertThatThrownBy(() -> service.saveRules(commands))
+                .isInstanceOf(AuthorizationDeniedException.class);
     }
 
     void employeeWith(AttendanceRecordCommand record) {
@@ -462,14 +560,27 @@ class HrAttendanceServiceTest {
                         "员工",
                         2L,
                         "销售部",
-                        null,
-                        null,
+                        LocalDate.of(2026, 9, 2),
+                        LocalDate.of(2026, 9, 29),
                         new AttendanceRecordCommand(null, null, "NONE", "", 2),
                         null);
         when(store.employee(tenant.toString(), YearMonth.of(2026, 9), "E1")).thenReturn(employee);
         when(source.evidence(anyString(), any()))
                 .thenReturn(
-                        List.of(new Evidence("E1", true, List.of(LocalDate.parse("2026-09-01")))));
+                        List.of(
+                                new Evidence(
+                                        "E1",
+                                        true,
+                                        List.of(
+                                                LocalDate.of(2026, 9, 1),
+                                                LocalDate.of(2026, 9, 2),
+                                                LocalDate.of(2026, 9, 30)))));
+        when(store.employees(anyString(), any(), any(), anyInt(), anyInt()))
+                .thenReturn(new HrPageView<>(1, 0, 20, List.of(employee)));
+        var pending = service.list("2026-09", "", "", null, "", 0, 20).page().items().getFirst();
+        assertThat(pending.entryDate()).isEqualTo(employee.entry());
+        assertThat(pending.leaveDate()).isEqualTo(employee.leave());
+        assertThat(pending.dates()).containsExactly(LocalDate.of(2026, 9, 2));
         service.confirmRecord("2026-09", "E1", command);
         var saved = org.mockito.ArgumentCaptor.forClass(AttendanceRow.class);
         verify(store)
@@ -490,6 +601,9 @@ class HrAttendanceServiceTest {
         var snapshot = saved.getValue();
         assertThat(snapshot.attendanceStatus()).isEqualTo("CONFIRMED");
         assertThat(snapshot.revision()).isEqualTo(3);
+        assertThat(snapshot.entryDate()).isEqualTo(employee.entry());
+        assertThat(snapshot.leaveDate()).isEqualTo(employee.leave());
+        assertThat(snapshot.dates()).containsExactly(LocalDate.of(2026, 9, 2));
         assertThat(snapshot.expectedDays()).isEqualTo(26);
         assertThat(snapshot.actualDays()).isEqualByComparingTo("20.5");
         assertThat(snapshot.absentDays()).isEqualByComparingTo("0.5");
@@ -628,7 +742,7 @@ class HrAttendanceServiceTest {
                                         "E1",
                                         new AttendanceRecordCommand(null, null, "NONE", "", 0)))
                 .hasMessageContaining("字典暂不可用");
-        identity(Set.of(HrAttendanceService.READ));
+        identity(Set.of());
         assertThatThrownBy(
                         () ->
                                 service.confirmRecord(
@@ -776,7 +890,7 @@ class HrAttendanceServiceTest {
                                                         type,
                                                         reason,
                                                         0)))
-                        .hasMessageContaining("请填写缺卡原因");
+                        .hasMessageContaining("考勤核定说明");
             }
         }
         verify(store, never())
@@ -906,5 +1020,145 @@ class HrAttendanceServiceTest {
         verify(store, never())
                 .confirmRecord(
                         anyString(), anyString(), anyString(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void attendanceMenuPermissionCanDetermineCountsAndPreservesZeroAndEvidence() {
+        identity(Set.of(HrAttendanceService.READ));
+        stubPendingEmployee();
+        var adjustment =
+                new com.rigour.hr.api.v1.model.AttendanceAssessmentOverride(0, 2, "已核对补卡与拜访");
+        service.confirmRecord(
+                "2026-09",
+                "E1",
+                new AttendanceRecordCommand(
+                        new BigDecimal("26"),
+                        BigDecimal.ZERO,
+                        "NONE",
+                        "",
+                        0,
+                        List.of(),
+                        adjustment));
+        var saved = org.mockito.ArgumentCaptor.forClass(AttendanceRecordCommand.class);
+        var snapshot = org.mockito.ArgumentCaptor.forClass(AttendanceRow.class);
+        verify(store)
+                .confirmRecord(
+                        eq(tenant.toString()),
+                        eq("2026-09"),
+                        eq("E1"),
+                        saved.capture(),
+                        snapshot.capture(),
+                        eq(2L),
+                        eq(user.toString()));
+        assertThat(saved.getValue().assessmentOverride()).isEqualTo(adjustment);
+        assertThat(snapshot.getValue().assessmentOverride()).isEqualTo(adjustment);
+    }
+
+    @Test
+    void manualCountsRequireAnExplanationAndValidCountsButLeaveExplanationIsNotDuplicated() {
+        stubPendingEmployee();
+        for (var adjustment :
+                List.of(
+                        new com.rigour.hr.api.v1.model.AttendanceAssessmentOverride(-1, 0, "核对"),
+                        new com.rigour.hr.api.v1.model.AttendanceAssessmentOverride(
+                                null, null, "核对"),
+                        new com.rigour.hr.api.v1.model.AttendanceAssessmentOverride(0, 0, " "))) {
+            assertThatThrownBy(
+                            () ->
+                                    service.confirmRecord(
+                                            "2026-09",
+                                            "E1",
+                                            new AttendanceRecordCommand(
+                                                    new BigDecimal("26"),
+                                                    BigDecimal.ZERO,
+                                                    "NONE",
+                                                    "",
+                                                    0,
+                                                    List.of(),
+                                                    adjustment)))
+                    .isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+        }
+        service.confirmRecord(
+                "2026-09",
+                "E1",
+                new AttendanceRecordCommand(
+                        new BigDecimal("26"),
+                        BigDecimal.ZERO,
+                        "PERSONAL",
+                        "",
+                        0,
+                        List.of(
+                                new AttendanceExceptionPeriod(
+                                        LocalDateTime.of(2026, 9, 3, 0, 0),
+                                        LocalDateTime.of(2026, 9, 4, 0, 0),
+                                        "UNPAID_LEAVE",
+                                        "已填写请假依据"))));
+        verify(store)
+                .confirmRecord(
+                        anyString(), anyString(), anyString(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void attendanceMenuCanReopenAnyConfirmedRecordWithoutARuleReviewTask() {
+        identity(Set.of(HrAttendanceService.READ));
+        var snapshot =
+                new AttendanceRow(
+                        "E1",
+                        "员工",
+                        "销售部",
+                        26,
+                        "COMPANY",
+                        new BigDecimal("24"),
+                        new BigDecimal("2"),
+                        24,
+                        new BigDecimal("24"),
+                        new BigDecimal("2"),
+                        "PERSONAL",
+                        "CONFIRMED",
+                        "AVAILABLE",
+                        List.of(),
+                        "已核定",
+                        3);
+        when(store.employee(tenant.toString(), YearMonth.of(2026, 9), "E1"))
+                .thenReturn(
+                        new HrAttendanceStore.Employee(
+                                "E1",
+                                "员工",
+                                2L,
+                                "销售部",
+                                null,
+                                null,
+                                new AttendanceRecordCommand(null, null, "PERSONAL", "已核定", 3),
+                                snapshot));
+        var command = new com.rigour.hr.api.v1.model.AttendanceReopenCommand(3, "出勤资料需要修正");
+        service.reopenRecord("2026-09", "E1", command);
+        verify(store).reopenRecord(tenant.toString(), "2026-09", "E1", command, user.toString());
+        verifyNoInteractions(source);
+        identity(Set.of());
+        assertThatThrownBy(() -> service.reopenRecord("2026-09", "E1", command))
+                .isInstanceOf(AuthorizationDeniedException.class);
+    }
+
+    @Test
+    void reopeningRequiresAConfirmedRecordAndANonblankReason() {
+        stubPendingEmployee();
+        assertThatThrownBy(
+                        () ->
+                                service.reopenRecord(
+                                        "2026-09",
+                                        "E1",
+                                        new com.rigour.hr.api.v1.model.AttendanceReopenCommand(
+                                                0, " ")))
+                .hasMessageContaining("撤销确认原因");
+        assertThatThrownBy(
+                        () ->
+                                service.reopenRecord(
+                                        "2026-09",
+                                        "E1",
+                                        new com.rigour.hr.api.v1.model.AttendanceReopenCommand(
+                                                0, "核对资料")))
+                .hasMessageContaining("尚未确认");
+        verify(store, never())
+                .reopenRecord(anyString(), anyString(), anyString(), any(), anyString());
     }
 }

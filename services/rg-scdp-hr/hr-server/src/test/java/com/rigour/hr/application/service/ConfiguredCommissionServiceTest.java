@@ -117,6 +117,25 @@ class ConfiguredCommissionServiceTest {
     }
 
     @Test
+    void quantityCommissionCarriesProductReceiptsSeparatelyFromItsQuantityBase() {
+        var result = calculate(List.of(line("receipts", 3, "C", true)), List.of());
+        assertThat(result.details()).isNotEmpty();
+        var fact = line("receipts", 3, "C", true);
+        for (var detail : result.details()) {
+            assertThat(detail.trace().method()).isEqualTo("QUANTITY");
+            assertThat(detail.trace().baseAmount()).isEqualByComparingTo("2");
+            assertThat(detail.trace().collectionAmount())
+                    .isEqualByComparingTo(
+                            fact.orderAmount()
+                                    .multiply(fact.lineAmount())
+                                    .divide(
+                                            fact.orderLineTotal(),
+                                            12,
+                                            java.math.RoundingMode.HALF_UP));
+        }
+    }
+
+    @Test
     void excludedCategoryAndDescendantsAreConfiguredZeroForBothRecipients() throws Exception {
         var json = tools.jackson.databind.json.JsonMapper.builder().build();
         var definition =

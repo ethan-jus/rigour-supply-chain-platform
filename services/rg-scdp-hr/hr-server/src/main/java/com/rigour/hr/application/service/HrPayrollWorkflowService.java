@@ -50,6 +50,13 @@ public class HrPayrollWorkflowService {
     }
 
     private HrPayrollComponentService components;
+    private PayrollAttendanceGate attendanceGate;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setAttendanceGate(PayrollAttendanceGate gate) {
+        this.attendanceGate = gate;
+    }
+
     private PayrollRuleResolver ruleResolver;
     private com.rigour.hr.application.port.out.HrPayrollComponentLifecycleStore ruleReviews;
 
@@ -255,7 +262,16 @@ public class HrPayrollWorkflowService {
         String tenant = a.tenantId().toString();
         store.lock(tenant);
         var current = store.detail(tenant, id, "hr:payroll:paid");
-        if ("CONFIRMED".equals(current.statusCode())
+        boolean retry =
+                current.payments() != null
+                        && current.payments().stream()
+                                .anyMatch(payment -> c.requestId().equals(payment.requestId()));
+        if ("CONFIRMED".equals(current.statusCode()) && !retry) {
+            if (attendanceGate == null) throw new IllegalStateException("考勤发薪校验未初始化");
+            attendanceGate.require(tenant, current, "hr:payroll:paid");
+        }
+        if (!retry
+                && "CONFIRMED".equals(current.statusCode())
                 && ruleReviews != null
                 && ruleReviews.reviews(tenant, "PAYROLL", current.month()).stream()
                         .anyMatch(review -> review.subjectId().equals(id)))

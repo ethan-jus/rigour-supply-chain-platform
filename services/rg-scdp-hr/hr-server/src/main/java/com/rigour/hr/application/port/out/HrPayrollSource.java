@@ -35,6 +35,9 @@ public interface HrPayrollSource {
     List<ErpPayrollProductView> products(
             String tenant, String keyword, Long variant, Long categoryId);
 
+    List<ErpPayrollProductView> products(
+            String tenant, String keyword, Long variant, Long categoryId, int begin);
+
     List<ErpPayrollCategoryView> productCategories(String tenant);
 
     List<ErpPayrollProductView> productsByVariants(String tenant, List<Long> ids);

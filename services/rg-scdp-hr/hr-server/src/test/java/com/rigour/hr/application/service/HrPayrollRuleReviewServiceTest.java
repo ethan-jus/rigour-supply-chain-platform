@@ -73,7 +73,10 @@ class HrPayrollRuleReviewServiceTest {
         verify(attendance, never()).employee(anyString(), any(), anyString());
         when(lifecycle.review(tenant.toString(), "review"))
                 .thenReturn(Optional.of(review("ATTENDANCE")));
-        assertThatThrownBy(() -> service.resolve("review", new PayrollRuleReviewCommand("核对完成")))
+        service.resolve("review", new PayrollRuleReviewCommand("核对完成"));
+        verify(lifecycle).resolve(tenant.toString(), "review", "核对完成", user.toString());
+        permissions();
+        assertThatThrownBy(() -> service.resolve("review", new PayrollRuleReviewCommand("无菜单权限")))
                 .isInstanceOf(AuthorizationDeniedException.class);
     }
 
@@ -88,12 +91,12 @@ class HrPayrollRuleReviewServiceTest {
     }
 
     @Test
-    void completingReviewRequiresTheSubjectWritePermissionAndAnExplanation() {
-        permissions("hr:attendance:write");
+    void attendanceMenuPermissionCanCompleteReviewWithAnExplanation() {
+        permissions("hr:attendance:read");
         when(lifecycle.review(tenant.toString(), "review"))
                 .thenReturn(Optional.of(review("ATTENDANCE")));
         when(attendance.employee(
-                        tenant.toString(), YearMonth.of(2026, 10), "E1", "hr:attendance:write"))
+                        tenant.toString(), YearMonth.of(2026, 10), "E1", "hr:attendance:read"))
                 .thenReturn(
                         new HrAttendanceStore.Employee(
                                 "E1", "员工一", 1L, "销售部", null, null, null, null));

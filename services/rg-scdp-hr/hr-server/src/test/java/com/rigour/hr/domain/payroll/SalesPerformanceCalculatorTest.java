@@ -251,4 +251,106 @@ class SalesPerformanceCalculatorTest {
         assertThat(result.issues()).isEmpty();
         assertThat(result.total()).isEqualByComparingTo("1000");
     }
+
+    @Test
+    void confirmedManualCountsOverrideOnlyTheirOwnTotalsAndKeepOriginalDailyEvidence() {
+        var month = YearMonth.of(2026, 9);
+        var date = month.atDay(1);
+        var result =
+                SalesPerformanceCalculator.calculate(
+                        policy(),
+                        month,
+                        LocalDate.of(2026, 1, 1),
+                        null,
+                        true,
+                        List.of(),
+                        n("7000"),
+                        java.util.Set.of(date),
+                        BigDecimal.ONE,
+                        n("40"),
+                        "UNIQUE_CUSTOMER",
+                        java.util.Map.of(),
+                        0,
+                        1);
+        assertThat(result.processDeduction()).isEqualByComparingTo("30");
+        assertThat(result.processPay()).isEqualByComparingTo("370");
+        assertThat(result.days().getFirst().missingCheckins()).isEqualTo(7);
+        assertThat(result.days().getFirst().missingVisits()).isEqualTo(3);
+        var partial =
+                SalesPerformanceCalculator.calculate(
+                        policy(),
+                        month,
+                        LocalDate.of(2026, 1, 1),
+                        null,
+                        true,
+                        List.of(),
+                        n("7000"),
+                        java.util.Set.of(date),
+                        BigDecimal.ONE,
+                        n("40"),
+                        "UNIQUE_CUSTOMER",
+                        java.util.Map.of(),
+                        0,
+                        null);
+        assertThat(partial.processDeduction()).isEqualByComparingTo("90");
+    }
+
+    @Test
+    void
+            completeManualCountsCanResolveMissingSourceButPartialCountsRemainPendingAndDeductionIsCapped() {
+        var month = YearMonth.of(2026, 9);
+        var resolved =
+                SalesPerformanceCalculator.calculate(
+                        policy(),
+                        month,
+                        LocalDate.of(2026, 1, 1),
+                        null,
+                        false,
+                        List.of(),
+                        n("7000"),
+                        java.util.Set.of(month.atDay(1)),
+                        BigDecimal.ONE,
+                        n("40"),
+                        "UNIQUE_CUSTOMER",
+                        java.util.Map.of(),
+                        0,
+                        0);
+        assertThat(resolved.issues()).isEmpty();
+        assertThat(resolved.total()).isEqualByComparingTo("1000");
+        var pending =
+                SalesPerformanceCalculator.calculate(
+                        policy(),
+                        month,
+                        LocalDate.of(2026, 1, 1),
+                        null,
+                        false,
+                        List.of(),
+                        n("7000"),
+                        java.util.Set.of(month.atDay(1)),
+                        BigDecimal.ONE,
+                        n("40"),
+                        "UNIQUE_CUSTOMER",
+                        java.util.Map.of(),
+                        0,
+                        null);
+        assertThat(pending.total()).isNull();
+        var capped =
+                SalesPerformanceCalculator.calculate(
+                        policy(),
+                        month,
+                        LocalDate.of(2026, 1, 1),
+                        null,
+                        false,
+                        List.of(),
+                        n("7000"),
+                        java.util.Set.of(month.atDay(1)),
+                        BigDecimal.ONE,
+                        n("40"),
+                        "UNIQUE_CUSTOMER",
+                        java.util.Map.of(),
+                        100,
+                        100);
+        assertThat(capped.processDeduction()).isEqualByComparingTo("400");
+        assertThat(capped.processPay()).isEqualByComparingTo("0");
+    }
 }

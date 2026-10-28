@@ -61,6 +61,12 @@ public class MybatisPlusErpPayrollProductRepository implements ErpPayrollProduct
     @Override
     public List<ErpPayrollProductView> products(
             String tenant, String keyword, Long variant, Long categoryId) {
+        return products(tenant, keyword, variant, categoryId, 0);
+    }
+
+    @Override
+    public List<ErpPayrollProductView> products(
+            String tenant, String keyword, Long variant, Long categoryId, int begin) {
         var q =
                 new QueryWrapper<InternalProductVariantEntity>()
                         .eq("p.tenant_id", tenant)
@@ -90,6 +96,8 @@ public class MybatisPlusErpPayrollProductRepository implements ErpPayrollProduct
                                     .like("v.variant_code", keyword)
                                     .or()
                                     .like("v.specification_snapshot", keyword));
-        return mapper.products(q.orderByAsc("p.id", "v.id").last("LIMIT 100"));
+        return mapper.products(
+                q.orderByAsc("p.id", "v.id")
+                        .last(begin == 0 ? "LIMIT 100" : "LIMIT 100 OFFSET " + begin));
     }
 }

@@ -242,17 +242,27 @@ public final class SalarySchemeCalculator {
                                                             b.lowerInclusive(),
                                                             b.upperInclusive()))
                                     .toList();
-                    if (matched.size() != 1
-                            || matched.getFirst().coefficient() == null
-                            || matched.getFirst().coefficient().signum() < 0) {
-                        issues.add(metric.name() + "：完成率未匹配唯一的有效计分区间，请核对单项阶梯规则");
+                    if (matched.isEmpty()
+                            || matched.stream()
+                                    .anyMatch(
+                                            b ->
+                                                    b.coefficient() == null
+                                                            || b.coefficient().signum() < 0)) {
+                        issues.add(metric.name() + "：完成率未匹配有效计分区间或区间系数无效，请核对单项阶梯规则");
                         continue;
                     }
-                    var band = matched.getFirst();
+                    // Overlapping single-metric ranges use the highest calculated score,
+                    // so a larger multiplier alone does not necessarily win over a fixed score.
                     score =
-                            "LINEAR".equals(band.mode())
-                                    ? completion.multiply(band.coefficient())
-                                    : band.coefficient();
+                            matched.stream()
+                                    .map(
+                                            band ->
+                                                    "LINEAR".equals(band.mode())
+                                                            ? completion.multiply(
+                                                                    band.coefficient())
+                                                            : band.coefficient())
+                                    .max(BigDecimal::compareTo)
+                                    .orElseThrow();
                 }
                 BigDecimal contribution = score.multiply(metric.weight()).divide(HUNDRED);
                 scoredTotal = scoredTotal.add(contribution);
