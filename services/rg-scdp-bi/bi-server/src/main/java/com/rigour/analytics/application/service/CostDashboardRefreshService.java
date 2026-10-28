@@ -4,6 +4,7 @@ import com.rigour.analytics.application.port.out.*;
 
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -75,9 +76,9 @@ public class CostDashboardRefreshService {
 
     public void refreshTenant(String tenant) {
         if (!enabled) throw new IllegalStateException("成本看板尚未开放");
-        store.register(tenant);
-        for (int attempt = 1; attempt <= 2; attempt++)
+        for (int attempt = 1; attempt <= 3; attempt++)
             try {
+                store.register(tenant);
                 refresh.refresh(tenant);
                 log.info("cost_snapshot_committed tenant={}", tenant);
                 return;
@@ -88,8 +89,17 @@ public class CostDashboardRefreshService {
                         attempt,
                         e.getClass().getSimpleName(),
                         "SOURCE_VERSION_CHANGED".equals(e.getMessage()));
-                if (attempt == 1 && "SOURCE_VERSION_CHANGED".equals(e.getMessage())) continue;
-                refresh.failed(tenant);
+                // 每次调用进入新的投影事务，不能在已回滚的事务中重试 SQL。
+                if (attempt < 3 && e instanceof ConcurrencyFailureException
+                        || attempt == 1 && "SOURCE_VERSION_CHANGED".equals(e.getMessage())) continue;
+                try {
+                    refresh.failed(tenant);
+                } catch (RuntimeException markingFailure) {
+                    // 记录失败本身也可能遇到锁冲突，不能掩盖原始错误或阻断旧完整批次兜底。
+                    e.addSuppressed(markingFailure);
+                    log.warn("cost_snapshot_failure_state_failed tenant={} errorType={}",
+                            tenant, markingFailure.getClass().getSimpleName());
+                }
                 throw new CostDashboardFailure("COST_SOURCE_UNAVAILABLE", 503, "费用来源暂不可用，请稍后刷新", e);
             }
     }

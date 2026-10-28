@@ -171,6 +171,8 @@ class CostSnapshotPersistenceTest {
     void textUuidPagesAndTenantIsolationAndUnchangedVersionReuse() {
         projector.refresh(tenant.toString());
         var state = store.state(tenant.toString());
+        store.register(tenant.toString());
+        assertThat(store.state(tenant.toString())).isEqualTo(state);
         var snapshot = store.snapshot(tenant.toString(), state.snapshotId());
         assertThat(snapshot.records()).hasSize(1001);
         assertThat(snapshot.records().stream().map(r -> r.sourceId()).distinct()).hasSize(1001);

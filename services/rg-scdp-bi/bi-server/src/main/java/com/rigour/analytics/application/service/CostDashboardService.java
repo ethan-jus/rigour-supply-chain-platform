@@ -106,11 +106,13 @@ public class CostDashboardService {
         Set<String> currentVisible =
                 latest.records().stream()
                         .filter(a::visible)
+                        .filter(r -> "CONFIRMED".equals(r.status()))
                         .map(CostFact::key)
                         .collect(java.util.stream.Collectors.toSet());
         List<CostFact> rows =
                 snapshot.records().stream()
                         .filter(a::visible)
+                        .filter(r -> "CONFIRMED".equals(r.status()))
                         .filter(r -> currentVisible.contains(r.key()))
                         .toList();
         if (f.category() != null && !a.categories().contains(f.category()))
@@ -119,7 +121,10 @@ public class CostDashboardService {
                 && !cityChoices(snapshot, a, rows).stream().anyMatch(c -> f.city().equals(c.key())))
             throw new AuthorizationDeniedException("cost-city-scope");
         boolean comparison =
-                rows.stream().anyMatch(r -> f.matches(r) && r.inPeriod(p, true) && r.confirmed());
+                // 历史覆盖按同一授权费用范围判断；新发生费用的城市、分类或对象上期金额为零，
+                // 不能因继续下钻而把总览中已可比较的增减金额变成“无可比数据”。
+                rows.stream()
+                        .anyMatch(r -> f.scope().equals(r.scope()) && r.inPeriod(p, true) && r.confirmed());
         var excluded =
                 CATEGORIES.keySet().stream()
                         .filter(k -> !a.sources().containsKey(k))
@@ -345,19 +350,23 @@ public class CostDashboardService {
     }
 
     public List<CostFact> matching(Context c) {
+        // 明细、导出与汇总采用同一纳入口径，关联报销不得再次作为费用金额行展示。
         return sorted(
                 period(
                         c.rows(),
                         c.filter(),
                         c.period(),
                         "previous".equals(c.filter().side()),
-                        true));
+                        true).stream()
+                        .filter(CostFact::confirmed)
+                        .toList());
     }
 
     public CostDashboardDetail detail(CostDashboardQuery q, String source, String id) {
         var c = context(q);
         var fact =
                 c.rows().stream()
+                        .filter(CostFact::confirmed)
                         .filter(
                                 r ->
                                         r.source().equals(source)

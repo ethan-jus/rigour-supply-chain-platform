@@ -219,15 +219,13 @@ class CostDashboardCapacityAcceptanceTest {
             String allocated = row.dimensions().containsKey("costMonth")
                     ? row.dimensions().get("costMonth").key() : row.date().toString().substring(0, 7);
             if (!allocated.equals(wantedMonth)) continue;
-            rows++;
             long value = row.amount() == null ? 0 : row.amount().movePointRight(2).longValueExact();
             String treatment = row.dimensions().containsKey("costTreatment")
                     ? row.dimensions().get("costTreatment").key() : "DIRECT";
-            if (row.amount() == null && !"VOID".equals(row.status())) missing++;
-            if ("DRAFT".equals(row.status())) draft += value;
             if (!"CONFIRMED".equals(row.status())) continue;
             if ("LINKED".equals(treatment)) linked += value;
             if (row.amount() == null || !"DIRECT".equals(treatment)) continue;
+            rows++;
             cents += value;
             count++;
             categoryCents.merge(row.category(), value, Long::sum);

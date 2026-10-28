@@ -1,6 +1,7 @@
 package com.rigour.analytics.application.service;
 
 import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.*;
 
 import com.rigour.analytics.application.port.out.BiScheduleCoordinator;
 import com.rigour.analytics.application.port.out.CostDashboardRefresh;
@@ -8,6 +9,7 @@ import com.rigour.analytics.application.port.out.CostDashboardStore;
 import com.rigour.analytics.application.port.out.SupplyDashboardStore;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.CannotAcquireLockException;
 
 import java.util.List;
 import java.util.UUID;
@@ -74,5 +76,37 @@ class CostDashboardRefreshServiceTest {
         service.scheduled();
         service.refreshConfiguredTenant(tenant);
         verifyNoInteractions(store, refresh, supply, schedules);
+    }
+
+    @Test
+    void lockConflictsRetryTheWholeProjectionAndDoNotMarkRecoveredRefreshFailed() {
+        doThrow(new CannotAcquireLockException("deadlock"))
+                .doThrow(new CannotAcquireLockException("deadlock"))
+                .doNothing().when(refresh).refresh(tenant);
+        service(true, false).refreshTenant(tenant);
+        verify(refresh, times(3)).refresh(tenant);
+        verify(refresh, never()).failed(tenant);
+    }
+
+    @Test
+    void registrationLockConflictIsAlsoRetried() {
+        doThrow(new CannotAcquireLockException("deadlock")).doNothing().when(store).register(tenant);
+        service(true, false).refreshTenant(tenant);
+        verify(store, times(2)).register(tenant);
+        verify(refresh).refresh(tenant);
+    }
+
+    @Test
+    void exhaustedLockRetriesAndFailureMarkerStillReturnAControlledFailure() {
+        var lockFailure = new CannotAcquireLockException("deadlock");
+        var markingFailure = new CannotAcquireLockException("marking deadlock");
+        doThrow(lockFailure).when(refresh).refresh(tenant);
+        doThrow(markingFailure).when(refresh).failed(tenant);
+        assertThatThrownBy(() -> service(true, false).refreshTenant(tenant))
+                .isInstanceOf(CostDashboardFailure.class)
+                .hasCause(lockFailure);
+        assertThat(lockFailure.getSuppressed()).containsExactly(markingFailure);
+        verify(refresh, times(3)).refresh(tenant);
+        verify(refresh).failed(tenant);
     }
 }

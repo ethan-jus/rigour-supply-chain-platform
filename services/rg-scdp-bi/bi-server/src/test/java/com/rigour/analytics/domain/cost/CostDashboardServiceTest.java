@@ -207,6 +207,68 @@ class CostDashboardServiceTest {
     }
 
     @Test
+    void newCategoryAndCityKeepTheParentComparisonWithZeroPriorCostAndNoGrowthRate() {
+        var normalizer = new com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer(
+                JsonMapper.builder().build());
+        var rent = normalizer.normalize("ERP", Map.of("id", "new-rent", "amount", "6000.00",
+                        "status_code", "CONFIRMED", "data_json", "{}", "cost_date", "2026-10-01",
+                        "revision", "1", "category_code", "RENTAL", "premises_type", "WAREHOUSE",
+                        "city_code", "WH"),
+                        List.of(new CostDashboardStore.City("WH", "武汉市", "WH", "20", List.of("20"))), Map.of());
+        useFacts(List.of(rent, salary("E1", false)));
+        var parent = service.overview(query(null, null, "current", "ALL"));
+        var child = service.overview(query(rent.city(), "warehouse", "current", "ALL"));
+        assertThat(parent.meta().comparisonAvailable()).isTrue();
+        assertThat(child.meta().comparisonAvailable()).isTrue();
+        assertThat(child.current().amount()).isEqualTo("6000.00");
+        assertThat(child.previous().amount()).isEqualTo("0.00");
+        assertThat(child.delta()).isEqualTo("6000.00");
+        assertThat(child.growth()).isNull();
+    }
+
+    @Test
+    void everyDashboardEntryPointOnlyIncludesConfirmedCostsAndPreservesSourcePayment() {
+        var normalizer = new com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer(
+                JsonMapper.builder().build());
+        var rows = new ArrayList<CostFact>();
+        for (String source : List.of("ERP", "ORDER", "HR")) {
+            for (String status : List.of("CONFIRMED", "DRAFT", "VOID")) {
+                for (String payment : List.of("PAID", "UNPAID")) {
+                    Map<String, String> row = new HashMap<>();
+                    row.put("id", source + "-" + status + "-" + payment);
+                    row.put("document_no", row.get("id"));
+                    row.put("title", "测试费用");
+                    row.put("amount", "100.00");
+                    row.put("status_code", status);
+                    row.put("payment_status_code", payment);
+                    row.put("cost_date", "2026-10-01");
+                    row.put("revision", "1");
+                    row.put("category_code", "MARKETING");
+                    row.put("payer_code", "COMPANY");
+                    row.put("data_json", "{}");
+                    rows.add(normalizer.normalize(source, row, List.of(), Map.of()));
+                }
+            }
+        }
+        useFacts(rows);
+        var q = query(null, null, "current", "ALL");
+        var c = service.context(q);
+        assertThat(c.rows()).hasSize(6).allMatch(r -> "CONFIRMED".equals(r.status()));
+        assertThat(service.overview(q).current().amount()).isEqualTo("600.00");
+        assertThat(service.overview(q).current().unpaid()).isEqualTo("300.00");
+        assertThat(service.overview(q).current().draftCount()).isZero();
+        assertThat(service.records(q).items()).hasSize(6);
+        assertThat(service.records(query(null, null, "current", "PAID")).items())
+                .hasSize(3).allMatch(r -> "PAID".equals(r.payment()));
+        assertThat(service.records(query(null, null, "current", "UNPAID")).items())
+                .hasSize(3).allMatch(r -> "UNPAID".equals(r.payment()));
+        var csv = CostDashboardExportService.csv(c, service.matching(c));
+        assertThat(csv).doesNotContain("DRAFT", "VOID", "待确认", "已作废");
+        assertThatThrownBy(() -> service.detail(q, "ERP", "ERP-DRAFT-PAID"))
+                .hasMessageContaining("费用不存在或无访问权限");
+    }
+
+    @Test
     void removingExpensePermissionRemovesItsAmountsFromEveryAggregate() {
         sources.remove("expense");
         authorize(null);
@@ -269,8 +331,9 @@ class CostDashboardServiceTest {
         assertThat(CostDashboardExportService.cell("a\"b")).isEqualTo("\"a\"\"b\"");
         var c = service.context(query(null, null, "current", "ALL"));
         var text = CostDashboardExportService.csv(c, service.matching(c));
-        assertThat(text).contains("180048.71", "snapshot", "cost-v9");
-        assertThat(text.split("\r\n")).hasSize(service.matching(c).size() + 5);
+        assertThat(text).contains("180048.71", "单据号", "付款状态");
+        assertThat(text).doesNotContain("来源服务", "源ID", "快照", "指标口径", "成本处理", "计入成本金额", "cost-v9");
+        assertThat(text.split("\r\n")).hasSize(service.matching(c).size() + 3);
     }
 
     @Test
@@ -987,6 +1050,11 @@ class CostDashboardServiceTest {
                         .orElseThrow();
         assertThat(linked.amount()).isEqualByComparingTo("320.00");
         assertThat(linked.confirmed()).isFalse();
+        var ledger = service.records(query(null, null, "current", "ALL"));
+        var included = service.matching(service.context(query(null, null, "current", "ALL")));
+        assertThat(included).allMatch(CostFact::confirmed);
+        assertThat(ledger.summary().count()).isEqualTo(report.current().count());
+        assertThat(CostAnalysis.sum(included, r -> true)).isEqualByComparingTo(report.current().amount());
         assertThat(
                         com.rigour.analytics.infrastructure.persistence.scope
                                 .CostReimbursementReconciler.reconcile(linked, Map.of())

@@ -20,7 +20,7 @@ import java.util.*;
 @Repository
 public class MybatisPlusPayrollCostAnalyticsSource {
     public static final String DATASET = "HR_PAYROLL_COST";
-    private static final String PROJECTION_VERSION = "payroll-cost-v2:";
+    private static final String PROJECTION_VERSION = "payroll-cost-v3:";
     public static final List<String> COMPONENTS =
             List.of("baseSalary", "performance", "commission", "allowance", "correctionAmount");
     public static final List<String> COLUMNS =
@@ -116,8 +116,8 @@ public class MybatisPlusPayrollCostAnalyticsSource {
         values.put("cost_date", YearMonth.parse(r.getPayrollMonth()).atEndOfMonth().toString());
         values.put("amount", amount.toPlainString());
         values.put("status_code", "CONFIRMED");
-        // 工资应发成本与实发欠款不是同一口径，付款分析留在工资单，避免部分发放被算成全部未付。
-        values.put("payment_status_code", "UNKNOWN");
+        // 付款状态沿用月度薪酬登记发放结果；未发完仍为未付款，不据应发金额推算实际欠款。
+        values.put("payment_status_code", "PAID".equals(r.getStatusCode()) ? "PAID" : "UNPAID");
         values.put("data_json", "{}");
         values.put("revision", Objects.toString(r.getRevision()));
         values.put("created_by", r.getCreatedBy());

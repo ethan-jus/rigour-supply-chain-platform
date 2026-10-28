@@ -242,58 +242,18 @@ public class CostDashboardExportService {
         StringBuilder out = new StringBuilder("\ufeff");
         append(
                 out,
-                "指标口径",
-                c.meta().metricVersion(),
-                "快照",
-                c.snapshot().id(),
-                "更新时间",
-                c.snapshot().generatedAt().toString());
-        append(
-                out,
                 "本期",
                 c.period().from() + " 至 " + c.period().to(),
                 "可比期",
                 c.period().previousFrom() + " 至 " + c.period().previousTo());
         append(
                 out,
-                "筛选范围",
-                switch (c.filter().scope()) {
-                    case "purchase" -> "商品采购";
-                    case "loss" -> "商品损耗";
-                    default -> "经营费用";
-                },
-                "城市",
-                Objects.toString(c.filter().city(), "全部授权城市"),
-                "类别",
-                c.filter().category() == null
-                        ? "全部"
-                        : CostAnalysis.CATEGORIES.get(c.filter().category()),
-                "维度",
-                c.filter().dimension() == null
-                        ? "全部"
-                        : CostAnalysis.DIMENSION_LABELS.get(c.filter().dimension()),
-                "对象",
-                Objects.toString(c.filter().dimensionKey(), "全部"),
-                "状态",
-                statusLabel(c.filter().status()),
-                "付款",
-                statusLabel(c.filter().payment()),
-                "期间",
-                "previous".equals(c.filter().side()) ? "可比期" : "本期",
-                "搜索",
-                Objects.toString(c.filter().search(), ""));
-        append(
-                out,
                 "匹配笔数",
                 String.valueOf(rows.size()),
                 "已确认金额",
-                CostAnalysis.money(CostAnalysis.amount(rows)),
-                "待确认已填金额",
-                CostAnalysis.money(CostAnalysis.sum(rows, r -> "DRAFT".equals(r.status()))));
+                CostAnalysis.money(CostAnalysis.amount(rows)));
         append(
                 out,
-                "来源服务",
-                "源ID",
                 "单据号",
                 "事项",
                 "费用类别",
@@ -302,15 +262,10 @@ public class CostDashboardExportService {
                 "金额（元）",
                 "确认状态",
                 "付款状态",
-                "原始来源",
-                "费用所属月",
-                "成本处理",
-                "计入成本金额（元）");
+                "费用所属月");
         for (var r : rows)
             append(
                     out,
-                    r.source(),
-                    r.sourceId(),
                     r.documentNo(),
                     r.title(),
                     CostAnalysis.CATEGORIES.get(r.category()),
@@ -319,10 +274,7 @@ public class CostDashboardExportService {
                     CostAnalysis.money(r.amount()),
                     statusLabel(r.status()),
                     statusLabel(r.payment()),
-                    r.sourceSystem(),
-                    r.costMonth().toString(),
-                    r.treatment(),
-                    r.confirmed() ? CostAnalysis.money(r.amount()) : "0.00");
+                    r.costMonth().toString());
         return out.toString();
     }
 

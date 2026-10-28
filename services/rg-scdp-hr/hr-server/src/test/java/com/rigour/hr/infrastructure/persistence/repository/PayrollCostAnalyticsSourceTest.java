@@ -74,9 +74,9 @@ class PayrollCostAnalyticsSourceTest {
             var source =
                     new MybatisPlusPayrollCostAnalyticsSource(mapper, JsonMapper.builder().build());
             var page = source.page("tenant", "");
-            assertThat(source.version("tenant")).isEqualTo("payroll-cost-v2:7");
+            assertThat(source.version("tenant")).isEqualTo("payroll-cost-v3:7");
             assertThat(page.version()).isEqualTo(source.version("tenant"));
-            assertThat(source.version("other")).isEqualTo("payroll-cost-v2:22");
+            assertThat(source.version("other")).isEqualTo("payroll-cost-v3:22");
             assertThat(page.items()).hasSize(1000);
             var row = page.items().getFirst();
             assertThat(row.keySet())
@@ -86,7 +86,10 @@ class PayrollCostAnalyticsSourceTest {
                     .containsEntry("amount", "4680.03")
                     .containsEntry("cost_date", "2024-02-29")
                     .containsEntry("status_code", "CONFIRMED")
-                    .containsEntry("payment_status_code", "UNKNOWN");
+                    .containsEntry("payment_status_code", "UNPAID");
+            assertThat(page.items().get(1))
+                    .containsEntry("status_code", "CONFIRMED")
+                    .containsEntry("payment_status_code", "PAID");
             assertThat(row.get("components_json"))
                     .contains("100.02", "-20")
                     .doesNotContain("netPay", "bankAccount");
@@ -102,13 +105,13 @@ class PayrollCostAnalyticsSourceTest {
                         jdbc.update(
                                 "UPDATE hr_payroll SET status_code='REVIEW' WHERE id=?",
                                 row.get("id"));
-                        assertThat(source.version("tenant")).isEqualTo("payroll-cost-v2:8");
+                        assertThat(source.version("tenant")).isEqualTo("payroll-cost-v3:8");
                         assertThat(source.page("tenant", "").version())
                                 .isEqualTo(source.version("tenant"));
-                        assertThat(source.version("other")).isEqualTo("payroll-cost-v2:22");
+                        assertThat(source.version("other")).isEqualTo("payroll-cost-v3:22");
                         status.setRollbackOnly();
                     });
-            assertThat(source.version("tenant")).isEqualTo("payroll-cost-v2:7");
+            assertThat(source.version("tenant")).isEqualTo("payroll-cost-v3:7");
             assertThat(source.page("tenant", "").items().getFirst().get("id"))
                     .isEqualTo(row.get("id"));
             jdbc.update("UPDATE hr_payroll SET calculation_json='{}' WHERE id=?", row.get("id"));
@@ -180,7 +183,7 @@ class PayrollCostAnalyticsSourceTest {
                 .containsEntry("department_id", "30")
                 .containsEntry("department_name", "研发部")
                 .containsEntry("status_code", "CONFIRMED")
-                .containsEntry("payment_status_code", "UNKNOWN")
+                .containsEntry("payment_status_code", "UNPAID")
                 .containsEntry("data_json", "{}");
         var projectedComponents = json.readTree(row.get("components_json"));
         assertThat(projectedComponents.size()).isEqualTo(5);

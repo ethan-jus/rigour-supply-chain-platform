@@ -42,6 +42,23 @@ class CostSourceNormalizerTest {
     }
 
     @Test
+    void payrollPreservesPaymentRegistrationStatusWithoutChangingConfirmedCost() {
+        for (String payment : List.of("PAID", "UNPAID")) {
+            var row = row();
+            row.put("category_code", "PAYROLL");
+            row.put("payment_status_code", payment);
+            row.put("components_json", "{}");
+            row.put("cost_date", "2026-09-30");
+            row.put("amount", "5000.03");
+            var fact = normalizer.normalize("HR", row, cities, Map.of());
+            assertThat(fact.payment()).isEqualTo(payment);
+            assertThat(fact.confirmed()).isTrue();
+            assertThat(fact.amount()).isEqualByComparingTo("5000.03");
+            assertThat(fact.category()).isEqualTo("labor");
+        }
+    }
+
+    @Test
     void courierReimbursementKeepsShippingDetailsAndTrackingNumberAsText() {
         var row = row();
         row.put("category_code", "EXPENSE");

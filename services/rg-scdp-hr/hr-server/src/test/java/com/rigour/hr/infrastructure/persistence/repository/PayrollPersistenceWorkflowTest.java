@@ -42,6 +42,7 @@ class PayrollPersistenceWorkflowTest {
     HrPayrollPersistenceSupport support;
     HrPayrollReferenceMapper references;
     MybatisPlusHrEmployeePayrollProfileRepository profiles;
+    MybatisPlusPayrollCostAnalyticsSource payrollCosts;
 
     @BeforeEach
     void setup() throws Exception {
@@ -110,6 +111,7 @@ class PayrollPersistenceWorkflowTest {
         factory.setConfiguration(config);
         var session = new SqlSessionTemplate(factory.getObject());
         var json = JsonMapper.builder().build();
+        payrollCosts = new MybatisPlusPayrollCostAnalyticsSource(session.getMapper(HrPayrollMapper.class), json);
         var scope = mock(HrDataScope.class);
         when(scope.apply(any(), anyString())).thenAnswer(i -> i.getArgument(0));
         when(scope.employeePredicate(anyString(), anyString()))
@@ -397,6 +399,10 @@ class PayrollPersistenceWorkflowTest {
     @Test
     void partialPaymentsAreAuditedIdempotentAndCannotExceedNetPay() {
         var confirmed = confirmed();
+        var confirmedCostVersion = payrollCosts.version("T1");
+        assertThat(payrollCosts.page("T1", "").items().getFirst())
+                .containsEntry("payment_status_code", "UNPAID")
+                .containsEntry("amount", "3040.00");
         var first =
                 new PayrollPaymentCommand(
                         UUID.randomUUID().toString(),
@@ -407,6 +413,10 @@ class PayrollPersistenceWorkflowTest {
                         "首笔");
         var partial = payroll.pay("T1", confirmed.id(), first, "ACTOR");
         assertThat(partial.statusCode()).isEqualTo("CONFIRMED");
+        assertThat(payrollCosts.version("T1")).isNotEqualTo(confirmedCostVersion);
+        assertThat(payrollCosts.page("T1", "").items().getFirst())
+                .containsEntry("payment_status_code", "UNPAID");
+        var partialCostVersion = payrollCosts.version("T1");
         assertThat(partial.payments()).hasSize(1);
         assertThat(payroll.pay("T1", confirmed.id(), first, "ACTOR").revision())
                 .isEqualTo(partial.revision());
@@ -461,6 +471,11 @@ class PayrollPersistenceWorkflowTest {
                                 "尾款"),
                         "ACTOR");
         assertThat(paid.statusCode()).isEqualTo("PAID");
+        assertThat(payrollCosts.version("T1")).isNotEqualTo(partialCostVersion);
+        assertThat(payrollCosts.page("T1", "").items().getFirst())
+                .containsEntry("payment_status_code", "PAID")
+                .containsEntry("status_code", "CONFIRMED")
+                .containsEntry("amount", "3040.00");
         assertThat(paid.payments()).hasSize(2);
         assertThat(payroll.history("T1", paid.id()))
                 .filteredOn(x -> x.action().equals("PAYMENT_REGISTER"))
