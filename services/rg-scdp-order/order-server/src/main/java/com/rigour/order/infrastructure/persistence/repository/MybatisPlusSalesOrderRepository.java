@@ -187,6 +187,7 @@ public class MybatisPlusSalesOrderRepository
         attribution.requireNoExecution(tenantId, id);
         scopes.requireOrder(tenantId, id, "order:update");
         InternalSalesOrderEntity existing = requireDraft(tenantId, id);
+        if (existing.getStoreId() != null) throw conflict("门店提交中的订单禁止编辑，请取消后重新建单");
         LocalDateTime now = now();
         int updated =
                 getBaseMapper()
@@ -620,7 +621,19 @@ public class MybatisPlusSalesOrderRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesOrderDetailView submit(String tenantId, Long id, int revision, String actorId) {
         scopes.requireOrder(tenantId, id, "order:submit");
-        requireDraft(tenantId, id);
+        getBaseMapper().selectOne(Wrappers.<InternalSalesOrderEntity>lambdaQuery()
+                .eq(InternalSalesOrderEntity::getTenantId, tenantId)
+                .eq(InternalSalesOrderEntity::getId, id).last("FOR UPDATE"));
+        InternalSalesOrderEntity existing = requireDraft(tenantId, id);
+        if (existing.getStoreId() != null) {
+            var actor = com.rigour.shared.context.AuthorizationContext.requireCurrent();
+            if (!"AUTHORIZED".equals(existing.getStoreSubmissionStatus())
+                    || existing.getStoreAuthorizationExpiresAt() == null
+                    || !now().isBefore(existing.getStoreAuthorizationExpiresAt())
+                    || actor.userId() == null
+                    || !actor.userId().toString().equals(existing.getStoreOperatorUserId()))
+                throw conflict("门店订单尚未授权或受理已过期");
+        }
         attribution.prepare(tenantId, id, true, false);
         scopes.requireOrder(tenantId, id, "order:submit");
         LocalDateTime now = now();
@@ -629,6 +642,10 @@ public class MybatisPlusSalesOrderRepository
                         .update(
                                 null,
                                 Wrappers.<InternalSalesOrderEntity>lambdaUpdate()
+                                        .set(existing.getStoreId() != null, InternalSalesOrderEntity::getStoreSubmissionStatus, "COMPLETED")
+                                        .set(existing.getStoreId() != null, InternalSalesOrderEntity::getStoreEffectiveAt, existing.getStoreAuthorizedAt())
+                                        .eq(existing.getStoreId() != null, InternalSalesOrderEntity::getStoreSubmissionStatus, "AUTHORIZED")
+                                        .gt(existing.getStoreId() != null, InternalSalesOrderEntity::getStoreAuthorizationExpiresAt, now)
                                         .set(
                                                 InternalSalesOrderEntity::getOrderStatusCode,
                                                 SalesOrderStatus.SUBMITTED.code())

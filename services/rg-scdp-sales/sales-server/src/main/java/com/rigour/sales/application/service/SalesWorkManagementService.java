@@ -56,6 +56,7 @@ public class SalesWorkManagementService {
     private final AuditSink auditSink;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final StoreVisitCaptureService captures;
 
     public SalesWorkManagementService(SalesWorkManagementRepository repository,
                                       SalesWorkRecordingRepository recordingRepository,
@@ -64,7 +65,7 @@ public class SalesWorkManagementService {
                                       OutboxStore outboxStore,
                                       AuditSink auditSink,
                                       ObjectMapper objectMapper,
-                                      Clock clock) {
+                                      Clock clock, StoreVisitCaptureService captures) {
         this.repository = repository;
         this.recordingRepository = recordingRepository;
         this.evidenceRepository = evidenceRepository;
@@ -73,6 +74,7 @@ public class SalesWorkManagementService {
         this.auditSink = auditSink;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.captures = captures;
     }
 
     public ManagementDashboardView dashboard(LocalDate from, LocalDate to) {
@@ -211,6 +213,7 @@ public class SalesWorkManagementService {
         CallerIdentity caller = SalesWorkContextService.requireTenantCaller();
         AuthorizationContext.requirePermission("sales:visit:review");
         if (visitId == null || command == null) throw invalid("复核请求无效");
+        if (repository.isCrmCapture(caller.tenantId(), visitId)) throw invalid("新门店拜访请在 CRM 中核验");
         String decision = required(command.decision(), "decision", 24).toUpperCase(Locale.ROOT);
         if (!Set.of("EFFECTIVE", "INEFFECTIVE").contains(decision)) {
             throw invalid("decision仅支持EFFECTIVE或INEFFECTIVE");
@@ -251,6 +254,7 @@ public class SalesWorkManagementService {
     }
 
     private void requireReviewTarget(CallerIdentity caller, UUID visitId) {
+        if (visitId != null) captures.requireEvidenceAccess(caller.tenantId(), visitId);
         if (visitId == null || repository.findReviewTarget(caller.tenantId(), visitId, false).isEmpty()) {
             throw invalid("可复核拜访不存在");
         }

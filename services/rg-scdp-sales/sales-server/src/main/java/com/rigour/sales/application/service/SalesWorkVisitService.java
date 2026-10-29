@@ -87,6 +87,7 @@ public class SalesWorkVisitService {
     private final AuditSink auditSink;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final StoreVisitCaptureService crmCapture;
 
     public SalesWorkVisitService(SalesWorkContextService contextService,
                                  SalesWorkAttendanceRepository attendanceRepository,
@@ -99,7 +100,7 @@ public class SalesWorkVisitService {
                                  OutboxStore outboxStore,
                                  AuditSink auditSink,
                                  ObjectMapper objectMapper,
-                                 Clock clock) {
+                                 Clock clock,StoreVisitCaptureService crmCapture) {
         this.contextService = contextService;
         this.attendanceRepository = attendanceRepository;
         this.visitRepository = visitRepository;
@@ -112,6 +113,7 @@ public class SalesWorkVisitService {
         this.auditSink = auditSink;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.crmCapture=crmCapture;
     }
 
     public NearbyStorePageView nearbyStores(BigDecimal longitude, BigDecimal latitude,
@@ -402,6 +404,7 @@ public class SalesWorkVisitService {
         if (!"CHECKED_IN".equals(visit.status()) && !"CHECKED_OUT".equals(visit.status())) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE, "当前拜访状态不允许录入结果", List.of());
         }
+        crmCapture.acceptResult(caller,visitId,contactOutcome,kpName,kpPhone,intention,resultNote);
         if (visitRepository.updateVisitResult(caller.tenantId(), identity.profile().id(), visitId,
                 contactOutcome, kpName, kpPhone, intention, resultNote, receivedAt) != 1) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE);

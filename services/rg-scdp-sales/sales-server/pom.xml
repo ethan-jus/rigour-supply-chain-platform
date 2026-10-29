@@ -12,6 +12,7 @@
         <dependency><groupId>com.rigour</groupId><artifactId>hr-api</artifactId></dependency>
         <dependency><groupId>org.apache.poi</groupId><artifactId>poi-ooxml</artifactId><version>5.5.1</version></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>sales-api</artifactId></dependency>
+        <dependency><groupId>com.rigour</groupId><artifactId>crm-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>rigour-platform-starter</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>shared-audit</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>shared-idempotency</artifactId></dependency>

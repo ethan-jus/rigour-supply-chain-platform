@@ -1368,6 +1368,27 @@ class OrderAttributionAndScopeIntegrationTest {
                 Set.of("order:read", "order:write"));
     }
 
+    @Autowired com.rigour.order.application.port.out.OrderSalesOrderStore orderStore;
+    @Autowired com.rigour.order.application.port.out.StoreOrderSubmissionStore storeSubmissions;
+
+    @Test
+    void boundOrderRequiresLiveAuthorizationAndCompletesAtomicallyWithEffectiveTime() {
+        long id=order("store-bound",1L);
+        when(iam.authorization(any(),any())).thenAnswer(call -> policy(call.getArgument(1),
+                List.of(new Clause(UUID.randomUUID(),"ORDER","ALL",all(),all(),all(),false)),all(),all()));
+        jdbc.update("UPDATE order_sales_order SET payable_amount=1000 WHERE id=?",id);
+        when(customer.resolve(any(),eq(1L))).thenReturn(attribution("v1","EMP-A",10,List.of(10L),"HZ",List.of("HZ"),true));
+        var now=Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        String request=UUID.randomUUID().toString();
+        var pending=storeSubmissions.reserve(tenant,actor.userId().toString(),id,1,"100","200",request,now);
+        assertThatThrownBy(()->orderStore.submit(tenant,id,pending.revision(),actor.userId().toString())).hasMessageContaining("尚未授权");
+        storeSubmissions.authorize(tenant,actor.userId().toString(),id,request,
+                new com.rigour.merchant.api.v1.model.StoreWorkModels.OrderPermit("100","200","232","27","测试门店",3,now),now);
+        orderStore.submit(tenant,id,pending.revision(),actor.userId().toString());
+        assertThat(jdbc.queryForObject("SELECT store_submission_status FROM order_sales_order WHERE id=?",String.class,id)).isEqualTo("COMPLETED");
+        assertThat(storeSubmissions.facts(tenant,"100","200",now.plusSeconds(1)).orders().getFirst().effectiveAt()).isEqualTo(now);
+    }
+
     private long order(String no, Long customerId) {
         jdbc.update(
                 "INSERT INTO"

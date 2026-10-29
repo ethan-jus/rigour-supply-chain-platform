@@ -15,6 +15,10 @@
     <dependencies>
         <dependency>
             <groupId>com.rigour</groupId>
+            <artifactId>foundation-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.rigour</groupId>
             <artifactId>rigour-platform-starter</artifactId>
         </dependency>
         <dependency>

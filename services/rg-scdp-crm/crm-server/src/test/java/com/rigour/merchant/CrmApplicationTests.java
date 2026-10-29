@@ -274,7 +274,7 @@ class CrmApplicationTests {
                                  WHERE table_schema = DATABASE() AND table_name LIKE 'crm\\_%'
                                 """,
                                 Integer.class))
-                .isEqualTo(26);
+                .isEqualTo(36);
         assertThat(
                         jdbcTemplate.queryForList(
                                 """
@@ -284,6 +284,15 @@ class CrmApplicationTests {
                                 String.class))
                 .contains(
                         "crm_customer_sync_job",
+                        "crm_store",
+                        "crm_store_master",
+                        "crm_store_identity",
+                        "crm_store_lead",
+                        "crm_pool_policy",
+                        "crm_segment_policy",
+                        "crm_store_ownership",
+                        "crm_store_summary",
+                        "crm_store_event",
                         "crm_party",
                         "crm_customer_profile",
                         "crm_contact",

@@ -75,6 +75,13 @@ public class SalesWorkVisitAssessmentService {
             return new AssessmentOutcome("PENDING_REVIEW", anomalies, null);
         }
 
+        if(repository.isCrmCapture(actor.tenantId(),visitId)) {
+            repository.upsertAutomaticAssessment(assessmentId,actor.tenantId(),visitId,
+                    "DECIDED","EFFECTIVE",AUTO_REASON,"服务端硬证据完整，自动确认有效",assessedAt);
+            // CRM读取核验事实并决定业务有效性；不再生成第二条Sales最终拜访事实。
+            return new AssessmentOutcome("CRM_AUTO_EFFECTIVE",List.of(),assessedAt);
+        }
+
         if (repository.finalizeVisit(actor.tenantId(), visitId, "EFFECTIVE", AUTO_REASON, assessedAt) != 1) {
             return new AssessmentOutcome("FINALIZED", List.of(), assessedAt);
         }

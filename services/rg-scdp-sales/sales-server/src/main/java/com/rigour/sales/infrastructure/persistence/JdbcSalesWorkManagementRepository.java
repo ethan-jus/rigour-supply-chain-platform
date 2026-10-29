@@ -255,7 +255,7 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                     ON policy.tenant_id=current_visit.tenant_id
                    AND policy.id=current_visit.visit_policy_version_id
                  WHERE current_visit.tenant_id=? AND current_visit.checked_out_at IS NOT NULL
-                   AND current_visit.finalized_at IS NULL
+                   AND current_visit.finalized_at IS NULL AND current_visit.crm_visit_id IS NULL
                    AND work_day.business_date BETWEEN ? AND ?
                  ORDER BY current_visit.checked_out_at, current_visit.id
                  LIMIT ? OFFSET ?
@@ -280,11 +280,13 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                   JOIN sales_work_day work_day
                     ON work_day.tenant_id=current_visit.tenant_id AND work_day.id=current_visit.work_day_id
                  WHERE current_visit.tenant_id=? AND current_visit.checked_out_at IS NOT NULL
-                   AND current_visit.finalized_at IS NULL
+                   AND current_visit.finalized_at IS NULL AND current_visit.crm_visit_id IS NULL
                    AND work_day.business_date BETWEEN ? AND ?
                 """, Long.class, bin(tenantId), Date.valueOf(from), Date.valueOf(to));
         return value(count);
     }
+
+    @Override public boolean isCrmCapture(UUID tenantId,UUID visitId){return jdbc.queryForObject("SELECT COUNT(*) FROM sales_visit WHERE tenant_id=? AND id=? AND crm_visit_id IS NOT NULL",Long.class,bin(tenantId),bin(visitId))>0;}
 
     @Override
     public java.util.Optional<ReviewTargetRow> findReviewTarget(UUID tenantId, UUID visitId, boolean lock) {
@@ -310,7 +312,7 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                 UPDATE sales_visit
                    SET finalized_at=?, final_reason_code=?, version=version+1,
                        updated_at=UTC_TIMESTAMP(6)
-                 WHERE tenant_id=? AND id=? AND checked_out_at IS NOT NULL AND finalized_at IS NULL
+                 WHERE tenant_id=? AND id=? AND checked_out_at IS NOT NULL AND finalized_at IS NULL AND crm_visit_id IS NULL
                 """, timestamp(finalizedAt), decision, bin(tenantId), bin(visitId));
     }
 

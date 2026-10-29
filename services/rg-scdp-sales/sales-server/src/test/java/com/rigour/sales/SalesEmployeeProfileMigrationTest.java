@@ -32,7 +32,7 @@ class SalesEmployeeProfileMigrationTest {
                 """, bin(), tenant, user, employee);
         var checksums = jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history ORDER BY installed_rank");
         var migration = Flyway.configure().dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())
-                .locations("classpath:db/migration", "classpath:db/bootstrap").load();
+                .locations("classpath:db/migration", "classpath:db/bootstrap").target("28").load();
         assertThat(migration.migrate().migrationsExecuted).isEqualTo(1);
         assertThat(migration.migrate().migrationsExecuted).isZero();
         migration.validate();

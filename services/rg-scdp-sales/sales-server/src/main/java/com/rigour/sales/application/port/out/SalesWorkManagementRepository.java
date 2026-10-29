@@ -8,6 +8,7 @@ import java.util.UUID;
 
 /** 销售管理只读聚合端口；所有查询必须携带 tenantId。 */
 public interface SalesWorkManagementRepository {
+    boolean isCrmCapture(UUID tenantId,UUID visitId);
 
     ManagementTotalsRow totals(UUID tenantId, LocalDate from, LocalDate to);
 

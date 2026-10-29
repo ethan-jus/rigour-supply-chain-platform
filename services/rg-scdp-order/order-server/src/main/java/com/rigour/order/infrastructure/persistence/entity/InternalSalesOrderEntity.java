@@ -9,6 +9,25 @@ import java.time.LocalDateTime;
 /** 自研销售订单头实体，对应 `order_sales_order`。 */
 @TableName("order_sales_order")
 public class InternalSalesOrderEntity {
+    private Long storeId;
+    public Long getStoreId() { return storeId; }
+    public void setStoreId(Long value) { storeId=value; }
+    private String storeSubmissionStatus;
+    public String getStoreSubmissionStatus() { return storeSubmissionStatus; }
+    public void setStoreSubmissionStatus(String value) { storeSubmissionStatus=value; }
+    private String storeOperatorUserId;
+    public String getStoreOperatorUserId() { return storeOperatorUserId; }
+    public void setStoreOperatorUserId(String value) { storeOperatorUserId=value; }
+    private LocalDateTime storeAuthorizationExpiresAt;
+    public LocalDateTime getStoreAuthorizationExpiresAt() { return storeAuthorizationExpiresAt; }
+    public void setStoreAuthorizationExpiresAt(LocalDateTime value) { storeAuthorizationExpiresAt=value; }
+    private LocalDateTime storeAuthorizedAt;
+    public LocalDateTime getStoreAuthorizedAt() { return storeAuthorizedAt; }
+    public void setStoreAuthorizedAt(LocalDateTime value) { storeAuthorizedAt=value; }
+    private LocalDateTime storeEffectiveAt;
+    public LocalDateTime getStoreEffectiveAt() { return storeEffectiveAt; }
+    public void setStoreEffectiveAt(LocalDateTime value) { storeEffectiveAt=value; }
+
     /** ID。 */
     @TableId(type = IdType.AUTO)
     private Long id;

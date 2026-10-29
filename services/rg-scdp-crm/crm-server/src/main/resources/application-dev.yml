@@ -56,3 +56,6 @@ rigour:
     base-url: "${RIGOUR_HR_BASE_URL:http://rigour-hr-payroll-service}"
   integration:
     base-url: "${RIGOUR_INTEGRATION_BASE_URL:http://rigour-integration-migration-service}"
+
+# 仅对新 crm_store_ownership 归属批次运行，旧客户未迁移。
+rigour.crm.store-lifecycle.enabled: true
