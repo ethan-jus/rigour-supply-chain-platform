@@ -21,7 +21,14 @@ public record LogisticsCostQuery(
         String objectName,
         String sourceSystem,
         String payerCode,
-        Boolean missingAmount) {
+        Boolean missingAmount,
+        String senderName,
+        String receiverName,
+        String carrierName) {
+    public LogisticsCostQuery(int begin, int step, String documentNo, String title, String remark, String trackingNo, String sourceDocumentNo, String typeCode, String cityCode, String statusCode, String paymentStatusCode, LocalDate dateFrom, LocalDate dateTo, Long warehouseId, String ownerEmployeeCode, String objectName, String sourceSystem, String payerCode, Boolean missingAmount) {
+        this(begin, step, documentNo, title, remark, trackingNo, sourceDocumentNo, typeCode, cityCode, statusCode, paymentStatusCode, dateFrom, dateTo, warehouseId, ownerEmployeeCode, objectName, sourceSystem, payerCode, missingAmount, null, null, null);
+    }
+
     public LogisticsCostQuery(
             int begin,
             int step,

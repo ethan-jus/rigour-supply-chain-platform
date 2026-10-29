@@ -87,6 +87,14 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         return q;
     }
 
+    private static void partyFilter(QueryWrapper<OrderLogisticsCostEntity> q, String field, String value) {
+        // field is a fixed internal path; user text is always bound and JSON_SEARCH wildcards are escaped.
+        String pattern = "%" + value.trim().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+        q.apply("(LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.logistics." + field + "')),''))>0"
+                + " OR JSON_SEARCH(sources_json,'one',{1},NULL,'$[*]." + field + "') IS NOT NULL"
+                + " OR JSON_SEARCH(data_json,'one',{1},NULL,'$.logistics.externalDocuments[*]." + field + "') IS NOT NULL)", value.trim(), pattern);
+    }
+
     private QueryWrapper<OrderLogisticsCostEntity> query(
             String tenant, String category, LogisticsCostQuery filter, String action) {
         var q = where(tenant, category, action);
@@ -117,6 +125,10 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         + " IS NOT NULL)",
                     filter.objectName().trim(), objectPattern);
         }
+        if (text(filter.senderName())) partyFilter(q, "senderName", filter.senderName());
+        if (text(filter.receiverName())) partyFilter(q, "receiverName", filter.receiverName());
+        if (text(filter.carrierName()))
+            q.apply("LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.logistics.carrierName')),''))>0", filter.carrierName().trim());
         // External source numbers remain distinguishable from local source IDs.
         if (text(filter.documentNo()))
             q.apply("LOCATE({0},document_no)>0", filter.documentNo().trim());

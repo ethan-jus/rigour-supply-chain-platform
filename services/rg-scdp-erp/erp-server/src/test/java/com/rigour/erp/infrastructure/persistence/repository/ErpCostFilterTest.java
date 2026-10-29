@@ -47,6 +47,7 @@ public class ErpCostFilterTest {
                                 "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
                                 "")
                         .replace(" JSON ", " LONGTEXT ");
+        ddl = ddl.replace("category_code IN ('MARKETING','RENTAL')", "category_code IN ('MARKETING','RENTAL','PURCHASE','LOSS')");
         jdbc.execute(ddl);
         jdbc.execute("ALTER TABLE erp_cost_entry ADD COLUMN cost_month VARCHAR(7)");
 
@@ -89,6 +90,17 @@ public class ErpCostFilterTest {
         insert("other", "T2", "DOC-A", 7L);
         insert("hidden", "T1", "DOC-H", 8L);
         jdbc.update("UPDATE erp_cost_entry SET source_warehouse_id=warehouse_id");
+    }
+
+    @Test
+    void productNameAndSpecificationAreIndependentAndShareTotalsScope() {
+        jdbc.update("UPDATE erp_cost_entry SET category_code='PURCHASE',data_json=?", "{\"goods\":{\"productName\":\"商品甲\",\"specification\":\"规格乙100%\"}}");
+        var match = JSON.readValue("{\"begin\":0,\"step\":20,\"productName\":\"商品甲\",\"specification\":\"规格乙100%\"}", ErpCostQuery.class);
+        var result = store.entries("T1", "PURCHASE", match, "cost:read");
+        assertThat(result.total()).isEqualTo(1);
+        assertThat(result.registeredAmount()).isEqualByComparingTo("100");
+        var crossed = JSON.readValue("{\"begin\":0,\"step\":20,\"productName\":\"规格乙\",\"specification\":\"商品甲\"}", ErpCostQuery.class);
+        assertThat(store.entries("T1", "PURCHASE", crossed, "cost:read").total()).isZero();
     }
 
     @AfterEach

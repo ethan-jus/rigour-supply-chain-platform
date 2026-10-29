@@ -32,6 +32,11 @@ import java.util.UUID;
 /** 工资规则及月度核算仓储；所有更新均带租户和版本条件。 */
 @Repository
 public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.rigour.hr.application.port.out.HrAuditActorNameResolver auditNames;
+    private String creationActorName(String tenant, String actor) {
+        return auditNames == null ? null : auditNames.resolve(tenant, actor);
+    }
     private final HrPayrollMapper mapper;
     private final HrPayrollRuleMapper ruleMapper;
     private final HrPayrollReferenceMapper references;
@@ -232,7 +237,7 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
                 r.getId(),
                 r.getRevision(),
                 json.readValue(r.getDataJson(), PayrollRuleCommand.class),
-                r.getUpdatedTime().toInstant(ZoneOffset.UTC));
+                r.getUpdatedTime().toInstant(ZoneOffset.UTC), r.getCreatedBy(), r.getCreatedTime() == null ? null : r.getCreatedTime().toInstant(ZoneOffset.UTC));
     }
 
     @Override
@@ -427,6 +432,7 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
             row.setDepartmentName(e.departmentName());
             row.setCityName(e.cityName());
             row.setPayrollMonth(month);
+            row.setCreatedByName(creationActorName(tenant, actor));
             row.setStatusCode(status);
             row.setCalculationJson(body);
             row.setCreatedBy(actor);
@@ -503,6 +509,9 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
                             w.like("employee_code", c.keyword())
                                     .or()
                                     .like("employee_name", c.keyword()));
+        // 姓名和编号是独立条件，组合查询采用 AND；keyword 保留给已有调用方。
+        if (text(c.employeeName())) q.like("employee_name", c.employeeName().trim());
+        if (text(c.employeeCode())) q.like("employee_code", c.employeeCode().trim());
         return q;
     }
 
@@ -517,7 +526,9 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
                         query.keyword(),
                         query.departmentId(),
                         null,
-                        query.payrollCategory());
+                        query.payrollCategory(),
+                        query.employeeName(),
+                        query.employeeCode());
         String complete =
                 "status_code IN ('READY','CONFIRMED','PAID') AND"
                     + " JSON_TYPE(JSON_EXTRACT(calculation_json, '$.grossPay')) IN"
@@ -619,7 +630,7 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
                 json.readValue(r.getCalculationJson(), PayrollCalculationView.class),
                 r.getUpdatedTime().toInstant(ZoneOffset.UTC),
                 payments(r.getTenantId(), r.getId()),
-                correctionsIssued(r.getTenantId(), r.getId()));
+                correctionsIssued(r.getTenantId(), r.getId()), null, r.getCreatedBy(), r.getCreatedByName(), r.getCreatedTime() == null ? null : r.getCreatedTime().toInstant(ZoneOffset.UTC));
     }
 
     @Override

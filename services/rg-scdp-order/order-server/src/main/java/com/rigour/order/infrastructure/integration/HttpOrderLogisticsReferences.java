@@ -45,6 +45,41 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
         this.crm = value;
     }
 
+    private String hr;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void hrAddress(@Value("${rigour.hr.base-url:http://rigour-hr-payroll-service}") String value) {
+        this.hr = value;
+    }
+
+    @Override
+    public List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employees(String action) {
+        var uri =
+                UriComponentsBuilder.fromUriString(hr)
+                        .path("/api/v1/hr/cost-references/employees")
+                        .queryParam("action", action)
+                        .build()
+                        .encode()
+                        .toUri();
+        var headers =
+                OutboundContextHeaders.caller(
+                        signer, "GET", uri, AuthorizationContext.requireCurrent());
+        var response =
+                client.get()
+                        .uri(uri)
+                        .headers(h -> headers.forEach(h::set))
+                        .retrieve()
+                        .body(
+                                new ParameterizedTypeReference<
+                                        ApiResponse<
+                                                List<
+                                                        com.rigour.order.api.v1.model
+                                                                .LogisticsCostEmployeeView>>>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("员工权限目录暂不可用");
+        return response.data();
+    }
+
     public String party(String kind, Long id, String city, String action) {
         var builder =
                 UriComponentsBuilder.fromUriString("suppliers".equals(kind) ? erp : crm)

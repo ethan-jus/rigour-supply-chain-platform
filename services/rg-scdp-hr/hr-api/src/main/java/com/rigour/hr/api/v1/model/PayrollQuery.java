@@ -7,7 +7,14 @@ public record PayrollQuery(
         String keyword,
         Long departmentId,
         String statusCode,
-        String payrollCategory) {
+        String payrollCategory,
+        String employeeName,
+        String employeeCode) {
+    public PayrollQuery(
+            int begin, int step, String month, String keyword, Long departmentId,
+            String statusCode, String payrollCategory) {
+        this(begin, step, month, keyword, departmentId, statusCode, payrollCategory, null, null);
+    }
     public PayrollQuery(
             int begin, int step, String month, String keyword, Long departmentId, String statusCode) {
         this(begin, step, month, keyword, departmentId, statusCode, null);

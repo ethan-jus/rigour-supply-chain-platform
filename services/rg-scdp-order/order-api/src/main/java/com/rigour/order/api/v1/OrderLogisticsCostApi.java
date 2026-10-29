@@ -55,4 +55,7 @@ public interface OrderLogisticsCostApi {
             @RequestParam(defaultValue = "") String keyword,
             @RequestParam(required = false) String cityCode,
             @RequestParam(defaultValue = "0") int begin);
+
+    @GetMapping(BASE_PATH + "/employees")
+    ApiResponse<List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView>> employees();
 }

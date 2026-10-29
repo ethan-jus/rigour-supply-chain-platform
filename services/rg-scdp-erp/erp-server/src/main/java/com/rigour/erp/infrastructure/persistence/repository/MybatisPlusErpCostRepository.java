@@ -149,6 +149,10 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                                             filter.objectName().trim());
                     });
         }
+        if (text(filter.productName()))
+            q.apply("LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.productName')),''))>0", filter.productName().trim());
+        if (text(filter.specification()))
+            q.apply("LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.specification')),''))>0", filter.specification().trim());
         if (text(filter.supplierName()))
             q.apply(
                     "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.supplierName')),''))>0",

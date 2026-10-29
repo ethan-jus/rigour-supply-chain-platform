@@ -70,4 +70,9 @@ public final class OrderLogisticsCostController implements OrderLogisticsCostApi
             String legCode, String keyword, String cityCode, int begin) {
         return ApiResponse.success(service.sources(legCode, keyword, cityCode, begin));
     }
+
+    @Override
+    public ApiResponse<List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView>> employees() {
+        return ApiResponse.success(service.employees());
+    }
 }

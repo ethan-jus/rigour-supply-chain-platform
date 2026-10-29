@@ -79,6 +79,6 @@ public interface ErpCostApi {
             @RequestParam(required = false) String cityCode,
             @RequestParam(defaultValue = "0") int begin);
 
-    @GetMapping(BASE_PATH + "/marketing/employees")
-    ApiResponse<List<ErpCostEmployeeView>> employees();
+    @GetMapping(BASE_PATH + "/{category}/employees")
+    ApiResponse<List<ErpCostEmployeeView>> employees(@PathVariable String category);
 }

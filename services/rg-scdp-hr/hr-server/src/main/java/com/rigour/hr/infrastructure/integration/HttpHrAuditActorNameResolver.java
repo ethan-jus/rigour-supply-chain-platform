@@ -18,6 +18,7 @@ import java.time.Duration;
 @Component
 public final class HttpHrAuditActorNameResolver implements HrAuditActorNameResolver {
     private final RestClient client;
+    private record ResolvedName(String value) {}
 
     public HttpHrAuditActorNameResolver(
             @Value("${rigour.supply-authorization.iam-base-url:${IAM_BASE_URL:http://rigour-tenant-iam-service}}") String base,
@@ -35,6 +36,9 @@ public final class HttpHrAuditActorNameResolver implements HrAuditActorNameResol
         if (!(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attributes)) return null;
         String token = attributes.getRequest().getHeader(HttpHeaders.AUTHORIZATION);
         if (token == null || !token.startsWith("Bearer ")) return null;
+        String cacheKey = getClass().getName() + ":" + tenantId + ":" + actorId;
+        Object cached = attributes.getRequest().getAttribute(cacheKey);
+        if (cached instanceof ResolvedName resolved) return resolved.value();
         try {
             CurrentUserView user = client.get().uri("/api/v1/me")
                     .header(HttpHeaders.AUTHORIZATION, token).retrieve().body(CurrentUserView.class);
@@ -42,10 +46,13 @@ public final class HttpHrAuditActorNameResolver implements HrAuditActorNameResol
                     || !actorId.equals(String.valueOf(user.id()))
                     || !tenantId.equals(String.valueOf(user.tenantId()))) return null;
             String name = user.displayName() == null || user.displayName().isBlank() ? user.username() : user.displayName();
-            return name != null && name.length() <= 128 ? name : null;
+            String resolved = name != null && name.length() <= 128 ? name : null;
+            attributes.getRequest().setAttribute(cacheKey, new ResolvedName(resolved));
+            return resolved;
         } catch (org.springframework.web.client.RestClientException ex) {
             // 名称服务失败不影响已验证的操作人 ID；不得把错误响应或凭据写入日志。
             org.slf4j.LoggerFactory.getLogger(getClass()).warn("部门审计显示名称未解析，保留操作人账号 ID，原因={}", ex.getClass().getSimpleName());
+            attributes.getRequest().setAttribute(cacheKey, new ResolvedName(null));
             return null;
         }
     }

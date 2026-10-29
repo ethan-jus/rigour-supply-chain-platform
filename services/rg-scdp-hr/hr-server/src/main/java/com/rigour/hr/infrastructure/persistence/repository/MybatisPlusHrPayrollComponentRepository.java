@@ -22,6 +22,11 @@ import java.util.*;
 
 @Repository
 public class MybatisPlusHrPayrollComponentRepository implements HrPayrollComponentStore {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.rigour.hr.application.port.out.HrAuditActorNameResolver auditNames;
+    private String creationActorName(String tenant, String actor) {
+        return auditNames == null ? null : auditNames.resolve(tenant, actor);
+    }
     private final HrPayrollComponentMapper mapper;
     private final HrPayrollConfigurationMapper settings;
     private final HrPayrollPersistenceSupport locks;
@@ -90,7 +95,7 @@ public class MybatisPlusHrPayrollComponentRepository implements HrPayrollCompone
                 row.getRuleCode(),
                 row.getRevision(),
                 Boolean.TRUE.equals(row.getDeleted()),
-                states);
+                states, row.getCreatedByName());
     }
 
     @Transactional
@@ -156,7 +161,7 @@ public class MybatisPlusHrPayrollComponentRepository implements HrPayrollCompone
                             previous.ruleCode(),
                             previous.revision() + 1,
                             false,
-                            previous.stateChanges());
+                            previous.stateChanges(), previous.createdByName());
             lifecycle.recordModification(tenant, c, updated, actor);
             locks.audit(
                     tenant,
@@ -198,6 +203,7 @@ public class MybatisPlusHrPayrollComponentRepository implements HrPayrollCompone
         row.setDataJson(json.writeValueAsString(c.definition()));
         row.setReason(c.reason());
         row.setCreatedBy(actor);
+        row.setCreatedByName(creationActorName(tenant, actor));
         row.setCreatedTime(LocalDateTime.now(ZoneOffset.UTC));
         mapper.insert(row);
         // State changes belong to the rule family, so a revised stopped rule stays stopped.

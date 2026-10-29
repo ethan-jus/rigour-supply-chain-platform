@@ -748,6 +748,10 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                                             + "WHERE tenant_id={0} AND source_system='DINGHUOBAO' AND deleted=0 "
                                             + "AND source_account_name LIKE {1})", tenantId, "%" + c.keyword() + "%"));
         }
+        if (c.dhbAccount() != null)
+            query.apply("employee_code IN (SELECT employee_code FROM hr_employee_source_binding "
+                    + "WHERE tenant_id={0} AND source_system='DINGHUOBAO' AND deleted=0 "
+                    + "AND LOCATE({1},COALESCE(source_account_name,''))>0)", tenantId, c.dhbAccount());
         eq(query, "employee_code", c.employeeCode());
         like(query, "employee_name", c.employeeName());
         like(query, "mobile", c.mobile());

@@ -54,6 +54,16 @@ public final class HrEmployeeService {
                                                 String regionName, String cityName,
                                                 String sourceSystem, Long departmentId, Boolean includeSubDepartments,
                                                 String positionCode, String jobGrade, String sortBy, String sortDirection, Boolean regularized, String payrollCategory, Boolean payrollMissing) {
+        return employees(begin, step, keyword, employeeCode, employeeName, mobile, employmentStatus, jobCategory, positionName, regionName, cityName, sourceSystem, departmentId, includeSubDepartments, positionCode, jobGrade, sortBy, sortDirection, regularized, payrollCategory, payrollMissing, null);
+    }
+
+    public HrPageView<HrEmployeeView> employees(int begin, int step, String keyword,
+                                                String employeeCode, String employeeName,
+                                                String mobile, String employmentStatus,
+                                                String jobCategory, String positionName,
+                                                String regionName, String cityName,
+                                                String sourceSystem, Long departmentId, Boolean includeSubDepartments,
+                                                String positionCode, String jobGrade, String sortBy, String sortDirection, Boolean regularized, String payrollCategory, Boolean payrollMissing, String dhbAccount) {
         String tenantId = tenant(READ_PERMISSION);
         EmployeeSearchCriteria criteria = new EmployeeSearchCriteria(
                 HrServiceValidation.text(keyword, 128, "keyword"),
@@ -68,7 +78,7 @@ public final class HrEmployeeService {
                 sourceSystem(sourceSystem, false), departmentId,
                 HrServiceValidation.text(positionCode, 50, "positionCode"),
                 HrServiceValidation.text(jobGrade, 32, "jobGrade"),
-                includeSubDepartments, sortBy, sortDirection, regularized, HrServiceValidation.text(payrollCategory, 32, "payrollCategory"), payrollMissing);
+                includeSubDepartments, sortBy, sortDirection, regularized, HrServiceValidation.text(payrollCategory, 32, "payrollCategory"), payrollMissing, HrServiceValidation.text(dhbAccount, 128, "dhbAccount"));
         HrPageView<HrEmployeeView> result = store.employees(tenantId, HrServiceValidation.pageBegin(begin),
                 HrServiceValidation.pageStep(step), criteria);
         log.debug("HR员工列表查询完成 tenantId={} keyword={} count={} total={}",

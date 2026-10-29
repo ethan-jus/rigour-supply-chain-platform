@@ -19,13 +19,24 @@ public final class HrCostReferenceService {
     }
 
     public List<HrCostEmployeeView> employees(String action) {
-        if (!Set.of(
-                        "erp:cost:marketing:export",
-                        "erp:cost:marketing:read",
-                        "erp:cost:marketing:write",
-                        "erp:cost:marketing:confirm",
-                        "erp:cost:marketing:void")
-                .contains(action)) throw new AuthorizationDeniedException("cost-reference-action");
+        boolean costAction =
+                action != null
+                        && Set.of("read", "write", "confirm", "void", "export").stream()
+                                .anyMatch(
+                                        operation ->
+                                                Set.of(
+                                                                "erp:cost:purchase:",
+                                                                "erp:cost:loss:",
+                                                                "erp:cost:marketing:",
+                                                                "erp:cost:rental:",
+                                                                "order:logistics-cost:")
+                                                        .stream()
+                                                        .anyMatch(
+                                                                prefix ->
+                                                                        action.equals(
+                                                                                prefix
+                                                                                        + operation)));
+        if (!costAction) throw new AuthorizationDeniedException("cost-reference-action");
         var a = AuthorizationContext.requireCurrent();
         AuthorizationContext.requirePermission(action);
         if (a.tenantId() == null || !"TENANT".equals(a.principalScope()))

@@ -33,6 +33,19 @@ class PayrollSummaryTest {
                     mock(HrPayrollCorrectionMapper.class),
                     mock(HrPayrollCommissionReleaseMapper.class));
 
+    @Test
+    void paymentRestrictionProjectionKeepsOriginalCreationFacts() {
+        var created = java.time.Instant.parse("2026-09-01T00:00:00Z");
+        var updated = java.time.Instant.parse("2026-10-01T00:00:00Z");
+        var record = new com.rigour.hr.api.v1.model.PayrollDetailView("P", "2026-09", "E", "员工甲", 1L,
+                "部门", null, "READY", 2, null, updated, List.of(), List.of(), null, "creator", "创建人甲", created);
+        var projected = record.withPaymentBlockReason("待复核");
+        assertThat(projected.createdBy()).isEqualTo("creator");
+        assertThat(projected.createdByName()).isEqualTo("创建人甲");
+        assertThat(projected.createdTime()).isEqualTo(created);
+        assertThat(projected.updatedTime()).isEqualTo(updated);
+    }
+
     void fixture() {
         when(scope.apply(any(), eq("hr:payroll:read")))
                 .thenAnswer(
@@ -114,6 +127,28 @@ class PayrollSummaryTest {
                     .contains("$.scheme.scheme.definition.role", "$.salarySource.payrollCategory", "tenant_id", "department_id")
                     .doesNotContain("CITY_MANAGER");
             assertThat(query.getParamNameValuePairs().values()).contains("CITY_MANAGER", "tenant-a", 6L);
+        }
+    }
+
+    @Test
+    void independentEmployeeFiltersApplyTogetherToListTotalsAndExport() {
+        fixture();
+        when(mapper.selectCount(any())).thenReturn(0L);
+        when(mapper.selectList(any())).thenReturn(List.of());
+        var criteria = new PayrollQuery(0, 20, "2026-09", null, 6L, "READY", null,
+                " 许 ", " EMP2026 ");
+        repository.payroll("tenant-a", criteria, "hr:payroll:read");
+        repository.summary("tenant-a", criteria, "hr:payroll:read");
+        repository.export("tenant-a", criteria, "hr:payroll:read");
+        var list = ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(mapper, times(2)).selectList(list.capture());
+        var totals = ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(mapper).selectMaps(totals.capture());
+        var queries = new java.util.ArrayList<QueryWrapper>(list.getAllValues());
+        queries.add(totals.getValue());
+        for (var query : queries) {
+            assertThat(query.getSqlSegment()).contains("employee_name LIKE", "employee_code LIKE", "tenant_id", "department_id IN").doesNotContain(" OR ");
+            assertThat(query.getParamNameValuePairs().values()).contains("%许%", "%EMP2026%", "tenant-a", 6L, 7L);
         }
     }
 

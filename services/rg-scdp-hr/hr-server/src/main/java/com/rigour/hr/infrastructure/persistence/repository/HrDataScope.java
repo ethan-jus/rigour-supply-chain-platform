@@ -40,6 +40,25 @@ public final class HrDataScope {
         return result;
     }
 
+    /** 费用负责人只返回姓名与部门引用。库存费用的全范围授权可选全部负责人； 受限库存授权仅返回本人，不能借负责人目录扩大员工资料读取范围。 */
+    public Predicate costEmployeePredicate(String action, String alias) {
+        boolean inventory =
+                action.startsWith("erp:cost:purchase:")
+                        || action.startsWith("erp:cost:loss:")
+                        || action.startsWith("erp:cost:rental:")
+                        || action.startsWith("order:logistics-cost:");
+        if (!inventory) return employeePredicate(action, alias);
+        if (!alias.matches("[a-z]*[.]?")) throw new IllegalArgumentException("固定 SQL 别名无效");
+        var policy = policy(action);
+        if (policy == null) return new Predicate("1=0", List.of());
+        var access = ManualCostScope.access(policy, "INVENTORY");
+        if (!access.allowed()) return new Predicate("1=0", List.of());
+        if (access.allCreators() && access.cities() == null) return new Predicate("1=1", List.of());
+        if (policy.employeeCode() == null || policy.employeeCode().isBlank())
+            return new Predicate("1=0", List.of());
+        return new Predicate(alias + "employee_code=?", List.of(policy.employeeCode()));
+    }
+
     public Predicate employeePredicate(String action, String alias) {
         return employeePredicate(policy(action), alias);
     }
@@ -117,8 +136,6 @@ public final class HrDataScope {
         return query.apply(sql.toString(), p.args().toArray());
     }
 
-
-
     public void requireEmployee(String tenant, long id, String action) {
         Predicate p = employeePredicate(action, "");
         List<Object> args = new ArrayList<>(List.of(tenant, id));
@@ -169,11 +186,14 @@ public final class HrDataScope {
     public boolean allDepartments(String action) {
         var policy = policy(action);
         if (policy == null) return true;
-        return policy.clauses().stream().anyMatch(c ->
-                "EMPLOYEE".equals(c.objectType()) && "ALL".equals(c.scopeMode())
-                        && Set.of("NONE", "ALL").contains(c.departments().mode())
-                        && Set.of("NONE", "ALL").contains(c.regions().mode())
-                        && Set.of("NONE", "ALL").contains(c.warehouses().mode()));
+        return policy.clauses().stream()
+                .anyMatch(
+                        c ->
+                                "EMPLOYEE".equals(c.objectType())
+                                        && "ALL".equals(c.scopeMode())
+                                        && Set.of("NONE", "ALL").contains(c.departments().mode())
+                                        && Set.of("NONE", "ALL").contains(c.regions().mode())
+                                        && Set.of("NONE", "ALL").contains(c.warehouses().mode()));
     }
 
     public void requireDepartment(String tenant, long department, String action) {

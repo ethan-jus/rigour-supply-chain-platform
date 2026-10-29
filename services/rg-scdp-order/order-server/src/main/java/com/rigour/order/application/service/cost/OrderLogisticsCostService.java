@@ -102,13 +102,38 @@ public final class OrderLogisticsCostService {
                         q.objectName(),
                         q.sourceSystem(),
                         q.payerCode(),
-                        q.missingAmount()),
+                        q.missingAmount(),
+                        q.senderName(),
+                        q.receiverName(),
+                        q.carrierName()),
                 p);
     }
 
     public LogisticsCostDetailView entry(String value, String id) {
         String c = category(value), p = permission(c, "read");
         return store.entry(actor(p).tenantId().toString(), c, id, p);
+    }
+
+    public List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employees() {
+        String action = permission("LOGISTICS", "read");
+        actor(action);
+        return dictionary.employees(action);
+    }
+
+    private String responsibleEmployee(LogisticsCostCommand command, String action) {
+        if (command.ownerEmployeeCode() == null || command.ownerEmployeeCode().isBlank()) {
+            if (command.departmentId() != null) throw bad("请先选择费用负责人，不接受未经核验的部门或员工");
+            return null;
+        }
+        text(command.ownerEmployeeCode(), 50, "费用负责人员工编号");
+        var employee =
+                dictionary.employees(action).stream()
+                        .filter(e -> e.employeeCode().equals(command.ownerEmployeeCode()))
+                        .findFirst()
+                        .orElseThrow(() -> bad("费用负责人不存在或无权限"));
+        if (!Objects.equals(employee.departmentId(), command.departmentId()))
+            throw bad("负责人部门与员工不一致，请重新选择");
+        return employee.employeeName();
     }
 
     public List<LogisticsCostAuditView> history(String value, String id) {
@@ -153,7 +178,7 @@ public final class OrderLogisticsCostService {
             throw bad("城市名称与授权目录不一致，请重新选择");
         List<LogisticsCostSourceView> sources =
                 new LogisticsCostValidator(store, dictionary).validate(t, c, p, false);
-        String warehouseName = null, employeeName = null;
+        String warehouseName = null, employeeName = responsibleEmployee(c, p);
         return store.save(
                 t,
                 category,
@@ -183,6 +208,7 @@ public final class OrderLogisticsCostService {
         if (confirm) {
             var current = store.entry(a.tenantId().toString(), category, id, p);
             dictionary.city(current.data().cityCode(), p);
+            responsibleEmployee(current.data(), p);
             new LogisticsCostValidator(store, dictionary)
                     .validate(a.tenantId().toString(), current.data(), p, true);
         }

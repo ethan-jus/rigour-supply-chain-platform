@@ -43,6 +43,10 @@ public class HrPayrollComponentEntity {
     }
 
     private String reason;
+    private String createdByName;
+    public String getCreatedByName() { return createdByName; }
+    public void setCreatedByName(String value) { createdByName = value; }
+
     private String createdBy;
     private java.time.LocalDateTime createdTime;
 

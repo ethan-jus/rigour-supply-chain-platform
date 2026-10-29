@@ -24,7 +24,7 @@ public class MybatisPlusHrCostReferenceRepository implements HrCostReferenceStor
     @Override
     public List<HrCostEmployeeView> employees(String tenant, String action) {
         var q = new QueryWrapper<HrEmployeeEntity>().eq("e.tenant_id", tenant).eq("e.deleted", 0);
-        var p = scope.employeePredicate(action, "e.");
+        var p = scope.costEmployeePredicate(action, "e.");
         HrPayrollPersistenceSupport.bind(q, p.sql(), p.args());
         var rows = mapper.employees(q.orderByAsc("e.employee_code").last("LIMIT 20001"));
         if (rows.size() > 20000) throw new IllegalStateException("员工引用超出上限");
