@@ -38,7 +38,44 @@ public class StorePoolService {
         store.update(access,id,c);
     }
     public Context context(String view) {return scope(action(view)).context();}
-    public Page list(Query query) {listView(query.view());validate(query);return store.list(scope(action(query.view())),query);}
+    public Page list(Query query) {
+        listView(query.view());validate(query);var scope=scope(action(query.view()));
+        return store.list(scope,query,typeCodes(scope,query));
+    }
+    public MapResult map(Query query,MapWindow window) {
+        listView(query.view());validate(query);validateWindow(window,false);
+        var scope=scope(action(query.view()));
+        return store.map(scope,query,typeCodes(scope,query),window);
+    }
+    public Page mapStores(Query query,MapWindow window,String coordinateSystem) {
+        listView(query.view());validate(query);validateWindow(window,true);
+        if(!Set.of("GCJ02","WGS84").contains(coordinateSystem))throw new RequestValidationException("坐标系无效");
+        var scope=scope(action(query.view()));
+        return store.mapStores(scope,query,typeCodes(scope,query),window,coordinateSystem);
+    }
+    private Set<String> typeCodes(StoreScope scope,Query query) {
+        String selected=query.storeType();
+        if(selected==null||selected.isBlank()||"__UNCLASSIFIED__".equals(selected))return Set.of();
+        var items=references.storeTypes(scope.access().tenantId());
+        Set<String> codes=new LinkedHashSet<>();codes.add(selected);
+        // 停用项仍可查询历史门店；父级包含全部后代及指向这些项的历史别名。
+        boolean changed;
+        do {
+            changed=false;
+            for(var item:items)if(codes.contains(item.parentDictionaryItemCode())||codes.contains(item.canonicalItemCode()))
+                changed|=codes.add(item.dictionaryItemCode());
+        }while(changed);
+        return codes;
+    }
+    private static void validateWindow(MapWindow window,boolean required) {
+        var bounds=Arrays.asList(window.west(),window.south(),window.east(),window.north());
+        long supplied=bounds.stream().filter(Objects::nonNull).count();
+        if((required&&supplied!=4)||(supplied!=0&&supplied!=4))throw new RequestValidationException("地图范围需要完整的四个边界");
+        if(supplied==4&&(bounds.stream().anyMatch(n->!Double.isFinite(n))
+                ||window.west() < -180||window.east()>180||window.south() < -90||window.north()>90
+                ||window.west()>window.east()||window.south()>window.north()))throw new RequestValidationException("地图范围无效");
+        if(window.zoom()!=null&&(!Double.isFinite(window.zoom())||window.zoom()<2||window.zoom()>20))throw new RequestValidationException("地图缩放级别无效");
+    }
     public Row detail(String id,String view) {id(id);listView(view);return store.detail(scope(action(view)),id);}
     public List<Ownership> ownerships(String id,String view) {id(id);listView(view);store.detail(scope(action(view)),id);return store.ownerships(scope("crm:store:history-read"),id);}
     public void claim(String id,Claim command) {
@@ -63,7 +100,7 @@ public class StorePoolService {
         return store.submit(scope,c);
     }
     public Lead review(String id,Review c) {id(id);request(c.requestId());required(c.reason(),1000,"审核说明");return store.review(scope("crm:lead:review"),id,c);}
-    public Coverage coverage(Query q) {validate(q);return store.coverage(scope("crm:coverage:read"),q);}
+    public Coverage coverage(Query q) {validate(q);var scope=scope("crm:coverage:read");return store.coverage(scope,q,typeCodes(scope,q));}
     private static void listView(String view){if(!Set.of("PUBLIC","MINE","TEAM","COOPERATED","ALL").contains(view))throw new RequestValidationException("门店列表视图无效");}
     private static void employee(StoreScope s) {if(s.access().employeeId()==null)throw new RequestValidationException("当前账号未关联有效员工，不能认领或提报门店");}
     private static void id(String s) {if(s==null||!s.matches("[1-9][0-9]{0,18}"))throw new RequestValidationException("门店或记录ID无效");}
@@ -72,6 +109,7 @@ public class StorePoolService {
     public static void validate(Query q) {
         action(q.view());if(q.size()<1||q.size()>100)throw new RequestValidationException("每页需要1至100条");
         if(q.keyword()!=null&&q.keyword().length()>100)throw new RequestValidationException("查询关键词过长");
+        if(q.storeType()!=null&&!q.storeType().isBlank()&&!"__UNCLASSIFIED__".equals(q.storeType())&&!q.storeType().matches("[A-Z][A-Z0-9_]{0,31}"))throw new RequestValidationException("门店类型编码无效");
         for(String code:Arrays.asList(q.province(),q.city(),q.county()))if(code!=null&&!code.isBlank()&&!code.matches("[0-9]{6}"))throw new RequestValidationException("行政编码无效");
         if(q.cursor()!=null&&!q.cursor().isBlank())id(q.cursor());
         oneOf(q.region(),Set.of("NORTH","NORTHEAST","EAST","CENTRAL","SOUTH","SOUTHWEST","NORTHWEST"));

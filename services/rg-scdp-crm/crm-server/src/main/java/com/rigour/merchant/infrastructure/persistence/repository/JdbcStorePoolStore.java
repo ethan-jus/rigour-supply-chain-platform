@@ -22,6 +22,9 @@ public class JdbcStorePoolStore implements StorePoolStore {
     private record Filter(String sql,List<Object> args) {}
 
     private Filter filter(StoreScope scope,Query query,boolean cursor) {
+        return filter(scope,query,cursor,Set.of());
+    }
+    private Filter filter(StoreScope scope,Query query,boolean cursor,Set<String> typeCodes) {
         var p=StoreScopeSql.compile(scope); var args=new ArrayList<Object>();
         args.add(scope.access().tenantId());args.add(scope.catalog().version());args.addAll(p.args());
         StringBuilder sql=new StringBuilder("q.tenant_id=? AND q.admin_area_version=? AND q.record_status='ACTIVE' AND (").append(p.sql()).append(')');
@@ -36,6 +39,11 @@ public class JdbcStorePoolStore implements StorePoolStore {
         condition(sql,args,"q.city_code",query.city());condition(sql,args,"q.county_code",query.county());
         condition(sql,args,"q.cooperation_status",query.cooperation());condition(sql,args,"q.customer_tier",query.tier());
         condition(sql,args,ACTIVITY,query.activity());condition(sql,args,"q.potential_level",query.potential());
+        if("__UNCLASSIFIED__".equals(query.storeType()))sql.append(" AND (s.store_type_code IS NULL OR s.store_type_code='')");
+        else if(!typeCodes.isEmpty()) {
+            sql.append(" AND s.store_type_code IN (").append(String.join(",",Collections.nCopies(typeCodes.size(),"?"))).append(')');
+            args.addAll(typeCodes);
+        }
         if(query.keyword()!=null&&!query.keyword().isBlank()) {
             sql.append(" AND (LOCATE(?,s.name)>0 OR LOCATE(?,s.address)>0)");args.add(query.keyword().strip());args.add(query.keyword().strip());
         }
@@ -55,10 +63,110 @@ public class JdbcStorePoolStore implements StorePoolStore {
     }
     @Override
     @Transactional(readOnly=true)
-    public Page list(StoreScope scope,Query query) {
-        var totalFilter=filter(scope,query,false);
+    public Page list(StoreScope scope,Query query,Set<String> typeCodes) {
+        var totalFilter=filter(scope,query,false,typeCodes);
         long total=Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+FROM+" WHERE "+totalFilter.sql(),Long.class,totalFilter.args().toArray()));
-        var f=filter(scope,query,true);var args=new ArrayList<Object>();args.add(scope.access().employeeId());args.addAll(f.args());args.add(query.size()+1);
+        var f=filter(scope,query,true,typeCodes);var args=new ArrayList<Object>();args.add(scope.access().employeeId());args.addAll(f.args());args.add(query.size()+1);
+        var rows=jdbc.query(select(scope)+" WHERE "+f.sql()+" ORDER BY q.store_id DESC LIMIT ?",(rs,n)->row(scope,rs),args.toArray());
+        boolean more=rows.size()>query.size();var items=more?rows.subList(0,query.size()):rows;
+        return new Page(total,List.copyOf(items),more?items.getLast().id():null);
+    }
+    private static final String LOCATED="s.longitude BETWEEN -180 AND 180 AND s.latitude BETWEEN -90 AND 90 AND s.coordinate_system IN ('GCJ02','WGS84')";
+    private record MapStats(long total,long located,MapBounds bounds) {}
+
+    @Override
+    @Transactional(readOnly=true)
+    public MapResult map(StoreScope scope,Query query,Set<String> typeCodes,MapWindow window) {
+        var f=filter(scope,query,false,typeCodes);
+        var stats=jdbc.queryForObject("SELECT COUNT(*) AS total,COALESCE(SUM("+LOCATED+"),0) AS located,"
+                +"MIN(CASE WHEN "+LOCATED+" THEN s.longitude END) AS west,MAX(CASE WHEN "+LOCATED+" THEN s.longitude END) AS east,"
+                +"MIN(CASE WHEN "+LOCATED+" THEN s.latitude END) AS south,MAX(CASE WHEN "+LOCATED+" THEN s.latitude END) AS north"
+                +FROM+" WHERE "+f.sql(),(rs,n)->new MapStats(rs.getLong("total"),rs.getLong("located"),rs.getLong("located")==0?null:
+                    new MapBounds(rs.getDouble("west"),rs.getDouble("south"),rs.getDouble("east"),rs.getDouble("north"))),f.args().toArray());
+        double zoom=window.zoom()==null?4:window.zoom();
+        String level=zoom<7?"PROVINCE":zoom<10?"PREFECTURE":zoom<13?"COUNTY":"STORE";
+        if(stats.located()==0)return new MapResult(stats.total(),0,0,null,List.of(),level);
+        if(!"STORE".equals(level))return administrativeMap(scope,f,stats,window,level);
+        var bounds=window.west()==null?stats.bounds():new MapBounds(window.west(),window.south(),window.east(),window.north());
+        // 约 80px 一个聚合格；按视野跨度设置下限，保证全国查询也只有有限网格，不截断门店。
+        double grid=Math.max(360/Math.pow(2,window.zoom()==null?4:window.zoom())/4,
+                Math.max((bounds.east()-bounds.west())/24,(bounds.north()-bounds.south())/16));
+        var visible=mapFilter(f,window,null);
+        double gpsGrid=window.west()==null?grid:Math.max(grid,Math.max((bounds.east()-bounds.west()+.04)/24,(bounds.north()-bounds.south()+.04)/16));
+        long visibleCount=Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+FROM+" WHERE "+visible.sql(),Long.class,visible.args().toArray()));
+        // 街道层优先展示真实位置；密集视野才保留聚合，不能按条数截断门店。
+        boolean exact=visibleCount<=800;
+        var args=new ArrayList<Object>();
+        if(!exact){args.add(gpsGrid);args.add(grid);args.add(gpsGrid);args.add(grid);}
+        args.addAll(visible.args());
+        String cells=exact?"s.longitude AS gx,s.latitude AS gy,":
+                "FLOOR(s.longitude/CASE WHEN s.coordinate_system='WGS84' THEN ? ELSE ? END) AS gx,"
+                +"FLOOR(s.latitude/CASE WHEN s.coordinate_system='WGS84' THEN ? ELSE ? END) AS gy,";
+        String sql="SELECT "+cells+"s.coordinate_system,COUNT(*) AS amount,"
+                +"MIN(s.id) AS store_id,MIN(s.name) AS name,AVG(s.longitude) AS lng,AVG(s.latitude) AS lat,"
+                +"SUM(q.pool_type='PRIVATE') AS private_count,SUM(q.cooperation_status='COOPERATED') AS cooperated_count,"
+                +"MIN(s.longitude) AS west,MAX(s.longitude) AS east,MIN(s.latitude) AS south,MAX(s.latitude) AS north"
+                +FROM+" WHERE "+visible.sql()+" GROUP BY gx,gy,s.coordinate_system ORDER BY gx,gy,s.coordinate_system";
+        var points=jdbc.query(sql,(rs,n)->{
+            long count=rs.getLong("amount");String system=rs.getString("coordinate_system");
+            return new MapPoint(system+":"+rs.getString("gx")+":"+rs.getString("gy"),count==1?rs.getString("store_id"):null,
+                    count==1?rs.getString("name"):null,rs.getDouble("lng"),rs.getDouble("lat"),system,count,
+                    rs.getLong("private_count"),rs.getLong("cooperated_count"),
+                    new MapBounds(rs.getDouble("west"),rs.getDouble("south"),rs.getDouble("east"),rs.getDouble("north")),null,null);
+        },args.toArray());
+        return new MapResult(stats.total(),stats.located(),points.stream().mapToLong(MapPoint::count).sum(),stats.bounds(),points,level);
+    }
+    private MapResult administrativeMap(StoreScope scope,Filter filter,MapStats stats,MapWindow window,String level) {
+        // 先按完整授权/筛选范围汇总，再裁剪区域；不能用视野先裁剪门店而改变同一区域的数字。
+        String area=switch(level) {
+            case "PROVINCE" -> "q.province_code";
+            case "PREFECTURE" -> "COALESCE(q.city_code,q.county_code,q.admin_area_code)";
+            default -> "COALESCE(q.county_code,q.city_code,q.admin_area_code)";
+        };
+        String sql="SELECT "+area+" AS area_code,COUNT(*) AS amount,"
+                +"SUM(q.pool_type='PRIVATE') AS private_count,SUM(q.cooperation_status='COOPERATED') AS cooperated_count,"
+                +"AVG(CASE WHEN "+LOCATED+" AND s.coordinate_system='GCJ02' THEN s.longitude END) AS gcj_lng,"
+                +"AVG(CASE WHEN "+LOCATED+" AND s.coordinate_system='GCJ02' THEN s.latitude END) AS gcj_lat,"
+                +"AVG(CASE WHEN "+LOCATED+" AND s.coordinate_system='WGS84' THEN s.longitude END) AS gps_lng,"
+                +"AVG(CASE WHEN "+LOCATED+" AND s.coordinate_system='WGS84' THEN s.latitude END) AS gps_lat,"
+                +"MIN(CASE WHEN "+LOCATED+" THEN s.longitude END) AS west,MAX(CASE WHEN "+LOCATED+" THEN s.longitude END) AS east,"
+                +"MIN(CASE WHEN "+LOCATED+" THEN s.latitude END) AS south,MAX(CASE WHEN "+LOCATED+" THEN s.latitude END) AS north"
+                +FROM+" WHERE "+filter.sql()+" GROUP BY area_code HAVING west IS NOT NULL ORDER BY area_code";
+        var points=jdbc.query(sql,(rs,n)->{
+            String code=rs.getString("area_code");var node=scope.nodes().get(code);
+            boolean gcj=rs.getObject("gcj_lng")!=null;
+            // 标记采用本区门店分布中心；不同坐标系不混算，也不冒充行政驻地。
+            return new MapPoint("AREA:"+code,null,node==null?code:node.name(),
+                    rs.getDouble(gcj?"gcj_lng":"gps_lng"),rs.getDouble(gcj?"gcj_lat":"gps_lat"),gcj?"GCJ02":"WGS84",
+                    rs.getLong("amount"),rs.getLong("private_count"),rs.getLong("cooperated_count"),
+                    new MapBounds(rs.getDouble("west"),rs.getDouble("south"),rs.getDouble("east"),rs.getDouble("north")),
+                    code,node==null?level:node.level());
+        },filter.args().toArray()).stream().filter(point->{
+            if(window.west()==null)return true;
+            var b=point.bounds();
+            return b.east()+.02>=window.west()&&b.west()-.02<=window.east()&&b.north()+.02>=window.south()&&b.south()-.02<=window.north();
+        }).toList();
+        return new MapResult(stats.total(),stats.located(),points.stream().mapToLong(MapPoint::count).sum(),stats.bounds(),points,level);
+    }
+    private static Filter mapFilter(Filter base,MapWindow window,String coordinateSystem) {
+        var args=new ArrayList<>(base.args());var sql=new StringBuilder(base.sql()).append(" AND ").append(LOCATED);
+        if(coordinateSystem!=null)condition(sql,args,"s.coordinate_system",coordinateSystem);
+        if(window.west()!=null) {
+            // 浏览器视野为 GCJ02；GPS 数据在边界额外取 0.02 度，转换后由地图裁剪，避免遗漏边缘门店。
+            // 点击聚合查看成员时传入原始坐标系及精确边界，不扩展范围。
+            String margin=coordinateSystem==null?"CASE WHEN s.coordinate_system='WGS84' THEN 0.02 ELSE 0 END":"0";
+            sql.append(" AND s.longitude BETWEEN ?-"+margin+" AND ?+"+margin+" AND s.latitude BETWEEN ?-"+margin+" AND ?+"+margin);
+            args.add(window.west());args.add(window.east());args.add(window.south());args.add(window.north());
+        }
+        return new Filter(sql.toString(),args);
+    }
+    @Override
+    @Transactional(readOnly=true)
+    public Page mapStores(StoreScope scope,Query query,Set<String> typeCodes,MapWindow window,String coordinateSystem) {
+        var totalFilter=mapFilter(filter(scope,query,false,typeCodes),window,coordinateSystem);
+        long total=Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+FROM+" WHERE "+totalFilter.sql(),Long.class,totalFilter.args().toArray()));
+        var f=mapFilter(filter(scope,query,true,typeCodes),window,coordinateSystem);
+        var args=new ArrayList<Object>();args.add(scope.access().employeeId());args.addAll(f.args());args.add(query.size()+1);
         var rows=jdbc.query(select(scope)+" WHERE "+f.sql()+" ORDER BY q.store_id DESC LIMIT ?",(rs,n)->row(scope,rs),args.toArray());
         boolean more=rows.size()>query.size();var items=more?rows.subList(0,query.size()):rows;
         return new Page(total,List.copyOf(items),more?items.getLast().id():null);
@@ -230,8 +338,8 @@ public class JdbcStorePoolStore implements StorePoolStore {
                 IdWorker.getId(),scope.access().tenantId(),id,id,scope.access().userId(),scope.access().employeeId(),old.name(),old.address(),old.publicPhone(),old.storeTypeCode(),c.name().strip(),c.address().strip(),c.publicPhone(),c.storeTypeCode(),c.reason(),c.requestId());
     }
     @Override
-    public Coverage coverage(StoreScope scope,Query query) {
-        var f=filter(scope,query,false);
+    public Coverage coverage(StoreScope scope,Query query,Set<String> typeCodes) {
+        var f=filter(scope,query,false,typeCodes);
         return jdbc.queryForObject("SELECT COUNT(*) AS total,COALESCE(SUM(q.pool_type='PUBLIC'),0) AS public_count,COALESCE(SUM(q.pool_type='PRIVATE'),0) AS private_count,COALESCE(SUM(q.cooperation_status='COOPERATED'),0) AS cooperated,COALESCE(SUM(q.valid_visit_count>0),0) AS visited,COALESCE(SUM(q.wecom_active_contact_count>0),0) AS connected,COALESCE(SUM(q.customer_tier='A'),0) AS a,COALESCE(SUM(q.customer_tier='B'),0) AS b,COALESCE(SUM(q.customer_tier='C'),0) AS c,COALESCE(SUM(q.customer_tier='UNRATED'),0) AS unrated,COALESCE(SUM(q.visit_data_status<>'COMPLETE'),0) AS unknown_visit,COALESCE(SUM(q.wecom_data_status<>'COMPLETE'),0) AS unknown_wecom"+FROM+" WHERE "+f.sql(),
                 (rs,n)->new Coverage(rs.getLong("total"),rs.getLong("public_count"),rs.getLong("private_count"),rs.getLong("cooperated"),rs.getLong("visited"),rs.getLong("connected"),rs.getLong("a"),rs.getLong("b"),rs.getLong("c"),rs.getLong("unrated"),rs.getLong("unknown_visit"),rs.getLong("unknown_wecom")),f.args().toArray());
     }

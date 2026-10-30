@@ -39,6 +39,7 @@ public class HttpStoreReferenceClient implements StoreReferenceClient {
         this.iam = iam.replaceAll("/+$", ""); this.foundation = foundation.replaceAll("/+$", "");
     }
     public Set<String> storeTypeCodes(String tenant){return dictionaries.activeCodes(tenant,"CRM_STORE_TYPE");}
+    public List<com.rigour.settings.api.v1.model.DictItemView> storeTypes(String tenant){return dictionaries.effective(tenant,"CRM_STORE_TYPE").items();}
     public StoreAccessView access(String action) {
         var caller = AuthorizationContext.requireCurrent();
         if (!"TENANT".equals(caller.principalScope()) || caller.tenantId() == null || caller.userId() == null)
@@ -48,7 +49,10 @@ public class HttpStoreReferenceClient implements StoreReferenceClient {
         h.put(RequestHeaders.PRINCIPAL_SCOPE, "TENANT");
         h.put(RequestHeaders.PRINCIPAL_ID, caller.principalId().toString());
         h.put(RequestHeaders.USER_ID, caller.userId().toString());
-        var result = client.get().uri(uri).headers(headers -> signed(uri, h).forEach(headers::set)).retrieve().body(StoreAccessView.class);
+        var result = client.get().uri(uri).headers(headers -> signed(uri, h).forEach(headers::set)).retrieve()
+                .onStatus(status -> status.value() == 403, (request, response) -> {
+                    throw new AuthorizationDeniedException(action);
+                }).body(StoreAccessView.class);
         if (result == null || !caller.tenantId().toString().equals(result.tenantId())
                 || !caller.userId().toString().equals(result.userId()) || !action.equals(result.action()))
             throw new IllegalStateException("门店授权上下文不一致");

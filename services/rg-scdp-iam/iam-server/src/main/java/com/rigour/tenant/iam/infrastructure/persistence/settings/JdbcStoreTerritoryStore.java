@@ -33,6 +33,13 @@ public class JdbcStoreTerritoryStore implements StoreTerritoryStore {
         this.tx = new TransactionTemplate(transactions);
     }
 
+    /** Public reference reads have their own permission and do not load HR or department scopes. */
+    @Override
+    public com.rigour.settings.api.v1.model.AdminDivisionCatalog catalog(Actor actor) {
+        settings.requirePermission(actor, "supply:admin-division:read");
+        return divisions.published(actor.tenantId());
+    }
+
     @Override
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public StoreTerritoryModels.Context management(Actor actor) {

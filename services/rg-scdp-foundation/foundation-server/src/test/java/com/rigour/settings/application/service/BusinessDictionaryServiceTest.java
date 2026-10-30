@@ -28,6 +28,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
 /** 验证新业务字典只按 dictionaryCode 维护和解析。 */
@@ -124,6 +125,12 @@ class BusinessDictionaryServiceTest {
 
     @ParameterizedTest
     @CsvSource({
+        "crm:pool:public-read,CRM_STORE_TYPE",
+        "crm:pool:private-read,CRM_STORE_TYPE",
+        "crm:pool:team-read,CRM_STORE_TYPE",
+        "crm:store:cooperation-read,CRM_STORE_TYPE",
+        "crm:store:manage,CRM_STORE_TYPE",
+        "crm:lead:read,CRM_STORE_TYPE",
         "erp:cost:purchase:read,PRODUCT_UNIT",
         "erp:cost:loss:read,PRODUCT_UNIT",
         "erp:cost:rental:read,COST_PREMISES_TYPE",
@@ -149,10 +156,14 @@ class BusinessDictionaryServiceTest {
 
         assertThat(service.resolve(code).items()).extracting(DictItemView::dictionaryItemName)
                 .containsExactly("业务选项");
+        assertThat(service.effective(code).items()).hasSize(1);
     }
 
     @ParameterizedTest
     @CsvSource({
+        "analytics:cost-dashboard:read,CRM_STORE_TYPE",
+        "crm:pool:public-read,PRIVATE_CUSTOM_DICTIONARY",
+        "crm:pool:private-read,PAYROLL_RULE_KIND",
         "erp:cost:purchase:read,MARKETING_EXPENSE_TYPE",
         "hr:expense:read,PRODUCT_UNIT",
         "hr:employee:read,COST_STATUS",
@@ -169,9 +180,10 @@ class BusinessDictionaryServiceTest {
         verifyNoInteractions(store);
     }
 
-    @Test
-    void businessOptionsAccessDoesNotGrantManagementListItemsOrWrites() {
-        setBusinessReader("analytics:cost-dashboard:read");
+    @ParameterizedTest
+    @ValueSource(strings = {"analytics:cost-dashboard:read", "crm:pool:public-read"})
+    void businessOptionsAccessDoesNotGrantManagementListItemsOrWrites(String permission) {
+        setBusinessReader(permission);
         assertThatThrownBy(() -> service.list(null, null)).isInstanceOf(AuthorizationDeniedException.class);
         assertThatThrownBy(() -> service.items(1L)).isInstanceOf(AuthorizationDeniedException.class);
         assertThatThrownBy(() -> service.create(new DictCommand("COST_STATUS","费用状态","COMMON",null,0)))

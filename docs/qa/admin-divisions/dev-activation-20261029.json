@@ -1,0 +1,14 @@
+{
+  "previousVersion": "DEV_CRM_20261028",
+  "publishedVersion": "MCA_20251231",
+  "scope": "DEV only; existing test stores and test department scopes; no legacy customer migration",
+  "devStoresUpdated": 12,
+  "devSummariesUpdated": 12,
+  "devDepartmentScopesUpdated": 2,
+  "legacyCountsUnchanged": {
+    "crm_customer": 2933,
+    "crm_customer_profile": 2896,
+    "crm_customer_area": 33
+  },
+  "appliedAtUtc": "2026-10-29 05:59:49.366620"
+}

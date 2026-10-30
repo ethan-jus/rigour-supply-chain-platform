@@ -15,6 +15,10 @@ public class StorePoolController {
     public ApiResponse<Context> context(@RequestParam(defaultValue="PUBLIC")String view){return ApiResponse.success(service.context(view));}
     @GetMapping
     public ApiResponse<Page> list(@ModelAttribute Query query){return ApiResponse.success(service.list(query));}
+    @GetMapping("/map")
+    public ApiResponse<MapResult> map(@ModelAttribute Query query,@ModelAttribute MapWindow window){return ApiResponse.success(service.map(query,window));}
+    @GetMapping("/map/stores")
+    public ApiResponse<Page> mapStores(@ModelAttribute Query query,@ModelAttribute MapWindow window,@RequestParam String coordinateSystem){return ApiResponse.success(service.mapStores(query,window,coordinateSystem));}
     @GetMapping("/{id}")
     public ApiResponse<Row> detail(@PathVariable String id,@RequestParam(defaultValue="PUBLIC")String view){return ApiResponse.success(service.detail(id,view));}
     @GetMapping("/{id}/ownerships")

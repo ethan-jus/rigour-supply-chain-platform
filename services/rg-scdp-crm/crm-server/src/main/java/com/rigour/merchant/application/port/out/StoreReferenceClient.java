@@ -7,4 +7,5 @@ public interface StoreReferenceClient {
     StoreAccessView access(String action);
     AdminDivisionCatalog divisions();
     java.util.Set<String> storeTypeCodes(String tenant);
+    java.util.List<com.rigour.settings.api.v1.model.DictItemView> storeTypes(String tenant);
 }

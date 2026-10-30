@@ -22,6 +22,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
@@ -120,6 +121,18 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     ResponseEntity<ApiResponse<Void>> handleAuthorizationStateChanged(AuthorizationStateChangedException exception) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(ApiResponse.error("IAM_AUTHORIZATION_CHANGED", exception.getMessage(), List.of()));
+    }
+
+    @ExceptionHandler(HttpServerErrorException.class)
+    ResponseEntity<ApiResponse<Void>> handleUpstreamServerError(HttpServerErrorException exception) {
+        // Gateway 的服务发现失败使用 RestClient 异常，不能落入未知异常后变成 500。
+        if (exception.getStatusCode().value() != HttpStatus.SERVICE_UNAVAILABLE.value()) {
+            return handleUnexpectedException(exception);
+        }
+        log.warn("下游服务暂不可用 requestId={} reason={}",
+                com.rigour.shared.context.RequestContext.getRequestId(), exception.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.error(ErrorCode.SERVICE_UNAVAILABLE));
     }
 
     @ExceptionHandler(ResourceAccessException.class)

@@ -64,6 +64,14 @@ class ApiHttpContractTest {
                 .andExpect(jsonPath("$.message").value("请求过于频繁，请稍后重试"));
     }
 
+    @Test
+    void missingUpstreamKeepsServiceUnavailableStatus() throws Exception {
+        mvc.perform(get("/api/v1/unavailable"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("SERVICE_UNAVAILABLE"))
+                .andExpect(jsonPath("$.message").value("服务暂不可用"));
+    }
+
     @RestController
     static class ContractController {
         @GetMapping({"/api/v1/contract", "/oauth2/example"}) Map<String, Integer> data() { return Map.of("total", 2); }
@@ -74,6 +82,10 @@ class ApiHttpContractTest {
         @GetMapping("/api/v1/number") int number(@RequestParam int count) { return count; }
         @GetMapping("/api/v1/reject") void reject() { throw new RequestValidationException("角色编码不合法"); }
         @GetMapping("/api/v1/broken") void broken() { throw new IllegalArgumentException("SQL password secret"); }
+        @GetMapping("/api/v1/unavailable") void unavailable() {
+            throw new org.springframework.web.client.HttpServerErrorException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "Unable to find instance for private-service");
+        }
         @GetMapping("/api/v1/rate") void rate() { throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "internal limiter detail"); }
     }
 }

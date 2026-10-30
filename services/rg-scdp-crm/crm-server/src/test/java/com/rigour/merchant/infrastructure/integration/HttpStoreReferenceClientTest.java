@@ -33,7 +33,7 @@ class HttpStoreReferenceClientTest {
         trust.setKeysBase64(Map.of("v1", Base64.getEncoder().encodeToString(new byte[32])));
         signer = new TrustedContextSigner(trust);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/internal/v1/business-settings/admin-divisions", exchange -> {
+        server.createContext("/internal/v1/", exchange -> {
             request = new MockHttpServletRequest(exchange.getRequestMethod(), exchange.getRequestURI().getRawPath());
             exchange.getRequestHeaders().forEach((key, values) -> request.addHeader(key, values.getFirst()));
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
@@ -82,5 +82,15 @@ class HttpStoreReferenceClientTest {
         body = "{\"code\":\"OK\",\"data\":null}";
         assertThatThrownBy(client::divisions).isInstanceOf(BusinessException.class)
                 .hasMessage("行政区划目录响应异常，请稍后重试");
+    }
+
+    @Test
+    void deniedStoreActionRemainsForbiddenRatherThanAnInternalError() {
+        status = 403;
+        body = "private downstream diagnostic";
+        assertThatThrownBy(() -> client.access("crm:store:manage"))
+                .isInstanceOf(AuthorizationDeniedException.class)
+                .hasMessageNotContaining(body);
+        assertThat(request.getRequestURI()).isEqualTo("/internal/v1/iam/supply/store-access");
     }
 }

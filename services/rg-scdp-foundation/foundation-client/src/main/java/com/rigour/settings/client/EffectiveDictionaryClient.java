@@ -39,6 +39,10 @@ public final class EffectiveDictionaryClient {
     }
 
     public Set<String> activeCodes(String tenantId, String dictionaryCode) {
+        return com.rigour.settings.client.DictionaryItems.activeCodes(effective(tenantId, dictionaryCode));
+    }
+
+    public EffectiveDictView effective(String tenantId, String dictionaryCode) {
         UUID.fromString(tenantId);
         if (dictionaryCode == null || !dictionaryCode.matches("[A-Z][A-Z0-9_]{0,49}"))
             throw new IllegalArgumentException("字典编码无效");
@@ -79,7 +83,7 @@ public final class EffectiveDictionaryClient {
                     || !dictionaryCode.equals(response.data().dictionary().dictionaryCode())) {
                 throw new IllegalStateException("Invalid dictionary");
             }
-            return com.rigour.settings.client.DictionaryItems.activeCodes(response.data());
+            return response.data();
         } catch (RuntimeException exception) {
             throw new BusinessException(
                     ErrorCode.SERVICE_UNAVAILABLE, "业务字典暂不可核验，请稍后重试", List.of());

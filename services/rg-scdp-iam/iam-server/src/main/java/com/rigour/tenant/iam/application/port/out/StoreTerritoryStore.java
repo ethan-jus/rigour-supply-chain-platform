@@ -6,6 +6,7 @@ import com.rigour.tenant.iam.application.service.management.ManagementModels.Act
 import java.util.List;
 
 public interface StoreTerritoryStore {
+    com.rigour.settings.api.v1.model.AdminDivisionCatalog catalog(Actor actor);
     List<Area> departments(String tenant, List<String> departments);
     record Ceiling(boolean enabled, List<Area> areas) {}
     Ceiling personal(String tenant, String user);

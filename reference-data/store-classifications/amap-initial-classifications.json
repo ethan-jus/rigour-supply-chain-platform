@@ -1,0 +1,1604 @@
+{
+  "source": "高德POI分类与编码 V1.06 20230208",
+  "sourceUrl": "https://lbs.amap.com/api/webservice/download",
+  "downloadUrl": "https://a.amap.com/lbs/static/code_resource/Amap_poicode.zip",
+  "sourceSha256": "6fc13305a1cf8dead9b96a2679807b7861ab6a22a1b709c2a04a5b318c1f7422",
+  "dictionaryCode": "CRM_STORE_TYPE",
+  "nodes": [
+    {
+      "code": "POI_L1_01",
+      "name": "汽车服务",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_02",
+      "name": "汽车销售",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_03",
+      "name": "汽车维修",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_04",
+      "name": "摩托车服务",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_05",
+      "name": "餐饮服务",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_06",
+      "name": "购物服务",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_07",
+      "name": "生活服务",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_08",
+      "name": "体育休闲服务",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_09",
+      "name": "医疗保健服务",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_10",
+      "name": "住宿服务",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_11",
+      "name": "风景名胜",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_12",
+      "name": "商务住宅",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_13",
+      "name": "政府机构及社会团体",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_14",
+      "name": "科教文化服务",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_15",
+      "name": "交通设施服务",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_16",
+      "name": "金融保险服务",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_17",
+      "name": "公司企业",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L1_19",
+      "name": "地名地址信息",
+      "level": 1,
+      "parentCode": null
+    },
+    {
+      "code": "POI_L2_0100",
+      "name": "汽车服务相关",
+      "level": 2,
+      "parentCode": "POI_L1_01"
+    },
+    {
+      "code": "POI_L2_0104",
+      "name": "汽车养护/装饰",
+      "level": 2,
+      "parentCode": "POI_L1_01"
+    },
+    {
+      "code": "POI_L2_0105",
+      "name": "洗车场",
+      "level": 2,
+      "parentCode": "POI_L1_01"
+    },
+    {
+      "code": "POI_L2_0106",
+      "name": "汽车俱乐部",
+      "level": 2,
+      "parentCode": "POI_L1_01"
+    },
+    {
+      "code": "POI_L2_0108",
+      "name": "汽车配件销售",
+      "level": 2,
+      "parentCode": "POI_L1_01"
+    },
+    {
+      "code": "POI_L2_0110",
+      "name": "二手车交易",
+      "level": 2,
+      "parentCode": "POI_L1_01"
+    },
+    {
+      "code": "POI_L2_0111",
+      "name": "充电站",
+      "level": 2,
+      "parentCode": "POI_L1_01"
+    },
+    {
+      "code": "POI_L2_0200",
+      "name": "汽车销售",
+      "level": 2,
+      "parentCode": "POI_L1_02"
+    },
+    {
+      "code": "POI_L2_0300",
+      "name": "汽车维修",
+      "level": 2,
+      "parentCode": "POI_L1_03"
+    },
+    {
+      "code": "POI_L2_0400",
+      "name": "摩托车服务相关",
+      "level": 2,
+      "parentCode": "POI_L1_04"
+    },
+    {
+      "code": "POI_L2_0401",
+      "name": "摩托车销售",
+      "level": 2,
+      "parentCode": "POI_L1_04"
+    },
+    {
+      "code": "POI_L2_0402",
+      "name": "摩托车维修",
+      "level": 2,
+      "parentCode": "POI_L1_04"
+    },
+    {
+      "code": "POI_L2_0500",
+      "name": "餐饮相关场所",
+      "level": 2,
+      "parentCode": "POI_L1_05"
+    },
+    {
+      "code": "POI_L2_0501",
+      "name": "中餐厅",
+      "level": 2,
+      "parentCode": "POI_L1_05"
+    },
+    {
+      "code": "POI_L2_0502",
+      "name": "外国餐厅",
+      "level": 2,
+      "parentCode": "POI_L1_05"
+    },
+    {
+      "code": "POI_L2_0503",
+      "name": "快餐厅",
+      "level": 2,
+      "parentCode": "POI_L1_05"
+    },
+    {
+      "code": "POI_L2_0504",
+      "name": "休闲餐饮场所",
+      "level": 2,
+      "parentCode": "POI_L1_05"
+    },
+    {
+      "code": "POI_L2_0505",
+      "name": "咖啡厅",
+      "level": 2,
+      "parentCode": "POI_L1_05"
+    },
+    {
+      "code": "POI_L2_0506",
+      "name": "茶艺馆",
+      "level": 2,
+      "parentCode": "POI_L1_05"
+    },
+    {
+      "code": "POI_L2_0507",
+      "name": "冷饮店",
+      "level": 2,
+      "parentCode": "POI_L1_05"
+    },
+    {
+      "code": "POI_L2_0508",
+      "name": "糕饼店",
+      "level": 2,
+      "parentCode": "POI_L1_05"
+    },
+    {
+      "code": "POI_L2_0600",
+      "name": "购物相关场所",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0601",
+      "name": "商场",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0602",
+      "name": "便民商店/便利店",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0603",
+      "name": "家电电子卖场",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0604",
+      "name": "超级市场",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0606",
+      "name": "家居建材市场",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0607",
+      "name": "综合市场",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0608",
+      "name": "文化用品店",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0609",
+      "name": "体育用品店",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0611",
+      "name": "服装鞋帽皮具店",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0612",
+      "name": "专卖店",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0613",
+      "name": "特殊买卖场所",
+      "level": 2,
+      "parentCode": "POI_L1_06"
+    },
+    {
+      "code": "POI_L2_0700",
+      "name": "生活服务场所",
+      "level": 2,
+      "parentCode": "POI_L1_07"
+    },
+    {
+      "code": "POI_L2_0702",
+      "name": "信息咨询中心",
+      "level": 2,
+      "parentCode": "POI_L1_07"
+    },
+    {
+      "code": "POI_L2_0706",
+      "name": "电讯营业厅",
+      "level": 2,
+      "parentCode": "POI_L1_07"
+    },
+    {
+      "code": "POI_L2_0711",
+      "name": "美容美发店",
+      "level": 2,
+      "parentCode": "POI_L1_07"
+    },
+    {
+      "code": "POI_L2_0712",
+      "name": "维修站点",
+      "level": 2,
+      "parentCode": "POI_L1_07"
+    },
+    {
+      "code": "POI_L2_0713",
+      "name": "摄影冲印店",
+      "level": 2,
+      "parentCode": "POI_L1_07"
+    },
+    {
+      "code": "POI_L2_0714",
+      "name": "洗浴推拿场所",
+      "level": 2,
+      "parentCode": "POI_L1_07"
+    },
+    {
+      "code": "POI_L2_0716",
+      "name": "中介机构",
+      "level": 2,
+      "parentCode": "POI_L1_07"
+    },
+    {
+      "code": "POI_L2_0718",
+      "name": "彩票彩券销售点",
+      "level": 2,
+      "parentCode": "POI_L1_07"
+    },
+    {
+      "code": "POI_L2_0720",
+      "name": "婴儿服务场所",
+      "level": 2,
+      "parentCode": "POI_L1_07"
+    },
+    {
+      "code": "POI_L2_0721",
+      "name": "共享设备",
+      "level": 2,
+      "parentCode": "POI_L1_07"
+    },
+    {
+      "code": "POI_L2_0800",
+      "name": "体育休闲服务场所",
+      "level": 2,
+      "parentCode": "POI_L1_08"
+    },
+    {
+      "code": "POI_L2_0801",
+      "name": "运动场馆",
+      "level": 2,
+      "parentCode": "POI_L1_08"
+    },
+    {
+      "code": "POI_L2_0802",
+      "name": "高尔夫相关",
+      "level": 2,
+      "parentCode": "POI_L1_08"
+    },
+    {
+      "code": "POI_L2_0803",
+      "name": "娱乐场所",
+      "level": 2,
+      "parentCode": "POI_L1_08"
+    },
+    {
+      "code": "POI_L2_0804",
+      "name": "度假疗养场所",
+      "level": 2,
+      "parentCode": "POI_L1_08"
+    },
+    {
+      "code": "POI_L2_0805",
+      "name": "休闲场所",
+      "level": 2,
+      "parentCode": "POI_L1_08"
+    },
+    {
+      "code": "POI_L2_0806",
+      "name": "影剧院",
+      "level": 2,
+      "parentCode": "POI_L1_08"
+    },
+    {
+      "code": "POI_L2_0900",
+      "name": "医疗保健服务场所",
+      "level": 2,
+      "parentCode": "POI_L1_09"
+    },
+    {
+      "code": "POI_L2_0902",
+      "name": "专科医院",
+      "level": 2,
+      "parentCode": "POI_L1_09"
+    },
+    {
+      "code": "POI_L2_0906",
+      "name": "医药保健销售店",
+      "level": 2,
+      "parentCode": "POI_L1_09"
+    },
+    {
+      "code": "POI_L2_1000",
+      "name": "住宿服务相关",
+      "level": 2,
+      "parentCode": "POI_L1_10"
+    },
+    {
+      "code": "POI_L2_1001",
+      "name": "宾馆酒店",
+      "level": 2,
+      "parentCode": "POI_L1_10"
+    },
+    {
+      "code": "POI_L2_1002",
+      "name": "旅馆招待所",
+      "level": 2,
+      "parentCode": "POI_L1_10"
+    },
+    {
+      "code": "POI_L2_1100",
+      "name": "风景名胜相关",
+      "level": 2,
+      "parentCode": "POI_L1_11"
+    },
+    {
+      "code": "POI_L2_1101",
+      "name": "公园广场",
+      "level": 2,
+      "parentCode": "POI_L1_11"
+    },
+    {
+      "code": "POI_L2_1102",
+      "name": "风景名胜",
+      "level": 2,
+      "parentCode": "POI_L1_11"
+    },
+    {
+      "code": "POI_L2_1200",
+      "name": "商务住宅相关",
+      "level": 2,
+      "parentCode": "POI_L1_12"
+    },
+    {
+      "code": "POI_L2_1201",
+      "name": "产业园区",
+      "level": 2,
+      "parentCode": "POI_L1_12"
+    },
+    {
+      "code": "POI_L2_1202",
+      "name": "楼宇",
+      "level": 2,
+      "parentCode": "POI_L1_12"
+    },
+    {
+      "code": "POI_L2_1203",
+      "name": "住宅区",
+      "level": 2,
+      "parentCode": "POI_L1_12"
+    },
+    {
+      "code": "POI_L2_1301",
+      "name": "政府机关",
+      "level": 2,
+      "parentCode": "POI_L1_13"
+    },
+    {
+      "code": "POI_L2_1304",
+      "name": "社会团体",
+      "level": 2,
+      "parentCode": "POI_L1_13"
+    },
+    {
+      "code": "POI_L2_1400",
+      "name": "科教文化场所",
+      "level": 2,
+      "parentCode": "POI_L1_14"
+    },
+    {
+      "code": "POI_L2_1406",
+      "name": "科技馆",
+      "level": 2,
+      "parentCode": "POI_L1_14"
+    },
+    {
+      "code": "POI_L2_1408",
+      "name": "文化宫",
+      "level": 2,
+      "parentCode": "POI_L1_14"
+    },
+    {
+      "code": "POI_L2_1411",
+      "name": "传媒机构",
+      "level": 2,
+      "parentCode": "POI_L1_14"
+    },
+    {
+      "code": "POI_L2_1412",
+      "name": "学校",
+      "level": 2,
+      "parentCode": "POI_L1_14"
+    },
+    {
+      "code": "POI_L2_1413",
+      "name": "科研机构",
+      "level": 2,
+      "parentCode": "POI_L1_14"
+    },
+    {
+      "code": "POI_L2_1414",
+      "name": "培训机构",
+      "level": 2,
+      "parentCode": "POI_L1_14"
+    },
+    {
+      "code": "POI_L2_1509",
+      "name": "停车场",
+      "level": 2,
+      "parentCode": "POI_L1_15"
+    },
+    {
+      "code": "POI_L2_1600",
+      "name": "金融保险服务机构",
+      "level": 2,
+      "parentCode": "POI_L1_16"
+    },
+    {
+      "code": "POI_L2_1700",
+      "name": "公司企业",
+      "level": 2,
+      "parentCode": "POI_L1_17"
+    },
+    {
+      "code": "POI_L2_1702",
+      "name": "公司",
+      "level": 2,
+      "parentCode": "POI_L1_17"
+    },
+    {
+      "code": "POI_L2_1703",
+      "name": "工厂",
+      "level": 2,
+      "parentCode": "POI_L1_17"
+    },
+    {
+      "code": "POI_L2_1704",
+      "name": "农林牧渔基地",
+      "level": 2,
+      "parentCode": "POI_L1_17"
+    },
+    {
+      "code": "POI_L2_1900",
+      "name": "地名地址信息",
+      "level": 2,
+      "parentCode": "POI_L1_19"
+    },
+    {
+      "code": "POI_L2_1901",
+      "name": "普通地名",
+      "level": 2,
+      "parentCode": "POI_L1_19"
+    },
+    {
+      "code": "POI_L2_1902",
+      "name": "自然地名",
+      "level": 2,
+      "parentCode": "POI_L1_19"
+    },
+    {
+      "code": "POI_L2_1903",
+      "name": "交通地名",
+      "level": 2,
+      "parentCode": "POI_L1_19"
+    },
+    {
+      "code": "POI_010000",
+      "name": "汽车服务相关",
+      "level": 3,
+      "parentCode": "POI_L2_0100"
+    },
+    {
+      "code": "POI_010400",
+      "name": "汽车养护",
+      "level": 3,
+      "parentCode": "POI_L2_0104"
+    },
+    {
+      "code": "POI_010500",
+      "name": "洗车场",
+      "level": 3,
+      "parentCode": "POI_L2_0105"
+    },
+    {
+      "code": "POI_010600",
+      "name": "汽车俱乐部",
+      "level": 3,
+      "parentCode": "POI_L2_0106"
+    },
+    {
+      "code": "POI_010800",
+      "name": "汽车配件销售",
+      "level": 3,
+      "parentCode": "POI_L2_0108"
+    },
+    {
+      "code": "POI_011000",
+      "name": "二手车交易",
+      "level": 3,
+      "parentCode": "POI_L2_0110"
+    },
+    {
+      "code": "POI_011100",
+      "name": "充电站",
+      "level": 3,
+      "parentCode": "POI_L2_0111"
+    },
+    {
+      "code": "POI_020000",
+      "name": "汽车销售",
+      "level": 3,
+      "parentCode": "POI_L2_0200"
+    },
+    {
+      "code": "POI_030000",
+      "name": "汽车维修",
+      "level": 3,
+      "parentCode": "POI_L2_0300"
+    },
+    {
+      "code": "POI_040000",
+      "name": "摩托车服务相关",
+      "level": 3,
+      "parentCode": "POI_L2_0400"
+    },
+    {
+      "code": "POI_040100",
+      "name": "摩托车销售",
+      "level": 3,
+      "parentCode": "POI_L2_0401"
+    },
+    {
+      "code": "POI_040200",
+      "name": "摩托车维修",
+      "level": 3,
+      "parentCode": "POI_L2_0402"
+    },
+    {
+      "code": "POI_050000",
+      "name": "餐饮相关",
+      "level": 3,
+      "parentCode": "POI_L2_0500"
+    },
+    {
+      "code": "POI_050100",
+      "name": "中餐厅",
+      "level": 3,
+      "parentCode": "POI_L2_0501"
+    },
+    {
+      "code": "POI_050101",
+      "name": "综合酒楼",
+      "level": 3,
+      "parentCode": "POI_L2_0501"
+    },
+    {
+      "code": "POI_050103",
+      "name": "广东菜(粤菜)",
+      "level": 3,
+      "parentCode": "POI_L2_0501"
+    },
+    {
+      "code": "POI_050113",
+      "name": "东北菜",
+      "level": 3,
+      "parentCode": "POI_L2_0501"
+    },
+    {
+      "code": "POI_050117",
+      "name": "火锅店",
+      "level": 3,
+      "parentCode": "POI_L2_0501"
+    },
+    {
+      "code": "POI_050118",
+      "name": "特色/地方风味餐厅",
+      "level": 3,
+      "parentCode": "POI_L2_0501"
+    },
+    {
+      "code": "POI_050120",
+      "name": "中式素菜馆",
+      "level": 3,
+      "parentCode": "POI_L2_0501"
+    },
+    {
+      "code": "POI_050200",
+      "name": "外国餐厅",
+      "level": 3,
+      "parentCode": "POI_L2_0502"
+    },
+    {
+      "code": "POI_050201",
+      "name": "西餐厅(综合风味)",
+      "level": 3,
+      "parentCode": "POI_L2_0502"
+    },
+    {
+      "code": "POI_050300",
+      "name": "快餐厅",
+      "level": 3,
+      "parentCode": "POI_L2_0503"
+    },
+    {
+      "code": "POI_050400",
+      "name": "休闲餐饮场所",
+      "level": 3,
+      "parentCode": "POI_L2_0504"
+    },
+    {
+      "code": "POI_050500",
+      "name": "咖啡厅",
+      "level": 3,
+      "parentCode": "POI_L2_0505"
+    },
+    {
+      "code": "POI_050600",
+      "name": "茶艺馆",
+      "level": 3,
+      "parentCode": "POI_L2_0506"
+    },
+    {
+      "code": "POI_050700",
+      "name": "冷饮店",
+      "level": 3,
+      "parentCode": "POI_L2_0507"
+    },
+    {
+      "code": "POI_050800",
+      "name": "糕饼店",
+      "level": 3,
+      "parentCode": "POI_L2_0508"
+    },
+    {
+      "code": "POI_060000",
+      "name": "购物相关场所",
+      "level": 3,
+      "parentCode": "POI_L2_0600"
+    },
+    {
+      "code": "POI_060100",
+      "name": "商场",
+      "level": 3,
+      "parentCode": "POI_L2_0601"
+    },
+    {
+      "code": "POI_060101",
+      "name": "购物中心",
+      "level": 3,
+      "parentCode": "POI_L2_0601"
+    },
+    {
+      "code": "POI_060102",
+      "name": "普通商场",
+      "level": 3,
+      "parentCode": "POI_L2_0601"
+    },
+    {
+      "code": "POI_060200",
+      "name": "便民商店/便利店",
+      "level": 3,
+      "parentCode": "POI_L2_0602"
+    },
+    {
+      "code": "POI_060300",
+      "name": "家电电子卖场",
+      "level": 3,
+      "parentCode": "POI_L2_0603"
+    },
+    {
+      "code": "POI_060304",
+      "name": "苏宁",
+      "level": 3,
+      "parentCode": "POI_L2_0603"
+    },
+    {
+      "code": "POI_060305",
+      "name": "手机销售",
+      "level": 3,
+      "parentCode": "POI_L2_0603"
+    },
+    {
+      "code": "POI_060306",
+      "name": "数码电子",
+      "level": 3,
+      "parentCode": "POI_L2_0603"
+    },
+    {
+      "code": "POI_060400",
+      "name": "超市",
+      "level": 3,
+      "parentCode": "POI_L2_0604"
+    },
+    {
+      "code": "POI_060600",
+      "name": "家居建材市场",
+      "level": 3,
+      "parentCode": "POI_L2_0606"
+    },
+    {
+      "code": "POI_060602",
+      "name": "家具城",
+      "level": 3,
+      "parentCode": "POI_L2_0606"
+    },
+    {
+      "code": "POI_060603",
+      "name": "建材五金市场",
+      "level": 3,
+      "parentCode": "POI_L2_0606"
+    },
+    {
+      "code": "POI_060605",
+      "name": "布艺市场",
+      "level": 3,
+      "parentCode": "POI_L2_0606"
+    },
+    {
+      "code": "POI_060700",
+      "name": "综合市场",
+      "level": 3,
+      "parentCode": "POI_L2_0607"
+    },
+    {
+      "code": "POI_060703",
+      "name": "农副产品市场",
+      "level": 3,
+      "parentCode": "POI_L2_0607"
+    },
+    {
+      "code": "POI_060704",
+      "name": "果品市场",
+      "level": 3,
+      "parentCode": "POI_L2_0607"
+    },
+    {
+      "code": "POI_060706",
+      "name": "水产海鲜市场",
+      "level": 3,
+      "parentCode": "POI_L2_0607"
+    },
+    {
+      "code": "POI_060800",
+      "name": "文化用品店",
+      "level": 3,
+      "parentCode": "POI_L2_0608"
+    },
+    {
+      "code": "POI_060900",
+      "name": "体育用品店",
+      "level": 3,
+      "parentCode": "POI_L2_0609"
+    },
+    {
+      "code": "POI_060907",
+      "name": "户外用品",
+      "level": 3,
+      "parentCode": "POI_L2_0609"
+    },
+    {
+      "code": "POI_061100",
+      "name": "服装鞋帽皮具店",
+      "level": 3,
+      "parentCode": "POI_L2_0611"
+    },
+    {
+      "code": "POI_061101",
+      "name": "品牌服装店",
+      "level": 3,
+      "parentCode": "POI_L2_0611"
+    },
+    {
+      "code": "POI_061200",
+      "name": "专营店",
+      "level": 3,
+      "parentCode": "POI_L2_0612"
+    },
+    {
+      "code": "POI_061202",
+      "name": "珠宝首饰工艺品",
+      "level": 3,
+      "parentCode": "POI_L2_0612"
+    },
+    {
+      "code": "POI_061204",
+      "name": "眼镜店",
+      "level": 3,
+      "parentCode": "POI_L2_0612"
+    },
+    {
+      "code": "POI_061207",
+      "name": "儿童用品店",
+      "level": 3,
+      "parentCode": "POI_L2_0612"
+    },
+    {
+      "code": "POI_061208",
+      "name": "自行车专卖店",
+      "level": 3,
+      "parentCode": "POI_L2_0612"
+    },
+    {
+      "code": "POI_061210",
+      "name": "烟酒专卖店",
+      "level": 3,
+      "parentCode": "POI_L2_0612"
+    },
+    {
+      "code": "POI_061211",
+      "name": "宠物用品店",
+      "level": 3,
+      "parentCode": "POI_L2_0612"
+    },
+    {
+      "code": "POI_061300",
+      "name": "特殊买卖场所",
+      "level": 3,
+      "parentCode": "POI_L2_0613"
+    },
+    {
+      "code": "POI_070000",
+      "name": "生活服务场所",
+      "level": 3,
+      "parentCode": "POI_L2_0700"
+    },
+    {
+      "code": "POI_070200",
+      "name": "信息咨询中心",
+      "level": 3,
+      "parentCode": "POI_L2_0702"
+    },
+    {
+      "code": "POI_070603",
+      "name": "中国移动营业厅",
+      "level": 3,
+      "parentCode": "POI_L2_0706"
+    },
+    {
+      "code": "POI_071100",
+      "name": "美容美发店",
+      "level": 3,
+      "parentCode": "POI_L2_0711"
+    },
+    {
+      "code": "POI_071200",
+      "name": "维修站点",
+      "level": 3,
+      "parentCode": "POI_L2_0712"
+    },
+    {
+      "code": "POI_071300",
+      "name": "摄影冲印",
+      "level": 3,
+      "parentCode": "POI_L2_0713"
+    },
+    {
+      "code": "POI_071400",
+      "name": "洗浴推拿场所",
+      "level": 3,
+      "parentCode": "POI_L2_0714"
+    },
+    {
+      "code": "POI_071600",
+      "name": "中介机构",
+      "level": 3,
+      "parentCode": "POI_L2_0716"
+    },
+    {
+      "code": "POI_071800",
+      "name": "彩票彩券销售点",
+      "level": 3,
+      "parentCode": "POI_L2_0718"
+    },
+    {
+      "code": "POI_072001",
+      "name": "婴儿游泳馆",
+      "level": 3,
+      "parentCode": "POI_L2_0720"
+    },
+    {
+      "code": "POI_072101",
+      "name": "充电宝",
+      "level": 3,
+      "parentCode": "POI_L2_0721"
+    },
+    {
+      "code": "POI_080000",
+      "name": "体育休闲服务场所",
+      "level": 3,
+      "parentCode": "POI_L2_0800"
+    },
+    {
+      "code": "POI_080100",
+      "name": "运动场所",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080101",
+      "name": "综合体育馆",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080102",
+      "name": "保龄球馆",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080103",
+      "name": "网球场",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080104",
+      "name": "篮球场馆",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080105",
+      "name": "足球场",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080107",
+      "name": "溜冰场",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080110",
+      "name": "游泳馆",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080111",
+      "name": "健身中心",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080112",
+      "name": "乒乓球馆",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080113",
+      "name": "台球厅",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080118",
+      "name": "羽毛球场",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080119",
+      "name": "跆拳道场馆",
+      "level": 3,
+      "parentCode": "POI_L2_0801"
+    },
+    {
+      "code": "POI_080201",
+      "name": "高尔夫球场",
+      "level": 3,
+      "parentCode": "POI_L2_0802"
+    },
+    {
+      "code": "POI_080300",
+      "name": "娱乐场所",
+      "level": 3,
+      "parentCode": "POI_L2_0803"
+    },
+    {
+      "code": "POI_080301",
+      "name": "夜总会",
+      "level": 3,
+      "parentCode": "POI_L2_0803"
+    },
+    {
+      "code": "POI_080302",
+      "name": "KTV",
+      "level": 3,
+      "parentCode": "POI_L2_0803"
+    },
+    {
+      "code": "POI_080303",
+      "name": "迪厅",
+      "level": 3,
+      "parentCode": "POI_L2_0803"
+    },
+    {
+      "code": "POI_080304",
+      "name": "酒吧",
+      "level": 3,
+      "parentCode": "POI_L2_0803"
+    },
+    {
+      "code": "POI_080305",
+      "name": "游戏厅",
+      "level": 3,
+      "parentCode": "POI_L2_0803"
+    },
+    {
+      "code": "POI_080306",
+      "name": "棋牌室",
+      "level": 3,
+      "parentCode": "POI_L2_0803"
+    },
+    {
+      "code": "POI_080308",
+      "name": "网吧",
+      "level": 3,
+      "parentCode": "POI_L2_0803"
+    },
+    {
+      "code": "POI_080401",
+      "name": "度假村",
+      "level": 3,
+      "parentCode": "POI_L2_0804"
+    },
+    {
+      "code": "POI_080500",
+      "name": "休闲场所",
+      "level": 3,
+      "parentCode": "POI_L2_0805"
+    },
+    {
+      "code": "POI_080501",
+      "name": "游乐场",
+      "level": 3,
+      "parentCode": "POI_L2_0805"
+    },
+    {
+      "code": "POI_080502",
+      "name": "垂钓园",
+      "level": 3,
+      "parentCode": "POI_L2_0805"
+    },
+    {
+      "code": "POI_080601",
+      "name": "电影院",
+      "level": 3,
+      "parentCode": "POI_L2_0806"
+    },
+    {
+      "code": "POI_090000",
+      "name": "医疗保健服务场所",
+      "level": 3,
+      "parentCode": "POI_L2_0900"
+    },
+    {
+      "code": "POI_090202",
+      "name": "口腔医院",
+      "level": 3,
+      "parentCode": "POI_L2_0902"
+    },
+    {
+      "code": "POI_090601",
+      "name": "药房",
+      "level": 3,
+      "parentCode": "POI_L2_0906"
+    },
+    {
+      "code": "POI_090602",
+      "name": "医疗保健用品",
+      "level": 3,
+      "parentCode": "POI_L2_0906"
+    },
+    {
+      "code": "POI_100000",
+      "name": "住宿服务相关",
+      "level": 3,
+      "parentCode": "POI_L2_1000"
+    },
+    {
+      "code": "POI_100100",
+      "name": "宾馆酒店",
+      "level": 3,
+      "parentCode": "POI_L2_1001"
+    },
+    {
+      "code": "POI_100200",
+      "name": "旅馆招待所",
+      "level": 3,
+      "parentCode": "POI_L2_1002"
+    },
+    {
+      "code": "POI_110000",
+      "name": "旅游景点",
+      "level": 3,
+      "parentCode": "POI_L2_1100"
+    },
+    {
+      "code": "POI_110101",
+      "name": "公园",
+      "level": 3,
+      "parentCode": "POI_L2_1101"
+    },
+    {
+      "code": "POI_110105",
+      "name": "城市广场",
+      "level": 3,
+      "parentCode": "POI_L2_1101"
+    },
+    {
+      "code": "POI_110200",
+      "name": "风景名胜",
+      "level": 3,
+      "parentCode": "POI_L2_1102"
+    },
+    {
+      "code": "POI_110205",
+      "name": "寺庙道观",
+      "level": 3,
+      "parentCode": "POI_L2_1102"
+    },
+    {
+      "code": "POI_120000",
+      "name": "商务住宅相关",
+      "level": 3,
+      "parentCode": "POI_L2_1200"
+    },
+    {
+      "code": "POI_120100",
+      "name": "产业园区",
+      "level": 3,
+      "parentCode": "POI_L2_1201"
+    },
+    {
+      "code": "POI_120200",
+      "name": "楼宇相关",
+      "level": 3,
+      "parentCode": "POI_L2_1202"
+    },
+    {
+      "code": "POI_120201",
+      "name": "商务写字楼",
+      "level": 3,
+      "parentCode": "POI_L2_1202"
+    },
+    {
+      "code": "POI_120300",
+      "name": "住宅区",
+      "level": 3,
+      "parentCode": "POI_L2_1203"
+    },
+    {
+      "code": "POI_120301",
+      "name": "别墅",
+      "level": 3,
+      "parentCode": "POI_L2_1203"
+    },
+    {
+      "code": "POI_120302",
+      "name": "住宅小区",
+      "level": 3,
+      "parentCode": "POI_L2_1203"
+    },
+    {
+      "code": "POI_130100",
+      "name": "政府机关相关",
+      "level": 3,
+      "parentCode": "POI_L2_1301"
+    },
+    {
+      "code": "POI_130105",
+      "name": "乡镇级政府及事业单位",
+      "level": 3,
+      "parentCode": "POI_L2_1301"
+    },
+    {
+      "code": "POI_130407",
+      "name": "行业协会",
+      "level": 3,
+      "parentCode": "POI_L2_1304"
+    },
+    {
+      "code": "POI_130408",
+      "name": "慈善机构",
+      "level": 3,
+      "parentCode": "POI_L2_1304"
+    },
+    {
+      "code": "POI_140000",
+      "name": "科教文化场所",
+      "level": 3,
+      "parentCode": "POI_L2_1400"
+    },
+    {
+      "code": "POI_140600",
+      "name": "科技馆",
+      "level": 3,
+      "parentCode": "POI_L2_1406"
+    },
+    {
+      "code": "POI_140800",
+      "name": "文化宫",
+      "level": 3,
+      "parentCode": "POI_L2_1408"
+    },
+    {
+      "code": "POI_141100",
+      "name": "传媒机构",
+      "level": 3,
+      "parentCode": "POI_L2_1411"
+    },
+    {
+      "code": "POI_141204",
+      "name": "幼儿园",
+      "level": 3,
+      "parentCode": "POI_L2_1412"
+    },
+    {
+      "code": "POI_141300",
+      "name": "科研机构",
+      "level": 3,
+      "parentCode": "POI_L2_1413"
+    },
+    {
+      "code": "POI_141400",
+      "name": "培训机构",
+      "level": 3,
+      "parentCode": "POI_L2_1414"
+    },
+    {
+      "code": "POI_150904",
+      "name": "公共停车场",
+      "level": 3,
+      "parentCode": "POI_L2_1509"
+    },
+    {
+      "code": "POI_160000",
+      "name": "金融保险机构",
+      "level": 3,
+      "parentCode": "POI_L2_1600"
+    },
+    {
+      "code": "POI_170000",
+      "name": "公司企业",
+      "level": 3,
+      "parentCode": "POI_L2_1700"
+    },
+    {
+      "code": "POI_170200",
+      "name": "公司",
+      "level": 3,
+      "parentCode": "POI_L2_1702"
+    },
+    {
+      "code": "POI_170201",
+      "name": "广告装饰",
+      "level": 3,
+      "parentCode": "POI_L2_1702"
+    },
+    {
+      "code": "POI_170204",
+      "name": "机械电子",
+      "level": 3,
+      "parentCode": "POI_L2_1702"
+    },
+    {
+      "code": "POI_170206",
+      "name": "网络科技",
+      "level": 3,
+      "parentCode": "POI_L2_1702"
+    },
+    {
+      "code": "POI_170300",
+      "name": "工厂",
+      "level": 3,
+      "parentCode": "POI_L2_1703"
+    },
+    {
+      "code": "POI_170400",
+      "name": "其它农林牧渔基地",
+      "level": 3,
+      "parentCode": "POI_L2_1704"
+    },
+    {
+      "code": "POI_190000",
+      "name": "地名地址信息",
+      "level": 3,
+      "parentCode": "POI_L2_1900"
+    },
+    {
+      "code": "POI_190108",
+      "name": "村庄级地名",
+      "level": 3,
+      "parentCode": "POI_L2_1901"
+    },
+    {
+      "code": "POI_190203",
+      "name": "山",
+      "level": 3,
+      "parentCode": "POI_L2_1902"
+    },
+    {
+      "code": "POI_190301",
+      "name": "道路名",
+      "level": 3,
+      "parentCode": "POI_L2_1903"
+    }
+  ],
+  "sourcePaths": {
+    "交通设施服务;停车场;公共停车场": "POI_150904",
+    "住宿服务;住宿服务相关;住宿服务相关": "POI_100000",
+    "住宿服务;宾馆酒店;宾馆酒店": "POI_100100",
+    "住宿服务;旅馆招待所;旅馆招待所": "POI_100200",
+    "体育休闲服务;休闲场所;休闲场所": "POI_080500",
+    "体育休闲服务;休闲场所;垂钓园": "POI_080502",
+    "体育休闲服务;休闲场所;游乐场": "POI_080501",
+    "体育休闲服务;体育休闲服务场所;体育休闲服务场所": "POI_080000",
+    "体育休闲服务;娱乐场所;KTV": "POI_080302",
+    "体育休闲服务;娱乐场所;夜总会": "POI_080301",
+    "体育休闲服务;娱乐场所;娱乐场所": "POI_080300",
+    "体育休闲服务;娱乐场所;棋牌室": "POI_080306",
+    "体育休闲服务;娱乐场所;游戏厅": "POI_080305",
+    "体育休闲服务;娱乐场所;网吧": "POI_080308",
+    "体育休闲服务;娱乐场所;迪厅": "POI_080303",
+    "体育休闲服务;娱乐场所;酒吧": "POI_080304",
+    "体育休闲服务;度假疗养场所;度假村": "POI_080401",
+    "体育休闲服务;影剧院;电影院": "POI_080601",
+    "体育休闲服务;运动场馆;乒乓球馆": "POI_080112",
+    "体育休闲服务;运动场馆;保龄球馆": "POI_080102",
+    "体育休闲服务;运动场馆;健身中心": "POI_080111",
+    "体育休闲服务;运动场馆;台球厅": "POI_080113",
+    "体育休闲服务;运动场馆;游泳馆": "POI_080110",
+    "体育休闲服务;运动场馆;溜冰场": "POI_080107",
+    "体育休闲服务;运动场馆;篮球场馆": "POI_080104",
+    "体育休闲服务;运动场馆;综合体育馆": "POI_080101",
+    "体育休闲服务;运动场馆;网球场": "POI_080103",
+    "体育休闲服务;运动场馆;羽毛球场": "POI_080118",
+    "体育休闲服务;运动场馆;足球场": "POI_080105",
+    "体育休闲服务;运动场馆;跆拳道场馆": "POI_080119",
+    "体育休闲服务;运动场馆;运动场所": "POI_080100",
+    "体育休闲服务;高尔夫相关;高尔夫球场": "POI_080201",
+    "公司企业;公司;公司": "POI_170200",
+    "公司企业;公司;广告装饰": "POI_170201",
+    "公司企业;公司;机械电子": "POI_170204",
+    "公司企业;公司;网络科技": "POI_170206",
+    "公司企业;公司企业;公司企业": "POI_170000",
+    "公司企业;农林牧渔基地;其它农林牧渔基地": "POI_170400",
+    "公司企业;工厂;工厂": "POI_170300",
+    "医疗保健服务;专科医院;口腔医院": "POI_090202",
+    "医疗保健服务;医疗保健服务场所;医疗保健服务场所": "POI_090000",
+    "医疗保健服务;医药保健销售店;医疗保健用品": "POI_090602",
+    "医疗保健服务;医药保健销售店;药房": "POI_090601",
+    "商务住宅;产业园区;产业园区": "POI_120100",
+    "商务住宅;住宅区;住宅区": "POI_120300",
+    "商务住宅;住宅区;住宅小区": "POI_120302",
+    "商务住宅;住宅区;别墅": "POI_120301",
+    "商务住宅;商务住宅相关;商务住宅相关": "POI_120000",
+    "商务住宅;楼宇;商务写字楼": "POI_120201",
+    "商务住宅;楼宇;楼宇相关": "POI_120200",
+    "地名地址信息;交通地名;道路名": "POI_190301",
+    "地名地址信息;地名地址信息;地名地址信息": "POI_190000",
+    "地名地址信息;普通地名;村庄级地名": "POI_190108",
+    "地名地址信息;自然地名;山": "POI_190203",
+    "摩托车服务;摩托车服务相关;摩托车服务相关": "POI_040000",
+    "摩托车服务;摩托车维修;摩托车维修": "POI_040200",
+    "摩托车服务;摩托车销售;摩托车销售": "POI_040100",
+    "政府机构及社会团体;政府机关;乡镇级政府及事业单位": "POI_130105",
+    "政府机构及社会团体;政府机关;政府机关相关": "POI_130100",
+    "政府机构及社会团体;社会团体;慈善机构": "POI_130408",
+    "政府机构及社会团体;社会团体;行业协会": "POI_130407",
+    "汽车服务;二手车交易;二手车交易": "POI_011000",
+    "汽车服务;充电站;充电站": "POI_011100",
+    "汽车服务;汽车俱乐部;汽车俱乐部": "POI_010600",
+    "汽车服务;汽车养护/装饰;汽车养护": "POI_010400",
+    "汽车服务;汽车服务相关;汽车服务相关": "POI_010000",
+    "汽车服务;汽车配件销售;汽车配件销售": "POI_010800",
+    "汽车服务;洗车场;洗车场": "POI_010500",
+    "汽车维修;汽车维修;汽车维修": "POI_030000",
+    "汽车销售;汽车销售;汽车销售": "POI_020000",
+    "生活服务;中介机构;中介机构": "POI_071600",
+    "生活服务;信息咨询中心;信息咨询中心": "POI_070200",
+    "生活服务;共享设备;充电宝": "POI_072101",
+    "生活服务;婴儿服务场所;婴儿游泳馆": "POI_072001",
+    "生活服务;彩票彩券销售点;彩票彩券销售点": "POI_071800",
+    "生活服务;摄影冲印店;摄影冲印": "POI_071300",
+    "生活服务;洗浴推拿场所;洗浴推拿场所": "POI_071400",
+    "生活服务;生活服务场所;生活服务场所": "POI_070000",
+    "生活服务;电讯营业厅;中国移动营业厅": "POI_070603",
+    "生活服务;维修站点;维修站点": "POI_071200",
+    "生活服务;美容美发店;美容美发店": "POI_071100",
+    "科教文化服务;传媒机构;传媒机构": "POI_141100",
+    "科教文化服务;培训机构;培训机构": "POI_141400",
+    "科教文化服务;学校;幼儿园": "POI_141204",
+    "科教文化服务;文化宫;文化宫": "POI_140800",
+    "科教文化服务;科技馆;科技馆": "POI_140600",
+    "科教文化服务;科教文化场所;科教文化场所": "POI_140000",
+    "科教文化服务;科研机构;科研机构": "POI_141300",
+    "购物服务;专卖店;专营店": "POI_061200",
+    "购物服务;专卖店;儿童用品店": "POI_061207",
+    "购物服务;专卖店;宠物用品店": "POI_061211",
+    "购物服务;专卖店;烟酒专卖店": "POI_061210",
+    "购物服务;专卖店;珠宝首饰工艺品": "POI_061202",
+    "购物服务;专卖店;眼镜店": "POI_061204",
+    "购物服务;专卖店;自行车专卖店": "POI_061208",
+    "购物服务;体育用品店;体育用品店": "POI_060900",
+    "购物服务;体育用品店;户外用品": "POI_060907",
+    "购物服务;便民商店/便利店;便民商店/便利店": "POI_060200",
+    "购物服务;商场;商场": "POI_060100",
+    "购物服务;商场;普通商场": "POI_060102",
+    "购物服务;商场;购物中心": "POI_060101",
+    "购物服务;家居建材市场;家具城": "POI_060602",
+    "购物服务;家居建材市场;家居建材市场": "POI_060600",
+    "购物服务;家居建材市场;布艺市场": "POI_060605",
+    "购物服务;家居建材市场;建材五金市场": "POI_060603",
+    "购物服务;家电电子卖场;家电电子卖场": "POI_060300",
+    "购物服务;家电电子卖场;手机销售": "POI_060305",
+    "购物服务;家电电子卖场;数码电子": "POI_060306",
+    "购物服务;家电电子卖场;苏宁": "POI_060304",
+    "购物服务;文化用品店;文化用品店": "POI_060800",
+    "购物服务;服装鞋帽皮具店;品牌服装店": "POI_061101",
+    "购物服务;服装鞋帽皮具店;服装鞋帽皮具店": "POI_061100",
+    "购物服务;特殊买卖场所;特殊买卖场所": "POI_061300",
+    "购物服务;综合市场;农副产品市场": "POI_060703",
+    "购物服务;综合市场;果品市场": "POI_060704",
+    "购物服务;综合市场;水产海鲜市场": "POI_060706",
+    "购物服务;综合市场;综合市场": "POI_060700",
+    "购物服务;购物相关场所;购物相关场所": "POI_060000",
+    "购物服务;超级市场;超市": "POI_060400",
+    "金融保险服务;金融保险服务机构;金融保险机构": "POI_160000",
+    "风景名胜;公园广场;公园": "POI_110101",
+    "风景名胜;公园广场;城市广场": "POI_110105",
+    "风景名胜;风景名胜;寺庙道观": "POI_110205",
+    "风景名胜;风景名胜;风景名胜": "POI_110200",
+    "风景名胜;风景名胜相关;旅游景点": "POI_110000",
+    "餐饮服务;中餐厅;东北菜": "POI_050113",
+    "餐饮服务;中餐厅;中式素菜馆": "POI_050120",
+    "餐饮服务;中餐厅;中餐厅": "POI_050100",
+    "餐饮服务;中餐厅;广东菜(粤菜)": "POI_050103",
+    "餐饮服务;中餐厅;火锅店": "POI_050117",
+    "餐饮服务;中餐厅;特色/地方风味餐厅": "POI_050118",
+    "餐饮服务;中餐厅;综合酒楼": "POI_050101",
+    "餐饮服务;休闲餐饮场所;休闲餐饮场所": "POI_050400",
+    "餐饮服务;冷饮店;冷饮店": "POI_050700",
+    "餐饮服务;咖啡厅;咖啡厅": "POI_050500",
+    "餐饮服务;外国餐厅;外国餐厅": "POI_050200",
+    "餐饮服务;外国餐厅;西餐厅(综合风味)": "POI_050201",
+    "餐饮服务;快餐厅;快餐厅": "POI_050300",
+    "餐饮服务;糕饼店;糕饼店": "POI_050800",
+    "餐饮服务;茶艺馆;茶艺馆": "POI_050600",
+    "餐饮服务;餐饮相关场所;餐饮相关": "POI_050000"
+  }
+}

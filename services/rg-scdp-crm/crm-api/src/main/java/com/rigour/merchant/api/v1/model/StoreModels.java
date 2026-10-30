@@ -22,7 +22,19 @@ public final class StoreModels {
     public record Page(long total, List<Row> items, String nextCursor) {}
     public record Query(String view, String keyword, String region, String province, String city,
             String county, String cooperation, String tier, String activity, String potential,
-            String cursor, int size) {}
+            String cursor, int size, String storeType) {
+        public Query(String view, String keyword, String region, String province, String city,
+                String county, String cooperation, String tier, String activity, String potential,
+                String cursor, int size) {
+            this(view, keyword, region, province, city, county, cooperation, tier, activity, potential, cursor, size, null);
+        }
+    }
+    public record MapWindow(Double west, Double south, Double east, Double north, Double zoom) {}
+    public record MapBounds(double west, double south, double east, double north) {}
+    public record MapPoint(String id, String storeId, String name, double longitude, double latitude,
+            String coordinateSystem, long count, long privateCount, long cooperatedCount, MapBounds bounds,
+            String areaCode, String areaLevel) {}
+    public record MapResult(long total, long located, long visible, MapBounds bounds, List<MapPoint> points, String level) {}
     public record Claim(String requestId, long revision) {}
     public record Release(String requestId, long revision, String reason) {}
     public record LeadCommand(String requestId, String name, String address, String areaCode,

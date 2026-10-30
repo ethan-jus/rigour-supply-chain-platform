@@ -52,6 +52,9 @@ public class BusinessDictionaryService {
             "PAYROLL_STATUS", "PAYROLL_RULE_KIND", "COMMISSION_RECIPIENT_ROLE", "PRODUCT_UNIT");
     private static final Set<String> ATTENDANCE_DICTIONARIES =
             Set.of("ATTENDANCE_LEAVE_TYPE", "ATTENDANCE_STATUS");
+    private static final Set<String> STORE_CLASSIFICATION_READERS = Set.of(
+            "crm:pool:public-read", "crm:pool:private-read", "crm:pool:team-read",
+            "crm:store:cooperation-read", "crm:store:manage", "crm:lead:read");
     private static final Map<String, Set<String>> BUSINESS_READ_PERMISSIONS = Map.ofEntries(
             Map.entry("PRODUCT_UNIT", Set.of("erp:cost:purchase:read", "erp:cost:loss:read")),
             Map.entry("MARKETING_EXPENSE_TYPE", Set.of("erp:cost:marketing:read")),
@@ -164,6 +167,8 @@ public class BusinessDictionaryService {
 
     private static void requireResolvePermission(String code) {
         if (AuthorizationContext.hasPermission(READ_PERMISSION)) return;
+        if ("CRM_STORE_TYPE".equals(code)
+                && STORE_CLASSIFICATION_READERS.stream().anyMatch(AuthorizationContext::hasPermission)) return;
         if (PAYROLL_DICTIONARIES.contains(code)
                 && (AuthorizationContext.hasPermission("hr:payroll:read")
                         || AuthorizationContext.hasPermission("hr:payroll-rule:read"))) return;
