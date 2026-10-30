@@ -309,4 +309,43 @@ class ManualLogisticsCostTest {
                         any());
         assertThat(c.logistics().externalDocuments().getFirst().sourceSystem()).isEqualTo("DHB");
     }
+
+    @Test
+    void recordsTheValidatedFreightOwnerRatherThanTheRecorder() {
+        var node = json.valueToTree(command("NONE", "[]", ""));
+        ((tools.jackson.databind.node.ObjectNode) node)
+                .put("ownerEmployeeCode", "E9")
+                .put("departmentId", 9);
+        var c = json.treeToValue(node, LogisticsCostCommand.class);
+        when(refs.employees("order:logistics-cost:write"))
+                .thenReturn(List.of(new LogisticsCostEmployeeView("E9", "北京负责人", 9L, "北京市")));
+        service.save("logistics", null, c);
+        verify(store)
+                .save(
+                        any(),
+                        eq("LOGISTICS"),
+                        isNull(),
+                        eq(c),
+                        eq(List.of()),
+                        isNull(),
+                        eq("北京负责人"),
+                        any(),
+                        eq("order:logistics-cost:write"));
+    }
+
+    @Test
+    void freightOwnerMustBeVisibleAndMatchTheirDepartment() {
+        var node =
+                (tools.jackson.databind.node.ObjectNode)
+                        json.valueToTree(command("NONE", "[]", ""));
+        node.put("ownerEmployeeCode", "E9").put("departmentId", 9);
+        var c = json.treeToValue(node, LogisticsCostCommand.class);
+        when(refs.employees(any())).thenReturn(List.of());
+        assertThatThrownBy(() -> service.save("logistics", null, c))
+                .hasMessageContaining("负责人不存在或无权限");
+        when(refs.employees(any()))
+                .thenReturn(List.of(new LogisticsCostEmployeeView("E9", "员工", 8L, "运营部")));
+        assertThatThrownBy(() -> service.save("logistics", null, c)).hasMessageContaining("负责人部门");
+        verify(store, never()).save(any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
 }

@@ -10,6 +10,9 @@ public class HrAttendanceRuleEntity {
     public Long departmentId;
     public Integer expectedDays;
     public Integer revision;
+    public String createdBy;
+    public String createdByName;
+    public java.time.LocalDateTime createdTime;
     public String updatedBy;
     public java.time.LocalDateTime updatedTime;
 }

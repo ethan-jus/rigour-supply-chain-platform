@@ -21,10 +21,10 @@ public final class HrEmployeeController implements HrEmployeeApi {
             int begin, int step, String keyword, String employeeCode, String employeeName,
             String mobile, String employmentStatus, String jobCategory, String positionName,
             String regionName, String cityName, String sourceSystem, Long departmentId,
-            Boolean includeSubDepartments, String positionCode, String jobGrade, String sortBy, String sortDirection, Boolean regularized, String payrollCategory, Boolean payrollMissing) {
+            Boolean includeSubDepartments, String positionCode, String jobGrade, String sortBy, String sortDirection, Boolean regularized, String payrollCategory, Boolean payrollMissing, String dhbAccount) {
         return ApiResponse.success(service.employees(begin, step, keyword, employeeCode, employeeName,
                 mobile, employmentStatus, jobCategory, positionName, regionName, cityName, sourceSystem,
-                departmentId, includeSubDepartments, positionCode, jobGrade, sortBy, sortDirection, regularized, payrollCategory, payrollMissing));
+                departmentId, includeSubDepartments, positionCode, jobGrade, sortBy, sortDirection, regularized, payrollCategory, payrollMissing, dhbAccount));
     }
 
     @Override

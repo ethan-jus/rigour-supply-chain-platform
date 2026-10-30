@@ -131,7 +131,9 @@ public final class ErpCostService {
                         q.lossReason(),
                         q.ownerName(),
                         q.payeeName(),
-                        q.landlordName()),
+                        q.landlordName(),
+                        q.productName(),
+                        q.specification()),
                 p);
     }
 
@@ -146,8 +148,13 @@ public final class ErpCostService {
     }
 
     public List<ErpCostEmployeeView> employees() {
-        actor(permission("MARKETING", "read"));
-        return references.employees(permission("MARKETING", "read"));
+        return employees("marketing");
+    }
+
+    public List<ErpCostEmployeeView> employees(String value) {
+        String action = permission(category(value), "read");
+        actor(action);
+        return references.employees(action);
     }
 
     public ErpCostDetailView save(String value, String id, ErpCostCommand command) {
@@ -204,6 +211,19 @@ public final class ErpCostService {
         if ("PAID".equals(c.paymentStatusCode()) && c.amount() == null) throw bad("已付款费用必须填写金额");
         List<ErpCostSourceView> sources = List.of();
         String warehouseName = null, employeeName = null;
+        if (c.ownerEmployeeCode() != null && !c.ownerEmployeeCode().isBlank()) {
+            text(c.ownerEmployeeCode(), 50, "费用负责人员工编号");
+            var employee =
+                    references.employees(p).stream()
+                            .filter(e -> e.employeeCode().equals(c.ownerEmployeeCode()))
+                            .findFirst()
+                            .orElseThrow(() -> bad("费用负责人不存在或无权限"));
+            if (!Objects.equals(employee.departmentId(), c.departmentId()))
+                throw bad("负责人部门与员工不一致，请重新选择");
+            employeeName = employee.employeeName();
+        } else if (c.departmentId() != null) {
+            throw bad("请先选择费用负责人，不接受未经核验的部门或员工编号");
+        }
         if ("RENTAL".equals(category)) {
             if (c.rental() == null || c.goods() != null) throw bad("场地参数无效");
             var r = c.rental();
@@ -236,17 +256,8 @@ public final class ErpCostService {
         } else if ("MARKETING".equals(category)) {
             if (c.rental() != null || c.goods() != null) throw bad("营销参数无效");
             valid(t, "MARKETING_EXPENSE_TYPE", c.typeCode());
-            if (c.ownerEmployeeCode() != null && !c.ownerEmployeeCode().isBlank()) {
-                var employee =
-                        references.employees(p).stream()
-                                .filter(e -> e.employeeCode().equals(c.ownerEmployeeCode()))
-                                .findFirst()
-                                .orElseThrow(() -> bad("经办员工不存在或无权限"));
-                if (!Objects.equals(employee.departmentId(), c.departmentId()))
-                    throw bad("归属部门与员工不一致");
-                employeeName = employee.employeeName();
-            } else {
-                required(c.ownerName(), 120, "经办人");
+            if (employeeName == null) {
+                required(c.ownerName(), 120, "费用负责人");
                 employeeName = c.ownerName();
             }
         } else {
@@ -319,12 +330,6 @@ public final class ErpCostService {
                                 source.senderCode())) throw bad("供应商须与采购单一致");
             }
         }
-        if (!("MARKETING".equals(category)
-                        && c.ownerEmployeeCode() != null
-                        && !c.ownerEmployeeCode().isBlank())
-                && (c.departmentId() != null
-                        || c.ownerEmployeeCode() != null && !c.ownerEmployeeCode().isBlank()))
-            throw bad("手工记录按录入人归属，不接受未经关联核验的部门或员工编号");
         return new ValidatedCost(sources, warehouseName, employeeName);
     }
 

@@ -99,7 +99,7 @@ public class HrAttendanceService {
                 rule.locked(),
                 store.ruleWritable(tenant, departmentId),
                 calendarDays,
-                calendarMessage);
+                calendarMessage, rule.createdBy(), rule.createdByName(), rule.createdTime());
     }
 
     public AttendanceRuleListView rules(
@@ -175,7 +175,7 @@ public class HrAttendanceService {
                                                         tenant,
                                                         r.departmentId() == 0
                                                                 ? null
-                                                                : r.departmentId())))
+                                                                : r.departmentId()), r.createdBy(), r.createdByName(), r.createdTime()))
                         .toList();
         return new AttendanceRuleListView(
                 value,

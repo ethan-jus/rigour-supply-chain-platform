@@ -28,7 +28,9 @@ public interface HrAttendanceStore {
 
     record EmployeeFilter(String name, String code, Long departmentId, String attendanceStatus) {}
 
-    record RuleRecord(long departmentId, int expectedDays, int revision, Instant updatedTime) {}
+    record RuleRecord(long departmentId, int expectedDays, int revision, Instant updatedTime, String createdBy, String createdByName, Instant createdTime) {
+        public RuleRecord(long departmentId, int expectedDays, int revision, Instant updatedTime) { this(departmentId, expectedDays, revision, updatedTime, null, null, null); }
+    }
 
     record RuleOverview(List<RuleRecord> rules, Set<Long> lockedDepartmentIds) {}
 

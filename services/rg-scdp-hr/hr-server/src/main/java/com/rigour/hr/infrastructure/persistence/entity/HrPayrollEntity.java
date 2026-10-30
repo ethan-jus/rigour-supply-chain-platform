@@ -21,6 +21,10 @@ public class HrPayrollEntity {
     private String statusCode;
     private Integer revision;
     private String calculationJson;
+    private String createdByName;
+    public String getCreatedByName() { return createdByName; }
+    public void setCreatedByName(String value) { createdByName = value; }
+
     private String createdBy;
     private String updatedBy;
     private LocalDateTime createdTime;

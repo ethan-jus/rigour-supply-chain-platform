@@ -33,7 +33,8 @@ public interface HrEmployeeApi {
             @RequestParam(required = false) String sortDirection,
             @RequestParam(required = false) Boolean regularized,
             @RequestParam(required = false) String payrollCategory,
-            @RequestParam(required = false) Boolean payrollMissing);
+            @RequestParam(required = false) Boolean payrollMissing,
+            @RequestParam(required = false) String dhbAccount);
 
     @GetMapping(BASE_PATH + "/{id}")
     ApiResponse<HrEmployeeView> employee(@PathVariable("id") Long id);

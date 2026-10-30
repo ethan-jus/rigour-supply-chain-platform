@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Set;
 
 public interface OrderLogisticsReferences {
+    List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employees(String action);
+
     String city(String code, String action);
 
     String party(String kind, Long id, String city, String action);

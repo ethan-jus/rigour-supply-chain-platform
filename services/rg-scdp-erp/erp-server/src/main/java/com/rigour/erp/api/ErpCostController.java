@@ -85,7 +85,7 @@ public final class ErpCostController implements ErpCostApi {
     }
 
     @Override
-    public ApiResponse<List<ErpCostEmployeeView>> employees() {
-        return ApiResponse.success(service.employees());
+    public ApiResponse<List<ErpCostEmployeeView>> employees(String category) {
+        return ApiResponse.success(service.employees(category));
     }
 }

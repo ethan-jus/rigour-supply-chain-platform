@@ -327,4 +327,40 @@ class ManualErpCostTest {
                 .hasMessageContaining("城市名称");
         verify(store, never()).save(any(), any(), any(), any(), any(), any(), any(), any(), any());
     }
+
+    @Test
+    void businessOwnerIsVerifiedIndependentlyFromTheRecordingActor() {
+        when(refs.employees("erp:cost:purchase:write"))
+                .thenReturn(
+                        List.of(new ErpCostEmployeeView("BEIJING-MANAGER", "北京负责人", 9L, "北京市")));
+        var c =
+                command(
+                        "\"ownerEmployeeCode\":\"BEIJING-MANAGER\",\"departmentId\":9,\"ownerName\":\"伪造姓名\",\"goods\":{\"productName\":\"商品\",\"unit\":\"箱\",\"unitPrice\":1}");
+        service.save("purchases", null, c);
+        verify(store)
+                .save(
+                        any(),
+                        eq("PURCHASE"),
+                        isNull(),
+                        eq(c),
+                        eq(List.of()),
+                        isNull(),
+                        eq("北京负责人"),
+                        any(),
+                        eq("erp:cost:purchase:write"));
+    }
+
+    @Test
+    void ownerOutsideScopedDirectoryAndForgedDepartmentAreRejected() {
+        var c =
+                command(
+                        "\"ownerEmployeeCode\":\"E1\",\"departmentId\":9,\"goods\":{\"productName\":\"商品\",\"unit\":\"箱\",\"unitPrice\":1}");
+        when(refs.employees(any())).thenReturn(List.of());
+        assertThatThrownBy(() -> service.save("purchases", null, c))
+                .hasMessageContaining("负责人不存在或无权限");
+        when(refs.employees(any()))
+                .thenReturn(List.of(new ErpCostEmployeeView("E1", "员工", 8L, "运营部")));
+        assertThatThrownBy(() -> service.save("purchases", null, c)).hasMessageContaining("负责人部门");
+        verify(store, never()).save(any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
 }

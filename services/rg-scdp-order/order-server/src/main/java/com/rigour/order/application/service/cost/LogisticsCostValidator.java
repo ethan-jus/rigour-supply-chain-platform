@@ -46,8 +46,6 @@ final class LogisticsCostValidator {
             throw bad("未关联的外部单据请选择混合来源模式");
         if (route.voucherIds() != null && !route.voucherIds().isEmpty())
             throw bad("请从来源单据详情查看入出库凭证");
-        if (command.departmentId() != null || present(command.ownerEmployeeCode()))
-            throw bad("物流记录不接受未经核验的部门或员工");
         optional(route.carrierName(), 120, "承运方");
         if (confirm) required(route.carrierName(), 120, "承运方");
         optional(route.trackingNo(), 100, "运单号");

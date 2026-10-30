@@ -56,6 +56,9 @@ public class HrAttendancePersistenceTest {
                         .replaceAll(
                                 "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
                                 ""));
+        jdbc.execute("ALTER TABLE hr_attendance_rule ADD COLUMN created_by VARCHAR(50)");
+        jdbc.execute("ALTER TABLE hr_attendance_rule ADD COLUMN created_by_name VARCHAR(128)");
+        jdbc.execute("ALTER TABLE hr_attendance_rule ADD COLUMN created_time DATETIME");
         jdbc.update(
                 "INSERT INTO"
                     + " hr_attendance_rule(tenant_id,attendance_month,expected_days,revision,updated_by)"
@@ -577,6 +580,19 @@ public class HrAttendancePersistenceTest {
     }
 
     @Test
+    void creatorAndCreationTimeRemainOriginalWhenAnotherPersonEdits() {
+        org.springframework.test.util.ReflectionTestUtils.setField(store, "auditNames",
+                (com.rigour.hr.application.port.out.HrAuditActorNameResolver) (tenant, actor) -> "创建者-" + actor);
+        var created = store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "U");
+        var edited = store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 25, 1), "V");
+        assertThat(edited.createdBy()).isEqualTo("U");
+        assertThat(edited.createdByName()).isEqualTo("创建者-U");
+        assertThat(edited.createdTime()).isEqualTo(created.createdTime());
+        assertThat(jdbc.queryForObject("SELECT updated_by FROM hr_attendance_rule WHERE tenant_id='T1' AND attendance_month='2026-09' AND department_id=0", String.class)).isEqualTo("V");
+        assertThat(store.ruleOverview("T1", "2026-09").rules().getFirst().createdByName()).isEqualTo("创建者-U");
+    }
+
+    @Test
     void rulesStayInTheirMonthAndTenantAndRejectLostUpdates() {
         store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 26, 0), "U");
         assertThat(store.rule("T1", "2026-10", null).expectedDays()).isNull();
@@ -590,7 +606,12 @@ public class HrAttendancePersistenceTest {
                 .hasMessageContaining("已变更");
         store.saveRule("T1", new AttendanceRuleCommand("2026-09", null, 22, 1), "U");
         assertThat(store.rule("T1", "2026-09", null))
-                .isEqualTo(new AttendanceRuleView("2026-09", null, 22, 2, 22, false));
+                .satisfies(rule -> {
+                    assertThat(rule.expectedDays()).isEqualTo(22);
+                    assertThat(rule.revision()).isEqualTo(2);
+                    assertThat(rule.createdBy()).isEqualTo("U");
+                    assertThat(rule.createdTime()).isNotNull();
+                });
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_attendance_audit", Integer.class))
                 .isEqualTo(2);
     }
@@ -613,7 +634,7 @@ public class HrAttendancePersistenceTest {
         store.saveRule("T1", new AttendanceRuleCommand("2026-09", 1L, 22, 0), "U");
         store.saveRule("T1", new AttendanceRuleCommand("2026-09", 2L, 0, 0), "U");
         assertThat(store.rule("T1", "2026-09", 1L))
-                .isEqualTo(new AttendanceRuleView("2026-09", 1L, 22, 1, 26, false));
+                .satisfies(rule -> { assertThat(rule.expectedDays()).isEqualTo(22); assertThat(rule.revision()).isEqualTo(1); assertThat(rule.createdBy()).isEqualTo("U"); assertThat(rule.createdTime()).isNotNull(); });
         assertThat(store.rule("T1", "2026-09", 3L))
                 .isEqualTo(new AttendanceRuleView("2026-09", 3L, null, 0, 26, false));
         assertThat(store.departmentRules("T1", "2026-09"))
@@ -627,7 +648,7 @@ public class HrAttendancePersistenceTest {
                 .hasMessageContaining("已变更");
         store.saveRule("T1", new AttendanceRuleCommand("2026-09", 1L, null, 1), "U");
         assertThat(store.rule("T1", "2026-09", 1L))
-                .isEqualTo(new AttendanceRuleView("2026-09", 1L, null, 2, 26, false));
+                .satisfies(rule -> { assertThat(rule.expectedDays()).isNull(); assertThat(rule.revision()).isEqualTo(2); assertThat(rule.createdBy()).isEqualTo("U"); assertThat(rule.createdTime()).isNotNull(); });
         assertThat(store.departmentRules("T1", "2026-09")).containsOnlyKeys(2L);
         assertThatThrownBy(
                         () ->

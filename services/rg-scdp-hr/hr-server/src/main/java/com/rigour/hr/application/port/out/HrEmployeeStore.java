@@ -39,7 +39,11 @@ public interface HrEmployeeStore {
                                   String regionName,
                                   String cityName,
                                   String sourceSystem, Long departmentId, String positionCode, String jobGrade,
-                                  Boolean includeSubDepartments, String sortBy, String sortDirection, Boolean regularized, String payrollCategory, Boolean payrollMissing) {
+                                  Boolean includeSubDepartments, String sortBy, String sortDirection, Boolean regularized, String payrollCategory, Boolean payrollMissing, String dhbAccount) {
+        public EmployeeSearchCriteria(String keyword, String employeeCode, String employeeName, String mobile, String employmentStatus, String jobCategory, String positionName, String regionName, String cityName, String sourceSystem, Long departmentId, String positionCode, String jobGrade, Boolean includeSubDepartments, String sortBy, String sortDirection, Boolean regularized, String payrollCategory, Boolean payrollMissing) {
+            this(keyword, employeeCode, employeeName, mobile, employmentStatus, jobCategory, positionName, regionName, cityName, sourceSystem, departmentId, positionCode, jobGrade, includeSubDepartments, sortBy, sortDirection, regularized, payrollCategory, payrollMissing, null);
+        }
+
         public EmployeeSearchCriteria(String keyword, String employeeCode, String employeeName,
                 String mobile, String employmentStatus, String jobCategory, String positionName,
                 String regionName, String cityName, String sourceSystem, Long departmentId,

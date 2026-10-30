@@ -31,6 +31,11 @@ import java.util.stream.Collectors;
 
 @Repository
 public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.rigour.hr.application.port.out.HrAuditActorNameResolver auditNames;
+    private String creationActorName(String tenant, String actor) {
+        return auditNames == null ? null : auditNames.resolve(tenant, actor);
+    }
     private final HrAttendanceRuleMapper rules;
     private final HrAttendanceNoteMapper notes;
     private final HrAttendanceAuditMapper audits;
@@ -125,7 +130,7 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
                                                 r.departmentId,
                                                 r.expectedDays,
                                                 r.revision,
-                                                r.updatedTime.toInstant(ZoneOffset.UTC)))
+                                                r.updatedTime.toInstant(ZoneOffset.UTC), r.createdBy, r.createdByName, r.createdTime == null ? null : r.createdTime.toInstant(ZoneOffset.UTC)))
                         .toList();
         var locked = new HashSet<Long>();
         notes.selectList(
@@ -163,7 +168,7 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
                 own == null ? null : own.expectedDays,
                 own == null ? 0 : own.revision,
                 company,
-                ruleLocked(tenant, month, departmentId));
+                ruleLocked(tenant, month, departmentId), true, null, null, own == null ? null : own.createdBy, own == null ? null : own.createdByName, own == null || own.createdTime == null ? null : own.createdTime.toInstant(ZoneOffset.UTC));
     }
 
     public Map<Long, Integer> departmentRules(String tenant, String month) {
@@ -205,6 +210,9 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
                 row.departmentId = id;
                 row.expectedDays = command.expectedDays();
                 row.revision = 1;
+                row.createdBy = actor;
+                row.createdByName = creationActorName(tenant, actor);
+                row.createdTime = LocalDateTime.now(ZoneOffset.UTC);
                 row.updatedBy = actor;
                 row.updatedTime = LocalDateTime.now(ZoneOffset.UTC);
                 rules.insert(row);

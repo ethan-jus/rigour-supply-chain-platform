@@ -58,6 +58,8 @@ class PayrollComponentLifecyclePersistenceTest {
                     + " CHAR(7), status_code VARCHAR(20), revision INT, calculation_json CLOB,"
                     + " created_by VARCHAR(50), updated_by VARCHAR(50), created_time TIMESTAMP,"
                     + " updated_time TIMESTAMP)");
+        jdbc.execute("ALTER TABLE hr_payroll_component_version ADD COLUMN created_by_name VARCHAR(128)");
+        jdbc.execute("ALTER TABLE hr_payroll ADD COLUMN created_by_name VARCHAR(128)");
         execute("V24__payroll_rule_lifecycle.sql");
         execute("V27__attendance_assessment_override.sql");
         var config = new MybatisConfiguration();

@@ -16,7 +16,12 @@ public record PayrollComponentVersionView(
         String ruleCode,
         int revision,
         boolean deleted,
-        List<PayrollComponentStateChange> stateChanges) {
+        List<PayrollComponentStateChange> stateChanges,
+        String createdByName) {
+    public PayrollComponentVersionView(String id, String ruleId, int version, PayrollComponentDefinition definition, String reason, String createdBy, Instant createdTime, String ruleCode, int revision, boolean deleted, List<PayrollComponentStateChange> stateChanges) {
+        this(id, ruleId, version, definition, reason, createdBy, createdTime, ruleCode, revision, deleted, stateChanges, null);
+    }
+
     public PayrollComponentVersionView {
         stateChanges = stateChanges == null ? List.of() : List.copyOf(stateChanges);
     }
