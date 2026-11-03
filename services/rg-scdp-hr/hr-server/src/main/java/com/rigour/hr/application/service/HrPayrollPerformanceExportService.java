@@ -105,15 +105,19 @@ public final class HrPayrollPerformanceExportService {
                 var bucket = buckets.get(category);
                 bucket.sales = bucket.sales.add(sales.get(i));
                 bucket.receipts = bucket.receipts.add(paid.get(i));
-                if ("CLOTH".equals(category) && soldThisMonth) {
+                if ("CLOTH".equals(category)) {
                     String group = clothGroup(product == null ? line.productName() : product.productName(), product == null ? null : product.specification());
                     if (group != null) {
-                        cloth.merge(group, sales.get(i), BigDecimal::add);
-                        if (line.quantity() == null || line.quantity().signum() < 0 || line.unitCode() == null || line.unitCode().isBlank())
-                            throw HrPayrollService.bad("台呢订单数量或单位缺失，不能以销售额代替销量");
-                        quantities.get(group).merge(line.unitCode(), line.quantity(), BigDecimal::add);
+                        if (soldThisMonth) cloth.merge(group, sales.get(i), BigDecimal::add);
+                        // 数量与整单付清业绩同月；历史订单本月付清计入，本月未付清不计入。
+                        if (paidThisMonth) {
+                            if (line.quantity() == null || line.quantity().signum() < 0 || line.unitCode() == null || line.unitCode().isBlank())
+                                throw HrPayrollService.bad("整单付清台呢的数量或单位缺失，请先核对订单");
+                            quantities.get(group).merge(line.unitCode(), line.quantity(), BigDecimal::add);
+                        }
                     }
-                    else if (sales.get(i).signum() != 0) issues.add("台呢含其他型号，销售总额包含该部分");
+                    else if (sales.get(i).signum() != 0 || paid.get(i).signum() != 0)
+                        issues.add("台呢含其他型号，销售及整单付清业绩包含该部分，未计入三组数量");
                 }
                 if (product == null) issues.add("部分商品未关联ERP分类，计入其他品类");
             }

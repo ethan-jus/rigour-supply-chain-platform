@@ -15,7 +15,7 @@ public record PayrollPerformanceExportView(
         Summary summary, List<Metric> metrics, String collectionTargetBasis) {
     public record Category(String code, String name, BigDecimal salesAmount,
                            BigDecimal collectionAmount, BigDecimal commission) {}
-    /** 数量按订单单位分别保存，床、套等不同单位不相加。 */
+    /** 金额按下单月；数量按首次整单付清月、订单原单位分别保存，不跨单位相加。 */
     public record ClothSales(String code, String name, BigDecimal salesAmount, List<UnitQuantity> quantities) {}
     public record UnitQuantity(String unitCode, BigDecimal quantity) {}
     public record Summary(BigDecimal expectedDays, BigDecimal actualDays,

@@ -34,6 +34,12 @@ class HrPayrollPerformanceExportServiceTest {
                 20L, new ErpPayrollProductView(20L, 20L, "P20", "V20", "方便面", "", "BUCKET", 3L, "方便面"));
     }
 
+    OrderPayrollLineView quantityLine(String id, long variant, String ordered, String paid, String unit, String quantity) {
+        return new OrderPayrollLineView(id, id, id, "E1", "C1", 1L, variant, variant, "台呢", unit,
+                LocalDate.parse(ordered), quantity == null ? null : n(quantity), n("100"), n("100"), n("100"),
+                n(paid == null ? "50" : "100"), paid == null ? null : LocalDate.parse(paid), n("0"), null, "COMPLETE");
+    }
+
     @AfterEach void clear() { TestAuthorizationContext.clear(); }
 
     @Test void monthlySalesAndFullyPaidAchievementRemainIndependentAndExcludeUnpaidOrders() {
@@ -51,10 +57,58 @@ class HrPayrollPerformanceExportServiceTest {
             assertThat(c.collectionAmount()).isEqualByComparingTo("275");
         });
         assertThat(result.clothSales()).filteredOn(c -> c.code().equals("A300_A500")).singleElement()
-                .satisfies(c -> assertThat(c.salesAmount()).isEqualByComparingTo("75"));
+                .satisfies(c -> {
+                    assertThat(c.salesAmount()).isEqualByComparingTo("75");
+                    assertThat(c.quantities()).singleElement().satisfies(q -> {
+                        assertThat(q.unitCode()).isEqualTo("SET");
+                        assertThat(q.quantity()).isEqualByComparingTo("2");
+                    });
+                });
         assertThat(result.commission()).isNull();
         assertThat(result.salesTarget()).isEqualByComparingTo("350");
         assertThat(result.issues()).contains("提成待核对，详见核对事项");
+    }
+
+    @Test void clothQuantitiesFollowFullyPaidMonthAcrossAllGroupsAndKeepOriginalUnits() {
+        var products = new HashMap<>(products());
+        for (var spec : Map.of(11L, "A500", 12L, "A500B", 13L, "A600", 14L, "A700", 15L, "A800").entrySet())
+            products.put(spec.getKey(), new ErpPayrollProductView(spec.getKey(), spec.getKey(), "P", "V", "澳洋台呢", spec.getValue(), "SET", 2L, "台呢"));
+        products.put(16L, new ErpPayrollProductView(16L, 16L, "P", "V", "澳洋斯诺克台呢", "Apex", "ROLL", 2L, "台呢"));
+        var lines = List.of(
+                quantityLine("old-a300", 10, "2026-09-30", "2026-10-01", "BED", "3"),
+                quantityLine("old-a500", 11, "2026-05-10", "2026-10-31", "SET", "2"),
+                quantityLine("current-a500b", 12, "2026-10-01", "2026-10-31", "ROLL", "1.5"),
+                quantityLine("old-a600", 13, "2026-09-20", "2026-10-05", "BED", "2"),
+                quantityLine("current-a700", 14, "2026-10-15", "2026-10-15", "SET", "4"),
+                quantityLine("old-a800", 15, "2026-08-01", "2026-10-20", "BED", "1"),
+                quantityLine("snooker", 16, "2026-10-01", "2026-10-01", "ROLL", "0.5"),
+                quantityLine("unpaid", 10, "2026-10-15", null, "SET", "77"),
+                quantityLine("next-month-paid", 10, "2026-10-31", "2026-11-01", "BED", "88"),
+                quantityLine("previous-month-paid", 10, "2026-09-25", "2026-09-30", "BED", "99"));
+        var result = HrPayrollPerformanceExportService.summarize(row(), lines, products, categories(), n("7000"), null);
+        assertThat(result.salesAmount()).isEqualByComparingTo("500");
+        assertThat(result.collectionAmount()).isEqualByComparingTo("700");
+        var groups = result.clothSales().stream().collect(java.util.stream.Collectors.toMap(PayrollPerformanceExportView.ClothSales::code, java.util.function.Function.identity()));
+        assertThat(groups.get("A300_A500").quantities().stream().collect(java.util.stream.Collectors.toMap(PayrollPerformanceExportView.UnitQuantity::unitCode, PayrollPerformanceExportView.UnitQuantity::quantity)))
+                .containsExactlyInAnyOrderEntriesOf(Map.of("BED", n("3"), "SET", n("2"), "ROLL", n("1.5")));
+        assertThat(groups.get("A600_A800").quantities().stream().collect(java.util.stream.Collectors.toMap(PayrollPerformanceExportView.UnitQuantity::unitCode, PayrollPerformanceExportView.UnitQuantity::quantity)))
+                .containsExactlyInAnyOrderEntriesOf(Map.of("BED", n("3"), "SET", n("4")));
+        assertThat(groups.get("SNOOKER").quantities()).containsExactly(new PayrollPerformanceExportView.UnitQuantity("ROLL", n("0.5")));
+    }
+
+    @Test void missingPaidClothQuantityOrUnitStopsExportButUnpaidQuantityIsNotRequired() {
+        for (var line : List.of(
+                quantityLine("missing-count", 10, "2026-09-30", "2026-10-01", "SET", null),
+                quantityLine("negative-count", 10, "2026-09-30", "2026-10-01", "SET", "-1"),
+                quantityLine("missing-unit", 10, "2026-09-30", "2026-10-01", null, "1"),
+                quantityLine("blank-unit", 10, "2026-09-30", "2026-10-01", " ", "1")))
+            assertThatThrownBy(() -> HrPayrollPerformanceExportService.summarize(row(), List.of(line), products(), categories(), null, null))
+                    .hasMessageContaining("整单付清台呢的数量或单位缺失");
+        var unpaid = quantityLine("unpaid-missing-count", 10, "2026-10-01", null, null, null);
+        var result = HrPayrollPerformanceExportService.summarize(row(), List.of(unpaid), products(), categories(), null, null);
+        assertThat(result.clothSales()).allSatisfy(group -> assertThat(group.quantities()).isEmpty());
+        assertThat(result.salesAmount()).isEqualByComparingTo("100");
+        assertThat(result.collectionAmount()).isZero();
     }
 
     @Test void zeroInputsMissingTargetsAndUnclassifiedGoodsAreNotFabricated() {
