@@ -95,6 +95,43 @@ class ConfiguredPayrollServiceTest {
     }
 
     @Test
+    void normalPayrollCalculationIncludesHistoricalCommissionInGrossAndNet() {
+        var fixture = new ConfiguredCommissionServiceTest();
+        fixture.setup();
+        var original = PayrollSchemeTestFixture.version(PayrollSchemeTestFixture.definition());
+        var selected = new PayrollSchemeVersionView(original.id(), original.schemeId(), 1, 1,
+                "RESOLVED", original.definition(), original.reason(), original.createdBy(), null, original.updatedTime(), null);
+        when(rules.resolve(anyString(), any(), any(), any())).thenReturn(new PayrollRuleMatch(selected, List.of()));
+        var catalog = mock(HrPayrollComponentStore.class);
+        var standard = new PayrollComponentVersionView("october-commission", "commission", 1,
+                new PayrollComponentDefinition("10月提成", "COMMISSION", "ALL", List.of(1L),
+                        LocalDate.of(2026, 10, 1), LocalDate.MAX, null, null,
+                        new PayrollSchemeCommissionPolicy("FULLY_PAID_DATE", "FULLY_PAID_DATE", original.definition().commission().rules()),
+                        null, null, List.of()), "规则配置", "hr", Instant.EPOCH);
+        when(catalog.versions("t")).thenReturn(List.of(standard));
+        var engine = new ConfiguredCommissionService(payroll, source);
+        engine.setRules(new PayrollRuleResolver(catalog));
+        service = new ConfiguredPayrollService(payroll, schemes, source, attendance, engine, JsonMapper.builder().build());
+        service.setRules(rules);
+        when(source.payrollLines(eq("t"), eq("A"), isNull(), any())).thenReturn(List.of(fixture.line("history", 1, "C", true)));
+        when(source.productsByVariants(eq("t"), anyList())).thenReturn(List.of(fixture.product(1, 10)));
+        when(source.productCategories("t")).thenReturn(List.of(new com.rigour.erp.api.v1.model.ErpPayrollCategoryView(10L, null, "方便面", 0)));
+        when(source.performanceEvidence(eq("t"), eq("A"), any(), any())).thenReturn(new com.rigour.sales.api.v1.model.SalesPayrollEvidenceView(true, List.of()));
+        var result = service.calculateIfConfigured("t", employee, YearMonth.of(2026, 10)).orElseThrow();
+        assertThat(result.issues()).isEmpty();
+        assertThat(result.commission()).isEqualByComparingTo("40");
+        assertThat(result.grossPay()).isEqualByComparingTo(result.baseSalary().add(result.performance()).add(result.allowance()).add(new BigDecimal("40")));
+        assertThat(result.netPay()).isEqualByComparingTo(result.grossPay().subtract(result.deduction()));
+        assertThat(result.details()).singleElement().satisfies(d -> {
+            assertThat(d.message()).contains("历史订单补算");
+            assertThat(d.trace().schemeVersionId()).isEqualTo("october-commission");
+        });
+        var repeated = service.calculateIfConfigured("t", employee, YearMonth.of(2026, 10)).orElseThrow();
+        assertThat(repeated.commission()).isEqualByComparingTo(result.commission());
+        assertThat(repeated.sourceFingerprint()).isEqualTo(result.sourceFingerprint());
+    }
+
+    @Test
     void salesLeaveProratesBaseAndAllowanceButNotEarnedPerformance() {
         employee =
                 new PayrollEmployeeView(

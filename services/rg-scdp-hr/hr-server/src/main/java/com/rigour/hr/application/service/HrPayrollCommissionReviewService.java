@@ -40,7 +40,7 @@ public final class HrPayrollCommissionReviewService {
             // 本次只授权销售存量订单补算；城市总政策涉及任期，不以本人销售替代团队事实。
             if (!"SALES".equals(snapshot.scheme().definition().role()))
                 throw HrPayrollService.bad("历史提成试算暂仅适用于销售人员，请单独选择销售工资单");
-            var computed = commission.calculate(tenant, employee, month, snapshot.scheme(), versions, lines, assignments, true);
+            var computed = commission.calculate(tenant, employee, month, snapshot.scheme(), versions, lines, assignments);
             result.add(compare(row, computed));
         }
         return List.copyOf(result);

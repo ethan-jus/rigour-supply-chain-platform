@@ -37,15 +37,6 @@ public class ConfiguredCommissionService {
             List<PayrollSchemeVersionView> versions,
             List<OrderPayrollLineView> facts,
             List<PayrollRuleView> assignments) {
-        return calculate(tenant, employee, month, selected, versions, facts, assignments, false);
-    }
-
-    /** 仅供明确选择的历史补算试算使用；普通核算仍要求原政策，试算不保存工资。 */
-    ConfiguredCommissionResult calculate(
-            String tenant, PayrollEmployeeView employee, YearMonth month,
-            PayrollSchemeVersionView selected, List<PayrollSchemeVersionView> versions,
-            List<OrderPayrollLineView> facts, List<PayrollRuleView> assignments,
-            boolean previewUnconfiguredHistory) {
         List<String> issues = new ArrayList<>();
         List<PayrollCommissionDetailView> details = new ArrayList<>();
         Set<String> historical = new HashSet<>();
@@ -92,9 +83,12 @@ public class ConfiguredCommissionService {
                                 versions,
                                 issues,
                                 fact.orderNo());
-                boolean missingOnly = issues.subList(issueCount, issues.size()).stream()
+                // 已确认的存量销售订单口径：只有订单日确实没有政策时，才允许使用
+                // 付清日生效且明确按付清日期取值的政策。停用、冲突不能视为未配置。
+                boolean missingOnly = issues.size() > issueCount
+                        && issues.subList(issueCount, issues.size()).stream()
                         .allMatch(i -> i.equals(fact.orderNo() + "：提成规则未配置"));
-                if (execution == null && previewUnconfiguredHistory && missingOnly) {
+                if (execution == null && missingOnly) {
                     var paidPolicy = execution(tenant, employee.employeeCode(),
                             payroll.departmentAt(tenant, employee.employeeCode(), fact.fullyPaidDate()),
                             fact.fullyPaidDate(), selected, versions, issues, fact.orderNo());
@@ -244,8 +238,9 @@ public class ConfiguredCommissionService {
                             d.ruleRevision(),
                             d.accrued(),
                             d.released(),
-                            d.message() + (historical.contains(d.sourceLineId()) && "SALES".equals(d.recipientRoleCode())
-                                    ? "；历史政策缺失：本次按整单付清日有效规则试算，保留订单原销售归属，尚未保存工资" : ""),
+                            d.message() + (historical.contains(d.sourceLineId()) && d.released() != null
+                                    && "SALES".equals(d.recipientRoleCode())
+                                    ? "；历史订单补算：订单日未配置政策，按整单付清日有效规则取值，保留订单原销售归属" : ""),
                             d.sourceEmployeeCode(),
                             trace);
                 });
