@@ -11,11 +11,18 @@ import java.util.List;
 @RestController
 public final class HrPayrollPerformanceExportController implements HrPayrollPerformanceExportApi {
     private final HrPayrollPerformanceExportService service;
-    public HrPayrollPerformanceExportController(HrPayrollPerformanceExportService service) {
+    private final com.rigour.hr.application.service.HrPayrollCommissionReviewService review;
+    public HrPayrollPerformanceExportController(HrPayrollPerformanceExportService service,
+            com.rigour.hr.application.service.HrPayrollCommissionReviewService review) {
         this.service = service;
+        this.review = review;
     }
     @Override
     public ApiResponse<List<PayrollPerformanceExportView>> performanceExport(PayrollQuery query) {
         return ApiResponse.success(service.export(query));
+    }
+    @Override
+    public ApiResponse<List<com.rigour.hr.api.v1.model.PayrollCommissionReviewView>> commissionReview(PayrollQuery query) {
+        return ApiResponse.success(review.preview(query));
     }
 }

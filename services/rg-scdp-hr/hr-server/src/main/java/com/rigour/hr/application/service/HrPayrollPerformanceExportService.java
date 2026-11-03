@@ -20,10 +20,16 @@ public final class HrPayrollPerformanceExportService {
     private final HrPayrollWorkflowService workflow;
     private final HrPayrollSource source;
     private final TargetSettingsStore targets;
-    public HrPayrollPerformanceExportService(HrPayrollWorkflowService workflow, HrPayrollSource source, TargetSettingsStore targets) {
+    private final com.rigour.hr.application.port.out.HrPayrollStore payroll;
+    private final com.rigour.hr.application.port.out.HrAttendanceStore attendance;
+    public HrPayrollPerformanceExportService(HrPayrollWorkflowService workflow, HrPayrollSource source, TargetSettingsStore targets,
+            com.rigour.hr.application.port.out.HrPayrollStore payroll,
+            com.rigour.hr.application.port.out.HrAttendanceStore attendance) {
         this.workflow = workflow;
         this.source = source;
         this.targets = targets;
+        this.payroll = payroll;
+        this.attendance = attendance;
     }
 
     public List<PayrollPerformanceExportView> export(PayrollQuery query) {
@@ -34,7 +40,9 @@ public final class HrPayrollPerformanceExportService {
         var categories = source.productCategories(tenant).stream()
                 .collect(Collectors.toMap(ErpPayrollCategoryView::id, Function.identity()));
         var products = new HashMap<Long, ErpPayrollProductView>();
-        var monthlyTargets = targets.targets(tenant, query.month(), query.month()).stream()
+        var allTargets = targets.targets(tenant, query.month(), query.month());
+        var subjects = targets.subjects(tenant);
+        var monthlyTargets = allTargets.stream()
                 .filter(t -> "SALES_OWNER".equals(t.dimensionType()))
                 .collect(Collectors.toMap(t -> t.code() + ":" + t.metric(), TargetSettingsModels.Target::value));
         var result = new ArrayList<PayrollPerformanceExportView>();
@@ -47,10 +55,14 @@ public final class HrPayrollPerformanceExportService {
             for (int begin = 0; begin < missing.size(); begin += 100)
                 source.productsByVariants(tenant, missing.subList(begin, Math.min(begin + 100, missing.size())))
                         .forEach(p -> products.put(p.productVariantId(), p));
-            result.add(summarize(row, lines, products, categories,
-                    monthlyTargets.getOrDefault(row.employeeCode() + ":FULLY_PAID_RECEIPT_BASIS",
-                            row.calculation().performanceDetail() == null ? null : row.calculation().performanceDetail().collectionTarget()),
-                    monthlyTargets.get(row.employeeCode() + ":SALES_AMOUNT")));
+            var report = summarize(row, lines, products, categories,
+                    row.calculation().performanceDetail() != null && row.calculation().performanceDetail().collectionTarget() != null
+                            ? row.calculation().performanceDetail().collectionTarget()
+                            : monthlyTargets.get(row.employeeCode() + ":FULLY_PAID_RECEIPT_BASIS"),
+                    monthlyTargets.get(row.employeeCode() + ":SALES_AMOUNT"));
+            var employee = payroll.employee(tenant, row.employeeCode(), "hr:payroll:read");
+            var confirmed = attendance.employee(tenant, month, row.employeeCode(), "hr:payroll:read").confirmation();
+            result.add(PayrollPerformanceReportFacts.enrich(row, report, employee, confirmed, allTargets, subjects));
         }
         return List.copyOf(result);
     }
@@ -63,7 +75,9 @@ public final class HrPayrollPerformanceExportService {
         var buckets = new LinkedHashMap<String, Amounts>();
         for (String code : List.of("NOODLES", "ACCESSORIES", "CLOTH", "OTHER")) buckets.put(code, new Amounts());
         var cloth = new LinkedHashMap<String, BigDecimal>();
+        var quantities = new LinkedHashMap<String, Map<String, BigDecimal>>();
         for (String code : List.of("A300_A500", "A600_A800", "SNOOKER")) cloth.put(code, BigDecimal.ZERO);
+        for (String code : cloth.keySet()) quantities.put(code, new TreeMap<>());
         var byOrder = lines.stream().collect(Collectors.groupingBy(OrderPayrollLineView::orderNo, LinkedHashMap::new, Collectors.toList()));
         BigDecimal totalReceipts = BigDecimal.ZERO, refunds = BigDecimal.ZERO;
         BigDecimal totalSales = BigDecimal.ZERO;
@@ -93,7 +107,12 @@ public final class HrPayrollPerformanceExportService {
                 bucket.receipts = bucket.receipts.add(paid.get(i));
                 if ("CLOTH".equals(category) && soldThisMonth) {
                     String group = clothGroup(product == null ? line.productName() : product.productName(), product == null ? null : product.specification());
-                    if (group != null) cloth.merge(group, sales.get(i), BigDecimal::add);
+                    if (group != null) {
+                        cloth.merge(group, sales.get(i), BigDecimal::add);
+                        if (line.quantity() == null || line.quantity().signum() < 0 || line.unitCode() == null || line.unitCode().isBlank())
+                            throw HrPayrollService.bad("台呢订单数量或单位缺失，不能以销售额代替销量");
+                        quantities.get(group).merge(line.unitCode(), line.quantity(), BigDecimal::add);
+                    }
                     else if (sales.get(i).signum() != 0) issues.add("台呢含其他型号，销售总额包含该部分");
                 }
                 if (product == null) issues.add("部分商品未关联ERP分类，计入其他品类");
@@ -121,12 +140,14 @@ public final class HrPayrollPerformanceExportService {
             issues.add("其他品类销售及回款包含在总额中，详见品类业绩明细");
         if (refunds.signum() != 0) issues.add("本期付清订单累计退款 " + money(refunds).toPlainString() + " 元，业绩影响待核定");
         if (collectionTarget == null) issues.add("回款指标未配置");
-        if (salesTarget == null) issues.add("销售指标未配置");
+        // 普通销售按入职阶段考核回款；未单独设置销售目标不等于薪酬规则缺失。
         return new PayrollPerformanceExportView(row.id(), row.revision(), row.month(), row.employeeCode(), row.employeeName(), row.cityName(),
                 buckets.entrySet().stream().map(e -> new PayrollPerformanceExportView.Category(e.getKey(), categoryName(e.getKey()),
                         money(e.getValue().sales), money(e.getValue().receipts), e.getValue().commissionPending ? null : money(e.getValue().commission))).toList(),
-                cloth.entrySet().stream().map(e -> new PayrollPerformanceExportView.ClothSales(e.getKey(), clothName(e.getKey()), money(e.getValue()))).toList(),
-                money(totalSales), money(totalReceipts), money(refunds), collectionTarget, salesTarget, row.calculation().commission(), List.copyOf(issues));
+                cloth.entrySet().stream().map(e -> new PayrollPerformanceExportView.ClothSales(e.getKey(), clothName(e.getKey()), money(e.getValue()),
+                        quantities.get(e.getKey()).entrySet().stream().map(q -> new PayrollPerformanceExportView.UnitQuantity(q.getKey(), q.getValue())).toList())).toList(),
+                money(totalSales), money(totalReceipts), money(refunds), collectionTarget, salesTarget, row.calculation().commission(), List.copyOf(issues),
+                null, null, null, null, null, List.of(), null);
     }
 
     /** Cumulative cent allocation preserves each order/receipt total, including small amounts. */

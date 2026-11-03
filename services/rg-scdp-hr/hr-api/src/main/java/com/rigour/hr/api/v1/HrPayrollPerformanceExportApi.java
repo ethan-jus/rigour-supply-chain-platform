@@ -11,4 +11,7 @@ import java.util.List;
 public interface HrPayrollPerformanceExportApi {
     @PostMapping(HrPayrollApi.BASE_PATH + "/performance-export")
     ApiResponse<List<PayrollPerformanceExportView>> performanceExport(@RequestBody PayrollQuery query);
+
+    @PostMapping(HrPayrollApi.BASE_PATH + "/commission-review")
+    ApiResponse<List<com.rigour.hr.api.v1.model.PayrollCommissionReviewView>> commissionReview(@RequestBody PayrollQuery query);
 }

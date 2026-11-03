@@ -37,8 +37,18 @@ public class ConfiguredCommissionService {
             List<PayrollSchemeVersionView> versions,
             List<OrderPayrollLineView> facts,
             List<PayrollRuleView> assignments) {
+        return calculate(tenant, employee, month, selected, versions, facts, assignments, false);
+    }
+
+    /** 仅供明确选择的历史补算试算使用；普通核算仍要求原政策，试算不保存工资。 */
+    ConfiguredCommissionResult calculate(
+            String tenant, PayrollEmployeeView employee, YearMonth month,
+            PayrollSchemeVersionView selected, List<PayrollSchemeVersionView> versions,
+            List<OrderPayrollLineView> facts, List<PayrollRuleView> assignments,
+            boolean previewUnconfiguredHistory) {
         List<String> issues = new ArrayList<>();
         List<PayrollCommissionDetailView> details = new ArrayList<>();
+        Set<String> historical = new HashSet<>();
         var released =
                 payroll.releasedForCalculation(tenant, employee.employeeCode(), month.toString());
         // 只有已整单付清的订单进入计提，未付清商品也不要求提前匹配经济标准。
@@ -68,6 +78,7 @@ public class ConfiguredCommissionService {
                         .collect(Collectors.toMap(ErpPayrollCategoryView::id, c -> c));
         for (var fact : facts) {
             if (Objects.equals(employee.employeeCode(), fact.employeeCode())) {
+                int issueCount = issues.size();
                 var execution =
                         execution(
                                 tenant,
@@ -81,6 +92,19 @@ public class ConfiguredCommissionService {
                                 versions,
                                 issues,
                                 fact.orderNo());
+                boolean missingOnly = issues.subList(issueCount, issues.size()).stream()
+                        .allMatch(i -> i.equals(fact.orderNo() + "：提成规则未配置"));
+                if (execution == null && previewUnconfiguredHistory && missingOnly) {
+                    var paidPolicy = execution(tenant, employee.employeeCode(),
+                            payroll.departmentAt(tenant, employee.employeeCode(), fact.fullyPaidDate()),
+                            fact.fullyPaidDate(), selected, versions, issues, fact.orderNo());
+                    if (paidPolicy != null && "FULLY_PAID_DATE".equals(paidPolicy.definition().commission().standardDate())
+                            && fact.orderDate().isBefore(paidPolicy.definition().effectiveFrom())) {
+                        execution = paidPolicy;
+                        historical.add(fact.lineId());
+                        issues.subList(issueCount, issues.size()).removeIf(i -> i.equals(fact.orderNo() + "：提成规则未配置"));
+                    }
+                }
                 add(
                         tenant,
                         employee,
@@ -220,7 +244,8 @@ public class ConfiguredCommissionService {
                             d.ruleRevision(),
                             d.accrued(),
                             d.released(),
-                            d.message(),
+                            d.message() + (historical.contains(d.sourceLineId()) && "SALES".equals(d.recipientRoleCode())
+                                    ? "；历史政策缺失：本次按整单付清日有效规则试算，保留订单原销售归属，尚未保存工资" : ""),
                             d.sourceEmployeeCode(),
                             trace);
                 });

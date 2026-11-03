@@ -1027,7 +1027,7 @@ class HrAttendanceServiceTest {
         identity(Set.of(HrAttendanceService.READ));
         stubPendingEmployee();
         var adjustment =
-                new com.rigour.hr.api.v1.model.AttendanceAssessmentOverride(0, 2, "已核对补卡与拜访");
+                new com.rigour.hr.api.v1.model.AttendanceAssessmentOverride(0, 2, "已核对补卡与拜访", 160, 70, 154, 66);
         service.confirmRecord(
                 "2026-09",
                 "E1",

@@ -64,7 +64,8 @@ class HrPayrollPerformanceExportServiceTest {
         assertThat(result.collectionAmount()).isZero();
         assertThat(result.collectionTarget()).isNull();
         assertThat(result.salesTarget()).isNull();
-        assertThat(result.issues()).contains("回款指标未配置", "销售指标未配置", "部分商品未关联ERP分类，计入其他品类");
+        assertThat(result.issues()).contains("回款指标未配置", "部分商品未关联ERP分类，计入其他品类");
+        assertThat(result.issues()).doesNotContain("销售指标未配置");
         assertThat(result.categories()).filteredOn(c -> c.code().equals("OTHER")).singleElement()
                 .satisfies(c -> assertThat(c.salesAmount()).isEqualByComparingTo("12.34"));
     }
@@ -91,7 +92,8 @@ class HrPayrollPerformanceExportServiceTest {
         var workflow = mock(HrPayrollWorkflowService.class);
         var source = mock(HrPayrollSource.class);
         var targets = mock(TargetSettingsStore.class);
-        var service = new HrPayrollPerformanceExportService(workflow, source, targets);
+        var service = new HrPayrollPerformanceExportService(workflow, source, targets,
+                mock(HrPayrollStore.class), mock(HrAttendanceStore.class));
         var query = new PayrollQuery(0, 200, "2026-10", null, null, null, null, null, null, List.of("P1"));
         assertThatThrownBy(() -> service.export(query)).isInstanceOf(AuthorizationDeniedException.class);
         UUID user = UUID.randomUUID(), tenant = UUID.randomUUID();

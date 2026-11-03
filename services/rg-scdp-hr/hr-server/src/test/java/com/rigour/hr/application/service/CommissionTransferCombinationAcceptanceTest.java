@@ -51,6 +51,30 @@ class CommissionTransferCombinationAcceptanceTest {
     }
 
     @Test
+    void explicitlyRequestedHistoricalPreviewUsesPaidDateStandardAndNeverInventsOrderDatePolicy() {
+        var catalog = mock(HrPayrollComponentStore.class);
+        var original = fixture.scheme;
+        fixture.scheme = new PayrollSchemeVersionView(original.id(), original.schemeId(), 1, 1,
+                "RESOLVED", original.definition(), original.reason(), original.createdBy(), null, original.updatedTime(), null);
+        when(catalog.versions("t")).thenReturn(List.of(commission("new", 2, "2026-10-01", "9999-12-31", "FULLY_PAID_DATE", "FULLY_PAID_DATE", "4", "1")));
+        fixture.service.setRules(new PayrollRuleResolver(catalog));
+        var facts = List.of(fixture.line("history", 1, "C", true));
+        assertThat(fixture.calculate(facts, List.of()).issues()).anyMatch(i -> i.contains("历史提成规则待配置"));
+        var preview = fixture.service.calculate("t", fixture.employee, YearMonth.of(2026, 10), fixture.scheme, List.of(fixture.scheme), facts, List.of(), true);
+        assertThat(preview.issues()).isEmpty();
+        assertThat(preview.released()).isEqualByComparingTo("40");
+        assertThat(preview.details()).singleElement().satisfies(d -> {
+            assertThat(d.sourceEmployeeCode()).isEqualTo("A");
+            assertThat(d.trace().schemeVersionId()).isEqualTo("new");
+            assertThat(d.message()).contains("历史政策缺失", "尚未保存工资");
+        });
+        when(catalog.versions("t")).thenReturn(List.of(commission("order-date", 2, "2026-10-01", "9999-12-31", "ORDER_DATE", "ORDER_DATE", "4", "1")));
+        assertThat(fixture.service.calculate("t", fixture.employee, YearMonth.of(2026, 10), fixture.scheme, List.of(fixture.scheme), facts, List.of(), true).issues())
+                .anyMatch(i -> i.contains("历史提成规则待配置"));
+        verify(fixture.store, never()).saveCalculation(anyString(), anyString(), anyString(), any(), any(), anyString());
+    }
+
+    @Test
     void tieredSalaryCannotSilentlyApplyTheFixedSalaryMidMonthSwitch() {
         ObjectNode definition = json.valueToTree(PayrollSchemeTestFixture.definition());
         definition.set("personalPolicy", json.valueToTree(new PayrollPersonalPolicy(
