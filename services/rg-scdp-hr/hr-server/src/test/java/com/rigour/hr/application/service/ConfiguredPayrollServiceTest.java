@@ -8,6 +8,8 @@ import com.rigour.hr.api.v1.model.*;
 import com.rigour.hr.application.port.out.*;
 
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import tools.jackson.databind.json.JsonMapper;
 
@@ -94,6 +96,9 @@ class ConfiguredPayrollServiceTest {
 
     @Test
     void salesLeaveProratesBaseAndAllowanceButNotEarnedPerformance() {
+        employee =
+                new PayrollEmployeeView(
+                        "A", "员工", 1L, "销售部", null, LocalDate.of(2026, 9, 1), null, "SALES");
         var confirmed =
                 new AttendanceRow(
                         "A",
@@ -177,6 +182,108 @@ class ConfiguredPayrollServiceTest {
         assertThat(after.sourceFingerprint()).isNotEqualTo(before.sourceFingerprint());
         assertThat(before.scheme().scheme().definition().calendar().referenceVersion())
                 .isEqualTo("v1");
+    }
+
+    @Test
+    void newEmploymentInTheSameDepartmentIsNotAMidMonthTransfer() {
+        var month = YearMonth.of(2026, 10);
+        employee =
+                new PayrollEmployeeView(
+                        "A", "员工", 1L, "销售部", null, month.atDay(29), null, "SALES");
+        when(payroll.departmentAt("t", "A", month.atDay(1))).thenReturn(null);
+        var result = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        assertThat(result.issues()).noneMatch(issue -> issue.contains("月内部门发生变化"));
+        verify(payroll).departmentAt("t", "A", month.atDay(29));
+    }
+
+    private YearMonth lateEntryAttendance(String actual) {
+        var month = YearMonth.of(2026, 10);
+        employee =
+                new PayrollEmployeeView(
+                        "A", "员工", 1L, "销售部", null, month.atDay(29), null, "SALES");
+        var original = PayrollSchemeTestFixture.definition();
+        var definition =
+                original.withCalendar(
+                        new PayrollWorkCalendar(
+                                List.of(1, 2, 3, 4, 5), List.of(), List.of(), List.of(),
+                                original.calendar().window(), List.of(), null),
+                        null);
+        when(rules.resolve(anyString(), any(), any(), any()))
+                .thenReturn(new PayrollRuleMatch(PayrollSchemeTestFixture.version(definition), List.of()));
+        var actualDays = new BigDecimal(actual);
+        var confirmed =
+                new AttendanceRow(
+                        "A", "员工", "销售部", 22, "DEPARTMENT", actualDays,
+                        new BigDecimal("22").subtract(actualDays), actualDays.intValue(),
+                        actualDays, null, "NONE", "CONFIRMED", "AVAILABLE", List.of(), "核定出勤", 1);
+        when(attendance.employee(anyString(), any(), anyString()))
+                .thenReturn(new HrAttendanceStore.Employee(
+                        "A", "员工", 1L, "销售部", employee.entryDate(), null,
+                        new AttendanceRecordCommand(actualDays, null, "NONE", "核定出勤", 1), confirmed));
+        when(payroll.departmentAt("t", "A", month.atDay(1))).thenReturn(null);
+        return month;
+    }
+
+    @ParameterizedTest
+    @CsvSource({"2,750,272.73", "1,375,136.36", "0.5,187.5,68.18", "0,0,0"})
+    void lateEntryAllowanceUsesOwnWorkingDaysWhileBaseKeepsMonthlyDenominator(
+            String actual, String allowance, String base) {
+        var month = lateEntryAttendance(actual);
+        var result = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        assertThat(result.issues()).isEmpty();
+        assertThat(result.allowance()).isEqualByComparingTo(allowance);
+        assertThat(result.baseSalary()).isEqualByComparingTo(base);
+        assertThat(result.scheme().explanations())
+                .anyMatch(line -> line.contains("补贴") && line.contains("2天"));
+    }
+
+    @Test
+    void lateEntryAllowanceRetainsManualOverride() {
+        var month = lateEntryAttendance("1");
+        when(payroll.input(anyString(), anyString(), anyString()))
+                .thenReturn(new PayrollInputCommand(
+                        1, null, null, BigDecimal.ZERO, "人工核定补贴", new BigDecimal("123")));
+        var result = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        assertThat(result.allowance()).isEqualByComparingTo("123");
+        assertThat(result.baseSalary()).isEqualByComparingTo("136.36");
+    }
+
+    @Test
+    void lateEntryAllowanceUsesCalendarMakeupDaysAndRestDays() {
+        var month = lateEntryAttendance("1");
+        var original = PayrollSchemeTestFixture.definition();
+        var definition = original.withCalendar(
+                new PayrollWorkCalendar(
+                        List.of(1, 2, 3, 4, 5), List.of(month.atDay(31)), List.of(month.atDay(29), month.atDay(30)),
+                        List.of(), original.calendar().window(), List.of(), null), null);
+        when(rules.resolve(anyString(), any(), any(), any()))
+                .thenReturn(new PayrollRuleMatch(PayrollSchemeTestFixture.version(definition), List.of()));
+        var result = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        assertThat(result.issues()).isEmpty();
+        assertThat(result.allowance()).isEqualByComparingTo("750");
+    }
+
+    @Test
+    void lateEntryWithoutConfirmedAttendanceOrWorkingDaysNeverGetsInventedFullAllowance() {
+        var month = lateEntryAttendance("0");
+        when(attendance.employee(anyString(), any(), anyString())).thenReturn(null);
+        var missing = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        assertThat(missing.allowance()).isNull();
+        assertThat(missing.issues()).anyMatch(issue -> issue.contains("考勤尚未确认"));
+        lateEntryAttendance("0");
+        employee = new PayrollEmployeeView(
+                "A", "员工", 1L, "销售部", null, month.atDay(31), null, "SALES");
+        var noWork = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        assertThat(noWork.allowance()).isNull();
+        assertThat(noWork.issues()).anyMatch(issue -> issue.contains("补贴金额或折算依据待核对"));
+    }
+
+    @Test
+    void lateEntryStillRequiresConfirmationForAnActualDepartmentTransfer() {
+        var month = lateEntryAttendance("2");
+        when(payroll.departmentAt("t", "A", month.atEndOfMonth())).thenReturn(2L);
+        var result = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        assertThat(result.issues()).anyMatch(issue -> issue.contains("月内部门发生变化"));
     }
 
     @Test

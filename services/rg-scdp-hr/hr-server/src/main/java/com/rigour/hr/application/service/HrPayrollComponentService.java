@@ -119,15 +119,26 @@ public class HrPayrollComponentService {
                                 .findFirst()
                                 .orElseThrow(() -> bad("关联补贴版本不存在"));
                 scope(tenant, plan.definition(), permission("ALLOWANCE", false));
-                var department =
-                        payroll.departmentAt(
-                                tenant, d.employeeCodes().getFirst(), d.effectiveFrom());
-                if (!plan.definition().role().equals(d.role())
-                        || !plan.enabledForDepartmentAt(department, d.effectiveFrom())
-                        || !plan.definition().departmentIds().contains(department)
+                if (!plan.definition().role().equals(d.role()))
+                    throw bad("关联补贴方案的人员身份与员工薪资身份不一致，请重新选择");
+                var employeeCode = d.employeeCodes().getFirst();
+                var employee = payroll.employee(tenant, employeeCode, permission("SALARY", true));
+                var assignmentDate = d.effectiveFrom();
+                if (employee.entryDate() != null && employee.entryDate().isAfter(assignmentDate)) {
+                    if (employee.entryDate().isAfter(YearMonth.from(assignmentDate).atEndOfMonth()))
+                        throw bad("薪资生效月份早于该员工档案的入职月份，请核对生效月份");
+                    // 月度规则从月初生效；月中入职须核对本次档案入职日的任职，不能借用同名旧档。
+                    assignmentDate = employee.entryDate();
+                }
+                var department = payroll.departmentAt(tenant, employeeCode, assignmentDate);
+                if (department == null)
+                    throw bad("该员工在薪资生效月份没有唯一有效的任职部门，请核对入职日期和任职记录");
+                if (!plan.definition().departmentIds().contains(department))
+                    throw bad("关联补贴方案不适用于该员工在薪资生效月份的任职部门，请重新选择");
+                if (!plan.enabledForDepartmentAt(department, d.effectiveFrom())
                         || plan.definition().effectiveFrom().isAfter(d.effectiveFrom())
                         || plan.definition().effectiveTo().isBefore(d.effectiveFrom()))
-                    throw bad("请选择与员工身份、任职部门及生效月份一致的补贴版本");
+                    throw bad("关联补贴方案在薪资生效月份未生效或已停用，请重新选择");
             }
         }
         var old =

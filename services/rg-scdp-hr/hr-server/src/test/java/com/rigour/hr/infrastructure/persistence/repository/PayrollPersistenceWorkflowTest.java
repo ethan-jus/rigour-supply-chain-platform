@@ -66,6 +66,9 @@ class PayrollPersistenceWorkflowTest {
                         .replace(" JSON ", " LONGTEXT ");
         schemaConnection = ds.getConnection();
         schemaConnection.createStatement().execute(ddl);
+        // V28 已为现行工资实体新增创建人姓名；本测试不加载其他薪资规则表。
+        schemaConnection.createStatement()
+                .execute("ALTER TABLE hr_payroll ADD COLUMN created_by_name VARCHAR(128) NULL");
         // 与现行 V25 实体保持一致；隔离测试是空表，略过 MySQL 专用的历史月份回填。
         schemaConnection.createStatement().execute(new ClassPathResource("db/migration/V25__expense_details_and_evidence.sql")
                 .getContentAsString(StandardCharsets.UTF_8)

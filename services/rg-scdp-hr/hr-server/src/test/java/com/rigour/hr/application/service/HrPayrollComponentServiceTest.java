@@ -128,6 +128,119 @@ class HrPayrollComponentServiceTest {
     }
 
     @ParameterizedTest
+    @ValueSource(
+            strings = {
+                "valid", "same-department", "established", "left-during-month", "wrong-department", "wrong-role",
+                "stopped", "future", "missing-assignment", "later-entry"
+            })
+    void personalAllowanceUsesSelectedEmploymentAndItsFirstWorkingDay(String scenario) {
+        var tenant = UUID.randomUUID();
+        var actor = UUID.randomUUID();
+        var month = LocalDate.of(2026, 10, 1);
+        var entry = switch (scenario) {
+            case "later-entry" -> month.plusMonths(1);
+            case "established" -> month.minusMonths(1);
+            default -> month.plusDays(14);
+        };
+        var assignmentDate = entry.isAfter(month) ? entry : month;
+        var current =
+                new PayrollEmployeeView(
+                        "E-ACTIVE", "同名员工", 1L, "销售部", null, entry,
+                        "left-during-month".equals(scenario) ? month.plusDays(20) : null,
+                        "SALES");
+        var left =
+                new PayrollEmployeeView(
+                        "E-LEFT", "同名员工", "same-department".equals(scenario) ? 1L : 2L,
+                        "same-department".equals(scenario) ? "销售部" : "旧部门", null,
+                        month.minusYears(1), month.minusDays(1), "SALES");
+        var allowance =
+                new PayrollComponentDefinition(
+                        "销售补贴", "ALLOWANCE",
+                        "wrong-role".equals(scenario) ? "HEADQUARTERS" : "SALES",
+                        List.of("wrong-department".equals(scenario) ? 2L : 1L),
+                        "future".equals(scenario) ? month.plusMonths(1) : month,
+                        LocalDate.of(9999, 12, 31), null, null, null, null,
+                        new PayrollAllowanceStandard(base.allowances(), "NONE"), List.of());
+        var plan =
+                new PayrollComponentVersionView(
+                        "selected-allowance", "allowance-family", 1, allowance,
+                        "创建", "HR", Instant.EPOCH, "PCR-ALLOWANCE", 1, false,
+                        "stopped".equals(scenario)
+                                ? List.of(new PayrollComponentStateChange(
+                                        1, "2026-10", false, "停用", "HR", Instant.EPOCH))
+                                : List.of());
+        var personal =
+                new PayrollPersonalPolicy(
+                        List.of(), plan.id(), null, null, null, null, null, null);
+        var definition =
+                new PayrollComponentDefinition(
+                        "员工薪资标准", "SALARY", "SALES", List.of(), month,
+                        LocalDate.of(9999, 12, 31),
+                        new PayrollSalaryStandard(
+                                base.baseSalary(), base.performanceBase(), base.proration(), personal),
+                        null, null, null, null, List.of(current.employeeCode()));
+        var command =
+                new PayrollComponentSaveCommand(
+                        "REQ-ALLOWANCE", null, definition, "维护在职档案", false, null);
+        if ("same-department".equals(scenario)) {
+            var formerDefinition =
+                    new PayrollComponentDefinition(
+                            definition.name(), "SALARY", definition.role(), List.of(),
+                            definition.effectiveFrom(), definition.effectiveTo(), definition.salary(),
+                            null, null, null, null, List.of(left.employeeCode()));
+            var formerSalary =
+                    new PayrollComponentVersionView(
+                            "former-salary", "former-family", 1, formerDefinition,
+                            "离职档案历史薪资", "HR", Instant.EPOCH);
+            when(catalog.versions(tenant.toString())).thenReturn(List.of(plan, formerSalary));
+        } else {
+            when(catalog.versions(tenant.toString())).thenReturn(List.of(plan));
+        }
+        when(payroll.employee(tenant.toString(), current.employeeCode(), "hr:payroll-rule:write"))
+                .thenReturn(current);
+        when(payroll.employees(tenant.toString(), "hr:payroll-rule:write"))
+                .thenReturn(List.of(left, current));
+        when(payroll.departments(eq(tenant.toString()), anyString()))
+                .thenReturn(List.of(
+                        new PayrollDepartmentView(1L, null, "销售部", 0),
+                        new PayrollDepartmentView(2L, null, "旧部门", 1)));
+        when(payroll.departmentAt(tenant.toString(), current.employeeCode(), assignmentDate))
+                .thenReturn("missing-assignment".equals(scenario) ? null : 1L);
+        var saved =
+                new PayrollComponentVersionView(
+                        "saved", "salary", 1, definition, "维护", "HR", Instant.EPOCH);
+        when(catalog.save(eq(tenant.toString()), eq(command), anyString())).thenReturn(saved);
+        TestAuthorizationContext.set(
+                new CallerIdentity(
+                        "TENANT", actor, tenant, actor, null, UUID.randomUUID(),
+                        0, 0, 0, Set.of(), Set.of("*:*:*")));
+        try {
+            if (Set.of("valid", "same-department", "established", "left-during-month").contains(scenario)) {
+                assertThat(service.save(command)).isSameAs(saved);
+                verify(payroll).departmentAt(tenant.toString(), current.employeeCode(), assignmentDate);
+                verify(catalog).save(eq(tenant.toString()), eq(command), anyString());
+            } else {
+                var expected = switch (scenario) {
+                    case "wrong-department" -> "任职部门";
+                    case "wrong-role" -> "人员身份";
+                    case "stopped", "future" -> "未生效或已停用";
+                    case "missing-assignment" -> "没有唯一有效的任职部门";
+                    default -> "早于该员工档案的入职月份";
+                };
+                assertThatThrownBy(() -> service.save(command))
+                        .isInstanceOf(com.rigour.shared.core.exception.BusinessException.class)
+                        .hasMessageContaining(expected);
+                verify(catalog, never()).save(anyString(), any(), anyString());
+            }
+            verify(payroll, never())
+                    .departmentAt(eq(tenant.toString()), eq(left.employeeCode()), any());
+            verify(payroll, never()).employees(anyString(), anyString());
+        } finally {
+            TestAuthorizationContext.clear();
+        }
+    }
+
+    @ParameterizedTest
     @ValueSource(ints = {0, 1, 2, 3, 4})
     void newRuleCanReplaceAStoppedFamilyButTheRetiredFamilyCannotBeEnabled(int ruleIndex) {
         var actor = UUID.randomUUID();

@@ -248,7 +248,12 @@ public class ConfiguredPayrollService {
                 || month.atEndOfMonth().isAfter(definition.effectiveTo())
                 || selected.stopFrom() != null && !month.atDay(1).isBefore(selected.stopFrom()))
             issues.add("薪资规则未覆盖本月，请维护本月生效标准");
-        Long departmentBefore = payroll.departmentAt(tenant, e.employeeCode(), month.atDay(1));
+        var firstEmploymentDay = month.atDay(1);
+        if (e.entryDate() != null
+                && e.entryDate().isAfter(firstEmploymentDay)
+                && !e.entryDate().isAfter(month.atEndOfMonth()))
+            firstEmploymentDay = e.entryDate();
+        Long departmentBefore = payroll.departmentAt(tenant, e.employeeCode(), firstEmploymentDay);
         Long departmentAfter = payroll.departmentAt(tenant, e.employeeCode(), month.atEndOfMonth());
         if (input.departmentOverrideId() == null
                 && !Objects.equals(departmentBefore, departmentAfter))
@@ -931,6 +936,18 @@ public class ConfiguredPayrollService {
                 default -> issues.add("绩效模式无效");
             }
         }
+        BigDecimal allowanceExpectedDays = expectedDays;
+        if ("SALES".equals(definition.role())
+                && expectedDays != null
+                && expectedDays.signum() > 0
+                && e.entryDate() != null
+                && e.entryDate().isAfter(month.atDay(1))
+                && !e.entryDate().isAfter(month.atEndOfMonth())) {
+            // 补贴按本次入职后的应出勤折算；底薪仍使用原整月分母，不能合并两项再折算。
+            allowanceExpectedDays =
+                    BigDecimal.valueOf(
+                            workDays.stream().filter(d -> !d.isBefore(e.entryDate())).count());
+        }
         BigDecimal allowance = input.allowanceOverride();
         if (allowance == null)
             allowance =
@@ -943,35 +960,9 @@ public class ConfiguredPayrollService {
                             e,
                             workDays,
                             actualDays,
-                            expectedDays,
+                            allowanceExpectedDays,
                             issues,
                             "补贴");
-        if ("SALES".equals(definition.role())
-                && input.baseOverride() == null
-                && input.allowanceOverride() == null
-                && base != null
-                && allowance != null) {
-            var ratio =
-                    SalarySchemeCalculator.proration(
-                            "CONFIRMED_ATTENDANCE",
-                            month,
-                            e.entryDate(),
-                            e.leaveDate(),
-                            workDays,
-                            actualDays,
-                            expectedDays);
-            if (ratio != null) {
-                var combined =
-                        SalarySchemeCalculator.money(
-                                standardBase
-                                        .add(
-                                                definition.allowances().stream()
-                                                        .map(PayrollSchemeAllowance::amount)
-                                                        .reduce(BigDecimal.ZERO, BigDecimal::add))
-                                        .multiply(ratio));
-                allowance = combined.subtract(base);
-            }
-        }
         ConfiguredCommissionResult commission =
                 new ConfiguredCommissionResult(
                         BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of());
@@ -1030,7 +1021,20 @@ public class ConfiguredPayrollService {
                         List.of(
                                 "按员工薪资档案与当月独立规则计算；人工调整单独留痕",
                                 "销售回款业绩与提成按首次整单付清归月；城市回款指标按全部有效到账归月",
-                                "底薪、绩效与补贴分别执行折算政策",
+                                "SALES".equals(definition.role())
+                                        ? "销售补贴按月补贴标准÷员工当月应出勤×实际出勤计算；入职当月仅计入职日至月底工作日。"
+                                                + "本次补贴应出勤："
+                                                + (allowanceExpectedDays == null
+                                                        ? "待核对"
+                                                        : allowanceExpectedDays.stripTrailingZeros()
+                                                                        .toPlainString()
+                                                                + "天")
+                                                + "；实际出勤："
+                                                + (actualDays == null
+                                                        ? "待核对"
+                                                        : actualDays.stripTrailingZeros().toPlainString() + "天")
+                                                + "；人工核定补贴优先。"
+                                        : "底薪、绩效与补贴分别执行折算政策",
                                 "打卡与有效拜访扣减以该项额度为上限，逐日展示扣减依据"),
                         rules == null
                                 ? List.of()
