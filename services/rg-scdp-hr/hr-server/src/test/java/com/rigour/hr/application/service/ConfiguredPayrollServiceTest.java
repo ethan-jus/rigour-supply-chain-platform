@@ -94,10 +94,12 @@ class ConfiguredPayrollServiceTest {
                                 List.of()));
     }
 
-    @Test
-    void normalPayrollCalculationIncludesHistoricalCommissionInGrossAndNet() {
+    @ParameterizedTest
+    @CsvSource({"2026-10-01,false", "2026-05-01,true"})
+    void normalPayrollCalculationIncludesHistoricalCommissionInGrossAndNet(String ruleFrom, boolean missingHistory) {
         var fixture = new ConfiguredCommissionServiceTest();
         fixture.setup();
+        employee = fixture.employee;
         var original = PayrollSchemeTestFixture.version(PayrollSchemeTestFixture.definition());
         var selected = new PayrollSchemeVersionView(original.id(), original.schemeId(), 1, 1,
                 "RESOLVED", original.definition(), original.reason(), original.createdBy(), null, original.updatedTime(), null);
@@ -105,7 +107,7 @@ class ConfiguredPayrollServiceTest {
         var catalog = mock(HrPayrollComponentStore.class);
         var standard = new PayrollComponentVersionView("october-commission", "commission", 1,
                 new PayrollComponentDefinition("10月提成", "COMMISSION", "ALL", List.of(1L),
-                        LocalDate.of(2026, 10, 1), LocalDate.MAX, null, null,
+                        LocalDate.parse(ruleFrom), LocalDate.MAX, null, null,
                         new PayrollSchemeCommissionPolicy("FULLY_PAID_DATE", "FULLY_PAID_DATE", original.definition().commission().rules()),
                         null, null, List.of()), "规则配置", "hr", Instant.EPOCH);
         when(catalog.versions("t")).thenReturn(List.of(standard));
@@ -113,7 +115,16 @@ class ConfiguredPayrollServiceTest {
         engine.setRules(new PayrollRuleResolver(catalog));
         service = new ConfiguredPayrollService(payroll, schemes, source, attendance, engine, JsonMapper.builder().build());
         service.setRules(rules);
-        when(source.payrollLines(eq("t"), eq("A"), isNull(), any())).thenReturn(List.of(fixture.line("history", 1, "C", true)));
+        var fact = fixture.line("history", 1, "C", true);
+        if (missingHistory) {
+            var mapper = JsonMapper.builder().build();
+            tools.jackson.databind.node.ObjectNode node = mapper.valueToTree(fact);
+            node.putNull("departmentId");
+            fact = mapper.treeToValue(node, com.rigour.order.api.v1.model.OrderPayrollLineView.class);
+            when(payroll.departmentAt(eq("t"), eq("A"), any())).thenAnswer(i ->
+                    ((LocalDate) i.getArgument(2)).isBefore(LocalDate.of(2026, 9, 16)) ? null : 1L);
+        }
+        when(source.payrollLines(eq("t"), eq("A"), isNull(), any())).thenReturn(List.of(fact));
         when(source.productsByVariants(eq("t"), anyList())).thenReturn(List.of(fixture.product(1, 10)));
         when(source.productCategories("t")).thenReturn(List.of(new com.rigour.erp.api.v1.model.ErpPayrollCategoryView(10L, null, "方便面", 0)));
         when(source.performanceEvidence(eq("t"), eq("A"), any(), any())).thenReturn(new com.rigour.sales.api.v1.model.SalesPayrollEvidenceView(true, List.of()));

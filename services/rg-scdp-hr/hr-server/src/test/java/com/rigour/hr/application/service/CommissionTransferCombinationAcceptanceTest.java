@@ -79,6 +79,39 @@ class CommissionTransferCombinationAcceptanceTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"MISSING_HISTORY", "KNOWN_OTHER_DEPARTMENT", "MISSING_PAID_DEPARTMENT", "ORDER_DATE_POLICY"})
+    void backdatedRuleHandlesMissingImportedHistoryWithoutInventingKnownDepartmentCoverage(String scenario) {
+        var catalog = mock(HrPayrollComponentStore.class);
+        var original = fixture.scheme;
+        fixture.scheme = new PayrollSchemeVersionView(original.id(), original.schemeId(), 1, 1,
+                "RESOLVED", original.definition(), original.reason(), original.createdBy(), null, original.updatedTime(), null);
+        when(catalog.versions("t")).thenReturn(List.of(commission("may-rule", 2, "2026-05-01", "9999-12-31", "FULLY_PAID_DATE",
+                scenario.equals("ORDER_DATE_POLICY") ? "ORDER_DATE" : "FULLY_PAID_DATE", "4", "1")));
+        fixture.service.setRules(new PayrollRuleResolver(catalog));
+        when(fixture.store.departmentAt(eq("t"), eq("A"), any())).thenAnswer(i -> {
+            LocalDate date = i.getArgument(2);
+            return date.isBefore(LocalDate.of(2026, 9, 16))
+                    ? scenario.equals("KNOWN_OTHER_DEPARTMENT") ? 1L : null
+                    : scenario.equals("MISSING_PAID_DEPARTMENT") ? null : 2L;
+        });
+        ObjectNode node = json.valueToTree(fixture.line("imported", 1, "C", true));
+        node.putNull("departmentId");
+        var result = fixture.calculate(List.of(json.treeToValue(node, com.rigour.order.api.v1.model.OrderPayrollLineView.class)), List.of());
+        if (scenario.equals("MISSING_HISTORY")) {
+            assertThat(result.issues()).isEmpty();
+            assertThat(result.released()).isEqualByComparingTo("40");
+            assertThat(result.details()).singleElement().satisfies(d -> {
+                assertThat(d.sourceEmployeeCode()).isEqualTo("A");
+                assertThat(d.message()).contains("订单日任职部门未记录", "整单付清日任职部门", "保留订单原销售归属");
+                assertThat(d.trace().schemeVersionId()).isEqualTo("may-rule");
+            });
+        } else {
+            assertThat(result.issues()).isNotEmpty();
+            assertThat(result.details()).singleElement().satisfies(d -> assertThat(d.released()).isNull());
+        }
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"STOPPED_HISTORY", "CONFLICTING_HISTORY", "EXPIRED_CURRENT", "OTHER_DEPARTMENT", "ORDER_DATE"})
     void uncoveredPoliciesAreNotSilentlyReplaced(String scenario) {
         var catalog = mock(HrPayrollComponentStore.class);

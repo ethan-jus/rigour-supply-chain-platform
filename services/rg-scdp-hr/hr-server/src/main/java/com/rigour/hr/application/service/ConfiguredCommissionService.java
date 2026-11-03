@@ -39,7 +39,7 @@ public class ConfiguredCommissionService {
             List<PayrollRuleView> assignments) {
         List<String> issues = new ArrayList<>();
         List<PayrollCommissionDetailView> details = new ArrayList<>();
-        Set<String> historical = new HashSet<>();
+        Map<String, String> historical = new HashMap<>();
         var released =
                 payroll.releasedForCalculation(tenant, employee.employeeCode(), month.toString());
         // 只有已整单付清的订单进入计提，未付清商品也不要求提前匹配经济标准。
@@ -70,14 +70,14 @@ public class ConfiguredCommissionService {
         for (var fact : facts) {
             if (Objects.equals(employee.employeeCode(), fact.employeeCode())) {
                 int issueCount = issues.size();
+                Long orderDepartment = fact.departmentId() != null
+                        ? fact.departmentId()
+                        : payroll.departmentAt(tenant, employee.employeeCode(), fact.orderDate());
                 var execution =
                         execution(
                                 tenant,
                                 employee.employeeCode(),
-                                fact.departmentId() != null
-                                        ? fact.departmentId()
-                                        : payroll.departmentAt(
-                                                tenant, employee.employeeCode(), fact.orderDate()),
+                                orderDepartment,
                                 fact.orderDate(),
                                 selected,
                                 versions,
@@ -93,9 +93,11 @@ public class ConfiguredCommissionService {
                             payroll.departmentAt(tenant, employee.employeeCode(), fact.fullyPaidDate()),
                             fact.fullyPaidDate(), selected, versions, issues, fact.orderNo());
                     if (paidPolicy != null && "FULLY_PAID_DATE".equals(paidPolicy.definition().commission().standardDate())
-                            && fact.orderDate().isBefore(paidPolicy.definition().effectiveFrom())) {
+                            && (orderDepartment == null
+                                    || fact.orderDate().isBefore(paidPolicy.definition().effectiveFrom()))) {
                         execution = paidPolicy;
-                        historical.add(fact.lineId());
+                        historical.put(fact.lineId(), orderDepartment == null
+                                ? "订单日任职部门未记录" : "订单日未配置政策");
                         issues.subList(issueCount, issues.size()).removeIf(i -> i.equals(fact.orderNo() + "：提成规则未配置"));
                     }
                 }
@@ -238,9 +240,10 @@ public class ConfiguredCommissionService {
                             d.ruleRevision(),
                             d.accrued(),
                             d.released(),
-                            d.message() + (historical.contains(d.sourceLineId()) && d.released() != null
+                            d.message() + (historical.containsKey(d.sourceLineId()) && d.released() != null
                                     && "SALES".equals(d.recipientRoleCode())
-                                    ? "；历史订单补算：订单日未配置政策，按整单付清日有效规则取值，保留订单原销售归属" : ""),
+                                    ? "；历史订单补算：" + historical.get(d.sourceLineId())
+                                            + "，按整单付清日任职部门及有效规则取值，保留订单原销售归属" : ""),
                             d.sourceEmployeeCode(),
                             trace);
                 });
