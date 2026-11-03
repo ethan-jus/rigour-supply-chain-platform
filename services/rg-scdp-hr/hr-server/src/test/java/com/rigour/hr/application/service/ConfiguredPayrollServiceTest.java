@@ -197,6 +197,10 @@ class ConfiguredPayrollServiceTest {
     }
 
     private YearMonth lateEntryAttendance(String actual) {
+        return lateEntryAttendance(actual, 22);
+    }
+
+    private YearMonth lateEntryAttendance(String actual, Integer departmentExpectedDays) {
         var month = YearMonth.of(2026, 10);
         employee =
                 new PayrollEmployeeView(
@@ -213,8 +217,9 @@ class ConfiguredPayrollServiceTest {
         var actualDays = new BigDecimal(actual);
         var confirmed =
                 new AttendanceRow(
-                        "A", "员工", "销售部", 22, "DEPARTMENT", actualDays,
-                        new BigDecimal("22").subtract(actualDays), actualDays.intValue(),
+                        "A", "员工", "销售部", departmentExpectedDays, "DEPARTMENT", actualDays,
+                        BigDecimal.valueOf(departmentExpectedDays == null ? 0 : departmentExpectedDays)
+                                .subtract(actualDays), actualDays.intValue(),
                         actualDays, null, "NONE", "CONFIRMED", "AVAILABLE", List.of(), "核定出勤", 1);
         when(attendance.employee(anyString(), any(), anyString()))
                 .thenReturn(new HrAttendanceStore.Employee(
@@ -225,16 +230,20 @@ class ConfiguredPayrollServiceTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"2,750,272.73", "1,375,136.36", "0.5,187.5,68.18", "0,0,0"})
-    void lateEntryAllowanceUsesOwnWorkingDaysWhileBaseKeepsMonthlyDenominator(
-            String actual, String allowance, String base) {
-        var month = lateEntryAttendance(actual);
+    @CsvSource({
+        "22,2,68.18,272.73", "22,1,34.09,136.36", "22,0.5,17.05,68.18", "22,0,0,0",
+        "18,2,83.33,333.33", "18,1,41.67,166.67", "18,0.5,20.83,83.33", "18,0,0,0"
+    })
+    void lateEntryAllowanceAndBaseUseConfirmedDepartmentWholeMonthDenominator(
+            Integer departmentExpectedDays, String actual, String allowance, String base) {
+        var month = lateEntryAttendance(actual, departmentExpectedDays);
         var result = service.calculateIfConfigured("t", employee, month).orElseThrow();
         assertThat(result.issues()).isEmpty();
         assertThat(result.allowance()).isEqualByComparingTo(allowance);
         assertThat(result.baseSalary()).isEqualByComparingTo(base);
         assertThat(result.scheme().explanations())
-                .anyMatch(line -> line.contains("补贴") && line.contains("2天"));
+                .anyMatch(line -> line.contains("部门整月应出勤：" + departmentExpectedDays + "天")
+                        && line.contains("实际出勤：" + actual + "天"));
     }
 
     @Test
@@ -249,7 +258,7 @@ class ConfiguredPayrollServiceTest {
     }
 
     @Test
-    void lateEntryAllowanceUsesCalendarMakeupDaysAndRestDays() {
+    void lateEntryDoesNotReplaceWholeMonthDenominatorWithRemainingCalendarDays() {
         var month = lateEntryAttendance("1");
         var original = PayrollSchemeTestFixture.definition();
         var definition = original.withCalendar(
@@ -260,22 +269,35 @@ class ConfiguredPayrollServiceTest {
                 .thenReturn(new PayrollRuleMatch(PayrollSchemeTestFixture.version(definition), List.of()));
         var result = service.calculateIfConfigured("t", employee, month).orElseThrow();
         assertThat(result.issues()).isEmpty();
-        assertThat(result.allowance()).isEqualByComparingTo("750");
+        assertThat(result.allowance()).isEqualByComparingTo("34.09");
     }
 
     @Test
-    void lateEntryWithoutConfirmedAttendanceOrWorkingDaysNeverGetsInventedFullAllowance() {
+    void lateEntryWithoutConfirmedAttendanceRemainsPending() {
         var month = lateEntryAttendance("0");
         when(attendance.employee(anyString(), any(), anyString())).thenReturn(null);
         var missing = service.calculateIfConfigured("t", employee, month).orElseThrow();
         assertThat(missing.allowance()).isNull();
         assertThat(missing.issues()).anyMatch(issue -> issue.contains("考勤尚未确认"));
-        lateEntryAttendance("0");
+    }
+
+    @ParameterizedTest
+    @CsvSource(value = {"0", "null"}, nullValues = "null")
+    void lateEntryWithoutDepartmentWholeMonthExpectedDaysRemainsPending(Integer expected) {
+        var month = lateEntryAttendance("0", expected);
+        var result = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        assertThat(result.allowance()).isNull();
+        assertThat(result.issues()).anyMatch(issue -> issue.contains("补贴金额或折算依据待核对"));
+    }
+
+    @Test
+    void entryOnRestDayWithZeroAttendanceHasZeroAllowance() {
+        var month = lateEntryAttendance("0");
         employee = new PayrollEmployeeView(
                 "A", "员工", 1L, "销售部", null, month.atDay(31), null, "SALES");
-        var noWork = service.calculateIfConfigured("t", employee, month).orElseThrow();
-        assertThat(noWork.allowance()).isNull();
-        assertThat(noWork.issues()).anyMatch(issue -> issue.contains("补贴金额或折算依据待核对"));
+        var result = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        assertThat(result.allowance()).isZero();
+        assertThat(result.issues()).isEmpty();
     }
 
     @Test

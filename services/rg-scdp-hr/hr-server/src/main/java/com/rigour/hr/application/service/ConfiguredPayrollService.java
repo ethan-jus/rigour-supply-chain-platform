@@ -936,18 +936,6 @@ public class ConfiguredPayrollService {
                 default -> issues.add("绩效模式无效");
             }
         }
-        BigDecimal allowanceExpectedDays = expectedDays;
-        if ("SALES".equals(definition.role())
-                && expectedDays != null
-                && expectedDays.signum() > 0
-                && e.entryDate() != null
-                && e.entryDate().isAfter(month.atDay(1))
-                && !e.entryDate().isAfter(month.atEndOfMonth())) {
-            // 补贴按本次入职后的应出勤折算；底薪仍使用原整月分母，不能合并两项再折算。
-            allowanceExpectedDays =
-                    BigDecimal.valueOf(
-                            workDays.stream().filter(d -> !d.isBefore(e.entryDate())).count());
-        }
         BigDecimal allowance = input.allowanceOverride();
         if (allowance == null)
             allowance =
@@ -960,7 +948,7 @@ public class ConfiguredPayrollService {
                             e,
                             workDays,
                             actualDays,
-                            allowanceExpectedDays,
+                            expectedDays,
                             issues,
                             "补贴");
         ConfiguredCommissionResult commission =
@@ -1022,11 +1010,11 @@ public class ConfiguredPayrollService {
                                 "按员工薪资档案与当月独立规则计算；人工调整单独留痕",
                                 "销售回款业绩与提成按首次整单付清归月；城市回款指标按全部有效到账归月",
                                 "SALES".equals(definition.role())
-                                        ? "销售补贴按月补贴标准÷员工当月应出勤×实际出勤计算；入职当月仅计入职日至月底工作日。"
-                                                + "本次补贴应出勤："
-                                                + (allowanceExpectedDays == null
+                                        ? "销售补贴按月补贴标准÷部门整月应出勤天数×员工实际出勤天数计算；入职当月也使用部门整月分母。"
+                                                + "本次部门整月应出勤："
+                                                + (expectedDays == null
                                                         ? "待核对"
-                                                        : allowanceExpectedDays.stripTrailingZeros()
+                                                        : expectedDays.stripTrailingZeros()
                                                                         .toPlainString()
                                                                 + "天")
                                                 + "；实际出勤："
