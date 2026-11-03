@@ -95,6 +95,13 @@ public class ConfiguredCommissionService {
                         details,
                         issues);
             }
+            // Only this employee's possible managerial entitlement can block their payroll.
+            // Other managers' assignment conflicts must not invalidate earned sales commission.
+            boolean possibleManager = java.util.stream.Stream.of(fact.orderDate(), fact.fullyPaidDate())
+                    .filter(Objects::nonNull)
+                    .flatMap(date -> assignmentsAt(assignments, fact.cityCode(), date).stream())
+                    .anyMatch(row -> employee.employeeCode().equals(row.data().employeeCode()));
+            if (!possibleManager) continue;
             var atOrder = assignmentsAt(assignments, fact.cityCode(), fact.orderDate());
             if (atOrder.size() > 1) {
                 issues.add(fact.orderNo() + "：订单日城市总任职重叠");
@@ -130,6 +137,8 @@ public class ConfiguredCommissionService {
                             : fact.orderDate();
             if (date == null) continue;
             var recipients = assignmentsAt(assignments, fact.cityCode(), date);
+            if (recipients.stream().noneMatch(row ->
+                    employee.employeeCode().equals(row.data().employeeCode()))) continue;
             if (recipients.size() != 1) {
                 issues.add(fact.orderNo() + "：归属时点城市总任职缺失或重叠");
                 continue;

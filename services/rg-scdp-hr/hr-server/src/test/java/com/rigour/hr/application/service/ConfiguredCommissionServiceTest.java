@@ -117,6 +117,46 @@ class ConfiguredCommissionServiceTest {
     }
 
     @Test
+    void unrelatedCityManagerAssignmentProblemsDoNotBlockConfiguredSalesCommission() {
+        var result = calculate(List.of(line("sales", 1, "C", true)), List.of(
+                assignment("C", "B", LocalDate.of(2026, 9, 1), LocalDate.MAX),
+                assignment("C", "D", LocalDate.of(2026, 9, 1), LocalDate.MAX)));
+        assertThat(result.issues()).isEmpty();
+        assertThat(result.released()).isEqualByComparingTo("40");
+        assertThat(result.details()).extracting(PayrollCommissionDetailView::recipientRoleCode)
+                .containsExactly("SALES");
+    }
+
+    @Test
+    void currentEmployeesOverlappingManagerAssignmentsStillRequireReview() {
+        var result = calculate(List.of(line("manager", 1, "C", true)), List.of(
+                assignment("C", "A", LocalDate.of(2026, 9, 1), LocalDate.MAX),
+                assignment("C", "D", LocalDate.of(2026, 9, 1), LocalDate.MAX)));
+        assertThat(result.issues()).contains("NOmanager：订单日城市总任职重叠");
+    }
+
+    @Test
+    void fullyPaidAttributionChecksOnlyTheEmployeeWhoMayReceiveTheManagerCommission() throws Exception {
+        var json = tools.jackson.databind.json.JsonMapper.builder().build();
+        var definition = (tools.jackson.databind.node.ObjectNode) json.valueToTree(scheme.definition());
+        ((tools.jackson.databind.node.ObjectNode) definition.get("commission"))
+                .put("managerAttribution", "FULLY_PAID_DATE");
+        scheme = PayrollSchemeTestFixture.version(json.treeToValue(definition, PayrollSchemeDefinition.class));
+        var oldManager = assignment("C", "A", LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 30));
+        var successors = List.of(oldManager,
+                assignment("C", "B", LocalDate.of(2026, 10, 1), LocalDate.MAX),
+                assignment("C", "D", LocalDate.of(2026, 10, 1), LocalDate.MAX));
+        var sales = calculate(List.of(line("handoff", 1, "C", true)), successors);
+        assertThat(sales.issues()).isEmpty();
+        assertThat(sales.released()).isEqualByComparingTo("40");
+        var current = calculate(List.of(line("current", 1, "C", true)), List.of(
+                assignment("C", "B", LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 30)),
+                assignment("C", "A", LocalDate.of(2026, 10, 1), LocalDate.MAX),
+                assignment("C", "D", LocalDate.of(2026, 10, 1), LocalDate.MAX)));
+        assertThat(current.issues()).contains("NOcurrent：归属时点城市总任职缺失或重叠");
+    }
+
+    @Test
     void quantityCommissionCarriesProductReceiptsSeparatelyFromItsQuantityBase() {
         var result = calculate(List.of(line("receipts", 3, "C", true)), List.of());
         assertThat(result.details()).isNotEmpty();
