@@ -271,6 +271,16 @@ public final class DhbClientAdapter implements DhbClient {
                         false, response.getStatusCode().value(), null);
             }
             String contentType = response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE);
+            String prefix = new String(content, 0, Math.min(content.length, 512), java.nio.charset.StandardCharsets.UTF_8)
+                    .stripLeading().toLowerCase(java.util.Locale.ROOT);
+            String mime = contentType == null ? "" : contentType.toLowerCase(java.util.Locale.ROOT);
+            if (mime.contains("html") || mime.contains("xml") || mime.contains("json")
+                    || prefix.startsWith("<!doctype") || prefix.startsWith("<html")
+                    || prefix.startsWith("<?xml") || prefix.startsWith("<error")
+                    || prefix.startsWith("{") || prefix.startsWith("[")) {
+                throw new DhbClientException("DHB_ATTACHMENT_ERROR_DOCUMENT", "订货宝业务附件返回错误文档，需刷新来源链接后重试",
+                        true, response.getStatusCode().value(), null);
+            }
             return new DownloadedFile(content, contentType);
         } catch (DhbClientException exception) {
             logAttachmentDownloadFailure(connector, uri, exception);
@@ -719,7 +729,12 @@ public final class DhbClientAdapter implements DhbClient {
         putIfPresent(values, "status", query.status());
         ApiEnvelope response = callBusiness(connector, "getPaymentList", values);
         List<Map<String, Object>> rows = rows(response, "getPaymentList");
-        List<Payment> items = rows.stream().map(DhbClientAdapter::payment).toList();
+        List<Payment> items = rows.stream().map(row -> {
+            Map<String, Object> withStatus = new LinkedHashMap<>(row);
+            if (!withStatus.containsKey("Status") && java.util.Set.of("pend_receipt", "pend_receipted", "canceled").contains(query.status() == null ? "" : query.status()))
+                withStatus.put("Status", query.status());
+            return payment(withStatus);
+        }).toList();
         logPage(connector, "getPaymentList", query.page(), response, items.size());
         return new Page<>(query.page(), response.total(), items);
     }

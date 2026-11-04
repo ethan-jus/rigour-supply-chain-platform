@@ -953,7 +953,7 @@ public final class SupplyDashboardQueryService {
                         "销售额",
                         "SUM(bi_sales_order_fact.payable_amount)，排除逻辑删除和已取消订单",
                         "Analytics BI / bi_sales_order_fact",
-                        "排除 deleted=1 和 order_status_code=CANCELLED",
+                        "排除 deleted=1 和 order_status_code 为 CANCELLED/DELETED",
                         updatedAt,
                         cutoff),
                 definition(
@@ -961,7 +961,7 @@ public final class SupplyDashboardQueryService {
                         "总回款额",
                         "SUM(bi_sales_order_fact.paid_amount)，按订单事实累计已收金额统计",
                         "Analytics BI / bi_sales_order_fact",
-                        "排除 deleted=1 和 order_status_code=CANCELLED",
+                        "排除 deleted=1 和 order_status_code 为 CANCELLED/DELETED",
                         updatedAt,
                         cutoff),
                 definition(
@@ -969,7 +969,7 @@ public final class SupplyDashboardQueryService {
                         "待回款",
                         "SUM(bi_sales_order_fact.unpaid_amount)，按订单事实累计未收金额统计",
                         "Analytics BI / bi_sales_order_fact",
-                        "排除 deleted=1 和 order_status_code=CANCELLED",
+                        "排除 deleted=1 和 order_status_code 为 CANCELLED/DELETED",
                         updatedAt,
                         cutoff),
                 definition(
@@ -985,7 +985,7 @@ public final class SupplyDashboardQueryService {
                         "商品销售额",
                         "SUM(bi_sales_order_line_fact.line_amount)，按商品或分类汇总",
                         "Analytics BI / bi_sales_order_line_fact",
-                        "排除 deleted=1 和 order_status_code=CANCELLED",
+                        "排除 deleted=1 和 order_status_code 为 CANCELLED/DELETED",
                         updatedAt,
                         cutoff),
                 definition(
@@ -993,7 +993,7 @@ public final class SupplyDashboardQueryService {
                         "商品订货数量",
                         "SUM(bi_sales_order_line_fact.quantity)，按商品或分类汇总",
                         "Analytics BI / bi_sales_order_line_fact",
-                        "排除 deleted=1 和 order_status_code=CANCELLED",
+                        "排除 deleted=1 和 order_status_code 为 CANCELLED/DELETED",
                         updatedAt,
                         cutoff),
                 definition(
@@ -1001,7 +1001,7 @@ public final class SupplyDashboardQueryService {
                         "SKU销售额",
                         "SUM(bi_sales_order_line_fact.line_amount)，按商品规格或SKU编码汇总",
                         "Analytics BI / bi_sales_order_line_fact",
-                        "排除 deleted=1 和 order_status_code=CANCELLED；没有SKU编码时回落到商品编码",
+                        "排除 deleted=1 和 order_status_code 为 CANCELLED/DELETED；没有SKU编码时回落到商品编码",
                         updatedAt,
                         cutoff),
                 definition(
@@ -1058,7 +1058,7 @@ public final class SupplyDashboardQueryService {
                         "回款账龄分布",
                         "待回款订单按 payment_due_date 与查询截止时间差分桶：未逾期、1-30天、31-60天、60天以上",
                         "Analytics BI / bi_sales_order_fact",
-                        "排除 deleted=1 和 order_status_code=CANCELLED；仅统计 unpaid_amount>0",
+                        "排除 deleted=1 和 order_status_code 为 CANCELLED/DELETED；仅统计 unpaid_amount>0",
                         updatedAt,
                         cutoff),
                 definition(
@@ -1074,7 +1074,7 @@ public final class SupplyDashboardQueryService {
                         "合作客户数",
                         "COUNT(DISTINCT bi_sales_order_fact.customer_id)，仅统计有非取消销售订单客户",
                         "Analytics BI / bi_sales_order_fact",
-                        "排除 deleted=1 和 order_status_code=CANCELLED",
+                        "排除 deleted=1 和 order_status_code 为 CANCELLED/DELETED",
                         updatedAt,
                         cutoff),
                 definition(
@@ -1082,7 +1082,7 @@ public final class SupplyDashboardQueryService {
                         "复购客户数",
                         "COUNT(DISTINCT customer_id)，查询周期内非取消销售订单数>=2",
                         "Analytics BI / bi_sales_order_fact",
-                        "排除 deleted=1 和 order_status_code=CANCELLED",
+                        "排除 deleted=1 和 order_status_code 为 CANCELLED/DELETED",
                         updatedAt,
                         cutoff),
                 definition(

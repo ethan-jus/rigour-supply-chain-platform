@@ -38,7 +38,7 @@ class PayrollCostAnalyticsSourceTest {
                         + " employee_code VARCHAR, employee_name VARCHAR, department_id BIGINT,"
                         + " department_name VARCHAR, city_name VARCHAR, payroll_month VARCHAR,"
                         + " status_code VARCHAR, revision INT, calculation_json VARCHAR, created_by"
-                        + " VARCHAR, updated_by VARCHAR, created_time TIMESTAMP, updated_time"
+                        + " VARCHAR, created_by_name VARCHAR(128), updated_by VARCHAR, created_time TIMESTAMP, updated_time"
                         + " TIMESTAMP)");
             jdbc.execute(
                     "CREATE TABLE hr_payroll_guard(tenant_id VARCHAR PRIMARY KEY, version BIGINT)");

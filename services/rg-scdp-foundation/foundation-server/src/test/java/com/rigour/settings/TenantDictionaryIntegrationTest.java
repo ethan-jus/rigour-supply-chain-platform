@@ -390,4 +390,77 @@ class TenantDictionaryIntegrationTest {
         assertThat(service.previewMerge(states.get(0).id(), states.get(1).id()).blockers())
                 .anyMatch(v -> v.contains("流程控制"));
     }
+    @Test
+    void paymentDictionariesMigrateWithTenantOverridesAndWorkflowGuards() {
+        var expected = Map.of(
+                "SALES_ORDER_STATUS", List.of("DRAFT", "SUBMITTED", "COMPLETED", "CANCELLED", "DELETED"),
+                "ORDER_COLLECTION_STATUS", List.of("UNPAID", "PARTIAL_PAID", "PAID", "NOT_REQUIRED"),
+                "PAYMENT_RECEIPT_STATUS", List.of("PENDING", "RECEIVED", "CANCELLED"),
+                "PAYMENT_CONFIRMATION_STATUS", List.of("UNCONFIRMED", "CONFIRMED"),
+                "PAYMENT_VOUCHER_AUDIT_STATUS", List.of("PENDING_REVIEW", "NORMAL", "ABNORMAL"));
+        for (var entry : expected.entrySet()) {
+            var view = service.resolve(entry.getKey());
+            assertThat(view.items()).extracting(DictItemView::dictionaryItemCode).containsExactlyElementsOf(entry.getValue());
+            var first = view.items().getFirst();
+            var second = view.items().get(1);
+            assertThatThrownBy(() -> service.createItem(view.dictionary().id(), new DictItemCommand(entry.getKey(), null, "INVENTED", "新增状态", null, 99, 0, true))).hasMessageContaining("流程控制");
+            assertThatThrownBy(() -> service.updateItem(first.id(), new DictItemCommand(entry.getKey(), null, first.dictionaryItemCode(), first.dictionaryItemName(), null, 10, first.revision(), false))).hasMessageContaining("流程控制");
+            assertThat(service.previewMerge(first.id(), second.id()).blockers()).anyMatch(v -> v.contains("流程控制"));
+        }
+        assertThat(service.resolve("ORDER_COLLECTION_STATUS").items())
+                .anyMatch(i -> i.dictionaryItemCode().equals("PAID") && i.dictionaryItemName().equals("已结清"));
+        assertThat(service.resolve("SALES_ORDER_STATUS").items())
+                .anyMatch(i -> i.dictionaryItemCode().equals("SUBMITTED") && i.dictionaryItemName().equals("进行中"));
+        assertThat(service.resolve("SALES_ORDER_STATUS").items())
+                .anyMatch(i -> i.dictionaryItemCode().equals("COMPLETED")
+                        && i.remark().contains("来源完成") && i.remark().contains("不代表收款结清"));
+        var original = service.resolve("ORDER_COLLECTION_STATUS").items().getFirst();
+        service.updateItem(original.id(), new DictItemCommand("ORDER_COLLECTION_STATUS", null, "UNPAID", "租户未到账", "租户说明", 99, original.revision(), true));
+        assertThat(service.resolve("ORDER_COLLECTION_STATUS").items()).anyMatch(i -> i.dictionaryItemName().equals("租户未到账") && i.ordinal() == 99);
+        actor(UUID.randomUUID(), "TENANT");
+        assertThat(service.resolve("ORDER_COLLECTION_STATUS").items()).anyMatch(i -> i.dictionaryItemName().equals("未收款"));
+        actor(tenant, "TENANT");
+        var reasons = service.resolve("PAYMENT_VOUCHER_AUDIT_REASON");
+        assertThat(reasons.items()).hasSize(7);
+        service.createItem(reasons.dictionary().id(), new DictItemCommand("PAYMENT_VOUCHER_AUDIT_REASON", null, "BANK_FEE", "银行手续费待核", null, 80, 0, true));
+        TestAuthorizationContext.set(new CallerIdentity("TENANT", user, tenant, user, null, UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("order:read")));
+        for (String code : expected.keySet()) assertThat(service.resolve(code).items()).isNotEmpty();
+        assertThat(service.resolve("PAYMENT_VOUCHER_AUDIT_REASON").items()).anyMatch(i -> i.dictionaryItemCode().equals("BANK_FEE"));
+        assertThatThrownBy(() -> service.createItem(reasons.dictionary().id(), new DictItemCommand("PAYMENT_VOUCHER_AUDIT_REASON", null, "UNAUTHORIZED", "越权", null, 90, 0, true))).isInstanceOf(AuthorizationDeniedException.class);
+    }
+
+    @Test
+    void legacyOrderStateCleanupPreservesHistoryAndTenantLabels() {
+        var draft = service.resolve("SALES_ORDER_STATUS").items().stream()
+                .filter(item -> item.dictionaryItemCode().equals("DRAFT")).findFirst().orElseThrow();
+        service.updateItem(draft.id(), new DictItemCommand("SALES_ORDER_STATUS", null, "DRAFT",
+                "租户草稿", null, 10, draft.revision(), true));
+        var names = List.of("已结清", "待回款", "未审核", "已审核", "驳回");
+        try {
+            for (String key : List.of("GLOBAL", tenant.toString())) {
+                for (int n=0; n<names.size(); n++) jdbc.update("""
+                        INSERT INTO data_dictionary_item(tenant_key,dictionary_code,dictionary_item_code,dictionary_item_name,ordinal,created_by)
+                        VALUES(?,'SALES_ORDER_STATUS',?,?,?,'legacy-sync')
+                        """, key, "AUTO_LEGACY_"+n, names.get(n), 100+n);
+            }
+            assertThat(service.effective("SALES_ORDER_STATUS").items()).hasSize(10);
+            var cleanup = new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                    new org.springframework.core.io.ClassPathResource("db/migration/V53__retire_legacy_order_status_items.sql"));
+            cleanup.execute(jdbc.getDataSource());
+            assertThat(service.effective("SALES_ORDER_STATUS").items())
+                    .extracting(DictItemView::dictionaryItemCode)
+                    .containsExactly("DRAFT","SUBMITTED","COMPLETED","CANCELLED");
+            assertThat(service.resolve("SALES_ORDER_STATUS").items())
+                    .anyMatch(item -> item.dictionaryItemCode().equals("DRAFT") && item.dictionaryItemName().equals("租户草稿"))
+                    .anyMatch(item -> item.dictionaryItemName().equals("已结清") && !item.enabled());
+            cleanup.execute(jdbc.getDataSource());
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM data_dictionary_item WHERE dictionary_code='SALES_ORDER_STATUS' AND dictionary_item_code LIKE 'AUTO_LEGACY_%' AND deleted=0 AND enabled=0 AND revision=2",Integer.class)).isEqualTo(10);
+            assertThat(service.effective("ORDER_COLLECTION_STATUS").items())
+                    .anyMatch(item -> item.dictionaryItemCode().equals("PAID") && item.dictionaryItemName().equals("已结清"));
+        } finally {
+            jdbc.update("UPDATE data_dictionary_item SET enabled=1 WHERE dictionary_code='SALES_ORDER_STATUS' AND dictionary_item_code='DELETED'");
+            jdbc.update("DELETE FROM data_dictionary_item WHERE dictionary_code='SALES_ORDER_STATUS' AND dictionary_item_code LIKE 'AUTO_LEGACY_%'");
+        }
+    }
+
 }

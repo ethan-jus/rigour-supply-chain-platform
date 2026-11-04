@@ -73,6 +73,42 @@ class JdbcStorePoolStoreTest {
     }
     void claim(String id,StoreScope scope){long revision=store.detail(scope,id).revision();inTx(()->{store.claim(scope,id,new Claim(UUID.randomUUID().toString(),revision));return null;});}
 
+    Query workQuery(String view,String pool,String status,String phase,String protection){
+        return new Query(view,null,null,null,null,null,null,null,null,null,null,20,null,pool,status,phase,protection);
+    }
+    @Test void libraryIncludesInactiveArchivesButOperationalViewsAndClaimsDoNot(){
+        String publicId=create("330105","公海档案"),privateId=create("330105","私海档案"),closed=create("330105","停业档案");
+        claim(privateId,hangzhou("crm:pool:claim","2"));
+        jdbc.update("UPDATE crm_store_master SET record_status='CLOSED' WHERE tenant_id=? AND id=?",tenant,closed);
+        jdbc.update("UPDATE crm_store_summary SET record_status='CLOSED' WHERE tenant_id=? AND store_id=?",tenant,closed);
+        jdbc.update("UPDATE crm_store_summary SET cooperation_status='COOPERATED' WHERE tenant_id=? AND store_id=?",tenant,publicId);
+        var admin=national("crm:store:manage","1");
+        assertThat(store.list(admin,query("ALL",null)).total()).isEqualTo(3);
+        assertThat(store.list(admin,workQuery("ALL","PRIVATE",null,null,null)).items()).extracting(Row::id).containsExactly(privateId);
+        var closedQuery=workQuery("ALL",null,"CLOSED",null,null);
+        assertThat(store.list(admin,closedQuery).items()).extracting(Row::id).containsExactly(closed);
+        assertThat(store.map(admin,closedQuery,Set.of(),new MapWindow(null,null,null,null,4d)).total()).isEqualTo(1);
+        assertThat(store.detail(admin,closed).claimBlockedReason()).contains("非正常");
+        assertThat(store.list(national("crm:pool:public-read","2"),query("PUBLIC",null)).items()).extracting(Row::id).containsExactly(publicId);
+        assertThat(store.list(national("crm:store:cooperation-read","2"),query("COOPERATED",null)).items()).extracting(Row::id).containsExactly(publicId);
+        assertThatThrownBy(()->claim(closed,hangzhou("crm:pool:claim","2"))).isInstanceOf(AuthorizationDeniedException.class);
+        assertThat(store.list(hangzhou("crm:pool:private-read","2"),query("MINE",null)).items()).extracting(Row::id).containsExactly(privateId);
+    }
+    @Test void privateFollowupFiltersSeparateDeadlinesAndReviewHoldsAndRespectOwnership(){
+        String soon=create("330105","即将到期"),overdue=create("330105","已到期"),held=create("330105","核验中"),other=create("330105","同城他人私海");
+        for(String id:List.of(soon,overdue,held))claim(id,hangzhou("crm:pool:claim","2"));
+        claim(other,hangzhou("crm:pool:claim","3"));
+        jdbc.update("UPDATE crm_store_summary SET phase='FOLLOW_UP',deadline_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 2 HOUR) WHERE tenant_id=? AND store_id=?",tenant,soon);
+        jdbc.update("UPDATE crm_store_summary SET deadline_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 HOUR) WHERE tenant_id=? AND store_id IN (?,?)",tenant,overdue,held);
+        jdbc.update("UPDATE crm_store_ownership SET hold_reason='PENDING_REVIEW' WHERE tenant_id=? AND store_id=? AND ended_at IS NULL",tenant,held);
+        var scope=hangzhou("crm:pool:private-read","2");
+        assertThat(store.list(scope,workQuery("MINE",null,null,"FOLLOW_UP","DUE_SOON")).items()).extracting(Row::id).containsExactly(soon);
+        assertThat(store.list(scope,workQuery("MINE",null,null,null,"OVERDUE")).items()).extracting(Row::id).containsExactly(overdue);
+        assertThat(store.list(scope,workQuery("MINE",null,null,null,"HELD")).items()).extracting(Row::id).containsExactly(held);
+        assertThat(store.list(scope,workQuery("MINE","PUBLIC",null,null,null)).total()).isZero();
+        assertThat(store.map(scope,workQuery("MINE",null,null,null,"DUE_SOON"),Set.of(),new MapWindow(null,null,null,null,4d)).total()).isEqualTo(1);
+    }
+
     @Test void nationwideAndCityScopesFilterRowsCountsDetailsAndOptions(){
         String hz=create("330105","杭州门店"),lz=create("620102","兰州门店");
         var all=store.list(national("crm:pool:public-read","1"),query("PUBLIC",null));assertThat(all.total()).isEqualTo(2);
@@ -132,6 +168,42 @@ class JdbcStorePoolStoreTest {
         inTx(()->{store.claim(scope,id,c);return null;});inTx(()->{store.claim(scope,id,c);return null;});
         assertThat(store.ownerships(scope,id)).hasSize(1);
         assertThatThrownBy(()->inTx(()->{store.claim(scope,other,c);return null;})).isInstanceOf(StateConflictException.class);
+    }
+    @Test void locationCorrectionUpdatesProjectionAndRetainsOwnershipWithPoiHistory() {
+        String id=create("330105","地区纠错");claim(id,national("crm:pool:claim","2"));
+        var scope=national("crm:store:manage","1");var old=store.detail(scope,id);
+        var location=new Location("620102",new BigDecimal("103.82"),new BigDecimal("36.06"),"GCJ02");
+        inTx(()->{store.update(scope,id,new Update(old.revision(),UUID.randomUUID().toString(),old.name(),"核实地址",old.publicPhone(),null,"纠正错误地区",location,"BTEST001"));return null;});
+        var after=store.detail(scope,id);
+        assertThat(after.areaCode()).isEqualTo("620102");
+        assertThat(after.regionCode()).isEqualTo("NORTHWEST");
+        assertThat(after.provinceName()).isEqualTo("甘肃省");
+        assertThat(after.cityName()).isEqualTo("兰州市");
+        assertThat(after.longitude()).isEqualByComparingTo("103.82");
+        assertThat(after.ownerEmployeeId()).isEqualTo(old.ownerEmployeeId());
+        assertThat(after.currentOwnershipId()).isEqualTo(old.currentOwnershipId());
+        assertThat(after.primaryPoi()).isEqualTo("BTEST001");
+        assertThat(store.list(scope,query("ALL","330100")).total()).isZero();
+        assertThat(store.list(scope,query("ALL","620100")).total()).isEqualTo(1);
+        var event=store.events(scope,id).getFirst();
+        assertThat(event.beforeData()).contains("330105");
+        assertThat(event.afterData()).contains("620102","103.82","BTEST001","GCJ02");
+        inTx(()->{store.update(scope,id,new Update(after.revision(),UUID.randomUUID().toString(),after.name(),after.address(),null,null,"更正POI",location,"BTEST002"));return null;});
+        assertThat(jdbc.queryForObject("SELECT status_code FROM crm_store_identity WHERE tenant_id=? AND external_id='BTEST001'",String.class,tenant)).isEqualTo("INACTIVE");
+        assertThat(store.detail(scope,id).primaryPoi()).isEqualTo("BTEST002");
+    }
+    @Test void duplicatePoiRollsBackLocationAndPreservesBothStores() {
+        String first=create("330105","已匹配门店"),second=create("330105","待匹配门店");
+        var scope=national("crm:store:manage","1");var a=store.detail(scope,first);var b=store.detail(scope,second);
+        var location=new Location("330105",new BigDecimal("120.1"),new BigDecimal("30.2"),"GCJ02");
+        inTx(()->{store.update(scope,first,new Update(a.revision(),UUID.randomUUID().toString(),a.name(),a.address(),null,null,"确认",location,"BTESTDUP"));return null;});
+        var otherLocation=new Location("620102",new BigDecimal("103.8"),new BigDecimal("36.0"),"GCJ02");
+        assertThatThrownBy(()->inTx(()->{store.update(scope,second,new Update(b.revision(),UUID.randomUUID().toString(),"不应保存","新地址",null,null,"重复测试",otherLocation,"BTESTDUP"));return null;}))
+                .isInstanceOf(StateConflictException.class).hasMessageContaining("已关联");
+        var unchanged=store.detail(scope,second);
+        assertThat(unchanged.name()).isEqualTo(b.name());assertThat(unchanged.areaCode()).isEqualTo(b.areaCode());
+        assertThat(unchanged.revision()).isEqualTo(b.revision());assertThat(unchanged.primaryPoi()).isNull();
+        assertThat(store.detail(scope,first).primaryPoi()).isEqualTo("BTESTDUP");
     }
     @Test void profileChangesPersistActorsTimestampsAndBeforeAfterEvidence(){
         String id=create("330105","原名称");var scope=national("crm:store:manage","1");var before=store.detail(scope,id);

@@ -1105,6 +1105,154 @@ class OrderAttributionAndScopeIntegrationTest {
         }
     }
 
+    @Test
+    void completionRequiresEveryOrderLineSignedAndDoesNotChangeReceivables() {
+        long id = order("lifecycle", 1L);
+        jdbc.update("UPDATE order_sales_order SET order_status_code='SUBMITTED',data_quality_status_code='COMPLETE',payable_amount=100,paid_amount=0,unpaid_amount=100 WHERE id=?", id);
+        for (int n=1; n<=2; n++) jdbc.update("""
+                INSERT INTO order_sales_order_line(tenant_id,order_id,line_no,product_id,product_variant_id,product_name_snapshot,unit_code,quantity,created_by)
+                VALUES(?,?,?,1,1,'商品','PIECE',2,'test')
+                """, tenant,id,n);
+        var lines = jdbc.queryForList("SELECT id FROM order_sales_order_line WHERE tenant_id=? AND order_id=? ORDER BY line_no", Long.class, tenant,id);
+        jdbc.update("UPDATE order_sales_order SET selected_warehouse_id=100 WHERE id=?",id);
+        jdbc.update("INSERT INTO order_fulfillment_execution(tenant_id,order_id,execution_id,warehouse_id,order_revision,request_json,request_hash,actor_id,status,erp_stock_out_id,erp_stock_out_no) VALUES(?,?,?,100,1,JSON_OBJECT(),?,'actor','COMPLETED',900,'CK-900')",
+                tenant,id,UUID.randomUUID().toString(),"0".repeat(64));
+        java.util.function.Function<String, SupplyAuthorizationView> lifecyclePolicy = action -> new SupplyAuthorizationView(
+                "ACTIVE",actor.tenantId(),actor.userId(),"EMP-A",1,1,1,1,
+                Set.of("order:shipment:create","order:shipment:delete"),action,true,
+                List.of(new Clause(UUID.randomUUID(),"ORDER","ALL",none(),none(),none(),true)),all(),all());
+        when(iam.authorization(any(), any())).thenAnswer(call -> lifecyclePolicy.apply(call.getArgument(1)));
+        try (var ctx = com.rigour.tenant.iam.client.SupplyAuthorizationContext.open(
+                iam,actor,lifecyclePolicy.apply("order:shipment:create"))) {
+        var partial = shipments.create(tenant,"partial", lifecycleShipment(id,lines.get(0),"SIGNED","1"),"test");
+        assertThat(orderMainStatus(id)).isEqualTo("SUBMITTED");
+        shipments.create(tenant,"remaining-first-line", lifecycleShipment(id,lines.get(0),"SIGNED","1"),"test");
+        assertThat(orderMainStatus(id)).isEqualTo("SUBMITTED");
+        var last = shipments.create(tenant,"last-line", lifecycleShipment(id,lines.get(1),"SIGNED","2"),"test");
+        assertThat(orderMainStatus(id)).isEqualTo("COMPLETED");
+        assertThat(jdbc.queryForObject("SELECT unpaid_amount FROM order_sales_order WHERE id=?", java.math.BigDecimal.class,id)).isEqualByComparingTo("100");
+        shipments.delete(tenant,last.id(),last.revision(),"test");
+        assertThat(orderMainStatus(id)).isEqualTo("SUBMITTED");
+        // 外部来源的签收记录不能代替我方交付确认。
+        jdbc.update("UPDATE order_sales_shipment SET source_system_code='DINGHUOBAO' WHERE id=?",partial.id());
+        var lastAgain = shipments.create(tenant,"last-again", lifecycleShipment(id,lines.get(1),"SIGNED","2"),"test");
+        assertThat(orderMainStatus(id)).isEqualTo("SUBMITTED");
+        jdbc.update("UPDATE order_sales_order SET source_system_code='DINGHUOBAO',order_status_code='COMPLETED' WHERE id=?",id);
+        shipments.delete(tenant,lastAgain.id(),lastAgain.revision(),"test");
+        assertThat(orderMainStatus(id)).isEqualTo("COMPLETED");
+        jdbc.update("UPDATE order_sales_order SET source_system_code=NULL,order_status_code='CANCELLED' WHERE id=?",id);
+        shipments.create(tenant,"cancelled-order", lifecycleShipment(id,lines.get(0),"SIGNED","1"),"test");
+        assertThat(orderMainStatus(id)).isEqualTo("CANCELLED");
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"0,UNPAID", "40,PARTIAL_PAID", "100,PAID"})
+    void importedCompletionPersistsAcrossAllSyncPathsWithoutChangingReceipts(String paid, String paymentStatus) {
+        TestAuthorizationContext.set(serviceCallerIdentity());
+        var created = sales.create(importedLifecycleCommand("PENDING_REVIEW", 0));
+        assertThat(created.orderStatusCode()).isEqualTo("DRAFT");
+        var ongoing = sales.update(created.id(), importedLifecycleCommand("PENDING_OUTBOUND", created.revision()));
+        assertThat(ongoing.orderStatusCode()).isEqualTo("SUBMITTED");
+        var received = new java.math.BigDecimal(paid);
+        var unpaid = new java.math.BigDecimal("100").subtract(received);
+        jdbc.update("UPDATE order_sales_order SET paid_amount=?,unpaid_amount=?,payment_status_code=? WHERE id=?",
+                received, unpaid, paymentStatus, created.id());
+        var completed = sales.update(ongoing.id(), importedLifecycleCommand("COMPLETED", ongoing.revision()));
+        assertThat(completed.orderStatusCode()).isEqualTo("COMPLETED");
+        assertThat(completed.paymentStatusCode()).isEqualTo(paymentStatus);
+        assertThat(completed.paidAmount()).isEqualByComparingTo(received);
+        assertThat(completed.unpaidAmount()).isEqualByComparingTo(unpaid);
+        var older = sales.update(completed.id(), importedLifecycleCommand("PENDING_OUTBOUND", completed.revision()));
+        assertThat(older.orderStatusCode()).isEqualTo("COMPLETED");
+        // 模拟旧实现遗留：来源已完成，但主状态未推进。相同来源状态重试必须修正。
+        jdbc.update("UPDATE order_sales_order SET order_status_code='SUBMITTED',source_status_code='COMPLETED' WHERE id=?", created.id());
+        var repaired = sales.updateSourceStatus(created.id(),
+                new com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand("COMPLETED", older.revision()));
+        assertThat(repaired.orderStatusCode()).isEqualTo("COMPLETED");
+        var replay = sales.updateSourceStatus(created.id(),
+                new com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand("COMPLETED", repaired.revision()));
+        assertThat(replay.revision()).isEqualTo(repaired.revision());
+        var returned = sales.updateSourceProjection(created.id(),
+                new com.rigour.order.api.v1.model.SalesOrderSourceProjectionCommand(
+                        "RETURNED", null, null, null, null, null, null, null, null, replay.revision()));
+        assertThat(returned.orderStatusCode()).isEqualTo("COMPLETED");
+        assertThat(returned.sourceStatusCode()).isEqualTo("RETURNED");
+        assertThat(returned.paymentStatusCode()).isEqualTo(paymentStatus);
+        assertThat(returned.paidAmount()).isEqualByComparingTo(received);
+        assertThat(returned.unpaidAmount()).isEqualByComparingTo(unpaid);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_sales_shipment WHERE tenant_id=?", Integer.class, tenant)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_fulfillment_execution WHERE tenant_id=?", Integer.class, tenant)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_record WHERE tenant_id=?", Integer.class, tenant)).isZero();
+    }
+
+    private com.rigour.order.api.v1.model.SalesOrderCommand importedLifecycleCommand(String status, int revision) {
+        return new com.rigour.order.api.v1.model.SalesOrderCommand(
+                1L, "DINGHUOBAO", "DHB-LIFECYCLE", status, null, null, null,
+                "C1", "客户", null, null, "HZ", null, null, "EMP-A", "销售员",
+                Instant.parse("2026-10-01T00:00:00Z"), null, null, List.of(), null, null, null,
+                List.of(new com.rigour.order.api.v1.model.SalesOrderLineCommand(
+                        10L, 11L, "P1", "S1", "商品", "规格", "PIECE",
+                        new java.math.BigDecimal("2"), new java.math.BigDecimal("50"), null,
+                        java.math.BigDecimal.ZERO, null)), true, revision);
+    }
+
+    @Autowired com.rigour.order.infrastructure.persistence.repository.JdbcOrderHistorySyncStore historySync;
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"CANCELLED", "DELETED"})
+    void sourceInactiveOrderStaysQueryableWithOriginalLinesAndPayments(String status) {
+        TestAuthorizationContext.set(serviceCallerIdentity());
+        var created = sales.create(importedLifecycleCommand("COMPLETED", 0));
+        jdbc.update("INSERT INTO order_payment_record(tenant_id,payment_no,order_id,paid_amount,payment_status_code,payment_time) VALUES(?,'KEEP-PAY',?,40,'RECEIVED',UTC_TIMESTAMP(6))", tenant, created.id());
+        jdbc.update("UPDATE order_sales_order SET paid_amount=40,unpaid_amount=60,payment_status_code='PARTIAL_PAID' WHERE id=?", created.id());
+        var command = new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(
+                UUID.randomUUID(), "DHB-LIFECYCLE", status, null, null, null, Instant.parse("2026-11-04T00:00:00Z"));
+        historySync.cancelSourceOrder(tenant, "sync-test", command);
+        var inactive = sales.salesOrder(created.id());
+        assertThat(inactive.orderStatusCode()).isEqualTo(status);
+        assertThat(inactive.paidAmount()).isEqualByComparingTo("40");
+        assertThat(inactive.unpaidAmount()).isEqualByComparingTo("60");
+        assertThat(inactive.lines()).hasSize(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_record WHERE tenant_id=? AND deleted=0", Integer.class, tenant)).isEqualTo(1);
+        historySync.cancelSourceOrder(tenant, "sync-test", command);
+        assertThat(sales.salesOrder(created.id()).revision()).isEqualTo(inactive.revision());
+        var late = sales.updateSourceStatus(created.id(), new com.rigour.order.api.v1.model.SalesOrderSourceStatusCommand("COMPLETED",inactive.revision()));
+        assertThat(late.orderStatusCode()).isEqualTo(status);
+        var old = new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(
+                command.connectorId(), command.sourceNo(), "DELETED", null, null, null,
+                Instant.parse("2026-11-03T00:00:00Z"));
+        assertThat(historySync.cancelSourceOrder(tenant, "sync-test", old).state()).isEqualTo("STALE");
+        assertThat(sales.salesOrder(created.id()).orderStatusCode()).isEqualTo(status);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"CANCELLED", "DELETED"})
+    void firstSeenInactiveSourceRetainsKnownInformationWithoutInventingDate(String status) {
+        TestAuthorizationContext.set(serviceCallerIdentity());
+        var command = new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(
+                UUID.randomUUID(), "DHB-ONLY-NUMBER", status, null, java.math.BigDecimal.ZERO, null, null);
+        historySync.cancelSourceOrder(tenant, "sync-test", command);
+        historySync.cancelSourceOrder(tenant, "sync-test", command);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_sales_order WHERE tenant_id=? AND deleted=0",Integer.class,tenant)).isEqualTo(1);
+        var row = jdbc.queryForMap("SELECT order_status_code,order_date,payable_amount FROM order_sales_order WHERE tenant_id=?",tenant);
+        assertThat(row.get("order_status_code")).isEqualTo(status);
+        assertThat(row.get("order_date")).isNull();
+        assertThat((java.math.BigDecimal)row.get("payable_amount")).isEqualByComparingTo("0");
+    }
+
+    private String orderMainStatus(long id) {
+        return jdbc.queryForObject("SELECT order_status_code FROM order_sales_order WHERE tenant_id=? AND id=?",String.class,tenant,id);
+    }
+
+    private com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentWrite lifecycleShipment(long orderId,long lineId,String status,String quantity) {
+        var amount = new java.math.BigDecimal(quantity);
+        return new com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentWrite(
+                orderId,"lifecycle",1L,"C1","客户",null,"HZ","EMP-A",null,null,null,status,null,null,Instant.now(),amount,
+                List.of(new com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentLineWrite(
+                        lineId,1,1L,1L,null,null,"商品",null,"PIECE",amount,null)),null,0);
+    }
+
     private com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentWrite
             shipmentWrite(long id, Long wh, Long stock, String stockNo, String status) {
         return new com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentWrite(

@@ -42,7 +42,7 @@ WITH effective_payments AS (
       FROM bi_sales_order_fact o
       JOIN effective_payments p ON p.tenant_id=o.tenant_id AND p.order_id=o.order_id
      WHERE o.tenant_id=#{tenantId} AND o.deleted=0
-       AND o.order_status_code NOT IN ('DRAFT','CANCELLED')
+       AND o.order_status_code NOT IN ('DRAFT','CANCELLED','DELETED')
        AND o.payable_amount &gt; 0 AND o.paid_amount &gt;= o.payable_amount
        AND p.cumulative_amount &gt;= o.payable_amount AND p.total_amount &gt;= o.payable_amount
 <if test="regionCode != null"> AND o.region_code=#{regionCode} </if>
@@ -123,7 +123,7 @@ ON DUPLICATE KEY UPDATE category_code=VALUES(category_code), category_name=VALUE
 WHERE f.tenant_id=#{tenantId} AND f.deleted=0
 <choose>
  <when test="kind == 'receipts'">AND f.payment_time &gt;=#{from} AND f.payment_time &lt;=#{to}</when>
- <otherwise>AND f.order_status_code &lt;&gt;'CANCELLED' AND f.unpaid_amount &gt;0
+ <otherwise>AND f.order_status_code  NOT IN ('CANCELLED','DELETED') AND f.unpaid_amount &gt;0
  AND f.order_date &gt;=#{from} AND f.order_date &lt;=#{to}</otherwise>
 </choose>
 <if test="regionCode != null">AND f.region_code""" + REGION_SCOPE + """
@@ -171,7 +171,7 @@ WHERE f.tenant_id=#{tenantId} AND f.deleted=0
 SELECT COALESCE(SUM(l.line_amount), 0)
   FROM bi_sales_order_line_fact l
  WHERE l.tenant_id = #{tenantId} AND l.deleted = 0
-   AND l.order_status_code &lt;&gt; 'CANCELLED'
+   AND l.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND l.order_date &gt;= #{from} AND l.order_date &lt;= #{to}
    AND TRIM(l.brand_name) = '杨掌柜 X CBSA世界斯诺克学院'
 <if test="regionCode != null"> AND l.region_code""" + REGION_SCOPE + """
@@ -190,7 +190,7 @@ SELECT COALESCE(target_city.region_code,f.region_code) AS dimensionCode,
        'SALES_AMOUNT' AS metricCode, SUM(f.payable_amount) AS actualValue
   FROM bi_sales_order_fact f
 """ + TARGET_CITY_JOIN + """
- WHERE f.tenant_id=#{tenantId} AND f.deleted=0 AND f.order_status_code&lt;&gt;'CANCELLED'
+ WHERE f.tenant_id=#{tenantId} AND f.deleted=0 AND f.order_status_code NOT IN ('CANCELLED','DELETED')
    AND f.order_date&gt;=#{from} AND f.order_date&lt;=#{to}
 <if test="regionCode != null">AND f.region_code""" + REGION_SCOPE + """
 </if>
@@ -220,7 +220,7 @@ SELECT <choose><when test="city">COALESCE(target_city.region_code,f.region_code)
 <if test="city">
 """ + TARGET_CITY_JOIN + """
 </if>
- WHERE f.tenant_id = #{tenantId} AND f.deleted = 0 AND f.order_status_code &lt;&gt; 'CANCELLED'
+ WHERE f.tenant_id = #{tenantId} AND f.deleted = 0 AND f.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND f.order_date &gt;= #{from} AND f.order_date &lt;= #{to}
 <if test="regionCode != null"> AND f.region_code""" + REGION_SCOPE + """
 </if>
@@ -233,7 +233,7 @@ SELECT <choose><when test="city">COALESCE(target_city.region_code,f.region_code)
 <if test="city">
 """ + TARGET_CITY_JOIN + """
 </if>
- WHERE f.tenant_id = #{tenantId} AND f.deleted = 0 AND f.order_status_code &lt;&gt; 'CANCELLED'
+ WHERE f.tenant_id = #{tenantId} AND f.deleted = 0 AND f.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND f.order_date &gt;= #{from} AND f.order_date &lt;= #{to}
    AND TRIM(f.brand_name) = '杨掌柜 X CBSA世界斯诺克学院'
 <if test="regionCode != null"> AND f.region_code""" + REGION_SCOPE + """
@@ -266,7 +266,7 @@ SELECT e.employee_code AS ownerStaffCode, e.employee_name AS ownerStaffName,
        SELECT 1 FROM bi_sales_order_fact o
         WHERE o.tenant_id=e.tenant_id AND o.owner_staff_code=e.employee_code
           AND o.region_code""" + REGION_SCOPE + """
- AND o.deleted=0 AND o.order_status_code&lt;&gt;'CANCELLED'
+ AND o.deleted=0 AND o.order_status_code NOT IN ('CANCELLED','DELETED')
           AND o.order_date&gt;=#{from} AND o.order_date&lt;=#{to})
        OR EXISTS (
        SELECT 1 FROM bi_sales_payment_fact p
@@ -340,7 +340,7 @@ UPDATE bi_inventory_operation_fact b
               FROM bi_sales_order_fact
              WHERE tenant_id = #{tenantId}
                AND deleted = 0
-               AND order_status_code <> 'CANCELLED'
+               AND order_status_code  NOT IN ('CANCELLED','DELETED')
             """)
     LocalDateTime latestSalesOrderDate(@Param("tenantId") String tenantId);
 
@@ -363,7 +363,7 @@ SELECT COUNT(*) AS orderCount,
           FROM bi_sales_order_fact
          WHERE tenant_id = #{tenantId}
            AND deleted = 0
-           AND order_status_code &lt;&gt; 'CANCELLED'
+           AND order_status_code  NOT IN ('CANCELLED','DELETED')
            AND order_date &gt;= #{from}
            AND order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -383,7 +383,7 @@ SELECT COUNT(*) AS orderCount,
   ) repeat_orders ON repeat_orders.customer_id = o.customer_id
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
-   AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -476,7 +476,7 @@ period_orders AS (
       JOIN base_customers c ON c.customerId = o.customer_id
      WHERE o.tenant_id = #{tenantId}
        AND o.deleted = 0
-       AND o.order_status_code &lt;&gt; 'CANCELLED'
+       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
        AND o.order_date &gt;= #{from}
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -498,7 +498,7 @@ history_orders AS (
       JOIN base_customers c ON c.customerId = o.customer_id
      WHERE o.tenant_id = #{tenantId}
        AND o.deleted = 0
-       AND o.order_status_code &lt;&gt; 'CANCELLED'
+       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
        AND o.region_code""" + REGION_SCOPE + """
@@ -655,7 +655,7 @@ period_orders AS (
       JOIN base_customers c ON c.customerId = o.customer_id
      WHERE o.tenant_id = #{tenantId}
        AND o.deleted = 0
-       AND o.order_status_code &lt;&gt; 'CANCELLED'
+       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
        AND o.order_date &gt;= #{from}
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -677,7 +677,7 @@ history_orders AS (
       JOIN base_customers c ON c.customerId = o.customer_id
      WHERE o.tenant_id = #{tenantId}
        AND o.deleted = 0
-       AND o.order_status_code &lt;&gt; 'CANCELLED'
+       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
        AND o.region_code""" + REGION_SCOPE + """
@@ -845,7 +845,7 @@ period_orders AS (
       JOIN base_customers c ON c.customerId = o.customer_id
      WHERE o.tenant_id = #{tenantId}
        AND o.deleted = 0
-       AND o.order_status_code &lt;&gt; 'CANCELLED'
+       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
        AND o.order_date &gt;= #{from}
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -867,7 +867,7 @@ history_orders AS (
       JOIN base_customers c ON c.customerId = o.customer_id
      WHERE o.tenant_id = #{tenantId}
        AND o.deleted = 0
-       AND o.order_status_code &lt;&gt; 'CANCELLED'
+       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
        AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
        AND o.region_code""" + REGION_SCOPE + """
@@ -1077,7 +1077,7 @@ SELECT COALESCE(SUM(l.line_amount), 0) AS salesAmount,
   FROM bi_sales_order_line_fact l
  WHERE l.tenant_id = #{tenantId}
    AND l.deleted = 0
-   AND l.order_status_code &lt;&gt; 'CANCELLED'
+   AND l.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND l.order_date &gt;= #{from}
    AND l.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -1131,7 +1131,7 @@ SELECT COALESCE(SUM(o.unpaid_amount), 0) AS riskAmount,
           FROM bi_sales_order_fact
          WHERE tenant_id = #{tenantId}
            AND deleted = 0
-           AND order_status_code &lt;&gt; 'CANCELLED'
+           AND order_status_code  NOT IN ('CANCELLED','DELETED')
            AND order_date &gt;= #{from}
            AND order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -1150,7 +1150,7 @@ SELECT COALESCE(SUM(o.unpaid_amount), 0) AS riskAmount,
   ) total_sales ON 1 = 1
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
-   AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND o.unpaid_amount &gt; 0
    AND o.payment_due_date &lt; #{to}
    AND o.order_date &gt;= #{from}
@@ -1189,7 +1189,7 @@ SELECT COALESCE(SUM(o.unpaid_amount), 0) AS riskAmount,
               FROM bi_sales_order_fact o
              WHERE o.tenant_id = #{tenantId}
                AND o.deleted = 0
-               AND o.order_status_code &lt;&gt; 'CANCELLED'
+               AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
                AND o.order_date &gt;= #{from}
                AND o.order_date &lt;= #{to}
             <if test="regionCode != null">
@@ -1274,7 +1274,7 @@ SELECT l.region_code AS regionCode,
   FROM bi_sales_order_line_fact l
  WHERE l.tenant_id = #{tenantId}
    AND l.deleted = 0
-   AND l.order_status_code &lt;&gt; 'CANCELLED'
+   AND l.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND l.order_date &gt;= #{from}
    AND l.order_date &lt;= #{to}
    AND NULLIF(TRIM(l.region_code), '') IS NOT NULL
@@ -1321,7 +1321,7 @@ SELECT l.region_code AS regionCode,
                       FROM bi_sales_order_fact o
                      WHERE o.tenant_id = #{tenantId}
                        AND o.deleted = 0
-                       AND o.order_status_code &lt;&gt; 'CANCELLED'
+                       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
                        AND o.order_date &gt;= #{from}
                        AND o.order_date &lt;= #{to}
                        AND NULLIF(TRIM(o.region_code), '') IS NOT NULL
@@ -1466,7 +1466,7 @@ SELECT COUNT(DISTINCT o.customer_id) AS orderingCustomerCount,
        ) THEN o.customer_id END) AS annualReturningCustomerCount
   FROM bi_sales_order_fact o
  WHERE o.tenant_id = #{tenantId} AND o.deleted = 0
-   AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND o.order_date &gt;= #{from} AND o.order_date &lt;= #{to}
 <if test="regionCode != null"> AND o.region_code""" + REGION_SCOPE + """
  </if>
@@ -1529,7 +1529,7 @@ SELECT 'CITY_SALES' AS rankType,
 """ + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
-   AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -1577,7 +1577,7 @@ SELECT 'CITY_COLLECTION_RATE' AS rankType,
 """ + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
-   AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -1631,7 +1631,7 @@ SELECT 'SALES_OWNER' AS rankType,
   FROM bi_sales_order_fact o
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
-   AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -1670,7 +1670,7 @@ SELECT DISTINCT COALESCE(o.owner_staff_code, 'UNKNOWN') AS dimensionCode,
   LEFT JOIN bi_employee_dim e
     ON e.tenant_id = o.tenant_id AND e.employee_code = o.owner_staff_code
  WHERE o.tenant_id = #{tenantId}
-   AND o.deleted = 0 AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.deleted = 0 AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND o.order_date &gt;= #{from} AND o.order_date &lt;= #{to}
 <if test="regionCode != null">AND o.region_code""" + REGION_SCOPE + """
 </if>
@@ -1711,7 +1711,7 @@ SELECT DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m') AS period,
   FROM bi_sales_order_fact o
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
-   AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND o.order_date &gt;= #{from}
    AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -1768,7 +1768,7 @@ SELECT DATE_FORMAT(TIMESTAMPADD(HOUR, 8, o.order_date), '%Y-%m') AS period,
                       FROM bi_sales_order_fact o
                      WHERE o.tenant_id = #{tenantId}
                        AND o.deleted = 0
-                       AND o.order_status_code &lt;&gt; 'CANCELLED'
+                       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
                        AND o.order_date &gt;= #{from}
                        AND o.order_date &lt;= #{to}
             <if test="regionCode != null">
@@ -1818,7 +1818,7 @@ SELECT 'PAYMENT_RISK_CITY' AS rankType,
 """ + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
-   AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND o.unpaid_amount &gt; 0
    AND o.payment_due_date &lt; #{to}
    AND o.order_date &gt;= #{from}
@@ -1873,7 +1873,7 @@ SELECT 'PAYMENT_RISK_OWNER' AS rankType,
   FROM bi_sales_order_fact o
  WHERE o.tenant_id = #{tenantId}
    AND o.deleted = 0
-   AND o.order_status_code &lt;&gt; 'CANCELLED'
+   AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND o.unpaid_amount &gt; 0
    AND o.payment_due_date &lt; #{to}
    AND o.order_date &gt;= #{from}
@@ -1937,7 +1937,7 @@ SELECT bucketCode,
           FROM bi_sales_order_fact o
          WHERE o.tenant_id = #{tenantId}
            AND o.deleted = 0
-           AND o.order_status_code &lt;&gt; 'CANCELLED'
+           AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND o.unpaid_amount &gt; 0
            AND o.order_date &gt;= #{from}
            AND o.order_date &lt;= #{to}
@@ -1978,7 +1978,7 @@ WITH scoped_lines AS (
       LEFT JOIN bi_product_dim current_product
         ON current_product.tenant_id = l.tenant_id AND current_product.product_id = l.product_id
      WHERE l.tenant_id = #{tenantId} AND l.deleted = 0
-       AND l.order_status_code &lt;&gt; 'CANCELLED'
+       AND l.order_status_code  NOT IN ('CANCELLED','DELETED')
        AND l.order_date &gt;= #{from}
        AND l.order_date &lt;= #{to}
     <if test="regionCode != null">AND l.region_code""" + REGION_SCOPE + """
@@ -2079,7 +2079,7 @@ SELECT 'SKU' AS rankType,
   FROM bi_sales_order_line_fact l
  WHERE l.tenant_id = #{tenantId}
    AND l.deleted = 0
-   AND l.order_status_code &lt;&gt; 'CANCELLED'
+   AND l.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND l.order_date &gt;= #{from}
    AND l.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -2121,7 +2121,7 @@ WITH scoped_lines AS (
       FROM bi_sales_order_line_fact l
       LEFT JOIN bi_product_dim p ON p.tenant_id = l.tenant_id AND p.product_id = l.product_id
      WHERE l.tenant_id = #{tenantId} AND l.deleted = 0
-       AND l.order_status_code &lt;&gt; 'CANCELLED'
+       AND l.order_status_code  NOT IN ('CANCELLED','DELETED')
        AND l.order_date &gt;= #{from}
        AND l.order_date &lt;= #{to}
     <if test="regionCode != null">AND l.region_code""" + REGION_SCOPE + """
@@ -2208,7 +2208,7 @@ SELECT 'BRAND' AS rankType,
   FROM bi_sales_order_line_fact l
  WHERE l.tenant_id = #{tenantId}
    AND l.deleted = 0
-   AND l.order_status_code &lt;&gt; 'CANCELLED'
+   AND l.order_status_code  NOT IN ('CANCELLED','DELETED')
    AND l.order_date &gt;= #{from}
    AND l.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -2332,7 +2332,7 @@ WITH sales_rows AS (
       FROM bi_sales_order_line_fact l
      WHERE l.tenant_id = #{tenantId}
        AND l.deleted = 0
-       AND l.order_status_code &lt;&gt; 'CANCELLED'
+       AND l.order_status_code  NOT IN ('CANCELLED','DELETED')
        AND l.order_date &gt;= #{from}
        AND l.order_date &lt;= #{to}
        AND l.product_id IS NOT NULL
@@ -2500,7 +2500,7 @@ SELECT cc.regionCode AS regionCode,
 """ + DISPLAY_CITY_JOIN + "o.region_code " + DISPLAY_CITY_END + """
          WHERE o.tenant_id = #{tenantId}
            AND deleted = 0
-           AND order_status_code &lt;&gt; 'CANCELLED'
+           AND order_status_code  NOT IN ('CANCELLED','DELETED')
            AND order_date &gt;= #{from}
            AND order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -2885,7 +2885,7 @@ SELECT 'SALES_ORDER' AS subjectCode,
             ON c.tenant_id = o.tenant_id AND c.id = o.customer_id
          WHERE o.tenant_id = #{tenantId}
            AND o.deleted = 0
-           AND o.order_status_code &lt;&gt; 'CANCELLED'
+           AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND o.order_date &gt;= #{from}
            AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -2906,7 +2906,7 @@ SELECT 'SALES_ORDER' AS subjectCode,
           FROM bi_sales_order_fact b
          WHERE b.tenant_id = #{tenantId}
            AND b.deleted = 0
-           AND b.order_status_code &lt;&gt; 'CANCELLED'
+           AND b.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND b.order_date &gt;= #{from}
            AND b.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -2933,7 +2933,7 @@ SELECT 'SALES_ORDER' AS subjectCode,
             ON c.tenant_id = o.tenant_id AND c.id = o.customer_id
          WHERE o.tenant_id = #{tenantId}
            AND o.deleted = 0
-           AND o.order_status_code &lt;&gt; 'CANCELLED'
+           AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND o.order_date &gt;= #{from}
            AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -2954,7 +2954,7 @@ SELECT 'SALES_ORDER' AS subjectCode,
           FROM bi_sales_order_fact b
          WHERE b.tenant_id = #{tenantId}
            AND b.deleted = 0
-           AND b.order_status_code &lt;&gt; 'CANCELLED'
+           AND b.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND b.order_date &gt;= #{from}
            AND b.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -2994,7 +2994,7 @@ SELECT 'SALES_ORDER' AS subjectCode,
                         ON c.tenant_id = o.tenant_id AND c.id = o.customer_id
                      WHERE o.tenant_id = #{tenantId}
                        AND o.deleted = 0
-                       AND o.order_status_code &lt;&gt; 'CANCELLED'
+                       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
                        AND o.order_date &gt;= #{from}
                        AND o.order_date &lt;= #{to}
             <if test="regionCode != null">
@@ -3016,12 +3016,12 @@ SELECT 'SALES_ORDER' AS subjectCode,
                          ON b.tenant_id = o.tenant_id
                         AND b.order_id = o.id
                         AND b.deleted = 0
-                        AND b.order_status_code &lt;&gt; 'CANCELLED'
+                        AND b.order_status_code  NOT IN ('CANCELLED','DELETED')
                       LEFT JOIN bi_source_crm_crm_customer c
                         ON c.tenant_id = o.tenant_id AND c.id = o.customer_id
                      WHERE o.tenant_id = #{tenantId}
                        AND o.deleted = 0
-                       AND o.order_status_code &lt;&gt; 'CANCELLED'
+                       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
                        AND o.order_date &gt;= #{from}
                        AND o.order_date &lt;= #{to}
             <if test="regionCode != null">
@@ -3044,7 +3044,7 @@ SELECT 'SALES_ORDER' AS subjectCode,
                         ON c.tenant_id = o.tenant_id AND c.id = o.customer_id
                      WHERE o.tenant_id = #{tenantId}
                        AND o.deleted = 0
-                       AND o.order_status_code &lt;&gt; 'CANCELLED'
+                       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
                        AND o.order_date &gt;= #{from}
                        AND o.order_date &lt;= #{to}
             <if test="regionCode != null">
@@ -3066,12 +3066,12 @@ SELECT 'SALES_ORDER' AS subjectCode,
                          ON b.tenant_id = o.tenant_id
                         AND b.order_id = o.id
                         AND b.deleted = 0
-                        AND b.order_status_code &lt;&gt; 'CANCELLED'
+                        AND b.order_status_code  NOT IN ('CANCELLED','DELETED')
                       LEFT JOIN bi_source_crm_crm_customer c
                         ON c.tenant_id = o.tenant_id AND c.id = o.customer_id
                      WHERE o.tenant_id = #{tenantId}
                        AND o.deleted = 0
-                       AND o.order_status_code &lt;&gt; 'CANCELLED'
+                       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
                        AND o.order_date &gt;= #{from}
                        AND o.order_date &lt;= #{to}
             <if test="regionCode != null">
@@ -3194,7 +3194,7 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
           LEFT JOIN bi_source_crm_crm_customer c
             ON c.tenant_id = p.tenant_id AND c.id = COALESCE(p.customer_id, o.customer_id)
          WHERE p.tenant_id = #{tenantId}
-           AND p.deleted = 0
+           AND p.deleted = 0 AND COALESCE(o.deleted,0)=0 AND COALESCE(o.order_status_code,'') NOT IN ('CANCELLED','DELETED')
            AND p.payment_time &gt;= #{from}
            AND p.payment_time &lt;= #{to}
 <if test="regionCode != null">
@@ -3244,7 +3244,7 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
           LEFT JOIN bi_source_crm_crm_customer c
             ON c.tenant_id = p.tenant_id AND c.id = COALESCE(p.customer_id, o.customer_id)
          WHERE p.tenant_id = #{tenantId}
-           AND p.deleted = 0
+           AND p.deleted = 0 AND COALESCE(o.deleted,0)=0 AND COALESCE(o.order_status_code,'') NOT IN ('CANCELLED','DELETED')
            AND p.payment_time &gt;= #{from}
            AND p.payment_time &lt;= #{to}
 <if test="regionCode != null">
@@ -3491,7 +3491,7 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
                      WHERE l.tenant_id = #{tenantId}
                        AND l.deleted = 0
                        AND o.deleted = 0
-                       AND o.order_status_code &lt;&gt; 'CANCELLED'
+                       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
                        AND o.order_date &gt;= #{from}
                        AND o.order_date &lt;= #{to}
             <if test="regionCode != null">
@@ -3514,7 +3514,7 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
                       FROM bi_sales_order_line_fact b
                      WHERE b.tenant_id = #{tenantId}
                        AND b.deleted = 0
-                       AND b.order_status_code &lt;&gt; 'CANCELLED'
+                       AND b.order_status_code  NOT IN ('CANCELLED','DELETED')
                        AND b.order_date &gt;= #{from}
                        AND b.order_date &lt;= #{to}
             <if test="regionCode != null">
@@ -3546,7 +3546,7 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
                      WHERE l.tenant_id = #{tenantId}
                        AND l.deleted = 0
                        AND o.deleted = 0
-                       AND o.order_status_code &lt;&gt; 'CANCELLED'
+                       AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
                        AND o.order_date &gt;= #{from}
                        AND o.order_date &lt;= #{to}
             <if test="regionCode != null">
@@ -3569,7 +3569,7 @@ SELECT 'SALES_PAYMENT' AS subjectCode,
                       FROM bi_sales_order_line_fact b
                      WHERE b.tenant_id = #{tenantId}
                        AND b.deleted = 0
-                       AND b.order_status_code &lt;&gt; 'CANCELLED'
+                       AND b.order_status_code  NOT IN ('CANCELLED','DELETED')
                        AND b.order_date &gt;= #{from}
                        AND b.order_date &lt;= #{to}
             <if test="regionCode != null">
@@ -3620,7 +3620,7 @@ SELECT 'ESTIMATED_GROSS_PROFIT' AS subjectCode,
          WHERE l.tenant_id = #{tenantId}
            AND l.deleted = 0
            AND o.deleted = 0
-           AND o.order_status_code &lt;&gt; 'CANCELLED'
+           AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND o.order_date &gt;= #{from}
            AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -3643,7 +3643,7 @@ SELECT 'ESTIMATED_GROSS_PROFIT' AS subjectCode,
           FROM bi_sales_order_line_fact b
          WHERE b.tenant_id = #{tenantId}
            AND b.deleted = 0
-           AND b.order_status_code &lt;&gt; 'CANCELLED'
+           AND b.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND b.order_date &gt;= #{from}
            AND b.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -3693,7 +3693,7 @@ SELECT 'ESTIMATED_GROSS_PROFIT' AS subjectCode,
          WHERE l.tenant_id = #{tenantId}
            AND l.deleted = 0
            AND o.deleted = 0
-           AND o.order_status_code &lt;&gt; 'CANCELLED'
+           AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND o.order_date &gt;= #{from}
            AND o.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -3716,7 +3716,7 @@ SELECT 'ESTIMATED_GROSS_PROFIT' AS subjectCode,
           FROM bi_sales_order_line_fact b
          WHERE b.tenant_id = #{tenantId}
            AND b.deleted = 0
-           AND b.order_status_code &lt;&gt; 'CANCELLED'
+           AND b.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND b.order_date &gt;= #{from}
            AND b.order_date &lt;= #{to}
 <if test="regionCode != null">
@@ -3764,7 +3764,7 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
            AND policy.deleted = 0
          WHERE o.tenant_id = #{tenantId}
            AND o.deleted = 0
-           AND o.order_status_code &lt;&gt; 'CANCELLED'
+           AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND o.unpaid_amount &gt; 0
            AND DATE_ADD(o.order_date, INTERVAL COALESCE(policy.payment_term_days, 30) DAY) &lt; #{to}
            AND o.order_date &gt;= #{from}
@@ -3786,7 +3786,7 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
           FROM bi_sales_order_fact b
          WHERE b.tenant_id = #{tenantId}
            AND b.deleted = 0
-           AND b.order_status_code &lt;&gt; 'CANCELLED'
+           AND b.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND b.unpaid_amount &gt; 0
            AND b.payment_due_date &lt; #{to}
            AND b.order_date &gt;= #{from}
@@ -3816,7 +3816,7 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
            AND policy.deleted = 0
          WHERE o.tenant_id = #{tenantId}
            AND o.deleted = 0
-           AND o.order_status_code &lt;&gt; 'CANCELLED'
+           AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND o.unpaid_amount &gt; 0
            AND DATE_ADD(o.order_date, INTERVAL COALESCE(policy.payment_term_days, 30) DAY) &lt; #{to}
            AND o.order_date &gt;= #{from}
@@ -3838,7 +3838,7 @@ SELECT 'PAYMENT_RISK' AS subjectCode,
           FROM bi_sales_order_fact b
          WHERE b.tenant_id = #{tenantId}
            AND b.deleted = 0
-           AND b.order_status_code &lt;&gt; 'CANCELLED'
+           AND b.order_status_code  NOT IN ('CANCELLED','DELETED')
            AND b.unpaid_amount &gt; 0
            AND b.payment_due_date &lt; #{to}
            AND b.order_date &gt;= #{from}
@@ -4526,7 +4526,7 @@ INSERT INTO bi_etl_run (
               LEFT JOIN bi_source_crm_crm_customer c
                 ON c.tenant_id = p.tenant_id AND c.id = COALESCE(p.customer_id, o.customer_id)
              WHERE p.tenant_id = #{tenantId}
-               AND p.deleted = 0
+               AND p.deleted = 0 AND COALESCE(o.deleted,0)=0 AND COALESCE(o.order_status_code,'') NOT IN ('CANCELLED','DELETED')
             """)
     Map<String, Object> paymentSourceBackfillHealth(@Param("tenantId") String tenantId);
 
@@ -4923,7 +4923,7 @@ SELECT o.tenant_id, o.id, o.order_no, COALESCE(o.source_system_code, 'MANUAL'), 
                 COALESCE(ca.updated_time, o.updated_time),
                 COALESCE(ct.updated_time, o.updated_time),
                 COALESCE(policy.updated_time, o.updated_time)),
-       #{syncedAt}, o.deleted, #{syncedAt}, #{syncedAt}
+       #{syncedAt}, CASE WHEN o.order_status_code IN ('CANCELLED','DELETED') THEN 1 ELSE o.deleted END, #{syncedAt}, #{syncedAt}
   FROM bi_source_order_order_sales_order o
   LEFT JOIN bi_source_crm_crm_customer c
     ON c.tenant_id = o.tenant_id AND c.id = o.customer_id
@@ -4935,7 +4935,7 @@ SELECT o.tenant_id, o.id, o.order_no, COALESCE(o.source_system_code, 'MANUAL'), 
     ON policy.tenant_id = UUID_TO_BIN(o.tenant_id)
    AND policy.party_id = c.party_id
    AND policy.deleted = 0
- WHERE o.tenant_id = #{tenantId}
+ WHERE o.tenant_id = #{tenantId} AND o.order_date IS NOT NULL
    AND (
         o.updated_time > #{from} AND o.updated_time <= #{to}
         OR c.updated_time > #{from} AND c.updated_time <= #{to}
@@ -5091,6 +5091,7 @@ SELECT l.tenant_id, l.id, l.order_id, o.order_no, COALESCE(o.source_system_code,
                 COALESCE(ct.updated_time, l.updated_time)),
        #{syncedAt},
        CASE WHEN COALESCE(l.deleted, 0) <> 0 OR COALESCE(o.deleted, 0) <> 0
+                 OR o.order_status_code IN ('CANCELLED','DELETED')
             THEN 1 ELSE 0 END,
        #{syncedAt}, #{syncedAt}
   FROM bi_source_order_order_sales_order_line l
@@ -5249,7 +5250,7 @@ SELECT p.tenant_id, p.id, p.payment_no, p.order_id, COALESCE(p.sales_order_no_sn
                 COALESCE(c.updated_time, p.updated_time),
                 COALESCE(ca.updated_time, p.updated_time),
                 COALESCE(ct.updated_time, p.updated_time)),
-       #{syncedAt}, p.deleted, #{syncedAt}, #{syncedAt}
+       #{syncedAt}, CASE WHEN COALESCE(o.deleted,0)<>0 OR o.order_status_code IN ('CANCELLED','DELETED') THEN 1 ELSE p.deleted END, #{syncedAt}, #{syncedAt}
   FROM bi_source_order_order_payment_record p
   LEFT JOIN bi_source_order_order_sales_order o
     ON o.tenant_id = p.tenant_id AND o.id = p.order_id

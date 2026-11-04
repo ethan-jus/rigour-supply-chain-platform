@@ -39,12 +39,12 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
     }
 
     private void cancellationColumns() {
-        db.execute("ALTER TABLE order_sales_order ADD updated_by VARCHAR(64)");
+        db.execute("ALTER TABLE order_sales_order ADD updated_by VARCHAR(64), ADD source_status_code VARCHAR(64), ADD source_updated_at DATETIME(6), ADD created_by VARCHAR(64), ADD data_quality_status_code VARCHAR(32), ADD data_quality_message VARCHAR(256), MODIFY id BIGINT AUTO_INCREMENT, ADD UNIQUE KEY uk_test_id(id)");
         db.execute("ALTER TABLE order_sales_order_line ADD revision INT DEFAULT 0, ADD updated_by VARCHAR(64), ADD updated_time TIMESTAMP");
     }
 
     @org.junit.jupiter.api.Test
-    void sourceCancellationDeletesAllProjectionsAndIsIdempotent() {
+    void sourceCancellationRetainsProjectionsAndIsIdempotent() {
         order(1, 1, "78", "0", "1");
         order(2, 1, "78", "0", "1");
         intake("D1", 1, "78", "1");
@@ -54,11 +54,12 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
         var command = new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(connector, "D1");
         tx.executeWithoutResult(s -> store.cancelSourceOrder(tenant, "tester", command));
         tx.executeWithoutResult(s -> store.cancelSourceOrder(tenant, "tester", command));
-        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT deleted FROM order_sales_order WHERE id=1", Integer.class)).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT deleted FROM order_sales_order WHERE id=1", Integer.class)).isZero();
         org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT revision FROM order_sales_order WHERE id=1", Integer.class)).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT order_status_code FROM order_sales_order WHERE id=1", String.class)).isEqualTo("CANCELLED");
         org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT deleted FROM order_sales_order WHERE id=2", Integer.class)).isZero();
-        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sales_order_line WHERE order_id=1 AND deleted=0", Integer.class)).isZero();
-        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT deleted FROM order_payment_record WHERE id=100", Integer.class)).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sales_order_line WHERE order_id=1 AND deleted=0", Integer.class)).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT deleted FROM order_payment_record WHERE id=100", Integer.class)).isZero();
         org.assertj.core.api.Assertions.assertThat(pay(receipt("R1", "D1", "78", "CONFIRMED", "r1")).state()).isEqualTo("ORDER_CANCELLED");
         org.assertj.core.api.Assertions.assertThat(tx.execute(s -> store.sourceOrder(tenant, source("D1", 1, "78", "1"))).state()).isEqualTo("CANCELLED");
     }
@@ -76,7 +77,7 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
         org.assertj.core.api.Assertions.assertThat(tx.execute(s -> store.cancelSourceOrder(tenant, "tester", first)).state()).isEqualTo("CANCELLATION_REVIEW");
         org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT deleted FROM order_sales_order WHERE id=1", Integer.class)).isZero();
         tx.executeWithoutResult(s -> store.cancelSourceOrder(tenant, "tester", new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(connector, "D2")));
-        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT deleted FROM order_sales_order WHERE id=1", Integer.class)).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT deleted FROM order_sales_order WHERE id=1", Integer.class)).isZero();
     }
 
     @org.junit.jupiter.params.ParameterizedTest

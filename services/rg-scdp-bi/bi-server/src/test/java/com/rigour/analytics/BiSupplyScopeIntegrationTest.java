@@ -71,6 +71,35 @@ class BiSupplyScopeIntegrationTest {
     String tenant;
     CallerIdentity actor;
 
+    @Test
+    void inactiveSourceOrdersAndUnchangedPaymentsAreExcludedFromBiFacts() {
+        var from = java.time.LocalDateTime.parse("2026-11-01T00:00:00");
+        var to = java.time.LocalDateTime.parse("2026-11-05T00:00:00");
+        for (int i=1; i<=3; i++) {
+            String status = List.of("COMPLETED", "CANCELLED", "DELETED").get(i-1);
+            jdbc.update("INSERT INTO bi_source_order_order_sales_order(tenant_id,id,order_no,order_date,order_status_code,payment_status_code,total_quantity,payable_amount,paid_amount,unpaid_amount,deleted,created_time,updated_time) VALUES(?,?,?,? ,?,'PARTIAL_PAID',1,100,40,60,0,?,?)",tenant,i,"BI-"+i,from,status,from,from.plusDays(1));
+            jdbc.update("INSERT INTO bi_source_order_order_payment_record(tenant_id,id,payment_no,order_id,payment_time,paid_amount,deleted,created_time,updated_time) VALUES(?,?,?,?,?,40,0,?,?)",tenant,i,"P-"+i,i,from,from,from.plusDays(1));
+        }
+        productionMapper.upsertSalesOrderFactFromSource(tenant,from,to,to);
+        productionMapper.upsertSalesPaymentFactFromSource(tenant,from,to,to);
+        assertThat(jdbc.queryForObject("SELECT SUM(payable_amount) FROM bi_sales_order_fact WHERE tenant_id=? AND deleted=0",java.math.BigDecimal.class,tenant)).isEqualByComparingTo("100");
+        assertThat(jdbc.queryForObject("SELECT SUM(paid_amount) FROM bi_sales_payment_fact WHERE tenant_id=? AND deleted=0",java.math.BigDecimal.class,tenant)).isEqualByComparingTo("40");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_sales_order_fact WHERE tenant_id=? AND deleted=1",Integer.class,tenant)).isEqualTo(2);
+        // 只变更订单状态，原回款不动；增量也必须将该回款从 BI 排除。
+        jdbc.update("UPDATE bi_source_order_order_sales_order SET order_status_code='CANCELLED',updated_time=? WHERE tenant_id=? AND id=1",from.plusDays(2),tenant);
+        productionMapper.upsertSalesOrderFactFromSource(tenant,from.plusDays(1),to,to);
+        productionMapper.upsertSalesPaymentFactFromSource(tenant,from.plusDays(1),to,to);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_sales_order_fact WHERE tenant_id=? AND deleted=0",Integer.class,tenant)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_sales_payment_fact WHERE tenant_id=? AND deleted=0",Integer.class,tenant)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_source_order_order_payment_record WHERE tenant_id=? AND deleted=0",Integer.class,tenant)).isEqualTo(3);
+        // 模拟旧版本留存的事实且来源水位未变化，全量镜像后的退役检查同样排除它们。
+        jdbc.update("UPDATE bi_sales_order_fact SET deleted=0 WHERE tenant_id=?",tenant);
+        jdbc.update("UPDATE bi_sales_payment_fact SET deleted=0 WHERE tenant_id=?",tenant);
+        dashboardProducts.retireMissingFacts(tenant);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_sales_payment_fact WHERE tenant_id=? AND deleted=0",Integer.class,tenant)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_sales_order_fact WHERE tenant_id=? AND deleted=0",Integer.class,tenant)).isZero();
+    }
+
     @BeforeEach
     void setup() {
         tenant = UUID.randomUUID().toString();

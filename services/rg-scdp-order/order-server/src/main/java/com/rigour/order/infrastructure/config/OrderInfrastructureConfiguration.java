@@ -44,6 +44,22 @@ public class OrderInfrastructureConfiguration {
     }
 
     @Bean
+    com.rigour.order.application.port.out.OrderStatusDictionary orderStatusDictionary(
+            TrustedContextSigner signer,
+            @Value("${rigour.business-settings.base-url:http://rigour-business-settings-service}") String settingsBaseUrl,
+            SimpleClientHttpRequestFactory requestFactory, RestClient.Builder restClientBuilder) {
+        var client = new com.rigour.settings.client.EffectiveDictionaryClient(
+                restClientBuilder.requestFactory(requestFactory), signer, settingsBaseUrl, "rigour-order-center-service");
+        return new com.rigour.order.application.port.out.OrderStatusDictionary() {
+            public java.util.Set<String> activeCodes(String tenant, String code) { return client.activeCodes(tenant, code); }
+            public java.util.Map<String, String> labels(String tenant, String code) {
+                return client.effective(tenant, code).items().stream().collect(java.util.stream.Collectors.toMap(
+                        item -> item.dictionaryItemCode(), item -> item.dictionaryItemName()));
+            }
+        };
+    }
+
+    @Bean
     OrderRepairUnitDictionary orderRepairUnitDictionary(
             TrustedContextSigner signer,
             @Value("${rigour.business-settings.base-url:http://rigour-business-settings-service}")

@@ -12,6 +12,9 @@ public interface PaymentVoucherApi {
     @GetMapping(OrderRegisterApi.BASE_PATH + "/payments/{id}/voucher-transactions")
     ApiResponse<List<VoucherTransaction>> vouchers(@PathVariable("id") long id);
 
+    @org.springframework.web.bind.annotation.PostMapping(OrderRegisterApi.BASE_PATH + "/payments/{id}/voucher-recognition")
+    ApiResponse<Integer> recognize(@PathVariable("id") long id);
+
     @GetMapping(OrderRegisterApi.BASE_PATH + "/payments/transaction-check")
     ApiResponse<List<TransactionMatch>> checkTransaction(@RequestParam String transactionNo);
 }

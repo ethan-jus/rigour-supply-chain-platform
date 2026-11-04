@@ -18,10 +18,8 @@ public final class DhbAttachmentObjectKeyFactory {
         if (content == null || content.length == 0) {
             throw new IllegalArgumentException("资金附件内容不能为空");
         }
-        String source = sourceReference == null || sourceReference.isBlank()
-                ? firstNonBlank(fileName, "attachment") : sourceReference;
         return tenantId + "/" + objectPrefix + "/" + safeKey(sourceDocumentNo)
-                + "/" + shortHash(source) + "/" + sha256(content) + extension(fileName, contentType);
+                + "/" + sha256(content) + extension(null, contentType);
     }
 
     static String normalizePrefix(String prefix) {
@@ -38,10 +36,6 @@ public final class DhbAttachmentObjectKeyFactory {
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256不可用", exception);
         }
-    }
-
-    private static String shortHash(String text) {
-        return sha256(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)).substring(0, 16);
     }
 
     private static String safeKey(String value) {
@@ -75,7 +69,4 @@ public final class DhbAttachmentObjectKeyFactory {
         };
     }
 
-    private static String firstNonBlank(String first, String fallback) {
-        return first == null || first.isBlank() ? fallback : first;
-    }
 }

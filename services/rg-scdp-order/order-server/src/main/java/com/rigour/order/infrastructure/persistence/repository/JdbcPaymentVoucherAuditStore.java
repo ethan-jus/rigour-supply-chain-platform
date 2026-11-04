@@ -26,7 +26,8 @@ public class JdbcPaymentVoucherAuditStore implements PaymentVoucherAuditStore {
               o.owner_employee_name_snapshot,p.paid_amount,p.payment_time,p.payment_status_code,
               p.deleted AS payment_deleted,COALESCE(o.deleted,0) AS order_deleted,
               p.transaction_no,p.voucher_keys_json,e.voucher_key,e.voucher_amount,
-              e.transaction_no AS voucher_transaction,e.evidence_note
+              e.transaction_no AS voucher_transaction,e.evidence_note,e.voucher_paid_time,e.voucher_paid_time_precision,
+              e.recognition_status,e.payee,e.payment_result
             FROM order_payment_record p
             JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
             LEFT JOIN order_payment_voucher_transaction e ON e.tenant_id=? AND e.payment_id=p.id
@@ -45,7 +46,9 @@ public class JdbcPaymentVoucherAuditStore implements PaymentVoucherAuditStore {
                 String key=rs.getString("voucher_key");
                 // 已移除附件的旧识别结果不能继续充当现有回款证据。
                 if (key!=null && result.get(id).attachmentKeys().contains(key)) result.get(id).evidence().add(new Evidence(key,
-                    rs.getBigDecimal("voucher_amount"),rs.getString("voucher_transaction"),rs.getString("evidence_note")));
+                    rs.getBigDecimal("voucher_amount"),rs.getString("voucher_transaction"),rs.getString("evidence_note"),
+                    rs.getObject("voucher_paid_time",LocalDateTime.class) == null ? null : rs.getObject("voucher_paid_time",LocalDateTime.class).toInstant(ZoneOffset.UTC),
+                    rs.getString("voucher_paid_time_precision"),rs.getString("recognition_status"),rs.getString("payee"),rs.getString("payment_result")));
             },args.toArray());
         return new ArrayList<>(result.values());
     }
@@ -53,15 +56,18 @@ public class JdbcPaymentVoucherAuditStore implements PaymentVoucherAuditStore {
         var result=new HashMap<String,List<Review>>();
         jdbc.query("SELECT * FROM order_payment_voucher_review WHERE tenant_id=? ORDER BY created_time DESC,id DESC",rs -> {
             var r=new Review(rs.getString("id"),rs.getString("fingerprint"),rs.getString("conclusion"),rs.getString("note"),
-                rs.getString("actor"),rs.getTimestamp("created_time").toInstant(),strings(rs.getString("payment_ids_json")));
+                rs.getString("actor"),rs.getTimestamp("created_time").toInstant(),strings(rs.getString("payment_ids_json")),strings(rs.getString("reason_codes_json")));
             result.computeIfAbsent(rs.getString("group_key"),k->new ArrayList<>()).add(r);
         },tenant);
         return result;
     }
     @Override public Review appendReview(String tenant,String groupKey,String fingerprint,String conclusion,String note,String actor,List<String> ids) {
+        return appendReview(tenant,groupKey,fingerprint,conclusion,note,actor,ids,List.of());
+    }
+    @Override public Review appendReview(String tenant,String groupKey,String fingerprint,String conclusion,String note,String actor,List<String> ids,List<String> reasonCodes) {
         String id=UUID.randomUUID().toString(); Instant now=Instant.now();
-        jdbc.update("INSERT INTO order_payment_voucher_review (id,tenant_id,group_key,fingerprint,conclusion,note,actor,payment_ids_json,created_time) VALUES (?,?,?,?,?,?,?,?,?)",
-            id,tenant,groupKey,fingerprint,conclusion,note,actor,JSON.writeValueAsString(ids),java.sql.Timestamp.from(now));
-        return new Review(id,fingerprint,conclusion,note,actor,now,ids);
+        jdbc.update("INSERT INTO order_payment_voucher_review (id,tenant_id,group_key,fingerprint,conclusion,note,actor,payment_ids_json,created_time,reason_codes_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            id,tenant,groupKey,fingerprint,conclusion,note,actor,JSON.writeValueAsString(ids),java.sql.Timestamp.from(now),JSON.writeValueAsString(reasonCodes));
+        return new Review(id,fingerprint,conclusion,note,actor,now,ids,reasonCodes);
     }
 }

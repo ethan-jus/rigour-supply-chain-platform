@@ -111,7 +111,7 @@ public class MybatisPlusSalesShipmentRepository
         try {
             getBaseMapper().insert(entity);
             insertLines(tenantId, entity.getId(), command.lines(), actorId, now);
-            refreshOrderShipmentTime(tenantId, command.salesOrderId(), actorId, now);
+            refreshOrderShipmentTime(tenantId, command.salesOrderId(), actorId, now, command.sourceSystemCode() == null);
         } catch (DataIntegrityViolationException exception) {
             throw conflict("销售发货单号已存在或销售发货单引用数据无效");
         }
@@ -214,9 +214,9 @@ public class MybatisPlusSalesShipmentRepository
         if (updated != 1) throw conflict("销售发货单已被其他人修改，请刷新后重试");
         logicDeleteLines(tenantId, id, actorId, now);
         insertLines(tenantId, id, command.lines(), actorId, now);
-        refreshOrderShipmentTime(tenantId, existing.getSalesOrderId(), actorId, now);
+        refreshOrderShipmentTime(tenantId, existing.getSalesOrderId(), actorId, now, existing.getSourceSystemCode() == null);
         if (!java.util.Objects.equals(existing.getSalesOrderId(), command.salesOrderId())) {
-            refreshOrderShipmentTime(tenantId, command.salesOrderId(), actorId, now);
+            refreshOrderShipmentTime(tenantId, command.salesOrderId(), actorId, now, command.sourceSystemCode() == null);
         }
         return rawDetail(tenantId, id).orElseThrow(() -> notFound("销售发货单不存在"));
     }
@@ -245,7 +245,7 @@ public class MybatisPlusSalesShipmentRepository
                                         .eq(InternalSalesShipmentEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售发货单已被其他人修改，请刷新后重试");
         logicDeleteLines(tenantId, id, actorId, now);
-        refreshOrderShipmentTime(tenantId, existing.getSalesOrderId(), actorId, now);
+        refreshOrderShipmentTime(tenantId, existing.getSalesOrderId(), actorId, now, existing.getSourceSystemCode() == null);
     }
 
     /** 租户录入的发货资料只能引用原订单的选仓和已完成回执；来源历史导入保留原始证据。 */
@@ -319,7 +319,7 @@ public class MybatisPlusSalesShipmentRepository
     }
 
     private void refreshOrderShipmentTime(
-            String tenantId, Long salesOrderId, String actorId, LocalDateTime now) {
+            String tenantId, Long salesOrderId, String actorId, LocalDateTime now, boolean ownFulfillment) {
         if (salesOrderId == null) return;
         LocalDateTime shipmentTime =
                 getBaseMapper()
@@ -348,6 +348,26 @@ public class MybatisPlusSalesShipmentRepository
                         .eq(InternalSalesOrderEntity::getTenantId, tenantId)
                         .eq(InternalSalesOrderEntity::getId, salesOrderId)
                         .eq(InternalSalesOrderEntity::getDeleted, 0));
+        // 自建订单按我方履约判断；同步订单由来源状态判断，补录发货不能倒改来源完成结论。
+        if (!ownFulfillment) return;
+        jdbc.update("""
+                UPDATE order_sales_order o
+                SET order_status_code = CASE WHEN
+                    o.data_quality_status_code='COMPLETE'
+                    AND EXISTS (SELECT 1 FROM order_sales_order_line l
+                        WHERE l.tenant_id=o.tenant_id AND l.order_id=o.id AND l.deleted=0 AND l.quantity>0)
+                    AND NOT EXISTS (SELECT 1 FROM order_sales_order_line l
+                        WHERE l.tenant_id=o.tenant_id AND l.order_id=o.id AND l.deleted=0
+                          AND l.quantity > COALESCE((SELECT SUM(sl.shipped_quantity)
+                            FROM order_sales_shipment_line sl
+                            JOIN order_sales_shipment sh ON sh.tenant_id=sl.tenant_id AND sh.id=sl.shipment_id
+                            WHERE sl.tenant_id=o.tenant_id AND sl.sales_order_line_id=l.id AND sl.deleted=0
+                              AND sh.sales_order_id=o.id AND sh.deleted=0 AND sh.shipment_status_code='SIGNED'
+                              AND sh.source_system_code IS NULL),0))
+                    THEN 'COMPLETED' ELSE 'SUBMITTED' END
+                WHERE o.tenant_id=? AND o.id=? AND o.deleted=0 AND o.source_system_code IS NULL
+                  AND o.order_status_code IN ('SUBMITTED','COMPLETED')
+                """, tenantId, salesOrderId);
     }
 
     private LambdaQueryWrapper<InternalSalesShipmentEntity> query(

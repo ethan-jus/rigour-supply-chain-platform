@@ -6,9 +6,25 @@ import java.util.*;
 
 /** 门店历史订单组、来源接入与回款接续契约；金额来自业务单据，不由门店名称猜测。 */
 public final class HistorySyncModels {
+    public record VoucherBackfillClaim(java.util.UUID connectorId, int limit, java.time.Instant scanStartedAt) {}
+    public record VoucherReceiptReference(String receiptNo, String sourceOrderNo) {}
+    public record VoucherBackfillCandidate(long paymentId, String leaseToken, java.util.List<VoucherReceiptReference> receipts) {}
+    public record VoucherBackfillResult(java.util.UUID connectorId, long paymentId, String leaseToken, String state) {}
+
+
     private HistorySyncModels() {}
 
-    public record CancelSourceOrder(UUID connectorId, String sourceNo) {}
+    /** 仅更新已关联回款的自有存储附件，不修改金额、付款日期或确认状态。 */
+    public record ReceiptVouchers(UUID connectorId, String receiptNo, String sourcePaymentNo,
+                                  String sourceOrderNo, String sourceStatus, java.util.List<String> objectKeys) {}
+
+    public record CancelSourceOrder(UUID connectorId, String sourceNo, String orderStatusCode,
+                                    Instant orderDate, BigDecimal amount, String customerName,
+                                    Instant sourceUpdatedAt) {
+        public CancelSourceOrder(UUID connectorId, String sourceNo) {
+            this(connectorId, sourceNo, "CANCELLED", null, null, null, null);
+        }
+    }
 
     public record SourceOrder(
             UUID connectorId,
@@ -73,7 +89,12 @@ public final class HistorySyncModels {
             Instant occurredAt,
             String status,
             Instant updatedAt,
-            String checksum) {}
+            String checksum, String confirmedBy, Instant confirmedAt) {
+        public Receipt(UUID connectorId,String receiptNo,String sourceOrderNo,Long customerId,BigDecimal amount,
+                Instant occurredAt,String status,Instant updatedAt,String checksum) {
+            this(connectorId,receiptNo,sourceOrderNo,customerId,amount,occurredAt,status,updatedAt,checksum,null,null);
+        }
+    }
 
     public record Allocation(long orderId, BigDecimal amount) {}
 

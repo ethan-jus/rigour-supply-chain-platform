@@ -1012,4 +1012,16 @@ class DhbClientAdapterTest {
         properties.setTokenSafetyWindow(java.time.Duration.ofSeconds(1));
         return properties;
     }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"text/html,<html>expired</html>", "application/xml,<?xml version='1.0'?><Error>Expired</Error>", "image/png,<Error>AccessDenied</Error>", "application/json,{error:expired}"})
+    void rejectsErrorDocumentEvenWithHttp200(String type, String body) {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://images.test/expired")).andRespond(withSuccess(body, MediaType.parseMediaType(type)));
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(), ref -> new DhbSecretResolver.Credentials("fixture", "fixture"), properties());
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> client.downloadAttachment(CONNECTOR, "https://images.test/expired"))
+                .hasMessageContaining("错误文档");
+        server.verify();
+    }
+
 }

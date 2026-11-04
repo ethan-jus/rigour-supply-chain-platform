@@ -21,7 +21,7 @@ public interface BiComparisonMapper {
             </if>
               FROM bi_sales_order_fact
              WHERE tenant_id = #{tenantId} AND deleted = 0
-               AND order_status_code &lt;&gt; 'CANCELLED'
+               AND order_status_code  NOT IN ('CANCELLED','DELETED')
                AND order_date &gt;= #{from} AND order_date &lt;= #{to}
             <if test="region != null">AND region_code = #{region}</if>
             <if test="owner != null">AND owner_staff_code = #{owner}</if>

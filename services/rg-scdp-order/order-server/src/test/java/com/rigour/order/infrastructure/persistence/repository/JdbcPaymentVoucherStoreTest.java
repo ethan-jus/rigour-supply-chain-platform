@@ -15,6 +15,11 @@ class JdbcPaymentVoucherStoreTest {
         jdbc.execute("INSERT INTO order_sales_order VALUES('a',1,'SO-1','销售',0),('a',2,'SO-2','销售',0),('b',3,'SECRET','其他租户',0)");
         jdbc.execute("INSERT INTO order_payment_record VALUES('a',11,'PAY-1',1,'客户',444.60,'2026-09-30 13:54:20','CHECKED',0,'TXN'),('a',12,'PAY-2',2,'客户',148.20,'2026-08-30 00:00:00','CANCELLED',1,'TXN'),('b',13,'SECRET',3,'保密',148.20,'2026-09-30 00:00:00','CHECKED',0,'TXN')");
         jdbc.execute("INSERT INTO order_payment_voucher_transaction VALUES('a',11,'a/first',148.20,'TXN','部分凭证'),('a',11,'a/second',296.40,NULL,'未显示单号'),('b',13,'b/secret',148.20,'TXN',NULL)");
+        jdbc.execute("ALTER TABLE order_payment_voucher_transaction ADD voucher_paid_time TIMESTAMP");
+        jdbc.execute("ALTER TABLE order_payment_voucher_transaction ADD voucher_paid_time_precision VARCHAR(8)");
+        jdbc.execute("ALTER TABLE order_payment_voucher_transaction ADD recognition_status VARCHAR(24)");
+        jdbc.execute("ALTER TABLE order_payment_voucher_transaction ADD payee VARCHAR(255)");
+        jdbc.execute("ALTER TABLE order_payment_voucher_transaction ADD payment_result VARCHAR(24)");
         var scopes = org.mockito.Mockito.mock(OrderDataScope.class);
         org.mockito.Mockito.when(scopes.predicate("order:read", "o.", null))
                 .thenReturn(new OrderDataScope.Predicate("1=1", java.util.List.of()));

@@ -19,4 +19,16 @@ class PaymentVoucherWriteGuardTest {
         assertThat(guard.retainedKeys("a",11,List.of("cancelled"))).isEmpty();
         assertThat(guard.retainedKeys("a",11,null)).isEmpty();
     }
+    @Test void excludedContentCannotReturnUnderNewSourcePath() {
+        var jdbc = new JdbcTemplate(new DriverManagerDataSource("jdbc:h2:mem:voucher_hash_guard;DB_CLOSE_DELAY=-1", "sa", ""));
+        jdbc.execute("CREATE TABLE order_payment_voucher_exclusion(tenant_id VARCHAR(36),payment_id BIGINT,voucher_key VARCHAR(500))");
+        String hash = "a".repeat(64);
+        jdbc.update("INSERT INTO order_payment_voucher_exclusion VALUES('t',11,?)", "t/voucher-audit-20261009/" + hash + ".png");
+        var guard = new PaymentVoucherWriteGuard(jdbc);
+        String incoming = "t/fund-attachments/FP1/" + hash + ".jpg";
+        assertThat(guard.retainedKeys("t", 11, List.of(incoming, "t/manual/" + hash + ".png")))
+                .containsExactly("t/manual/" + hash + ".png");
+        assertThat(guard.retainedKeys("t", 12, List.of(incoming))).containsExactly(incoming);
+    }
+
 }

@@ -16,12 +16,7 @@ public final class PaymentVoucherAuditEngine {
     private PaymentVoucherAuditEngine() {}
     private static String number(String x) { return x==null?"":x.trim().toUpperCase(Locale.ROOT); }
     private static String image(String key) {
-        // 此导入目录的文件名已验证由原图内容SHA256生成，其他附件仅按相同对象识别。
-        if (key.contains("/voucher-audit-20261009/")) {
-            String file=key.substring(key.lastIndexOf('/')+1);
-            if(file.matches("[a-f0-9]{64}\\.[a-zA-Z]+")) return "sha256:"+file.substring(0,64);
-        }
-        return "object:"+key;
+        return com.rigour.order.domain.value.VoucherIdentity.of(key);
     }
     private static String hash(String value) {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); }
@@ -75,6 +70,8 @@ public final class PaymentVoucherAuditEngine {
         groups.sort(Comparator.comparingInt((AuditGroup g)->priority.indexOf(g.result())).thenComparing(AuditGroup::key));
         var counts=new LinkedHashMap<String,Long>();
         for(var status:priority) counts.put(status,groups.stream().filter(g->status.equals(g.result())).count());
+        for (String status : List.of("PENDING_REVIEW", "NORMAL", "ABNORMAL"))
+            counts.put(status, groups.stream().filter(g -> status.equals(g.auditStatusCode())).count());
         return new Scan(Instant.now(),payments.size(),(int)payments.stream().filter(p->!p.attachmentKeys().isEmpty()).count(),counts,groups);
     }
     private static AuditGroup group(String kind,String value,List<Payment> source,Map<String,List<Review>> history) {
@@ -93,11 +90,16 @@ public final class PaymentVoucherAuditEngine {
         BigDecimal excess=amount==null?null:total.subtract(amount).max(ZERO);
         String result;
         if(amounts.size()>1) {result="CONFLICT";reasons.add("同一交易或图片登记了不同的凭证金额，请核对原图和识别结果");}
-        else if(excess!=null&&excess.signum()>0) {result=rows.stream().filter(p->!p.excluded()).count()>1?"EXCESS":"AMOUNT_MISMATCH";reasons.add("已明确归属到该付款的有效回款合计超出凭证金额；差额也可能来自优惠、抹零或识别偏差，需核对原图");}
+        else if(excess!=null&&excess.compareTo(new BigDecimal("5.00"))>0) {result=rows.stream().filter(p->!p.excluded()).count()>1?"EXCESS":"AMOUNT_MISMATCH";reasons.add("已明确归属到该付款的有效回款合计超出凭证金额；差额也可能来自优惠、抹零或识别偏差，需核对原图");}
         else if(kind.equals("IMAGE")) {result="IMAGE_REUSE";reasons.add("相同原图或附件被多条回款使用，交易单号缺失或不一致");}
         else if(unresolved>0) {result="PENDING_ALLOCATION";reasons.add("多张凭证或多个交易号尚无法完整解释回款分配，不作金额相符判定");}
         else if(amount==null) {result="MISSING_EVIDENCE";reasons.add("缺少可确认的凭证付款金额，无法核对上限");}
-        else if(total.compareTo(amount)<0) {result="UNALLOCATED";reasons.add("凭证金额大于当前权限范围内已关联回款，可能存在未分配或其他范围的订单");}
+        else if(amount.subtract(total).compareTo(new BigDecimal("5.00"))>0) {result="UNALLOCATED";reasons.add("凭证金额大于当前权限范围内已关联回款，可能存在未分配或其他范围的订单");}
+        else if (rows.stream().filter(p -> !p.excluded()).flatMap(p -> evidence(p).stream())
+                .anyMatch(e -> e.paidTime() == null || (e.recognitionStatus() != null
+                    && (!"RECOGNIZED".equals(e.recognitionStatus()) || !"SUCCESS".equals(e.paymentResult()))))) {
+            result="MISSING_EVIDENCE";reasons.add("凭证付款时间、支付结果或识别信息不完整，请核对原图");
+        }
         else {result="BALANCED";reasons.add("当前权限范围内金额相符；金额相符不代表已确认凭证真实性");}
         if(kind.equals("PAYMENT")) {result="MISSING_EVIDENCE";reasons.clear();reasons.add("尚无可确认交易单号，无法完成跨单核查");}
         if(rows.stream().map(Payment::customer).filter(Objects::nonNull).distinct().count()>1) reasons.add("涉及多个客户，请核对是否为代付或合并付款");

@@ -104,6 +104,7 @@ public class MybatisPlusSalesOrderRepository
                 getBaseMapper()
                         .selectList(
                                 query(tenantId, criteria)
+                                        .notIn(InternalSalesOrderEntity::getOrderStatusCode, "CANCELLED", "DELETED")
                                         .select(
                                                 InternalSalesOrderEntity::getTotalQuantity,
                                                 InternalSalesOrderEntity::getOriginalAmount,
@@ -1313,8 +1314,13 @@ public class MybatisPlusSalesOrderRepository
 
     private static String orderStatusAfterExternalProjection(
             InternalSalesOrderEntity existing, SalesOrderWrite command) {
-        if (SalesOrderStatus.CANCELLED.code().equals(existing.getOrderStatusCode())) {
-            return SalesOrderStatus.CANCELLED.code();
+        if (SalesOrderStatus.DELETED.code().equals(existing.getOrderStatusCode())
+                || SalesOrderStatus.CANCELLED.code().equals(existing.getOrderStatusCode())
+                || SalesOrderStatus.COMPLETED.code().equals(existing.getOrderStatusCode())) {
+            return existing.getOrderStatusCode();
+        }
+        if ("DINGHUOBAO".equalsIgnoreCase(existing.getSourceSystemCode())) {
+            return command.orderStatusCode();
         }
         if (SOURCE_SYSTEM_FEISHU.equalsIgnoreCase(existing.getSourceSystemCode())
                 && DATA_QUALITY_NEEDS_REVIEW.equals(command.dataQualityStatusCode())) {

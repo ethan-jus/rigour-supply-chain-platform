@@ -758,8 +758,16 @@ class HrApplicationTests {
                                 java.util.List.of(clause),
                                 none,
                                 none));
+        org.mockito.Mockito.when(authorizations.authorization(caller, "hr:employee:delete"))
+                .thenReturn(new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView(
+                        "ACTIVE", tenantId, user, "EMP-MANAGER", 1, 1, 1, 1,
+                        java.util.Set.of("hr:employee:delete"), "hr:employee:delete", true,
+                        java.util.List.of(clause), none, none));
         com.rigour.shared.context.TestAuthorizationContext.set(caller);
         try {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.deleteEmployee(tenant, hidden, 1, user.toString()))
+                    .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+            assertThat(jdbcTemplate.queryForObject("SELECT deleted FROM hr_employee WHERE tenant_id=? AND id=?", Integer.class, tenant, hidden)).isZero();
             var criteria =
                     new com.rigour.hr.application.port.out.HrEmployeeStore.EmployeeSearchCriteria(
                             null, null, null, null, null, null, null, null, null, null, null, null, null, null);
@@ -774,6 +782,50 @@ class HrApplicationTests {
         } finally {
             com.rigour.shared.context.TestAuthorizationContext.clear();
         }
+    }
+
+    @Test
+    void employeeDeletePreservesHistoryAndSourceTombstone() {
+        String tenant = java.util.UUID.randomUUID().toString();
+        jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')", tenant);
+        var dept = organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "删除测试部", 0, "ACTIVE", 0, null, null, null), "admin");
+        long id = organizations.saveEmployee(tenant, null, employee("删除测试员工", dept.id(), "ACTIVE", 0), "admin");
+        var codes = new com.rigour.shared.core.code.BusinessCodeGenerator();
+        var source = salesperson("delete-source", "删除测试员工", null, "删除测试部");
+        assertThat(employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(source), "sync", codes).failed()).isZero();
+        var before = employeeStore.employee(tenant, id).orElseThrow();
+        long accessVersion = organizations.identity(tenant, before.employeeCode()).orElseThrow().accessVersion();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.deleteEmployee(tenant, id, before.revision() + 1, "admin"))
+                .hasMessage("员工已修改，请刷新");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.deleteEmployee(java.util.UUID.randomUUID().toString(), id, before.revision(), "admin"))
+                .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        jdbcTemplate.update("UPDATE hr_department SET leader_employee_code=? WHERE tenant_id=? AND id=?", before.employeeCode(), tenant, dept.id());
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.deleteEmployee(tenant, id, before.revision(), "admin"))
+                .hasMessage("请先调整部门负责人或直属下级");
+        jdbcTemplate.update("UPDATE hr_department SET leader_employee_code=NULL WHERE tenant_id=? AND id=?", tenant, dept.id());
+        long subordinate = organizations.saveEmployee(tenant, null, employee("下级员工", dept.id(), "ACTIVE", 0), "admin");
+        jdbcTemplate.update("UPDATE hr_employee SET leader_employee_code=? WHERE tenant_id=? AND id=?", before.employeeCode(), tenant, subordinate);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.deleteEmployee(tenant, id, before.revision(), "admin"))
+                .hasMessage("请先调整部门负责人或直属下级");
+        jdbcTemplate.update("UPDATE hr_employee SET leader_employee_code=NULL WHERE tenant_id=? AND id=?", tenant, subordinate);
+        organizations.deleteEmployee(tenant, id, before.revision(), "admin");
+        assertThat(employeeStore.employee(tenant, id)).isEmpty();
+        assertThat(organizations.identity(tenant, before.employeeCode())).isEmpty();
+        var deleted = jdbcTemplate.queryForMap("SELECT deleted,revision,access_version,updated_by FROM hr_employee WHERE tenant_id=? AND id=?", tenant, id);
+        assertThat(((Number) deleted.get("deleted")).intValue()).isEqualTo(1);
+        assertThat(((Number) deleted.get("revision")).intValue()).isEqualTo(before.revision() + 1);
+        assertThat(((Number) deleted.get("access_version")).longValue()).isEqualTo(accessVersion + 1);
+        assertThat(deleted.get("updated_by")).isEqualTo("admin");
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee_assignment WHERE tenant_id=? AND employee_code=? AND effective_to IS NOT NULL", Integer.class, tenant, before.employeeCode())).isPositive();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee_assignment WHERE tenant_id=? AND employee_code=? AND effective_to IS NULL", Integer.class, tenant, before.employeeCode())).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_organization_change WHERE tenant_id=? AND object_ref=? AND event_type='EMPLOYEE_DELETE'", Integer.class, tenant, before.employeeCode())).isEqualTo(1);
+        var replay = employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(source), "sync", codes);
+        assertThat(replay.unchanged()).isEqualTo(1);
+        assertThat(replay.created()).isZero();
+        assertThat(employeeStore.employee(tenant, id)).isEmpty();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee_source_binding WHERE tenant_id=? AND employee_code=?", Integer.class, tenant, before.employeeCode())).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee WHERE tenant_id=?", Integer.class, tenant)).isEqualTo(2);
     }
 
     @Test

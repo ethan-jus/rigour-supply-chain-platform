@@ -22,6 +22,41 @@ class RestAmapPoiClientTest {
 
     private final AmapProperties properties = properties();
 
+    @Test void ipWhitelistRejectionHasSafeStableReasonForSearchAndDetail() {
+        RestClient.Builder builder=RestClient.builder();
+        MockRestServiceServer server=MockRestServiceServer.bindTo(builder).build();
+        RestAmapPoiClient client=new RestAmapPoiClient(builder.build(),properties,JsonMapper.builder().build());
+        String denied="{\"status\":\"0\",\"info\":\"INVALID_USER_IP\",\"infocode\":\"10005\",\"diagnostic\":\"private secret\"}";
+        server.expect(requestTo(containsString("/place/text"))).andRespond(withSuccess(denied,MediaType.APPLICATION_JSON));
+        server.expect(requestTo(containsString("/place/detail"))).andRespond(withSuccess(denied,MediaType.APPLICATION_JSON));
+        for(Runnable call:java.util.List.<Runnable>of(()->client.searchText("球馆","330105",1,20),()->client.detail("B001"))) {
+            assertThatThrownBy(call::run).isInstanceOfSatisfying(AmapPoiException.class,e->{
+                assertThat(e.reason()).isEqualTo("AMAP_IP_NOT_ALLOWED");
+                assertThat(e.getMessage()).contains("10005").doesNotContain("secret");
+            });
+        }
+        server.verify();
+    }
+
+    @Test void readsPoiDetailAndPublicPhoneButRejectsMismatchedIdentity() {
+        RestClient.Builder builder=RestClient.builder();
+        MockRestServiceServer server=MockRestServiceServer.bindTo(builder).build();
+        RestAmapPoiClient client=new RestAmapPoiClient(builder.build(),properties,JsonMapper.builder().build());
+        server.expect(requestTo(containsString("/place/detail")))
+                .andExpect(queryParam("id","B001"))
+                .andExpect(queryParam("extensions","all"))
+                .andRespond(withSuccess("""
+                  {"status":"1","pois":[{"id":"B001","name":"台球厅","adcode":"330105","tel":"0571-12345678","location":"120.15,30.28"}]}
+                  """,MediaType.APPLICATION_JSON));
+        server.expect(requestTo(containsString("/place/detail")))
+                .andRespond(withSuccess("""
+                  {"status":"1","pois":[{"id":"OTHER","name":"错误门店","location":"120.15,30.28"}]}
+                  """,MediaType.APPLICATION_JSON));
+        assertThat(client.detail("B001").publicPhone()).isEqualTo("0571-12345678");
+        assertThatThrownBy(()->client.detail("B001")).isInstanceOf(AmapPoiException.class);
+        server.verify();
+    }
+
     @Test
     void parsesAroundResponseWithoutKeyInLogs() {
         RestClient.Builder builder = RestClient.builder();
@@ -67,6 +102,7 @@ class RestAmapPoiClientTest {
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         RestAmapPoiClient client = new RestAmapPoiClient(builder.build(), properties, JsonMapper.builder().build());
         server.expect(requestTo(containsString("/place/text")))
+                .andExpect(queryParam("extensions", "all"))
                 .andExpect(queryParam("key", "test-amap-key"))
                 .andExpect(queryParam("keywords", "%E5%8F%B0%E7%90%83%E4%BF%B1%E4%B9%90%E9%83%A8"))
                 .andExpect(queryParam("city", "%E5%8C%97%E4%BA%AC"))

@@ -36,8 +36,16 @@ public class OrderRegisterController implements OrderRegisterApi {
 
     private final OrderRegisterService service;
 
-    public OrderRegisterController(OrderRegisterService service) {
+    private final com.rigour.order.application.port.out.OrderStatusDictionary dictionaries;
+
+    public OrderRegisterController(OrderRegisterService service,
+            com.rigour.order.application.port.out.OrderStatusDictionary dictionaries) {
         this.service = service;
+        this.dictionaries = dictionaries;
+    }
+
+    private java.util.Map<String, String> statusLabels(String code) {
+        return dictionaries.labels(com.rigour.shared.context.AuthorizationContext.requireCurrent().tenantId().toString(), code);
     }
 
     @Override
@@ -146,6 +154,8 @@ public class OrderRegisterController implements OrderRegisterApi {
             String paymentNo,
             String transactionNo,
             String paymentStatusCode,
+            String receiptStatusCode,
+            String confirmationStatusCode,
             Instant paymentTimeFrom,
             Instant paymentTimeTo,
             String sortBy,
@@ -170,7 +180,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         orderStatusCode,
                         paymentNo,
                         transactionNo,
-                        paymentStatusCode,
+                        PaymentStatusFilter.resolve(paymentStatusCode, receiptStatusCode, confirmationStatusCode),
                         paymentTimeFrom,
                         paymentTimeTo,
                         sortBy,
@@ -312,12 +322,14 @@ public class OrderRegisterController implements OrderRegisterApi {
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
+        var orderLabels = statusLabels("SALES_ORDER_STATUS");
+        var collectionLabels = statusLabels("ORDER_COLLECTION_STATUS");
         return csv(
                 "orders.csv",
                 new String[] {
                     "订单号", "旧内部订单号", "来源系统", "来源单号", "客户编码", "客户名称",
                     "归属地区", "所属业务员", "部门", "订单状态", "收款状态", "订货金额",
-                    "订单金额", "优惠额", "优惠率", "收款金额", "收款日期", "待收金额", "已核金额", "下单时间", "创建人",
+                    "订单金额", "优惠额", "优惠率", "收款金额", "收款日期", "待收金额", "已确认金额", "下单时间", "创建人",
                     "创建时间", "修改人", "修改时间", "同步人", "同步时间"
                 },
                 rows.stream()
@@ -335,8 +347,8 @@ public class OrderRegisterController implements OrderRegisterApi {
                                                         ? r.ownerEmployeeCode()
                                                         : r.ownerEmployeeName()),
                                                 str(r.departmentName()),
-                                                str(r.orderStatusCode()),
-                                                str(r.paymentStatusCode()),
+                                                orderLabels.getOrDefault(str(r.orderStatusCode()), str(r.orderStatusCode())),
+                                                collectionLabels.getOrDefault(str(r.paymentStatusCode()), str(r.paymentStatusCode())),
                                                 r.originalAmount() == null ? "" : r.originalAmount().toPlainString(),
                                                 dec(r.payableAmount()),
                                                 r.discountAmount() == null ? "" : r.discountAmount().toPlainString(),
@@ -402,6 +414,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
+        var collectionLabels = statusLabels("ORDER_COLLECTION_STATUS");
         return csv(
                 "lines.csv",
                 new String[] {
@@ -429,7 +442,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                                                 dec(r.orderAmount()),
                                                 dec(r.discountAmount()),
                                                 r.discountRate() == null ? "" : r.discountRate().multiply(BigDecimal.valueOf(100)).setScale(2, java.math.RoundingMode.HALF_UP).toPlainString() + "%",
-                                                str(r.paymentStatusCode()),
+                                                collectionLabels.getOrDefault(str(r.paymentStatusCode()), str(r.paymentStatusCode())),
                                                 r.paymentTime() == null ? "" : r.paymentTime().atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().toString(),
                                                 time(r.orderDate())))
                         .toList());
@@ -451,6 +464,8 @@ public class OrderRegisterController implements OrderRegisterApi {
             String paymentNo,
             String transactionNo,
             String paymentStatusCode,
+            String receiptStatusCode,
+            String confirmationStatusCode,
             Instant paymentTimeFrom,
             Instant paymentTimeTo, String createdBy,
             List<Long> productIds,
@@ -477,7 +492,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                             orderStatusCode,
                             paymentNo,
                             transactionNo,
-                            paymentStatusCode,
+                            PaymentStatusFilter.resolve(paymentStatusCode, receiptStatusCode, confirmationStatusCode),
                             paymentTimeFrom,
                             paymentTimeTo,
                             sortBy,
@@ -485,9 +500,11 @@ public class OrderRegisterController implements OrderRegisterApi {
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
+        var receiptLabels = statusLabels("PAYMENT_RECEIPT_STATUS");
+        var confirmationLabels = statusLabels("PAYMENT_CONFIRMATION_STATUS");
         var headers = new ArrayList<>(List.of(
                     "收款编码", "来源付款编码", "订单号", "客户名称", "归属地区", "业务员", "订单金额",
-                    "收款金额", "收款状态", "收款时间", "交易单号", "审核人", "审核时间"
+                    "收款金额", "回款状态", "财务确认", "收款时间", "交易单号", "财务确认人", "财务确认时间"
                 ));
         if (productIds != null) headers.add("筛选商品分摊金额");
         return csv("payments.csv", headers.toArray(String[]::new), rows.stream()
@@ -504,7 +521,8 @@ public class OrderRegisterController implements OrderRegisterApi {
                                                         : r.ownerEmployeeName()),
                                                 dec(r.orderAmount()),
                                                 dec(r.paidAmount()),
-                                                str(r.paymentStatusCode()),
+                                                receiptLabels.getOrDefault(str(r.receiptStatusCode()), str(r.receiptStatusCode())),
+                                                confirmationLabels.getOrDefault(str(r.confirmationStatusCode()), str(r.confirmationStatusCode())),
                                                 time(r.paymentTime()),
                                                 str(r.transactionNo()),
                                                 str(r.checkedBy()),

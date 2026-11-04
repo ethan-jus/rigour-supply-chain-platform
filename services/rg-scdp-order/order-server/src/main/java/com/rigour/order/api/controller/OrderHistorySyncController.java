@@ -59,6 +59,18 @@ public class OrderHistorySyncController implements OrderHistorySyncApi {
         return ApiResponse.success(service.historicalReceiptStatus(c));
     }
 
+    public ApiResponse<Intake> receiptVouchers(ReceiptVouchers c) {
+        return ApiResponse.success(service.receiptVouchers(c));
+    }
+
+    public ApiResponse<java.util.List<VoucherBackfillCandidate>> claimVoucherBackfill(VoucherBackfillClaim c) {
+        return ApiResponse.success(service.claimVoucherBackfill(c));
+    }
+    public ApiResponse<Void> finishVoucherBackfill(VoucherBackfillResult c) {
+        service.finishVoucherBackfill(c);
+        return ApiResponse.success(null);
+    }
+
     public ApiResponse<Void> allocate(Allocate c) {
         service.allocate(c);
         return ApiResponse.success(null);

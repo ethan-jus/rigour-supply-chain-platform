@@ -42,6 +42,13 @@ public class BiDashboardProductProjector {
                             + ")",
                     tenant);
         }
+        // 主表状态变化也要退役旧事实，避免回款未更新或水位未前进时继续贡献统计。
+        for (String table : new String[]{"bi_sales_order_fact", "bi_sales_order_line_fact", "bi_sales_payment_fact"}) {
+            jdbc.update("UPDATE " + table + " f SET deleted=1 WHERE f.tenant_id=? AND f.deleted=0"
+                    + " AND EXISTS(SELECT 1 FROM bi_source_order_order_sales_order o"
+                    + " WHERE o.tenant_id=f.tenant_id AND o.id=f.order_id"
+                    + " AND (o.deleted<>0 OR o.order_status_code IN ('CANCELLED','DELETED')))", tenant);
+        }
     }
 
     @Transactional
@@ -53,7 +60,7 @@ public class BiDashboardProductProjector {
 INSERT INTO bi_dashboard_customer_history(tenant_id,customer_id,first_order_date,synced_time)
 SELECT tenant_id,customer_id,MIN(order_date),? FROM bi_sales_order_fact
 WHERE tenant_id=? AND customer_id IS NOT NULL AND deleted=0
-  AND COALESCE(order_status_code,'')<>'CANCELLED' GROUP BY tenant_id,customer_id
+  AND COALESCE(order_status_code,'') NOT IN ('CANCELLED','DELETED') GROUP BY tenant_id,customer_id
 """,
                 at,
                 tenant);
@@ -81,7 +88,7 @@ WITH source_lines AS (
     ROUND(o.payable_amount*l.unit_price*l.quantity/l.gross,6) sales,
     ROUND(o.paid_amount*l.unit_price*l.quantity/l.gross,6) paid
   FROM bi_sales_order_fact o JOIN source_lines l ON l.tenant_id=o.tenant_id AND l.order_id=o.order_id
-  WHERE o.tenant_id=? AND o.deleted=0 AND COALESCE(o.order_status_code,'')<>'CANCELLED'
+  WHERE o.tenant_id=? AND o.deleted=0 AND COALESCE(o.order_status_code,'') NOT IN ('CANCELLED','DELETED')
     AND l.gross>0 AND l.minimum_amount>=0
 )
 SELECT tenant_id,order_id,order_line_id,product_id,product_variant_id,product_category_id,
@@ -100,7 +107,7 @@ INSERT INTO bi_dashboard_order_product
   (tenant_id,order_id,order_line_id,allocation_status,sales_amount,cohort_paid_amount,synced_time)
 SELECT o.tenant_id,o.order_id,0,'UNALLOCATABLE',o.payable_amount,o.paid_amount,?
 FROM bi_sales_order_fact o WHERE o.tenant_id=? AND o.deleted=0
-  AND COALESCE(o.order_status_code,'')<>'CANCELLED'
+  AND COALESCE(o.order_status_code,'') NOT IN ('CANCELLED','DELETED')
   AND NOT EXISTS(SELECT 1 FROM bi_dashboard_order_product a
     WHERE a.tenant_id=o.tenant_id AND a.order_id=o.order_id)
 """,

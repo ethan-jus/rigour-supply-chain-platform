@@ -233,9 +233,11 @@ public class MybatisPlusSalesPaymentRecordRepository
                                         .set(InternalSalesPaymentRecordEntity::getUpdatedTime, now);
         if (command.sourcePaymentStatusCode() != null) {
             update.set(InternalSalesPaymentRecordEntity::getPaymentStatusCode, command.sourcePaymentStatusCode())
-                    .set(InternalSalesPaymentRecordEntity::getCheckedBy,
+                    .set(!"CHECKED".equals(command.sourcePaymentStatusCode()) || command.sourceCheckedBy()!=null,
+                            InternalSalesPaymentRecordEntity::getCheckedBy,
                             "CHECKED".equals(command.sourcePaymentStatusCode()) ? command.sourceCheckedBy() : null)
-                    .set(InternalSalesPaymentRecordEntity::getCheckedAt,
+                    .set(!"CHECKED".equals(command.sourcePaymentStatusCode()) || command.sourceCheckedAt()!=null,
+                            InternalSalesPaymentRecordEntity::getCheckedAt,
                             "CHECKED".equals(command.sourcePaymentStatusCode()) ? local(command.sourceCheckedAt()) : null);
         }
         if (command.sourceCreatedAt() != null)

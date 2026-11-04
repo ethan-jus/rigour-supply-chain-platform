@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class PaymentVoucherAuditController implements PaymentVoucherAuditApi {
     private final PaymentVoucherAuditService service;
     public PaymentVoucherAuditController(PaymentVoucherAuditService service) {this.service=service;}
+    @Override public ApiResponse<java.util.Map<String,PaymentAuditState>> paymentStates(java.util.List<String> paymentIds) {return ApiResponse.success(service.paymentStates(paymentIds));}
     @Override public ApiResponse<Scan> scan() {return ApiResponse.success(service.scan());}
     @Override public ApiResponse<Review> review(ReviewRequest request) {return ApiResponse.success(service.review(request));}
 }

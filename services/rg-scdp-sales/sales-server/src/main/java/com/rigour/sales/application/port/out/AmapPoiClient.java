@@ -15,9 +15,16 @@ public interface AmapPoiClient {
      */
     NearbyPoiPage searchText(String keyword, String city, int page, int pageSize);
 
+    NearbyPoi detail(String poiId);
+
     record NearbyPoi(String poiId, String name, String address, String type, String typeCode,
                      BigDecimal longitude, BigDecimal latitude, BigDecimal distanceMeters,
-                     String cityName, String adcode) {
+                     String cityName, String adcode, String publicPhone) {
+
+        public NearbyPoi(String poiId, String name, String address, String type, String typeCode,
+                BigDecimal longitude, BigDecimal latitude, BigDecimal distanceMeters, String cityName, String adcode) {
+            this(poiId,name,address,type,typeCode,longitude,latitude,distanceMeters,cityName,adcode,null);
+        }
 
         /** 兼容已有端口与测试构造器。新门店公开接口只接受带城市证据的候选。 */
         public NearbyPoi(

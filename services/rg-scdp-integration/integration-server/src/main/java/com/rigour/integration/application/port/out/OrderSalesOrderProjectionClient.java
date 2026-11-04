@@ -26,6 +26,11 @@ public interface OrderSalesOrderProjectionClient {
             com.rigour.order.api.v1.model.HistorySyncModels.SourceOrder command) {
         throw new UnsupportedOperationException("必须先部署历史订单保护接口");
     }
+    default com.rigour.order.api.v1.model.HistorySyncModels.Intake syncReceiptVouchers(CallerIdentity caller,
+            com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers command) {
+        throw new UnsupportedOperationException("receipt voucher projection unavailable");
+    }
+
     default com.rigour.order.api.v1.model.HistorySyncModels.Intake registerReceipt(CallerIdentity caller,
             com.rigour.order.api.v1.model.HistorySyncModels.Receipt command) {
         throw new UnsupportedOperationException("必须先部署回款接续接口");
@@ -36,6 +41,15 @@ public interface OrderSalesOrderProjectionClient {
         throw new UnsupportedOperationException("必须先部署历史回款状态接续接口");
     }
 
+
+    default java.util.List<com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillCandidate> claimVoucherBackfill(CallerIdentity caller,
+            com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillClaim command) {
+        throw new UnsupportedOperationException("voucher backfill unavailable");
+    }
+    default void finishVoucherBackfill(CallerIdentity caller,
+            com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillResult command) {
+        throw new UnsupportedOperationException("voucher backfill unavailable");
+    }
 
     SalesOrderDetailView salesOrder(CallerIdentity caller, Long id);
 

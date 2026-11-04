@@ -6,6 +6,7 @@ import java.util.List;
 
 public interface PaymentVoucherStore {
     default List<String> attachmentKeys(String tenantId, long paymentId) { return List.of(); }
+    int requestRecognition(String tenantId, long paymentId);
     List<VoucherTransaction> vouchers(String tenantId, long paymentId);
     List<TransactionMatch> transactionMatches(String tenantId, String transactionNo);
 }

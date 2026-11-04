@@ -73,7 +73,7 @@ SELECT a.__ATTRIBUTE__ AS attribute_name, COUNT(*) AS customer_count,
               SUM(paid_amount) AS paid_amount
          FROM bi_sales_order_fact
         WHERE tenant_id = :tenant AND deleted = 0
-          AND (order_status_code IS NULL OR order_status_code <> 'CANCELLED')
+          AND (order_status_code IS NULL OR order_status_code  NOT IN ('CANCELLED','DELETED'))
           AND order_date >= :from AND order_date <= :to
           AND (:region IS NULL OR region_code""" + JDBC_REGION_SCOPE + """
 )

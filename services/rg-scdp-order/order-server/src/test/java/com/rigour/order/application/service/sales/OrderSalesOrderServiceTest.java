@@ -186,7 +186,7 @@ class OrderSalesOrderServiceTest {
 
         SalesOrderDetailView created = service.create(feishuCommandWithPaymentVoucher(voucherKey));
 
-        assertThat(created.orderStatusCode()).isEqualTo(SalesOrderStatus.COMPLETED.code());
+        assertThat(created.orderStatusCode()).isEqualTo(SalesOrderStatus.DRAFT.code());
         assertThat(created.paymentVoucherKeys()).containsExactly(voucherKey);
         assertThat(created.paymentAttachments())
                 .singleElement()
@@ -250,7 +250,7 @@ class OrderSalesOrderServiceTest {
         OrderSalesOrderService service = service(store);
         TestAuthorizationContext.set(serviceCaller("order:write"));
         SalesOrderDetailView created =
-                service.create(feishuCommandWithPaymentVoucher("voucher-key"));
+                historicalCompletedOrder(service, store);
 
         SalesOrderDetailView updated =
                 service.update(
@@ -273,18 +273,18 @@ class OrderSalesOrderServiceTest {
     }
 
     @Test
-    void serviceCallerMovesCompletedFeishuOrderBackToDraftWhenProjectionNeedsReview() {
+    void sourceDataQualityChangePreservesHistoricalCompletedOrder() {
         FakeStore store = new FakeStore();
         OrderSalesOrderService service = service(store);
         TestAuthorizationContext.set(serviceCaller("order:write"));
         SalesOrderDetailView created =
-                service.create(feishuCommandWithPaymentVoucher("voucher-key"));
+                historicalCompletedOrder(service, store);
 
         SalesOrderDetailView updated =
                 service.update(created.id(), externalProjectionCommand(created, List.of()));
 
         assertThat(created.orderStatusCode()).isEqualTo(SalesOrderStatus.COMPLETED.code());
-        assertThat(updated.orderStatusCode()).isEqualTo(SalesOrderStatus.DRAFT.code());
+        assertThat(updated.orderStatusCode()).isEqualTo(SalesOrderStatus.COMPLETED.code());
         assertThat(updated.dataQualityStatusCode()).isEqualTo("NEEDS_REVIEW");
         assertThat(updated.dataQualityMessage()).contains("商品明细");
     }
@@ -314,7 +314,7 @@ class OrderSalesOrderServiceTest {
         OrderSalesOrderService service = service(store);
         TestAuthorizationContext.set(serviceCaller("order:write"));
         SalesOrderDetailView completed =
-                service.create(feishuCommandWithPaymentVoucher("voucher-key"));
+                historicalCompletedOrder(service, store);
         TestAuthorizationContext.set(caller("order:read", "order:write", "erp:supply:write"));
 
         assertThat(completed.orderStatusCode()).isEqualTo(SalesOrderStatus.COMPLETED.code());
@@ -348,7 +348,7 @@ class OrderSalesOrderServiceTest {
         OrderSalesOrderService service = service(store);
         TestAuthorizationContext.set(serviceCaller("order:write"));
         SalesOrderDetailView created =
-                service.create(feishuCommandWithPaymentVoucher("voucher-key"));
+                historicalCompletedOrder(service, store);
         SalesOrderCommand command =
                 new SalesOrderCommand(
                         created.customerId(),
@@ -613,7 +613,7 @@ class OrderSalesOrderServiceTest {
                         new SalesOrderSourceStatusCommand("finished", external.revision()));
 
         assertThat(updated.sourceStatusCode()).isEqualTo("finished");
-        assertThat(updated.orderStatusCode()).isEqualTo(external.orderStatusCode());
+        assertThat(updated.orderStatusCode()).isEqualTo(SalesOrderStatus.COMPLETED.code());
         assertThat(updated.revision()).isEqualTo(external.revision() + 1);
     }
 
@@ -636,7 +636,7 @@ class OrderSalesOrderServiceTest {
     }
 
     @Test
-    void sourceStatusCompletedAdvancesSubmittedOrderToCompleted() {
+    void sourceStatusCompletedCompletesWithoutShipmentOrPayment() {
         FakeStore store = new FakeStore();
         OrderSalesOrderService service = service(store);
         TestAuthorizationContext.set(serviceCaller("order:write"));
@@ -649,11 +649,14 @@ class OrderSalesOrderServiceTest {
 
         assertThat(completed.sourceStatusCode()).isEqualTo("COMPLETED");
         assertThat(completed.orderStatusCode()).isEqualTo(SalesOrderStatus.COMPLETED.code());
+        assertThat(completed.paymentStatusCode()).isEqualTo(external.paymentStatusCode());
+        assertThat(completed.paidAmount()).isEqualByComparingTo(external.paidAmount());
+        assertThat(completed.unpaidAmount()).isEqualByComparingTo(external.unpaidAmount());
         assertThat(completed.revision()).isEqualTo(external.revision() + 1);
     }
 
     @Test
-    void sourceProjectionCompletionAdvancesSubmittedOrderToCompleted() {
+    void sourceProjectionCompletionCompletesWithoutShipmentOrPayment() {
         FakeStore store = new FakeStore();
         OrderSalesOrderService service = service(store);
         TestAuthorizationContext.set(serviceCaller("order:write"));
@@ -676,10 +679,13 @@ class OrderSalesOrderServiceTest {
 
         assertThat(completed.sourceStatusCode()).isEqualTo("COMPLETED");
         assertThat(completed.orderStatusCode()).isEqualTo(SalesOrderStatus.COMPLETED.code());
+        assertThat(completed.paymentStatusCode()).isEqualTo(external.paymentStatusCode());
+        assertThat(completed.paidAmount()).isEqualByComparingTo(external.paidAmount());
+        assertThat(completed.unpaidAmount()).isEqualByComparingTo(external.unpaidAmount());
     }
 
     @Test
-    void sourceProjectionDraftStaysDraftUntilDataComplete() {
+    void sourceProjectionCanCompleteDraftWithoutLocalWorkflow() {
         FakeStore store = new FakeStore();
         OrderSalesOrderService service = service(store);
         TestAuthorizationContext.set(serviceCaller("order:write"));
@@ -701,7 +707,49 @@ class OrderSalesOrderServiceTest {
                                 external.regionCode(),
                                 external.revision()));
 
-        assertThat(completed.orderStatusCode()).isEqualTo(SalesOrderStatus.DRAFT.code());
+        assertThat(completed.orderStatusCode()).isEqualTo(SalesOrderStatus.COMPLETED.code());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "PENDING_PRICING,DRAFT", "PENDING_REVIEW,DRAFT", "PENDING_OUTBOUND,SUBMITTED",
+        "PENDING_SHIPPED,SUBMITTED", "RECEIVED,SUBMITTED", "COMPLETED,COMPLETED",
+        "FORCE_COMPLETED,COMPLETED", "RETURNED,COMPLETED"
+    })
+    void importedStatusDeterminesLifecycleWithoutLocalWorkflow(String sourceStatus, String expected) {
+        FakeStore store = new FakeStore();
+        var service = service(store);
+        TestAuthorizationContext.set(serviceCaller("order:write"));
+        var created = service.create(dinghuobaoStatusCommand(sourceStatus));
+        assertThat(created.orderStatusCode()).isEqualTo(expected);
+        assertThat(created.paymentStatusCode()).isEqualTo("UNPAID");
+        assertThat(created.paidAmount()).isEqualByComparingTo("0");
+        assertThat(created.unpaidAmount()).isEqualByComparingTo(created.payableAmount());
+        assertThat(created.shipmentTime()).isNull();
+    }
+
+    @Test
+    void sameSourceCompletionRepairsMainStatusAndReplayIsIdempotent() {
+        FakeStore store = new FakeStore();
+        var service = service(store);
+        TestAuthorizationContext.set(serviceCaller("order:write"));
+        var created = service.create(dinghuobaoSubmittedCommand());
+        var legacy = store.updateSourceStatus(TENANT_ID.toString(), created.id(), "COMPLETED",
+                "SUBMITTED", created.revision(), "legacy");
+        var repaired = service.updateSourceStatus(legacy.id(),
+                new SalesOrderSourceStatusCommand("COMPLETED", legacy.revision()));
+        assertThat(repaired.orderStatusCode()).isEqualTo("COMPLETED");
+        var replay = service.updateSourceStatus(repaired.id(),
+                new SalesOrderSourceStatusCommand("COMPLETED", repaired.revision()));
+        assertThat(replay.revision()).isEqualTo(repaired.revision());
+        var older = service.updateSourceStatus(replay.id(),
+                new SalesOrderSourceStatusCommand("PENDING_OUTBOUND", replay.revision()));
+        assertThat(older.orderStatusCode()).isEqualTo("COMPLETED");
+        assertThat(older.unpaidAmount()).isEqualByComparingTo(legacy.unpaidAmount());
+        var cancelled = service.cancelBySource(older.id(), older.revision());
+        var retry = service.updateSourceStatus(cancelled.id(),
+                new SalesOrderSourceStatusCommand("COMPLETED", cancelled.revision()));
+        assertThat(retry.orderStatusCode()).isEqualTo("CANCELLED");
     }
 
     @Test
@@ -861,11 +909,15 @@ class OrderSalesOrderServiceTest {
     }
 
     private static SalesOrderCommand dinghuobaoSubmittedCommand() {
+        return dinghuobaoStatusCommand("PENDING_OUTBOUND");
+    }
+
+    private static SalesOrderCommand dinghuobaoStatusCommand(String sourceStatus) {
         return new SalesOrderCommand(
                 1L,
                 "DINGHUOBAO",
                 "DH.20260819.0002",
-                "PENDING_OUTBOUND",
+                sourceStatus,
                 null,
                 null,
                 null,
@@ -1000,6 +1052,12 @@ class OrderSalesOrderServiceTest {
                 List.of(),
                 submit,
                 0);
+    }
+
+    private static SalesOrderDetailView historicalCompletedOrder(OrderSalesOrderService service, FakeStore store) {
+        var created = service.create(feishuCommandWithPaymentVoucher("voucher-key"));
+        return store.updateSourceStatus(TENANT_ID.toString(), created.id(), created.sourceStatusCode(),
+                "COMPLETED", created.revision(), "historical-fixture");
     }
 
     private static SalesOrderCommand feishuCommandWithPaymentVoucher(String voucherKey) {
@@ -1252,6 +1310,8 @@ class OrderSalesOrderServiceTest {
 
         private static boolean shouldPreserveExistingOrderStatus(
                 SalesOrderDetailView current, SalesOrderWrite command) {
+            if (SalesOrderStatus.COMPLETED.code().equals(current.orderStatusCode())
+                    || SalesOrderStatus.CANCELLED.code().equals(current.orderStatusCode())) return true;
             if (SalesOrderStatus.DRAFT.code().equals(current.orderStatusCode())) return false;
             return !"FEISHU".equalsIgnoreCase(current.sourceSystemCode())
                     || !"NEEDS_REVIEW".equals(command.dataQualityStatusCode());

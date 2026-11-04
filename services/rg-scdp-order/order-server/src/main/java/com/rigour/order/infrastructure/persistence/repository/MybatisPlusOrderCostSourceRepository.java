@@ -65,7 +65,7 @@ public class MybatisPlusOrderCostSourceRepository implements OrderCostSourceStor
                 new QueryWrapper<InternalSalesOrderEntity>()
                         .eq("o.tenant_id", tenant)
                         .eq("o.deleted", 0)
-                        .notIn("o.order_status_code", "DRAFT", "CANCELLED");
+                        .notIn("o.order_status_code", "DRAFT", "CANCELLED", "DELETED");
         // 导入订单可能尚未关联仓库。仍执行原仓库范围：指定仓库角色不会匹配 NULL，
         // 全仓角色可选择后在费用中补录实际仓库，不回写销售订单。
         q.eq(city != null && !city.isBlank(), "o.region_code", city);

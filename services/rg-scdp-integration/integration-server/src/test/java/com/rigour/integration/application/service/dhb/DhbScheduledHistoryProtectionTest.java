@@ -50,6 +50,7 @@ class DhbScheduledHistoryProtectionTest {
         var store = mock(DhbSyncStore.class);
         var client = mock(DhbClient.class);
         var projection = mock(OrderSalesOrderProjectionClient.class);
+        when(projection.syncReceiptVouchers(any(), any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED",null,null));
         var hr = mock(HrDhbStaffSyncClient.class);
         var service = new DhbOrderSyncService(store, client, projection, hr);
         var old = Instant.parse("2026-09-02T16:00:00Z");
@@ -125,7 +126,9 @@ class DhbScheduledHistoryProtectionTest {
             verify(store).findActiveMapping(tenant, task.connectorId(), "SALES_ORDER", "D1");
         }
         verifyNoMoreInteractions(store);
-        verifyNoInteractions(client, projection, hr);
+        if (object.equals("payment")) verify(projection).syncReceiptVouchers(any(), argThat(c -> c.sourceStatus().equals("CANCELLED") && c.objectKeys().isEmpty()));
+        verifyNoMoreInteractions(projection);
+        verifyNoInteractions(client, hr);
     }
     @ParameterizedTest
     @ValueSource(strings = {"SYNCED", "HISTORY_REVIEW", "SOURCE_CHANGED_REVIEW", "STALE"})

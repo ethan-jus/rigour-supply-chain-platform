@@ -40,6 +40,15 @@ public interface OrderHistorySyncApi {
     @PostMapping(BASE + "/receipts/historical-status")
     ApiResponse<Intake> historicalReceiptStatus(@RequestBody Receipt command);
 
+    @PostMapping(BASE + "/receipts/vouchers")
+    ApiResponse<Intake> receiptVouchers(@RequestBody ReceiptVouchers command);
+
+    @PostMapping(BASE + "/receipts/vouchers/claim")
+    ApiResponse<java.util.List<VoucherBackfillCandidate>> claimVoucherBackfill(@RequestBody VoucherBackfillClaim command);
+
+    @PostMapping(BASE + "/receipts/vouchers/result")
+    ApiResponse<Void> finishVoucherBackfill(@RequestBody VoucherBackfillResult command);
+
     @PostMapping(BASE + "/allocations")
     ApiResponse<Void> allocate(@RequestBody Allocate command);
 

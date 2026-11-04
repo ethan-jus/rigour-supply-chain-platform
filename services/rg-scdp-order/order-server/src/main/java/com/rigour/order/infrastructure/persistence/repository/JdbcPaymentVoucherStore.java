@@ -24,17 +24,34 @@ public class JdbcPaymentVoucherStore implements PaymentVoucherStore {
                 return java.util.Arrays.asList(tools.jackson.databind.json.JsonMapper.builder().build().readValue(rs.getString(1), String[].class));
             }, args.toArray());
     }
+    @Override public int requestRecognition(String tenantId,long paymentId) {
+        var scope=scopes.predicate("order:payment:check","o.",null);
+        var args=new ArrayList<Object>(List.of(tenantId,paymentId));args.addAll(scope.args());
+        if(jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_record p JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id"
+                + " WHERE p.tenant_id=? AND p.id=? AND p.deleted=0 AND ("+scope.sql()+")",Integer.class,args.toArray())!=1)
+            throw new com.rigour.shared.context.AuthorizationDeniedException("order:payment:check");
+        int count=0;
+        for(String key:attachmentKeys(tenantId,paymentId)) {
+            JdbcVoucherRecognitionStore.enqueue(jdbc,tenantId,paymentId,key);
+            // Failed/partial OCR can be retried explicitly. Human evidence is never replaced.
+            count+=jdbc.update("UPDATE order_voucher_recognition_job j SET status='PENDING',attempts=0,result_json=NULL,error_code=NULL,next_attempt_at=UTC_TIMESTAMP(6)"
+                    + " WHERE j.tenant_id=? AND j.voucher_key=? AND j.status<>'RUNNING' AND EXISTS"
+                    + " (SELECT 1 FROM order_payment_voucher_transaction e WHERE e.tenant_id=j.tenant_id AND e.voucher_key=j.voucher_key AND e.payment_id=? AND e.created_by='VOUCHER_OCR')",tenantId,key,paymentId);
+        }
+        return count;
+    }
     @Override public List<VoucherTransaction> vouchers(String tenantId, long paymentId) {
         var scope = scopes.predicate("order:read", "o.", null);
         var args = new ArrayList<Object>(List.of(tenantId, tenantId, paymentId)); args.addAll(scope.args());
         return jdbc.query("""
-                SELECT e.voucher_key,e.voucher_amount,e.transaction_no,e.evidence_note
+                SELECT e.voucher_key,e.voucher_amount,e.transaction_no,e.evidence_note,e.voucher_paid_time,e.voucher_paid_time_precision,e.recognition_status,e.payee,e.payment_result
                 FROM order_payment_voucher_transaction e
                 JOIN order_payment_record p ON p.tenant_id=? AND p.id=e.payment_id
                 JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
                 WHERE e.tenant_id=? AND e.payment_id=? AND p.deleted=0
                 """ + " AND (" + scope.sql() + ") ORDER BY e.voucher_key", (rs, n) -> new VoucherTransaction(rs.getString(1), rs.getBigDecimal(2),
-                        rs.getString(3), rs.getString(4), null), args.toArray());
+                        rs.getString(3), rs.getString(4), null, rs.getObject(5,LocalDateTime.class) == null ? null : rs.getObject(5,LocalDateTime.class).toInstant(ZoneOffset.UTC),
+                        rs.getString(6), rs.getString(7), rs.getString(8), rs.getString(9)), args.toArray());
     }
     @Override public List<TransactionMatch> transactionMatches(String tenantId, String transactionNo) {
         // 同时查主单历史单号和逐图单号；历史删除记录也展示，避免误判“从未使用”。

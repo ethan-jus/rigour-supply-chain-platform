@@ -167,6 +167,8 @@ public class BusinessDictionaryService {
 
     private static void requireResolvePermission(String code) {
         if (AuthorizationContext.hasPermission(READ_PERMISSION)) return;
+        if (Set.of("SALES_ORDER_STATUS","ORDER_COLLECTION_STATUS","PAYMENT_RECEIPT_STATUS","PAYMENT_CONFIRMATION_STATUS","PAYMENT_VOUCHER_AUDIT_STATUS","PAYMENT_VOUCHER_AUDIT_REASON").contains(code)
+                && AuthorizationContext.hasPermission("order:read")) return;
         if ("CRM_STORE_TYPE".equals(code)
                 && STORE_CLASSIFICATION_READERS.stream().anyMatch(AuthorizationContext::hasPermission)) return;
         if (PAYROLL_DICTIONARIES.contains(code)

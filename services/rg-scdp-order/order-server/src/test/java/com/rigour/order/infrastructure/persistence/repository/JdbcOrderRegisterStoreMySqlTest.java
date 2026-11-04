@@ -72,6 +72,37 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     @Test
+    void ownedVoucherSyncPreservesMoneyManualFilesAndRemovesOnlyCancelledSourceLinks() {
+        String tenant=UUID.randomUUID().toString(); UUID connector=UUID.randomUUID();
+        long orderId=order(tenant,"VOUCHER-O",1L,"C1","凭证客户","HZ","E1","业务员","2026-09-01T00:00:00Z",300,0);
+        insertPayment(tenant,"VOUCHER-P",orderId,"2026-09-02T00:00:00Z",300,"CHECKED",null);
+        jdbc.update("UPDATE order_payment_record SET connector_id=?,source_system_code='DINGHUOBAO',source_record_id='FR1',voucher_keys_json=? WHERE tenant_id=? AND order_id=?",
+                connector.toString(),"[\""+tenant+"/manual.png\"]",tenant,orderId);
+        long paymentId=jdbc.queryForObject("SELECT id FROM order_payment_record WHERE tenant_id=? AND order_id=?",Long.class,tenant,orderId);
+        var before=store.payments(tenant,0,20,allocationCriteria(null,null));
+        var sync=new JdbcOrderHistorySyncStore(jdbc,null,null,null);
+        var command=new com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers(connector,"FR1","FP1","DH1","CONFIRMED",List.of(tenant+"/fund-attachments/a.png",tenant+"/fund-attachments/b.png"));
+        assertThat(sync.receiptVouchers(tenant,"tester",command).state()).isEqualTo("SYNCED");
+        sync.receiptVouchers(tenant,"tester",command);
+        assertThat(jdbc.queryForObject("SELECT JSON_LENGTH(voucher_keys_json) FROM order_payment_record WHERE id=?",Integer.class,paymentId)).isEqualTo(3);
+        var after=store.payments(tenant,0,20,allocationCriteria(null,null));
+        assertThat(after.totals()).isEqualTo(before.totals());
+        assertThat(after.items().getFirst().paidAmount()).isEqualByComparingTo("300");
+        assertThat(after.items().getFirst().paymentTime()).isEqualTo(before.items().getFirst().paymentTime());
+        assertThat(after.items().getFirst().receiptStatusCode()).isEqualTo("RECEIVED");
+        assertThat(after.items().getFirst().confirmationStatusCode()).isEqualTo("CONFIRMED");
+        // Even if the same source image belongs to another valid payment document, cancelling one source cannot remove it.
+        sync.receiptVouchers(tenant,"tester",new com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers(connector,"FR1","FP2","DH1","CONFIRMED",List.of(tenant+"/fund-attachments/a.png")));
+        sync.receiptVouchers(tenant,"tester",new com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers(connector,"FR1","FP1","DH1","CANCELLED",List.of()));
+        assertThat(jdbc.queryForObject("SELECT JSON_LENGTH(voucher_keys_json) FROM order_payment_record WHERE id=?",Integer.class,paymentId)).isEqualTo(2);
+        sync.receiptVouchers(tenant,"tester",new com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers(connector,"FR1","FP2","DH1","CANCELLED",List.of()));
+        assertThat(jdbc.queryForObject("SELECT voucher_keys_json FROM order_payment_record WHERE id=?",String.class,paymentId)).contains("manual.png").doesNotContain("fund-attachments");
+        assertThat(store.payments(tenant,0,20,allocationCriteria(null,null)).totals()).isEqualTo(before.totals());
+        assertThatThrownBy(()->sync.receiptVouchers(tenant,"tester",new com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers(connector,"FR1","FP3","DH1","CONFIRMED",List.of("https://source.test/expired?sign=secret")))).hasMessageContaining("自有对象存储");
+        assertThat(sync.receiptVouchers(UUID.randomUUID().toString(),"tester",new com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers(connector,"FR1","FP3","DH1","CONFIRMED",List.of())).state()).isEqualTo("PENDING_MAPPING");
+    }
+
+    @Test
     void sourceCityOverridesEmployeeDepartmentInAllThreeListsAndTotals() {
         String tenant = UUID.randomUUID().toString();
         long a = order(tenant,"CITY-SJZ",1L,"C1","石家庄客户","SJZ","E1","同一业务员","2026-10-01T00:00:00Z",100,0);
@@ -1068,6 +1099,43 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(page.totals().get("quantitySum")).isZero();
     }
 
+    @Test
+    void confirmedPaymentFilterIncludesReceivedAndCheckedWithMatchingTotals() {
+        String tenant = UUID.randomUUID().toString();
+        long id = order(tenant, "STATUS-ORDER", 1L, "C1", "客户", "HZ", "E1", "张三", "2026-09-11T05:00:00Z", 100, 0);
+        insertPayment(tenant, "STATUS-CHECKED", id, "2026-10-12T05:00:00Z", 20, "CHECKED", null);
+        insertPayment(tenant, "STATUS-RECEIVED", id, "2026-10-12T06:00:00Z", 30, "RECEIVED", null);
+        insertPayment(tenant, "STATUS-PENDING", id, "2026-10-12T07:00:00Z", 40, "PENDING", null);
+        insertPayment(tenant, "STATUS-CANCELLED", id, "2026-10-12T08:00:00Z", 88, "CANCELLED", null);
+        insertPayment(tenant, "STATUS-OLD", id, "2026-09-12T05:00:00Z", 10, "RECEIVED", null);
+        insertPayment(tenant, "STATUS-DELETED", id, "2026-10-12T09:00:00Z", 99, "CHECKED", null);
+        jdbc.update("UPDATE order_payment_record SET deleted=1 WHERE tenant_id=? AND payment_no='STATUS-DELETED'", tenant);
+        insertPayment(UUID.randomUUID().toString(), "STATUS-OTHER-TENANT", id, "2026-10-12T10:00:00Z", 999, "CHECKED", null);
+
+        var criteria = new PaymentCriteria(
+                null, null, null, null, null, null, null, null, null, null, null, null,
+                "CONFIRMED", Instant.parse("2026-09-30T16:00:00Z"), Instant.parse("2026-10-31T16:00:00Z"),
+                null, null, null, null, null, null, null);
+        var page = store.payments(tenant, 0, 1, criteria);
+        assertThat(page.total()).isEqualTo(2);
+        assertThat(page.items()).hasSize(1);
+        assertThat(page.totals().get("receivedAmount")).isEqualByComparingTo("50");
+        assertThat(page.totals().get("checkedAmount")).isEqualByComparingTo("20");
+        assertThat(page.totals().get("relatedOrderAmount")).isEqualByComparingTo("100");
+        assertThat(store.payments(tenant, 0, 50, criteria).items())
+                .extracting(item -> item.paymentNo()).containsExactlyInAnyOrder("STATUS-RECEIVED", "STATUS-CHECKED");
+        for (String status : List.of("RECEIVED", "CHECKED", "PENDING", "CANCELLED")) {
+            var exact = store.payments(tenant, 0, 50, new PaymentCriteria(
+                    null, null, null, null, null, null, null, null, null, null, null, null, status,
+                    criteria.paymentTimeFrom(), criteria.paymentTimeTo(), null, null, null, null, null, null, null));
+            assertThat(exact.total()).isEqualTo(1);
+            assertThat(exact.items().getFirst().paymentStatusCode()).isEqualTo(status);
+        }
+        assertThat(store.payments(tenant, 0, 50, new PaymentCriteria(
+                null, null, null, null, null, null, null, null, null, null, null, null, null,
+                criteria.paymentTimeFrom(), criteria.paymentTimeTo(), null, null, null, null, null, null, null)).total()).isEqualTo(4);
+    }
+
     private static long orderId(String tenant, String orderNo) {
         Long id =
                 jdbc.queryForObject(
@@ -1170,6 +1238,35 @@ class JdbcOrderRegisterStoreMySqlTest {
                         + " UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),1)",
                 TENANT_COVERED,
                 covered);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"CANCELLED", "DELETED"})
+    void inactiveOrdersRemainFilterableButNeverContributeToTotals(String status) {
+        String tenant = UUID.randomUUID().toString();
+        long id = order(tenant, "RETAINED", 1L, "C1", "保留客户", "HZ", "EMP-1", "来源",
+                "2026-11-01T00:00:00Z", 100, 0);
+        jdbc.update("UPDATE order_sales_order SET order_status_code=?,paid_amount=40,unpaid_amount=60 WHERE id=?",status,id);
+        allocationLine(tenant,id,1,101L,"100");
+        insertPayment(tenant,"RETAINED-PAY",id,"2026-11-02T00:00:00Z",40,"CHECKED",null);
+        var criteria = new OrderCriteria(null,null,null,null,null,null,null,null,null,status,null,null,null,null,null,null,null,null,null,null,null,null);
+        var orders = store.orders(tenant,0,20,criteria);
+        assertThat(orders.total()).isEqualTo(1);
+        assertThat(orders.items().getFirst().orderStatusCode()).isEqualTo(status);
+        assertThat(orders.items().getFirst().payableAmount()).isEqualByComparingTo("100");
+        for (String amount : List.of("payableAmount","paidAmount","unpaidAmount","checkedAmount","customerCount"))
+            assertThat(orders.totals().get(amount)).as(amount).isEqualByComparingTo("0");
+        var payments = store.payments(tenant,0,20,allocationCriteria(null,null));
+        assertThat(payments.total()).isEqualTo(1);
+        assertThat(payments.totals().get("receivedAmount")).isEqualByComparingTo("0");
+        assertThat(payments.totals().get("checkedAmount")).isEqualByComparingTo("0");
+        var receivables = store.receivables(tenant,0,20,new ReceivablesCriteria(LocalDate.parse("2026-11-04"),false,null,null,null,null,null));
+        assertThat(receivables.total()).isZero();
+        assertThat(receivables.totals().get("receivableAmount")).isEqualByComparingTo("0");
+        var period = store.periodStatistics(tenant,new PeriodCriteria(LocalDate.parse("2026-11-01"),LocalDate.parse("2026-11-04"),"region",null,null,null,null,null,null));
+        assertThat(period.totals().periodOrderAmount()).isEqualByComparingTo("0");
+        assertThat(period.totals().periodReceivedAmount()).isEqualByComparingTo("0");
+        assertThat(store.monthlyPerformance(tenant,Instant.parse("2026-11-01T00:00:00Z"),Instant.parse("2026-12-01T00:00:00Z"))).isEmpty();
     }
 
     private static long order(
@@ -1485,4 +1582,37 @@ class JdbcOrderRegisterStoreMySqlTest {
                 new BigDecimal(amount),
                 status);
     }
+    @Test void contentAddressedVoucherDeduplicationPreservesManualLinkAndExcludedContent() {
+        String tenant = UUID.randomUUID().toString(); UUID connector = UUID.randomUUID();
+        long orderId = order(tenant,"HASH-O",1L,"C1","客户","HZ","E1","业务员","2026-09-01T00:00:00Z",100,0);
+        insertPayment(tenant,"HASH-P",orderId,"2026-09-02T00:00:00Z",100,"CHECKED",null);
+        long paymentId = paymentId(tenant, "HASH-P");
+        String manual = tenant + "/voucher-audit-20261009/" + "a".repeat(64) + ".png";
+        String copy = tenant + "/fund-attachments/FP1/" + "a".repeat(64) + ".jpg";
+        String excluded = tenant + "/voucher-audit-20261009/" + "b".repeat(64) + ".png";
+        jdbc.update("UPDATE order_payment_record SET connector_id=?,source_system_code='DINGHUOBAO',source_record_id='FR1',voucher_keys_json=? WHERE id=?", connector.toString(), "[\"" + manual + "\"]", paymentId);
+        jdbc.update("INSERT INTO order_payment_voucher_exclusion(tenant_id,payment_id,voucher_key,reason,operation_id,created_by,created_time) VALUES(?,?,?,'人工移除',?,'tester',UTC_TIMESTAMP())", tenant, paymentId, excluded, UUID.randomUUID().toString());
+        var before = store.payments(tenant,0,20,allocationCriteria(null,null));
+        var sync = new JdbcOrderHistorySyncStore(jdbc,null,null,null);
+        sync.receiptVouchers(tenant,"tester",new com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers(connector,"FR1","FP1","DH1","CONFIRMED",List.of(copy, tenant + "/fund-attachments/FP1/" + "b".repeat(64) + ".png")));
+        assertThat(store.payments(tenant,0,20,allocationCriteria(null,null)).items().getFirst().attachments()).containsExactly(manual);
+        sync.receiptVouchers(tenant,"tester",new com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers(connector,"FR1","FP1","DH1","CANCELLED",List.of()));
+        var after = store.payments(tenant,0,20,allocationCriteria(null,null));
+        assertThat(after.items().getFirst().attachments()).containsExactly(manual);
+        assertThat(after.totals()).isEqualTo(before.totals());
+        assertThat(after.items().getFirst().paymentTime()).isEqualTo(before.items().getFirst().paymentTime());
+    }
+
+    @Test void zeroPayableProjectsNotRequiredWithoutChangingStoredStatusOrTotals() {
+        String tenant = UUID.randomUUID().toString();
+        long id = order(tenant,"ZERO-O",1L,"C1","客户","HZ","E1","业务员","2026-09-01T00:00:00Z",0,0);
+        insertLine(tenant,id,1,"赠品","100");
+        jdbc.update("UPDATE order_sales_order SET payment_status_code='UNPAID' WHERE id=?", id);
+        var orders = store.orders(tenant,0,20,new OrderCriteria(null,null,null,null,null,null,null,null,null,null,"NOT_REQUIRED",null,null,null,null,null,null,null,null,null,null,null));
+        var lines = store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,"NOT_REQUIRED",null,null,null,null,null,null,null,null));
+        assertThat(orders.items()).singleElement().satisfies(o -> assertThat(o.paymentStatusCode()).isEqualTo("NOT_REQUIRED"));
+        assertThat(lines.items()).singleElement().satisfies(l -> assertThat(l.paymentStatusCode()).isEqualTo("NOT_REQUIRED"));
+        assertThat(jdbc.queryForObject("SELECT payment_status_code FROM order_sales_order WHERE id=?",String.class,id)).isEqualTo("UNPAID");
+    }
+
 }

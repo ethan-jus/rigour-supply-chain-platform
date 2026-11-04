@@ -47,6 +47,46 @@ class DhbOrderSyncProgressTest {
     }
 
     @Test
+    void missingVoucherBatchDownloadsOnlyExactReceiptAndNeverProjectsMoney() {
+        var worker=service();var storage=mock(ProductMediaStorage.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(worker,"fundAttachmentStorage",storage);
+        org.springframework.test.util.ReflectionTestUtils.setField(worker,"fundAttachmentKeyFactory",new DhbAttachmentObjectKeyFactory("dev/fund-attachments"));
+        var candidate=new com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillCandidate(1,"lease",
+                List.of(new com.rigour.order.api.v1.model.HistorySyncModels.VoucherReceiptReference("FR1","DH1")));
+        when(projection.claimVoucherBackfill(any(),any())).thenReturn(List.of(candidate),List.of());
+        when(client.getPayments(any(),any())).thenAnswer(call->{
+            DhbClient.PaymentQuery query=call.getArgument(1);
+            var attrs=Map.<String,Object>of("resource",List.of(Map.of("file_url","https://example.test/voucher","old_name","v.png")));
+            var exact=new DhbClient.Payment("FP1","FP1","FR1","DH1",null,null,null,null,BigDecimal.TEN,"pend_receipted",to,to,to,null,null,null,null,null,attrs);
+            var other=new DhbClient.Payment("FP2","FP2","FR2","DH1",null,null,null,null,BigDecimal.TEN,"pend_receipted",to,to,to,null,null,null,null,null,attrs);
+            return new DhbClient.Page<>(query.page(),2,"pend_receipted".equals(query.status())?List.of(exact,other):List.of());
+        });
+        when(client.downloadAttachment(any(),any())).thenReturn(new DhbClient.DownloadedFile(new byte[]{1,2,3},"image/png"));
+        when(projection.syncReceiptVouchers(any(),any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED",null,null));
+        var result=worker.backfillVouchers(DhbSyncOrchestrationService.serviceCaller(tenant),taskId,10,s->{});
+        assertThat(result.fetched()).isEqualTo(1);assertThat(result.repaired()).isEqualTo(1);
+        verify(projection).syncReceiptVouchers(any(),argThat(c->c.receiptNo().equals("FR1") && c.sourcePaymentNo().equals("FP1") && c.objectKeys().size()==1));
+        verify(client,times(1)).downloadAttachment(any(),any());
+        verify(projection).finishVoucherBackfill(any(),argThat(c->c.paymentId()==1 && c.state().equals("SYNCED")));
+        verify(projection,never()).registerReceipt(any(),any());
+        verify(store,never()).finishRun(any(),any(),any(),any(),any(),any(),any(),anyLong(),anyLong(),anyLong(),anyLong(),any(),any(),any());
+    }
+
+    @Test
+    void sourceEmptyAndMissingMappingAreRecordedWithoutFabricatingAttachments() {
+        var worker=service();
+        var noMapping=new com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillCandidate(1,"a",List.of());
+        var mapped=new com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillCandidate(2,"b",List.of(new com.rigour.order.api.v1.model.HistorySyncModels.VoucherReceiptReference("FR1","DH1")));
+        when(projection.claimVoucherBackfill(any(),any())).thenReturn(List.of(noMapping),List.of(mapped),List.of());
+        when(client.getPayments(any(),any())).thenAnswer(call->{DhbClient.PaymentQuery q=call.getArgument(1);return new DhbClient.Page<>(q.page(),1,List.of(new DhbClient.Payment("FP1","FP1","FR1","DH1",null,null,null,null,BigDecimal.TEN,"pend_receipted",to,to,to,null,null,null,null,null,Map.of("resource",List.of()))));});
+        var result=worker.backfillVouchers(DhbSyncOrchestrationService.serviceCaller(tenant),taskId,10,s->{});
+        assertThat(result.unmapped()).isEqualTo(2);
+        verify(projection).finishVoucherBackfill(any(),argThat(c->c.paymentId()==1 && c.state().equals("MAPPING_MISSING")));
+        verify(projection).finishVoucherBackfill(any(),argThat(c->c.paymentId()==2 && c.state().equals("SOURCE_EMPTY")));
+        verify(projection,never()).syncReceiptVouchers(any(),any());verify(client,never()).downloadAttachment(any(),any());
+    }
+
+    @Test
     void receiptProgressIsReportedForEveryPageWithoutImportingRecordsBeyondTheCutoff() {
         var worker = service();
         var later =
@@ -250,4 +290,39 @@ class DhbOrderSyncProgressTest {
         verify(client, never()).getOrderContent(any(), any());
         verifyNoInteractions(projection);
     }
+    @Test void expiredPaymentRefreshRemainsPendingAndDoesNotBlockAnotherCancellation() {
+        var worker = service();
+        var work = mock(DhbIncrementalWorkStore.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(worker, "incrementalWork", work);
+        var historical = Instant.parse("2026-08-01T00:00:00Z");
+        var missing = new DhbClient.Payment("MISSING","MISSING","FR1","DH1",null,null,null,null,BigDecimal.TEN,
+                "pend_receipted",historical,historical,historical,null,null,null,null,null,Map.of("resource",List.of(Map.of("file_url","https://a/expired"))));
+        var canceled = new DhbClient.Payment("CANCELED","CANCELED","FR2","DH2",null,null,null,null,BigDecimal.TEN,
+                "canceled",historical,historical,historical,null,null,null,null,null,Map.of());
+        var json = tools.jackson.databind.json.JsonMapper.builder().build();
+        var first = new DhbIncrementalWorkStore.Item("MISSING","f1",json.writeValueAsString(missing),historical);
+        var second = new DhbIncrementalWorkStore.Item("CANCELED","f2",json.writeValueAsString(canceled),historical);
+        when(work.pending(eq(tenant),eq(connector),eq("PAYMENT"),anyInt(),any())).thenReturn(List.of(first,second));
+        when(work.pendingCount(tenant,connector,"PAYMENT")).thenReturn(1L);
+        when(client.getPayments(any(),any())).thenAnswer(call -> {
+            DhbClient.PaymentQuery q = call.getArgument(1);
+            var rows = "DH2".equals(q.orderNumber()) && "canceled".equals(q.status()) ? List.of(canceled) : List.<DhbClient.Payment>of();
+            return new DhbClient.Page<>(q.page(),rows.size(),rows);
+        });
+        when(projection.syncReceiptVouchers(any(),any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED",null,null));
+        var base = DhbSyncOrchestrationService.serviceCaller(tenant);
+        var scheduled = new com.rigour.shared.context.CallerIdentity("SERVICE",base.principalId(),tenant,null,null,
+                UUID.randomUUID(),0,0,0,Set.of("DHB_PROTECT_HISTORY"),base.permissions());
+        var result = worker.runOrderPull(scheduled,taskId,
+                new SyncRunCommand(from,to,null,null,null,"PAYMENT"),500,s1 -> {});
+        assertThat(result.status()).isEqualTo("PARTIAL");
+        assertThat(result.errorCode()).isEqualTo("DHB_DURABLE_PROJECTION_PENDING");
+        verify(work).complete(eq(tenant),eq(connector),eq("PAYMENT"),eq(first),eq(false),any());
+        verify(work).complete(eq(tenant),eq(connector),eq("PAYMENT"),eq(second),eq(true),any());
+        verify(client,never()).downloadAttachment(any(),any());
+        verify(projection).syncReceiptVouchers(any(),argThat(c -> c.sourcePaymentNo().equals("CANCELED") && c.sourceStatus().equals("CANCELLED")));
+        verify(projection).claimVoucherBackfill(any(),argThat(c -> c.connectorId().equals(connector) && c.limit()==1));
+        verifyNoMoreInteractions(projection);
+    }
+
 }

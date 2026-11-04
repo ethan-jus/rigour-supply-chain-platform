@@ -31,7 +31,7 @@ public class JdbcSalesDashboardStore implements SalesDashboardStore {
             """
             WITH orders AS (
               SELECT o.* FROM bi_sales_order_fact o
-               WHERE o.tenant_id=:tenant AND o.deleted=0 AND o.order_status_code<>'CANCELLED'
+               WHERE o.tenant_id=:tenant AND o.deleted=0 AND o.order_status_code NOT IN ('CANCELLED','DELETED')
                  AND (:region IS NULL OR o.region_code""" + JDBC_REGION_SCOPE + """
 )
                  AND (:owner IS NULL OR o.owner_staff_code=:owner)

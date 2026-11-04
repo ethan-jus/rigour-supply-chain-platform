@@ -15,6 +15,7 @@ public class PaymentVoucherController implements PaymentVoucherApi {
     @Override public ApiResponse<List<VoucherTransaction>> vouchers(long id) {
         return ApiResponse.success(service.vouchers(id));
     }
+    @Override public ApiResponse<Integer> recognize(long id) { return ApiResponse.success(service.recognize(id)); }
     @Override public ApiResponse<List<TransactionMatch>> checkTransaction(String transactionNo) {
         return ApiResponse.success(service.checkTransaction(transactionNo));
     }

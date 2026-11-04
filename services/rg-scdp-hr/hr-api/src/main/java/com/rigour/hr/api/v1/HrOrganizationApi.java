@@ -30,6 +30,10 @@ public interface HrOrganizationApi {
     ApiResponse<HrEmployeeView> updateEmployee(
             @PathVariable("id") Long id, @RequestBody HrEmployeeCommand command);
 
+    @DeleteMapping("/api/v1/hr/employees/{id}")
+    ApiResponse<Void> deleteEmployee(
+            @PathVariable("id") Long id, @RequestParam("revision") int revision);
+
     @GetMapping("/api/v1/hr/employees/{id}/assignments")
     ApiResponse<List<HrAssignmentView>> assignments(@PathVariable("id") Long id);
 

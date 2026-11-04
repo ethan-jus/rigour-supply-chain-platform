@@ -57,9 +57,10 @@ public class DhbPageSyncJobService {
                 || !Set.of(
                                 DhbPageSyncCommand.Scope.CUSTOMER,
                                 DhbPageSyncCommand.Scope.SALESPERSON,
-                                DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE)
+                                DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE,
+                                DhbPageSyncCommand.Scope.VOUCHER_BACKFILL)
                         .contains(command.scope()))
-            throw new IllegalArgumentException("后台任务只支持客户、业务员或订单包同步");
+            throw new IllegalArgumentException("后台任务只支持客户、业务员、订单包或凭证补齐");
         delegate.validatePageTarget(caller, command);
         return submit(caller, requestId, command, false);
     }

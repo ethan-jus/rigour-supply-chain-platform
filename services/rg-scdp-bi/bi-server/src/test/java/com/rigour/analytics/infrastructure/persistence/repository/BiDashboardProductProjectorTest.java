@@ -192,7 +192,9 @@ class BiDashboardProductProjectorTest {
                         "bi_source_order_order_sales_order_line",
                         "bi_source_order_order_payment_record"))
             jdbc.execute("CREATE TABLE " + name + "(tenant_id VARCHAR(64),id BIGINT)");
-        jdbc.update("INSERT INTO bi_source_order_order_sales_order VALUES('T',1)");
+        jdbc.execute("ALTER TABLE bi_source_order_order_sales_order ADD deleted INT DEFAULT 0");
+        jdbc.execute("ALTER TABLE bi_source_order_order_sales_order ADD order_status_code VARCHAR(32)");
+        jdbc.update("INSERT INTO bi_source_order_order_sales_order(tenant_id,id) VALUES('T',1)");
         projector.retireMissingFacts("T");
         assertThat(
                         jdbc.queryForObject(

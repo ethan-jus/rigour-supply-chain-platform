@@ -90,7 +90,7 @@ public class RestAmapPoiClient implements AmapPoiClient {
             if (response == null || !"1".equals(scalarText(response.get("status")))) {
                 String info = response == null ? "empty" : scalarText(response.get("info"));
                 log.warn("高德附近门店返回失败 endpoint=/place/around info={}", info);
-                throw new AmapPoiException("高德附近门店返回失败");
+                throw providerFailure(response,"高德附近门店返回失败");
             }
             List<NearbyPoi> pois = pois(response.get("pois"));
             long total = parseCount(scalarText(response.get("count")));
@@ -140,13 +140,13 @@ public class RestAmapPoiClient implements AmapPoiClient {
                     .queryParam("citylimit", true)
                     .queryParam("offset", pageSize)
                     .queryParam("page", page)
-                    .queryParam("extensions", "base")
+                    .queryParam("extensions", "all")
                     .build()).retrieve().body(String.class);
             JsonNode response = objectMapper.readTree(body);
             if (response == null || !"1".equals(scalarText(response.get("status")))) {
                 String info = response == null ? "empty" : scalarText(response.get("info"));
                 log.warn("高德城市门店返回失败 endpoint=/place/text info={}", info);
-                throw new AmapPoiException("高德城市门店返回失败");
+                throw providerFailure(response,"高德城市门店返回失败");
             }
             List<NearbyPoi> pois = pois(response.get("pois"));
             long total = parseCount(scalarText(response.get("count")));
@@ -170,6 +170,32 @@ public class RestAmapPoiClient implements AmapPoiClient {
                     exception.getClass().getSimpleName());
             throw new AmapPoiException("高德城市门店响应解析失败");
         }
+    }
+
+    @Override
+    public NearbyPoi detail(String poiId) {
+        if (!StringUtils.hasText(properties.getWebKey())) throw new AmapPoiException("高德 Web 服务 key 未配置");
+        try {
+            String body=restClient.get().uri(uri->uri.path("/place/detail")
+                    .queryParam("key",properties.getWebKey()).queryParam("id",poiId)
+                    .queryParam("extensions","all").build()).retrieve().body(String.class);
+            JsonNode response=objectMapper.readTree(body);
+            if(response==null||!"1".equals(scalarText(response.get("status"))))
+                throw providerFailure(response,"高德门店详情查询失败");
+            return pois(response.get("pois")).stream().filter(p->poiId.equals(p.poiId())).findFirst()
+                    .orElseThrow(()->new AmapPoiException("高德未返回该 POI 的有效门店详情"));
+        } catch (AmapPoiException error) {
+            throw error;
+        } catch (RuntimeException error) {
+            log.warn("高德门店详情查询失败 endpoint=/place/detail reason={}",error.getClass().getSimpleName());
+            throw new AmapPoiException("高德门店详情查询暂不可用");
+        }
+    }
+
+    private static AmapPoiException providerFailure(JsonNode response,String fallback) {
+        if(response!=null&&"10005".equals(scalarText(response.get("infocode"))))
+            return new AmapPoiException("AMAP_IP_NOT_ALLOWED","高德拒绝当前服务器 IP（10005），请检查 Web 服务 Key 的 IP 白名单");
+        return new AmapPoiException(fallback);
     }
 
     private static List<NearbyPoi> pois(JsonNode values) {
@@ -196,7 +222,7 @@ public class RestAmapPoiClient implements AmapPoiClient {
         return new NearbyPoi(id, name, scalarText(source.get("address")), scalarText(source.get("type")),
                 scalarText(source.get("typecode")), coordinates[0], coordinates[1],
                 distance(scalarText(source.get("distance"))), scalarText(source.get("cityname")),
-                scalarText(source.get("adcode")));
+                scalarText(source.get("adcode")), scalarText(source.get("tel")));
     }
 
     /** 高德空字段有时会返回 []；对预期标量的非标量值按缺失处理。 */

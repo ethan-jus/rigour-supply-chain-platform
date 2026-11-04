@@ -10,6 +10,7 @@ import java.sql.*;
 import java.time.Instant;
 import java.util.*;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,7 +28,11 @@ public class JdbcStorePoolStore implements StorePoolStore {
     private Filter filter(StoreScope scope,Query query,boolean cursor,Set<String> typeCodes) {
         var p=StoreScopeSql.compile(scope); var args=new ArrayList<Object>();
         args.add(scope.access().tenantId());args.add(scope.catalog().version());args.addAll(p.args());
-        StringBuilder sql=new StringBuilder("q.tenant_id=? AND q.admin_area_version=? AND q.record_status='ACTIVE' AND (").append(p.sql()).append(')');
+        StringBuilder sql=new StringBuilder("q.tenant_id=? AND q.admin_area_version=? AND (").append(p.sql()).append(')');
+        // Only the management view includes inactive archives; customer operations remain active-only.
+        if("ALL".equals(query.view())&&"crm:store:manage".equals(scope.access().action()))
+            condition(sql,args,"q.record_status",query.recordStatus());
+        else sql.append(" AND q.record_status='ACTIVE'");
         switch(query.view()) {
             case "PUBLIC" -> sql.append(" AND q.pool_type='PUBLIC'");
             case "MINE" -> {sql.append(" AND q.pool_type='PRIVATE' AND q.owner_employee_id=?");args.add(scope.access().employeeId());}
@@ -39,6 +44,16 @@ public class JdbcStorePoolStore implements StorePoolStore {
         condition(sql,args,"q.city_code",query.city());condition(sql,args,"q.county_code",query.county());
         condition(sql,args,"q.cooperation_status",query.cooperation());condition(sql,args,"q.customer_tier",query.tier());
         condition(sql,args,ACTIVITY,query.activity());condition(sql,args,"q.potential_level",query.potential());
+        condition(sql,args,"q.pool_type",query.pool());condition(sql,args,"q.phase",query.phase());
+        if(query.protection()!=null&&!query.protection().isBlank()) {
+            sql.append(" AND q.pool_type='PRIVATE'");
+            switch(query.protection()) {
+                case "DUE_SOON" -> sql.append(" AND current_o.hold_reason IS NULL AND q.deadline_at>UTC_TIMESTAMP(6) AND q.deadline_at<=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 24 HOUR)");
+                case "OVERDUE" -> sql.append(" AND current_o.hold_reason IS NULL AND q.deadline_at<=UTC_TIMESTAMP(6)");
+                case "HELD" -> sql.append(" AND current_o.hold_reason IS NOT NULL");
+                default -> throw new IllegalArgumentException("Unknown protection filter");
+            }
+        }
         if("__UNCLASSIFIED__".equals(query.storeType()))sql.append(" AND (s.store_type_code IS NULL OR s.store_type_code='')");
         else if(!typeCodes.isEmpty()) {
             sql.append(" AND s.store_type_code IN (").append(String.join(",",Collections.nCopies(typeCodes.size(),"?"))).append(')');
@@ -182,7 +197,8 @@ public class JdbcStorePoolStore implements StorePoolStore {
     private Row row(StoreScope scope,ResultSet rs)throws SQLException {
         var nodes=scope.nodes();String province=rs.getString("province_code"),city=rs.getString("city_code"),county=rs.getString("county_code");
         var cooldown=instant(rs,"cooldown_until");String blocked=null;
-        if(!"PUBLIC".equals(rs.getString("pool_type")))blocked="门店已被认领";
+        if(!"ACTIVE".equals(rs.getString("record_status")))blocked="门店档案非正常状态，不能认领";
+        else if(!"PUBLIC".equals(rs.getString("pool_type")))blocked="门店已被认领";
         else if(scope.access().employeeId()==null)blocked="账号尚未关联有效员工";
         else if(cooldown!=null&&cooldown.isAfter(Instant.now()))blocked="本人冷却中";
         else if(rs.getBigDecimal("longitude")==null||rs.getBigDecimal("latitude")==null||"PENDING_COUNTY".equals(rs.getString("area_resolution")))blocked="门店资料待完善";
@@ -331,11 +347,46 @@ public class JdbcStorePoolStore implements StorePoolStore {
         lock(scope,id);var old=detail(scope,id);
         if(old.revision()!=c.revision())throw new StateConflictException("门店资料已变化，请刷新");
         if(jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_event WHERE tenant_id=? AND request_id=?",Integer.class,scope.access().tenantId(),c.requestId())>0)throw new StateConflictException("修改请求已处理，请刷新");
+        var location=c.location();
+        if(location!=null) {
+            if(!scope.permitsArea(location.areaCode()))throw new AuthorizationDeniedException("store-area");
+            var chain=scope.ancestry(location.areaCode());
+            var province=chain.stream().filter(n->"PROVINCE".equals(n.level())).findFirst().orElseThrow();
+            var city=chain.stream().filter(n->"PREFECTURE".equals(n.level())).findFirst().orElse(null);
+            boolean county="COUNTY".equals(chain.getFirst().level());
+            String cityCode=city!=null?city.code():Set.of("110000","120000","310000","500000").contains(province.code())?province.code():null;
+            String resolution=county?"COUNTY":"LEGAL_CITY_LEAF";
+            jdbc.update("UPDATE crm_store_master SET admin_area_code=?,admin_area_version=?,area_resolution=?,longitude=?,latitude=?,coordinate_system=? WHERE tenant_id=? AND id=?",
+                    location.areaCode(),scope.catalog().version(),resolution,location.longitude(),location.latitude(),location.coordinateSystem(),scope.access().tenantId(),id);
+            jdbc.update("UPDATE crm_store_summary SET admin_area_code=?,admin_area_version=?,area_resolution=?,geo_region_code=?,province_code=?,city_code=?,county_code=? WHERE tenant_id=? AND store_id=?",
+                    location.areaCode(),scope.catalog().version(),resolution,province.regionCode(),province.code(),cityCode,county?location.areaCode():null,scope.access().tenantId(),id);
+        }
+        if(c.amapPoiId()!=null)bindPoi(scope,id,c.amapPoiId());
         jdbc.update("UPDATE crm_store_master SET name=?,address=?,public_phone=?,store_type_code=?,revision=revision+1,updated_at=UTC_TIMESTAMP(6),updated_by=? WHERE tenant_id=? AND id=?",
                 c.name().strip(),c.address().strip(),c.publicPhone(),c.storeTypeCode(),scope.access().userId(),scope.access().tenantId(),id);
         jdbc.update("UPDATE crm_store_summary SET revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE tenant_id=? AND store_id=?",scope.access().tenantId(),id);
-        jdbc.update("INSERT INTO crm_store_event(id,tenant_id,store_id,object_type,object_id,event_type,actor_user_id,actor_employee_id,occurred_at,before_data,after_data,reason,request_id,event_seq) VALUES(?,?,?,'STORE',?,'PROFILE_UPDATED',?,?,UTC_TIMESTAMP(6),JSON_OBJECT('name',?,'address',?,'publicPhone',?,'storeTypeCode',?),JSON_OBJECT('name',?,'address',?,'publicPhone',?,'storeTypeCode',?),?,?,1)",
-                IdWorker.getId(),scope.access().tenantId(),id,id,scope.access().userId(),scope.access().employeeId(),old.name(),old.address(),old.publicPhone(),old.storeTypeCode(),c.name().strip(),c.address().strip(),c.publicPhone(),c.storeTypeCode(),c.reason(),c.requestId());
+        jdbc.update("INSERT INTO crm_store_event(id,tenant_id,store_id,object_type,object_id,event_type,actor_user_id,actor_employee_id,occurred_at,before_data,after_data,reason,request_id,event_seq) VALUES(?,?,?,'STORE',?,'PROFILE_UPDATED',?,?,UTC_TIMESTAMP(6),JSON_OBJECT('name',?,'address',?,'publicPhone',?,'storeTypeCode',?,'areaCode',?,'longitude',?,'latitude',?,'coordinateSystem',?,'amapPoiId',?),JSON_OBJECT('name',?,'address',?,'publicPhone',?,'storeTypeCode',?,'areaCode',?,'longitude',?,'latitude',?,'coordinateSystem',?,'amapPoiId',?),?,?,1)",
+                IdWorker.getId(),scope.access().tenantId(),id,id,scope.access().userId(),scope.access().employeeId(),
+                old.name(),old.address(),old.publicPhone(),old.storeTypeCode(),old.areaCode(),old.longitude(),old.latitude(),old.coordinateSystem(),old.primaryPoi(),
+                c.name().strip(),c.address().strip(),c.publicPhone(),c.storeTypeCode(),
+                location==null?old.areaCode():location.areaCode(),location==null?old.longitude():location.longitude(),
+                location==null?old.latitude():location.latitude(),location==null?old.coordinateSystem():location.coordinateSystem(),
+                c.amapPoiId()==null?old.primaryPoi():c.amapPoiId(),c.reason(),c.requestId());
+    }
+    private void bindPoi(StoreScope scope,String storeId,String poiId) {
+        String tenant=scope.access().tenantId(),actor=scope.access().userId();
+        var existing=jdbc.queryForList("SELECT store_id FROM crm_store_identity WHERE tenant_id=? AND provider_code='AMAP' AND identity_scope='CN' AND external_id=? FOR UPDATE",tenant,poiId);
+        if(!existing.isEmpty()&&!storeId.equals(existing.getFirst().get("store_id").toString()))
+            throw new StateConflictException("该高德 POI 已关联其他门店，请先核验重复档案，不能直接覆盖");
+        jdbc.update("UPDATE crm_store_identity SET status_code='INACTIVE',revision=revision+1,updated_at=UTC_TIMESTAMP(6),updated_by=? WHERE tenant_id=? AND store_id=? AND provider_code='AMAP' AND identity_scope='CN' AND external_id<>? AND status_code='ACTIVE'",actor,tenant,storeId,poiId);
+        if(existing.isEmpty()) {
+            try {
+                jdbc.update("INSERT INTO crm_store_identity(id,tenant_id,store_id,provider_code,identity_scope,external_id,acquisition_method,observed_at,verified_at,created_at,updated_at,created_by,updated_by) VALUES(?,?,?,'AMAP','CN',?,'API_CONFIRM',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),?,?)",
+                        IdWorker.getId(),tenant,storeId,poiId,actor,actor);
+            } catch(DuplicateKeyException e) {
+                throw new StateConflictException("该高德 POI 已被关联，请刷新后核验重复档案");
+            }
+        } else jdbc.update("UPDATE crm_store_identity SET status_code='ACTIVE',observed_at=UTC_TIMESTAMP(6),verified_at=UTC_TIMESTAMP(6),revision=revision+1,updated_at=UTC_TIMESTAMP(6),updated_by=? WHERE tenant_id=? AND provider_code='AMAP' AND identity_scope='CN' AND external_id=?",actor,tenant,poiId);
     }
     @Override
     public Coverage coverage(StoreScope scope,Query query,Set<String> typeCodes) {

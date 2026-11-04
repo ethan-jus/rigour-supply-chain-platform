@@ -3,9 +3,10 @@ package com.rigour.order.domain.enums;
 /** 销售订单业务状态；数据库只存 code，页面展示名称来自数据字典。 */
 public enum SalesOrderStatus {
     DRAFT("DRAFT", "草稿"),
-    SUBMITTED("SUBMITTED", "已提交"),
+    SUBMITTED("SUBMITTED", "进行中"),
     COMPLETED("COMPLETED", "已完成"),
-    CANCELLED("CANCELLED", "已取消");
+    CANCELLED("CANCELLED", "已取消"),
+    DELETED("DELETED", "已删除");
 
     private final String code;
     private final String description;

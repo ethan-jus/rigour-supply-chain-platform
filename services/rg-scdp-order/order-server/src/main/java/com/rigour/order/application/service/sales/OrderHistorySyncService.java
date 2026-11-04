@@ -78,6 +78,20 @@ public class OrderHistorySyncService {
         return store.historicalReceiptStatus(a.tenantId().toString(), c);
     }
 
+    public Intake receiptVouchers(ReceiptVouchers c) {
+        var a = actor(true, true);
+        return store.receiptVouchers(a.tenantId().toString(), a.principalId().toString(), c);
+    }
+
+    public java.util.List<VoucherBackfillCandidate> claimVoucherBackfill(VoucherBackfillClaim c) {
+        var a = actor(true, true);
+        return store.claimVoucherBackfill(a.tenantId().toString(), c);
+    }
+    public void finishVoucherBackfill(VoucherBackfillResult c) {
+        var a = actor(true, true);
+        store.finishVoucherBackfill(a.tenantId().toString(), c);
+    }
+
     public void allocate(Allocate c) {
         var a = actor(true, false);
         store.allocate(a.tenantId().toString(), a.principalId().toString(), c);

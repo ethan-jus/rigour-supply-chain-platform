@@ -51,12 +51,18 @@ rigour:
   integration:
     product-media:
       worker-enabled: false
+      # DEV 与生产共用私桶时，资金凭证必须使用独立路径。
+      fund-attachment-prefix: "dev/fund-attachments"
       cos:
         region: "ap-beijing"
         bucket: "rigour-sales-recordings-1361731487"
         secret-id: "${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_ID}"
         secret-key: "${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_SECRET_KEY}"
     dhb:
+      # DEV 仅验收单笔，不维护全量测试数据。
+      voucher-backfill:
+        enabled: false
+        run-limit: 1
       orchestration:
         enabled: false
         # 仅用于定时统一同步（本环境 enabled=false）。订单页「同步订单」按钮走 incremental-window-from，

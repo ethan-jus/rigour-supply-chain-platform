@@ -102,6 +102,12 @@ public class HrOrganizationService {
         return saved;
     }
 
+    public void deleteEmployee(Long id, int revision) {
+        CallerIdentity actor = actor("hr:employee:delete");
+        if (id == null || id <= 0 || revision < 1) throw bad("员工 ID 或版本无效");
+        store.deleteEmployee(actor.tenantId().toString(), id, revision, actor.principalId().toString());
+    }
+
     public List<HrAssignmentView> assignments(Long id) {
         CallerIdentity actor = actor("hr:employee:read");
         if (id == null || id <= 0) throw bad("员工 ID 无效");

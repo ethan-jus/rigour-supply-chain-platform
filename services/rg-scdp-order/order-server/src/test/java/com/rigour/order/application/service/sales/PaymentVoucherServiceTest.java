@@ -31,6 +31,10 @@ class PaymentVoucherServiceTest {
         assertThatThrownBy(() -> service.checkTransaction(" ")).isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.checkTransaction("x".repeat(129))).isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.vouchers(0)).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.recognize(1)).isInstanceOf(AuthorizationDeniedException.class);
+        TestAuthorizationContext.set(new CallerIdentity("TENANT",USER_ID,TENANT_ID,USER_ID,null,UUID.randomUUID(),0,0,0,Set.of(),Set.of("order:read","order:payment:check")));
+        service.recognize(1);
+        verify(store).requestRecognition(TENANT_ID.toString(),1);
         service.checkTransaction(" TXN ");
         verify(store).transactionMatches(TENANT_ID.toString(), "TXN");
     }

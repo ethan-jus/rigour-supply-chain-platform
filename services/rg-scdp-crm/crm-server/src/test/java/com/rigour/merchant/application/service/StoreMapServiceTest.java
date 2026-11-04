@@ -18,7 +18,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 class StoreMapServiceTest {
     StoreReferenceClient references=mock(StoreReferenceClient.class);
     StorePoolStore store=mock(StorePoolStore.class);
-    StorePoolService service=new StorePoolService(references,mock(CrmEmployeeClient.class),store);
+    StorePoolService service=new StorePoolService(references,mock(CrmEmployeeClient.class),store,mock(StorePoiClient.class));
     Query query(String type){return new Query("PUBLIC",null,null,null,null,null,null,null,null,null,null,20,type);}
     @BeforeEach void scope(){
         when(references.access("crm:pool:public-read")).thenReturn(new StoreAccessView("T","U","crm:pool:public-read",1,"1","E1","销售","10",Set.of("crm:pool:public-read"),List.of(new StoreAccessView.Grant("ALL",List.of(),false,true,List.of())),false,List.of()));
@@ -58,5 +58,22 @@ class StoreMapServiceTest {
         verify(api).map(query.capture(),window.capture());
         assertThat(query.getValue().storeType()).isEqualTo("SPORTS");assertThat(window.getValue()).isEqualTo(new MapWindow(120d,30d,121d,31d,12d));
         verify(api,never()).list(any());
+    }
+    @Test void managementFiltersBindAndCannotExposeInactiveStoresThroughOperationalViews()throws Exception {
+        var api=mock(StorePoolService.class);
+        var mvc=MockMvcBuilders.standaloneSetup(new StorePoolController(api)).build();
+        mvc.perform(get("/api/v1/crm/stores").param("view","ALL").param("size","20")
+                .param("pool","PRIVATE").param("recordStatus","SUSPENDED")
+                .param("phase","FOLLOW_UP").param("protection","HELD")).andExpect(status().isOk());
+        var query=ArgumentCaptor.forClass(Query.class);verify(api).list(query.capture());
+        assertThat(query.getValue().pool()).isEqualTo("PRIVATE");
+        assertThat(query.getValue().recordStatus()).isEqualTo("SUSPENDED");
+        assertThat(query.getValue().phase()).isEqualTo("FOLLOW_UP");
+        assertThat(query.getValue().protection()).isEqualTo("HELD");
+        StorePoolService.validate(query.getValue());
+        assertThatThrownBy(()->StorePoolService.validate(new Query("PUBLIC",null,null,null,null,null,null,null,null,null,
+                null,20,null,null,"SUSPENDED",null,null))).isInstanceOf(RequestValidationException.class);
+        assertThatThrownBy(()->StorePoolService.validate(new Query("MINE",null,null,null,null,null,null,null,null,null,
+                null,20,null,null,null,null,"INVALID"))).isInstanceOf(RequestValidationException.class);
     }
 }

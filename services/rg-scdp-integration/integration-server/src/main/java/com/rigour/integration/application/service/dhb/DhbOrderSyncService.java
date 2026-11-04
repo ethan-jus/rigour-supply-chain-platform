@@ -224,12 +224,16 @@ public final class DhbOrderSyncService {
             new Observation("DHB_UNIT", "orderLine.sourceUnit", "件", "件"));
     /** 订货宝订单状态 → 内部状态码；字典以内部码为键，页面按内部码解析展示名称。 */
     private static final List<Observation> ORDER_STATUS_DICTIONARY_ITEMS = List.of(
+            new Observation("DHB_ORDER_STATUS", "order.status", "PENDING_PRICING", "待核价"),
+            new Observation("DHB_ORDER_STATUS", "order.status", "PENDING_REVIEW", "待审核"),
             new Observation("DHB_ORDER_STATUS", "order.status", "PENDING_OUTBOUND", "待出库"),
             new Observation("DHB_ORDER_STATUS", "order.status", "PENDING_SHIPPED", "待发货"),
             new Observation("DHB_ORDER_STATUS", "order.status", "RECEIVED", "待收货"),
             new Observation("DHB_ORDER_STATUS", "order.status", "COMPLETED", "已完成"),
+            new Observation("DHB_ORDER_STATUS", "order.status", "FORCE_COMPLETED", "强制完成"),
             new Observation("DHB_ORDER_STATUS", "order.status", "CANCELLED", "已取消"),
-            new Observation("DHB_ORDER_STATUS", "order.status", "RETURNED", "已退货"));
+            new Observation("DHB_ORDER_STATUS", "order.status", "RETURNED", "已退货"),
+            new Observation("DHB_ORDER_STATUS", "order.status", "DELETED", "已删除"));
     private static final List<Observation> UNIT_DICTIONARY_ITEMS = unitDictionaryItems();
     private static final Map<String, String> UNIT_ALIASES = Map.ofEntries(
             Map.entry("箱", "BOX"),
@@ -258,6 +262,10 @@ public final class DhbOrderSyncService {
     @org.springframework.beans.factory.annotation.Autowired
     private com.rigour.integration.application.service.DictionarySourceMappingService dictionaryMappings;
     private final int detailConcurrency;
+    @org.springframework.beans.factory.annotation.Value("${rigour.integration.dhb.voucher-backfill.enabled:true}")
+    private boolean voucherBackfillEnabled = true;
+    @org.springframework.beans.factory.annotation.Value("${rigour.integration.dhb.voucher-backfill.run-limit:2147483647}")
+    private int voucherBackfillRunLimit = Integer.MAX_VALUE;
     private final ProductMediaStorage fundAttachmentStorage;
     private final DhbAttachmentObjectKeyFactory fundAttachmentKeyFactory;
     private final CrmCustomerAttributionClient crmCustomerAttributionClient;
@@ -433,6 +441,15 @@ public final class DhbOrderSyncService {
                         employeeCache, customerRegionCache, sourceOrderLocks));
             }
 
+            if (voucherBackfillEnabled && replayTarget == null && (selectedScope == null || "PAYMENT".equals(selectedScope))) {
+                try {
+                    var repaired = backfillVouchers(caller,taskId,20,progress);
+                    store.recordSyncLog(caller.tenantId(),taskId,started.runId(),"INFO",repaired.message(),null);
+                } catch(RuntimeException error) {
+                    store.recordSyncLog(caller.tenantId(),taskId,started.runId(),"WARN","缺图补查暂未完成，下次继续","DHB_VOUCHER_BACKFILL_PENDING");
+                }
+            }
+
             boolean durable = incrementalWork != null && replayTarget == null
                     && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT").contains(selectedScope == null ? "" : selectedScope);
             long remaining = durable ? incrementalWork.pendingCount(caller.tenantId(), task.connectorId(), selectedScope) : 0;
@@ -542,13 +559,42 @@ public final class DhbOrderSyncService {
                 case "SALES_ORDER" -> projectOrder(caller, task, runId,
                         WORK_JSON.readValue(item.payload(), OrderSummary.class), employees, regions);
                 case "RECEIPT" -> projectReceipt(caller, task, runId, WORK_JSON.readValue(item.payload(), Receipt.class));
-                case "PAYMENT" -> projectPayment(caller, task, runId, WORK_JSON.readValue(item.payload(), Payment.class));
+                case "PAYMENT" -> retryPayment(caller, task, runId, WORK_JSON.readValue(item.payload(), Payment.class));
                 default -> throw new IllegalArgumentException("不支持的重试对象");
             });
             counts.fetched++;
             counts.add(outcome);
             page.completed(outcome);
         }
+    }
+
+    private ProjectionOutcome retryPayment(CallerIdentity caller, SyncTaskContext task, UUID runId, Payment previous) {
+        try {
+            return projectPayment(caller, task, runId, refreshPayment(task.connector(), firstNonBlank(previous.paymentNumber(), previous.sourceId()), previous.orderNumber()));
+        } catch (RuntimeException error) {
+            String paymentNo = firstNonBlank(previous.paymentNumber(), previous.sourceId());
+            recordFundPaymentRejected(caller, task, runId, null, paymentNo, "DHB_PAYMENT_REFRESH_FAILED",
+                    safeMessage(error), "PROJECTION", Map.of("sourcePaymentNo", paymentNo), Map.of());
+            return ProjectionOutcome.REJECTED;
+        }
+    }
+
+    private Payment refreshPayment(Connector connector, String paymentNo, String orderNumber) {
+        // Raw 中的签名链接只作审计；重试重新读取来源，并按付款单号精确匹配。
+        for (String status : List.of("pend_receipted", "pend_receipt", "canceled")) {
+            PageRequest request = PageRequest.first(DEFAULT_PAGE_SIZE);
+            for (int pageNo = 0; pageNo < 100; pageNo++) {
+                var page = client.getPayments(connector, new PaymentQuery(request, orderNumber, null, status));
+                var matches = page.items().stream()
+                        .filter(p -> Objects.equals(paymentNo, firstNonBlank(p.paymentNumber(), p.sourceId()))).toList();
+                if (matches.size() > 1) throw new IllegalStateException("DHB_PAYMENT_REFRESH_AMBIGUOUS: 来源付款单号不唯一");
+                if (matches.size() == 1) return matches.getFirst();
+                if (!page.hasNext()) break;
+                if (pageNo == 99) throw new IllegalStateException("DHB_PAYMENT_REFRESH_PAGE_LIMIT: 刷新来源尚未读取完毕");
+                request = page.nextRequest();
+            }
+        }
+        throw new IllegalStateException("DHB_PAYMENT_REFRESH_MISSING: 未找到来源付款单，保留待重试，不能使用过期附件链接");
     }
 
     private void ensureProductUnitDictionary(UUID tenantId, UUID taskId, UUID runId) {
@@ -662,23 +708,23 @@ public final class DhbOrderSyncService {
 
         RawObjectPersistResult raw = null;
         try {
+            String summaryState = inactiveOrderStatus(summary.status(), map(summary.attributes()));
             if (protectHistory(caller)) {
                 Instant business = firstInstant(Map.of(), map(summary.attributes()), null, "OrderDate", "order_date");
-                if (business == null) throw new ProjectionRejected("DHB_ORDER_BUSINESS_TIME_MISSING",
+                if (business == null && summaryState == null) throw new ProjectionRejected("DHB_ORDER_BUSINESS_TIME_MISSING",
                         "定时同步缺少原下单日期，需核对后处理", "DETAIL", Map.of(), Map.of("sourceOrderNo", sourceOrderNo));
-                if (business.isBefore(HISTORY_CUTOVER)) {
+                if (business != null && business.isBefore(HISTORY_CUTOVER)) {
                     var mapped = store.findActiveMapping(caller.tenantId(), task.connectorId(),
                             SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
                     // 已关联历史单仍接收金额和状态变化；Order 保留原业务日期和回款凭证。
                     if (mapped == null || mapped.internalObjectId() == null) return ProjectionOutcome.DUPLICATE;
                 }
             }
-            if (isCancelled(dhbOrderStatusCode(firstNonBlank(summary.status(),
-                    first(map(summary.attributes()), "OrderStatus", "orderStatus", "StatusName", "status"))))) {
+            if (summaryState != null) {
                 raw = store.persistRawObject(caller.tenantId(), task.connectorId(), runId,
                         "ORDER", sourceOrderNo, summary.updatedAt() == null ? null : summary.updatedAt().toString(),
                         summary.updatedAt(), map(summary.attributes()), Instant.now());
-                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw);
+                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw, summaryState, summary, null);
             }
             OrderDetail detail = client.getOrderContent(task.connector(), sourceOrderNo);
             Map<String, Object> payload = combinedPayload(summary, detail);
@@ -686,15 +732,14 @@ public final class DhbOrderSyncService {
                     RAW_OBJECT_ORDER_DETAIL, sourceOrderNo,
                     summary == null || summary.updatedAt() == null ? null : summary.updatedAt().toString(),
                     summary == null ? null : summary.updatedAt(), payload, Instant.now());
-            if (isCancelled(dhbOrderStatusCode(firstNonBlank(detail.status(),
-                    first(map(detail.attributes()), "OrderStatus", "orderStatus", "StatusName", "status"))))) {
-                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw);
+            String detailState = inactiveOrderStatus(detail.status(), map(detail.attributes()));
+            if (detailState != null) {
+                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw, detailState, summary, detail);
             }
-            // 订货宝已完成订单无法取消；用户以结算金额清零表示取消，缺失金额不能视为零。
-            if (zeroSettlementOrder(detail.attributes())) {
-                store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
-                        "订货宝零金额无效订单已排除 sourceOrderNo=" + sourceOrderNo, "DHB_ZERO_AMOUNT_ORDER");
-                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw);
+            // 只有来源明确的零结算额才取消；缺失金额不能默认为零。
+            BigDecimal settlement = sourceSettlementAmount(detail, summary);
+            if (settlement != null && settlement.signum() == 0) {
+                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw, "CANCELLED", summary, detail);
             }
             syncObservedUnitDictionaries(caller.tenantId(), task.taskId(), runId,
                     "orderLine.sourceUnit", payload);
@@ -778,11 +823,17 @@ public final class DhbOrderSyncService {
     }
 
     private ProjectionOutcome cancelSourceOrder(CallerIdentity caller, SyncTaskContext task, UUID runId,
-                                                String sourceOrderNo, RawObjectPersistResult raw) {
+                                                String sourceOrderNo, RawObjectPersistResult raw, String status,
+                                                OrderSummary summary, OrderDetail detail) {
+        Map<String, Object> content = map(detail == null ? null : detail.attributes());
+        Map<String, Object> list = map(summary.attributes());
         var result = orderProjectionClient.cancelSourceOrder(orderServiceCaller(caller.tenantId()),
-                new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(task.connectorId(), sourceOrderNo));
+                new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(task.connectorId(), sourceOrderNo,
+                        status, firstInstant(content, list, summary.createdAt(), "OrderDate", "order_date", "createdAt"),
+                        sourceSettlementAmount(detail, summary),
+                        first(content, list, "ClientName", "clientName", "customerName"), summary.updatedAt()));
         if (result == null) throw new IllegalStateException("来源取消接口未返回结果");
-        if (!"CANCELLED".equals(result.state())) {
+        if (!Set.of("CANCELLED", "DELETED", "STALE").contains(result.state())) {
             recordRejected(caller, task, runId, raw, sourceOrderNo, "DHB_CANCELLATION_REVIEW",
                     result.reason(), "MAPPING", Map.of("required", "取消部分核对"), Map.of("sourceOrderNo", sourceOrderNo));
             return ProjectionOutcome.REVIEW;
@@ -790,7 +841,7 @@ public final class DhbOrderSyncService {
         store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
         resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
         store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
-                "订货宝取消订单已排除业务投影 sourceOrderNo=" + sourceOrderNo, null);
+                "订货宝失效订单已保留并排除统计 sourceOrderNo=" + sourceOrderNo, null);
         return ProjectionOutcome.CHANGED;
     }
 
@@ -852,11 +903,12 @@ public final class DhbOrderSyncService {
     private void syncPayments(CallerIdentity caller, SyncTaskContext task, UUID runId,
                               Window window, int pageSize, int pageLimit, Counts counts,
                               java.util.function.Consumer<String> progress) {
+        for (String sourceStatus : List.of("pend_receipted", "pend_receipt", "canceled")) {
         PageRequest pageRequest = PageRequest.first(pageSize);
         int pages = 0;
         while (true) {
             Page<Payment> page = client.getPayments(task.connector(),
-                    new PaymentQuery(pageRequest, null, timeWindow(window), "all"));
+                    new PaymentQuery(pageRequest, null, timeWindow(window), sourceStatus));
             pages++;
             counts.fetched += page.items().size();
             var items = workItems(page.items());
@@ -873,6 +925,7 @@ public final class DhbOrderSyncService {
             }
             pageRequest = page.nextRequest();
         }
+    }
     }
 
     private void syncTransferOrders(CallerIdentity caller, SyncTaskContext task, UUID runId,
@@ -1041,6 +1094,8 @@ public final class DhbOrderSyncService {
                                                   Map<Long, Optional<String>> customerRegionCache,
                                                   Map<String, Object> sourceOrderLocks) {
         return switch (replayTarget.sourceObjectType()) {
+            case SOURCE_OBJECT_FUND_PAYMENT ->
+                    projectPayment(caller, task, runId, refreshPayment(task.connector(), replayTarget.sourceId(), null));
             case SOURCE_OBJECT_SALES_ORDER ->
                     projectOrder(caller, task, runId, replayOrderSummary(caller.tenantId(), task.connectorId(), replayTarget.sourceId()),
                             employeeCache, customerRegionCache);
@@ -1222,7 +1277,8 @@ public final class DhbOrderSyncService {
             String normalizedReceiptStatus=receiptIntakeStatus(receipt);
             var receiptCommand = new com.rigour.order.api.v1.model.HistorySyncModels.Receipt(task.connectorId(),sourceReceiptNo,
                     receiptSourceOrderNo(receipt,attributes),receiptCustomer==null?null:receiptCustomer.internalObjectId(),
-                    receipt.amount(),receiptBusinessTime(receipt,sourceReceiptNo),normalizedReceiptStatus,receipt.updatedAt(),raw.payloadChecksum());
+                    receipt.amount(),receiptBusinessTime(receipt,sourceReceiptNo),normalizedReceiptStatus,receipt.updatedAt(),raw.payloadChecksum(),
+                    sourceConfirmedBy(normalizedReceiptStatus, attributes), sourceConfirmedAt(normalizedReceiptStatus, null, attributes));
             var receiptIntake = historicalStatusOnly
                     ? orderProjectionClient.syncHistoricalReceiptStatus(orderServiceCaller(caller.tenantId()), receiptCommand)
                     : orderProjectionClient.registerReceipt(orderServiceCaller(caller.tenantId()), receiptCommand);
@@ -1326,6 +1382,93 @@ public final class DhbOrderSyncService {
         }
     }
 
+    public boolean voucherBackfillEnabled() { return voucherBackfillEnabled; }
+
+    /** Only attachments are projected; no source amounts, dates or business checkpoints are replayed. */
+    public com.rigour.integration.api.v1.model.DhbSyncOrchestrationStepView backfillVouchers(
+            CallerIdentity caller, UUID taskId, int maxRecords, java.util.function.Consumer<String> progress) {
+        var task = store.loadTask(caller.tenantId(),taskId); validateTask(task);
+        long scanned=0, filled=0, missing=0, failed=0;
+        Instant scanStartedAt=Instant.now();
+        // Claim one at a time so slow source responses cannot expire a whole page of leases.
+        while (scanned < Math.min(maxRecords,Math.max(1,voucherBackfillRunLimit))) {
+            var candidates=orderProjectionClient.claimVoucherBackfill(orderServiceCaller(caller.tenantId()),
+                    new com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillClaim(task.connectorId(),1,scanStartedAt));
+            if(candidates==null || candidates.isEmpty()) break;
+            var candidate=candidates.getFirst(); String state;
+            try { state=backfillVoucher(caller,task,candidate); }
+            catch(ProjectionRejected error) { state="DHB_VOUCHER_RECEIPT_MAPPING_PENDING".equals(error.code()) ? "MAPPING_MISSING" : "FAILED"; }
+            catch(RuntimeException error) { state="FAILED"; }
+            orderProjectionClient.finishVoucherBackfill(orderServiceCaller(caller.tenantId()),
+                    new com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillResult(task.connectorId(),candidate.paymentId(),candidate.leaseToken(),state));
+            scanned++;
+            if("SYNCED".equals(state)) filled++; else if("FAILED".equals(state)) failed++; else missing++;
+            progress.accept("补齐凭证：已检查 "+scanned+"，已补 "+filled+"，来源待补 "+missing+"，失败 "+failed);
+        }
+        return new com.rigour.integration.api.v1.model.DhbSyncOrchestrationStepView("ORDER","VOUCHER_BACKFILL",
+                failed>0 ? "FAILED" : missing>0 || scanned>=Math.min(maxRecords,Math.max(1,voucherBackfillRunLimit)) ? "SUCCEEDED_WITH_WARNINGS" : "SUCCEEDED", null,scanned,filled,missing,Map.of(),
+                "本轮已检查 "+scanned+" 笔，已补 "+filled+" 笔；来源缺图/关联待补 "+missing+" 笔，失败 "+failed+" 笔。"
+                        +(scanned>=Math.min(maxRecords,Math.max(1,voucherBackfillRunLimit)) ? "已达本轮上限，未处理记录下次继续。" : "")
+                        +"缺图次日复查，失败稍后重试；OCR后台自动处理。",
+                0L,0L,filled,0L,failed);
+    }
+
+    private String backfillVoucher(CallerIdentity caller, SyncTaskContext task,
+            com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillCandidate candidate) {
+        if(candidate.receipts().isEmpty()) return "MAPPING_MISSING";
+        boolean filled=false; String missing="SOURCE_MISSING";
+        for(var ref:candidate.receipts()) {
+            if(blank(ref.receiptNo()) || blank(ref.sourceOrderNo())) { missing="MAPPING_MISSING";continue; }
+            for(String status:List.of("pend_receipted","pend_receipt","canceled")) {
+                PageRequest request=PageRequest.first(DEFAULT_PAGE_SIZE);
+                for(int pageNo=0;pageNo<100;pageNo++) {
+                    var page=client.getPayments(task.connector(),new PaymentQuery(request,ref.sourceOrderNo(),null,status));
+                    for(var payment:page.items()) {
+                        // An order may have many receipts: exact receipt AND order are mandatory.
+                        if(!Objects.equals(ref.receiptNo(),payment.receiptNumber()) || !Objects.equals(ref.sourceOrderNo(),payment.orderNumber())) continue;
+                        if(receiptCancelled(payment.status())) { missing="SOURCE_CANCELLED";continue; }
+                        var attributes=map(payment.attributes());
+                        if(!attributes.containsKey("resource") || sourceAttachmentRefs(attributes).isEmpty()) { missing="SOURCE_EMPTY";continue; }
+                        syncPaymentVouchers(caller,task,payment,firstNonBlank(payment.paymentNumber(),payment.sourceId()),attributes);
+                        filled=true;
+                    }
+                    if(!page.hasNext()) break;
+                    if(pageNo==99) throw new IllegalStateException("DHB_VOUCHER_PAGE_LIMIT");
+                    request=page.nextRequest();
+                }
+            }
+        }
+        return filled ? "SYNCED" : missing;
+    }
+
+    private void syncPaymentVouchers(CallerIdentity caller, SyncTaskContext task, Payment payment,
+                                     String sourcePaymentNo, Map<String, Object> attributes) {
+        syncPaymentVouchers(caller, task, payment, sourcePaymentNo, attributes, null);
+    }
+
+    private void syncPaymentVouchers(CallerIdentity caller, SyncTaskContext task, Payment payment,
+                                     String sourcePaymentNo, Map<String, Object> attributes, List<String> archivedKeys) {
+        if (!attributes.containsKey("resource") && !receiptCancelled(payment.status())) return;
+        String status = verifiedReceiptStatus(payment.status());
+        boolean cancelled = "CANCELLED".equals(status);
+        if (!cancelled && !attributes.containsKey("resource")) return;
+        if (!cancelled && blank(payment.receiptNumber())) {
+            if (sourceAttachmentRefs(attributes).isEmpty()) return;
+            throw new ProjectionRejected("DHB_VOUCHER_RECEIPT_MAPPING_PENDING",
+                    "付款凭证缺少关联收款单号，不能仅凭订单号匹配回款", "MAPPING", Map.of("required", "ReceiptsNum"),
+                    Map.of("sourcePaymentNo", sourcePaymentNo));
+        }
+        var keys = cancelled ? List.<String>of() : archivedKeys != null ? archivedKeys
+                : sourceAttachmentKeys(task.connector(), sourcePaymentNo, attributes);
+        var result = orderProjectionClient.syncReceiptVouchers(orderServiceCaller(caller.tenantId()),
+                new com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers(task.connectorId(),
+                        payment.receiptNumber(), sourcePaymentNo, payment.orderNumber(),
+                        cancelled ? "CANCELLED" : "CONFIRMED".equals(status) ? "CONFIRMED" : "PENDING", keys));
+        if (result == null || !"SYNCED".equals(result.state()))
+            throw new ProjectionRejected("DHB_VOUCHER_RECEIPT_MAPPING_PENDING", "凭证已保存至自有存储，等待来源收款单关联后重试",
+                    "MAPPING", Map.of("required", "receipt mapping"), Map.of("sourcePaymentNo", sourcePaymentNo));
+    }
+
     private ProjectionOutcome projectPayment(CallerIdentity caller, SyncTaskContext task,
                                              UUID runId, Payment payment) {
         Map<String, Object> attributes = map(payment == null ? null : payment.attributes());
@@ -1344,7 +1487,10 @@ public final class DhbOrderSyncService {
             if (protectHistory(caller)) {
                 Instant business = sourceBusinessTime("DHB_PAYMENT_BUSINESS_TIME_MISSING",
                         "缺少原付款日期，无法确认历史边界", "sourcePaymentNo", sourcePaymentNo, payment.transactionAt());
-                if (business.isBefore(HISTORY_CUTOVER)) return ProjectionOutcome.DUPLICATE;
+                if (business.isBefore(HISTORY_CUTOVER)) {
+                    syncPaymentVouchers(caller, task, payment, sourcePaymentNo, attributes);
+                    return ProjectionOutcome.DUPLICATE;
+                }
             }
             Instant sourceUpdatedAt = firstNonNull(
                     payment == null ? null : payment.transactionAt(),
@@ -1362,6 +1508,7 @@ public final class DhbOrderSyncService {
             if (existing != null && existing.internalObjectId() != null
                     && Objects.equals(existing.payloadChecksum(), raw.payloadChecksum())
                     && fundDocumentProjectionComplete(current, "PAYMENT")) {
+                syncPaymentVouchers(caller, task, payment, sourcePaymentNo, attributes);
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
                 resolveProjectionIssues(caller, SOURCE_OBJECT_FUND_PAYMENT, sourcePaymentNo);
                 store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "DEBUG",
@@ -1378,6 +1525,7 @@ public final class DhbOrderSyncService {
                             sourcePaymentNo, sourcePaymentNo, "ORDER", "FUND_DOCUMENT", projected.id(),
                             projected.documentNo(), "ACTIVE", runId, Instant.now(), raw.payloadChecksum(),
                             null, "订货宝付款单已投影到自研资金付款单"));
+            syncPaymentVouchers(caller, task, payment, sourcePaymentNo, attributes, prepared.command().sourceAttachmentKeys());
             store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
             resolveProjectionIssues(caller, SOURCE_OBJECT_FUND_PAYMENT, sourcePaymentNo);
             store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "INFO",
@@ -1405,7 +1553,7 @@ public final class DhbOrderSyncService {
             current = orderProjectionClient.salesOrder(serviceCaller, existing.internalObjectId());
         }
         if (current != null) {
-            if ("CANCELLED".equalsIgnoreCase(current.orderStatusCode())) {
+            if (Set.of("CANCELLED", "DELETED").contains(current.orderStatusCode())) {
                 if (prepared.cancelled()) {
                     return ensureSalesOrderSourceProjection(serviceCaller, current, prepared);
                 }
@@ -1468,26 +1616,26 @@ public final class DhbOrderSyncService {
         return ensureSalesOrderBusinessStatus(serviceCaller, projected, expected);
     }
 
-    /**
-     * 来源已完成但业务状态仍停在「已提交」的单据（例如历史同步创建时就已完成）在这里补推进；
-     * 来源状态到业务状态的映射只维护在订单服务，这里只触发幂等补写。
-     */
+    /** 相同来源内容重试也要补齐旧映射留下的主状态；业务转换由 Order 执行。 */
     private SalesOrderDetailView ensureSalesOrderBusinessStatus(
             CallerIdentity serviceCaller, SalesOrderDetailView current, SalesOrderCommand expected) {
-        String expectedSourceStatus = expected.sourceStatusCode();
-        if (current == null
-                || expectedSourceStatus == null
-                || !"COMPLETED".equalsIgnoreCase(expectedSourceStatus.trim())
-                || "COMPLETED".equalsIgnoreCase(current.orderStatusCode())
-                || "CANCELLED".equalsIgnoreCase(current.orderStatusCode())
-                || salesOrderDraft(current)) {
-            return current;
-        }
+        if (current == null || salesOrderBusinessStatusComplete(current, expected)) return current;
         return orderProjectionClient.updateSalesOrderSourceStatus(
-                serviceCaller,
-                current.id(),
-                new SalesOrderSourceStatusCommand(
-                        current.sourceStatusCode(), current.revision()));
+                serviceCaller, current.id(),
+                new SalesOrderSourceStatusCommand(expected.sourceStatusCode(), current.revision()));
+    }
+
+    private static boolean salesOrderBusinessStatusComplete(SalesOrderDetailView current, SalesOrderCommand expected) {
+        if (Set.of("COMPLETED", "CANCELLED", "DELETED").contains(current.orderStatusCode())) return true;
+        String source = expected.sourceStatusCode();
+        if (source == null) return true;
+        String desired = switch (source) {
+            case "PENDING_PRICING", "PENDING_REVIEW" -> "DRAFT";
+            case "PENDING_OUTBOUND", "PENDING_SHIPPED", "RECEIVED" -> "SUBMITTED";
+            case "COMPLETED", "FORCE_COMPLETED", "RETURNED" -> "COMPLETED";
+            default -> current.orderStatusCode();
+        };
+        return Objects.equals(current.orderStatusCode(), desired);
     }
 
     private void ensureSalesOrderMapping(CallerIdentity caller, SyncTaskContext task, UUID runId,
@@ -1585,7 +1733,8 @@ public final class DhbOrderSyncService {
             return false;
         }
         if (expected == null) return true;
-        if (!salesOrderSourceProjectionComplete(current, expected)) {
+        if (!salesOrderSourceProjectionComplete(current, expected)
+                || !salesOrderBusinessStatusComplete(current, expected)) {
             return false;
         }
         if (!blank(expected.regionCode())
@@ -1692,9 +1841,20 @@ public final class DhbOrderSyncService {
         };
     }
 
-    static boolean zeroSettlementOrder(Map<String, Object> content) {
-        BigDecimal settlement = decimal(firstObject(content, "DiscountTotal"));
-        return settlement != null && settlement.signum() == 0;
+    static BigDecimal sourceSettlementAmount(OrderDetail detail, OrderSummary summary) {
+        BigDecimal explicit = decimal(firstObject(map(detail == null ? null : detail.attributes()), "DiscountTotal"));
+        if (explicit != null) return explicit;
+        if (detail != null && detail.amount() != null) return detail.amount();
+        return summary.amount();
+    }
+
+    static String inactiveOrderStatus(String status, Map<String, Object> attributes) {
+        String code = dhbOrderStatusCode(firstNonBlank(status,
+                first(attributes, "OrderStatus", "orderStatus", "StatusName", "status")));
+        Object deleted = firstObject(attributes, "is_deleted", "is_delete", "isDeleted", "deleted");
+        if ("DELETED".equals(code) || deleted != null
+                && Set.of("1", "true").contains(deleted.toString().trim().toLowerCase(Locale.ROOT))) return "DELETED";
+        return "CANCELLED".equals(code) ? "CANCELLED" : null;
     }
 
     /** OrderTotal 是折前商品总额；历史关联与正式订单均使用优惠后结算金额。 */
@@ -1955,9 +2115,8 @@ public final class DhbOrderSyncService {
                 null,
                 SYNC_ACTOR,
                 Instant.now(), status,
-                "CHECKED".equals(status) ? first(attributes, "ConfirmName", "ConfirmUserName", "AuditName") : null,
-                "CHECKED".equals(status) ? firstInstant(attributes, Map.of(), null,
-                        "ConfirmDate", "ConfirmTime", "AuditDate", "AuditTime") : null);
+                sourceConfirmedBy("CHECKED".equals(status) ? "CONFIRMED" : status, attributes),
+                sourceConfirmedAt("CHECKED".equals(status) ? "CONFIRMED" : status, null, attributes));
         return new PreparedSalesPayment(sourceReceiptNo, sourceOrderNo, command);
     }
 
@@ -2047,7 +2206,7 @@ public final class DhbOrderSyncService {
                 receiptBankAccountNo(receipt, attributes),
                 sourceSubmittedAt(receipt == null ? null : receipt.createdAt(), attributes),
                 sourceConfirmedAt(statusCode, receipt == null ? null : receipt.updatedAt(), attributes),
-                sourceAttachmentKeys(connector, sourceReceiptNo, attributes),
+                "CANCELLED".equals(statusCode) ? List.of() : sourceAttachmentKeys(connector, sourceReceiptNo, attributes),
                 List.of(),
                 receiptRemark(receipt, attributes),
                 null);
@@ -2117,7 +2276,7 @@ public final class DhbOrderSyncService {
                 paymentBankAccountNo(payment, attributes),
                 sourceSubmittedAt(payment == null ? null : payment.createdAt(), attributes),
                 sourceConfirmedAt(statusCode, payment == null ? null : payment.updatedAt(), attributes),
-                sourceAttachmentKeys(connector, sourcePaymentNo, attributes),
+                "CANCELLED".equals(statusCode) ? List.of() : sourceAttachmentKeys(connector, sourcePaymentNo, attributes),
                 List.of(),
                 paymentRemark(payment, attributes),
                 null);
@@ -3735,7 +3894,7 @@ public final class DhbOrderSyncService {
     }
 
     private static boolean shouldSubmit(String internalStatusCode) {
-        return Set.of("PENDING_OUTBOUND", "PENDING_SHIPPED", "RECEIVED", "COMPLETED")
+        return Set.of("PENDING_OUTBOUND", "PENDING_SHIPPED", "RECEIVED", "COMPLETED", "FORCE_COMPLETED", "RETURNED")
                 .contains(internalStatusCode);
     }
 
@@ -3749,13 +3908,16 @@ public final class DhbOrderSyncService {
         if (value == null) return null;
         String normalized = value.toLowerCase(Locale.ROOT);
         return switch (normalized) {
-            case "pricing", "pending", "stock_up", "stockup",
-                    "待核价", "待审核", "待出库" -> "PENDING_OUTBOUND";
+            case "pricing", "待核价" -> "PENDING_PRICING";
+            case "pending", "待审核" -> "PENDING_REVIEW";
+            case "stock_up", "stockup", "待出库" -> "PENDING_OUTBOUND";
             case "shipped", "待发货" -> "PENDING_SHIPPED";
             case "received", "待收货" -> "RECEIVED";
-            case "finished", "forcedone", "已完成", "强制完成" -> "COMPLETED";
+            case "finished", "已完成" -> "COMPLETED";
+            case "forcedone", "强制完成" -> "FORCE_COMPLETED";
             case "cancel", "canceled", "cancelled", "closed", "已取消" -> "CANCELLED";
             case "return", "returned", "已退货" -> "RETURNED";
+            case "delete", "deleted", "removed", "已删除" -> "DELETED";
             default -> null;
         };
     }
@@ -3998,6 +4160,10 @@ public final class DhbOrderSyncService {
                 "CreateDate", "createDate", "CreateTime", "createTime");
     }
 
+    private static String sourceConfirmedBy(String status, Map<String, Object> attributes) {
+        return "CONFIRMED".equals(status) ? first(attributes, "ConfirmName", "ConfirmUserName", "AuditName") : null;
+    }
+
     private static Instant sourceConfirmedAt(String statusCode, Instant typed, Map<String, Object> attributes) {
         if (!"CONFIRMED".equals(statusCode)) return null;
         return firstInstant(attributes, Map.of(), null,
@@ -4010,36 +4176,24 @@ public final class DhbOrderSyncService {
                                               Map<String, Object> attributes) {
         List<SourceAttachmentRef> refs = sourceAttachmentRefs(attributes);
         if (refs.isEmpty()) return List.of();
-        if (fundAttachmentStorage == null || fundAttachmentKeyFactory == null) {
-            return cleanDistinct(refs.stream().map(SourceAttachmentRef::displayValue).toList());
-        }
+        if (fundAttachmentStorage == null || fundAttachmentKeyFactory == null)
+            throw new IllegalStateException("DHB_ATTACHMENT_STORAGE_UNAVAILABLE: 自有附件存储未配置，稍后重试");
         List<String> values = new ArrayList<>();
         for (SourceAttachmentRef ref : refs) {
-            if (blank(ref.sourceUrl())) {
-                addCandidate(values, ref.displayValue());
-                continue;
-            }
-            try {
-                DownloadedFile downloaded = client.downloadAttachment(connector, ref.sourceUrl());
-                String objectKey = fundAttachmentKeyFactory.generate(connector.tenantId().toString(),
-                        sourceDocumentNo, ref.sourceUrl(), downloaded.content(),
-                        ref.originalName(), downloaded.contentType());
-                fundAttachmentStorage.put(connector.tenantId().toString(), objectKey,
-                        ref.originalName(), downloaded.contentType(), downloaded.content());
-                addCandidate(values, objectKey);
-            } catch (RuntimeException exception) {
-                log.warn("订货宝资金附件上传COS失败 tenantId={} connectorId={} sourceDocumentNo={} attachment={} errorType={}",
-                        connector.tenantId(), connector.connectorId(), safeLogValue(sourceDocumentNo),
-                        safeLogValue(ref.displayValue()), exception.getClass().getSimpleName());
-                addCandidate(values, ref.displayValue());
-            }
+            if (blank(ref.sourceUrl())) throw new IllegalStateException("DHB_ATTACHMENT_URL_MISSING: 附件缺少下载地址");
+            DownloadedFile downloaded = client.downloadAttachment(connector, ref.sourceUrl());
+            String objectKey = fundAttachmentKeyFactory.generate(connector.tenantId().toString(),
+                    sourceDocumentNo, ref.sourceUrl(), downloaded.content(), ref.originalName(), downloaded.contentType());
+            fundAttachmentStorage.put(connector.tenantId().toString(), objectKey,
+                    ref.originalName(), downloaded.contentType(), downloaded.content());
+            addCandidate(values, objectKey);
         }
         return cleanDistinct(values);
     }
 
     private static List<SourceAttachmentRef> sourceAttachmentRefs(Map<String, Object> attributes) {
         List<SourceAttachmentRef> values = new ArrayList<>();
-        for (String key : List.of("Attachment", "Attachments", "attachment", "attachments",
+        for (String key : List.of("resource", "Attachment", "Attachments", "attachment", "attachments",
                 "File", "Files", "file", "files", "Voucher", "Vouchers", "voucher", "vouchers",
                 "Bill", "Bills", "ReceiptImages", "PaymentImages", "Images", "imgs", "pics",
                 "file_url", "fileUrl", "url")) {
@@ -4059,7 +4213,7 @@ public final class DhbOrderSyncService {
         if (value instanceof Map<?, ?> map) {
             Map<String, Object> row = stringMap(map);
             String url = first(row, "url", "fileUrl", "file_url", "path", "key", "objectKey", "cosKey");
-            String name = first(row, "name", "fileName", "file_name", "originalName", "original_name");
+            String name = first(row, "old_name", "name", "fileName", "file_name", "originalName", "original_name");
             addAttachmentCandidate(values, url, name);
             return;
         }
@@ -4181,10 +4335,11 @@ public final class DhbOrderSyncService {
         String normalizedObjectType = sourceObjectType.toUpperCase(Locale.ROOT);
         if (!SOURCE_OBJECT_SALES_ORDER.equals(normalizedObjectType)
                 && !SOURCE_OBJECT_ERP_STOCK_OUT.equals(normalizedObjectType)
-                && !SOURCE_OBJECT_SALES_SHIPMENT.equals(normalizedObjectType)) {
+                && !SOURCE_OBJECT_SALES_SHIPMENT.equals(normalizedObjectType)
+                && !SOURCE_OBJECT_FUND_PAYMENT.equals(normalizedObjectType)) {
             throw new IllegalArgumentException("当前订货宝单对象重放只支持 sourceObjectType="
                     + SOURCE_OBJECT_SALES_ORDER + "、" + SOURCE_OBJECT_ERP_STOCK_OUT + " 或 "
-                    + SOURCE_OBJECT_SALES_SHIPMENT);
+                    + SOURCE_OBJECT_SALES_SHIPMENT + "、" + SOURCE_OBJECT_FUND_PAYMENT);
         }
         return new ReplayTarget(normalizedObjectType, sourceId);
     }

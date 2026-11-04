@@ -39,4 +39,11 @@ class DhbAttachmentObjectKeyFactoryTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("资金附件 COS object-prefix 必须是安全的相对路径");
     }
+    @org.junit.jupiter.api.Test void ignoresExpiringSignatureAndFilenameForSameBytes() {
+        var factory=new DhbAttachmentObjectKeyFactory("fund-attachments");
+        String a=factory.generate("tenant","FP1","https://a/p?expires=1",new byte[]{1},"one.png","image/png");
+        String b=factory.generate("tenant","FP1","https://a/p?expires=2",new byte[]{1},"two.jpg","image/png");
+        org.assertj.core.api.Assertions.assertThat(a).isEqualTo(b);
+        org.assertj.core.api.Assertions.assertThat(a).isNotEqualTo(factory.generate("tenant","FP1","https://a/p?expires=1",new byte[]{2},"one.png","image/png"));
+    }
 }

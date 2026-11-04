@@ -616,8 +616,7 @@ public final class OrderSalesOrderService {
             throw conflict("只有外部来源销售订单允许更新来源状态");
         }
         String sourceStatusCode = text(command.sourceStatusCode(), 64, "sourceStatusCode");
-        String businessStatusCode =
-                businessStatusForSource(sourceStatusCode, current.orderStatusCode());
+        String businessStatusCode = syncedOrderStatus(current, sourceStatusCode);
         if (Objects.equals(current.sourceStatusCode(), sourceStatusCode)
                 && Objects.equals(current.orderStatusCode(), businessStatusCode)) {
             return withDetailEnrichment(actor, current);
@@ -1186,11 +1185,7 @@ public final class OrderSalesOrderService {
                         100,
                         "ownerEmployeeNameSnapshot"),
                 orderDate,
-                initialOrderStatus(
-                        sourceSystemCode,
-                        text(command.sourceStatusCode(), 64, "sourceStatusCode"),
-                        command.submit(),
-                        dataQuality),
+                initialOrderStatus(sourceSystemCode, command.sourceStatusCode(), command.submit()),
                 code(command.orderTypeCode(), "orderTypeCode", false),
                 code(command.paymentMethodCode(), "paymentMethodCode", false),
                 voucherKeys(command.paymentVoucherKeys()),
@@ -1236,8 +1231,7 @@ public final class OrderSalesOrderService {
                         command.ownerEmployeeCode(),
                         command.ownerEmployeeNameSnapshot());
         // 来源地区只补空：已有归属的订单不能被来源同步改写。
-        String orderStatusCode =
-                businessStatusForSource(sourceStatusCode, current.orderStatusCode());
+        String orderStatusCode = syncedOrderStatus(current, sourceStatusCode);
         String requestedRegion = text(command.regionCode(), 128, "regionCode");
         String regionCode =
                 current.regionCode() == null || current.regionCode().isBlank()
@@ -1296,22 +1290,6 @@ public final class OrderSalesOrderService {
                         current.ownerEmployeeNameSnapshot(), expected.ownerEmployeeNameSnapshot())
                 && Objects.equals(current.regionCode(), expected.regionCode())
                 && Objects.equals(current.orderStatusCode(), expected.orderStatusCode());
-    }
-
-    /**
-     * 来源状态推进到「已完成」时同步推进业务状态；其余来源状态只记录来源口径。
-     *
-     * <p>业务口径已确认：在当前阶段系统订单数据以来源（订货宝/飞书）为准，
-     * 来源完成即代表订单完成，不做“来源完成 vs 本地履约完成”的统计区分；
-     * 将来订货宝停用、订单只由本系统产生时，再按系统自身履约流程定义完成状态。</p>
-     *
-     * <p>在途时业务状态是「已提交」；草稿单保留草稿（资料未补齐），取消走来源取消流程。</p>
-     */
-    private static String businessStatusForSource(String sourceStatusCode, String currentStatusCode) {
-        if (!sourceCompleted(sourceStatusCode)) return currentStatusCode;
-        return "SUBMITTED".equalsIgnoreCase(currentStatusCode)
-                ? SalesOrderStatus.COMPLETED.code()
-                : currentStatusCode;
     }
 
     private List<SalesOrderLineWrite> lines(
@@ -1554,24 +1532,30 @@ public final class OrderSalesOrderService {
         return normalized;
     }
 
-    private static String initialOrderStatus(
-            String sourceSystemCode,
-            String sourceStatusCode,
-            Boolean submit,
-            DataQuality dataQuality) {
-        if (Boolean.TRUE.equals(submit)) {
-            return sourceCompleted(sourceStatusCode)
-                    ? SalesOrderStatus.COMPLETED.code()
-                    : SalesOrderStatus.SUBMITTED.code();
-        }
-        if (isFeishuSource(sourceSystemCode) && dataQuality != null && dataQuality.complete()) {
-            return SalesOrderStatus.COMPLETED.code();
-        }
-        return SalesOrderStatus.DRAFT.code();
+    private static String initialOrderStatus(String sourceSystem, String sourceStatus, Boolean submit) {
+        String imported = dhbOrderStatus(sourceSystem, sourceStatus);
+        return imported != null ? imported : Boolean.TRUE.equals(submit)
+                ? SalesOrderStatus.SUBMITTED.code() : SalesOrderStatus.DRAFT.code();
     }
 
-    private static boolean sourceCompleted(String sourceStatusCode) {
-        return sourceStatusCode != null && "COMPLETED".equalsIgnoreCase(sourceStatusCode.trim());
+    private static String syncedOrderStatus(SalesOrderDetailView current, String sourceStatus) {
+        // 已结束的订单不因旧来源阶段重新打开；取消仍走有审计和资金约束的专用入口。
+        if (Set.of("COMPLETED", "CANCELLED", "DELETED").contains(current.orderStatusCode())) {
+            return current.orderStatusCode();
+        }
+        String imported = dhbOrderStatus(current.sourceSystemCode(), sourceStatus);
+        return imported == null ? current.orderStatusCode() : imported;
+    }
+
+    private static String dhbOrderStatus(String sourceSystem, String sourceStatus) {
+        if (!SOURCE_SYSTEM_DINGHUOBAO.equalsIgnoreCase(sourceSystem) || sourceStatus == null) return null;
+        // 当前订货宝承担实际业务流程，完成依据来自来源单，不要求补建我方发货/签收。
+        return switch (sourceStatus.trim().toUpperCase(Locale.ROOT)) {
+            case "PENDING_PRICING", "PENDING_REVIEW" -> SalesOrderStatus.DRAFT.code();
+            case "PENDING_OUTBOUND", "PENDING_SHIPPED", "RECEIVED" -> SalesOrderStatus.SUBMITTED.code();
+            case "COMPLETED", "FINISHED", "FORCE_COMPLETED", "RETURNED" -> SalesOrderStatus.COMPLETED.code();
+            default -> null;
+        };
     }
 
     private static String paymentStatus(String value, boolean required) {

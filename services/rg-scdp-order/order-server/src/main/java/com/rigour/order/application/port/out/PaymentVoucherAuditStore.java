@@ -9,4 +9,8 @@ public interface PaymentVoucherAuditStore {
     Map<String, List<Review>> reviews(String tenant);
     Review appendReview(String tenant, String groupKey, String fingerprint, String conclusion,
             String note, String actor, List<String> paymentIds);
+    default Review appendReview(String tenant, String groupKey, String fingerprint, String conclusion,
+            String note, String actor, List<String> paymentIds, List<String> reasonCodes) {
+        return appendReview(tenant, groupKey, fingerprint, conclusion, note, actor, paymentIds);
+    }
 }

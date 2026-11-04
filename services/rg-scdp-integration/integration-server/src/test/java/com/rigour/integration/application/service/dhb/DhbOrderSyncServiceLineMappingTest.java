@@ -41,9 +41,10 @@ import static org.mockito.Mockito.when;
 class DhbOrderSyncServiceLineMappingTest {
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings = {"listCancelled", "detailCancelled", "zeroSettlement"})
-    void invalidSourceSkipsCustomerProductAndDeletedOrderLookup(String scenario) throws Exception {
-        boolean cancelledInList = "listCancelled".equals(scenario);
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"listCancelled", "detailCancelled", "zeroSettlement", "listDeleted", "detailDeleted"})
+    void retainsInactiveSourceWithoutRequiringCustomerOrProductMapping(String scenario) throws Exception {
+        boolean cancelledInList = "listCancelled".equals(scenario) || "listDeleted".equals(scenario);
+        String terminal = scenario.endsWith("Deleted") ? "DELETED" : "CANCELLED";
         UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID();
         var store = mock(DhbSyncStore.class);
         var client = mock(DhbClient.class);
@@ -54,33 +55,46 @@ class DhbOrderSyncServiceLineMappingTest {
         var caller = (com.rigour.shared.context.CallerIdentity) callerMethod.invoke(null, tenant);
         var task = new DhbSyncStore.SyncTaskContext(tenant, UUID.randomUUID(), connector,
                 "orders", "ORDER", "ACTIVE", "https://example.test", "secret", "ACTIVE", 100, 1, 0, true);
-        var summary = new DhbClient.OrderSummary("D1", "D1", cancelledInList ? "cancelled" : "stockup",
+        var summary = new DhbClient.OrderSummary("D1", "D1", cancelledInList ? terminal : "stockup",
                 BigDecimal.ONE, Instant.now(), Instant.now(), null, null, Map.of());
         var raw = new DhbSyncStore.RawObjectPersistResult(UUID.randomUUID(), "hash", true);
         when(store.persistRawObject(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(raw);
-        when(client.getOrderContent(any(), eq("D1"))).thenReturn(new DhbClient.OrderDetail("D1", "zeroSettlement".equals(scenario) ? "finished" : "cancelled",
+        when(client.getOrderContent(any(), eq("D1"))).thenReturn(new DhbClient.OrderDetail("D1", "zeroSettlement".equals(scenario) ? "finished" : terminal,
                 BigDecimal.ONE, "zeroSettlement".equals(scenario) ? Map.of("DiscountTotal", "0.0000") : Map.of()));
         when(projection.cancelSourceOrder(any(), any())).thenReturn(
-                new com.rigour.order.api.v1.model.HistorySyncModels.Intake("CANCELLED", null, null));
+                new com.rigour.order.api.v1.model.HistorySyncModels.Intake(terminal, null, null));
         var method = DhbOrderSyncService.class.getDeclaredMethod("projectOrder",
                 com.rigour.shared.context.CallerIdentity.class, DhbSyncStore.SyncTaskContext.class,
                 UUID.class, DhbClient.OrderSummary.class, Map.class, Map.class);
         method.setAccessible(true);
         assertThat(method.invoke(service, caller, task, UUID.randomUUID(), summary, new HashMap<>(), new HashMap<>()))
                 .isEqualTo(DhbOrderSyncService.ProjectionOutcome.CHANGED);
-        verify(projection).cancelSourceOrder(any(), eq(new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(connector, "D1")));
+        verify(projection).cancelSourceOrder(any(), argThat(c -> c.connectorId().equals(connector) && c.sourceNo().equals("D1") && c.orderStatusCode().equals(terminal)));
         org.mockito.Mockito.verifyNoMoreInteractions(projection);
         if (cancelledInList) org.mockito.Mockito.verifyNoInteractions(client);
         verify(store).markRawProcessed(tenant, raw.rawLandingId());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"deleted", "delete", "removed", "已删除"})
+    void explicitDeletionIsDistinctFromCancellation(String status) {
+        assertThat(DhbOrderSyncService.inactiveOrderStatus(status, Map.of())).isEqualTo("DELETED");
+        assertThat(DhbOrderSyncService.inactiveOrderStatus("finished", Map.of("is_deleted", true))).isEqualTo("DELETED");
+        assertThat(DhbOrderSyncService.inactiveOrderStatus("finished", Map.of("deleted", "0"))).isNull();
+        assertThat(DhbOrderSyncService.inactiveOrderStatus(null, Map.of())).isNull();
+    }
+
     @Test
     void zeroSettlementRequiresExplicitZeroNotMissingOrNonzeroAmount() {
-        assertThat(DhbOrderSyncService.zeroSettlementOrder(Map.of("DiscountTotal", "0.0000"))).isTrue();
-        assertThat(DhbOrderSyncService.zeroSettlementOrder(Map.of("DiscountTotal", "222.30"))).isFalse();
-        assertThat(DhbOrderSyncService.zeroSettlementOrder(Map.of("DiscountTotal", "-1"))).isFalse();
-        assertThat(DhbOrderSyncService.zeroSettlementOrder(Map.of("OrderTotal", "0"))).isFalse();
-        assertThat(DhbOrderSyncService.zeroSettlementOrder(Map.of())).isFalse();
+        var summary = new DhbClient.OrderSummary("D1", "D1", "finished", null, null, null, null, null, Map.of());
+        assertThat(DhbOrderSyncService.sourceSettlementAmount(
+                new DhbClient.OrderDetail("D1", "finished", BigDecimal.ONE, Map.of("DiscountTotal", "0.0000")), summary)).isZero();
+        assertThat(DhbOrderSyncService.sourceSettlementAmount(
+                new DhbClient.OrderDetail("D1", "finished", BigDecimal.ZERO, Map.of("DiscountTotal", "222.30")), summary)).isEqualByComparingTo("222.30");
+        assertThat(DhbOrderSyncService.sourceSettlementAmount(
+                new DhbClient.OrderDetail("D1", "finished", BigDecimal.ZERO, Map.of()), summary)).isZero();
+        assertThat(DhbOrderSyncService.sourceSettlementAmount(
+                new DhbClient.OrderDetail("D1", "finished", null, Map.of()), summary)).isNull();
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -224,6 +238,11 @@ class DhbOrderSyncServiceLineMappingTest {
             assertThat(command.sourcePaymentStatusCode()).isEqualTo(state.equals("pend_receipted") ? "CHECKED" : "RECEIVED");
             assertThat(command.sourceCheckedAt()).isNull();
             assertThat(command.sourceCheckedBy()).isNull();
+            var withEvidence = prepare.invoke(service, tenant, connector, "FR-1", receipt,
+                    Map.of("ConfirmName", "财务甲", "ConfirmDate", "2026-09-06 10:00:00"));
+            var confirmed = (com.rigour.order.api.v1.model.SalesPaymentRecordCommand) accessor.invoke(withEvidence);
+            assertThat(confirmed.sourceCheckedBy()).isEqualTo(state.equals("pend_receipted") ? "财务甲" : null);
+            assertThat(confirmed.sourceCheckedAt()).isEqualTo(state.equals("pend_receipted") ? Instant.parse("2026-09-06T02:00:00Z") : null);
         }
         var missing = new DhbClient.Receipt("FR-2", "FR-2", "DH-1", "C-1", null, "13", "Offline",
                 new BigDecimal("80"), "pend_receipted", null, Instant.now(), Instant.now(),
@@ -242,8 +261,7 @@ class DhbOrderSyncServiceLineMappingTest {
                 mapping("SALES_ORDER", "DH-1", "DH-1", "ORDER", "SALES_ORDER",
                         100L, "SO202608260001"));
         DhbOrderSyncService service = service(storeWithMappings(mappings));
-        Map<String, Object> attributes = Map.of(
-                "Attachments", List.of(Map.of("fileName", "202608260239531787726393103.png")));
+        Map<String, Object> attributes = Map.of();
 
         FundDocumentCommand command = prepareReceiptFundDocument(service, tenantId, connectorId,
                 "FR.20260826.0247",
@@ -268,7 +286,7 @@ class DhbOrderSyncServiceLineMappingTest {
         assertThat(command.submittedAt()).isEqualTo(Instant.parse("2026-08-26T06:39:00Z"));
         assertThat(command.confirmedAt()).isNull();
         assertThat(command.documentStatusCode()).isEqualTo("CONFIRMED");
-        assertThat(command.sourceAttachmentKeys()).containsExactly("202608260239531787726393103.png");
+        assertThat(command.sourceAttachmentKeys()).isEmpty();
     }
 
     @Test
@@ -322,7 +340,7 @@ class DhbOrderSyncServiceLineMappingTest {
                 mapping("SALES_ORDER", "DH-1", "DH-1", "ORDER", "SALES_ORDER",
                         100L, "SO202608260001"));
         DhbOrderSyncService service = service(storeWithMappings(mappings));
-        Map<String, Object> attributes = Map.of("Files", "payment-proof.png");
+        Map<String, Object> attributes = Map.of();
 
         FundDocumentCommand command = preparePaymentFundDocument(service, tenantId, connectorId,
                 "FP.20260826.0001",
@@ -344,7 +362,7 @@ class DhbOrderSyncServiceLineMappingTest {
         assertThat(command.bankAccountNo()).isEqualTo("11050171360000002801");
         assertThat(command.submittedAt()).isEqualTo(Instant.parse("2026-08-26T07:00:00Z"));
         assertThat(command.confirmedAt()).isNull();
-        assertThat(command.sourceAttachmentKeys()).containsExactly("payment-proof.png");
+        assertThat(command.sourceAttachmentKeys()).isEmpty();
     }
 
     @Test
@@ -899,6 +917,47 @@ class DhbOrderSyncServiceLineMappingTest {
         assertThat(lines.getFirst().unitCode()).isEqualTo("PIECE");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "pricing,PENDING_PRICING,false", "待核价,PENDING_PRICING,false",
+        "pending,PENDING_REVIEW,false", "待审核,PENDING_REVIEW,false",
+        "stock_up,PENDING_OUTBOUND,true", "stockup,PENDING_OUTBOUND,true", "待出库,PENDING_OUTBOUND,true",
+        "shipped,PENDING_SHIPPED,true", "待发货,PENDING_SHIPPED,true",
+        "received,RECEIVED,true", "待收货,RECEIVED,true",
+        "finished,COMPLETED,true", "已完成,COMPLETED,true",
+        "forcedone,FORCE_COMPLETED,true", "强制完成,FORCE_COMPLETED,true",
+        "return,RETURNED,true", "returned,RETURNED,true", "已退货,RETURNED,true",
+        "cancel,CANCELLED,false", "canceled,CANCELLED,false", "cancelled,CANCELLED,false",
+        "closed,CANCELLED,false", "已取消,CANCELLED,false"
+    })
+    void mapsSourceStagesWithoutLosingReviewReturnOrForcedCompletion(String raw, String normalized, boolean submit) throws Exception {
+        var mapping = DhbOrderSyncService.class.getDeclaredMethod("dhbOrderStatusCode", String.class);
+        mapping.setAccessible(true);
+        assertThat(mapping.invoke(null, raw)).isEqualTo(normalized);
+        var submission = DhbOrderSyncService.class.getDeclaredMethod("shouldSubmit", String.class);
+        submission.setAccessible(true);
+        assertThat(submission.invoke(null, normalized)).isEqualTo(submit);
+    }
+
+    @Test
+    void unknownStatusRequiresReviewInsteadOfDefaultingToOngoing() throws Exception {
+        var mapping = DhbOrderSyncService.class.getDeclaredMethod("requireDhbOrderStatusCode", String.class, String.class);
+        mapping.setAccessible(true);
+        assertThatThrownBy(() -> mapping.invoke(null, "unrecognized", "DHB-UNKNOWN"))
+                .isInstanceOf(InvocationTargetException.class)
+                .cause().hasMessageContaining("无法映射");
+    }
+
+    @Test
+    void unchangedPayloadMustRepairIncompleteMainStatusBeforeSkipping() throws Exception {
+        var method = DhbOrderSyncService.class.getDeclaredMethod("projectionComplete",
+                SalesOrderDetailView.class, SalesOrderCommand.class, boolean.class);
+        method.setAccessible(true);
+        assertThat(method.invoke(null, completedSourceDetail("SUBMITTED"), completedSourceCommand(), false)).isEqualTo(false);
+        assertThat(method.invoke(null, completedSourceDetail("DRAFT"), completedSourceCommand(), false)).isEqualTo(false);
+        assertThat(method.invoke(null, completedSourceDetail("COMPLETED"), completedSourceCommand(), false)).isEqualTo(true);
+    }
+
     @Test
     void updatesSubmittedSalesOrderCommercialDataWhenSourcePayloadChanges() {
         AtomicBoolean updateCalled = new AtomicBoolean(false);
@@ -948,14 +1007,17 @@ class DhbOrderSyncServiceLineMappingTest {
     }
 
     @Test
-    void keepsDraftSalesOrderWhenSourceIsAlreadyCompleted() {
+    void completesDraftSalesOrderWhenSourceIsAlreadyCompleted() {
         AtomicBoolean businessStatusTouched = new AtomicBoolean(false);
         OrderSalesOrderProjectionClient projection = proxy(OrderSalesOrderProjectionClient.class,
                 (ignoredProxy, method, ignoredArgs) -> {
                     if ("updateSalesOrder".equals(method.getName())) {
                         return completedSourceDetail("DRAFT");
                     }
-                    businessStatusTouched.set(true);
+                    if ("updateSalesOrderSourceStatus".equals(method.getName())) {
+                        businessStatusTouched.set(true);
+                        return completedSourceDetail("COMPLETED");
+                    }
                     throw new UnsupportedOperationException(
                             "Unexpected projection call: " + method.getName());
                 });
@@ -966,8 +1028,8 @@ class DhbOrderSyncServiceLineMappingTest {
         SalesOrderDetailView result = upsertSalesOrder(service, UUID.randomUUID(), current,
                 completedSourceCommand(), false);
 
-        assertThat(result.orderStatusCode()).isEqualTo("DRAFT");
-        assertThat(businessStatusTouched).isFalse();
+        assertThat(result.orderStatusCode()).isEqualTo("COMPLETED");
+        assertThat(businessStatusTouched).isTrue();
     }
 
     @Test
@@ -1506,4 +1568,135 @@ class DhbOrderSyncServiceLineMappingTest {
     private record MappingKey(UUID tenantId, UUID connectorId,
                               String sourceObjectType, String sourceObjectId) {
     }
+    @Test
+    void officialPaymentResourcesAreOwnedDistinctAndFailClosed() throws Exception {
+        UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID();
+        var client=mock(DhbClient.class); var storage=mock(ProductMediaStorage.class);
+        var projection=mock(OrderSalesOrderProjectionClient.class);
+        var service=new DhbOrderSyncService(mock(DhbSyncStore.class),client,projection,null,
+                proxy(HrDhbStaffSyncClient.class),null,3,storage,new DhbAttachmentObjectKeyFactory("fund-attachments"));
+        var task=new DhbSyncStore.SyncTaskContext(tenant,UUID.randomUUID(),connector,"orders","ORDER","ACTIVE","https://example.test","secret","ACTIVE",100,1,0,true);
+        var callerMethod=DhbOrderSyncService.class.getDeclaredMethod("orderServiceCaller",UUID.class);callerMethod.setAccessible(true);
+        var caller=(com.rigour.shared.context.CallerIdentity)callerMethod.invoke(null,tenant);
+        var method=DhbOrderSyncService.class.getDeclaredMethod("syncPaymentVouchers",com.rigour.shared.context.CallerIdentity.class,DhbSyncStore.SyncTaskContext.class,DhbClient.Payment.class,String.class,Map.class);
+        method.setAccessible(true);
+        var attributes=Map.<String,Object>of("resource",List.of(Map.of("old_name","a.png","file_url","https://example.test/a?sign=1"),Map.of("old_name","b.png","file_url","https://example.test/b?sign=2")));
+        when(client.downloadAttachment(any(),eq("https://example.test/a?sign=1"))).thenReturn(new DhbClient.DownloadedFile(new byte[]{1},"image/png"));
+        when(client.downloadAttachment(any(),eq("https://example.test/b?sign=2"))).thenReturn(new DhbClient.DownloadedFile(new byte[]{2},"image/png"));
+        when(projection.syncReceiptVouchers(any(),any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED",null,null));
+        var payment=new DhbClient.Payment("FP1","FP1","FR1","DH1","C1",null,null,null,java.math.BigDecimal.TEN,"pend_receipted",null,null,null,null,null,null,null,null,attributes);
+        method.invoke(service,caller,task,payment,"FP1",attributes);
+        var captor=org.mockito.ArgumentCaptor.forClass(com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers.class);
+        verify(projection).syncReceiptVouchers(any(),captor.capture());
+        assertThat(captor.getValue().objectKeys()).hasSize(2).doesNotHaveDuplicates().allSatisfy(key->assertThat(key).startsWith(tenant+"/fund-attachments/FP1/").doesNotContain("?","https:"));
+        org.mockito.Mockito.clearInvocations(projection);
+        when(client.downloadAttachment(any(),eq("https://example.test/b?sign=2"))).thenThrow(new IllegalStateException("expired"));
+        assertThatThrownBy(()->method.invoke(service,caller,task,payment,"FP1",attributes)).hasCauseInstanceOf(IllegalStateException.class);
+        org.mockito.Mockito.verifyNoInteractions(projection);
+        var cancelled=new DhbClient.Payment("FP1","FP1","FR1","DH1","C1",null,null,null,java.math.BigDecimal.TEN,"canceled",null,null,null,null,null,null,null,null,attributes);
+        org.mockito.Mockito.clearInvocations(client);
+        method.invoke(service,caller,task,cancelled,"FP1",attributes);
+        verify(projection).syncReceiptVouchers(any(),captor.capture());
+        assertThat(captor.getValue().objectKeys()).isEmpty();
+        assertThat(captor.getValue().sourceStatus()).isEqualTo("CANCELLED");
+        org.mockito.Mockito.verifyNoInteractions(client);
+    }
+    @Test void retryRefreshesSourceUrlAndStatusByExactPaymentNumber() throws Exception {
+        var client = mock(DhbClient.class);
+        var service = new DhbOrderSyncService(mock(DhbSyncStore.class), client, mock(OrderSalesOrderProjectionClient.class), proxy(HrDhbStaffSyncClient.class));
+        var connector = new DhbClient.Connector(UUID.randomUUID(), UUID.randomUUID(), "https://example.test", "secret");
+        var stale = new DhbClient.Payment("FP1","FP1","FR1","DH1","C1",null,null,null,BigDecimal.TEN,"pend_receipted",null,null,null,null,null,null,null,null,Map.of("resource",List.of(Map.of("file_url","https://a/old"))));
+        var fresh = new DhbClient.Payment("FP1","FP1","FR1","DH1","C1",null,null,null,BigDecimal.TEN,"canceled",null,null,null,null,null,null,null,null,Map.of("resource",List.of(Map.of("file_url","https://a/new"))));
+        when(client.getPayments(eq(connector), any())).thenAnswer(call -> {
+            DhbClient.PaymentQuery query = call.getArgument(1);
+            assertThat(query.orderNumber()).isEqualTo("DH1");
+            return new DhbClient.Page<>(query.page(), "canceled".equals(query.status()) ? 1 : 0,
+                    "canceled".equals(query.status()) ? List.of(fresh) : List.of());
+        });
+        var method = DhbOrderSyncService.class.getDeclaredMethod("refreshPayment", DhbClient.Connector.class, String.class, String.class);
+        method.setAccessible(true);
+        assertThat(method.invoke(service, connector, stale.paymentNumber(), stale.orderNumber())).isEqualTo(fresh);
+        when(client.getPayments(eq(connector), any())).thenAnswer(call -> new DhbClient.Page<>(((DhbClient.PaymentQuery)call.getArgument(1)).page(),0,List.of()));
+        assertThatThrownBy(() -> method.invoke(service,connector,stale.paymentNumber(),stale.orderNumber())).hasCauseInstanceOf(IllegalStateException.class).hasStackTraceContaining("不能使用过期附件链接");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void paymentReplayOnlyProjectsExactSourceAndDoesNotAdvanceWindow(boolean found) {
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID(), actor = UUID.randomUUID(), run = UUID.randomUUID();
+        var store = mock(DhbSyncStore.class);
+        var client = mock(DhbClient.class);
+        var storage = mock(ProductMediaStorage.class);
+        var projection = mock(OrderSalesOrderProjectionClient.class);
+        var task = new DhbSyncStore.SyncTaskContext(tenant, UUID.randomUUID(), connector,
+                "orders", "ORDER", "ACTIVE", "https://example.test", "secret", "ACTIVE", 100, 1, 0, true);
+        when(store.loadTask(tenant, task.taskId())).thenReturn(task);
+        when(store.beginRun(tenant, null, task.taskId(), null, null)).thenReturn(new DhbSyncStore.SyncRunStarted(run, "unchanged"));
+        var attrs = Map.<String,Object>of("resource", List.of(Map.of("file_url", "https://example.test/fresh", "old_name", "proof.png")));
+        var target = new DhbClient.Payment("FP1", "FP1", "FR1", "DH1", "C1", null, null, null,
+                BigDecimal.TEN, "pend_receipted", Instant.parse("2026-08-01T00:00:00Z"), null,
+                null, null, null, null, null, null, attrs);
+        var other = new DhbClient.Payment("OTHER", "OTHER", "FR2", "DH2", "C2", null, null, null,
+                BigDecimal.TEN, "pend_receipted", target.transactionAt(), null, null, null, null, null, null, null, attrs);
+        when(client.getPayments(any(), any())).thenAnswer(call -> {
+            DhbClient.PaymentQuery query = call.getArgument(1);
+            var rows = found && "pend_receipted".equals(query.status()) ? List.of(other, target) : List.of(other);
+            return new DhbClient.Page<>(query.page(), rows.size(), rows);
+        });
+        when(client.downloadAttachment(any(), any())).thenReturn(new DhbClient.DownloadedFile(new byte[]{1,2}, "image/png"));
+        when(projection.syncReceiptVouchers(any(), any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED", null, null));
+        var caller = new com.rigour.shared.context.CallerIdentity("SERVICE", actor, tenant, null, null, UUID.randomUUID(),
+                0, 0, 0, java.util.Set.of("DHB_PROTECT_HISTORY"), java.util.Set.of("integration:dhb:write"));
+        var service = new DhbOrderSyncService(store, client, projection, null, proxy(HrDhbStaffSyncClient.class),
+                null, 3, storage, new DhbAttachmentObjectKeyFactory("dev/fund-attachments"));
+        var command = new com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand(null, null, null, "FUND_PAYMENT", "FP1");
+        if (found) {
+            var result = service.runOrderPull(caller, task.taskId(), command);
+            assertThat(result.status()).isEqualTo("SUCCEEDED");
+            assertThat(result.windowFrom()).isNull();
+            assertThat(result.windowTo()).isNull();
+            verify(projection).syncReceiptVouchers(any(), argThat(c -> c.sourcePaymentNo().equals("FP1")
+                    && c.receiptNo().equals("FR1") && c.objectKeys().getFirst().startsWith(tenant + "/dev/fund-attachments/FP1/")));
+        } else {
+            assertThatThrownBy(() -> service.runOrderPull(caller, task.taskId(), command))
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("DHB_PAYMENT_REFRESH_MISSING");
+            org.mockito.Mockito.verifyNoInteractions(projection, storage);
+        }
+        verify(store, org.mockito.Mockito.never()).resolveRecoveredProjectionIssues(any(), any());
+        verify(client, org.mockito.Mockito.never()).getOrders(any(), any());
+    }
+
+    @Test void cancelledFundDocumentsDoNotDownloadExpiredResources() {
+        var client = mock(DhbClient.class);
+        var storage = mock(ProductMediaStorage.class);
+        var service = new DhbOrderSyncService(mock(DhbSyncStore.class),client,mock(OrderSalesOrderProjectionClient.class),null,
+                proxy(HrDhbStaffSyncClient.class),null,3,storage,new DhbAttachmentObjectKeyFactory("fund-attachments"));
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID();
+        var attributes = Map.<String,Object>of("resource",List.of(Map.of("file_url","https://a/expired", "old_name", "proof.png")));
+        Instant time = Instant.parse("2026-10-01T00:00:00Z");
+        var payment = new DhbClient.Payment("FP1","FP1","FR1","DH1","C1",null,null,null,BigDecimal.TEN,"canceled",time,time,time,null,null,null,null,null,attributes);
+        var receipt = new DhbClient.Receipt("FR1","FR1","DH1","C1",null,null,null,BigDecimal.TEN,"canceled",time,time,time,null,null,null,null,null,attributes);
+        assertThat(preparePaymentFundDocument(service,tenant,connector,"FP1",payment,attributes).sourceAttachmentKeys()).isEmpty();
+        assertThat(prepareReceiptFundDocument(service,tenant,connector,"FR1",receipt,attributes).sourceAttachmentKeys()).isEmpty();
+        org.mockito.Mockito.verifyNoInteractions(client,storage);
+    }
+
+    @Test void alreadyArchivedPaymentKeysAreReusedWithoutAnotherDownload() throws Exception {
+        var client = mock(DhbClient.class);
+        var projection = mock(OrderSalesOrderProjectionClient.class);
+        var service = new DhbOrderSyncService(mock(DhbSyncStore.class),client,projection,proxy(HrDhbStaffSyncClient.class));
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID();
+        var task = new DhbSyncStore.SyncTaskContext(tenant,UUID.randomUUID(),connector,"orders","ORDER","ACTIVE","https://example.test","secret","ACTIVE",100,1,0,true);
+        var attributes = Map.<String,Object>of("resource",List.of(Map.of("file_url","https://a/expired")));
+        var payment = new DhbClient.Payment("FP1","FP1","FR1","DH1","C1",null,null,null,BigDecimal.TEN,"pend_receipted",null,null,null,null,null,null,null,null,attributes);
+        var caller = new com.rigour.shared.context.CallerIdentity("SERVICE",UUID.randomUUID(),tenant,null,null,UUID.randomUUID(),0,0,0,java.util.Set.of(),java.util.Set.of("order:write"));
+        var method = DhbOrderSyncService.class.getDeclaredMethod("syncPaymentVouchers",com.rigour.shared.context.CallerIdentity.class,DhbSyncStore.SyncTaskContext.class,DhbClient.Payment.class,String.class,Map.class,List.class);
+        method.setAccessible(true);
+        when(projection.syncReceiptVouchers(any(),any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED",null,null));
+        var keys = List.of(tenant + "/fund-attachments/FP1/owned.png");
+        method.invoke(service,caller,task,payment,"FP1",attributes,keys);
+        verify(projection).syncReceiptVouchers(any(),argThat(c -> c.objectKeys().equals(keys) && c.receiptNo().equals("FR1")));
+        org.mockito.Mockito.verifyNoInteractions(client);
+    }
+
 }

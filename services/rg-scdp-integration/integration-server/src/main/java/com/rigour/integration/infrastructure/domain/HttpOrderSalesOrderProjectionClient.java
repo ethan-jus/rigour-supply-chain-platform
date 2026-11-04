@@ -543,6 +543,35 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
             com.rigour.order.api.v1.model.HistorySyncModels.Receipt command) {
         return historyIntake(caller,"/receipts/historical-status",command);
     }
+    @Override
+    public com.rigour.order.api.v1.model.HistorySyncModels.Intake syncReceiptVouchers(CallerIdentity caller,
+            com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers command) {
+        return historyIntake(caller, "/receipts/vouchers", command);
+    }
+
+    @Override
+    public java.util.List<com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillCandidate> claimVoucherBackfill(CallerIdentity caller,
+            com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillClaim command) {
+        requireCaller(caller);
+        URI uri=UriComponentsBuilder.fromUri(baseUri).path(com.rigour.order.api.v1.OrderHistorySyncApi.BASE+"/receipts/vouchers/claim").build().encode().toUri();
+        var response=restClient.post().uri(uri).contentType(MediaType.APPLICATION_JSON).accept(MediaType.APPLICATION_JSON)
+            .headers(headers->signedHeaders("POST",uri,caller).forEach(headers::set)).body(command)
+            .exchange((request,httpResponse)->SignedDomainRequest.readResponse(httpResponse,
+                new TypeReference<ApiResponse<java.util.List<com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillCandidate>>>() {},"凭证补齐"));
+        return SignedDomainRequest.required(response,"Order凭证补齐");
+    }
+    @Override
+    public void finishVoucherBackfill(CallerIdentity caller,
+            com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillResult command) {
+        requireCaller(caller);
+        URI uri=UriComponentsBuilder.fromUri(baseUri).path(com.rigour.order.api.v1.OrderHistorySyncApi.BASE+"/receipts/vouchers/result").build().encode().toUri();
+        var response=restClient.post().uri(uri).contentType(MediaType.APPLICATION_JSON).accept(MediaType.APPLICATION_JSON)
+            .headers(headers->signedHeaders("POST",uri,caller).forEach(headers::set)).body(command)
+            .exchange((request,httpResponse)->SignedDomainRequest.readResponse(httpResponse,
+                new TypeReference<ApiResponse<Void>>() {},"凭证补齐结果"));
+        if(response==null || !"OK".equals(response.code())) throw new IllegalStateException("Order凭证补齐结果未确认");
+    }
+
     private com.rigour.order.api.v1.model.HistorySyncModels.Intake historyIntake(CallerIdentity caller,String path,Object command) {
         requireCaller(caller);
         URI uri=UriComponentsBuilder.fromUri(baseUri).path(com.rigour.order.api.v1.OrderHistorySyncApi.BASE+path).build().encode().toUri();

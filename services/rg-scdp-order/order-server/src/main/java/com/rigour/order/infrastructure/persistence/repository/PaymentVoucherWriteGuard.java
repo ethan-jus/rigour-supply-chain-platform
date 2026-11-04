@@ -14,9 +14,11 @@ public class PaymentVoucherWriteGuard {
     public List<String> retainedKeys(String tenantId, long paymentId, List<String> keys) {
         if (keys == null || keys.isEmpty()) return List.of();
         var retained = new LinkedHashSet<>(keys);
-        retained.removeAll(jdbc.queryForList(
+        var excluded = jdbc.queryForList(
                 "SELECT voucher_key FROM order_payment_voucher_exclusion WHERE tenant_id=? AND payment_id=?",
-                String.class, tenantId, paymentId));
+                String.class, tenantId, paymentId).stream()
+                .map(com.rigour.order.domain.value.VoucherIdentity::of).collect(java.util.stream.Collectors.toSet());
+        retained.removeIf(key -> excluded.contains(com.rigour.order.domain.value.VoucherIdentity.of(key)));
         return List.copyOf(retained);
     }
 }

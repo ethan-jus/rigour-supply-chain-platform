@@ -322,6 +322,38 @@ UPDATE hr_employee SET department_name_snapshot=?,revision=revision+1,updated_ti
     }
 
     @Override
+    public void deleteEmployee(String tenant, long id, int revision, String actor) {
+        String actorName = actorNames.resolve(tenant, actor);
+        tx.executeWithoutResult(status -> {
+            lock(tenant);
+            scopes.requireEmployee(tenant, id, "hr:employee:delete");
+            var rows = jdbc.queryForList(
+                    "SELECT employee_code,revision FROM hr_employee WHERE tenant_id=? AND id=? AND deleted=0 FOR UPDATE",
+                    tenant, id);
+            if (rows.isEmpty()) throw new BusinessException(ErrorCode.NOT_FOUND, "员工不存在", List.of());
+            var row = rows.getFirst();
+            if (((Number) row.get("revision")).intValue() != revision)
+                throw new BusinessException(ErrorCode.CONFLICT, "员工已修改，请刷新", List.of());
+            String code = (String) row.get("employee_code");
+            if (count("SELECT COUNT(*) FROM hr_department WHERE tenant_id=? AND leader_employee_code=? AND deleted=0", tenant, code) > 0
+                    || count("SELECT COUNT(*) FROM hr_employee WHERE tenant_id=? AND leader_employee_code=? AND id<>? AND deleted=0", tenant, code, id) > 0)
+                throw new BusinessException(ErrorCode.CONFLICT, "请先调整部门负责人或直属下级", List.of());
+            int changed = jdbc.update("""
+UPDATE hr_employee SET deleted=1,revision=revision+1,access_version=access_version+1,
+ updated_by=?,updated_by_name=?,updated_time=UTC_TIMESTAMP(6)
+ WHERE tenant_id=? AND id=? AND revision=? AND deleted=0
+""", actor, actorName, tenant, id, revision);
+            if (changed != 1) throw new BusinessException(ErrorCode.CONFLICT, "员工已修改，请刷新", List.of());
+            // 保留历史任职与来源映射；来源同步看到已删除主档时不得重新创建。
+            jdbc.update("""
+UPDATE hr_employee_assignment SET effective_to=UTC_TIMESTAMP(6),revision=revision+1
+ WHERE tenant_id=? AND employee_code=? AND effective_to IS NULL
+""", tenant, code);
+            change(tenant, "EMPLOYEE_DELETE", code, actor);
+        });
+    }
+
+    @Override
     public long saveEmployee(String tenant, Long id, HrEmployeeCommand c, String actor) {
         String actorName = actorNames.resolve(tenant, actor);
         return Objects.requireNonNull(

@@ -16,6 +16,8 @@ public interface HrOrganizationStore {
 
     long saveEmployee(String tenantId, Long id, HrEmployeeCommand command, String actorId);
 
+    void deleteEmployee(String tenantId, long id, int revision, String actorId);
+
     Optional<HrEmployeeIdentityView> identity(String tenantId, String employeeCode);
 
     HrPageView<HrEmployeeIdentityView> identities(

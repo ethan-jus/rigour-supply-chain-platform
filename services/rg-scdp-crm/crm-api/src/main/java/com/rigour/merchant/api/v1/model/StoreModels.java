@@ -22,7 +22,14 @@ public final class StoreModels {
     public record Page(long total, List<Row> items, String nextCursor) {}
     public record Query(String view, String keyword, String region, String province, String city,
             String county, String cooperation, String tier, String activity, String potential,
-            String cursor, int size, String storeType) {
+            String cursor, int size, String storeType, String pool, String recordStatus,
+            String phase, String protection) {
+        public Query(String view, String keyword, String region, String province, String city,
+                String county, String cooperation, String tier, String activity, String potential,
+                String cursor, int size, String storeType) {
+            this(view, keyword, region, province, city, county, cooperation, tier, activity, potential,
+                    cursor, size, storeType, null, null, null, null);
+        }
         public Query(String view, String keyword, String region, String province, String city,
                 String county, String cooperation, String tier, String activity, String potential,
                 String cursor, int size) {
@@ -39,7 +46,15 @@ public final class StoreModels {
     public record Release(String requestId, long revision, String reason) {}
     public record LeadCommand(String requestId, String name, String address, String areaCode,
             BigDecimal longitude, BigDecimal latitude, String publicPhone) {}
-    public record Update(long revision, String requestId, String name, String address, String publicPhone, String storeTypeCode, String reason) {}
+    public record Location(String areaCode, BigDecimal longitude, BigDecimal latitude, String coordinateSystem) {}
+    public record Poi(String id, String name, String address, String publicPhone, String typeCode,
+            String areaCode, BigDecimal longitude, BigDecimal latitude) {}
+    public record Update(long revision, String requestId, String name, String address, String publicPhone,
+            String storeTypeCode, String reason, Location location, String amapPoiId) {
+        public Update(long revision, String requestId, String name, String address, String publicPhone, String storeTypeCode, String reason) {
+            this(revision,requestId,name,address,publicPhone,storeTypeCode,reason,null,null);
+        }
+    }
     public record Event(String id, String type, String actorUserId, Instant occurredAt, String beforeData, String afterData, String reason) {}
     public record Review(String requestId, long revision, boolean approve, String reason) {}
     public record Lead(String id, String name, String address, String areaCode,

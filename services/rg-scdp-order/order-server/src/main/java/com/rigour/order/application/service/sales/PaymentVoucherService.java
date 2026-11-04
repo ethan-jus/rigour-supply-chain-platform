@@ -30,7 +30,15 @@ public class PaymentVoucherService {
                     .orElse(new VoucherTransaction(key, null, null, "尚无可确认的逐图识别结果，请核对原图", null)));
         return byKey.values().stream().map(v -> new VoucherTransaction(
                 v.voucherKey(), v.voucherAmount(), v.transactionNo(), v.evidenceNote(),
-                urls.temporaryUrl(tenant, v.voucherKey()))).toList();
+                urls.temporaryUrl(tenant, v.voucherKey()), v.paidTime(), v.paidTimePrecision(),
+                v.recognitionStatus(), v.payee(), v.paymentResult())).toList();
+    }
+    @org.springframework.transaction.annotation.Transactional
+    public int recognize(long id) {
+        String tenant=tenant();
+        AuthorizationContext.requirePermission("order:payment:check");
+        if(id<1)throw badRequest("回款ID无效");
+        return store.requestRecognition(tenant,id);
     }
     public List<TransactionMatch> checkTransaction(String transactionNo) {
         String tenant = tenant();

@@ -81,6 +81,10 @@ class HistoryOrderSyncTest {
                     + " TIMESTAMP,paid_amount DECIMAL(20,2),remark VARCHAR(1000),created_by"
                     + " VARCHAR(50),updated_by VARCHAR(50),created_time TIMESTAMP,updated_time"
                     + " TIMESTAMP,revision INT,deleted INT)");
+        db.execute("ALTER TABLE order_payment_record ADD checked_by VARCHAR(50)");
+        db.execute("ALTER TABLE order_payment_record ADD checked_at TIMESTAMP");
+        db.execute("ALTER TABLE order_sync_receipt ADD confirmed_by VARCHAR(50)");
+        db.execute("ALTER TABLE order_sync_receipt ADD confirmed_at TIMESTAMP");
         salesOrders = mock(com.rigour.order.application.service.sales.OrderSalesOrderService.class);
         store =
                 new JdbcOrderHistorySyncStore(
@@ -1333,4 +1337,20 @@ class HistoryOrderSyncTest {
         assertThat(september.sales()).isEmpty();
         assertThat(september.receipts().getFirst().get("employee_code")).isEqualTo("LI");
     }
+    @Test
+    void historicalConfirmationCarriesSourceResponsibilityWithoutChangingMoneyOrDate() {
+        pendingHistoricalReceipt();
+        var c=historicalStatus("CONFIRMED","confirmed-person");
+        c=new Receipt(c.connectorId(),c.receiptNo(),c.sourceOrderNo(),c.customerId(),c.amount(),c.occurredAt(),c.status(),c.updatedAt(),c.checksum(),"财务甲",paidAt);
+        assertThat(syncHistorical(c).state()).isEqualTo("SYNCED");
+        assertThat(db.queryForObject("SELECT checked_by FROM order_payment_record",String.class)).isEqualTo("财务甲");
+        assertThat(db.queryForObject("SELECT checked_at FROM order_payment_record",java.time.LocalDateTime.class)).isEqualTo(java.time.LocalDateTime.ofInstant(paidAt,java.time.ZoneOffset.UTC));
+        var before=db.queryForList("SELECT * FROM order_payment_record");
+        syncHistorical(c);
+        assertThat(db.queryForList("SELECT * FROM order_payment_record")).isEqualTo(before);
+        var missing=new Receipt(c.connectorId(),c.receiptNo(),c.sourceOrderNo(),c.customerId(),c.amount(),c.occurredAt(),c.status(),c.updatedAt(),c.checksum());
+        syncHistorical(missing);
+        assertThat(db.queryForList("SELECT * FROM order_payment_record")).isEqualTo(before);
+    }
+
 }

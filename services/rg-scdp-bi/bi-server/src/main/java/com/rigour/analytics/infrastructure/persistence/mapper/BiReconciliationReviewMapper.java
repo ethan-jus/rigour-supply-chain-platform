@@ -65,7 +65,7 @@ SELECT o.source_order_no AS orderNo, 'ORDER' AS kind, o.source_order_no AS ident
   LEFT JOIN bi_source_crm_crm_customer_area ca ON ca.tenant_id=UUID_TO_BIN(o.tenant_id)
    AND ca.area_code=COALESCE(NULLIF(o.region_code,''), NULLIF(c.region_code,''))
  WHERE o.tenant_id=#{tenant} AND o.source_system_code='FEISHU'
-   AND o.deleted=0 AND o.order_status_code <> 'CANCELLED'
+   AND o.deleted=0 AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
  ORDER BY o.source_order_no, o.id LIMIT #{limit}
 """)
     List<Map<String, Object>> businessOrders(
@@ -92,7 +92,7 @@ SELECT o.source_order_no AS orderNo, 'SKU' AS kind, l.id AS systemLineId,
   LEFT JOIN bi_source_crm_crm_customer_area ca ON ca.tenant_id=UUID_TO_BIN(o.tenant_id)
    AND ca.area_code=COALESCE(NULLIF(o.region_code,''),NULLIF(c.region_code,''))
  WHERE l.tenant_id=#{tenant} AND o.source_system_code='FEISHU'
-   AND l.deleted=0 AND o.deleted=0 AND o.order_status_code <> 'CANCELLED'
+   AND l.deleted=0 AND o.deleted=0 AND o.order_status_code  NOT IN ('CANCELLED','DELETED')
  ORDER BY o.source_order_no, l.id LIMIT #{limit}
 """)
     List<Map<String, Object>> businessLines(
@@ -107,7 +107,7 @@ SELECT o.source_order_no AS orderNo, 'SKU' AS kind, l.id AS systemLineId,
                    NULL AS product, NULL AS specification, NULL AS unit
               FROM bi_sales_order_fact
              WHERE tenant_id=#{tenant} AND source_system_code='FEISHU'
-               AND deleted=0 AND order_status_code <> 'CANCELLED'
+               AND deleted=0 AND order_status_code  NOT IN ('CANCELLED','DELETED')
              ORDER BY source_order_no, order_id LIMIT #{limit}
             """)
     List<Map<String, Object>> biOrders(@Param("tenant") String tenant, @Param("limit") int limit);
@@ -125,7 +125,7 @@ SELECT l.source_order_no AS orderNo, 'SKU' AS kind, l.order_line_id AS systemLin
        l.specification_snapshot AS specification, l.unit_code AS unit
   FROM bi_sales_order_line_fact l
  WHERE l.tenant_id=#{tenant} AND l.source_system_code='FEISHU'
-   AND l.deleted=0 AND l.order_status_code <> 'CANCELLED'
+   AND l.deleted=0 AND l.order_status_code  NOT IN ('CANCELLED','DELETED')
  ORDER BY l.source_order_no, l.order_line_id LIMIT #{limit}
 """)
     List<Map<String, Object>> biLines(@Param("tenant") String tenant, @Param("limit") int limit);

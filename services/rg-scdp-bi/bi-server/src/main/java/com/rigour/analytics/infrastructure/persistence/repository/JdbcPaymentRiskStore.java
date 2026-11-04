@@ -60,7 +60,7 @@ public class JdbcPaymentRiskStore implements PaymentRiskStore {
                   LEFT JOIN bi_sales_order_line_fact l
                     ON l.tenant_id=o.tenant_id AND l.order_id=o.order_id AND l.deleted=0
                   LEFT JOIN bi_product_dim p ON p.tenant_id=l.tenant_id AND p.product_id=l.product_id
-                 WHERE o.tenant_id=:tenant AND o.deleted=0 AND COALESCE(o.order_status_code,'')<>'CANCELLED'
+                 WHERE o.tenant_id=:tenant AND o.deleted=0 AND COALESCE(o.order_status_code,'') NOT IN ('CANCELLED','DELETED')
                    AND o.payable_amount>0 AND o.paid_amount<o.payable_amount
                    AND o.order_date BETWEEN :from AND :to
                    AND (:region IS NULL OR o.region_code""" + JDBC_REGION_SCOPE + """

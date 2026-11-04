@@ -50,6 +50,10 @@ import java.util.Optional;
 /** 订单登记读取仓储；直接用现有业务表查询，金额按主键聚合，禁止三表展开求和。 */
 @Repository
 public class JdbcOrderRegisterStore implements OrderRegisterStore {
+    private static String orderCollectionStatus() {
+        return "CASE WHEN o.payable_amount=0 THEN 'NOT_REQUIRED' ELSE o.payment_status_code END";
+    }
+
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final TypeReference<List<String>> STRING_LIST = new TypeReference<>() {};
@@ -109,7 +113,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                                 + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
                                 + " snap.department_id,snap.department_name,"
-                                + " o.order_status_code,o.payment_status_code,o.data_quality_status_code,"
+                                + " o.order_status_code," + orderCollectionStatus() + " AS payment_status_code,o.data_quality_status_code,"
                                 + " ol.original_amount,"
                                 + " o.payable_amount,o.paid_amount,o.unpaid_amount,"
                                 + " COALESCE(pc.checked_amount,0) AS checked_amount,"
@@ -205,7 +209,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + " COALESCE(snap.region_code,o.region_code) AS region_code,"
                                 + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                                 + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
-                                + " snap.department_id,snap.department_name,o.order_status_code,o.payment_status_code,o.order_date,"
+                                + " snap.department_id,snap.department_name,o.order_status_code," + orderCollectionStatus() + " AS payment_status_code,o.order_date,"
                                 + " " + allocatedAmount("payable_amount") + " AS allocated_order_amount,"
                                 + " " + lineDiscountAmount() + " AS allocated_discount_amount,"
                                 + " " + lineDiscountRate() + " AS allocated_discount_rate,"
@@ -263,6 +267,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                         rs.getString("synced_by"),
                                         instant(rs, "synced_at"), instant(rs, "payment_time")),
                         append(where.args(), step, begin).toArray());
+        where.and("o.order_status_code NOT IN ('CANCELLED','DELETED')");
         var totals = jdbc.queryForMap(
                 "SELECT COALESCE(SUM(l.unit_price*l.quantity),0) line_amount,"
                         + " COUNT(DISTINCT l.product_id) product_count,"
@@ -695,6 +700,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
     }
 
     private Map<String, BigDecimal> orderTotals(Sql where) {
+        where.and("o.order_status_code NOT IN ('CANCELLED','DELETED')");
         var row = jdbc.queryForMap(
                 "SELECT COALESCE(SUM(ol.original_amount),0) original_amount,"
                         + " COALESCE(SUM(CASE WHEN ol.original_amount IS NULL THEN 1 ELSE 0 END),0) missing_line_count,"
@@ -741,7 +747,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                     null, null, null, null, null, null, null, null, null, null, null, null, null);
             var where = orderWhere(tenantId, criteria);
             where.and("o.payable_amount>0");
-            where.and("o.order_status_code<>'CANCELLED'");
+            where.and("o.order_status_code NOT IN ('CANCELLED','DELETED')");
             // 先按订单聚合回款，避免多笔回款放大交易额；保留范围之前下单的历史欠款。
             var args = new ArrayList<Object>();
             args.add(month.toString());
@@ -837,6 +843,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
 
     private Map<String, BigDecimal> paymentTotals(String tenantId, PaymentCriteria criteria) {
         var where = paymentWhere(tenantId, criteria);
+        where.and("o.order_status_code NOT IN ('CANCELLED','DELETED')");
         String amount = selectedPaymentAmount("p.paid_amount", criteria);
         var row =
                 jdbc.queryForMap(
@@ -1042,7 +1049,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         ge(where, LATEST_PAYMENT_TIME, c.paymentTimeFrom());
         lt(where, LATEST_PAYMENT_TIME, c.paymentTimeTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
-        eq(where, "o.payment_status_code", c.paymentStatusCode());
+        eq(where, orderCollectionStatus(), c.paymentStatusCode());
         if (c.hasDiscount() != null) {
             where.and("(ol.original_amount-o.payable_amount)" + (c.hasDiscount() ? " > 0" : " <= 0"));
         }
@@ -1101,7 +1108,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
-        eq(where, "o.payment_status_code", c.paymentStatusCode());
+        eq(where, orderCollectionStatus(), c.paymentStatusCode());
         if (c.productKeyword() != null && !c.productKeyword().isBlank()) {
             where.and(
                     "(l.product_name_snapshot LIKE ? OR l.product_code_snapshot LIKE ? OR l.sku_code_snapshot LIKE ?)",
@@ -1161,7 +1168,12 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                     + " WHERE vt.tenant_id=? AND vt.payment_id=p.id AND vt.transaction_no LIKE ?))",
                     pattern, tenantId, pattern);
         }
-        eq(where, "p.payment_status_code", c.paymentStatusCode());
+        // CONFIRMED 是页面“已收款”的汇总筛选，包含到账未核对和已核对回款。
+        if ("CONFIRMED".equals(c.paymentStatusCode())) {
+            where.and("p.payment_status_code IN ('RECEIVED','CHECKED')");
+        } else {
+            eq(where, "p.payment_status_code", c.paymentStatusCode());
+        }
         ge(where, "p.payment_time", c.paymentTimeFrom());
         lt(where, "p.payment_time", c.paymentTimeTo());
         eq(where, "COALESCE(NULLIF(TRIM(o.source_creator_name),''),p.created_by)", c.createdBy());
@@ -1177,6 +1189,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         var where = new Sql();
         where.and("o.tenant_id=?", tenantId);
         where.and("o.deleted=0");
+        where.and("o.order_status_code NOT IN ('CANCELLED','DELETED')");
         like(where, "o.region_code", c.regionCode());
         like(where, "o.owner_employee_code", c.ownerEmployeeCode());
         inIds(where, "snap.department_id", c.departmentIds());
@@ -1190,6 +1203,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         var where = new Sql();
         where.and("o.tenant_id=?", tenantId);
         where.and("o.deleted=0");
+        where.and("o.order_status_code NOT IN ('CANCELLED','DELETED')");
         like(where, "o.order_no", c.orderNo());
         like(where, "o.region_code", c.regionCode());
         like(where, "o.owner_employee_code", c.ownerEmployeeCode());

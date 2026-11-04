@@ -38,6 +38,132 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         this.salesOrders = salesOrders;
     }
 
+    @Override
+    @Transactional
+    public List<VoucherBackfillCandidate> claimVoucherBackfill(String tenant, VoucherBackfillClaim c) {
+        require(c != null && c.connectorId() != null && c.limit() >= 1 && c.limit() <= 50 && c.scanStartedAt() != null, "补图批次参数无效");
+        String connector = c.connectorId().toString();
+        // Bind each tenant column separately: legacy tables may use a different collation.
+        var rows = jdbc.queryForList("SELECT p.id,p.source_record_id,p.source_document_no,p.sales_order_no_snapshot,p.connector_id,p.source_system_code"
+                + " FROM order_payment_record p WHERE p.tenant_id=? AND p.deleted=0"
+                + " AND COALESCE(JSON_LENGTH(p.voucher_keys_json),0)=0"
+                + " AND (p.connector_id=? OR EXISTS(SELECT 1 FROM order_sync_allocation a WHERE a.tenant_id=? AND a.connector_id=? AND a.payment_id=p.id))"
+                + " AND NOT EXISTS(SELECT 1 FROM order_payment_voucher_backfill b WHERE b.tenant_id=? AND b.connector_id=? AND b.payment_id=p.id AND (b.next_check_at>UTC_TIMESTAMP(6) OR b.checked_at>=?))"
+                + " ORDER BY p.id LIMIT ? FOR UPDATE SKIP LOCKED", tenant,connector,tenant,connector,tenant,connector,LocalDateTime.ofInstant(c.scanStartedAt(),ZoneOffset.UTC),c.limit());
+        List<VoucherBackfillCandidate> result = new ArrayList<>();
+        for (var p : rows) {
+            long paymentId = num(p,"id"); String token = UUID.randomUUID().toString();
+            var refs = new LinkedHashSet<VoucherReceiptReference>();
+            var allocated = jdbc.queryForList("SELECT a.receipt_no,r.source_order_no FROM order_sync_allocation a"
+                    + " LEFT JOIN order_sync_receipt r ON r.tenant_id=? AND r.connector_id=? AND r.receipt_no=a.receipt_no"
+                    + " WHERE a.tenant_id=? AND a.connector_id=? AND a.payment_id=?",tenant,connector,tenant,connector,paymentId);
+            for (var a : allocated) refs.add(new VoucherReceiptReference(text(a,"receipt_no"),text(a,"source_order_no")));
+            if (connector.equals(text(p,"connector_id")) && "DINGHUOBAO".equals(text(p,"source_system_code"))) {
+                String receipt = text(p,"source_document_no");
+                if (receipt == null) receipt = text(p,"source_record_id");
+                if (receipt != null) {
+                    var source = jdbc.queryForList("SELECT source_order_no FROM order_sync_receipt WHERE tenant_id=? AND connector_id=? AND receipt_no=?",tenant,connector,receipt);
+                    String order = source.isEmpty() ? text(p,"sales_order_no_snapshot") : text(source.getFirst(),"source_order_no");
+                    refs.add(new VoucherReceiptReference(receipt,order));
+                }
+            }
+            jdbc.update("INSERT INTO order_payment_voucher_backfill(tenant_id,connector_id,payment_id,state,lease_token,next_check_at)"
+                    + " VALUES(?,?,?,'RUNNING',?,DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 30 MINUTE))"
+                    + " ON DUPLICATE KEY UPDATE state='RUNNING',lease_token=VALUES(lease_token),next_check_at=VALUES(next_check_at)",tenant,connector,paymentId,token);
+            result.add(new VoucherBackfillCandidate(paymentId,token,List.copyOf(refs)));
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional
+    public void finishVoucherBackfill(String tenant, VoucherBackfillResult c) {
+        require(c != null && c.connectorId() != null && Set.of("SYNCED","SOURCE_EMPTY","SOURCE_MISSING","MAPPING_MISSING","SOURCE_CANCELLED","FAILED").contains(c.state()), "补图结果无效");
+        // A response from an expired attempt cannot overwrite a newer claim.
+        jdbc.update("UPDATE order_payment_voucher_backfill SET state=?,checked_at=UTC_TIMESTAMP(6),"
+                + " next_check_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL ? MINUTE)"
+                + " WHERE tenant_id=? AND connector_id=? AND payment_id=? AND lease_token=? AND state='RUNNING'",
+                c.state(),"FAILED".equals(c.state()) ? 15 : 1440,tenant,c.connectorId().toString(),c.paymentId(),c.leaseToken());
+    }
+
+    @Override
+    @Transactional
+    public Intake receiptVouchers(String tenant, String actor, ReceiptVouchers c) {
+        require(c != null && c.connectorId() != null, "凭证来源连接不能为空");
+        id(c.sourcePaymentNo());
+        require(Set.of("CONFIRMED", "PENDING", "CANCELLED").contains(c.sourceStatus()), "凭证来源状态未知");
+        String connector = c.connectorId().toString();
+        boolean cancelled = "CANCELLED".equals(c.sourceStatus());
+        List<String> keys = cancelled ? List.of() : c.objectKeys();
+        require(keys != null, "附件列表不能为空");
+        for (String key : keys) require(key != null && key.startsWith(tenant + "/")
+                && key.length() <= 500 && !key.contains(":") && !key.contains("..")
+                && !key.contains("?") && !key.contains("#"), "凭证必须为本租户自有对象存储key");
+        // 撤销只处理本同步曾建立的关联，不据订单号推断回款身份。
+        var old = jdbc.queryForList("SELECT * FROM order_payment_voucher_source WHERE tenant_id=?"
+                + " AND connector_id=? AND source_payment_no=? FOR UPDATE", tenant, connector, c.sourcePaymentNo());
+        List<Map<String, Object>> targets;
+        if (cancelled) {
+            targets = new ArrayList<>();
+            for (long paymentId : old.stream().map(r -> num(r, "payment_id")).distinct().sorted().toList())
+                targets.addAll(jdbc.queryForList("SELECT * FROM order_payment_record WHERE tenant_id=? AND id=? FOR UPDATE", tenant, paymentId));
+        } else {
+            id(c.receiptNo());
+            targets = jdbc.queryForList("SELECT p.* FROM order_payment_record p WHERE p.tenant_id=? AND p.deleted=0"
+                    + " AND p.payment_status_code IN ('RECEIVED','CHECKED') AND ("
+                    + " (p.connector_id=? AND p.source_system_code='DINGHUOBAO' AND (p.source_record_id=? OR p.source_document_no=?))"
+                    + " OR EXISTS (SELECT 1 FROM order_sync_allocation a WHERE a.tenant_id=p.tenant_id AND a.payment_id=p.id"
+                    + " AND a.connector_id=? AND a.receipt_no=?)) ORDER BY p.id FOR UPDATE",
+                    tenant, connector, c.receiptNo(), c.receiptNo(), connector, c.receiptNo());
+            if (targets.isEmpty()) return new Intake("PENDING_MAPPING", null, "未找到该收款单的有效回款，凭证未关联");
+            // 同一来源不能悄悄迁移到另一批回款；保留原关联等待核对。
+            var targetIds = targets.stream().map(r -> num(r, "id")).toList();
+            require(old.stream().allMatch(r -> targetIds.contains(num(r, "payment_id"))), "凭证来源回款关联已变化，需人工核对");
+            var sourceReceipts = jdbc.queryForList("SELECT source_order_no FROM order_sync_receipt WHERE tenant_id=? AND connector_id=? AND receipt_no=?",
+                    tenant, connector, c.receiptNo());
+            if (!sourceReceipts.isEmpty() && c.sourceOrderNo() != null)
+                require(sourceReceipts.stream().allMatch(r -> Objects.equals(text(r, "source_order_no"), c.sourceOrderNo())), "付款单和收款单的来源订单不一致");
+        }
+        for (var target : targets) {
+            long paymentId = num(target, "id");
+            var existing = new LinkedHashSet<String>();
+            String json = text(target, "voucher_keys_json");
+            if (json != null) for (var node : JSON.readTree(json)) existing.add(node.asText());
+            var before = List.copyOf(existing);
+            var previous = old.stream().filter(r -> num(r, "payment_id") == paymentId).toList();
+            jdbc.update("DELETE FROM order_payment_voucher_source WHERE tenant_id=? AND connector_id=? AND source_payment_no=? AND payment_id=?",
+                    tenant, connector, c.sourcePaymentNo(), paymentId);
+            var guard = new PaymentVoucherWriteGuard(jdbc);
+            // 同一内容已有关联时沿用原 key，保留人工附件的所有权和旧识别信息。
+            var canonical = new LinkedHashMap<String, String>();
+            existing.forEach(key -> canonical.putIfAbsent(com.rigour.order.domain.value.VoucherIdentity.of(key), key));
+            var retained = guard.retainedKeys(tenant, paymentId, keys).stream()
+                    .map(key -> canonical.computeIfAbsent(com.rigour.order.domain.value.VoucherIdentity.of(key), ignored -> key))
+                    .distinct().toList();
+            for (String key : retained) {
+                boolean managed = !existing.contains(key)
+                        || jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_voucher_source WHERE tenant_id=? AND payment_id=? AND voucher_key=? AND managed_link=1", Long.class, tenant, paymentId, key) > 0
+                        || previous.stream().anyMatch(r -> key.equals(text(r, "voucher_key")) && num(r, "managed_link") == 1);
+                jdbc.update("INSERT INTO order_payment_voucher_source(tenant_id,connector_id,source_payment_no,receipt_no,payment_id,voucher_key,managed_link,created_time)"
+                        + " VALUES(?,?,?,?,?,?,?,UTC_TIMESTAMP(6))", tenant, connector, c.sourcePaymentNo(), c.receiptNo(), paymentId, key, managed ? 1 : 0);
+                existing.add(key);
+                JdbcVoucherRecognitionStore.enqueue(jdbc, tenant, paymentId, key);
+            }
+            for (var previousLink : previous) {
+                String key = text(previousLink, "voucher_key");
+                if (num(previousLink, "managed_link") == 1 && !retained.contains(key)
+                        && jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_voucher_source WHERE tenant_id=? AND payment_id=? AND voucher_key=?",
+                            Long.class, tenant, paymentId, key) == 0) existing.remove(key);
+            }
+            if (!before.equals(List.copyOf(existing))) {
+                auditChange(tenant, c.connectorId(), "VOUCHER", c.sourcePaymentNo(), target, c);
+                jdbc.update("UPDATE order_payment_record SET voucher_keys_json=?,revision=revision+1 WHERE tenant_id=? AND id=?",
+                        JSON.writeValueAsString(existing), tenant, paymentId);
+            }
+        }
+        return new Intake("SYNCED", null, "凭证关联已同步");
+    }
+
     private static LocalDateTime ts(Instant v) {
         return v == null ? null : LocalDateTime.ofInstant(v, ZoneOffset.UTC);
     }
@@ -273,44 +399,68 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         return rows;
     }
 
-    /** 来源取消只删除业务投影，保留来源、关联、核销审计记录。 */
+    /** 保留来源失效订单供查询，金额和回款证据不删除，统计按主状态排除。 */
     @Transactional
     public Intake cancelSourceOrder(String t, String actor, CancelSourceOrder c) {
         require(c != null && c.connectorId() != null, "来源连接器缺失");
         id(c.sourceNo());
+        String status = c.orderStatusCode() == null ? "CANCELLED" : c.orderStatusCode();
+        require(Set.of("CANCELLED", "DELETED").contains(status), "来源失效状态无效");
         require(jdbc.queryForObject(
                 "SELECT COUNT(*) FROM order_sync_source WHERE tenant_id=? AND source_no=? AND connector_id<>?",
                 Long.class, t, c.sourceNo(), c.connectorId().toString()) == 0,
-                "来源单属于其他连接器，不能执行删除");
+                "来源单属于其他连接器，不能更新状态");
         var sources = source(t, c.connectorId(), c.sourceNo(), true);
         String group = sources.isEmpty() ? null : text(sources.getFirst(), "group_id");
-        jdbc.update("UPDATE order_sync_source SET state='CANCELLED',revision=revision+1"
-                        + " WHERE tenant_id=? AND connector_id=? AND source_no=? AND state<>'CANCELLED'",
-                t, c.connectorId().toString(), c.sourceNo());
-        // 一张历史单可能对应多张来源单，不能因其中一张取消删除其他有效订单。
+        var latest = jdbc.queryForList("SELECT source_updated_at FROM order_sales_order WHERE tenant_id=?"
+                + " AND source_system_code='DINGHUOBAO' AND source_order_no=? FOR UPDATE", t, c.sourceNo());
+        if (c.sourceUpdatedAt() != null && latest.stream().anyMatch(row ->
+                instant(row.get("source_updated_at")) != null
+                        && c.sourceUpdatedAt().isBefore(instant(row.get("source_updated_at")))))
+            return new Intake("STALE", group, "旧版本来源已忽略");
+        if (!sources.isEmpty()) {
+            var previous = JSON.readValue(text(sources.getFirst(), "payload"), SalesOrderCommand.class);
+            if (previous.sourceUpdatedAt() != null && c.sourceUpdatedAt() != null
+                    && c.sourceUpdatedAt().isBefore(previous.sourceUpdatedAt()))
+                return new Intake("STALE", group, "旧版本来源已忽略");
+        }
+        jdbc.update("UPDATE order_sync_source SET state=?,revision=revision+1"
+                        + " WHERE tenant_id=? AND connector_id=? AND source_no=? AND state<>? AND state<>'DELETED'",
+                status, t, c.connectorId().toString(), c.sourceNo(), status);
         if (group != null && jdbc.queryForObject(
-                "SELECT COUNT(*) FROM order_sync_source WHERE tenant_id=? AND group_id=? AND state<>'CANCELLED'",
+                "SELECT COUNT(*) FROM order_sync_source WHERE tenant_id=? AND group_id=? AND state NOT IN ('CANCELLED','DELETED')",
                 Long.class, t, group) > 0) {
-            return new Intake("CANCELLATION_REVIEW", group, "关联组仍有有效来源订单，需拆分核对后删除取消部分");
+            return new Intake("CANCELLATION_REVIEW", group, "关联组仍有有效来源订单，需拆分核对失效部分");
         }
         var orders = jdbc.queryForList(
-                "SELECT o.id FROM order_sales_order o WHERE o.tenant_id=? AND o.deleted=0 AND"
+                "SELECT o.id FROM order_sales_order o WHERE o.tenant_id=? AND"
                         + " ((o.source_system_code='DINGHUOBAO' AND o.source_order_no=?) OR EXISTS"
                         + " (SELECT 1 FROM order_history_member m WHERE m.tenant_id=o.tenant_id"
                         + " AND m.order_id=o.id AND m.group_id=?)) FOR UPDATE", t, c.sourceNo(), group);
-        for (var order : orders) {
-            long orderId = num(order, "id");
-            jdbc.update("UPDATE order_payment_record SET deleted=1,revision=revision+1,updated_by=?,"
-                            + " updated_time=UTC_TIMESTAMP(6) WHERE tenant_id=? AND order_id=? AND deleted=0",
-                    actor, t, orderId);
-            jdbc.update("UPDATE order_sales_order_line SET deleted=1,revision=revision+1,updated_by=?,"
-                            + " updated_time=UTC_TIMESTAMP(6) WHERE tenant_id=? AND order_id=? AND deleted=0",
-                    actor, t, orderId);
-            jdbc.update("UPDATE order_sales_order SET deleted=1,order_status_code='CANCELLED',"
-                            + " revision=revision+1,updated_by=?,updated_time=UTC_TIMESTAMP(6)"
-                            + " WHERE tenant_id=? AND id=? AND deleted=0", actor, t, orderId);
+        if (orders.isEmpty()) {
+            // 来源可能已删除而无法再取客户/商品；只保存已知字段，不补造下单时间或回款。
+            require(jdbc.queryForObject("SELECT COUNT(*) FROM order_sales_order WHERE tenant_id=? AND order_no=?",
+                    Long.class, t, c.sourceNo()) == 0, "来源订单号与已有订单冲突，需核对");
+            jdbc.update("INSERT INTO order_sales_order(tenant_id,order_no,source_system_code,source_order_no,"
+                            + "source_status_code,order_status_code,order_date,customer_name_snapshot,"
+                            + "payable_amount,data_quality_status_code,data_quality_message,source_updated_at,created_by,updated_by)"
+                            + " VALUES(?,?,'DINGHUOBAO',?,?,?,?,?,?,'NEEDS_REVIEW','来源失效订单，仅保留已知信息',?,?,?)",
+                    t, c.sourceNo(), c.sourceNo(), status, status, ts(c.orderDate()), c.customerName(),
+                    c.amount() == null ? BigDecimal.ZERO : c.amount(), ts(c.sourceUpdatedAt()), actor, actor);
+        } else {
+            for (var order : orders) {
+                jdbc.update("UPDATE order_sales_order SET deleted=0,order_status_code=?,source_status_code=?,"
+                                + " source_updated_at=COALESCE(?,source_updated_at),revision=revision+1,updated_by=?,updated_time=UTC_TIMESTAMP(6)"
+                                + " WHERE tenant_id=? AND id=? AND (source_updated_at IS NULL OR ? IS NULL OR source_updated_at<=?)"
+                                + " AND (order_status_code<>'DELETED' OR ?='DELETED')"
+                                + " AND (deleted<>0 OR order_status_code<>? OR source_status_code IS NULL OR source_status_code<>?"
+                                + " OR ? IS NOT NULL AND (source_updated_at IS NULL OR source_updated_at<?))",
+                        status, status, ts(c.sourceUpdatedAt()), actor, t, num(order, "id"),
+                        ts(c.sourceUpdatedAt()), ts(c.sourceUpdatedAt()), status, status, status,
+                        ts(c.sourceUpdatedAt()), ts(c.sourceUpdatedAt()));
+            }
         }
-        return new Intake("CANCELLED", group, null);
+        return new Intake(status, group, null);
     }
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
@@ -351,8 +501,8 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         if (!rows.isEmpty()) {
             var old = rows.getFirst();
             group = text(old, "group_id");
-            if ("CANCELLED".equals(text(old, "state")))
-                return new Intake("CANCELLED", group, "来源订单已取消，不能自动恢复");
+            if (Set.of("CANCELLED", "DELETED").contains(text(old, "state")))
+                return new Intake(text(old, "state"), group, "来源订单已失效，不能自动恢复");
             var previousSource = JSON.readValue(text(old, "payload"), SalesOrderCommand.class);
             if (previousSource.sourceUpdatedAt() != null && c.order().sourceUpdatedAt() != null
                     && c.order().sourceUpdatedAt().isBefore(previousSource.sourceUpdatedAt()))
@@ -926,13 +1076,13 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 && money(old, "amount").compareTo(c.amount()) == 0
                 && Objects.equals(text(old, "source_order_no"), c.sourceOrderNo())
                 && Objects.equals(old.get("customer_id"), c.customerId())
-                && !sources.isEmpty() && !"CANCELLED".equals(text(sources.getFirst(), "state"))
+                && !sources.isEmpty() && !Set.of("CANCELLED", "DELETED").contains(text(sources.getFirst(), "state"))
                 && Objects.equals(text(sources.getFirst(), "group_id"), group)
                 && Objects.equals(sources.getFirst().get("customer_id"), c.customerId());
         if (sameFacts && Objects.equals(text(old, "source_status"), c.status())
                 && c.checksum().equals(text(old, "checksum")) && old.get("pending_checksum") == null
                 && Set.of("SYNCED", "ALLOCATED", "BASELINE_COVERED", "CANCELLED").contains(text(old, "state")))
-            return new Intake("CANCELLED".equals(c.status()) ? "CANCELLED" : "SYNCED", group, null);
+            return confirmedReceiptResult(t, c, group);
         if (sameFacts && !"CANCELLED".equals(text(old, "source_status"))) {
             if (receivedReceipt(c.status())) {
                 BigDecimal other = jdbc.queryForObject("SELECT COALESCE(SUM(amount),0) FROM order_sync_receipt"
@@ -942,7 +1092,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 sameFacts = other.add(c.amount()).compareTo(money(sources.getFirst(), "amount")) <= 0;
             }
             var preserved = new Receipt(c.connectorId(), c.receiptNo(), c.sourceOrderNo(), c.customerId(),
-                    c.amount(), instant(old.get("occurred_at")), c.status(), c.updatedAt(), c.checksum());
+                    c.amount(), instant(old.get("occurred_at")), c.status(), c.updatedAt(), c.checksum(), c.confirmedBy(), c.confirmedAt());
             if (sameFacts && syncReceiptChange(t, preserved, old, c.customerId(), group)) {
                 var funds = jdbc.queryForList("SELECT * FROM order_fund_document WHERE tenant_id=? AND connector_id=?"
                         + " AND source_system_code='DINGHUOBAO' AND direction_code='RECEIPT' AND source_document_no=?"
@@ -955,7 +1105,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             + "updated_by='SYSTEM',updated_time=? WHERE tenant_id=? AND id=?",
                             fundStatus, ts(Instant.now()), t, num(fund, "id"));
                 }
-                return new Intake("CANCELLED".equals(c.status()) ? "CANCELLED" : "SYNCED", group, null);
+                return confirmedReceiptResult(t, c, group);
             }
         }
         // 保留待核对来源；相同待处理版本在关联修复后仍可重试。
@@ -987,7 +1137,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         ? List.<Map<String, Object>>of()
                         : source(t, c.connectorId(), c.sourceOrderNo(), true);
         String group = sources.isEmpty() ? null : text(sources.getFirst(), "group_id");
-        if (!sources.isEmpty() && "CANCELLED".equals(text(sources.getFirst(), "state")))
+        if (!sources.isEmpty() && Set.of("CANCELLED", "DELETED").contains(text(sources.getFirst(), "state")))
             return new Intake("ORDER_CANCELLED", group, "订单已取消，回款保留在来源记录中");
         Long customer = c.customerId();
         if (!sources.isEmpty()) {
@@ -1254,6 +1404,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         c.receiptNo());
             }
         }
+        if (Set.of("ALLOCATED","ALLOCATION_PENDING","BASELINE_COVERED").contains(state)) syncConfirmation(t, c);
         return new Intake(
                 state, group, "ALLOCATION_PENDING".equals(state) ? "已归门店组，待确认组内核销" : "回款来源已保存");
     }
@@ -1493,7 +1644,28 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 BigDecimal.class, t, id);
     }
 
+    private Intake confirmedReceiptResult(String tenant, Receipt receipt, String group) {
+        syncConfirmation(tenant, receipt);
+        return new Intake("CANCELLED".equals(receipt.status()) ? "CANCELLED" : "SYNCED", group, null);
+    }
+
+    /** 来源确认元数据只更新已证明关联的确认款，空值不抹掉已知责任人。 */
+    private void syncConfirmation(String tenant, Receipt c) {
+        if (!"CONFIRMED".equals(c.status()) || (c.confirmedBy() == null && c.confirmedAt() == null)) return;
+        require(c.confirmedBy() == null || c.confirmedBy().length() <= 50, "来源确认人过长");
+        jdbc.update("UPDATE order_sync_receipt SET confirmed_by=COALESCE(?,confirmed_by),confirmed_at=COALESCE(?,confirmed_at)"
+                + " WHERE tenant_id=? AND connector_id=? AND receipt_no=?",c.confirmedBy(),ts(c.confirmedAt()),tenant,c.connectorId().toString(),c.receiptNo());
+        jdbc.update("UPDATE order_payment_record p SET checked_by=COALESCE(?,checked_by),checked_at=COALESCE(?,checked_at),revision=revision+1"
+                + " WHERE p.tenant_id=? AND p.deleted=0 AND p.payment_status_code='CHECKED' AND ("
+                + " (p.connector_id=? AND p.source_system_code='DINGHUOBAO' AND (p.source_record_id=? OR p.source_document_no=?))"
+                + " OR EXISTS(SELECT 1 FROM order_sync_allocation a WHERE a.tenant_id=p.tenant_id AND a.payment_id=p.id AND a.connector_id=? AND a.receipt_no=?))"
+                + " AND ((? IS NOT NULL AND (checked_by IS NULL OR checked_by<>?)) OR (? IS NOT NULL AND (checked_at IS NULL OR checked_at<>?)))",
+                c.confirmedBy(),ts(c.confirmedAt()),tenant,c.connectorId().toString(),c.receiptNo(),c.receiptNo(),c.connectorId().toString(),c.receiptNo(),
+                c.confirmedBy(),c.confirmedBy(),ts(c.confirmedAt()),ts(c.confirmedAt()));
+    }
+
     private Intake receiptResult(String t, Receipt c, String state, String group) {
+        if (Set.of("NEW","SYNCED","ALLOCATED","BASELINE_COVERED").contains(state)) syncConfirmation(t, c);
         var receipt =
                 one(
                         "SELECT * FROM order_sync_receipt WHERE tenant_id=? AND connector_id=? AND"
@@ -1537,6 +1709,9 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 ts(Instant.now()),
                 c.receiptNo(),
                 "CONFIRMED".equals(text(receipt, "source_status")) ? "CHECKED" : "RECEIVED");
+        if ("CONFIRMED".equals(text(receipt, "source_status")))
+            jdbc.update("UPDATE order_payment_record SET checked_by=?,checked_at=? WHERE tenant_id=? AND id=?",
+                    receipt.get("confirmed_by"),receipt.get("confirmed_at"),t,id);
         jdbc.update(
                 "UPDATE order_sync_allocation SET payment_id=? WHERE tenant_id=? AND connector_id=?"
                     + " AND receipt_no=? AND order_id=?",
@@ -1675,7 +1850,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         "SELECT owner_employee_code employee_code,MAX(owner_employee_name_snapshot)"
                             + " employee_name,COUNT(*) order_count,SUM(payable_amount) amount FROM"
                             + " order_sales_order WHERE tenant_id=? AND deleted=0 AND"
-                            + " order_status_code<>'CANCELLED' AND order_date>=? AND order_date<?"
+                            + " order_status_code NOT IN ('CANCELLED','DELETED') AND order_date>=? AND order_date<?"
                             + " GROUP BY owner_employee_code",
                         t,
                         from,
@@ -1686,7 +1861,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             + " employee_name,SUM(p.paid_amount) amount FROM order_payment_record p"
                             + " JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id"
                             + " WHERE p.tenant_id=? AND p.deleted=0 AND o.deleted=0"
-                            + " AND o.order_status_code<>'CANCELLED'"
+                            + " AND o.order_status_code NOT IN ('CANCELLED','DELETED')"
                             + " AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time>=? AND"
                             + " p.payment_time<? GROUP BY p.collector_staff_code",
                         t,
@@ -1699,7 +1874,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             + " specification,SUM(l.line_amount) amount FROM order_sales_order_line"
                             + " l JOIN order_sales_order o ON o.tenant_id=l.tenant_id AND"
                             + " o.id=l.order_id WHERE o.tenant_id=? AND o.deleted=0 AND l.deleted=0"
-                            + " AND o.order_status_code<>'CANCELLED' AND o.order_date>=? AND"
+                            + " AND o.order_status_code NOT IN ('CANCELLED','DELETED') AND o.order_date>=? AND"
                             + " o.order_date<? GROUP BY l.product_id,l.product_variant_id",
                         t,
                         from,
@@ -1714,7 +1889,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             + " r.receipt_no=a.receipt_no JOIN order_sales_order_line l ON"
                             + " l.tenant_id=a.tenant_id AND l.id=a.line_id JOIN order_sales_order o ON"
                             + " o.tenant_id=l.tenant_id AND o.id=l.order_id WHERE a.tenant_id=? AND"
-                            + " l.deleted=0 AND o.deleted=0 AND o.order_status_code<>'CANCELLED' AND"
+                            + " l.deleted=0 AND o.deleted=0 AND o.order_status_code NOT IN ('CANCELLED','DELETED') AND"
                             + " r.source_status IN ('RECEIVED','CONFIRMED') AND r.occurred_at>=? AND"
                             + " r.occurred_at<? GROUP BY l.product_id,l.product_variant_id",
                         t,
@@ -1728,8 +1903,13 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             + " ('ALLOCATED','BASELINE_COVERED','NEW','CANCELLED') THEN amount ELSE"
                             + " 0 END),0) allocation_pending_amount,COALESCE(SUM(CASE WHEN"
                             + " pending_payload IS NOT NULL THEN amount ELSE 0 END),0)"
-                            + " changed_review_amount FROM order_sync_receipt WHERE tenant_id=? AND"
-                            + " source_status<>'CANCELLED' AND occurred_at>=? AND occurred_at<?",
+                            + " changed_review_amount FROM order_sync_receipt r WHERE tenant_id=? AND"
+                            + " source_status<>'CANCELLED' AND occurred_at>=? AND occurred_at<?"
+                            + " AND NOT EXISTS(SELECT 1 FROM order_sync_source s WHERE s.tenant_id=r.tenant_id"
+                            + " AND s.connector_id=r.connector_id AND s.source_no=r.source_order_no AND s.state IN ('CANCELLED','DELETED'))"
+                            + " AND NOT EXISTS(SELECT 1 FROM order_sales_order o WHERE o.tenant_id=r.tenant_id"
+                            + " AND o.source_system_code='DINGHUOBAO' AND o.source_order_no=r.source_order_no"
+                            + " AND o.order_status_code IN ('CANCELLED','DELETED'))",
                         t,
                         from,
                         to);
@@ -1739,7 +1919,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                                 "SELECT COALESCE(SUM(p.paid_amount),0) FROM order_payment_record p"
                                     + " JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id"
                                     + " WHERE p.tenant_id=? AND p.deleted=0 AND o.deleted=0"
-                                    + " AND o.order_status_code<>'CANCELLED'"
+                                    + " AND o.order_status_code NOT IN ('CANCELLED','DELETED')"
                                     + " AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time>=?"
                                     + " AND p.payment_time<?",
                                 BigDecimal.class,

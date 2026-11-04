@@ -12,8 +12,9 @@ public class StorePoolService {
     private final StoreReferenceClient references;
     private final CrmEmployeeClient employees;
     private final StorePoolStore store;
-    public StorePoolService(StoreReferenceClient references, CrmEmployeeClient employees, StorePoolStore store) {
-        this.references=references;this.employees=employees;this.store=store;
+    private final StorePoiClient pois;
+    public StorePoolService(StoreReferenceClient references, CrmEmployeeClient employees, StorePoolStore store, StorePoiClient pois) {
+        this.references=references;this.employees=employees;this.store=store;this.pois=pois;
     }
     public static String action(String view) {
         return switch(view) {case "PUBLIC"->"crm:pool:public-read";case "MINE"->"crm:pool:private-read";case "TEAM"->"crm:pool:team-read";case "COOPERATED"->"crm:store:cooperation-read";case "ALL"->"crm:store:manage";case "LEADS"->"crm:lead:read";case "COVERAGE"->"crm:coverage:read";default->throw new RequestValidationException("门店视图无效");};
@@ -34,8 +35,44 @@ public class StorePoolService {
         if(c.publicPhone()!=null&&c.publicPhone().length()>50)throw new RequestValidationException("电话过长");
         if(c.storeTypeCode()!=null&&!c.storeTypeCode().isBlank()&&!c.storeTypeCode().matches("[A-Z][A-Z0-9_]{0,31}"))throw new RequestValidationException("门店类型编码无效");
         var access=scope("crm:store:manage");
+        store.detail(access,id);
+        if(c.location()!=null) {
+            maintenanceArea(access,c.location().areaCode());
+            var l=c.location();
+            if((l.longitude()==null)!=(l.latitude()==null)||(l.longitude()==null&&l.coordinateSystem()!=null)||l.longitude()!=null&&
+                    (l.longitude().abs().doubleValue()>180||l.latitude().abs().doubleValue()>90||
+                    !Set.of("GCJ02","WGS84").contains(Objects.toString(l.coordinateSystem(),""))))
+                throw new RequestValidationException("请填写成对的有效经纬度并选择坐标系");
+        }
+        if(c.amapPoiId()!=null) {
+            if(!c.amapPoiId().matches("[A-Za-z0-9]{1,64}"))throw new RequestValidationException("POI 编码无效");
+            var poi=pois.detail(access.access().tenantId(),c.amapPoiId());
+            if(poi==null||!c.amapPoiId().equals(poi.id())||!usablePoi(access,poi))
+                throw new RequestValidationException("该 POI 无法核验或不在可维护地区范围");
+            var l=c.location();
+            if(l==null||!poi.areaCode().equals(l.areaCode())||!"GCJ02".equals(l.coordinateSystem())||
+                    l.longitude()==null||l.latitude()==null||poi.longitude().compareTo(l.longitude())!=0||poi.latitude().compareTo(l.latitude())!=0)
+                throw new RequestValidationException("所选 POI 的地区或坐标已变化，请重新查询并选择");
+        }
         if(c.storeTypeCode()!=null&&!c.storeTypeCode().isBlank()&&!references.storeTypeCodes(access.access().tenantId()).contains(c.storeTypeCode()))throw new RequestValidationException("请选择字典中启用的门店类型");
         store.update(access,id,c);
+    }
+    public List<Poi> poiCandidates(String id,String keyword,String areaCode) {
+        id(id);required(keyword,200,"门店名称");
+        var scope=scopeForStore("crm:store:manage",id);
+        maintenanceArea(scope,areaCode);
+        return pois.search(scope.access().tenantId(),keyword.strip(),areaCode).stream()
+                .filter(p->areaCode.equals(p.areaCode())&&usablePoi(scope,p)).toList();
+    }
+    private static boolean usablePoi(StoreScope scope,Poi poi) {
+        return poi.areaCode()!=null&&scope.permitsArea(poi.areaCode())&&poi.longitude()!=null&&poi.latitude()!=null
+                &&poi.longitude().abs().doubleValue()<=180&&poi.latitude().abs().doubleValue()<=90;
+    }
+    private static void maintenanceArea(StoreScope scope,String code) {
+        var node=scope.nodes().get(code);
+        if(node==null||!scope.permitsArea(code))throw new AuthorizationDeniedException("store-area");
+        boolean leaf="PREFECTURE".equals(node.level())&&scope.catalog().nodes().stream().noneMatch(n->code.equals(n.parentCode()));
+        if(!"COUNTY".equals(node.level())&&!leaf)throw new RequestValidationException("请选择区县或合法的无县级建制城市");
     }
     public Context context(String view) {return scope(action(view)).context();}
     public Page list(Query query) {
@@ -115,6 +152,12 @@ public class StorePoolService {
         oneOf(q.region(),Set.of("NORTH","NORTHEAST","EAST","CENTRAL","SOUTH","SOUTHWEST","NORTHWEST"));
         oneOf(q.cooperation(),Set.of("NEVER","COOPERATED"));oneOf(q.tier(),Set.of("A","B","C","UNRATED"));
         oneOf(q.activity(),Set.of("UNKNOWN","NEVER_ORDERED","ACTIVE","DORMANT"));oneOf(q.potential(),Set.of("UNKNOWN","HIGH","MEDIUM","LOW"));
+        oneOf(q.pool(),Set.of("PUBLIC","PRIVATE"));
+        oneOf(q.recordStatus(),Set.of("ACTIVE","SUSPENDED","CLOSED","MERGED"));
+        if(q.recordStatus()!=null&&!q.recordStatus().isBlank()&&!"ALL".equals(q.view()))
+            throw new RequestValidationException("档案状态筛选仅供商家库管理使用");
+        oneOf(q.phase(),Set.of("FIRST_VISIT","FOLLOW_UP","COOPERATING"));
+        oneOf(q.protection(),Set.of("DUE_SOON","OVERDUE","HELD"));
     }
     private static void oneOf(String value,Set<String> allowed) {if(value!=null&&!value.isBlank()&&!allowed.contains(value))throw new RequestValidationException("筛选编码无效");}
 }

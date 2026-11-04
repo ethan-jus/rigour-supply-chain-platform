@@ -183,6 +183,16 @@ public final class OrderRegisterModels {
             BigDecimal allocatedPaymentAmount,
             List<PaymentProductAllocation> productAllocations,
             List<String> voucherTransactionNos) {
+        @com.fasterxml.jackson.annotation.JsonProperty
+        public String receiptStatusCode() {
+            return "CHECKED".equals(paymentStatusCode) ? "RECEIVED" : paymentStatusCode;
+        }
+        @com.fasterxml.jackson.annotation.JsonProperty
+        public String confirmationStatusCode() {
+            return "CHECKED".equals(paymentStatusCode) ? "CONFIRMED"
+                    : "RECEIVED".equals(paymentStatusCode) ? "UNCONFIRMED" : null;
+        }
+
         public OrderRegisterPaymentView(
             Long id,
             String paymentNo,

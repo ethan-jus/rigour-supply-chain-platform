@@ -6,6 +6,7 @@ import org.springframework.web.bind.annotation.*;
 
 public interface PaymentVoucherAuditApi {
     String PATH = OrderRegisterApi.BASE_PATH + "/payments/voucher-audit";
+    @PostMapping(PATH + "/payment-states") ApiResponse<java.util.Map<String,PaymentAuditState>> paymentStates(@RequestBody java.util.List<String> paymentIds);
     @GetMapping(PATH) ApiResponse<Scan> scan();
     @PostMapping(PATH + "/reviews") ApiResponse<Review> review(@RequestBody ReviewRequest request);
 }

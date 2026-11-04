@@ -39,6 +39,8 @@ public class StorePoolController {
     public ApiResponse<List<Event>> events(@PathVariable String id,@RequestParam(defaultValue="PUBLIC")String view){return ApiResponse.success(service.events(id,view));}
     @PutMapping("/{id}")
     public ApiResponse<Void> update(@PathVariable String id,@RequestBody Update command){service.update(id,command);return ApiResponse.success(null);}
+    @GetMapping("/{id}/poi-candidates")
+    public ApiResponse<List<Poi>> poiCandidates(@PathVariable String id,@RequestParam String keyword,@RequestParam String areaCode){return ApiResponse.success(service.poiCandidates(id,keyword,areaCode));}
     @PostMapping("/policy/initialize")
     public ApiResponse<Void> initialize(){service.initializePolicy();return ApiResponse.success(null);}
 }

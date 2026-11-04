@@ -127,12 +127,16 @@ public final class DhbSyncOrchestrationService {
             new Observation("DHB_CUSTOMER_CLEARING_FORM", "customer.clearingForm", "prepaid", "预付"),
             new Observation("DHB_CUSTOMER_CLEARING_FORM", "customer.clearingForm", "forward", "现付"),
             new Observation("DHB_CUSTOMER_CLEARING_FORM", "customer.clearingForm", "postpaid", "后付"),
+            new Observation("DHB_ORDER_STATUS", "order.status", "PENDING_PRICING", "待核价"),
+            new Observation("DHB_ORDER_STATUS", "order.status", "PENDING_REVIEW", "待审核"),
             new Observation("DHB_ORDER_STATUS", "order.status", "PENDING_OUTBOUND", "待出库"),
             new Observation("DHB_ORDER_STATUS", "order.status", "PENDING_SHIPPED", "待发货"),
             new Observation("DHB_ORDER_STATUS", "order.status", "RECEIVED", "待收货"),
             new Observation("DHB_ORDER_STATUS", "order.status", "COMPLETED", "已完成"),
+            new Observation("DHB_ORDER_STATUS", "order.status", "FORCE_COMPLETED", "强制完成"),
             new Observation("DHB_ORDER_STATUS", "order.status", "CANCELLED", "已取消"),
             new Observation("DHB_ORDER_STATUS", "order.status", "RETURNED", "已退货"),
+            new Observation("DHB_ORDER_STATUS", "order.status", "DELETED", "已删除"),
             new Observation("DHB_FINANCIAL_BUSINESS_TYPE", "fund.incexpId", "1", "普通充值"),
             new Observation("DHB_FINANCIAL_BUSINESS_TYPE", "fund.incexpId", "19", "预付款充值"),
             new Observation("DHB_FINANCIAL_BUSINESS_TYPE", "fund.incexpId", "13", "订单收款"),
@@ -262,6 +266,11 @@ public final class DhbSyncOrchestrationService {
                                 break;
                             }
                             runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, true);
+                        }
+                        case VOUCHER_BACKFILL -> {
+                            if(bucket.orderTarget==null) throw new IllegalArgumentException("未配置订单同步任务");
+                            if(!background) throw new IllegalArgumentException("凭证补齐请使用后台任务入口");
+                            steps.add(orderSyncService.backfillVouchers(caller,bucket.orderTarget.taskId(),Integer.MAX_VALUE,progress));
                         }
                         case SALESPERSON -> runStaffStep(bucket, caller, pages, null, steps, true, progress);
                         case SALES_ORDER, RECEIPT, PAYMENT, SHIPMENT, TRANSFER -> {
@@ -787,6 +796,10 @@ public final class DhbSyncOrchestrationService {
             if (from.isBefore(bootstrap)) from = bootstrap;
             if (!from.isBefore(end)) {
                 steps.add(skipped("ORDER", type, "该对象游标已覆盖增量窗口，无需再次拉取"));
+                if("PAYMENT".equals(type) && orderSyncService.voucherBackfillEnabled()) {
+                    try { steps.add(orderSyncService.backfillVouchers(protectedCaller,bucket.orderTarget.taskId(),20,progress)); }
+                    catch(RuntimeException error) { steps.add(failed("ORDER","VOUCHER_BACKFILL",error)); }
+                }
                 continue;
             }
             steps.add(runIncrementalOrderScope(protectedCaller, bucket, type, from, end, pages, progress, background));

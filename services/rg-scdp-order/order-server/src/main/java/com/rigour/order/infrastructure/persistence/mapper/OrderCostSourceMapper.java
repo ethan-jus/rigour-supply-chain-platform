@@ -29,7 +29,7 @@ SELECT CONCAT('PAYMENT:',p.id) sourceId,o.order_no orderNo,COALESCE(a.region_cod
       THEN o.data_quality_status_code ELSE 'ATTRIBUTION_PENDING' END qualityStatus
 FROM order_payment_record p JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
 LEFT JOIN order_attribution_snapshot a ON a.tenant_id=o.tenant_id AND a.order_id=o.id AND a.state='FROZEN'
-WHERE p.tenant_id=#{tenant} AND COALESCE(a.region_code,o.region_code)=#{city} AND p.deleted=0 AND o.deleted=0
+WHERE p.tenant_id=#{tenant} AND COALESCE(a.region_code,o.region_code)=#{city} AND p.deleted=0 AND o.deleted=0 AND o.order_status_code NOT IN ('CANCELLED','DELETED')
  AND p.payment_status_code IN ('RECEIVED','CHECKED')
  AND p.payment_time>=#{from} AND p.payment_time<#{until}
 ORDER BY `date`,sourceId LIMIT 20001
@@ -45,11 +45,11 @@ ORDER BY `date`,sourceId LIMIT 20001
 SELECT CAST(p.id AS CHAR) sourceId,o.order_no orderNo,DATE(CONVERT_TZ(p.payment_time,'+00:00','+08:00')) `date`,p.paid_amount amount,'PAYMENT' kind
 FROM order_payment_record p JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
 WHERE p.tenant_id=#{tenant} AND o.owner_employee_code=#{employee} AND p.deleted=0 AND o.deleted=0
-  AND o.order_status_code<>'CANCELLED' AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time>=#{from} AND p.payment_time<#{until}
+  AND o.order_status_code NOT IN ('CANCELLED','DELETED') AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time>=#{from} AND p.payment_time<#{until}
 UNION ALL
 SELECT CONCAT('REFUND:',r.id),o.order_no,DATE(CONVERT_TZ(r.refund_time,'+00:00','+08:00')),-r.refund_amount,'REFUND'
 FROM order_refund_record r JOIN order_sales_order o ON o.tenant_id=r.tenant_id AND o.id=r.order_id
-WHERE r.tenant_id=#{tenant} AND o.owner_employee_code=#{employee} AND r.deleted=0 AND o.deleted=0
+WHERE r.tenant_id=#{tenant} AND o.owner_employee_code=#{employee} AND r.deleted=0 AND o.deleted=0 AND o.order_status_code NOT IN ('CANCELLED','DELETED')
   AND r.refund_status_code='CONFIRMED' AND r.refund_time>=#{from} AND r.refund_time<#{until}
 ORDER BY `date`,sourceId
 """)
@@ -82,7 +82,7 @@ SELECT CAST(l.id AS CHAR) lineId,o.order_no orderNo,o.owner_employee_code employ
   CASE WHEN ABS(o.paid_amount-(SELECT COALESCE(SUM(p.paid_amount),0) FROM order_payment_record p WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.deleted=0 AND p.payment_status_code IN ('RECEIVED','CHECKED')))&gt;0.01 THEN 'PAYMENT_MISMATCH' ELSE o.data_quality_status_code END qualityStatus
 FROM (SELECT #{until} AS end_utc) cutoff CROSS JOIN order_sales_order o JOIN order_sales_order_line l ON l.tenant_id=o.tenant_id AND l.order_id=o.id
 WHERE o.tenant_id=#{tenant} AND <choose><when test="employee != null and employee != ''">o.owner_employee_code=#{employee}</when><otherwise>o.region_code=#{city}</otherwise></choose> AND o.deleted=0 AND l.deleted=0
-  AND o.order_status_code NOT IN ('DRAFT','CANCELLED') AND o.order_date&lt;cutoff.end_utc ORDER BY o.id,l.id LIMIT 20001
+  AND o.order_status_code NOT IN ('DRAFT','CANCELLED','DELETED') AND o.order_date&lt;cutoff.end_utc ORDER BY o.id,l.id LIMIT 20001
  </script>
 """)
     List<OrderCommissionSourceLineView> commissions(
@@ -97,7 +97,7 @@ WHERE o.tenant_id=#{tenant} AND <choose><when test="employee != null and employe
 WITH scoped AS (
  SELECT o.* FROM order_sales_order o
  LEFT JOIN order_attribution_snapshot scope_attr ON scope_attr.tenant_id=o.tenant_id AND scope_attr.order_id=o.id AND scope_attr.state='FROZEN'
- WHERE o.tenant_id=#{tenant} AND o.deleted=0 AND o.order_status_code NOT IN ('DRAFT','CANCELLED')
+ WHERE o.tenant_id=#{tenant} AND o.deleted=0 AND o.order_status_code NOT IN ('DRAFT','CANCELLED','DELETED')
  AND o.order_date&lt;#{until}
  AND <choose><when test="employee != null and employee != ''">COALESCE(scope_attr.employee_code,o.owner_employee_code)=#{employee}</when><otherwise>COALESCE(scope_attr.region_code,o.region_code)=#{city}</otherwise></choose>
 ), running AS (

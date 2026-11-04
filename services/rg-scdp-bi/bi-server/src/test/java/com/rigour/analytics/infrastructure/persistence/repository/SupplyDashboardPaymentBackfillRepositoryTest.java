@@ -73,7 +73,7 @@ public class SupplyDashboardPaymentBackfillRepositoryTest {
                 """
                 CREATE TABLE bi_source_order_order_sales_order (
                     tenant_id VARCHAR(64), id BIGINT, customer_id BIGINT,
-                    region_code VARCHAR(64), owner_employee_code VARCHAR(50))
+                    region_code VARCHAR(64), owner_employee_code VARCHAR(50), deleted INT DEFAULT 0, order_status_code VARCHAR(32))
                 """);
         jdbc.execute(
                 """
@@ -136,7 +136,7 @@ CREATE TABLE bi_source_crm_crm_customer (
     void matchingPaymentProjectionDoesNotTriggerRepeatedBackfill(
             String orderOwner, String customerOwner, String collector, String projectedOwner) {
         jdbc.update(
-                "INSERT INTO bi_source_order_order_sales_order VALUES (?, 10, 20, 'BJ', ?)",
+                "INSERT INTO bi_source_order_order_sales_order(tenant_id,id,customer_id,region_code,owner_employee_code) VALUES (?, 10, 20, 'BJ', ?)",
                 TENANT,
                 orderOwner);
         jdbc.update(

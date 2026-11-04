@@ -50,6 +50,12 @@ public final class HrOrganizationController implements HrOrganizationApi {
     }
 
     @Override
+    public ApiResponse<Void> deleteEmployee(Long id, int revision) {
+        service.deleteEmployee(id, revision);
+        return ApiResponse.success(null);
+    }
+
+    @Override
     public ApiResponse<List<HrAssignmentView>> assignments(Long id) {
         return ApiResponse.success(service.assignments(id));
     }
